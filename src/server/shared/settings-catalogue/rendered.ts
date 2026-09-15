@@ -49,8 +49,20 @@ const HAS_LINE_BREAKER = new RegExp(`[${LINE_BREAKERS}]`, "u");
 const EVERY_LINE_BREAKER = new RegExp(`[${LINE_BREAKERS}]`, "gu");
 const RUN_OF_SPACE = new RegExp(String.raw`[\s${LINE_BREAKERS}]+`, "gu");
 
+/**
+ * Every UTF-16 code unit of the match, not just the first. The deny-set is
+ * matched with the `u` flag, so a match can be one CODE POINT of two units — the
+ * tag block (U+E0000…) and U+1BCA0 are format characters — and escaping the lead
+ * surrogate alone leaves the trail one behind as a lone surrogate. That silently
+ * changed the value a `--json` reader parses, which is the one thing this escape
+ * promises not to do.
+ */
 function escaped(ch: string): string {
-  return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
+  let out = "";
+  for (let i = 0; i < ch.length; i++) {
+    out += `\\u${ch.charCodeAt(i).toString(16).padStart(4, "0")}`;
+  }
+  return out;
 }
 
 /**

@@ -126,8 +126,15 @@ function describe(outcome: ResolvedSettingsOutcome): string {
       ? `In effect: ${outcome.card.effectState}.`
       : "";
   const sentences = [proposalPhaseGuidance(outcome.phase), effect].filter(Boolean).join(" ");
-  return `- ${name}${instance}${where} — ${headline}.`
-    + `${sentences ? ` ${sentences}` : ""} Key: \`${outcome.key}\`.`;
+  // The whole line at once, not each piece: this notice is one bullet an agent
+  // reads, and three of the pieces come from persisted rows — the setting key,
+  // the card's recorded effect state, and a phase this build may not know. A
+  // per-piece rule is what left `notes` raw on the read beside it (planning#577,
+  // docs/299-agent-settings-access req 2).
+  return renderOwn(
+    `- ${name}${instance}${where} — ${headline}.`
+      + `${sentences ? ` ${sentences}` : ""} Key: \`${outcome.key}\`.`,
+  );
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { joinRendered, renderAddress, renderOwn, renderValue } from "./rendered.js";
+import { joinRendered, renderAddress, renderJson, renderOwn, renderValue } from "./rendered.js";
 
 /**
  * planning#577: `shipit settings list` and `get` are a line-oriented format an
@@ -58,6 +58,39 @@ describe("renderValue", () => {
     circular.self = circular;
     expect(renderValue(circular)).toBe("(not representable)");
     expect(renderValue(() => "x")).toBe("(not representable)");
+  });
+});
+
+describe("renderJson", () => {
+  it("escapes what JSON.stringify leaves as itself, and nothing else changes", () => {
+    const value = `Be helpful.\u2028${FORGED_FIELD}`;
+    const json = renderJson({ value });
+
+    expect(json).not.toMatch(NO_BREAKS);
+    // The escape is the JSON spelling of the same character, so a reader parses
+    // the value that was stored — which is the whole promise of doing this to a
+    // document rather than to the text inside it.
+    expect((JSON.parse(json) as { value: string }).value).toBe(value);
+  });
+
+  /*
+    The deny-set is matched with the `u` flag, so a match can be one code point
+    of TWO UTF-16 units: the tag block and U+1BCA0 are format characters.
+    Escaping the lead surrogate alone left the trail one behind as a lone
+    surrogate, which silently changed the value a `--json` reader parses.
+  */
+  for (const supplementary of ["\u{E0067}", "\u{1BCA0}"]) {
+    it(`keeps ${JSON.stringify(supplementary)} intact through both of its code units`, () => {
+      const json = renderJson({ value: `tag${supplementary}end` });
+      expect(json).not.toMatch(NO_BREAKS);
+      expect((JSON.parse(json) as { value: string }).value).toBe(`tag${supplementary}end`);
+    });
+  }
+
+  it("says so rather than throwing on a document JSON cannot represent", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(renderJson(circular)).toBe("(not representable)");
   });
 });
 

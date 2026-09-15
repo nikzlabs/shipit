@@ -746,3 +746,17 @@ value and stored another. Both re-verified at the code.
       reader parses is unchanged. Guard: a stored U+2028 through the real read
       and the real shim, asserting both that stdout carries none and that the
       parsed value is still the stored one
+- [x] A second review round, on the changed diff, found four more: the escape
+      emitted only the first UTF-16 unit of a match, so a supplementary format
+      character (the tag block, U+1BCA0) came back from `--json` as a lone
+      surrogate — the round-trip the mint promises, broken by the mint; the
+      guard admitted every mixed union (`string | null`, `string | number`, a
+      union of objects, a `Record` of a union); the next-turn notice still
+      interpolated the stored setting key and the card's recorded effect state;
+      and both role errors appended `checked.message`, which names the role's
+      stored harness, service, billing mode, model and level
+- [x] Two of this round's own tests were blind by construction before they were
+      fixed: the unknown-phase one filtered case-sensitively while the fallback
+      UPPER-CASES what it echoes, and the notice one asserted that no line
+      EQUALS the forged text while a forged line arrives carrying whatever
+      followed it in the template. Both now assert on what opens a line

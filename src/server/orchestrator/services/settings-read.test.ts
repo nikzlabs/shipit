@@ -50,26 +50,40 @@ import {
  * `{ text: string }`. A leaf anywhere under a field is a leaf the shim can
  * print.
  *
- * What may stay plain is `key` alone: a declared catalogue constant, and the
- * address a caller passes back.
+ * Three names are exempt, and the exemption is a decision rather than a claim
+ * about what TypeScript prevents — nothing stops `String(x)` printing an
+ * `unknown`. `value`, `shape` and `live` are the machine-readable half of the
+ * response: the shim serializes `shape` and `live` through `renderJson` and
+ * never prints `value` at all, `display` being the line that carries it. A
+ * fourth name added here needs the same argument made at the renderer.
  *
- * `unknown` is deliberately NOT flagged. It is the machine-readable half of the
- * response — `value`, `shape`, `live` — which no renderer can put on a line
- * without serializing it first, and serializing goes through `renderJson`.
- * TypeScript will not let it be printed as text any other way.
+ * `key` stays plain as a declared catalogue constant, and the address a caller
+ * passes back. `items` is exempt on the detail entry only because it carries
+ * `value` at one remove — `SettingItemView` has an assertion of its own below,
+ * which is what actually covers an item's fields.
  */
-type HasPlainString<V> =
-  [V] extends [string]
-    // A branded string (`Rendered`) and a union of literals are string SUBtypes,
-    // and neither is a plain string: the test is whether `string` fits in it.
-    ? string extends V ? true : false
-    : V extends readonly (infer E)[]
-      ? HasPlainString<E>
-      : V extends object
-        ? true extends { [K in keyof V]-?: HasPlainString<Required<V>[K]> }[keyof V]
-          ? true
-          : false
-        : false;
+type PlainStringIn<V> =
+  // Distributes, so a UNION is judged member by member: `string | null` fails
+  // `[V] extends [string]` as a whole and is a plain string in the half that
+  // matters. The first version of this guard tested the union whole and let
+  // every mixed field through.
+  V extends unknown
+    ? [V] extends [string]
+      // A branded string (`Rendered`) and a string literal are string SUBtypes,
+      // and neither is a plain string: the test is whether `string` fits in it.
+      ? string extends V ? true : false
+      : V extends readonly (infer E)[]
+        ? HasPlainString<E>
+        : V extends object
+          ? true extends { [K in keyof V]-?: HasPlainString<Required<V>[K]> }[keyof V]
+            ? true
+            : false
+          // `unknown` and `any` land here, and both accept a plain string.
+          : string extends V ? true : false
+    : never;
+
+/** Collapsed to one answer, so a `true | false` from a union still reads as true. */
+type HasPlainString<V> = true extends PlainStringIn<V> ? true : false;
 
 type PlainStringFields<T> = {
   [K in keyof T]-?: HasPlainString<Required<T>[K]> extends true ? K : never;
@@ -77,9 +91,12 @@ type PlainStringFields<T> = {
 
 type AssertPlainFields<T, Allowed> = PlainStringFields<T> extends Allowed ? true : never;
 
-const _indexFieldsAreRendered: AssertPlainFields<SettingIndexEntry, "key"> = true;
-const _detailFieldsAreRendered: AssertPlainFields<SettingDetailEntry, "key"> = true;
-const _itemFieldsAreRendered: AssertPlainFields<SettingItemView, never> = true;
+const _indexFieldsAreRendered: AssertPlainFields<SettingIndexEntry, "key" | "value"> = true;
+const _detailFieldsAreRendered: AssertPlainFields<
+  SettingDetailEntry,
+  "key" | "value" | "shape" | "live" | "items"
+> = true;
+const _itemFieldsAreRendered: AssertPlainFields<SettingItemView, "value"> = true;
 const _effectFieldsAreRendered: AssertPlainFields<SettingEffect, never> = true;
 const _proposeFieldsAreRendered: AssertPlainFields<SettingProposeView, never> = true;
 const _addressFieldsAreRendered: AssertPlainFields<SettingAddressView, never> = true;

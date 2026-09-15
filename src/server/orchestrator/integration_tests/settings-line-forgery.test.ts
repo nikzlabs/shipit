@@ -201,6 +201,34 @@ describe("a stored value cannot forge a line of `shipit settings` output", () =>
     expect(detail.lastProposal?.proposedAt).not.toMatch(/[\n\r\u0085\u2028\u2029]/);
   });
 
+  it("does not let a PHASE this build does not know echo itself onto a line", async () => {
+    // `phase` is typed as one of ten and read back from SQLite with a cast, and
+    // the headline falls back to the stored string for a phase this build does
+    // not know — which is the sensible fallback and was also a raw echo.
+    fx.proposals.create({
+      cardId: "set-phase",
+      sessionId: fx.sessionId,
+      target: { key: "instructions.userInstructions" },
+      operation: "set",
+      phase: `dismissed-by-a-later-build\n${FORGED_FIELD}` as never,
+      from: "before",
+      proposed: "after",
+      createdAt: "2026-09-15T00:00:00.000Z",
+    });
+
+    const detail = await getSettingForAgent(
+      fx.deps.read,
+      fx.sessionId,
+      "instructions.userInstructions",
+    );
+    const out = await shim(detail, ["settings", "get", "instructions.userInstructions"]);
+
+    // Case-insensitively: the fallback upper-cases what it echoes, so a forged
+    // line arrives SHOUTING and a case-sensitive filter walks straight past it.
+    const fields = out.split("\n").filter((line) => /^\s*last proposal:/i.test(line));
+    expect(fields).toHaveLength(1);
+  });
+
   it("escapes a line separator in --json, which JSON.stringify leaves as itself", async () => {
     // `value` carries the prose raw — it is the machine-readable half — and
     // `JSON.stringify` escapes the C0 controls and stops there, so U+2028 in a

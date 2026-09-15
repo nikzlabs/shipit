@@ -206,7 +206,10 @@ export function validateRolePinnedParams(
   purpose: RoleParamsPurpose = "run",
 ): RolePinnedParams {
   const checked = checkRolePinnedParams(params, deps, purpose);
-  if (!checked.ok) throw new ServiceError(400, `${what} cannot run: ${checked.message}`);
+  // Flattened whole: the message names the STORED harness, service, billing
+  // mode, model and reasoning level of the role, none of which is gated to one
+  // line, and this error is a line the agent reads (req 2).
+  if (!checked.ok) throw new ServiceError(400, renderOwn(`${what} cannot run: ${checked.message}`));
   return checked.params;
 }
 

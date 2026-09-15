@@ -61,7 +61,13 @@ export function resolveUserRole(name: string, deps: UserRoleDeps): ResolvedUserR
   if (!checked.ok) {
     throw new ServiceError(
       400,
-      unavailableMessage(shown, checked.kind === "credential" ? "disconnected" : "stranded", checked.message),
+      // Flattened whole: `checked.message` names the role's stored harness,
+      // service, model and reasoning level, which nothing gates to one line.
+      // Flattened whole: `checked.message` names the role's stored harness,
+      // service, model and reasoning level, which nothing gates to one line.
+      renderOwn(
+        unavailableMessage(shown, checked.kind === "credential" ? "disconnected" : "stranded", checked.message),
+      ),
     );
   }
   return { role, params: checked.params };

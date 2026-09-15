@@ -400,6 +400,7 @@ is **no emitted text contains a character that can begin a line**: not `\n` and
 which is how a local `replace(/\s+/g, " ")` looks like the rule and is not it.
 Three mints, all returning a branded `Rendered` the type system will not accept a
 plain string in place of. `renderValue` quotes and escapes a stored value;
+`renderJson` escapes a whole serialized document;
 `renderOwn` flattens ShipIt's own words; `renderAddress` refuses an address
 outright, because `--item` takes an address back and it cannot be quoted out of
 harm's way — that instance is named by nothing, exactly as a URL-shaped name is,
@@ -425,6 +426,20 @@ fields (`phase`, `state`, `unreadableReason`), and `key`, which is a catalogue
 constant and the address a caller passes back. `value` is `unknown` — the
 machine-readable half, never a line.
 
+**The escape covers a character of two code units.** The deny-set is matched
+with the `u` flag, so one match can be one code point of two UTF-16 units — the
+tag block and U+1BCA0 are format characters — and escaping the lead surrogate
+alone left the trail one behind as a lone surrogate. On the text path that is a
+garbled character; on `--json` it silently changed the value a reader parses,
+which is the one thing that escape promises not to do.
+
+**The rule reaches the surfaces beside the read.** The next-turn notice composes
+one bullet from three persisted pieces — the setting key, the card's recorded
+effect state, and a phase this build may not know — and it is rendered whole
+rather than piece by piece, which is the shape of the `notes` defect one surface
+over. The two role errors flatten `checked.message` for the same reason: it
+names the role's stored harness, service, billing mode, model and level.
+
 **The rule is a type assertion rather than a habit.**
 `settings-read.test.ts` holds a compile-time guard (`PlainStringFields`) over
 each view: a new string-typed field fails `npm run typecheck` until it is
@@ -432,13 +447,15 @@ minted, and `key` is the only name the allow-list grants. The store readers mint
 at their own constructor (`unreadable()`), so a reader added later cannot supply
 a raw reason.
 
-The guard **looks through arrays and nested objects**, and the first version did
-not — it tested each direct property, so `notes: string[]`, the very regression
-it exists to prevent, passed it. A guard that cannot fail on the defect it was
-written for is worse than none, because it is read as coverage. `unknown` is
-deliberately not flagged: `value`, `shape` and `live` are the machine-readable
-half, and TypeScript admits no way to print one as text without serializing it,
-which goes through `renderJson`.
+The guard **looks through arrays, nested objects and union members**, and took
+two passes to get there. The first tested each direct property, so
+`notes: string[]` — the very regression it exists to prevent — passed it; the
+second tested a union whole, so `string | null` passed. A guard that cannot fail
+on the defect it was written for is worse than none, because it is read as
+coverage. Three names are exempt and the exemption is a decision rather than a
+claim about what TypeScript prevents: `value`, `shape` and `live` are the
+machine-readable half, `shape` and `live` are serialized through `renderJson`,
+and `value` is never printed — `display` is the line that carries it.
 
 **`--json` is part of the boundary, not an escape from it.** `JSON.stringify`
 escapes the C0 controls and stops, so a stored value carrying U+2028 put a real
@@ -460,7 +477,7 @@ flattens where it turns one into text.
 **The shim renders what it composes itself and trusts what the read sent.** The
 wire is `Rendered`, so re-rendering a value there would quote what is already
 quoted; what the shim composes itself is the `--item` echo and the two JSON
-blobs in `get`, and those go through `renderValue` — `JSON.stringify` escapes
+blobs in `get`, and those go through `renderJson` — `JSON.stringify` escapes
 the C0 controls and leaves U+2028, U+2029 and U+0085 as themselves.
 
 **The same enumeration exists outside the settings surface.** A role name is
