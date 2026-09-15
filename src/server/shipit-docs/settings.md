@@ -97,6 +97,20 @@ not text the user typed into a field that could hold a credential. Where the
 text *is* the point — the user's own instructions, their git identity — you get
 it, and the read says so.
 
+**A text value is shown quoted, and the quotes are ShipIt's own.** Anything the
+user wrote comes back as `"…"`, with a line break written `\n`, so no value can
+become a line of this output and be read as a setting or a field it is not.
+`on`, `off`, a number, `not set`, `empty` (an empty *list*) and
+`unreadable (…)` are ShipIt speaking and carry no quotes — which is how a
+setting whose stored value is literally the words `not set` reads back as
+`"not set"` and is not mistaken for one nobody set. When you propose such a
+value back, pass the text itself, not the quotes ShipIt printed around it.
+
+An **address** — the `--item` form naming one instance — is printed bare,
+because you pass it back exactly as it is. A stored instance whose address could
+not be printed on one line is left out for the same reason a URL-shaped name is,
+and the read says how many.
+
 A **name** the user chose is the point too, so you get it: naming the missing
 secret or the role that does not exist is most of what you have to tell them.
 But only when it is shaped like a name, and only when ShipIt can give it to you

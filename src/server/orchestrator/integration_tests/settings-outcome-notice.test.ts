@@ -9,6 +9,7 @@ import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
+import { renderOwn } from "../../shared/settings-catalogue/index.js";
 import {
   postSettingsProposal,
   transitionSettingsProposal,
@@ -90,8 +91,8 @@ function postAndResolve(
     sessionId: SESSION,
     target: { key: KEY },
     operation: "set",
-    from: over.from ?? "off",
-    to: over.to ?? "on",
+    from: renderOwn(over.from ?? "off"),
+    to: renderOwn(over.to ?? "on"),
     fromValue: false,
     proposedValue: true,
     baseline: { revision: cardId },

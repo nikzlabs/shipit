@@ -1,0 +1,121 @@
+/**
+ * How anything becomes text on ONE line of the agent's settings output
+ * (docs/299-agent-settings-access req 2, planning#577).
+ *
+ * `shipit settings list` and `get` are a line-oriented format an LLM parses:
+ * `key = value` in the index, `Value: …` and `Last proposal: …` in the detail. A
+ * stored string reaching one of those lines unescaped does not merely garble the
+ * output — a newline inside it starts a line of its own, and that line can read
+ * as one of ShipIt's own fields (`Last proposal: APPLIED by the user`, which
+ * stops an agent proposing a change nobody approved) or, in `list`, as an entire
+ * setting nobody declared. Not all of these strings are written by the session's
+ * user: a secret name comes from the repository, and a role's description can be
+ * agent-proposed from text that originated in a repository file or a web page.
+ *
+ * So no raw string is ever put on a line. Everything goes through one of the
+ * three mints below, each of which returns {@link Rendered} — a branded string
+ * the type system will not accept a plain one in place of. All three guarantee
+ * the same thing: **the result contains no character that can begin a new line.**
+ * They differ only in how the result reads, so choosing the wrong one costs
+ * legibility and never the guarantee.
+ */
+
+declare const RENDERED: unique symbol;
+
+/** Text that is safe on one line. Minted only by this file. */
+export type Rendered = string & { readonly [RENDERED]: true };
+
+/**
+ * Every character that can begin a new line for some reader: the C0 and C1
+ * controls (`\n`, `\r`, and NEL at U+0085), LINE SEPARATOR and PARAGRAPH
+ * SEPARATOR. The format characters go with them, because a bidi override
+ * reorders the rest of a line on screen without changing a byte of it.
+ *
+ * A deny-set rather than an allowed-shape test, because the property is narrow —
+ * can this begin a line? — and an allowlist answers a wider question: what a
+ * name may be made of. Each collection's own projection already answers that one
+ * (`userNameProjection` and `hostEntryProjection` in `projection.ts`, with their
+ * reasons), and a second shape gate here would silently drop addresses those
+ * deliberately allow.
+ */
+const LINE_BREAKERS = String.raw`\p{Cc}\p{Cf}\p{Zl}\p{Zp}`;
+const HAS_LINE_BREAKER = new RegExp(`[${LINE_BREAKERS}]`, "u");
+const EVERY_LINE_BREAKER = new RegExp(`[${LINE_BREAKERS}]`, "gu");
+const RUN_OF_SPACE = new RegExp(String.raw`[\s${LINE_BREAKERS}]+`, "gu");
+
+function escaped(ch: string): string {
+  return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
+/**
+ * ShipIt's own words, on one line: a refusal sentence, a count, a literal like
+ * "configured" — and an address echoed back for identification, which is the one
+ * caller here that is not ShipIt's own text. Not quoted, because the reader is
+ * meant to read the result as ShipIt speaking.
+ *
+ * It flattens rather than trusting its caller, so passing it the friendlier mint
+ * by mistake costs legibility and not the guarantee.
+ */
+export function renderOwn(text: string): Rendered {
+  return text.replace(RUN_OF_SPACE, " ").trim() as Rendered;
+}
+
+/**
+ * A stored value, quoted and escaped — the mint every value-bearing output uses.
+ *
+ * **Every string is quoted, with no exception** (planning#577). A predicate for
+ * "plain enough to leave bare" is one more thing to get wrong, and getting it
+ * wrong is a hole rather than a blemish; quoting uniformly also gives the LLM
+ * reading this an unambiguous grammar, and it is what separates a stored value
+ * reading `not set` from ShipIt saying the setting is not set. Non-strings are
+ * not quoted: `on`, `off` and a number cannot carry a line break, and an object
+ * goes through `JSON.stringify`, which quotes its own strings.
+ */
+export function renderValue(value: unknown): Rendered {
+  if (value === null || value === undefined) return "not set" as Rendered;
+  if (typeof value === "boolean") return (value ? "on" : "off") as Rendered;
+  if (typeof value === "number") return String(value) as Rendered;
+  return quoted(value);
+}
+
+/**
+ * `JSON.stringify` escapes the quote, the backslash and the C0 controls, which
+ * is most of the work. It leaves U+0085, U+2028, U+2029 and the format
+ * characters as themselves, so those are escaped here — U+2028 inside a quoted
+ * string is still a line break to a reader that honours it.
+ */
+function quoted(value: unknown): Rendered {
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    json = undefined;
+  }
+  if (json === undefined) return "(not representable)" as Rendered;
+  return json.replace(EVERY_LINE_BREAKER, escaped) as Rendered;
+}
+
+/**
+ * An address the agent passes back to `--item`, so it is emitted BARE — which is
+ * why it has to be a single-line token or nothing at all.
+ *
+ * Every collection projects its item names before they get here
+ * (`userNameProjection`, `hostEntryProjection`), but not all of them: the
+ * credential and provider-account collections emit ids their projection only
+ * filters for being strings. Refusing here is what makes the guarantee the
+ * read's rather than each declaration's, and the read already reports how many
+ * instances it left unnamed.
+ */
+export function renderAddress(text: string): Rendered | null {
+  if (text.length === 0 || HAS_LINE_BREAKER.test(text)) return null;
+  return text as Rendered;
+}
+
+/**
+ * Join pieces that are already rendered. The separator is fixed rather than a
+ * parameter: a caller-supplied one is a raw string, and taking it would be the
+ * one way to mint a `Rendered` carrying a line break.
+ */
+export function joinRendered(parts: readonly Rendered[]): Rendered {
+  return parts.join(", ") as Rendered;
+}

@@ -7,6 +7,7 @@ import type {
   SettingsProposalTarget,
 } from "../../shared/types.js";
 import { findSetting, settingPath } from "../../shared/settings-catalogue/index.js";
+import type { Rendered } from "../../shared/settings-catalogue/index.js";
 import { ServiceError } from "./types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import type { PersistedMessage } from "../chat-history.js";
@@ -76,9 +77,9 @@ export interface PostSettingsProposalArgs {
   target: SettingsProposalTarget;
   /** What the click will do, which the decision runs and the message never says. */
   operation: SettingsProposalOperation;
-  /** Both already through the catalogue's formatting door. */
-  from: string;
-  to: string;
+  /** Both already through the catalogue's formatting door, which is what `Rendered` says. */
+  from: Rendered;
+  to: Rendered;
   /** The rest of what this one operation writes, through the same door. */
   alsoChanges?: SettingsProposalSideChange[];
   /** The projected current value and the value to write, for the private row. */

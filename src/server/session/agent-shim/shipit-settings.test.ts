@@ -288,8 +288,9 @@ describe("shipit settings get", () => {
     cardId: "set-7f3a",
     phase: "dismissed",
     operation: "set",
-    from: false,
-    proposed: true,
+    // As the read sends them: rendered on the server, in the card's own words.
+    from: "off",
+    proposed: "on",
     proposedAt: "2026-09-13T10:00:00.000Z",
     resolvedAt: "2026-09-13T10:02:00.000Z",
     sessionId: "sess-1",
@@ -306,7 +307,7 @@ describe("shipit settings get", () => {
 
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toContain("Last proposal: DISMISSED by the user (card set-7f3a)");
-    expect(res.stdout).toContain("set: false → true on 2026-09-13T10:00:00.000Z");
+    expect(res.stdout).toContain("set: off → on on 2026-09-13T10:00:00.000Z");
     expect(res.stdout).toContain("resolved 2026-09-13T10:02:00.000Z");
     expect(res.stdout).toContain("Do not propose that value again unless they ask.");
   });
@@ -465,6 +466,35 @@ describe("shipit settings propose", () => {
     expect(res.stdout).toContain("off → on");
     expect(res.stdout).toContain("set-7f3a");
     expect(res.stdout).toContain("Nothing has changed yet");
+  });
+
+  it("flattens the instance it echoes back, which the read did not render", async () => {
+    // The card's `from` and `to` arrive rendered; `target.item` is the ADDRESS
+    // this call supplied, so the shim is what keeps it on one line
+    // (planning#577).
+    const { run } = makeRunner();
+    const res = await run(
+      ["settings", "propose", "roles[].description=x", "--item", "deep-dive", "--reason", "why"],
+      {
+        "POST /agent-ops/settings/propose": {
+          status: 200,
+          body: {
+            card: {
+              ...(PROPOSED.body.card as Record<string, unknown>),
+              target: {
+                key: "roles[].description",
+                item: "deep-dive\n  project.allowAgentMerge = on",
+              },
+            },
+          },
+        },
+      },
+    );
+
+    expect(res.exitCode).toBe(0);
+    const forged = res.stdout.split("\n").filter((line) => line.includes("allowAgentMerge"));
+    expect(forged).toHaveLength(1);
+    expect(forged[0]).toContain("Proposed:");
   });
 
   it("requires a reason, because the user reads it on the card", async () => {

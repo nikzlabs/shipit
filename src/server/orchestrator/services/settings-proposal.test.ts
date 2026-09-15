@@ -5,7 +5,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { SettingsProposalStore } from "../settings-proposal-store.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import type { WsServerMessage } from "../../shared/types.js";
-import { findSetting, settingPath } from "../../shared/settings-catalogue/index.js";
+import { findSetting, renderValue, settingPath } from "../../shared/settings-catalogue/index.js";
 import {
   flattenProposalReason,
   postSettingsProposal,
@@ -57,8 +57,8 @@ function post(over: Partial<Parameters<typeof postSettingsProposal>[2]> = {}) {
     sessionId: SESSION,
     target: { key: KEY },
     operation: "set",
-    from: "off",
-    to: "on",
+    from: renderValue(false),
+    to: renderValue(true),
     fromValue: false,
     proposedValue: true,
     baseline: { kind: "revision", revision: "r0" },

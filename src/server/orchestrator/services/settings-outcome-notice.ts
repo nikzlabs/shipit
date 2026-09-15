@@ -3,7 +3,7 @@ import type {
   SettingsProposalCard,
   SettingsProposalPhase,
 } from "../../shared/types.js";
-import { findSetting } from "../../shared/settings-catalogue/index.js";
+import { findSetting, renderOwn } from "../../shared/settings-catalogue/index.js";
 import {
   proposalPhaseGuidance,
   proposalPhaseHeadline,
@@ -25,12 +25,19 @@ import type { NoticeDelivery } from "../turn-settlement.js";
  * must not be the authority for anything.
  */
 
-/** One field of user-shaped text on the notice, flattened so it cannot add lines. */
+/**
+ * One field of user-shaped text on the notice, flattened so it cannot add lines.
+ *
+ * Through the catalogue's own flattening mint, not a local `\s+` (planning#577):
+ * `\s` does not match U+0085, U+2028 or U+2029, each of which a reader treats as
+ * the end of a line — so the field that carries a role name the proposing agent
+ * supplied could add one to a notice that speaks in ShipIt's voice.
+ */
 const FIELD_MAX = 160;
 
 function oneLine(value: string | undefined): string {
   if (!value) return "";
-  return value.replace(/\s+/g, " ").trim().slice(0, FIELD_MAX);
+  return renderOwn(value).slice(0, FIELD_MAX);
 }
 
 /**
