@@ -269,7 +269,10 @@ meets one, and every offer shows its description (req 26).
   with that hint as the row's title and in each checkbox's accessible name. A subtitle is the transcript action card's
   header row — an accent icon beside a 13px semibold primary label — because a
   heading in text colour alone, tertiary or primary, blends into the markdown
-  above it.
+  above it. `ClipboardText` marks the manual steps, `ListChecks` the follow-ups:
+  two silhouettes that do not read as the same glyph twice. The card's surface
+  is translucent (`bg-(--color-bg-secondary)/50`, border `/60`), so the rules
+  and subtitles carry its structure rather than a filled panel.
 - **Freshness.** A current card is a regular card. A stale card carries the
   word **"Stale"** (`text-[11px] font-semibold text-(--color-accent)`) in its
   bottom-right corner; the last row keeps right padding so text never runs
@@ -377,11 +380,13 @@ and absent in the flag-off ones, never its wording.
   other tool list; flag off → today's behavior, byte for byte, per harness.
 - `MessageList.test.tsx` — the card renders after the last transcript row
   inside the scroll content, and not at all without a stored status.
-- `SessionStatusCard.test.tsx` — rows; hidden `Needs you`; "Stale" only when
+- `SessionStatusCard.test.tsx` — the markdown status; the two subtitles; the
+  manual-step toggles and their "I've done this" names; "Stale" only when
   stale; selection keyed by `offerId` survives a replacement as a new
-  unselected item; taken offers greyed, disabled, unchecked; stale card's
-  untaken offers selectable; submit carries `sessionStatusOfferIds` and
-  per-offer provenance.
+  unselected item; a sent row greyed, unticked, tagged SENT and still tickable;
+  stale card's offers selectable; submit carries `sessionStatusOfferIds` and
+  per-offer provenance, and rides with the reported steps; a step submitted
+  alone carries no offer ids.
 - `ActionChecklistCard.test.tsx` — unchanged behavior after the split.
 - `agent-instructions.test.ts` — section present in flag-on variants, absent
   in flag-off ones.
