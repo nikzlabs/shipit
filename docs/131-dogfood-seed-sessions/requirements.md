@@ -56,6 +56,11 @@ able to do with it.
     like one. A value that only exists in the environment does not satisfy
     requirement 11.
 
+13. The inner ShipIt comes up with a session whose conversation is already
+    there, so a change to how a conversation renders can be looked at without
+    anyone first talking to an agent. Its turns include turns that end in an
+    agent reply and turns with no agent response text at all.
+
 Not required in this version: the outer agent replying to an inner agent
 mid-task — follow-up messages, answering a question the inner agent asks,
 interrupting it. Starting it and reading the result is enough (see the resolved
@@ -66,6 +71,16 @@ question below).
 _(none — implementation is unblocked.)_
 
 ## Resolved questions
+
+- 2026-09-15 — Requirement 13 added from *"Seed the dogfood db with sample
+  turns. With and without agent response text."*, said while iterating on the
+  collapsed-turn expand button (docs/299). It reverses this plan's earlier
+  non-goal "seeding chat history as part of the fixture", which was written when
+  the fixture's only purpose was a repo to work in. The reversal is narrow:
+  fixture rows written straight to the inner database, not turns produced by
+  running an agent — the non-goal's reason (a fixture must not depend on model
+  spend or on an agent's output being stable) still stands, and writing rows
+  satisfies it.
 
 - 2026-08-11 — Requirements 11–12 added from two statements. First: *"I don't
   want to go to settings in every session"*, with GLM as the motivating case.

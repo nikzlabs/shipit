@@ -1,11 +1,14 @@
 import { seedCredentials } from "./seed-inner-credentials.js";
 import { seedRoles } from "./seed-inner-roles.js";
+import { seedTranscript } from "./seed-inner-transcript.js";
 import { seed as seedRepos } from "./seed-inner-sessions.js";
 
-// Roles need stored credentials. Clone repos last so slow clones do not delay the other steps.
+// Roles need stored credentials, and the transcript needs the database the
+// earlier steps waited for. Clone repos last so slow clones delay nothing.
 export const SEED_STEPS: readonly { name: string; run: () => Promise<unknown> }[] = [
   { name: "credentials", run: () => seedCredentials() },
   { name: "roles", run: () => seedRoles() },
+  { name: "transcript", run: () => seedTranscript() },
   { name: "repos", run: () => seedRepos() },
 ];
 
