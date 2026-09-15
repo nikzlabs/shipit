@@ -44,11 +44,23 @@ is filtered silently at line 41.
 **Resident agents.** A spawn variable does not reach a process that outlives
 its turn: the reuse path sends the next message to the resident process and
 builds no run params (`turn-executor.ts:1026`; Claude's own shortcut at
-`agents/claude/adapter.ts:382`). So the runner records the flag value its
-resident was spawned with, and the reuse decision
-(`ws-handlers/agent-execution.ts:668`) treats a mismatch as "no existing
-agent": the resident is ended with `killProcessTree` and the next turn spawns
-fresh. A toggle therefore applies from the next turn on every harness.
+`agents/claude/adapter.ts:382`). Two mechanisms bring residents in line, and
+the first is the main one: the setting can only change through a running
+orchestrator, so the **save hook itself** (`onSessionStatusCardToggled`, fired
+in both directions) retires every idle resident at the toggle — including one
+adopted after a restart, which has no recorded value to compare. A session that
+is mid-turn is left alone, because killing its process would lose the turn; it
+is caught by the **second** mechanism when its next interactive turn starts:
+`buildAgentRunParams` records the value each spawn carries
+(`session-status-spawn-record.ts`, the one place the value is decided, so every
+spawning path writes it), and `releaseResidentOnStatusCardChange`
+(`ws-handlers/agent-execution.ts`) retires a resident whose record disagrees
+with the setting. A toggle therefore applies from the next turn on every
+harness. The one gap left is a session that was mid-turn at the toggle and
+whose next turn is a *dispatched* one (`dispatched-turn.ts` reuses residents
+through its own decision and cannot read the setting without a new
+`SystemTurnDeps` field): that turn runs with the previous tool list, and the
+two routes refuse its offer call, so it cannot write the wrong kind of card.
 
 **Re-enable (req 23).** A save hook for the key (`services/settings.ts`,
 `SAVE_HOOKS`, the `advanced.autoFixCi` pattern) runs on false → true: every
@@ -83,7 +95,7 @@ rehydration) is involved.
 |---|---|---|
 | `status` | optional, markdown, ≤ 1200 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
 | `needsYou` | optional repeated field: a list of strings, each ≤ 240 chars, at most 10; omitted: unchanged; `[]`: cleared (req 27) | One entry per decision or hand action only the user can take. Empty when nothing. |
-| `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the shared validator takes that as an option | Agent work the user approves with a click. |
+| `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the rule is `requireOfferDescriptions` (`shared/session-status-offers.ts`), applied by the tool and by the route on the validated items rather than by the shared item validator, which serves both tools | Agent work the user approves with a click. |
 | `replaceActions` | optional boolean, default false | `false`: add the given items to the offered list. `true`: the given list becomes the offered list; an empty list clears it. |
 
 An empty `actions` is valid only with `replaceActions: true`. There is no
@@ -116,7 +128,12 @@ in `agent-ops-routes.ts`) → orchestrator
 `headSha` for the offers it creates (as `api-routes-propose-actions.ts` does),
 persists, broadcasts, sets the turn's `statusUpdated`, and answers with one
 line saying the card is on screen, followed by the offered list with each
-item's taken state, so the agent can keep or replace offers knowingly.
+item's taken state, so the agent can keep or replace offers knowingly. It reads
+`runner.turnEpoch` before the provenance and persist awaits and sets
+`statusUpdated` only if it still matches: a stop and a successor turn can land
+inside those awaits, and the credit for a write belongs to the turn that made
+it. The route refuses while the setting is off, as `propose-actions` refuses
+while it is on, so neither card can be written from the other side of a toggle.
 
 ## Storage (req 10)
 
@@ -413,7 +430,7 @@ and absent in the flag-off ones, never its wording.
 ## Tests
 
 - `session-status-validation.test.ts` — limits; a bare call is valid;
-  `needsYou: ""` is a clear; empty list only with `replaceActions`; items
+  `needsYou: []` is a clear; empty list only with `replaceActions`; items
   through `validateActionItems`.
 - `services/session-status.test.ts` — reconciliation (unchanged item keeps
   `offerId` and `takenAt`; changed payload → new untaken offer; replace;
@@ -468,7 +485,9 @@ and absent in the flag-off ones, never its wording.
 - `src/server/shared/settings-catalogue/global-settings.ts` — the declaration; `src/server/orchestrator/services/settings.ts` — the save hook.
 - `src/server/session/mcp-tools/session-status.ts`, `src/server/session/mcp-shipit-bridge.ts` — the tool and its registry entry.
 - `src/server/session/agents/*/adapter.ts`, `src/server/session/agents/claude/process.ts`, `src/server/session/mcp-config-controller.ts`, `src/server/shared/types/agent-types.ts` — tool lists, allowlists and the flag in the config context and spawn env.
+- `src/server/session/mcp-tool-spec.ts` — `shipitToolSpec`, the one place the offer tool id is chosen, so each harness keeps its own order and the flag-off spec stays byte for byte.
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — resident reuse check against the flag.
+- `src/server/orchestrator/resident-spawn-guard.ts` — `releaseResidentOnStatusCardChange` and the per-process record of the value it was spawned with.
 - `src/server/session/agent-ops-routes.ts` — worker relay.
 - `src/server/orchestrator/api-routes-session-status.ts` — the route; `api-routes-propose-actions.ts` — refuses under the flag.
 - `src/server/shared/session-status-validation.ts`, `src/server/shared/propose-actions-validation.ts` — envelope; shared `validateActionItems`.
@@ -479,7 +498,7 @@ and absent in the flag-off ones, never its wording.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — acceptance after admission.
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, `src/server/orchestrator/services/session-fork-merge.ts` — stale on rewind, copy-as-stale on fork.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts`, `src/server/shared/types/domain-types/session.ts` — column and type.
-- `src/server/orchestrator/prompts/skeleton.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
+- `src/server/orchestrator/prompts/skeleton.md` (the `{{FOLLOW_UP_ACTIONS}}` slot), `prompts/propose-actions.md`, `prompts/session-status.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
 - `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation.
 
 ## Rejected alternatives
@@ -518,4 +537,9 @@ Each is reversible without touching a numbered requirement.
   comment shortcut" is withdrawn — Nik ruled the card extends the action card
   rather than reducing it, req 26.)
 - Every tool field is a delta on the stored card: omitted means unchanged,
-  `needsYou: ""` clears; a bare call with no stored card is refused.
+  `needsYou: []` clears; a bare call with no stored card is refused.
+- A `session_status` call whose awaits straddle a turn reset still writes the
+  card but does not set `statusUpdated`: the write is right either way, and a
+  successor inheriting the credit would escape the nudge it is owed. The
+  stopped turn is exempt through `wasInterrupted`, so the skipped flag costs
+  nothing.

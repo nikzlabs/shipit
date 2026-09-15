@@ -1,4 +1,9 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import {
+  forgetStatusCardSpawn,
+  statusCardSpawnValue,
+} from "./session-status-spawn-record.js";
 import type { AgentId, SessionInfo } from "../shared/types.js";
 import {
   buildAgentRunParams,
@@ -21,6 +26,7 @@ function setup(
   session: SessionInfo | undefined,
   connectionModel?: string,
   connectionReasoning?: string,
+  opts: { sessionStatusCard?: boolean; agentInstructions?: boolean } = {},
 ) {
   const captured: PrepareRunParamsInput[] = [];
   const prep: PrepareRunParamsFn = (params, input) => {
@@ -29,9 +35,10 @@ function setup(
   };
   const deps = {
     credentialStore: {
-      getAgentSystemInstructionsEnabled: () => false,
+      getAgentSystemInstructionsEnabled: () => opts.agentInstructions === true,
       getAllMcpServers: () => ({}),
       getAutoCreatePr: () => true,
+      getSessionStatusCard: () => opts.sessionStatusCard === true,
     },
     githubAuthManager: { authenticated: true },
     sessionManager: {
@@ -127,5 +134,41 @@ describe("buildAgentRunParams — the reasoning level comes from the session row
     const { run } = setup(makeSession({}), undefined, "low");
     const params = await run();
     expect(params.reasoningEffort).toBe("low");
+  });
+});
+
+const promptSection = (name: string): string =>
+  fs.readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8").trim();
+
+describe("buildAgentRunParams — docs/303 session status card", () => {
+  it("records the value this spawn carries, for the resident-reuse check", async () => {
+    forgetStatusCardSpawn("s1");
+    const { run } = setup(makeSession(), undefined, undefined, { sessionStatusCard: true });
+    await run();
+    expect(statusCardSpawnValue("s1")).toBe(true);
+
+    const off = setup(makeSession());
+    await off.run();
+    expect(statusCardSpawnValue("s1")).toBe(false);
+    forgetStatusCardSpawn("s1");
+  });
+
+  it("carries the setting to the agent and picks the status-card prompt", async () => {
+    const { run } = setup(makeSession(), undefined, undefined, {
+      sessionStatusCard: true,
+      agentInstructions: true,
+    });
+    const params = await run();
+    expect(params.sessionStatusCard).toBe(true);
+    expect(params.systemPrompt).toContain(promptSection("session-status.md"));
+    expect(params.systemPrompt).not.toContain(promptSection("propose-actions.md"));
+  });
+
+  it("omits the flag and keeps the action-card prompt while the setting is off", async () => {
+    const { run } = setup(makeSession(), undefined, undefined, { agentInstructions: true });
+    const params = await run();
+    expect(params.sessionStatusCard).toBeUndefined();
+    expect(params.systemPrompt).toContain(promptSection("propose-actions.md"));
+    expect(params.systemPrompt).not.toContain(promptSection("session-status.md"));
   });
 });

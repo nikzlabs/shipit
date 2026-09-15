@@ -84,6 +84,42 @@ describe("agent-ops routes", () => {
     expect(res.statusCode).toBe(409);
   });
 
+  it("POST /agent-ops/session-status forwards the delta to /session-status", async () => {
+    client.setResponse("POST", "/session-status", {
+      ok: true, status: 200,
+      body: { ok: true, status: "Done.", actions: [] },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session-status",
+      payload: { status: "Done.", replaceActions: true, actions: [] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/session-status",
+      body: { status: "Done.", replaceActions: true, actions: [] },
+    });
+  });
+
+  it("POST /agent-ops/session-status relays the orchestrator's refusal status", async () => {
+    client.setResponse("POST", "/session-status", {
+      ok: false, status: 400,
+      body: { error: "`status` is required" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session-status",
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
   it("POST /agent-ops/pr/create forwards to /pr/agent-create with body", async () => {
     client.setResponse("POST", "/pr/agent-create", {
       ok: true, status: 200,

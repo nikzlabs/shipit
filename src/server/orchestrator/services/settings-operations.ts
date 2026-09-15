@@ -34,6 +34,7 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import { MAX_CREDENTIAL_LABEL_LENGTH } from "../credential-store.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { SessionManager } from "../sessions.js";
+import { releaseResidentsOnStatusCardToggle } from "../resident-spawn-guard.js";
 import { markAllSessionStatusesStale } from "./session-status.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
@@ -337,6 +338,15 @@ function saveOptions(
       ? {
           onSessionStatusCardEnabled: () => {
             void markAllSessionStatusesStale({ sessionManager, sseBroadcast: deps.sseBroadcast });
+          },
+        }
+      : {}),
+    ...(deps.runnerRegistry
+      ? {
+          onSessionStatusCardToggled: (enabled: boolean) => {
+            if (deps.runnerRegistry) {
+              releaseResidentsOnStatusCardToggle(deps.runnerRegistry, enabled);
+            }
           },
         }
       : {}),

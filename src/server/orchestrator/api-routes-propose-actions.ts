@@ -19,6 +19,18 @@ export async function registerProposeActionsRoutes(
     async (request, reply: FastifyReply) => {
       const { sessionId } = request.params;
 
+      // docs/303 req 21 — the tool is absent from the agent's context while the
+      // card is on, so this only answers a resident process spawned before the
+      // toggle; it must not post a transcript card the card has replaced.
+      if (deps.credentialStore.getSessionStatusCard()) {
+        reply.code(409).send({
+          error:
+            "The session status card is on, so follow-up actions are offered through it: "
+            + "call session_status with `actions` instead.",
+        });
+        return;
+      }
+
       const validated = validateProposeActions(request.body ?? {});
       if ("error" in validated) {
         reply.code(400).send({ error: validated.error });

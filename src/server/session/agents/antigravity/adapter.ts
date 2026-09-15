@@ -31,6 +31,7 @@ import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
 import { normalizeAntigravityToolCall } from "./antigravity-tool-normalizer.js";
+import { shipitToolSpec } from "../../mcp-tool-spec.js";
 import {
   AntigravityUsageAccumulator,
   antigravityStderrErrorText,
@@ -588,7 +589,7 @@ export class AntigravityAdapter
       servers.shipit = {
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
-        env: { SHIPIT_MCP_TOOLS: "present,voice,bug,ask,propose_actions,propose_repo_session" },
+        env: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session", ctx) },
       };
     }
 

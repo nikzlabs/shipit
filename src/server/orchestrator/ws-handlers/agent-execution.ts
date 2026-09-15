@@ -31,7 +31,10 @@ import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../services/pr-rearm.js";
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
-import { releaseResidentOnSpawnChange } from "../resident-spawn-guard.js";
+import {
+  releaseResidentOnSpawnChange,
+  releaseResidentOnStatusCardChange,
+} from "../resident-spawn-guard.js";
 import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-routing.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 import { takeRoleStandingInstructions } from "../services/session-role.js";
@@ -327,6 +330,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       runner,
       desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
     );
+  }
+  if (useStreaming) {
+    releaseResidentOnStatusCardChange(runner, ctx.credentialStore.getSessionStatusCard());
   }
   const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
   const currentAgent = existingAgent ?? ctx.agentFactory(agentId);

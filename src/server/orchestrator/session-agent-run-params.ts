@@ -9,6 +9,7 @@ import {
   type PrepareRunParamsFn,
 } from "./agent-run-params-prep.js";
 import { serviceRoutingForSelection } from "./service-routing.js";
+import { recordStatusCardSpawn } from "./session-status-spawn-record.js";
 
 export interface BuildAgentRunParamsDeps {
   credentialStore: CredentialStore;
@@ -78,11 +79,15 @@ export async function buildAgentRunParams(
   const autoCreatePr = !isSandbox
     && deps.credentialStore.getAutoCreatePr()
     && deps.githubAuthManager.authenticated;
+  const sessionStatusCard = deps.credentialStore.getSessionStatusCard();
+  // Only a spawning turn builds run params, so this is the value the process
+  // about to start will hold until it is retired.
+  recordStatusCardSpawn(sessionId, sessionStatusCard);
 
   const userSystemPrompt = await deps.readSystemPrompt(isOps ? "ops" : "standard");
 
   const agentInstructions = agentInstructionsEnabled
-    ? buildAgentSystemInstructions({ agentId, isOps, isSandbox })
+    ? buildAgentSystemInstructions({ agentId, isOps, isSandbox, sessionStatusCard })
     : undefined;
   let systemPrompt: string | undefined =
     [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
@@ -103,6 +108,7 @@ export async function buildAgentRunParams(
     ...(serviceRouting !== undefined ? { serviceRouting } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
+    ...(sessionStatusCard ? { sessionStatusCard: true } : {}),
     ...(compact ? { compact: true } : {}),
   };
   const prepare = getPrepareRunParams(deps.runParamsPreps, agentId);

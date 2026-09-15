@@ -31,6 +31,7 @@ import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
 import { ensureCodexProjectTrusted } from "./project-trust.js";
 import { executeGoalCommand, runCodexGoalControl } from "./codex-goal.js";
+import { shipitToolSpec } from "../../mcp-tool-spec.js";
 
 export { unwrapShellCommand, buildCodexPermissionInput } from "./codex-tool-normalizer.js";
 
@@ -470,7 +471,7 @@ export class CodexAdapter
     }
 
     if (ctx.shipitBridge) {
-      runtimeEnv.SHIPIT_MCP_TOOLS = "present,voice,ask,bug,propose_actions,propose_repo_session";
+      runtimeEnv.SHIPIT_MCP_TOOLS = shipitToolSpec("present,voice,ask,bug,propose_actions,propose_repo_session", ctx);
       lines.push(
         "",
         "[mcp_servers.shipit]",

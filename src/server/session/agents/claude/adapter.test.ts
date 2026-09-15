@@ -49,6 +49,17 @@ describe("ClaudeAdapter", () => {
     expect(adapter.capabilities.toolNames).toContain("Agent");
   });
 
+  it("docs/303 — forwards sessionStatusCard from the run params to the CLI process", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as unknown as ClaudeProcess);
+
+    adapter.run({ prompt: "p", cwd: "/workspace", sessionStatusCard: true } as AgentRunParams);
+    expect(inner.lastRunOpts.sessionStatusCard).toBe(true);
+
+    adapter.run({ prompt: "p", cwd: "/workspace" } as AgentRunParams);
+    expect(inner.lastRunOpts.sessionStatusCard).toBeUndefined();
+  });
+
   it("maps system event to agent_init", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
