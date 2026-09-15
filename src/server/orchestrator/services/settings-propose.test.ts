@@ -8,6 +8,7 @@ import { addMcpServer, MAX_ENABLED_MCP_SERVERS } from "./mcp.js";
 import { settingsPayloadDomain, withConflictDomains } from "./settings-conflict-domain.js";
 import { getSettingForAgent } from "./settings-read.js";
 import { proposeSettingChange, readProposedValue, CARD_VALUE_MAX } from "./settings-propose.js";
+import { CARD_TEXT_LINES_MAX, CARD_TEXT_MAX } from "./settings-text-change.js";
 import { proposalFixture, type ProposalFixture } from "./settings-proposal-test-helpers.js";
 import { ServiceError } from "./types.js";
 
@@ -163,14 +164,93 @@ describe("proposeSettingChange", () => {
     expect(message).not.toContain("CANARY");
   });
 
-  it("refuses a value the card cannot show in full", async () => {
+  it("proposes a prose change, showing the whole before and the whole after", async () => {
+    // The case req 9 came from: an agent reads the user's own instructions,
+    // suggests a better version, and gets refused because no realistic prose
+    // value fits a 200-character chip.
+    const before = "Always run the tests before you finish.";
+    fs.mkdirSync(path.join(fx.tmpDir, ".shipit"), { recursive: true });
+    fs.writeFileSync(path.join(fx.tmpDir, ".shipit", "system-prompt.md"), before);
+    const proposed = `${before}\n${"Prefer small, reviewable pull requests. ".repeat(9)}`;
+    expect(proposed.length).toBeGreaterThan(CARD_VALUE_MAX);
+
+    const card = await propose({
+      key: "instructions.userInstructions",
+      valueText: proposed,
+      reason: "You asked for a tighter version of your own instructions.",
+    });
+
+    expect(card.textChange).toBeDefined();
+    const lines = card.textChange!.lines;
+    // Full context: the whole before and the whole after are on the card, not a
+    // sample of what Apply would write.
+    expect(lines.filter((l) => l.kind !== "added").map((l) => l.text).join("\n")).toBe(before);
+    // The declaration trims because the WRITER does, so the card cannot show a
+    // trailing space that Apply discards.
+    const stored = proposed.trim();
+    expect(lines.filter((l) => l.kind !== "removed").map((l) => l.text).join("\n")).toBe(stored);
+    // The prose lives in the diff and nowhere else; `from`/`to` are ShipIt's own
+    // summary, which is what the collapsed line and `lastProposal` want.
+    expect(card.from).toBe(`${before.length} characters`);
+    expect(card.to).toBe(`${stored.length.toLocaleString("en-US")} characters`);
+    expect(fx.proposals.get(card.cardId)).toMatchObject({ phase: "pending", proposed: stored });
+  });
+
+  it("refuses prose past what a card can carry, naming that bound and not the chip's", async () => {
     const message = await refusal({
       key: "instructions.userInstructions",
-      valueText: "x".repeat(CARD_VALUE_MAX + 1),
+      valueText: "x".repeat(CARD_TEXT_MAX + 1),
       reason: "why",
     });
     // The test is what the card can display, never the size of the diff.
-    expect(message).toContain(`at most ${CARD_VALUE_MAX}`);
+    expect(message).toContain(`at most ${CARD_TEXT_MAX.toLocaleString("en-US")}`);
+    expect(fx.emitted).toHaveLength(0);
+  });
+
+  it("refuses a change of more lines than anyone reads before clicking", async () => {
+    // The character bound alone does not bound the card: short lines cost far
+    // more as diff rows than as characters.
+    const message = await refusal({
+      key: "instructions.userInstructions",
+      valueText: Array.from({ length: CARD_TEXT_LINES_MAX + 1 }, (_, i) => `x${i}`).join("\n"),
+      reason: "why",
+    });
+    expect(message).toContain(`at most ${CARD_TEXT_LINES_MAX.toLocaleString("en-US")}`);
+    expect(fx.emitted).toHaveLength(0);
+  });
+
+  it("tells the agent it cannot shrink a CURRENT value that is over the bound", async () => {
+    fs.mkdirSync(path.join(fx.tmpDir, ".shipit"), { recursive: true });
+    fs.writeFileSync(
+      path.join(fx.tmpDir, ".shipit", "system-prompt.md"),
+      "y".repeat(CARD_TEXT_MAX + 1),
+    );
+
+    const message = await refusal({
+      key: "instructions.userInstructions",
+      valueText: "Always run the tests.",
+      reason: "why",
+    });
+
+    // "Propose a smaller edit" is useless advice about a value the agent did not
+    // write and cannot shorten from a card.
+    expect(message).toContain("edited by hand");
+    expect(message).not.toContain("smaller edit");
+  });
+
+  it("refuses a value that would render as something other than what Apply writes", async () => {
+    // A bidi override reorders the displayed text without changing what is
+    // stored, so the card would show one instruction and the button write
+    // another — `unsafe_to_display`, decided on the characters rather than the
+    // length.
+    const message = await refusal({
+      key: "instructions.userInstructions",
+      valueText: `Never push to main.\u202E${"x".repeat(CARD_VALUE_MAX)}`,
+      reason: "why",
+    });
+    expect(message).toContain("bidirectional override");
+    expect(message).toContain("other than what Apply would write");
+    expect(fx.emitted).toHaveLength(0);
   });
 
   it("needs the instance of an item-addressed setting, and names where to find them", async () => {
@@ -630,21 +710,47 @@ describe("a refused or recorded value cannot start a line", () => {
   const BREAK = new RegExp("[\\n\\r\\u2028\\u2029\\u0085]");
 
   it("measures the card's room over the text the card shows, not the value's own length", async () => {
-    // The card carries the RENDERED value, so a short value made mostly of line
-    // breaks needs more room than its own length — and the refusal says which
-    // number it means rather than reporting the value as longer than it is.
-    const raw = "a\n".repeat(CARD_VALUE_MAX / 2);
-    expect(raw.length).toBe(CARD_VALUE_MAX);
+    // A chip carries the RENDERED value, so one made mostly of line breaks needs
+    // more room than its own length — and the refusal says which number it means
+    // rather than reporting the value as longer than it is.
+    //
+    // The subject is the git identity rather than a prose setting because prose
+    // is no longer refused for outgrowing a chip; it is shown as a diff instead
+    // (docs/299-agent-settings-access req 9), and the test below is where that
+    // same rendered measure is pinned.
+    const name = `${"a\n".repeat(99)}a`;
+    const email = "nik@example.test";
 
     const message = await refusal({
-      key: "instructions.userInstructions",
-      valueText: raw,
+      key: "git.identity",
+      valueText: JSON.stringify({ name, email }),
       reason: "why",
     });
     expect(message).toContain("to show in full");
     expect(message).toContain(`at most ${CARD_VALUE_MAX}`);
-    // Every break is two characters once escaped, plus the pair of quotes.
-    expect(message).toContain(`needs ${CARD_VALUE_MAX + CARD_VALUE_MAX / 2 + 2} characters`);
+    // Every break is two characters once escaped; the rest is the JSON object's
+    // own quotes, braces and keys.
+    const rendered = name.length + 99 + email.length + '{"name":"","email":""}'.length;
+    expect(message).toContain(`needs ${rendered} characters`);
+    expect(rendered).toBeGreaterThan(name.length + email.length);
+  });
+
+  it("chooses the diff on the rendered length too, so newlines do not refuse prose", async () => {
+    // 199 raw characters — under the chip's cap — but 300 once quoted and
+    // escaped. Deciding on the raw length would refuse the user's own
+    // instructions for having line breaks in them, which is exactly what req 9
+    // exists to stop.
+    const raw = `${"a\n".repeat(99)}a`;
+    expect(raw.length).toBeLessThan(CARD_VALUE_MAX);
+
+    const card = await propose({
+      key: "instructions.userInstructions",
+      valueText: raw,
+      reason: "why",
+    });
+
+    expect(card.textChange?.after).toEqual({ chars: raw.length, lines: 100 });
+    expect(card.to).toBe(`${raw.length} characters`);
   });
 
   it("names the current value in a refusal without letting it become a line", async () => {

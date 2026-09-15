@@ -307,6 +307,7 @@ ShipIt's own settings (docs/299 — read what the user configured, propose a cha
   shipit settings get     <key> [--json]
   shipit settings propose <key>=<value> [--item ADDRESS] --reason "..."
   shipit settings propose <key> --add|--remove <entry> --reason "..."
+  shipit settings propose <key> --value-file - --reason "..."   (prose, on stdin)
 
   Answer "what is this setting set to?" yourself instead of asking the user to
   read a value out of the Settings dialog. 'list' is the index — every setting

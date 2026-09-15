@@ -8,6 +8,12 @@
  * that stays in the scrollback — the card is persisted, so a proposal they
  * applied last week is still there, saying so.
  *
+ * A prose value gets a third shape in place of the two chips (req 9): the card
+ * says a change is proposed and how big it is, and the change itself is read in
+ * a dialog the card opens. Chips cannot carry the user's own instructions, and
+ * refusing every realistic change to them is what that limitation used to mean —
+ * but pages of their own text do not belong in the scrollback either.
+ *
  * Everything ShipIt asserts about the change comes from the server: the label,
  * the description and the breadcrumb are the registry's own words, `from` and
  * `to` are the server's own read, and `outcome` is ShipIt's account of what
@@ -18,7 +24,9 @@
  * renders identically live and after a reload.
  */
 
+import { useState } from "react";
 import {
+  ArrowsOutSimpleIcon,
   CheckCircleIcon,
   CircleHalfIcon,
   QuestionIcon,
@@ -30,10 +38,19 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog.js";
 import { Spinner } from "./Spinner.js";
 import type {
   SettingsProposalCard as SettingsProposalCardData,
+  SettingsProposalDiffLine,
   SettingsProposalPhase,
+  SettingsProposalTextChange,
 } from "../../server/shared/types.js";
 
 export interface SettingsProposalCardProps {
@@ -105,6 +122,107 @@ function subLines(card: SettingsProposalCardData): string[] {
   return standard ? [standard] : [];
 }
 
+const DIFF_TONE: Record<SettingsProposalDiffLine["kind"], string> = {
+  added: "bg-(--color-success)/10 text-(--color-success)",
+  removed: "bg-(--color-error)/10 text-(--color-error)",
+  context: "text-(--color-text-secondary)",
+};
+
+const DIFF_MARK: Record<SettingsProposalDiffLine["kind"], string> = {
+  added: "+",
+  removed: "−",
+  context: " ",
+};
+
+/**
+ * Colour and a `+`/`−` glyph are the whole distinction on screen, so a reader
+ * that reports neither would hear "Always run the tests" and "Never run the
+ * tests" with nothing saying which one Apply writes.
+ */
+const DIFF_LABEL: Partial<Record<SettingsProposalDiffLine["kind"], string>> = {
+  added: "Added:",
+  removed: "Removed:",
+};
+
+function sizeOf(side: { chars: number; lines: number }): string {
+  return `${side.chars.toLocaleString()} characters, ${side.lines.toLocaleString()} ${
+    side.lines === 1 ? "line" : "lines"}`;
+}
+
+/**
+ * The whole before and the whole after, interleaved — full context, so this is
+ * not a sample of what Apply would write.
+ *
+ * Three things about it are load-bearing rather than styling. It **scrolls
+ * inside a bounded region**, so no length of proposed value outgrows the dialog.
+ * Its lines are **plain text**, never markdown, so a heading or a link written
+ * into the value cannot render as ShipIt's own chrome. And each changed line
+ * **says which it is**, because colour and an `aria-hidden` glyph are the whole
+ * distinction on screen.
+ */
+function DiffLines({ change }: { change: SettingsProposalTextChange }) {
+  return (
+    <pre
+      tabIndex={0}
+      aria-label="Proposed text, as a diff"
+      className="max-h-[60vh] overflow-auto rounded border border-(--color-border-secondary) bg-(--color-bg-tertiary) p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words"
+    >
+      {change.lines.map((line, index) => (
+        <div key={index} className={`flex ${DIFF_TONE[line.kind]}`}>
+          {DIFF_LABEL[line.kind] && <span className="sr-only">{DIFF_LABEL[line.kind]} </span>}
+          <span className="mr-2 shrink-0 select-none opacity-50" aria-hidden>
+            {DIFF_MARK[line.kind]}
+          </span>
+          <span className="min-w-0 flex-1">{line.text || " "}</span>
+        </div>
+      ))}
+    </pre>
+  );
+}
+
+/**
+ * A prose change on the card: ShipIt's own summary of it, and the control that
+ * opens it (docs/299-agent-settings-access req 9).
+ *
+ * The change itself is **not** in the transcript. An instructions rewrite is
+ * pages of the user's own text, and the scrollback is where their conversation
+ * lives — so the card says a change is proposed and how big it is, and the
+ * reading happens in a dialog. The counts are the server's, so a value padded
+ * with blank lines still reports its bulk here rather than hiding it behind a
+ * button that looks cheap to skip.
+ */
+function TextChange({ change, label }: { change: SettingsProposalTextChange; label: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="settings-proposal-text-change">
+      <span className="text-xs text-(--color-text-tertiary)">
+        {sizeOf(change.before)} <span aria-hidden>→</span> {sizeOf(change.after)}
+      </span>
+      <span className="text-xs text-(--color-success)">+{change.added}</span>
+      <span className="text-xs text-(--color-error)">−{change.removed}</span>
+      <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
+        <ArrowsOutSimpleIcon size={ICON_SIZE.XS} aria-hidden />
+        Review the change
+      </Button>
+      {open && (
+        <Dialog open onOpenChange={(next) => { if (!next) setOpen(false); }}>
+          <DialogContent className="flex max-h-[80vh] w-[min(90vw,56rem)] flex-col">
+            <DialogHeader className="flex-col items-start gap-0.5">
+              <DialogTitle>{label}</DialogTitle>
+              <DialogDescription>
+                {sizeOf(change.before)} → {sizeOf(change.after)} · +{change.added} −{change.removed}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              <DiffLines change={change} />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
 export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardProps) {
   if (card.phase !== "pending") {
     const { icon: Icon, tone, headline } = RESOLVED[card.phase];
@@ -162,21 +280,25 @@ export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardPro
               )}
             </div>
             <div className="mt-0.5 text-xs text-(--color-text-secondary)">{card.description}</div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-              <span
-                data-testid="settings-proposal-from"
-                className="rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 font-mono text-(--color-text-secondary) line-through decoration-(--color-text-tertiary)"
-              >
-                {card.from}
-              </span>
-              <span className="text-(--color-text-tertiary)" aria-hidden>→</span>
-              <span
-                data-testid="settings-proposal-to"
-                className="rounded bg-(--color-success-subtle) px-1.5 py-0.5 font-mono font-semibold text-(--color-success)"
-              >
-                {card.to}
-              </span>
-            </div>
+            {card.textChange ? (
+              <TextChange change={card.textChange} label={card.label} />
+            ) : (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span
+                  data-testid="settings-proposal-from"
+                  className="rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 font-mono text-(--color-text-secondary) line-through decoration-(--color-text-tertiary)"
+                >
+                  {card.from}
+                </span>
+                <span className="text-(--color-text-tertiary)" aria-hidden>→</span>
+                <span
+                  data-testid="settings-proposal-to"
+                  className="rounded bg-(--color-success-subtle) px-1.5 py-0.5 font-mono font-semibold text-(--color-success)"
+                >
+                  {card.to}
+                </span>
+              </div>
+            )}
             {card.alsoChanges && card.alsoChanges.length > 0 && (
               <div
                 data-testid="settings-proposal-also"

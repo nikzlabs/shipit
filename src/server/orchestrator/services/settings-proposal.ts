@@ -5,6 +5,7 @@ import type {
   SettingsProposalPhase,
   SettingsProposalSideChange,
   SettingsProposalTarget,
+  SettingsProposalTextChange,
 } from "../../shared/types.js";
 import { findSetting, settingPath } from "../../shared/settings-catalogue/index.js";
 import type { Rendered } from "../../shared/settings-catalogue/index.js";
@@ -80,6 +81,12 @@ export interface PostSettingsProposalArgs {
   /** Both already through the catalogue's formatting door, which is what `Rendered` says. */
   from: Rendered;
   to: Rendered;
+  /**
+   * Present when the prose outgrew a chip and the card shows a diff instead. Its
+   * lines are the raw value rather than `Rendered`: they reach the browser as
+   * their own elements, never a line of the agent's text output.
+   */
+  textChange?: SettingsProposalTextChange;
   /** The rest of what this one operation writes, through the same door. */
   alsoChanges?: SettingsProposalSideChange[];
   /** The projected current value and the value to write, for the private row. */
@@ -138,6 +145,7 @@ export function postSettingsProposal(
     path: settingPath(declaration.tab),
     from: args.from,
     to: args.to,
+    ...(args.textChange ? { textChange: args.textChange } : {}),
     ...(args.alsoChanges && args.alsoChanges.length > 0 ? { alsoChanges: args.alsoChanges } : {}),
     ...(reason ? { reason } : {}),
     phase: "pending",

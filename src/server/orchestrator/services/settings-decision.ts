@@ -9,7 +9,7 @@ import type { SettingsProposalRow, SettingsProposalStore } from "../settings-pro
 import { baselineMatches, settingBaseline } from "./settings-baseline.js";
 import type { SettingBaseline, SettingBaselineDeps } from "./settings-baseline.js";
 import { withConflictDomains } from "./settings-conflict-domain.js";
-import { findOperation } from "./settings-operations.js";
+import { appliedOutcome, findOperation } from "./settings-operations.js";
 import type { SettingsOperation, SettingsOperationDeps } from "./settings-operations.js";
 import { getSettingForAgent } from "./settings-read.js";
 import type { SettingsReadDeps } from "./settings-read.js";
@@ -206,7 +206,7 @@ async function runApply(
     return {
       phase,
       outcome: outcome.status === "applied"
-        ? operation.applied(row.target, card.to, declaration)
+        ? appliedOutcome(operation, row.target, card, declaration)
         : undefined,
       ...(outcome.detail ? { outcomeDetail: outcome.detail } : {}),
       ...(effect ? { effect } : {}),

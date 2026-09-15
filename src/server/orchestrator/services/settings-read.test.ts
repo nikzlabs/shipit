@@ -6,6 +6,7 @@ import { CredentialStore } from "../credential-store.js";
 import { getVoiceProvider, providerSpeeds, providerVoices, ttsProviders } from "../../shared/voice-catalog.js";
 import { addMcpServer } from "./mcp.js";
 import { globalSystemPromptPath, writeGlobalSystemPrompt } from "../global-system-prompt.js";
+import { CARD_TEXT_MAX } from "./settings-text-change.js";
 import {
   ALL_SETTINGS,
   GLOBAL_SETTINGS,
@@ -608,6 +609,22 @@ describe("getSettingForAgent", () => {
     await writeGlobalSystemPrompt(tmpDir, long);
     const entry = await getSettingForAgent(deps(), "s1", "instructions.userInstructions");
     expect(entry.value).toBe(long);
+  });
+
+  /**
+   * The dialog's box and a proposal card answer different questions — typing
+   * 50,000 characters of your own instructions is not the same act as approving
+   * 50,000 characters somebody else wrote — so the smaller of the two is said out
+   * loud rather than met in a refusal (docs/299-agent-settings-access req 9).
+   */
+  it("reports what a card can carry, where that is less than the dialog takes", async () => {
+    const prose = await getSettingForAgent(deps(), "s1", "instructions.userInstructions");
+    expect(prose.shape.maxLength).toBe(50_000);
+    expect(prose.proposeMaxLength).toBe(CARD_TEXT_MAX);
+
+    // A setting the card can always show whole has nothing extra to say.
+    const short = await getSettingForAgent(deps(), "s1", "git.identity");
+    expect(short.proposeMaxLength).toBeUndefined();
   });
 
   it("404s an unknown key by name", async () => {

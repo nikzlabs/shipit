@@ -89,6 +89,33 @@ button.theme:hover { background:var(--color-bg-hover); }
 .val.to { background:var(--color-success-subtle); color:var(--color-success); font-weight:600; }
 .arrow { color:var(--color-text-tertiary); }
 
+.sizes { display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px;
+  color:var(--color-text-tertiary); flex-wrap:wrap; }
+.diff {
+  margin:6px 0 0; max-height:16rem; overflow:auto; border-radius:4px;
+  border:1px solid var(--color-border-secondary); background:var(--color-bg-tertiary);
+  padding:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px;
+  line-height:1.6; white-space:pre-wrap; word-break:break-word;
+}
+.diff span { display:block; }
+.diff .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.diff .ctx { color:var(--color-text-secondary); }
+.diff .add { background:color-mix(in srgb, var(--color-success) 10%, transparent); color:var(--color-success); }
+.diff .del { background:color-mix(in srgb, var(--color-error) 10%, transparent); color:var(--color-error); }
+
+.review { margin-top:9px; }
+.btn.secondary { background:var(--color-bg-tertiary); color:var(--color-text-primary);
+  border-color:var(--color-border-secondary); display:inline-flex; align-items:center; gap:5px;
+  font-size:12px; padding:3px 9px; }
+.btn.secondary:hover { background:var(--color-bg-hover); }
+.dialog { border-radius:10px; border:1px solid var(--color-border-primary);
+  background:var(--color-bg-elevated); box-shadow:0 10px 30px rgba(0,0,0,.18); overflow:hidden; }
+.dialog-head { padding:14px 18px; border-bottom:1px solid var(--color-border-secondary); }
+.dialog-title { font-size:16px; font-weight:600; }
+.dialog-sub { font-size:12px; color:var(--color-text-secondary); margin-top:2px; }
+.dialog-body { padding:14px; }
+.dialog-body .diff { max-height:18rem; font-size:12px; }
+
 .reason {
   margin-top:10px; padding-left:10px; border-left:2px solid var(--color-border-secondary);
   color:var(--color-text-secondary); font-size:13px;
@@ -179,6 +206,114 @@ button.theme:hover { background:var(--color-bg-hover); }
     The setting name, the path, the description and both values come from the declaration and
     the server’s own read. Only the quoted reason is the agent’s text — flattened to one line,
     length-capped, and shown as attributed so it can never look like ShipIt describing the change.
+  </p>
+
+  <div class="divider"></div>
+
+  <h2>Pending — a prose value</h2>
+  <p class="note">
+    Two chips cannot carry the user's own instructions, and neither should the scrollback: the card
+    says a change is proposed and how big it is, and the change itself is read in the dialog below.
+    The card's height does not depend on the value at all.
+  </p>
+
+  <div class="bubble">
+    Here’s the tighter version of your instructions you asked for.
+  </div>
+
+  <div class="card pending">
+    <div class="row">
+      <span class="icon" style="color:var(--color-accent)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="4" y1="8" x2="20" y2="8"/><circle cx="9" cy="8" r="2.4" fill="currentColor" stroke="none"/>
+          <line x1="4" y1="16" x2="20" y2="16"/><circle cx="16" cy="16" r="2.4" fill="currentColor" stroke="none"/>
+        </svg>
+      </span>
+      <div class="body">
+        <div class="title">Settings change proposed</div>
+        <div class="path">Settings › Instructions</div>
+
+        <div class="change">
+          <div class="label">Your Instructions</div>
+          <div class="desc">Custom instructions sent to the agent with every message.</div>
+          <div class="sizes">
+            <span>412 characters, 9 lines</span>
+            <span class="arrow" aria-hidden="true">→</span>
+            <span>358 characters, 7 lines</span>
+            <span style="color:var(--color-success)">+3</span>
+            <span style="color:var(--color-error)">−5</span>
+          </div>
+          <div class="review">
+            <button class="btn secondary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="9,3 3,3 3,9"/><polyline points="15,21 21,21 21,15"/>
+                <line x1="3" y1="3" x2="10" y2="10"/><line x1="21" y1="21" x2="14" y2="14"/>
+              </svg>
+              Review the change
+            </button>
+          </div>
+        </div>
+
+        <div class="reason">
+          <span class="who">The agent’s reason</span>
+          You asked for a tighter version; this keeps every rule and drops the repetition.
+        </div>
+
+        <div class="actions">
+          <button class="btn primary">Apply</button>
+          <button class="btn ghost">Dismiss</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="legend">
+    The <strong>counts are ShipIt’s and they stay on the card</strong>, so padding a value with
+    blank lines cannot make the control look cheaper to skip than it is.
+  </p>
+
+  <h2>The dialog it opens</h2>
+  <p class="note">
+    A full-context diff: every line of both versions, unchanged ones included, so this is the
+    whole before and the whole after rather than a sample of what Apply writes.
+  </p>
+
+  <div class="dialog">
+    <div class="dialog-head">
+      <div class="dialog-title">Your Instructions</div>
+      <div class="dialog-sub">412 characters, 9 lines → 358 characters, 7 lines · +3 −5</div>
+    </div>
+    <div class="dialog-body">
+      <pre class="diff" tabindex="0" aria-label="Proposed text, as a diff">
+<span class="del"><span class="sr">Removed: </span>-Use lint:dev, not the full lint, unless you suspect a cross-file rule.</span>
+<span class="del"><span class="sr">Removed: </span>-Use test:dev, not the full suite, unless the change is wide.</span>
+<span class="add"><span class="sr">Added: </span>+Run the affected tests and the dev lint; reach for the full ones only</span>
+<span class="add"><span class="sr">Added: </span>+when the change is wide or you suspect a cross-file rule.</span>
+<span class="ctx"> </span>
+<span class="ctx"> Prefer small, reviewable pull requests.</span>
+<span class="del"><span class="sr">Removed: </span>-Explain why a change was made, not only what changed.</span>
+<span class="del"><span class="sr">Removed: </span>-Keep the PR body's rationale section stable rather than appending logs.</span>
+<span class="add"><span class="sr">Added: </span>+A PR body explains why, and its rationale section is edited rather than appended to.</span>
+<span class="ctx"> </span>
+<span class="ctx"> Never push to main.</span>
+<span class="del"><span class="sr">Removed: </span>-Ask before anything outward-facing.</span>
+<span class="ctx"> Read the feature doc before changing a feature.</span></pre>
+    </div>
+  </div>
+  <p class="legend">
+    Three things about the diff region are load-bearing rather than styling. It <strong>scrolls
+    inside a bounded region</strong>, so no length of value outgrows the dialog. Its lines are
+    <strong>plain text, never markdown</strong>, so a heading or a link written into the value
+    cannot render as ShipIt’s own chrome. And <strong>each changed line says which it is</strong>
+    — colour and an <code style="font-family:ui-monospace,Menlo,monospace">aria-hidden</code>
+    glyph are the whole distinction on screen otherwise.
+    A value carrying a bidirectional override or an
+    invisible formatting character is <strong>refused before the card exists</strong> — a card
+    that displays something other than what Apply writes fails the one test this refusal is.
+    Past 10,000 characters a side, or 1,000 lines between the two versions, the refusal stands:
+    that edit is the user’s own to make. Each changed line also carries an “Added:” / “Removed:”
+    label for a reader that gets neither the colour nor the glyph.
   </p>
 
   <div class="divider"></div>

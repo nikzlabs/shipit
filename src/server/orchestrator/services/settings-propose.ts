@@ -9,7 +9,11 @@ import {
   renderValue,
 } from "../../shared/settings-catalogue/index.js";
 import type { AnySettingDeclaration, Rendered } from "../../shared/settings-catalogue/index.js";
-import type { SettingsProposalCard, SettingsProposalTarget } from "../../shared/types.js";
+import type {
+  SettingsProposalCard,
+  SettingsProposalTarget,
+  SettingsProposalTextChange,
+} from "../../shared/types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import { settingBaseline } from "./settings-baseline.js";
@@ -28,6 +32,13 @@ import type {
 } from "./settings-operations.js";
 import { getSettingForAgent } from "./settings-read.js";
 import type { SettingDetailEntry, SettingItemView, SettingsReadDeps } from "./settings-read.js";
+import {
+  buildTextChange,
+  CARD_TEXT_LINES_MAX,
+  CARD_TEXT_MAX,
+  summarizeText,
+  unshowableCharacter,
+} from "./settings-text-change.js";
 import { postSettingsProposal } from "./settings-proposal.js";
 import type { SettingsProposalPersister } from "./settings-proposal.js";
 import { ServiceError } from "./types.js";
@@ -87,13 +98,17 @@ export interface SettingsProposeDeps {
 }
 
 /**
- * How much of a value a card can show.
+ * How much of a value one chip can show.
  *
  * A change nobody can check by looking is not a change the user can approve, so
- * a value too long for the card is refused rather than shown truncated —
- * the same test as an operation whose full effect the card cannot display
- * (plan.md → Collections are patched, never replaced). It is what keeps a 50,000
- * character instructions rewrite out of a one-click card.
+ * a value too long for the card is refused rather than shown truncated — the
+ * same test as an operation whose full effect the card cannot display
+ * (plan.md → Collections are patched, never replaced).
+ *
+ * Past it a PROSE setting is not refused but shown differently, as a
+ * full-context diff up to {@link CARD_TEXT_MAX} (req 9): the chip is what cannot
+ * carry the change, and the refusal was never meant to say that the user's own
+ * instructions are unproposable.
  */
 export const CARD_VALUE_MAX = 200;
 
@@ -265,7 +280,27 @@ function knownAddresses(entry: SettingDetailEntry): string {
 }
 
 /**
- * Neither side of the card may be longer than the card can show.
+ * A value the card cannot show truthfully, whatever its size — a bidi override
+ * reorders the text on screen without changing a byte of what Apply writes.
+ *
+ * Only the PROSE path needs it. Everywhere else the card carries a
+ * {@link Rendered} string, whose mint already escapes every format character
+ * (planning#577); a diff's lines are the raw value, because the card renders
+ * them as their own elements rather than on one line of the agent's output, and
+ * escaping there would show the user something other than their instructions.
+ */
+function requireDisplayable(declaration: AnySettingDeclaration, side: string, text: string): void {
+  const unshowable = unshowableCharacter(text);
+  if (!unshowable) return;
+  refuse(
+    `The ${side} value of ${declaration.key} contains ${unshowable}, so the card would show `
+      + "something other than what Apply would write. It is not offered as one click; tell the "
+      + "user what to change instead.",
+  );
+}
+
+/**
+ * Neither side of a chip may be longer than a chip can show.
  *
  * Measured over the RENDERED text, which is what the card carries: a value is
  * quoted and its line breaks escaped on the way out (planning#577), so a short
@@ -280,6 +315,72 @@ function requireShowable(declaration: AnySettingDeclaration, side: string, text:
       + `a proposal card shows at most ${CARD_VALUE_MAX}. A change the user cannot check by looking `
       + "at the card is not offered as one click; tell them what to change instead.",
   );
+}
+
+/**
+ * The card's change body: two chips, or — for a prose setting whose text has
+ * outgrown a chip — a full-context diff and a one-line summary in its place
+ * (req 9).
+ *
+ * Only a `text` declaration takes the diff path. A diff is a prose
+ * representation, and a collection whose formatted join runs long is a list
+ * rather than a document; those keep the chip and its refusal.
+ */
+function showableChange(
+  declaration: AnySettingDeclaration,
+  change: ProposedChange,
+): { from: Rendered; to: Rendered; textChange?: SettingsProposalTextChange } {
+  // The RAW strings, not the rendered ones: a text setting with no value renders
+  // as "not set", which is ShipIt's own words and not a document to diff or to
+  // count. What DECIDES between the two shapes is the rendered length, because
+  // that is what a chip would have to carry — a value is quoted and its line
+  // breaks escaped on the way out (planning#577), so the chip runs out of room
+  // on prose the raw measure would call short enough. Deciding on the raw length
+  // would refuse a 150-character instructions rewrite for having newlines in it,
+  // which is req 9's own failure one notch smaller.
+  const before = typeof change.fromValue === "string" ? change.fromValue : "";
+  const after = typeof change.proposedValue === "string" ? change.proposedValue : "";
+  const prose = declaration.type.kind === "text"
+    && (change.from.length > CARD_VALUE_MAX || change.to.length > CARD_VALUE_MAX);
+  if (!prose) {
+    requireShowable(declaration, "current", change.from);
+    requireShowable(declaration, "proposed", change.to);
+    return { from: change.from, to: change.to };
+  }
+  for (const [side, text] of [["current", before], ["proposed", after]] as const) {
+    requireDisplayable(declaration, side, text);
+    if (text.length > CARD_TEXT_MAX) {
+      // Which side is over decides what the agent can do about it: a proposal it
+      // wrote can be made smaller, and a value the user already has cannot.
+      refuse(
+        `The ${side} value of ${declaration.key} is ${text.length.toLocaleString("en-US")} `
+          + `characters, and a proposal card carries at most ${CARD_TEXT_MAX.toLocaleString("en-US")} `
+          + `of them. Past that the click is not an approval, ${side === "proposed"
+            ? "so propose a smaller edit or tell the user what to change."
+            : "and this is the value the user already has — this setting has to be edited by hand."}`,
+      );
+    }
+  }
+  const textChange = buildTextChange(before, after);
+  const lines = textChange.before.lines + textChange.after.lines;
+  if (lines > CARD_TEXT_LINES_MAX) {
+    refuse(
+      `The change to ${declaration.key} comes to ${lines.toLocaleString("en-US")} lines between the `
+        + `two versions, and a proposal card carries at most `
+        + `${CARD_TEXT_LINES_MAX.toLocaleString("en-US")}. Nobody checks that many before clicking; `
+        + "tell the user what to change instead.",
+    );
+  }
+  // The prose moves into the diff and out of `from`/`to`, which keep ShipIt's
+  // own summary — what the collapsed line, `lastProposal` and the CLI's echo all
+  // want, and what stops the text being persisted three times over. A count is
+  // ShipIt's own words about a value rather than the value, so it is minted as
+  // such and never quoted.
+  return {
+    from: renderOwn(summarizeText(before)),
+    to: renderOwn(summarizeText(after)),
+    textChange,
+  };
 }
 
 /**
@@ -419,7 +520,7 @@ export async function proposeSettingChange(
   // approves what the card shows, and the apply compares against something else
   // and overwrites it (plan.md → Proposing: "the server takes the snapshot").
   const proposedValue = kind === "set" ? proposedValueOf(declaration, input) : kind === "add";
-  const { change, alsoChanges, baseline } = await withConflictDomains(
+  const { change, shown, alsoChanges, baseline } = await withConflictDomains(
     operation.domains(target, deps.operations, proposedValue),
     async () => {
       const current = await readCurrent(deps, sessionId, resolved);
@@ -432,8 +533,7 @@ export async function proposeSettingChange(
       // it the other way round, where there is no card to name anything on.
       const refusal = operation.preflight?.(deps.operations, target, computed.proposedValue);
       if (refusal) refuse(refusal);
-      requireShowable(declaration, "current", computed.from);
-      requireShowable(declaration, "proposed", computed.to);
+      const shown = showableChange(declaration, computed);
       // The rest of what this one operation writes, in the same snapshot and
       // under the same lock as `from`: a role's model re-derives the harness and
       // the level, and the card names both rather than leaving the user to
@@ -445,6 +545,7 @@ export async function proposeSettingChange(
       }
       return {
         change: computed,
+        shown,
         alsoChanges,
         baseline: await requireBaseline(deps, resolved),
       };
@@ -464,8 +565,9 @@ export async function proposeSettingChange(
       sessionId,
       target,
       operation: kind,
-      from: change.from,
-      to: change.to,
+      from: shown.from,
+      to: shown.to,
+      ...(shown.textChange ? { textChange: shown.textChange } : {}),
       alsoChanges,
       fromValue: change.fromValue,
       proposedValue: change.proposedValue,

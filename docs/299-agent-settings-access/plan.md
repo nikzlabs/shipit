@@ -797,8 +797,165 @@ that separation is what stops a reason describing a different change than the
 button applies. Flattening is presentation hygiene, not a secret defence; the
 projections are that.
 
-[`mockup.html`](./mockup.html) shows the card: pending, all eight terminal
-states, and the saved-versus-effective case, in both themes.
+### A prose value is shown as a change to the text
+
+`from → to` chips work for a boolean, a model id, a host. They do not work for
+the user's own instructions, and nothing realistic ever will: no prose value fits
+the 200 characters a chip shows, so `instructions.userInstructions` declared
+`maxLength: 50_000`, read as fully proposable, and refused every proposal anyone
+would actually make. Req 9 is the user's answer to that — *"but I want this
+instructions to be proposable"*.
+
+The refusal underneath is right and is not overturned: a change the user cannot
+check by looking is not offered as one click. What was wrong is that the card had
+only one way to show a value, in one piece.
+
+**So a third shape replaces the two chips** whenever either side is longer than a
+chip shows (`CARD_VALUE_MAX`, still 200): **the card says a change is proposed
+and how big it is, and the change itself is read in a dialog the card opens.**
+Two sizes, a `+n −n`, and a *Review the change* control — that is the whole of
+what a prose change occupies in the scrollback.
+
+The dialog holds a **full-context** diff — every line of both versions, unchanged
+lines included — so it is not a summary that elides part of what is being
+written; the whole before and the whole after are there, marked with what
+changed.
+
+**The split is the user's, and the reason is where a transcript's room goes.** An
+earlier build put the diff inline in the card, height-capped. It worked, and it
+spent several screens of the conversation on pages of the user's own text that
+they were about to read once and never again — so the summary stays in the
+scrollback and the reading happens somewhere it can have the room. Two
+consequences fall out rather than needing to be designed: the card's height no
+longer depends on the value at all, so nothing can push Apply and Dismiss out of
+view; and a card the user scrolls past later costs one line.
+
+**"Longer than a chip shows" is measured over the RENDERED text**, which is the
+same measure `requireShowable` refuses on: a value is quoted and its line breaks
+escaped on the way out (planning#577), so a chip runs out of room on prose that
+the raw measure would call short enough. Deciding on the raw length would refuse
+a 150-character instructions rewrite for having newlines in it — req 9's own
+failure, one notch smaller. The two measures meeting here is also what leaves the
+chip refusal reachable only for a value that is not prose; the git identity, two
+`text({ maxLength: 200 })` fields inside one JSON object, is the case that still
+reaches it and the one its guard uses.
+
+The diff's own lines are the **raw** value and not `Rendered`. They reach the
+browser as their own elements rather than as one line of the agent's text output,
+so escaping there would show the user something other than their instructions —
+and the display-integrity refusal below is what covers that path instead.
+
+**Computed on the server at propose time, and snapshotted** exactly as `from` and
+`to` are. A diff is an assertion about the change, so it is ShipIt's to make:
+computing it in the browser would let two viewers on different client builds see
+two accounts of one approval, and would leave the refusal below deciding on
+numbers the card does not render.
+
+**`from` and `to` do not carry the prose.** For a long change they are ShipIt's
+own one-line summary — `412 characters` → `358 characters` — which is what every
+existing consumer of them actually wants: the collapsed line in the scrollback,
+the `lastProposal` the read reports, the line `shipit settings propose` prints
+back. The text is in the diff, once, instead of in three places at 10 KB each.
+
+**The bound is two numbers, and past either the card still refuses.**
+`CARD_TEXT_MAX` is 10,000 characters a side: roughly 1,500 words, past which the
+click stops being an approval and becomes a rubber stamp, which is the thing the
+refusal exists to prevent. It is deliberately **lower than the declared
+`maxLength` of 50,000**, and that is not an inconsistency to reconcile — a user
+typing 50,000 characters of their own instructions into the dialog is not
+performing the same act as approving 50,000 characters somebody else wrote, so
+the two limits answer different questions and are allowed to differ.
+
+`CARD_TEXT_LINES_MAX` is 1,000 lines between the two versions, and it exists
+because the character bound does not bound the card: a diff line costs far more
+than the character it carries, so 10,000 single-character lines a side is a
+300 KB transcript row and 20,000 rendered rows. It is a reviewability bound too —
+nobody checks a thousand lines before clicking — and prose at `CARD_TEXT_MAX`
+comes to a couple of hundred.
+
+**Which side is over decides what the agent is told.** "Propose a smaller edit"
+is useless advice about the value the user already has, so a `current` side past
+the bound says instead that this setting has to be edited by hand.
+
+**`alsoChanges` sides keep the 200-character cap.** A side change is a supporting
+line under the main one and has no diff of its own; the three operations that
+have them (`roles[].model`, `roles[].harness`, `reviewers[].model`) write a
+harness id and a reasoning level. Long text arriving there is a declaration that
+has outgrown the card, not something to render.
+
+**The agent is told where the line is before it writes a value.** `get` on a
+proposable text setting whose declared `maxLength` is wider than the card reports
+`proposeMaxLength`, and both renderers print it — so the agent composes to the
+limit instead of discovering it in a refusal, which is the second half of req 9.
+
+**And the value reaches the command through a file, not through argv.**
+`shipit settings propose <key> --value-file -` takes the prose on stdin, the same
+shape as `gh pr create --body-file -` and `shipit issue comment --body-file -`.
+`key=value` still works and is still right for a scalar; multi-line prose
+squeezed into one shell word is not a surface the feature should depend on.
+
+#### What replaces flattening, for a value that cannot be flattened
+
+`--reason` is untrusted text and its defence is to flatten it to one line, cap it
+and render it attributed. A proposed value cannot be flattened — the newlines are
+the content — and it is agent-authored in the same sense. The *class* is not new
+(`roles[].description` and a git name are agent-supplied text today); the volume
+is, and a long agent-authored block inside an approval card is a good place to
+put text shaped like ShipIt's own words. The equivalent is four rules:
+
+- **The card's own words stay the registry's.** Label, description, breadcrumb,
+  the character and line counts and the `+n −n` are ShipIt's, and the diff is the
+  only region carrying anyone else's text. That the diff is in a dialog helps
+  here and is not relied on: a surface the user opened deliberately, with a title
+  ShipIt wrote, is harder to mistake for chrome than a block inside the card.
+- **The diff renders as plain text, never as markdown.** A heading, a link or a
+  rule rendered out of the proposed value is exactly how it stops reading as
+  content.
+- **The counts come from the server, and they are on the CARD.** A change the
+  user has not opened yet is still described by its real size — padding a value
+  with blank lines cannot make *Review the change* look cheaper to skip than it
+  is.
+- **Every changed line says so in words, not only in colour.** The `+`/`−` glyph
+  is decorative, so a screen reader would otherwise hear both halves of a
+  replaced line with nothing saying which one Apply writes.
+- **A value whose rendering differs from its content is refused** — which is
+  `unsafe_to_display` applied to the characters rather than to the length.
+  Bidirectional overrides and isolates (`U+202A`–`U+202E`, `U+2066`–`U+2069`)
+  reorder displayed text without changing what is stored; and the rest is
+  Unicode's own `Default_Ignorable_Code_Point` — what a renderer is meant to show
+  as nothing — plus the C0/C1 controls other than tab, carriage return and
+  newline. The **property** rather than a hand-listed range, because the
+  hand-listed one missed the soft hyphen, the combining grapheme joiner, the
+  Arabic letter mark and the tag block. Variation selectors are subtracted from
+  it: they are ignorable by that definition and are how an ordinary emoji is
+  written. A card that displays something other than what Apply writes fails the
+  one test this refusal is. Both sides are checked, because the card displays
+  both, and the refusal names the side rather than quoting it.
+
+**And the card must not show a change the WRITER discards.** The instructions
+writer trims and stores one trailing newline; `boundedText` trims role prose. A
+diff built from the untrimmed value showed a leading blank line or a second
+trailing newline that Apply then dropped — the card asserting a change nobody
+made. The fix is on the declaration, where it can be seen: `text({ trim: true })`
+wherever the writer trims, so the type's own validation produces the value that
+will be stored. The rule is that a declaration describes what is stored, not what
+was typed.
+
+**An applied prose card says what the edit did.** `settingIs` resolves the
+operation's outcome from the card's `to`, which for a prose card is a character
+count — "Your Instructions is 305 characters", true and saying nothing about what
+was just approved. `appliedOutcome` substitutes `changed (+n −n)` when a
+`textChange` is present. It lives on the server beside the other outcomes rather
+than in the component, because the resolved line is ShipIt's account of what
+happened and the client renders `outcome` in preference to anything of its own.
+
+This is **not a scanner** and is not a second defence against a secret in a
+value: `emits` is that, and a `user_text` setting is the user's own prose shown
+because it is theirs. The claim is narrow — what the card shows is what the
+button writes.
+
+[`mockup.html`](./mockup.html) shows the card: pending, the long-text state, all
+eight terminal states, and the saved-versus-effective case, in both themes.
 
 ## Applying
 
@@ -1316,6 +1473,8 @@ session-scoped, container-accessible reads `GET /api/sessions/:id/settings` and
 the broadcast), `services/settings-conflict-domain.ts` (the lock) and
 `services/settings-baseline.ts` (the per-declaration revision);
 `shared/settings-catalogue/apply-outcome.ts` (the four outcomes);
+`services/settings-text-change.ts` (the full-context line diff a long prose
+change is shown as, its counts, and the display-integrity check);
 `settings-proposal-store.ts` (the private proposal row: target, operation,
 proposed value, baseline, phase); `services/settings-proposal.ts` (the card as a
 transcript object: post, claim, transition); `services/settings-propose.ts` (the
@@ -1397,6 +1556,21 @@ Beyond the persistence round-trip tests:
   `propose` refuse.
 - **Reconnect** — a viewer away when a change applied shows the new value.
 - **Frozen project target** — a card for repo A is refused after a rebind.
+- **A prose change is proposable** — several hundred characters of
+  `instructions.userInstructions`, the case req 9 came from, produces a card, and
+  the card summarises it and its dialog carries the whole before and the whole
+  after. At
+  `CARD_TEXT_MAX + 1` and at `CARD_TEXT_LINES_MAX + 1` the refusal still happens,
+  naming the bound rather than the chip's 200.
+- **The click writes what the diff showed** — a propose-then-apply round trip
+  comparing the stored file against the diff's own added lines. The propose test
+  alone cannot see the writer's trim, which is how that defect got in.
+- **Display integrity** — a proposed value carrying a bidi override or an
+  invisible formatting character is refused before a card exists, and so is one
+  whose *current* value carries one; an emoji written with a variation selector
+  is not.
+- **An unchanged line BETWEEN two changes stays context** — the assertion the
+  LCS has to earn, since prefix/suffix trimming supplies every other one.
 
 ## Risks
 

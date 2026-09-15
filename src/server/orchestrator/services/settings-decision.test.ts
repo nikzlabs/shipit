@@ -76,6 +76,36 @@ describe("resolveSettingsProposal — apply", () => {
     expect(fx.history.getSettingsProposalCard(fx.sessionId, card.cardId)?.phase).toBe("applied");
   });
 
+  /**
+   * A prose card (docs/299-agent-settings-access req 9). Two things the card
+   * asserts have to survive the click: what the diff showed is what gets stored,
+   * character for character, and the resolved line says what the edit did.
+   */
+  it("writes exactly the prose its diff showed, and says what the edit did", async () => {
+    const before = "Always run the tests before you finish.";
+    const promptFile = path.join(fx.tmpDir, ".shipit", "system-prompt.md");
+    fs.mkdirSync(path.dirname(promptFile), { recursive: true });
+    fs.writeFileSync(promptFile, before);
+    const proposed = `${before}\n${"Prefer small, reviewable pull requests. ".repeat(9)}`;
+
+    const card = await post({ key: "instructions.userInstructions", valueText: proposed });
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("applied");
+    // The writer trims and appends one newline, so a card built from the
+    // untrimmed text would show a trailing line Apply never writes. The
+    // declaration trims too, which is what makes the two agree.
+    const stored = fs.readFileSync(promptFile, "utf-8");
+    expect(stored).toBe(`${proposed.trim()}\n`);
+    expect(card.textChange?.lines.filter((l) => l.kind !== "removed").map((l) => l.text).join("\n"))
+      .toBe(stored.trim());
+    // "Your Instructions is 398 characters" is true and says nothing about what
+    // the user just approved.
+    expect(resolved.outcome).toBe(
+      `Your Instructions changed (+${card.textChange!.added} −${card.textChange!.removed})`,
+    );
+  });
+
   it("produces ONE apply when two decisions arrive for one card", async () => {
     const card = await post();
 

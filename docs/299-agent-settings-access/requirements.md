@@ -51,7 +51,10 @@ agent is the actor.
    which setting it is, what it is currently set to, and what it has to become —
    instead of a generic "change it in Settings".
 4. The agent's only write path is a proposal. It posts a card that names the
-   exact change, and the setting does not move until the user clicks. This holds
+   exact change, and the setting does not move until the user clicks. Naming the
+   exact change is a claim about what the user can check, not about how a value
+   is printed: a long value is shown as what it does to the text rather than as
+   one piece (req 9). This holds
    for every setting: there is no class of setting the agent may change on its
    own, however small or reversible the change is. The guarantee is about
    container mode; in `RUNTIME_MODE=local` no click gate is enforceable for this
@@ -78,6 +81,13 @@ agent is the actor.
    itself for** is one ShipIt composed no prompt for, so there is no place there
    either. The last two are recorded below as known limitations. In all three the
    outcome waits for the turn after rather than being lost.
+9. A setting whose value is prose — the user's own instructions, an ops session's
+   instructions, a role's standing instructions — is proposable like any other
+   setting, and not only in principle. The card **says a change is proposed and
+   how big it is**; the change itself is read in a dialog the card opens, and the
+   user can read it in full before they click. A value too
+   long for anyone to check that way is still refused rather than shown in part,
+   and the agent is told where that line is before it writes a value, not after.
 
 ## Open questions
 
@@ -123,6 +133,26 @@ agent is the actor.
 
 ## Resolved questions
 
+- 2026-09-15 — *Where does a long change get read — inline on the card, or
+  somewhere the card opens?* The first build put the whole diff in the transcript,
+  in a height-capped scroll region. The user: **"let's make the card just say that
+  there is a change, for a case of a long values. And the full diff should be
+  shown in a dialog."** So the card carries the summary ShipIt authored — the two
+  sizes and the `+n −n` — and a control that opens the change; a prose value never
+  occupies the scrollback. → requirement 9's second sentence.
+- 2026-09-15 — *A prose setting declares a 50,000-character limit and reads as
+  fully proposable, but no realistic prose value fits the 200 characters a
+  proposal card will show — so it is proposable in principle and unproposable in
+  practice. Which half gives?* The user, on being shown an agent refused while
+  proposing a better version of their own instructions: **"but I want this
+  instructions to be proposable"**. So the card learns to show a long change, and
+  the principle underneath the refusal is untouched — an operation whose full
+  effect the card cannot show is still refused. The option not chosen was to
+  state the smaller limit honestly in the read and leave prose settings
+  hand-edited: it would have made the surface truthful and left in place exactly
+  the dead end this feature exists to remove. Background and both options:
+  [planning#576](https://github.com/nikzlabs/shipit-planning/issues/576). →
+  requirement 9, and requirement 4's clause about what "the exact change" claims.
 - 2026-09-13 — *Which capabilities does this cover beyond reading?* The user
   chose **reading** plus a **proposal card the user applies with one click**.
   Two candidates were offered and not chosen: a clickable pointer that opens

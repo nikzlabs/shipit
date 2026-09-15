@@ -87,6 +87,122 @@ describe("SettingsProposalCard — pending", () => {
     expect(screen.queryByTestId("settings-proposal-also")).not.toBeInTheDocument();
   });
 
+  const prose = (over: Partial<CardData> = {}): CardData => card({
+    target: { key: "instructions.userInstructions" },
+    label: "Your Instructions",
+    from: "39 characters",
+    to: "78 characters",
+    textChange: {
+      lines: [
+        { kind: "context", text: "Always run the tests." },
+        { kind: "removed", text: "Use tabs." },
+        { kind: "added", text: "Use spaces." },
+        { kind: "added", text: "Prefer small PRs." },
+      ],
+      before: { chars: 39, lines: 2 },
+      after: { chars: 78, lines: 3 },
+      added: 2,
+      removed: 1,
+    },
+    ...over,
+  });
+
+  /**
+   * A prose value gets a third shape in place of the two chips
+   * (docs/299-agent-settings-access req 9): the card says a change is proposed
+   * and how big it is, and the change itself is read in a dialog. Pages of the
+   * user's own text do not belong in the scrollback.
+   */
+  it("keeps a prose change out of the transcript, summarising it instead", () => {
+    render(<SettingsProposalCard card={prose()} />);
+
+    const summary = screen.getByTestId("settings-proposal-text-change");
+    // The server's counts, so a value padded with blank lines still reports its
+    // bulk rather than hiding behind a button that looks cheap to skip.
+    expect(summary).toHaveTextContent("39 characters, 2 lines");
+    expect(summary).toHaveTextContent("78 characters, 3 lines");
+    expect(summary).toHaveTextContent("+2");
+    expect(summary).toHaveTextContent("−1");
+    // Not one line of the value until the user asks for it.
+    expect(screen.queryByText("Use tabs.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Use spaces.")).not.toBeInTheDocument();
+    // The chips would truncate; they are not rendered at all.
+    expect(screen.queryByTestId("settings-proposal-from")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-proposal-to")).not.toBeInTheDocument();
+  });
+
+  it("opens the whole change in a dialog, both versions in full", () => {
+    render(<SettingsProposalCard card={prose()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Review the change/ }));
+
+    const diff = screen.getByLabelText("Proposed text, as a diff");
+    // Full context: the whole before and the whole after, not a sample of what
+    // Apply would write.
+    expect(diff).toHaveTextContent("Always run the tests.");
+    expect(diff).toHaveTextContent("Use tabs.");
+    expect(diff).toHaveTextContent("Use spaces.");
+    expect(diff).toHaveTextContent("Prefer small PRs.");
+    // The dialog names the setting it is about; two pending cards read
+    // identically otherwise.
+    expect(screen.getByRole("heading", { name: "Your Instructions" })).toBeInTheDocument();
+  });
+
+  it("leaves Apply and Dismiss reachable however long the change is", () => {
+    const onDecide = vi.fn();
+    render(<SettingsProposalCard card={prose({
+      textChange: {
+        lines: Array.from({ length: 800 }, (_, i) => ({ kind: "added" as const, text: `line ${i}` })),
+        before: { chars: 0, lines: 0 },
+        after: { chars: 6_400, lines: 800 },
+        added: 800,
+        removed: 0,
+      },
+    })} onDecide={onDecide} />);
+
+    // The card's own height does not depend on the value at all now — its whole
+    // account of an 800-line change is one row.
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onDecide).toHaveBeenCalledWith("set-1", "apply");
+
+    // And the dialog bounds its own region: jsdom lays nothing out, so the pair
+    // of classes is what can be asserted — overflow alone does not bound a
+    // height, and a height alone clips instead of scrolling.
+    fireEvent.click(screen.getByRole("button", { name: /Review the change/ }));
+    const region = screen.getByLabelText("Proposed text, as a diff");
+    expect(region.className).toContain("max-h-[60vh]");
+    expect(region.className).toContain("overflow-auto");
+  });
+
+  /**
+   * Colour and a `+`/`−` glyph are the whole distinction on screen, and the
+   * glyph is `aria-hidden`. Without a label, a reader hears both versions of a
+   * replaced line and nothing saying which one Apply writes.
+   */
+  it("says which lines are added and removed, for a reader that gets no colour", () => {
+    render(<SettingsProposalCard card={prose({
+      textChange: {
+        lines: [
+          { kind: "removed", text: "Always run the tests." },
+          { kind: "added", text: "Never run the tests." },
+          { kind: "context", text: "Prefer small PRs." },
+        ],
+        before: { chars: 40, lines: 2 },
+        after: { chars: 39, lines: 2 },
+        added: 1,
+        removed: 1,
+      },
+    })} />);
+    fireEvent.click(screen.getByRole("button", { name: /Review the change/ }));
+
+    const diff = screen.getByLabelText("Proposed text, as a diff");
+    expect(diff.textContent).toContain("Removed: −Always run the tests.");
+    expect(diff.textContent).toContain("Added: +Never run the tests.");
+    // A line neither side changed is not announced as either.
+    expect(diff.textContent).toContain(" Prefer small PRs.");
+    expect(diff.textContent).not.toContain("Added: + Prefer small PRs.");
+  });
+
   it("attributes the agent's reason, so it cannot read as ShipIt describing the change", () => {
     render(<SettingsProposalCard card={card()} />);
     expect(screen.getByText("The agent’s reason")).toBeInTheDocument();
@@ -111,6 +227,7 @@ describe("SettingsProposalCard — pending", () => {
 });
 
 describe("SettingsProposalCard — resolved", () => {
+
   const terminal: { phase: SettingsProposalPhase; headline: string; clause: RegExp }[] = [
     { phase: "applied", headline: "Applied", clause: /Multi-agent sessions is on/ },
     { phase: "dismissed", headline: "Dismissed", clause: /Multi-agent sessions/ },

@@ -447,3 +447,82 @@ Three findings, each verified at the code and each a defect rather than taste.
 - [x] Proven red alone: the end-to-end store → read → shim test, the read's
       wire-contract walk, the propose refusal, and the notice's flattening all
       fail on main's formatter
+
+## Req 9 — a prose setting is proposable in practice
+
+The user's answer to a card that refused an improvement to their own
+instructions: *"but I want this instructions to be proposable"* (planning#576).
+The refusal's principle is untouched — the chip is what could not carry the
+change.
+
+- [x] `requirements.md` req 9 appended, req 4's clause about what "the exact
+      change" claims, and the dated receipt naming the option not chosen
+- [x] `plan.md` → *A prose value is shown as a change to the text*: the diff, the
+      bound and why it is lower than the declared `maxLength`, and what replaces
+      flattening for a value that cannot be flattened
+- [x] `mockup.html` — the long-text state, in both themes
+- [x] A full-context line diff, computed server-side at propose time and
+      snapshotted, so two viewers cannot see two accounts of one approval
+- [x] `from`/`to` become ShipIt's own summary for a prose change, so the text is
+      persisted once rather than three times
+- [x] `CARD_TEXT_MAX` — 10,000 a side, past which the card still refuses;
+      `alsoChanges` sides keep the chip's 200
+- [x] A value whose rendering differs from its content is refused, on every card
+- [x] `get` reports `proposeMaxLength` where the card carries less than the
+      dialog's box
+- [x] `shipit settings propose <key> --value-file -`, because prose does not fit
+      in one shell word
+- [x] The card carries ShipIt's summary and the dialog carries the diff, plain
+      text, with the server's counts on the card — verified in both themes
+- [x] `shipit-docs/settings.md` and the capability wiki
+- [x] Every new guard proven red on its own
+- [x] An independent review, each finding verified at the code
+- [x] The independent review's four findings, each verified at the code first:
+      the writer's trim (the card showed a trailing line Apply discarded — fixed
+      on the declaration, where `text({ trim: true })` is visible); four
+      invisible characters a hand-listed range missed (now Unicode's own
+      `Default_Ignorable_Code_Point`, minus the variation selectors an emoji is
+      written with); the applied outcome, which the server composes and the
+      client renders in preference to anything of its own, so the prose line had
+      to move to `appliedOutcome`; and a diff whose only distinction was colour
+      and an `aria-hidden` glyph
+- [x] Its three test findings closed: a propose-then-apply round trip, which is
+      what the propose test alone could not see; an unchanged line BETWEEN two
+      changes, which is the only assertion the LCS has to earn; and a height cap
+      whose test stayed green without it
+- [x] Its correction to the bound taken: the "about 20 KB" claim was false — a
+      diff line costs far more than its characters — so `CARD_TEXT_LINES_MAX`
+      bounds the row and the plan says which bound does what. And a `current`
+      value over the bound no longer advises a smaller edit, which is not
+      something a proposal can do
+
+### Rebased onto planning#577's rendered output
+
+- [x] The two changes meet at one measure: what decides between a chip and a diff
+      is the RENDERED length, the same number `requireShowable` refuses on.
+      Deciding on the raw length would have refused a 150-character instructions
+      rewrite for having newlines in it — req 9's own failure, one notch smaller
+- [x] A diff's lines stay the raw value: they reach the browser as their own
+      elements rather than a line of the agent's output, and escaping them would
+      show the user something other than their instructions. The
+      display-integrity refusal is what covers that path
+- [x] `from`/`to` for a prose card are minted with `renderOwn` — a character
+      count is ShipIt's own words about a value, not the value
+- [x] planning#577's "measured over the rendered text" guard re-pointed at
+      `git.identity`, which is the case that still reaches the chip refusal now
+      that prose does not; a new guard pins that the same measure chooses the
+      diff. Both proven red alone
+
+### The diff moved into a dialog
+
+- [x] The user, on the first build: *"let's make the card just say that there is
+      a change, for a case of a long values. And the full diff should be shown in
+      a dialog."* Receipt under `requirements.md` → *Resolved questions*, and
+      req 9's second sentence rewritten to match
+- [x] The card is a summary row — two sizes, `+n −n`, and *Review the change* —
+      so a prose value never occupies the scrollback, and the card's height no
+      longer depends on the value at all
+- [x] The dialog keeps every property the inline block had: full context, plain
+      text, per-line Added/Removed labels, and a bounded scrolling region
+- [x] The counts stay on the CARD, so padding a value cannot make the control
+      look cheaper to skip than it is
