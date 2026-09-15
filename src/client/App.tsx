@@ -669,7 +669,10 @@ export default function App() {
   );
 
   const handleSendFollowUp = useCallback(
-    (text: string, options?: { actionChecklistCardId?: string }): boolean => {
+    (
+      text: string,
+      options?: { actionChecklistCardId?: string; sessionStatusOfferIds?: string[] },
+    ): boolean => {
       const session = useSessionStore.getState();
       const pm = useSettingsStore
         .getState()
@@ -686,6 +689,10 @@ export default function App() {
           // docs/299 req 12 — the server marks the card submitted when it accepts this.
           ...(options?.actionChecklistCardId
             ? { actionChecklistCardId: options.actionChecklistCardId }
+            : {}),
+          // docs/303 req 17 — the server marks these offers taken when it accepts this.
+          ...(options?.sessionStatusOfferIds?.length
+            ? { sessionStatusOfferIds: options.sessionStatusOfferIds }
             : {}),
         },
         bubble: { role: "user", text },

@@ -15,6 +15,7 @@ import { ShipitPointerSessionProvider } from "../message-markdown.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { ChatQuoteReply } from "../ChatQuoteReply.js";
+import { SessionStatusCard } from "../SessionStatusCard.js";
 import { extractTurnProse, hasSpeakableProse } from "../../voice/extract-turn-prose.js";
 
 import type { ChatMessage } from "./types.js";
@@ -92,7 +93,10 @@ export function MessageList({
 
   onAnswerQuestion?: AnswerQuestionFn;
 
-  onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
+  onSendFollowUp?: (
+    text: string,
+    options?: { actionChecklistCardId?: string; sessionStatusOfferIds?: string[] },
+  ) => boolean;
   rewindPreviews?: Record<string, WsRewindPreview>;
   sessionTitle?: string;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
@@ -138,6 +142,11 @@ export function MessageList({
   const messages = deferred.messages;
 
   const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor } = useMessageScroll(messages, isLoading, currentMatch);
+
+  const sessionStatusCardEnabled = useSettingsStore((s) => s.sessionStatusCard);
+  const sessionStatus = useSessionStore((s) =>
+    s.sessions.find((session) => session.id === s.sessionId)?.sessionStatus,
+  );
 
   const compactConversation = useSettingsStore((s) => s.compactConversation);
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
@@ -454,6 +463,12 @@ export function MessageList({
         ))}
 
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
+
+      {/* docs/303 req 6 — inside the scroll container, after the last row, so
+          the card scrolls away with the conversation. */}
+      {sessionStatusCardEnabled && sessionStatus && (
+        <SessionStatusCard status={sessionStatus} onSubmit={onSendFollowUp} />
+      )}
     </div>
     </div>
     </RowHandlersProvider>

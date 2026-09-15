@@ -49,6 +49,7 @@ const BOOTSTRAP = {
     gitIdentity: { name: "Ada", email: "ada@example.com" },
     systemPrompt: "",
     enableSubAgents: false,
+    sessionStatusCard: true,
     memoryBudgetMb: 8192,
   },
 };
@@ -65,7 +66,7 @@ describe("useServerEvents — settings changed elsewhere", () => {
       json: () => Promise.resolve(BOOTSTRAP),
     });
     vi.stubGlobal("fetch", fetchMock);
-    useSettingsStore.setState({ enableSubAgents: true, memoryBudgetMb: null });
+    useSettingsStore.setState({ enableSubAgents: true, sessionStatusCard: false, memoryBudgetMb: null });
   });
 
   afterEach(() => {
@@ -85,6 +86,9 @@ describe("useServerEvents — settings changed elsewhere", () => {
       expect(useSettingsStore.getState().enableSubAgents).toBe(false);
     });
     expect(useSettingsStore.getState().memoryBudgetMb).toBe(8192);
+    // docs/303 — the card is drawn from this store value, so a setting the
+    // refresh does not apply leaves the feature off in a viewer that stayed open.
+    expect(useSettingsStore.getState().sessionStatusCard).toBe(true);
   });
 
   it("refreshes the egress store only for a network key, and only when something is looking", async () => {
