@@ -1,6 +1,7 @@
 import { getMode, selectionExists } from "../catalogue/index.js";
 import type { ModelSelection } from "../catalogue/index.js";
 import type { GitIdentity, SettingValueType, ValidationResult } from "./types.js";
+import { renderLine, renderOwn, renderValue, type Rendered } from "./rendered.js";
 
 // A declaration's `type` carries the value's default, its validation and the
 // shape the detail view renders, so none of the three is authored twice.
@@ -17,7 +18,15 @@ function ok<T>(value: T): ValidationResult<T> {
   return { ok: true, value };
 }
 
-function fail<T>(message: string): ValidationResult<T> {
+/**
+ * A refusal, on one line.
+ *
+ * Rendering inside this helper would keep every message to one line too. What it
+ * could not do is pick the MINT: the one message here that names text the caller
+ * supplied — a model selection's three ids — wants them quoted, and a blanket
+ * `renderOwn` would flatten them into the sentence instead (planning#537).
+ */
+function fail<T>(message: Rendered): ValidationResult<T> {
   return { ok: false, message };
 }
 
@@ -30,7 +39,7 @@ export function bool(opts: { default: boolean }): SettingValueType<boolean> {
       return typeof raw === "boolean" ? raw : opts.default;
     },
     validate(raw, noun) {
-      return typeof raw === "boolean" ? ok(raw) : fail(`${noun} must be true or false`);
+      return typeof raw === "boolean" ? ok(raw) : fail(renderOwn(`${noun} must be true or false`));
     },
     serialize(value) {
       return value;
@@ -63,7 +72,7 @@ export function enumOf<const O extends readonly EnumOption<string>[]>(opts: {
     validate(raw, noun) {
       return isMember(raw)
         ? ok(raw)
-        : fail(`${noun} must be one of: ${values.join(", ")}`);
+        : fail(renderOwn(`${noun} must be one of: ${values.join(", ")}`));
     },
     serialize(value) {
       return value;
@@ -123,7 +132,7 @@ export function numeric(
     validate(raw, noun) {
       if (raw === null && nullable) return ok(null);
       if (typeof raw !== "number" || !Number.isFinite(raw)) {
-        return fail(`${noun} must be a number${nullable ? " or null" : ""}`);
+        return fail(renderOwn(`${noun} must be a number${nullable ? " or null" : ""}`));
       }
       const value = integer ? Math.floor(raw) : raw;
       if (!inRange(value)) {
@@ -131,7 +140,7 @@ export function numeric(
           min === undefined ? null : `at least ${min}`,
           max === undefined ? null : `at most ${max}`,
         ].filter(Boolean).join(" and ");
-        return fail(`${noun} must be ${bounds}${unit ? ` ${unit}` : ""}`);
+        return fail(renderOwn(`${noun} must be ${bounds}${unit ? ` ${unit}` : ""}`));
       }
       if (!isSet(value)) {
         // Serialising this removes the field, so returning the number would hand
@@ -139,7 +148,7 @@ export function numeric(
         // "4096 → 0" over a write that stores nothing.
         return nullable
           ? ok(null)
-          : fail(`${noun} must be at least ${unsetBelow}${unit ? ` ${unit}` : ""}`);
+          : fail(renderOwn(`${noun} must be at least ${unsetBelow}${unit ? ` ${unit}` : ""}`));
       }
       return ok(value);
     },
@@ -204,15 +213,15 @@ export function text(opts: TextOpts): SettingValueType<string | null> {
       // null has always cleared an instructions box.
       const supplied = typeof raw === "string" ? raw : fallback;
       const value = opts.trim ? supplied.trim() : supplied;
-      if (opts.required && !value) return fail(`${name} cannot be empty`);
+      if (opts.required && !value) return fail(renderOwn(`${name} cannot be empty`));
       if (value.length > opts.maxLength) {
-        return fail(`${name} is too long (max ${opts.maxLength.toLocaleString("en-US")} characters)`);
+        return fail(renderOwn(`${name} is too long (max ${opts.maxLength.toLocaleString("en-US")} characters)`));
       }
       if (LONE_SURROGATE.test(value)) {
         // The file-backed writers encode UTF-8, which replaces a lone surrogate
         // with U+FFFD — so accepting this would store text the user never
         // approved, and no card could have shown the substitution.
-        return fail(`${name} contains an unpaired surrogate, which cannot be stored as written`);
+        return fail(renderOwn(`${name} contains an unpaired surrogate, which cannot be stored as written`));
       }
       return ok(unset(value) ? null : value);
     },
@@ -245,7 +254,7 @@ export function gitIdentity(): SettingValueType<GitIdentity> {
       };
     },
     validate(raw, noun) {
-      if (!raw || typeof raw !== "object") return fail(`${noun} must have a name and an email`);
+      if (!raw || typeof raw !== "object") return fail(renderOwn(`${noun} must have a name and an email`));
       const row = raw as Partial<GitIdentity>;
       const checkedName = name.validate(row.name ?? "", "Git user name");
       if (!checkedName.ok) return fail(checkedName.message);
@@ -287,12 +296,16 @@ export function modelSelection(): SettingValueType<ModelSelection | null> {
       if (raw === null) return ok(null);
       const selection = parse(raw);
       if (!selection) {
-        return fail(`${noun} must name a serviceId, a billingMode and a modelId`);
+        return fail(renderOwn(`${noun} must name a serviceId, a billingMode and a modelId`));
       }
       if (!selectionExists(selection)) {
-        return fail(
-          `No catalogue entry for ${selection.serviceId}/${selection.billingMode}/${selection.modelId}`,
-        );
+        // The three ids are the CALLER's text, not the catalogue's — nothing
+        // matched them — so each is quoted rather than dropped into the
+        // sentence bare (planning#537).
+        return fail(renderLine(
+          `No catalogue entry for ${renderValue(selection.serviceId)}/`
+            + `${renderValue(selection.billingMode)}/${renderValue(selection.modelId)}`,
+        ));
       }
       return ok(selection);
     },
@@ -323,10 +336,10 @@ export function secretBag(opts: {
       return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     },
     validate(_raw, noun) {
-      return fail(
+      return fail(renderOwn(
         `${opts.noun || noun} can hold credential material, so it is edited in the panel that `
           + "owns it and never through a proposal",
-      );
+      ));
     },
     serialize(value) {
       return value;
@@ -352,10 +365,10 @@ export function collection<T>(opts: {
       return Array.isArray(raw) ? (raw as T[]) : [];
     },
     validate(_raw, noun) {
-      return fail(
+      return fail(renderOwn(
         `${noun} is a collection: change one item at a time with `
           + `${opts.operations.join(", ")}, never by replacing the list`,
-      );
+      ));
     },
     serialize(value) {
       return value;

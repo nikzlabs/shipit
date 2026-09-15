@@ -15,6 +15,8 @@ import {
   joinRendered,
   namesForMessage,
   projectSetting,
+  renderLine,
+  renderOwn,
   renderValue,
 } from "../../shared/settings-catalogue/index.js";
 import type {
@@ -154,8 +156,17 @@ export interface SettingsOperation {
   /**
    * Refuse before anything is written, in words the card can show. Runs at
    * propose time AND again inside the lock, because a card outlives its turn.
+   *
+   * {@link Rendered}, because this message is the one the agent reads back on a
+   * line of `shipit settings propose` output, and every refusal here names
+   * something stored — a role's harness, an MCP server's name, a credential id
+   * (planning#537).
    */
-  preflight?(deps: SettingsOperationDeps, target: SettingsOperationTarget, value: unknown): string | null;
+  preflight?(
+    deps: SettingsOperationDeps,
+    target: SettingsOperationTarget,
+    value: unknown,
+  ): Rendered | null;
   apply(
     deps: SettingsOperationDeps,
     target: SettingsOperationTarget,
@@ -284,15 +295,20 @@ export function appliedOutcome(
 
 /**
  * An address the CALLER supplied, echoed back so the refusal says which one it
- * means. Reflected input rather than a stored value, so this is presentation
- * hygiene and not req 2's defence — the same treatment `settings-read.ts` gives
- * a key it does not know (plan.md → Reflected input is not this rule's business).
+ * means. Reflected input rather than a stored value, so the shortening is
+ * presentation hygiene and not req 2's defence — the same treatment
+ * `settings-read.ts` gives a key it does not know (plan.md → Reflected input is
+ * not this rule's business).
+ *
+ * The flattening IS the defence, and it goes through {@link renderOwn} rather
+ * than its own `\s+` sweep: `\s` leaves U+0085 and every format character as
+ * themselves, and both begin a line for some reader (planning#537).
  */
 const SUPPLIED_ECHO_MAX = 80;
 
-export function echoSupplied(supplied: string): string {
-  const flat = supplied.replace(/\s+/g, " ").trim();
-  return flat.length > SUPPLIED_ECHO_MAX ? `${flat.slice(0, SUPPLIED_ECHO_MAX)}…` : flat;
+export function echoSupplied(supplied: string): Rendered {
+  const flat = renderOwn(supplied);
+  return flat.length > SUPPLIED_ECHO_MAX ? renderLine(`${flat.slice(0, SUPPLIED_ECHO_MAX)}…`) : flat;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,13 +433,16 @@ function rolePreflight(patch: RolePatch): NonNullable<SettingsOperation["preflig
     const role = storedRole(deps, target.item);
     if (!role) {
       const known = namesForMessage(deps.credentialStore?.getRoles().map((r) => r.name) ?? []);
-      return `No role named "${echoSupplied(target.item ?? "")}" — roles on this install: ${known}.`;
+      return renderLine(`No role named "${echoSupplied(target.item ?? "")}" — roles on this install: ${known}.`);
     }
     let params: AgentRole["params"];
     try {
       params = { ...role, ...patch(role, value, deps) }.params;
     } catch (err) {
-      if (err instanceof ServiceError) return err.message;
+      // A patch builder raises an ordinary `ServiceError`, whose message is a
+      // plain string built wherever it was thrown — so this is the one place
+      // that message becomes a refusal, and the one place it is minted.
+      if (err instanceof ServiceError) return renderOwn(err.message);
       throw err;
     }
     if (params.kind !== "pinned") return null;
@@ -606,13 +625,13 @@ function reviewerLevelRefusal(
   deps: SettingsOperationDeps,
   patch: Record<string, unknown>,
   requested: string | undefined,
-): string | null {
+): Rendered | null {
   const credentialStore = requireCredentialStore(deps);
   let resolved;
   try {
     resolved = resolveReviewerPinPatch(patch as unknown as ReviewerPinPatch, credentialStore);
   } catch (err) {
-    if (err instanceof ServiceError) return err.message;
+    if (err instanceof ServiceError) return renderOwn(err.message);
     throw err;
   }
   if (requested === undefined || resolved.reasoningEffort === requested) return null;
@@ -626,8 +645,9 @@ function reviewerLevelRefusal(
     ? reasoningOptionsFor(runnable.harnessId, selection).map((o) => o.value)
     : [];
   return offered.length > 0
-    ? `"${requested}" is not a reasoning level this model offers. It offers: ${offered.join(", ")}.`
-    : "This model offers no reasoning levels, so a reviewer slot on it cannot name one.";
+    ? renderLine(`${renderValue(requested)} is not a reasoning level this model offers. `
+      + `It offers: ${offered.join(", ")}.`)
+    : renderOwn("This model offers no reasoning levels, so a reviewer slot on it cannot name one.");
 }
 
 function reviewerOperation(
@@ -642,7 +662,7 @@ function reviewerOperation(
     {
       preflight: (deps, target, value) => {
         if (target.item !== "first" && target.item !== "second") {
-          return `A reviewer slot is "first" or "second", not "${echoSupplied(target.item ?? "")}".`;
+          return renderLine(`A reviewer slot is "first" or "second", not "${echoSupplied(target.item ?? "")}".`);
         }
         return preflight ? preflight(deps, target, value) : null;
       },
@@ -678,7 +698,7 @@ function reviewerModelOperation(): SettingsOperation {
         const pin = reviewerPin(deps, target.item ?? "");
         const selection = value as Partial<ModelSelection>;
         if (typeof selection?.serviceId !== "string") {
-          return "A model names a serviceId, a billingMode and a modelId.";
+          return renderOwn("A model names a serviceId, a billingMode and a modelId.");
         }
         // The selection has to be one this install can run a reviewer on — that
         // is what the writer refuses. The level the pin carries is NOT compared:
@@ -714,8 +734,8 @@ function modeKey(target: SettingsOperationTarget): string {
 function modeAddressed(preflight?: SettingsOperation["preflight"]): SettingsOperation["preflight"] {
   return (deps, target, value) => {
     if (!target.item?.includes(":")) {
-      return `This setting is addressed by "service:billingMode" — `
-        + "`shipit settings get` lists the ones this install has.";
+      return renderOwn(`This setting is addressed by "service:billingMode" — `
+        + "`shipit settings get` lists the ones this install has.");
     }
     return preflight ? preflight(deps, target, value) : null;
   };
@@ -738,13 +758,13 @@ function modeAddressed(preflight?: SettingsOperation["preflight"]): SettingsOper
  *
  * Where nothing is eligible the clear is a real clear, and it is allowed.
  */
-function nonTurnClearRefusal(deps: SettingsOperationDeps, value: unknown): string | null {
+function nonTurnClearRefusal(deps: SettingsOperationDeps, value: unknown): Rendered | null {
   if (value !== null) return null;
   const seeded = nonTurnModelSeedCandidate(deps.credentialStore, deps.agentRegistry);
   if (!seeded) return null;
-  return "Clearing this does not leave it unset: ShipIt immediately pins the first model it can "
+  return renderOwn("Clearing this does not leave it unset: ShipIt immediately pins the first model it can "
     + "run background work on, so a card promising \"not set\" would be undone by its own write. "
-    + "Propose the model you want instead, or tell the user.";
+    + "Propose the model you want instead, or tell the user.");
 }
 
 /**
@@ -753,9 +773,9 @@ function nonTurnClearRefusal(deps: SettingsOperationDeps, value: unknown): strin
  * card that could only ever resolve `refused` is not a change the user makes
  * with one click.
  */
-function labelRefusal(label: string): string | null {
+function labelRefusal(label: string): Rendered | null {
   return label.length > MAX_CREDENTIAL_LABEL_LENGTH
-    ? `A name is at most ${MAX_CREDENTIAL_LABEL_LENGTH} characters, and this one is ${label.length}.`
+    ? renderOwn(`A name is at most ${MAX_CREDENTIAL_LABEL_LENGTH} characters, and this one is ${label.length}.`)
     : null;
 }
 
@@ -774,8 +794,8 @@ const credentialLabelOperation: SettingsOperation = {
     const known = outcome.readable && Array.isArray(outcome.value) ? outcome.value : [];
     // `services.credentials` filters its ids for being strings and nothing more,
     // so each one is rendered before it reaches a message (planning#577).
-    return `No credential with id "${echoSupplied(routeId)}" — ids on this install: `
-      + `${known.length > 0 ? joinRendered(known.map(renderValue)) : "none"}.`;
+    return renderLine(`No credential with id "${echoSupplied(routeId)}" — ids on this install: `
+      + `${known.length > 0 ? joinRendered(known.map(renderValue)) : "none"}.`);
   },
   apply: async (deps, target, value) => {
     const { outcome } = await applyCredentialLabel(
@@ -806,11 +826,11 @@ const providerAccountLabelOperation: SettingsOperation = {
   preflight: (deps, target, value) => {
     const address = accountAddress(target.item);
     if (!address) {
-      return `No provider account is addressed by "${echoSupplied(target.item ?? "")}" — `
-        + "`shipit settings get services.providerAccounts[].label` lists the ones this install has.";
+      return renderLine(`No provider account is addressed by "${echoSupplied(target.item ?? "")}" — `
+        + "`shipit settings get services.providerAccounts[].label` lists the ones this install has.");
     }
     if (!deps.providerAccountManager) {
-      return "This install has no provider accounts, so there is none to rename.";
+      return renderOwn("This install has no provider accounts, so there is none to rename.");
     }
     return labelRefusal(asText(value));
   },
@@ -853,18 +873,18 @@ const roleNameOperation: SettingsOperation = savingOperation(
       const role = storedRole(deps, target.item);
       if (!role) {
         const known = namesForMessage(deps.credentialStore?.getRoles().map((r) => r.name) ?? []);
-        return `No role named "${echoSupplied(target.item ?? "")}" — roles on this install: ${known}.`;
+        return renderLine(`No role named "${echoSupplied(target.item ?? "")}" — roles on this install: ${known}.`);
       }
       const next = asText(value);
       if (role.name === RESERVED_ROLE_NAME) {
-        return `The "${RESERVED_ROLE_NAME}" role cannot be renamed: "review this" has to keep resolving `
-          + "to something. Its description and standing instructions are editable.";
+        return renderOwn(`The "${RESERVED_ROLE_NAME}" role cannot be renamed: "review this" has to keep resolving `
+          + "to something. Its description and standing instructions are editable.");
       }
       if (next === RESERVED_ROLE_NAME) {
-        return `"${RESERVED_ROLE_NAME}" is the name of the role ShipIt ships, so another role cannot take it.`;
+        return renderOwn(`"${RESERVED_ROLE_NAME}" is the name of the role ShipIt ships, so another role cannot take it.`);
       }
       if (storedRole(deps, next)) {
-        return `A role called "${echoSupplied(next)}" already exists, and a rename would replace it.`;
+        return renderLine(`A role called "${echoSupplied(next)}" already exists, and a rename would replace it.`);
       }
       // The write validates the whole role, not the name — a role pinned to a
       // retired model or an uninstalled harness is refused at the click — so the
@@ -906,8 +926,8 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     (deps, target, value) => {
       const pin = reviewerPin(deps, target.item ?? "");
       if (!pin) {
-        return `The "${echoSupplied(target.item ?? "")}" reviewer slot pins no model, so it has no level of its own. `
-          + "Pin a model on the slot first.";
+        return renderLine(`The "${echoSupplied(target.item ?? "")}" reviewer slot pins no model, so it has no `
+          + "level of its own. Pin a model on the slot first.");
       }
       return reviewerLevelRefusal(deps, { ...pin, reasoningEffort: asText(value) }, asText(value));
     },
@@ -984,15 +1004,15 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     domains: (target) => [mcpServerDomain(target.item ?? "")],
     preflight: (deps, target, value) => {
       const server = deps.credentialStore?.getMcpServer(target.item ?? "");
-      if (!server) return `No MCP server named "${echoSupplied(target.item ?? "")}".`;
+      if (!server) return renderLine(`No MCP server named "${echoSupplied(target.item ?? "")}".`);
       if (value !== true || server.enabled) return null;
       // The writer refuses the eleventh, so a card offering it would only ever
       // resolve `refused` (`services/mcp.ts` → MAX_ENABLED_MCP_SERVERS).
       const enabled = Object.values(deps.credentialStore?.getAllMcpServers() ?? {})
         .filter((s) => s.enabled && s.name !== server.name).length;
       return enabled + 1 > MAX_ENABLED_MCP_SERVERS
-        ? `${MAX_ENABLED_MCP_SERVERS} MCP servers are already enabled, which is the limit. `
-          + "Turning another one off is what makes room for this."
+        ? renderOwn(`${MAX_ENABLED_MCP_SERVERS} MCP servers are already enabled, which is the limit. `
+          + "Turning another one off is what makes room for this.")
         : null;
     },
     async apply(deps, target, value) {
@@ -1025,8 +1045,8 @@ function normalizeHostEntry(host: string): string {
   return hostEntryProjection(host) ?? host;
 }
 
-function hostPreflight(host: string | undefined): string | null {
-  if (!host) return "Name the host to add or remove.";
+function hostPreflight(host: string | undefined): Rendered | null {
+  if (!host) return renderOwn("Name the host to add or remove.");
   // The allowlist's own projection drops anything not shaped like a host, so an
   // entry shaped otherwise is one the card could not show back (plan.md → an
   // operation whose full effect cannot be displayed is refused). The entry is
@@ -1034,8 +1054,8 @@ function hostPreflight(host: string | undefined): string | null {
   // message reaches the transcript as tool output.
   return hostEntryProjection(host) !== null
     ? null
-    : "That entry is not shaped like a host name, so a card could not show what it would allow. "
-      + "Name a host such as registry.npmjs.org, or .example.com for a whole subtree.";
+    : renderOwn("That entry is not shaped like a host name, so a card could not show what it would allow. "
+      + "Name a host such as registry.npmjs.org, or .example.com for a whole subtree.");
 }
 
 /**
@@ -1048,7 +1068,7 @@ function hostPreflight(host: string | undefined): string | null {
  * a default, and neither reaches the other two — so removing one of those would
  * report "off the allowlist" about a host that is still on it.
  */
-function removableRefusal(deps: SettingsOperationDeps, host: string): string | null {
+function removableRefusal(deps: SettingsOperationDeps, host: string): Rendered | null {
   const store = deps.egressAllowlistStore;
   if (!store) return null;
   const entry = buildEffectiveAllowlist({
@@ -1058,20 +1078,22 @@ function removableRefusal(deps: SettingsOperationDeps, host: string): string | n
   }).find((candidate) => candidate.host === host);
   if (!entry || entry.removable) return null;
   return entry.source === "mcp"
-    ? `${host} is on the allowlist because a configured MCP server needs it, so removing it here `
-      + "would not take it off. Removing the server is what removes the host."
-    : `${host} is on the allowlist because this deployment's operator put it there, so ShipIt `
-      + "cannot take it off.";
+    ? renderLine(`${host} is on the allowlist because a configured MCP server needs it, so removing it here `
+      + "would not take it off. Removing the server is what removes the host.")
+    : renderLine(`${host} is on the allowlist because this deployment's operator put it there, so ShipIt `
+      + "cannot take it off.");
 }
 
 function repoOperation(field: "allowAgentMerge" | "colorIndex"): SettingsOperation {
   return {
     domains: (target) => [repositoryDomain(target.repoUrl ?? "")],
     preflight: (deps, target) => {
-      if (!target.repoUrl) return "This is a per-repository setting and this session binds no repository.";
+      if (!target.repoUrl) {
+        return renderOwn("This is a per-repository setting and this session binds no repository.");
+      }
       return deps.repoStore?.get(target.repoUrl)
         ? null
-        : "ShipIt has no record of this session's repository any more.";
+        : renderOwn("ShipIt has no record of this session's repository any more.");
     },
     async apply(deps, target, value) {
       if (!deps.repoStore || !deps.chatHistoryManager) {

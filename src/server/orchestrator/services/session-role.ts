@@ -7,7 +7,7 @@ import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
 import { namesForMessage } from "../../shared/settings-catalogue/projection.js";
-import { renderOwn } from "../../shared/settings-catalogue/rendered.js";
+import { renderLine } from "../../shared/settings-catalogue/rendered.js";
 import { checkRolePinnedParams, type RoleValidatorDeps } from "./roles.js";
 import { ServiceError } from "./types.js";
 
@@ -40,10 +40,12 @@ function unavailableMessage(name: string, reason: RoleUnavailableReason, detail:
  * shape as `roles.ts` → `refuse` (docs/299-agent-settings-access req 2).
  * `shipit session create --role` reaches these from inside a session, and each
  * names either the supplied role name or the role's own stored harness,
- * service, model and level.
+ * service, model and level. {@link renderLine} for the same reason as there:
+ * these lines embed a value another mint already quoted, and collapsing runs of
+ * space would reach inside those quotes (planning#537).
  */
 function refuse(message: string): never {
-  throw new ServiceError(400, renderOwn(message));
+  throw new ServiceError(400, renderLine(message));
 }
 
 export function resolveUserRole(name: string, deps: UserRoleDeps): ResolvedUserRole {

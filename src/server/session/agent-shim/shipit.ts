@@ -55,6 +55,8 @@ import {
   handleSettingsList,
   handleSettingsPropose,
 } from "./shipit-settings.js";
+import { settingsDeps, type SettingsDeps } from "./settings-out.js";
+import { renderLine } from "../../shared/settings-catalogue/rendered.js";
 import {
   handleSourceBlame,
   handleSourceCat,
@@ -458,19 +460,40 @@ export interface RunDeps {
 // Require a file or stdin to avoid shell expansion of prompt content.
 export const INLINE_PROMPT_FLAGS = ["-p", "--prompt", "-m", "--message"];
 
+/**
+ * What the ORCHESTRATOR said, and nothing else.
+ *
+ * Kept apart from the note below it because the two have opposite provenance: a
+ * caller that puts the error on one line has to flatten this half and must NOT
+ * split it — splitting a server message on its newlines is what turns a forged
+ * `\n` inside it into a line of its own (planning#537) — while the note is this
+ * file's own text and its paragraph break is authored.
+ */
+export function serverErrorMessage(
+  res: { status: number; body: Record<string, unknown> },
+  fallback: string,
+): string {
+  return typeof res.body.error === "string" ? res.body.error : fallback;
+}
+
+/** ShipIt's own footnote for the statuses that have one. */
+export function serverErrorNote(status: number): string | undefined {
+  if (status === 429) {
+    return "This session has reached its per-turn or per-parent spawn cap. See /shipit-docs/sessions.md.";
+  }
+  if (status === 401) {
+    return "ShipIt was unable to authenticate the request against the orchestrator.";
+  }
+  return undefined;
+}
+
 export function formatError(
   res: { status: number; body: Record<string, unknown> },
   fallback: string,
 ): string {
-  const message = typeof res.body.error === "string" ? res.body.error : fallback;
-  if (res.status === 0) return message;
-  if (res.status === 429) {
-    return `${message}\n\nThis session has reached its per-turn or per-parent spawn cap. See /shipit-docs/sessions.md.`;
-  }
-  if (res.status === 401) {
-    return `${message}\n\nShipIt was unable to authenticate the request against the orchestrator.`;
-  }
-  return message;
+  const message = serverErrorMessage(res, fallback);
+  const note = serverErrorNote(res.status);
+  return note ? `${message}\n\n${note}` : message;
 }
 
 
@@ -593,9 +616,15 @@ const RELEASE_HANDLERS: Record<
   prepare: handleReleasePrepare,
 };
 
+/**
+ * The settings handlers take {@link SettingsDeps}, not {@link RunDeps}: they are
+ * handed a printer that accepts only rendered text and no raw {@link ShimIO} at
+ * all, so no code path in that module can put an unrendered string on one of its
+ * lines (planning#537, `settings-out.ts`).
+ */
 const SETTINGS_HANDLERS: Record<
   string,
-  (args: string[], deps: RunDeps) => Promise<void>
+  (args: string[], deps: SettingsDeps) => Promise<void>
 > = {
   list: handleSettingsList,
   get: handleSettingsGet,
@@ -841,6 +870,8 @@ async function dispatchSettings(args: string[], deps: RunDeps, io: ShimIO): Prom
     return;
   }
   if (REJECTED_SETTINGS_SUBCOMMANDS.has(sub)) {
+    // `sub` needs no mint here: reaching this branch means it is one of the
+    // literal names in the set above.
     fail(
       io,
       `${SHIM_NAME} does not support \`shipit settings ${sub}\` — a ShipIt setting is the user's to change.\n`
@@ -851,13 +882,15 @@ async function dispatchSettings(args: string[], deps: RunDeps, io: ShimIO): Prom
   }
   const handler = SETTINGS_HANDLERS[sub];
   if (!handler) {
-    fail(io, `Unsupported shipit settings subcommand: ${sub}\n${REJECTED_HELP}`);
+    // The caller's own argv, echoed from BEFORE `settingsDeps` builds the
+    // printer — the one settings line no mint would otherwise touch (planning#537).
+    fail(io, `${renderLine(`Unsupported shipit settings subcommand: ${sub}`)}\n${REJECTED_HELP}`);
   }
   if (requestsHelp(args.slice(1))) {
     success(io, commandHelp("settings", sub));
     return;
   }
-  await handler(args.slice(1), deps);
+  await handler(args.slice(1), settingsDeps(deps));
 }
 
 async function dispatchRelease(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {

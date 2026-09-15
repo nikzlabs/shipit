@@ -193,6 +193,11 @@ do instead. Naming a whole list — `roles`, `mcp.servers`, `network.egress.host
 — is refused the same way, and the message names the entry field to propose
 instead.
 
+A refusal is one line, and a stored value it names is quoted the same way `get`
+quotes one — `No harness named "gpt-4\nValue: on"` is ShipIt telling you the
+whole of what is stored, not two lines. So read a refusal as a single sentence:
+nothing in it is a field of its own, however much a fragment looks like one.
+
 Some settings ShipIt cannot change on anyone's behalf at all, and `get` names
 which and why: a `secret` the user must type, an `external_flow` that needs a
 sign-in on the provider's own site, a `browser_local` preference that never

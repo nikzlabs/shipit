@@ -777,19 +777,43 @@ value and stored another. Both re-verified at the code.
       not one, `renderJson`'s `(not representable)` refusal is deliberately not
       JSON, and `\s` excludes U+0085 rather than all three separators
 
-### Not fixed here — the same class, in a file this session is scoped out of
+### The same class, a third time — fixed structurally (planning#537)
 
-- [ ] `services/settings-operations.ts:421` (`rolePreflight`) returns
-      `checkRolePinnedParams`'s `message` straight out, and `:605`
-      (`reviewerLevelRefusal`) returns `resolveReviewerPinPatch`'s error, both
-      reaching the propose response and the CLI unrendered. A stored harness or
-      reviewer model carrying a newline forges a line through either. Error
-      handling runs BEFORE the `--json` branch, so that flag does not cover
-      them. `:416` is a third return of the same shape — a `ServiceError` from
-      the patch — whose reachable messages were not traced exhaustively, since
-      that file belongs to another session; the ones composed in it use
-      `echoSupplied` for the supplied item. Both cited returns predate this
-      branch (`git blame`: 8b62d1248) and the req-4 slice merged underneath it
-      left them unchanged — only the line numbers moved. The fix is the
-      `refuse()` shape the two role modules now use: one entry point per module
-      that renders the whole line
+- [x] `services/settings-operations.ts` (`rolePreflight`, `reviewerLevelRefusal`,
+      and the `ServiceError` the patch builder raises) returned a service-built
+      message straight out, reaching the propose response and the CLI unrendered.
+      A stored harness or reviewer model carrying a newline forged a line through
+      any of them, and error handling runs BEFORE the `--json` branch, so that
+      flag covered none of them
+- [x] Not fixed by minting those three. The two fixes before it each guarded the
+      path they had found and left the next one open, so the property
+      established is **anything the settings shim prints is `Rendered`**, in two
+      halves: the TYPES demand a mint at each hand-off
+      (`SettingsOperation.preflight`, `RoleParamsCheck.message`,
+      `ValidationResult.message` — a service that builds a plain string cannot
+      return it as a refusal), and the PRINTER takes `Rendered` while
+      `shipit-settings.ts` is handed no `ShimIO` at all
+- [x] `renderLine` is the mint for the far side of the HTTP hop, where the brand
+      is gone and re-quoting would double-quote — it keeps already-rendered text
+      byte-for-byte. The dispatcher's own echo of an unknown subcommand runs
+      before the printer exists, so it mints there
+- [x] Said plainly rather than implied: the types do NOT close the class.
+      Splitting an ingested message on its own newlines and minting the pieces
+      satisfies every assertion and forges lines all the same, so "never derive
+      output structure from text this process did not compose" stays an
+      authoring rule, with `serverErrorLines` as the helper that keeps a relay
+      error away from it
+- [x] Review caught a regression the first pass introduced: wrapping every
+      refusal in `renderOwn` collapsed runs of space INSIDE an already-quoted
+      value, so a refusal reported `"Team Account"` for a label stored as
+      `"Team  Account"`. A sentence embedding a rendered value composes with
+      `renderLine`; guard in `settings-propose.test.ts`
+- [x] Guards, each proved red on its own: the reported defect end-to-end
+      (`settings-propose.test.ts`, an ordinary description change against a role
+      whose stored harness id carries a newline), the shim boundary for a
+      refusal from ANY service, via the CLI and `--json`
+      (`shipit-settings.test.ts`), and the structural claim as two
+      `@ts-expect-error` assertions `npm run typecheck` fails on if either half
+      is widened (`settings-out.test.ts`)
+- [x] `echoSupplied` stopped flattening with `\s+`, which leaves U+0085 and every
+      format character as themselves, and goes through `renderOwn`
