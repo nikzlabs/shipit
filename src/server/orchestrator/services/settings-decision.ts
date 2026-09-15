@@ -12,7 +12,7 @@ import { withConflictDomains } from "./settings-conflict-domain.js";
 import { appliedOutcome, findOperation } from "./settings-operations.js";
 import type { SettingsOperation, SettingsOperationDeps } from "./settings-operations.js";
 import { getSettingForAgent } from "./settings-read.js";
-import type { SettingsReadDeps } from "./settings-read.js";
+import type { SettingDetailEntry, SettingsReadDeps } from "./settings-read.js";
 import { baselineTargetOf } from "./settings-propose.js";
 import { claimSettingsProposal, transitionSettingsProposal } from "./settings-proposal.js";
 import type { SettingsProposalDeps, SettingsProposalPersister } from "./settings-proposal.js";
@@ -113,27 +113,124 @@ const OUTCOME_PHASE: Record<ApplyOutcome["status"], SettingsProposalPhase> = {
 };
 
 /**
- * Whether the stored value ShipIt would now use is the one the user approved
- * against — and, where it is not, what the read already computes about why
- * (plan.md → Saved is not effective).
+ * What the setting says about itself once the write has run: whether the stored
+ * value is the one ShipIt would now use (plan.md → Saved is not effective), and
+ * whether it is the one the card promised.
  *
- * Read through the agent's own read surface rather than re-derived, so the card
- * and `shipit settings get` cannot disagree about the same setting. A failure
- * here costs the card its effect line and nothing else: the write already
- * happened.
+ * ONE read answers both, through the agent's own read surface rather than
+ * re-derived, so the card and `shipit settings get` cannot disagree about the
+ * same setting. A failure here costs the card those two lines and nothing else:
+ * the write already happened.
  */
-async function effectAfterApply(
+interface AfterApply {
+  effect?: SettingsProposalCard["effect"];
+  /** Present when the store does not hold what the card named. */
+  mismatch?: string;
+}
+
+async function verifyAfterApply(
   deps: SettingsDecisionDeps,
   sessionId: string,
-  key: string,
-): Promise<SettingsProposalCard["effect"] | undefined> {
+  declaration: AnySettingDeclaration,
+  row: SettingsProposalRow,
+  card: SettingsProposalCard,
+): Promise<AfterApply> {
   try {
-    const entry = await getSettingForAgent(deps.read, sessionId, key);
-    return entry.effect.state === "live" ? undefined : entry.effect;
+    const entry = await getSettingForAgent(deps.read, sessionId, declaration.key);
+    const effect = entry.effect.state === "live" ? undefined : entry.effect;
+    const mismatch = storedValueMismatch(declaration, row, card, entry)
+      // The card promised these too, and the user approved the whole of it. A
+      // side change is the one thing a write can drop while its own field
+      // lands — which is exactly how a level a new model cannot honour stays
+      // pinned behind a card that said it would go.
+      ?? await sideChangeMismatch(deps, sessionId, row, card);
+    return { ...(effect ? { effect } : {}), ...(mismatch ? { mismatch } : {}) };
   } catch (err) {
-    console.error(`[settings-decision] reading ${key}'s effect after applying failed:`, err);
-    return undefined;
+    console.error(`[settings-decision] reading ${declaration.key} back after applying failed:`, err);
+    return {};
   }
+}
+
+/**
+ * The neighbouring fields the card displayed, read back at the same address.
+ *
+ * Under the same rules the target's own check follows: an unreadable setting or
+ * an instance the read does not list says nothing, because not seeing a value
+ * is not evidence about the write.
+ */
+async function sideChangeMismatch(
+  deps: SettingsDecisionDeps,
+  sessionId: string,
+  row: SettingsProposalRow,
+  card: SettingsProposalCard,
+): Promise<string | null> {
+  for (const side of card.alsoChanges ?? []) {
+    const declaration = findSetting(side.key);
+    if (!declaration) continue;
+    const entry = await getSettingForAgent(deps.read, sessionId, side.key);
+    if (!entry.readable) continue;
+    const stored = row.target.item
+      ? entry.items?.find((candidate) => candidate.address === row.target.item)
+      : entry;
+    if (!stored || stored.display === side.to) continue;
+    return `The card showed ${side.label} becoming ${side.to}, and it now reads ${stored.display}.`;
+  }
+  return null;
+}
+
+/**
+ * The card promised a value; this is what the store now holds instead, or null
+ * when the two agree (docs/299-agent-settings-access req 4).
+ *
+ * The prospective defences come first and catch more: a declared type answers
+ * with the value the store will hold (`value-types.ts`), a projection that
+ * would not emit the value refuses the card, and an operation that writes more
+ * than its own field declares it as `alsoChanges`. None of them can see what a
+ * WRITER does after they have run — a save hook seeding a replacement, a field
+ * the write silently keeps — so the last word is the store's own, read back.
+ *
+ * **Not seeing a value is never evidence about the write**, which is the whole
+ * shape of this check: every branch that cannot compare answers `null` rather
+ * than reporting a failure it did not observe. Only a `set` is compared — a
+ * membership card displays ShipIt's own wording rather than a value ("on the
+ * global allowlist"), and those writers already answer from the resulting
+ * membership, `applyEgressHostRemove` reporting `failed` for a host still on
+ * the list.
+ */
+export function storedValueMismatch(
+  declaration: AnySettingDeclaration,
+  row: Pick<SettingsProposalRow, "operation" | "target" | "proposed">,
+  card: SettingsProposalCard,
+  entry: SettingDetailEntry,
+): string | null {
+  if (row.operation !== "set") return null;
+  // Unreadable is the read's own answer about the setting, not a claim about
+  // this write, and `effect` is where the card already says so.
+  if (!entry.readable) return null;
+
+  const item = row.target.item;
+  const stored = item ? entry.items?.find((candidate) => candidate.address === item) : entry;
+  // An instance leaves the read for reasons that are nothing to do with this
+  // write: a rename moves the address the card was written against, and a
+  // service/mode setting stops being listed the moment its last credential
+  // goes (`settings-store-readers.ts` → `modePairs`). Both are writes that
+  // landed, and reporting them would be the check inventing its own defect.
+  if (!stored) return null;
+
+  if (card.textChange) {
+    // The card's `to` is ShipIt's SUMMARY of the prose — two sizes and a
+    // `+n −n` — so comparing what the card displays would pass any rewrite of
+    // the same length. What the click promised is the approved TEXT.
+    const approved = typeof row.proposed === "string" ? row.proposed : "";
+    const now = typeof stored.value === "string" ? stored.value : "";
+    // Neither side is quoted back: a prose card keeps the value out of the
+    // scrollback on purpose (req 9), and this line lands in the same place.
+    return now === approved
+      ? null
+      : `${declaration.key} does not now hold the text this card showed.`;
+  }
+  if (stored.display === card.to) return null;
+  return `The card showed ${card.to}, and ${declaration.key} now reads ${stored.display}.`;
 }
 
 /** One comparable line per side change, in the operation's own order. */
@@ -200,16 +297,27 @@ async function runApply(
     }
     const outcome = await operation.apply(deps.operations, row.target, row.proposed);
     const phase = OUTCOME_PHASE[outcome.status];
-    const effect = phase === "failed"
-      ? undefined
-      : await effectAfterApply(deps, sessionId, declaration.key);
+    const verified = phase === "failed"
+      ? {}
+      : await verifyAfterApply(deps, sessionId, declaration, row, card);
+    // Only an `applied` is overridden. A writer reporting `partial` or
+    // `uncertain` already knows more about what it left behind than a read of
+    // the resulting value does.
+    if (outcome.status === "applied" && verified.mismatch) {
+      return {
+        phase: "partial",
+        outcome: `${declaration.label} was saved, and it is not what this card showed.`,
+        outcomeDetail: verified.mismatch,
+        ...(verified.effect ? { effect: verified.effect } : {}),
+      };
+    }
     return {
       phase,
       outcome: outcome.status === "applied"
         ? appliedOutcome(operation, row.target, card, declaration)
         : undefined,
       ...(outcome.detail ? { outcomeDetail: outcome.detail } : {}),
-      ...(effect ? { effect } : {}),
+      ...(verified.effect ? { effect: verified.effect } : {}),
     };
   } catch (err) {
     // A refused write changed nothing on purpose — an unknown repository, a

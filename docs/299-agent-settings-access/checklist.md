@@ -624,3 +624,65 @@ finding re-verified at the code first.
 - [x] req 5 gained a clause and the decision a dated receipt, both in
       `requirements.md`: a setting's per-session availability may be narrower
       than the dialog's where ShipIt already gates the resource per session
+
+### The card's value, and the store's — a fourth req 4 slice
+
+A fourth conformance review found req 4 partly met: two proposals displayed one
+value and stored another. Both re-verified at the code.
+
+- [x] req 4 — a declared type's `validate` now answers with the value the store
+      will hold, so `read(serialize(v))` is `v` for anything it accepts. A
+      budget of `0` validates to `null`, so the card says "4096 → not set"
+      instead of "4096 → 0" over a write that removes the field. `text`'s `trim`
+      already worked this way; `unsetBelow` was the one option that did not
+- [x] req 7 — the contract is held over the WHOLE registry, not the two types
+      that carry it today: `store-round-trip.test.ts` walks every declaration
+      with boundary candidates built from its own `shape`, so a normalising
+      declaration added tomorrow is covered without a second step. It holds the
+      class where SERIALISING drops the value, and not a writer that normalises
+      on its own — the codec cannot see one, which is what the next item is for
+- [x] req 4 — a declared type says what the WRITER stores too, which the codec
+      round trip cannot reach: `serialize` never runs for a bespoke store, so
+      nothing there sees `pinned()` drop a role's empty reasoning level.
+      `text`'s `emptyIsUnset` declares it and `validate` answers null, so
+      clearing a level shows "not set" rather than the `""` it was asked for.
+      Opt-in on purpose: an instructions box stores the empty string it was
+      cleared to
+- [x] The first draft put that in the PROJECTION instead, and it was wrong
+      twice: a stored level no harness offers read as "not set" while still
+      stored and unclearable ("already not set"), and a real `alsoChanges`
+      deletion collapsed to "not set → not set" and vanished from the card.
+      Guarded now — a stale level is still named back
+- [x] req 4 — `text` refuses an unpaired surrogate, which the file writers turn
+      into U+FFFD: the store would hold text nobody approved, and no card could
+      have shown the substitution
+- [x] req 4 — the backstop verifies EVERYTHING the card displayed: each
+      `alsoChanges` entry carries its declaration key and is read back at the
+      same address, since a write that lands its own field while keeping a
+      neighbour is what a check of the named field alone cannot see
+- [x] req 4 — clearing `services.nonTurnModel` is refused while a model is
+      eligible, rather than shown as "not set". `seedNonTurnModel` runs from the
+      save hook AND from every build of the settings payload, so unset is not a
+      state that setting can be left in — `alsoChanges` was considered and
+      rejected, because naming the same setting twice with two destinations is
+      not a change anyone can approve by looking. The seeded model is not named
+      back either: what the seed picks at apply time is not what it picks now
+- [x] req 4 — the refusal and the seeding read ONE function
+      (`nonTurnModelSeedCandidate`), so they cannot come to different answers
+- [x] req 4 — the store has the last word: after an `applied` write the apply
+      reads the setting back through the agent's own read surface — the read
+      that already answers `effect`, so no second round trip — and resolves a
+      disagreement with the card as `partial` naming both values
+- [x] req 4 — the read-back is scoped so that it cannot invent a defect, and
+      NOT SEEING a value is never treated as one: a `set` only, since a
+      membership card shows ShipIt's wording rather than a value and those
+      writers already answer from the resulting membership; a prose card
+      compared against the approved TEXT rather than against ShipIt's summary of
+      its size, which any rewrite of the same length would pass; and silence
+      about an instance the read no longer lists, since an address leaves the
+      read for reasons that are nothing to do with the write — a rename retires
+      the name the card used, and a service/mode setting stops being listed the
+      moment its last credential goes (`settings-store-readers.ts` → `modePairs`)
+- [x] The release-channel fixture stubbed a reader that could not see its own
+      mocked write, so the apply's read-back was right to call it `partial`. The
+      fixture now moves with the write, as the real file-backed pair does

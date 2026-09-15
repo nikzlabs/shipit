@@ -65,6 +65,7 @@ import {
   domainsForSettingsSave,
   providerAccountDomains,
 } from "./settings-apply.js";
+import { nonTurnModelSeedCandidate } from "./settings.js";
 import type { SaveGlobalSettingsOptions } from "./settings.js";
 import {
   egressScopeDomain,
@@ -240,7 +241,9 @@ function sideChange(key: string, from: unknown, to: unknown): RenderedSideChange
     formatSetting(declaration, projectSetting(declaration, raw ?? null));
   const before = show(from);
   const after = show(to);
-  return before === after ? null : { label: declaration.label, from: before, to: after };
+  return before === after
+    ? null
+    : { key: declaration.key, label: declaration.label, from: before, to: after };
 }
 
 function sideChanges(changes: (RenderedSideChange | null)[]): RenderedSideChange[] {
@@ -728,6 +731,31 @@ function modeAddressed(preflight?: SettingsOperation["preflight"]): SettingsOper
 }
 
 /**
+ * Clearing the background-model pin, where clearing it is not a state the
+ * setting can be left in.
+ *
+ * Unsetting the pin is what makes ShipIt seed one: `seedNonTurnModel` runs from
+ * the save hook that stores the clear (`services/settings.ts`) and again
+ * whenever the settings payload is built, so on an install with an eligible
+ * model the value is a different pin before anyone reads it. A card saying
+ * "not set" would therefore promise something the click cannot produce, and an
+ * operation whose full effect cannot be displayed is refused rather than shown
+ * wrong (docs/299-agent-settings-access req 4). The seeded model is NOT named
+ * back: what the seed picks at apply time is not what it picks now, so naming
+ * it would be a second claim the card cannot keep.
+ *
+ * Where nothing is eligible the clear is a real clear, and it is allowed.
+ */
+function nonTurnClearRefusal(deps: SettingsOperationDeps, value: unknown): string | null {
+  if (value !== null) return null;
+  const seeded = nonTurnModelSeedCandidate(deps.credentialStore, deps.agentRegistry);
+  if (!seeded) return null;
+  return "Clearing this does not leave it unset: ShipIt immediately pins the first model it can "
+    + "run background work on, so a card promising \"not set\" would be undone by its own write. "
+    + "Propose the model you want instead, or tell the user.";
+}
+
+/**
  * A label the writer would refuse. The declaration's own limit is wider than
  * what `updateStringCredential` and `ProviderAccountManager.rename` store, and a
  * card that could only ever resolve `refused` is not a change the user makes
@@ -910,6 +938,11 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     (_deps, target, value) => ({ failoverCutoffs: { [modeKey(target)]: { weekly: value as number } } }),
     () => domainsOfSave({ failoverCutoffs: {} }),
     { preflight: modeAddressed() },
+  ),
+  "services.nonTurnModel::set": savingOperation(
+    (_deps, _target, value) => ({ nonTurnModel: value as ModelSelection | null }),
+    () => domainsOfSave({ nonTurnModel: null }),
+    { preflight: (deps, _target, value) => nonTurnClearRefusal(deps, value) },
   ),
 
   // The release channel writes through its own route. `applyReleaseChannel`

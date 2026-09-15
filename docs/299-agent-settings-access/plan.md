@@ -1348,6 +1348,84 @@ check's error is therefore **returned** beside an `applied` outcome that says
 what could not be confirmed, and the route that answers with an update status is
 what raises it.
 
+### And "applied" has to mean what the card showed
+
+A writer reporting `applied` says the write landed, not that it landed as the
+card displayed it. Those came apart three times: `advanced.memoryBudgetMb`
+showed `4096 → 0` over a write that *removes* the field, clearing
+`services.nonTurnModel` showed "not set" over a save hook that seeds a
+replacement selection in the same call, and clearing a role's reasoning level
+showed `""` over params that store no level at all. Requirement 4 is about what
+the user can check before clicking, so a card the store then contradicts is the
+requirement failing.
+
+Three defences, prospective first, because a card corrected after the click is
+already a card someone approved wrongly. **A declaration is where each of the
+first two lives**, which is the point: the normalisation is stated once, beside
+the setting, rather than patched into whichever path noticed it.
+
+1. **A declared type answers with the value the store will hold**
+   (`value-types.ts`): `read(serialize(v))` is `v` for anything `validate`
+   accepts. `text`'s `trim` already worked this way; `unsetBelow` now does, so a
+   budget of `0` validates to `null` and the card says "not set".
+   `store-round-trip.test.ts` holds it over the whole registry — which catches
+   the class where **serialising drops the value**, and not a writer that
+   normalises on its own, since the codec cannot see one.
+2. **A declared type also says what the WRITER stores**, which is the half the
+   codec contract above cannot reach: `serialize` never runs for a bespoke
+   store, so nothing in the round trip can see `pinned()` dropping a role's
+   empty reasoning level. `text`'s `emptyIsUnset` is where that is declared, and
+   `validate` answers `null` — so a card clearing the level says "not set"
+   rather than `""`. Deliberately opt-in: an instructions box stores the empty
+   string it was cleared to, and reporting *that* as "not set" is the same lie
+   reversed. The first draft of this put the normalisation in the declaration's
+   PROJECTION instead, which was wrong twice over — it made a stored level
+   nothing offers read as "not set" while it was still stored and unclearable,
+   and it collapsed a genuine `alsoChanges` deletion into "not set → not set",
+   hiding a write the card was meant to show.
+3. **A change that cannot be shown truthfully is refused**, which is the rule
+   `hostPreflight` and `requireEmittable` already apply. Clearing the
+   background-model pin joins them: `seedNonTurnModel` runs from the save hook
+   AND from every build of the settings payload, so "not set" is not a state
+   that setting can be left in while a model is eligible. The seeded model is
+   not named back either — what the seed picks at apply time is not what it
+   picks now.
+
+Then the backstop. **The store has the last word**: after an `applied` write the
+apply reads the setting back through the agent's own read surface — the same
+read that already answers `effect`, so no second round trip — and compares it
+with what the card promised. A disagreement resolves the card `partial` naming
+both values, rather than `applied`. This is what covers a save hook, whose side
+effects nothing before the write can see.
+
+It verifies **everything the card displayed**, not only the field the card is
+named for: each `alsoChanges` entry carries its declaration key and is read back
+at the same address, because a write that lands its own field while keeping a
+neighbour is exactly the shape a check of the named field alone cannot see.
+
+What it compares is chosen so that it cannot invent a defect, and **failing to
+observe a value is never treated as one** — every branch that cannot compare
+answers "no mismatch":
+
+- Only a `set`. A membership card displays ShipIt's own wording rather than a
+  value, and those writers already answer from the resulting membership.
+- A **prose** card is compared against the approved TEXT, not against the card's
+  `to` — which is ShipIt's summary of the prose, so comparing displays would
+  pass any rewrite of the same length.
+- An **item the read no longer lists** says nothing. An instance leaves the read
+  for reasons that have nothing to do with the write: a rename retires the name
+  the card was addressed by, and a service/mode setting stops being listed the
+  moment its last credential goes (`settings-store-readers.ts` → `modePairs`).
+  Both are writes that landed.
+
+**Known gap, wider than this feature.** `saveGlobalSettings` ends by building
+the settings payload, and that build seeds the background-model pin — so
+applying *any* global setting can pin one that no card named. The click is not
+what causes it (every read of the payload does, including opening the dialog),
+and closing it means deciding when a pin is seeded at all, which is
+background-work behaviour rather than proposal behaviour. Tracked as
+planning#578 rather than fixed alongside the three above.
+
 ## How the agent learns the outcome
 
 `shipit settings get <key>` carries `lastProposal`, and the agent reads before
@@ -1372,7 +1450,7 @@ differently.
 | `dismissed` | does not re-propose *that value* unless asked |
 | `applied` | does nothing; `value` reflects it |
 | `stale` / `refused` | may propose again, from the current value |
-| `partial` | says which half landed and proposes the rest |
+| `partial` | says what did not land — a half of a multi-part write, or a value the store did not keep — and proposes the rest |
 | `failed` | may propose again, saying the last attempt failed |
 | `uncertain` / `unknown` | reads the value and says the outcome was not verified |
 

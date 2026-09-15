@@ -38,7 +38,8 @@ export const PROPOSAL_PHASE_GUIDANCE: Record<SettingsProposalPhase, ProposalPhas
   },
   partial: {
     headline: "PARTIALLY applied",
-    guidance: "Say which half landed, and propose the rest.",
+    guidance: "Some of what the card showed did not land — read the value, say what differs, and "
+      + "propose the rest.",
   },
   failed: {
     headline: "FAILED",

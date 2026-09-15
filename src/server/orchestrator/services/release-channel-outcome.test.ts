@@ -33,7 +33,13 @@ let fx: ProposalFixture;
 
 beforeEach(() => {
   fx = proposalFixture();
-  updates.writeReleaseChannel.mockReset().mockResolvedValue(undefined);
+  // The real pair is a file written and then read back, so the mocked write
+  // moves what the fixture's reader answers. Without that the apply's read-back
+  // sees the old channel and reports the change as `partial` — correctly, since
+  // a write that stores nothing is exactly what it is there to catch.
+  updates.writeReleaseChannel.mockReset().mockImplementation(async (channel: string) => {
+    fx.setReleaseChannel(channel);
+  });
   updates.checkForUpdates.mockReset();
   vi.spyOn(console, "error").mockImplementation(() => {});
 });

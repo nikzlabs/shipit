@@ -144,6 +144,13 @@ export type SettingsProposalPhase =
  * the user approves what the card shows.
  */
 export interface SettingsProposalSideChange {
+  /**
+   * The neighbouring declaration's key. Carried so the apply can read THIS
+   * field back too: a card promises every field its one operation writes, and
+   * verifying only the field it is named for verifies part of what was approved
+   * (docs/299-agent-settings-access req 4).
+   */
+  key: string;
   /** The neighbouring declaration's label, never the agent's words. */
   label: string;
   from: string;

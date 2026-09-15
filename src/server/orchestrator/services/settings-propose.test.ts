@@ -576,7 +576,7 @@ describe("a card shows every field its one operation writes", () => {
     });
 
     expect(card.alsoChanges).toEqual([
-      { label: findSetting("roles[].reasoningEffort")!.label, from: '"max"', to: "not set" },
+      { key: "roles[].reasoningEffort", label: findSetting("roles[].reasoningEffort")!.label, from: '"max"', to: "not set" },
     ]);
   });
 
@@ -599,7 +599,7 @@ describe("a card shows every field its one operation writes", () => {
       });
 
       expect(card.alsoChanges).toEqual([
-        { label: findSetting("roles[].harness")!.label, from: '"claude"', to: '"codex"' },
+        { key: "roles[].harness", label: findSetting("roles[].harness")!.label, from: '"claude"', to: '"codex"' },
       ]);
     } finally {
       report.restore();
@@ -627,7 +627,7 @@ describe("a card shows every field its one operation writes", () => {
       });
 
       expect(card.alsoChanges).toEqual([
-        { label: findSetting("roles[].reasoningEffort")!.label, from: '"minimal"', to: "not set" },
+        { key: "roles[].reasoningEffort", label: findSetting("roles[].reasoningEffort")!.label, from: '"minimal"', to: "not set" },
       ]);
     } finally {
       report.restore();
