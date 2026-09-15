@@ -237,11 +237,11 @@ Billing service. Markdown, so a list reads as a list:
   - routes and tests done; PR #212 ready to merge
   - webhook not started
 
-MANUAL STEPS
+✋ Manual steps
   • Add the Stripe test key in Settings → Secrets.
   • Review and merge PR #212.
 
-FOLLOW-UPS
+☑ Follow-ups
 ☑ Wire the Stripe webhook            RECOMMENDED
   Adds /webhooks/stripe and its signature check.
 ☐ Add retry on 5xx from Stripe
@@ -262,7 +262,10 @@ meets one, and every offer shows its description (req 26).
   (`needsYou` keeps its field name), omitted when the list is empty, one line
   for a single entry and a bulleted list for several (req 27); the offers
   follow under the subtitle **"Follow-ups"**, which is what separates them —
-  there is no rule between the sections.
+  there is no rule between the sections. A subtitle is the transcript action
+  card's header row — an accent icon beside a 13px semibold primary label —
+  because a heading in text colour alone, tertiary or primary, blends into the
+  markdown above it.
 - **Freshness.** A current card is a regular card. A stale card carries the
   word **"Stale"** (`text-[11px] font-semibold text-(--color-accent)`) in its
   bottom-right corner; the last row keeps right padding so text never runs

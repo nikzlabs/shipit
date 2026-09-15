@@ -41,6 +41,17 @@ describe("SessionStatusCard", () => {
     expect(screen.getByText("Follow-ups")).toBeInTheDocument();
   });
 
+  it("draws both subtitles in the primary text colour, not as grey metadata", () => {
+    render(
+      <SessionStatusCard
+        status={card({ needsYou: ["Add the key."], actions: [offer({ offerId: "o1" })] })}
+      />,
+    );
+    for (const heading of ["Manual steps", "Follow-ups"]) {
+      expect(screen.getByText(heading).className).toContain("--color-text-primary");
+    }
+  });
+
   it("renders the status as markdown, so a list in it reads as a list", () => {
     render(
       <SessionStatusCard

@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChatCircleDotsIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChatCircleDotsIcon, HandIcon, ListChecksIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import type { SessionStatus } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -27,8 +27,19 @@ const NOTICE_MS = 5000;
  */
 const COMPACT_MARKDOWN = "[&_.prose]:text-xs [&_.prose]:leading-snug";
 
-/** The card's own section headings: the status needs none, the sections below do. */
-const SUBTITLE = "text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary) mb-1";
+/**
+ * The card's section headings. They are the transcript action card's header
+ * row — an accent icon beside a medium primary label — because a heading in
+ * text colour alone, however bold, blends into the markdown above it.
+ */
+function Subtitle({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-1.5 mb-1">
+      <span className="shrink-0 text-(--color-accent)">{icon}</span>
+      <span className="text-[13px] font-semibold text-(--color-text-primary)">{children}</span>
+    </div>
+  );
+}
 
 export interface SessionStatusCardProps {
   status: SessionStatus;
@@ -121,8 +132,8 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
       </div>
 
       {needsYou.length > 0 && (
-        <div className="mt-2">
-          <div className={SUBTITLE}>Manual steps</div>
+        <div className="mt-3">
+          <Subtitle icon={<HandIcon size={ICON_SIZE.SM} weight="fill" />}>Manual steps</Subtitle>
           <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN} ${hasOffers ? "" : clearOfStale}`}>
             {needsYou.length === 1
               ? <MarkdownContent text={needsYou[0]} />
@@ -140,8 +151,8 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
       {/* req 26 — the offers are the transcript action card's, extended rather
           than reduced: same rows, badge, buttons and delivery notice. */}
       {hasOffers && (
-        <div className="mt-2 flex flex-col gap-2">
-          <div className={SUBTITLE}>Follow-ups</div>
+        <div className="mt-3 flex flex-col gap-2">
+          <Subtitle icon={<ListChecksIcon size={ICON_SIZE.SM} />}>Follow-ups</Subtitle>
           <ActionChecklist
             items={items}
             selected={selected}
