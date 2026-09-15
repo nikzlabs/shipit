@@ -222,7 +222,7 @@ describe("applyEgressHostRemove: `applied` means the host came off", () => {
     expect(fx.effective().map((entry) => entry.host)).not.toContain(".github.com");
   });
 
-  it("reports `failed` when the deployment's operator supplies the host as well", async () => {
+  it("reports `partial` when the deployment's operator supplies the host as well", async () => {
     process.env.SESSION_EGRESS_ALLOWLIST = ".github.com";
     const fx = fixture();
 
@@ -230,10 +230,36 @@ describe("applyEgressHostRemove: `applied` means the host came off", () => {
 
     // Suppressing the built-in default is all this write can reach, and the
     // operator's entry keeps the host allowed — so the card and the agent's
-    // next-turn notice must not say it came off.
-    expect(outcome.status).toBe("failed");
+    // next-turn notice must not say it came off. Not `failed` either: the
+    // suppression IS stored, and `failed` claims ShipIt verified nothing
+    // changed (planning#537).
+    expect(outcome.status).toBe("partial");
     expect(outcome.detail).toContain("operator");
+    expect(fx.store.isDefaultSuppressed(".github.com")).toBe(true);
     expect(fx.effective().map((entry) => entry.host)).toContain(".github.com");
+
+    // Now nothing is left for this write to change, so `failed` is true of it.
+    const again = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, ".github.com");
+    expect(again.status).toBe("failed");
+  });
+
+  it("leaves the row in place when the suppression fails, so `failed` is true", async () => {
+    const fx = fixture();
+    fx.store.addHost(EGRESS_GLOBAL_SCOPE, "openrouter.ai");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // The second of the two writes a removal makes. Ungrouped, the delete had
+    // already committed when this threw and the operation still reported
+    // `failed` — the row gone, and the strongest claim the vocabulary has made
+    // over it (planning#537).
+    vi.spyOn(fx.store, "suppressDefault").mockImplementation(() => {
+      throw new Error("SQLITE_FULL: database or disk is full");
+    });
+
+    const outcome = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, "openrouter.ai");
+
+    expect(outcome.status).toBe("failed");
+    expect(fx.store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual(["openrouter.ai"]);
+    expect(fx.store.isDefaultSuppressed("openrouter.ai")).toBe(false);
   });
 
   it("says the host is still reachable when a broader entry covers it", async () => {
@@ -254,7 +280,7 @@ describe("applyEgressHostRemove: `applied` means the host came off", () => {
     expect(fx.effective().map((entry) => entry.host)).not.toContain("api.github.com");
   });
 
-  it("reports `failed` when a configured MCP server needs the host", async () => {
+  it("reports `partial`, not `applied`, when a configured MCP server needs the host", async () => {
     const credentialStore = new CredentialStore(tmpDir("shipit-truth-mcp-"));
     credentialStore.setMcpServer("router", {
       name: "router",
@@ -263,13 +289,18 @@ describe("applyEgressHostRemove: `applied` means the host came off", () => {
       enabled: true,
     });
     const fx = fixture(credentialStore);
+    fx.store.addHost(EGRESS_GLOBAL_SCOPE, "openrouter.ai");
 
     const outcome = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, "openrouter.ai");
 
     // The proposal path refuses this before writing; the route does not, so the
-    // writer itself has to see every source the list is assembled from.
-    expect(outcome.status).toBe("failed");
+    // writer itself has to see every source the list is assembled from. It saw
+    // the MCP server and still deleted the user's own row, so the honest answer
+    // is `partial`: `failed` would say ShipIt verified the list never moved.
+    expect(outcome.status).toBe("partial");
     expect(outcome.detail).toContain("MCP server");
+    expect(fx.store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
+    expect(fx.effective().map((entry) => entry.host)).toContain("openrouter.ai");
   });
 
   it("stays idempotent for a host that is genuinely off the list", async () => {

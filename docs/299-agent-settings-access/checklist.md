@@ -836,3 +836,33 @@ value and stored another. Both re-verified at the code.
 - [x] `renderLine` has a test over the whole deny-set, not the `\n` its
       adversarial fixtures happen to use: an implementation replacing only the
       newline passed every other case in the file
+
+## A fifth conformance review — two writes that reported the opposite of what happened
+
+Both findings re-verified at the code before being acted on.
+
+- [x] req 4 — a global allowlist removal is **one transaction**
+      (`EgressAllowlistStore.removeGlobalHost`). Deleting the explicit rows and
+      suppressing a matching shipped default were two ungrouped writes, so a
+      suppression that threw left the row gone and the catch reported `failed` —
+      the one status that claims ShipIt verified nothing changed, and the
+      strongest claim the vocabulary has
+- [x] req 4 — and a removal that *wrote* something while the host stayed listed
+      now reports `partial`. Taking off a host a configured MCP server also
+      supplies deletes the user's own row; taking off a shipped default an
+      operator also supplies stores the suppression. `failed` is left for the
+      removal that changed nothing, which a repeat removal still is — the store's
+      own `removed || suppressed` answer is what separates the two
+- [x] req 7 — a save hook runs only for a value the store kept. A failed
+      credential-store write rolls back, so `advanced.sessionStatusCard`
+      correctly reported `failed` while its hooks still retired idle resident
+      agents and scheduled the persisted cards to go stale. Each of the four
+      hooks was read against a rolled-back write rather than gated blanket: three
+      act on the stored value, and the background-model reseed reads the store,
+      so it is a no-op there and takes the same rule rather than being the one
+      exception to re-derive
+- [x] Both guards proven red alone, with the defect restored: the suppression
+      failing after a successful delete (the row survives, so `failed` is true),
+      the MCP- and operator-supplied removals reporting `failed` over a store
+      they had changed, and the status-card hooks firing on a write the same
+      save reports as failed

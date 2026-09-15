@@ -300,24 +300,41 @@ interface SaveHookContext {
 interface SaveHook {
   /** Refuse a value for a reason the declared type cannot express. */
   check?: (value: unknown, ctx: SaveHookContext) => void;
-  /** Runs after the value is stored; `previous` is the value it replaced. */
+  /**
+   * Runs after the value is stored, and only when the store kept it; `previous`
+   * is the value it replaced.
+   *
+   * A `failed` write VERIFIES the old value is still there, so a hook running
+   * past one changes runtime and persisted state for a change that did not
+   * happen (planning#537); the note beside each hook says why its work needs the
+   * durable value. `uncertain` and `partial` still run it — the value may be
+   * stored, and a hook skipped for a stored value leaves the feature asleep,
+   * which is the defect `onAutoFixCiEnabled` exists to prevent. Work that must
+   * run whatever the write did belongs beside the write, not here.
+   */
   after?: (value: unknown, previous: unknown, ctx: SaveHookContext) => void;
 }
 
 const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
-  // Enabling remediation refreshes existing snapshots without waiting for a PR change.
+  // Enabling remediation refreshes existing snapshots without waiting for a PR
+  // change. Needs the stored value: it is how the STORED permission takes effect
+  // at once, and a rolled-back write leaves remediation off.
   "advanced.autoResolveConflicts": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onAutoResolveConflictsEnabled?.();
     },
   },
+  // Same shape, same reason: unattended CI fixing must not start from a write
+  // the store rolled back.
   "advanced.autoFixCi": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onAutoFixCiEnabled?.();
     },
   },
   // docs/303 req 23 — the earlier card reappears at once, marked stale, and the
-  // next turn refreshes it.
+  // next turn refreshes it. Both halves need the stored value: the stale mark is
+  // persisted, and retiring idle residents is only right because their tool list
+  // was fixed at spawn against a setting that has now moved.
   "advanced.sessionStatusCard": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onSessionStatusCardEnabled?.();
@@ -344,6 +361,9 @@ const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
     },
     after: (value, _previous, ctx) => {
       // Older clients send null; reseed once when a runnable selection exists.
+      // A rolled-back clear leaves the old pin, and `seedNonTurnModel` reads the
+      // store, so running it would do nothing — it is skipped on the same rule
+      // as the rest rather than left as the one exception to re-derive.
       if (value === null) seedNonTurnModel(ctx.credentialStore, ctx.agentRegistry);
     },
   },
@@ -499,8 +519,13 @@ export async function saveGlobalSettings(
     const previous = hook?.after
       ? currentDeclaredValue(write.declaration, credentialStore)
       : undefined;
-    outcomes.push(await writeDeclaredSetting(write, derivationCtx));
-    hook?.after?.(write.value, previous, hookCtx);
+    const outcome = await writeDeclaredSetting(write, derivationCtx);
+    outcomes.push(outcome);
+    // The store kept the value, or could not say it did not. A `failed` write
+    // is verified to hold the OLD value, and every hook acts on the new one —
+    // so running one there changes runtime and persisted state for a save the
+    // same response reports as refused (planning#537).
+    if (outcome.status !== "failed") hook?.after?.(write.value, previous, hookCtx);
   }
   // Folded in only when there IS bespoke work: an empty group reports `applied`,
   // and an `applied` standing for no write would make a lone failed scalar read
