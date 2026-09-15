@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SETTING_EXCLUSIONS } from "./exclusions.js";
+import { projectSetting } from "./projection.js";
 import { ALL_SETTINGS, collectionKeyOf, findSetting } from "./registry.js";
 import { addressesARepository, isPayloadDeclaration } from "./types.js";
 import type { SettingTab } from "./types.js";
@@ -86,6 +87,52 @@ describe("the settings registry", () => {
 
       expect(emits.kind === "user_text" && emits.reason.length, declaration.key)
         .toBeGreaterThan(30);
+    }
+  });
+
+  it("makes every derived projection say whose text it emits", () => {
+    const derived = ALL_SETTINGS.filter((d) => d.emits.kind === "derived");
+
+    expect(derived.length).toBeGreaterThan(0);
+    for (const declaration of derived) {
+      const { emits } = declaration;
+      if (emits.kind !== "derived") continue;
+      // Exactly one: `userText` says the output is the user's own and why it is
+      // shown, `computed` says it is ShipIt's own and why. `derived()` takes the
+      // choice as a required argument, so this pins the pair rather than the
+      // presence — a hand-built projection object could still say neither.
+      const stated = [emits.userText, emits.computed].filter((reason) => reason !== undefined);
+
+      expect(stated.length, declaration.key).toBe(1);
+      expect(stated[0]!.length, declaration.key).toBeGreaterThan(30);
+    }
+  });
+
+  /*
+    Both of these shipped unmarked, and the mark is the whole of what review
+    reads: a `derived` projection with no `userText` claims its output is
+    something ShipIt computed. Neither is a leak — the SSH private key and a
+    credential's value stay withheld either way — and neither projection's
+    OUTPUT changes here. What changes is that the declaration now says the text
+    is the user's own, which is what `plan.md` requires of a free-text exception.
+  */
+  it("marks the two collections whose shape gate emits the user's own text", () => {
+    // Lowercase and hyphenated, because both projections lowercase what they
+    // emit and a canary that came back altered would prove nothing.
+    const canary = "canary-text-the-user-typed";
+    const cases: [key: string, stored: unknown][] = [
+      ["integrations.sshHosts", [{ label: canary, address: "prod.example.com" }]],
+      ["network.egress.hosts[].host", canary],
+    ];
+
+    for (const [key, stored] of cases) {
+      const declaration = findSetting(key)!;
+      const outcome = projectSetting(declaration, stored);
+
+      // Emitted unchanged, in `list`, in `get` and in `--json`. That is the
+      // point of both settings and not the defect.
+      expect(JSON.stringify(outcome), key).toContain(canary);
+      expect(declaration.emits.kind === "derived" && declaration.emits.userText, key).toBeTruthy();
     }
   });
 

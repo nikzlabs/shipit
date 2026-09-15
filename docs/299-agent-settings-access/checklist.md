@@ -526,3 +526,101 @@ change.
       text, per-line Added/Removed labels, and a bounded scrolling region
 - [x] The counts stay on the CARD, so padding a value cannot make the control
       look cheaper to skip than it is
+
+## Conformance against reqs 5 and 7 — SSH destinations, and the guard that missed them
+
+A conformance review of the SSH hosts area found a part of the Integrations tab
+the catalogue never covered, and the walk that should have caught it. Each
+finding re-verified at the code first.
+
+- [x] req 5 — the add-a-destination form's four boxes are declared per field.
+      They were an `action` exclusion on the reasoning that a draft field stores
+      nothing and "the collection is what carries the policy", which was false of
+      three of them: the collection carries labels only, while the dialog sends
+      address, user and port to `POST /api/ssh-hosts` and shows them back on the
+      row. `integrations.sshHosts[].label|address|user|port`, each with its own
+      projection, its own refusal reason and a reader in `BESPOKE_READERS`
+- [x] The claim that `[].address` and `[].user` must stay undeclared — "the
+      enumeration the rest of docs/305 is built to prevent" — did **not** hold
+      against docs/305-ssh-hosts: its req 3 withholds the private key from a
+      settings read and nothing there makes an address confidential from an
+      ungranted session, whose membership the labels already emit account-wide.
+      Recorded in the declaration rather than acted on as written
+- [x] Two projections of their own rather than the near neighbours, because
+      either reuse would have emitted a stored value as nothing:
+      `hostEntryProjection` refuses every IPv6 literal (docs/305 req 12 admits
+      one) and `userNameProjection` requires an alphanumeric first character
+      (`requireUser` does not)
+- [x] req 7 — `SSH_HOST_FIELD_SETTINGS`, keyed by `keyof SshHostPublic`, so a
+      field added to the stored shape is a compile error until it is declared or
+      explained. It does not depend on anything being rendered, which is what the
+      DOM walk could not manage for a form nobody opened
+- [x] req 2 — the `derived` origin is a **required argument**: `{ userText }` or
+      `{ shipItComputed }`, each with its reason. `integrations.sshHosts` and
+      `network.egress.hosts[].host` both emitted the user's own text under a bare
+      `derived`, which claims ShipIt computed it. No output changed
+- [x] req 5, req 7 — the coverage walk **crawls** instead of opening named forms.
+      Every trigger in scope is pressed and whatever appears is walked, so the
+      SSH form is reached by nothing naming it. A hand list of forms was the same
+      failure one level up, and the SSH form was the proof
+- [x] What the crawl then found, accounted rather than excused: the
+      add-a-provider wizard, which `UNREACHED` had called "a flow rather than a
+      pane". Its secret box, Save and Sign in bind their declarations, its two
+      address steps bind the credentials collection, and its three ways out are
+      one exclusion. `UNREACHED` is now empty
+- [x] `region` on an exclusion — a container whose every control is that one
+      exclusion, for a surface the install produces rather than anyone writing:
+      the supported-models dialog's filters are one per (service, mode, harness)
+- [x] Each fix proven red alone: the canary label emitted under an unmarked
+      `derived`; an SSH address the agent cannot read (`settings list` knows no
+      such setting); and the four SSH boxes named as unaccounted by the crawl
+      against the form as it was
+
+### After the rebase onto the in-place edit (docs/305 req 14)
+
+- [x] `main`'s shared `HostFields` renders the declaration-bound boxes, so the
+      new EDIT form carries the bindings and the declared copy as well as the add
+      form — one component rather than two that can drift
+- [x] Each refusal re-decided on the new facts rather than reworded. The comment
+      said "the only write the dialog offers is the collection's `add`", which
+      the edit made false. `[].address` and `[].user` stay `external_flow` — they
+      decide which account on which machine must hold the public line — while
+      `[].label` and `[].port` become `unsafe_to_display`: neither needs an act
+      outside ShipIt, and a card cannot show that a rename moves the derived
+      `~/.ssh/config` alias, or that a port change discards the recorded server
+      host key (which is why req 14 makes the DIALOG warn before saving)
+- [x] The coverage crawl reaches the edit form: it is disclosed from a
+      destination row, and the panel loads its rows over HTTP, so the fixture
+      answers a GET of `/api/ssh-hosts` with one host and rejects everything else
+      as before. Verified by instrumenting the crawl — it presses *Edit prod*,
+      then *Save changes* and *Cancel* inside the form. A test guards the fixture,
+      since a row that stopped rendering would take the surface with it silently
+- [x] Two defects the merge introduced, both caught by `main`'s own tests: the
+      declared description ran into the input's accessible name, so
+      `getByLabelText("Address")` found nothing — the label is now `aria-label`
+      and the description `aria-describedby`; and `type="number"` on the port box
+      reads back `""` for `abc`, which would have sent an empty port and coerced
+      it to 22, defeating main's "send the port as typed" contract
+
+### Scoped to the grant, which closes a hole older than this slice
+
+- [x] req 5 — the SSH read answers with the destinations THIS session is granted
+      (`sessionSshHosts`, over the shipped `grantedSshHosts`), for the collection
+      and for every `sshHosts[]` field. `api-container-guard.ts` hard-denies
+      `/api/ssh-hosts` to every container — "a container has no business editing
+      destinations or reading the list" — while `/api/sessions/:id/settings` is
+      container-accessible, so the settings door crossed a decision the guard
+      makes at its own door
+- [x] The name list scoped too, not only this slice's new fields: the guard's
+      words are about reading THE LIST, so the label enumeration on `main` is
+      already what that decision forbids. Reachable today, not hypothetical
+- [x] A session with no grant gets an empty **readable** answer — it holds none,
+      which is not ShipIt failing to read — with the reason on the collection's
+      own description, which every `list` carries. No count of what was withheld:
+      "4 more destinations" is the same enumeration one step weaker
+- [x] The guard that matters is red against `main` and not only against this
+      branch: with `main`'s reader restored, a session granted nothing reads
+      `["prod", "staging"]` from `integrations.sshHosts`
+- [x] req 5 gained a clause and the decision a dated receipt, both in
+      `requirements.md`: a setting's per-session availability may be narrower
+      than the dialog's where ShipIt already gates the resource per session

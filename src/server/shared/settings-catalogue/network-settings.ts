@@ -52,7 +52,10 @@ export const NETWORK_SETTINGS = {
     // The host is the whole subject of the setting and a card shows it in full,
     // but only once it is a host: the box takes any text, and a pasted URL can
     // carry a token in its user information or its query.
-    emits: derived("the entry, when it is shaped like a host", hostEntryProjection),
+    emits: derived("the entry, when it is shaped like a host", hostEntryProjection, {
+      userText: "The entry is the user's own, and it is the whole subject of the setting. The "
+        + "shape gate keeps a pasted URL out; it does not make the host ShipIt's own text.",
+    }),
     propose: { kind: "yes" },
   }),
 } as const satisfies Record<string, AnySettingDeclaration>;

@@ -75,10 +75,11 @@ export type Projection =
       /**
        * Present when what the function emits is the user's own text rather than
        * something ShipIt computed — the same mark `user_text` carries, for the
-       * same reason: it is what review reads. A `derived` projection without one
-       * claims its output is ShipIt's own.
+       * same reason: it is what review reads.
        */
       readonly userText?: string;
+      /** Present instead, when the output is ShipIt's own: why it is. */
+      readonly computed?: string;
     }
   | { readonly kind: "withheld"; readonly reason: RefusalReason };
 
@@ -274,15 +275,35 @@ export function configuredOnly(): Projection {
 }
 
 /**
- * Emits what the function returns and nothing else. `userText` marks a function
- * whose output is the user's own text rather than something ShipIt computed.
+ * Where a `derived` projection's output comes from — whose text it is.
+ *
+ * **Exactly one, and neither is optional** (docs/299-agent-settings-access
+ * req 2). `userText` used to be an optional third argument, so a projection that
+ * emitted the user's own text simply by forgetting it claimed to emit something
+ * ShipIt computed, which is what review reads. Two shipped that way:
+ * `integrations.sshHosts` emitted a destination's label and
+ * `network.egress.hosts[].host` an allowlist entry, both unmarked. A required
+ * argument is the only form of this rule that cannot be forgotten — omitting it
+ * does not compile.
  */
+export type DerivedOrigin =
+  /** The output is the user's own text; the reason it is shown anyway. */
+  | { readonly userText: string }
+  /** The output is ShipIt's own — an id, a parse, a count — and why that is so. */
+  | { readonly shipItComputed: string };
+
+/** Emits what the function returns and nothing else, with whose text that is. */
 export function derived(
   describes: string,
   project: (raw: unknown) => unknown,
-  opts: { userText?: string } = {},
+  origin: DerivedOrigin,
 ): Projection {
-  return { kind: "derived", describes, project, ...(opts.userText ? { userText: opts.userText } : {}) };
+  return {
+    kind: "derived",
+    describes,
+    project,
+    ...("userText" in origin ? { userText: origin.userText } : { computed: origin.shipItComputed }),
+  };
 }
 
 /** The read has no value to give: a browser-local setting, or secret material. */

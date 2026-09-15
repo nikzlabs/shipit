@@ -1595,6 +1595,14 @@ function AddServiceDialog({
 
                       className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-0.5 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                       data-testid={`add-service-option-${s.id}`}
+                      /*
+                        Step 1 of the collection's `add`, which is what
+                        `services.credentials` calls it: the service and the
+                        billing mode "are the address, not fields … chosen when
+                        a credential is added". So it binds the collection and
+                        not a field — there is no field here to store.
+                      */
+                      {...bindSetting("services.credentials")}
                     >
                       {/*
                         The same mark the card will carry once the service is
@@ -1684,6 +1692,10 @@ function AddServiceDialog({
                 onClick={() => pickMode(service, m.kind)}
                 className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 data-testid={`add-service-mode-${m.kind}`}
+                // The other half of that address, and the step that decides
+                // whether the add ends as a key on this collection or as a
+                // sign-in on `services.providerAccounts`.
+                {...bindSetting("services.credentials")}
               >
                 {/* Wraps, like the service names one step earlier: the label is
                     what the button is, and the count beside it is `shrink-0`. */}
@@ -1810,6 +1822,9 @@ function AddServiceDialog({
                   aria-label={`${service.name} credential`}
                   className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
                   data-testid="add-service-secret"
+                  // The same value the row's Replace secret box writes, at the
+                  // other end of its life (docs/299-agent-settings-access req 7).
+                  {...bindSetting("services.credentials[].secret")}
                 />
                 <p className="text-[11px] text-(--color-text-tertiary)">
                   {modeAllowsMultipleCredentials(billingMode)
@@ -1885,6 +1900,8 @@ function AddServiceDialog({
               disabled={!service || !billingMode || !secret.trim() || saving}
               onClick={() => void save()}
               data-testid="add-service-save"
+              // The collection's `add`, like the MCP form's Save.
+              {...bindSetting("services.credentials")}
             >
               {saving ? "Saving..." : "Save"}
             </Button>
@@ -1923,6 +1940,9 @@ function AddServiceDialog({
               disabled={!harnessInstalled || !!blockedBySignIn}
               onClick={() => void startSignIn()}
               data-testid="add-service-sign-in"
+              // Starts the provider's own login, which is the whole of what
+              // this declaration is: the connection, never its tokens.
+              {...bindSetting("services.providerAccounts[].connection")}
             >
               {signInStalled ? "Try again" : `Sign in to ${service?.name ?? "the provider"}`}
             </Button>

@@ -22,8 +22,14 @@ export type ProjectionOutcome =
 
 const REFUSAL_SENTENCES: Record<RefusalReason, string> = {
   secret: "This holds credential material, so ShipIt reports only whether it is configured.",
+  // Named for the OAuth case and true of more than it: an SSH destination is
+  // inert until its public line is installed on the server, which is the same
+  // shape of refusal — an act outside ShipIt that no click here can perform.
+  // The sentence says the shape and then both instances, because it is the whole
+  // of what the agent is told; the declaration's comments never reach it.
   external_flow:
-    "This is connected through a sign-in on the provider's own site, which ShipIt cannot do for you.",
+    "Finishing this takes an act ShipIt cannot perform for you, outside ShipIt — a sign-in on the "
+    + "provider's own site, or installing a key on the server.",
   browser_local:
     "Set in the browser; ShipIt's server does not hold this value.",
   unsafe_to_display:
@@ -193,6 +199,51 @@ export function hostEntryProjection(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const entry = raw.trim().toLowerCase();
   return HOST_ENTRY.test(entry) ? entry : null;
+}
+
+/**
+ * An SSH destination's address, when it is shaped like one.
+ *
+ * `hostEntryProjection` is the near neighbour and is deliberately NOT reused: it
+ * refuses every IPv6 literal, and req 12 of docs/305-ssh-hosts admits one, so an
+ * IPv6 destination would have had its address silently emitted as nothing. It
+ * also admits a leading dot, which is an allowlist subdomain match and never an
+ * address.
+ *
+ * `requireAddress` (`api-routes-ssh.ts:42`) already lowercases and shape-gates
+ * what is stored, so this re-gate is defence in depth rather than the only
+ * check — which is the same posture every projection here takes, because a
+ * projection is the one door an emitted value leaves by. What it excludes is the
+ * URL-shaped punctuation a credential travels in (`@ / ? # % & =` and
+ * whitespace); the store normalizes identically, so an emitted address is the
+ * stored one and addresses it back.
+ */
+// A colon is admitted only because an IPv6 literal is made of them; it may
+// begin and end the address (`::1`, `2001:db8::`) but a dot or a dash may not.
+const SSH_ADDRESS = /^[a-z0-9]$|^[a-z0-9:][a-z0-9.:-]*[a-z0-9:]$/;
+
+export function sshAddressProjection(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const address = raw.trim().toLowerCase();
+  if (address.length === 0 || address.length > 253) return null;
+  return SSH_ADDRESS.test(address) ? address : null;
+}
+
+/**
+ * The remote account name a destination logs in as. `requireUser`
+ * (`api-routes-ssh.ts:61`) allows letters, digits, dot, dash and underscore and
+ * nothing else — `userNameProjection` is the wrong gate here because it requires
+ * an alphanumeric first character, so a stored `_deploy` would be emitted as
+ * nothing.
+ *
+ * Emitted VERBATIM for the same reason a name is: the signer compares this
+ * string exactly, so a normalized form would describe a login ShipIt does not
+ * use.
+ */
+const SSH_USER = /^[A-Za-z0-9._-]{1,64}$/;
+
+export function sshUserProjection(raw: unknown): string | null {
+  return typeof raw === "string" && SSH_USER.test(raw) ? raw : null;
 }
 
 /**

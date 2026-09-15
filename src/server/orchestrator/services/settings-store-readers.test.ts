@@ -32,6 +32,8 @@ let tmpDir: string;
 let credentialStore: CredentialStore;
 let providerAccountManager: ProviderAccountManager;
 let hosts: string[];
+/** The SSH destinations this session is granted; the read is scoped to them. */
+let grantedSshHostIds: string[];
 let repo: { allowAgentMerge?: boolean; colorIndex?: number } | undefined;
 let secrets: Record<string, string>;
 
@@ -51,7 +53,7 @@ function deps(over: Partial<SettingsReadDeps> = {}): SettingsReadDeps {
     agentRegistry: { list: () => [] } as unknown as SettingsReadDeps["agentRegistry"],
     appWorkspaceDir: tmpDir,
     sessionManager: {
-      get: (id: string) => (id === SESSION ? { id, remoteUrl: REPO_URL } : undefined),
+      get: (id: string) => (id === SESSION ? { id, remoteUrl: REPO_URL, sshHosts: grantedSshHostIds } : undefined),
     } as unknown as SettingsReadDeps["sessionManager"],
     credentialStore,
     providerAccountManager,
@@ -94,6 +96,7 @@ beforeEach(() => {
     credentialStore,
   });
   hosts = [];
+  grantedSshHostIds = [];
   repo = { allowAgentMerge: false, colorIndex: undefined };
   secrets = {};
 });
@@ -617,6 +620,124 @@ describe("the pasted-token integrations and the voice credentials", () => {
     expect(token.display).toBe("configured");
     expect(JSON.stringify([url, token])).not.toContain("hooks.example.com");
     expect(JSON.stringify([url, token])).not.toContain("token-SENTINEL");
+  });
+});
+
+describe("SSH destinations", () => {
+  const generated = {
+    // No PEM armour: it would only make a fake value look real to a secret
+    // scanner, without strengthening the assertion below.
+    privateKeyPem: "private-key-SENTINEL",
+    publicKeyBlob: "AAAAsentinel",
+    identityLine: "ssh-ed25519 AAAAsentinel shipit-prod",
+    authorizedKeysLine: "restrict ssh-ed25519 AAAAsentinel shipit-prod",
+    fingerprint: "SHA256:sentinel",
+  };
+
+  /** Registers a destination and returns its id, granted to nobody. */
+  const register = (label: string, over: { address?: string; port?: number; user?: string } = {}) =>
+    credentialStore.createSshHost(
+      { label, address: `${label}.example.com`, user: "deploy", ...over },
+      generated,
+    ).id;
+
+  let prod: string;
+
+  beforeEach(() => {
+    prod = register("prod", { address: "prod.example.com", port: 2222 });
+    grantedSshHostIds = [prod];
+  });
+
+  /*
+    The gate for the third conformance review's first finding. The registry's
+    address, user and port are stored (`api-routes-ssh.ts:161`) and shown back on
+    the row, so they are settings — and until they were declared, this was the
+    whole of what the agent could learn about a destination: its name.
+  */
+  it("reads where a granted destination is, who it logs in as and on which port", async () => {
+    // The two text fields are quoted by `renderValue` (planning#577) and the
+    // port is not, because a number cannot carry a line break. The item ADDRESS
+    // stays bare either way — it is what `--item` takes back.
+    expect(await itemDisplays("integrations.sshHosts[].address")).toEqual({ prod: '"prod.example.com"' });
+    expect(await itemDisplays("integrations.sshHosts[].user")).toEqual({ prod: '"deploy"' });
+    expect(await itemDisplays("integrations.sshHosts[].port")).toEqual({ prod: "2222" });
+    expect((await detail("integrations.sshHosts")).value).toEqual(["prod"]);
+  });
+
+  /*
+    The read is the GRANT, never the registry, and this is the guard that matters
+    most because the hole it closes is older than the address and port fields.
+    `api-container-guard.ts` hard-denies `/api/ssh-hosts` to every container —
+    "a container has no business … reading the list" — while the settings routes
+    are container-accessible, so a whole-registry read here is that decision
+    undone through another door.
+  */
+  it("does not name a destination to a session that is granted none", async () => {
+    register("staging");
+    grantedSshHostIds = [];
+    const entry = await detail("integrations.sshHosts");
+
+    // Empty, and READABLE: this session has none, which is not the same as
+    // ShipIt being unable to read. The reason rides the declaration's own
+    // description, which every read carries.
+    expect(entry.readable).toBe(true);
+    expect(entry.value).toEqual([]);
+    expect(JSON.stringify(entry)).not.toMatch(/prod|staging/);
+  });
+
+  it("gives the fields nothing either, for the same session", async () => {
+    register("staging");
+    grantedSshHostIds = [];
+
+    const read = await Promise.all([
+      detail("integrations.sshHosts[].label"),
+      detail("integrations.sshHosts[].address"),
+      detail("integrations.sshHosts[].user"),
+      detail("integrations.sshHosts[].port"),
+    ]);
+
+    expect(read.every((entry) => entry.readable)).toBe(true);
+    expect(read.flatMap((entry) => entry.items ?? [])).toEqual([]);
+    expect(JSON.stringify(read)).not.toMatch(/prod|staging/);
+  });
+
+  it("gives a session only what it holds, and no count of the rest", async () => {
+    register("staging", { user: "root" });
+
+    const read = JSON.stringify(await Promise.all([
+      detail("integrations.sshHosts"),
+      detail("integrations.sshHosts[].address"),
+      detail("integrations.sshHosts[].user"),
+    ]));
+
+    expect(read).toContain("prod");
+    // Not the label, not the address, and not "1 more" either — a count is the
+    // same enumeration one step weaker.
+    expect(read).not.toMatch(/staging|1 more|1 other/);
+  });
+
+  it("never carries key material into any of them", async () => {
+    const read = await Promise.all([
+      detail("integrations.sshHosts"),
+      detail("integrations.sshHosts[].label"),
+      detail("integrations.sshHosts[].address"),
+      detail("integrations.sshHosts[].user"),
+      detail("integrations.sshHosts[].port"),
+    ]);
+    expect(JSON.stringify(read)).not.toMatch(/SENTINEL|sentinel/);
+  });
+
+  it("names a destination by nothing when its label is not shaped like a name", async () => {
+    // The route takes any 200 characters that are not control characters, so a
+    // pasted URL is a storable label — and an item the collection refuses to
+    // name has no address to be read under.
+    const pasted = credentialStore.createSshHost(
+      { label: "https://u:t@host/p?token=x", address: "other.example.com", user: "root" }, // gitleaks:allow
+      generated,
+    ).id;
+    grantedSshHostIds = [prod, pasted];
+
+    expect(Object.keys(await itemDisplays("integrations.sshHosts[].address"))).toEqual(["prod"]);
   });
 });
 

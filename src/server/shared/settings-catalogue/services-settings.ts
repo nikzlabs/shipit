@@ -48,7 +48,9 @@ export const SERVICES_SETTINGS = {
       + "fallback sequence either way.",
     type: collection<string>({ operations: ["add", "remove", "reorder"], patchableFields: ["label"] }),
     store: { kind: "bespoke", ownedBy: "credential routes (PUT /api/credential-routes/:service/:mode/order)" },
-    emits: derived("the credential ids, in the order they are tried", idsOnly),
+    emits: derived("the credential ids, in the order they are tried", idsOnly, {
+      shipItComputed: "An id is generated when a credential is added; the label beside it is the user's own text and is emitted by `services.credentials[].label`, which is marked as such.",
+    }),
     propose: { kind: "yes" },
   }),
 
@@ -191,7 +193,9 @@ export const SERVICES_SETTINGS = {
       + "Connecting one is the provider's own sign-in; the order and a disconnect are not.",
     type: collection<string>({ operations: ["disconnect", "reorder"], patchableFields: ["label"] }),
     store: { kind: "bespoke", ownedBy: "provider accounts (PUT /api/provider-accounts/:provider/order)" },
-    emits: derived("the account ids, in the order they are tried", idsOnly),
+    emits: derived("the account ids, in the order they are tried", idsOnly, {
+      shipItComputed: "An account id comes from the provider's own sign-in; the label beside it is the user's own text and is emitted by `services.providerAccounts[].label`, which is marked as such.",
+    }),
     propose: { kind: "yes" },
   }),
 } as const satisfies Record<string, AnySettingDeclaration>;

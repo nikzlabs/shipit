@@ -29,7 +29,8 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { CopyButton } from "./ui/copy-button.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { bindSetting } from "./Settings/declared.js";
+import { bindSetting, settingCopy } from "./Settings/declared.js";
+import type { SettingKey } from "../../server/shared/settings-catalogue/index.js";
 import type { SshHostPublic } from "../../server/shared/types.js";
 
 const FIELD_CLASS =
@@ -47,9 +48,74 @@ interface HostForm {
 const EMPTY_FORM: HostForm = { label: "", address: "", user: "", port: "22" };
 
 /**
+ * One box of the destination form, **bound to its own declaration and carrying
+ * that declaration's words** (docs/299-agent-settings-access req 7, plan.md →
+ * Bespoke panels declare per field). One binding for the whole form would be the
+ * loophole one entry per panel leaves open, so each box names the field it
+ * writes.
+ *
+ * Every box is plain text, the port included: `type="number"` reads back `""`
+ * for anything that is not a number, so `abc` would be sent as an empty port and
+ * coerced to 22 — a silent move of the destination, and on an edit one that also
+ * forgets the key recorded for the port it really had.
+ */
+function SshField({
+  settingKey,
+  value,
+  onChange,
+  placeholder,
+  disabled,
+}: {
+  settingKey: SettingKey;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  disabled: boolean;
+}) {
+  const { label, description } = settingCopy(settingKey);
+  const describedBy = `${settingKey}-description`;
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs text-(--color-text-secondary)" data-setting-label={settingKey}>
+        {label}
+      </span>
+      <span
+        id={describedBy}
+        className="text-[11px] text-(--color-text-tertiary)"
+        data-setting-description={settingKey}
+      >
+        {description}
+      </span>
+      <input
+        className={FIELD_CLASS}
+        placeholder={placeholder}
+        disabled={disabled}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        /*
+          The declaration's label is the accessible NAME and its description is
+          a description, rather than both running together into the name — which
+          is what a wrapping `<label>` alone produces once there is help text in
+          it, and what left `getByLabelText("Address")` with nothing to find.
+        */
+        aria-label={label}
+        aria-describedby={describedBy}
+        {...bindSetting(settingKey)}
+      />
+    </label>
+  );
+}
+
+/**
  * The same four fields for a new destination and for an edit, so both validate
- * alike. Disabled while a save is in flight: an edit typed after the request left
- * is not in it, and the reset on success would drop it without a trace.
+ * alike — and so both carry the declarations, which is why the boxes live in one
+ * component rather than two. Disabled while a save is in flight: an edit typed
+ * after the request left is not in it, and the reset on success would drop it
+ * without a trace.
+ *
+ * One column, not two: each box now renders its declaration's description under
+ * its label, which a two-column grid squeezes — and the edit form sits inside a
+ * destination row, which is narrower still.
  */
 function HostFields({
   form,
@@ -61,38 +127,34 @@ function HostFields({
   disabled: boolean;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2">
-      <input
-        className={FIELD_CLASS}
-        placeholder="Name (e.g. prod)"
-        aria-label="Name"
+    <div className="flex flex-col gap-3">
+      <SshField
+        settingKey="integrations.sshHosts[].label"
+        placeholder="prod"
         disabled={disabled}
         value={form.label}
-        onChange={(e) => onChange({ ...form, label: e.target.value })}
+        onChange={(label) => onChange({ ...form, label })}
       />
-      <input
-        className={FIELD_CLASS}
-        placeholder="Hostname or IP"
-        aria-label="Address"
+      <SshField
+        settingKey="integrations.sshHosts[].address"
+        placeholder="prod.example.com"
         disabled={disabled}
         value={form.address}
-        onChange={(e) => onChange({ ...form, address: e.target.value })}
+        onChange={(address) => onChange({ ...form, address })}
       />
-      <input
-        className={FIELD_CLASS}
-        placeholder="User"
-        aria-label="User"
+      <SshField
+        settingKey="integrations.sshHosts[].user"
+        placeholder="deploy"
         disabled={disabled}
         value={form.user}
-        onChange={(e) => onChange({ ...form, user: e.target.value })}
+        onChange={(user) => onChange({ ...form, user })}
       />
-      <input
-        className={FIELD_CLASS}
-        placeholder="Port"
-        aria-label="Port"
+      <SshField
+        settingKey="integrations.sshHosts[].port"
+        placeholder="22"
         disabled={disabled}
         value={form.port}
-        onChange={(e) => onChange({ ...form, port: e.target.value })}
+        onChange={(port) => onChange({ ...form, port })}
       />
     </div>
   );
