@@ -329,7 +329,7 @@ export function createRunnerRegistry(
               ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
               ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
               deps: {
-                credentialsDir, credentialStore, sessionManager, chatHistoryManager,
+                credentialsDir, credentialStore, sessionManager, chatHistoryManager, sseBroadcast,
                 ...(providerAccountManager ? { providerAccountManager } : {}),
                 ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
               },

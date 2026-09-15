@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { ActionChecklistItem, OfferedAction, SessionStatus } from "../../shared/types.js";
 import type { ValidatedSessionStatus } from "../../shared/session-status-validation.js";
 import type { SessionManager } from "../sessions.js";
+import { loadPrompt, fillPromptTokens } from "../load-prompt.js";
+
+const STATUS_NUDGE_PROMPT = loadPrompt(import.meta.url, "../prompts/status-card-nudge.md");
 
 export interface SessionStatusDeps {
   sessionManager: Pick<SessionManager, "get" | "list" | "setSessionStatus" | "sessionIdsWithStatus">;
@@ -191,6 +194,25 @@ export function takeOfferedActions(
 }
 
 /**
+ * Conversation reset, rewind and the two recovery paths that discard the agent's thread.
+ *
+ * docs/303 — the card is kept and marked stale rather than cleared: after a rewind it may
+ * describe work that is gone, and "Stale" is how it says so. The mark itself lives in
+ * `clearAgentSessionId`, beside the goal's clear, so no caller can forget it; this wraps it
+ * with the broadcast, so viewers never keep a card that reads current.
+ */
+export function clearConversationThread(
+  deps: {
+    sessionManager: Pick<SessionManager, "clearAgentSessionId" | "list">;
+    sseBroadcast?: (event: string, data: unknown) => void;
+  },
+  sessionId: string,
+): void {
+  if (!deps.sessionManager.clearAgentSessionId(sessionId)) return;
+  deps.sseBroadcast?.("session_list", { sessions: deps.sessionManager.list() });
+}
+
+/**
  * docs/303 — what a settling turn knew about itself, taken before its drain step: the
  * drained successor resets the runner state these three come from, and it starts before
  * the network post-turn work and `idle`.
@@ -235,22 +257,18 @@ export function shouldNudgeForStatusCard(
 }
 
 /**
- * The nudge's own prompt (req 12). It is a visible turn, so it opens with `[ShipIt]`, and
- * it lists the offers because the agent must be able to keep or replace them knowingly.
+ * The nudge's own prompt (req 12). The offer list is composed here; the prose is the
+ * `.md` above, loaded once at module load, per the `prompt-architecture` skill.
  */
 export function statusNudgePrompt(card: SessionStatus | undefined): string {
   const offers = card?.actions ?? [];
+  // The agent has to see the taken state to keep or replace an offer knowingly (req 17).
   const list = offers.length === 0
     ? "The card offers no actions at the moment."
     : ["The card currently offers:", ...offers.map(
       (offer) => `- ${offer.label}${offer.takenAt ? " (already taken)" : ""}`,
     )].join("\n");
-  return [
-    "[ShipIt] The last turn ended without a status-card update, so the card is marked stale.",
-    list,
-    "Call `session_status` once, and do nothing else this turn: pass the fields that changed, "
-    + "or call it with no arguments to confirm the card exactly as it stands.",
-  ].join("\n\n");
+  return fillPromptTokens(STATUS_NUDGE_PROMPT, { OFFERS: list }).trim();
 }
 
 /**

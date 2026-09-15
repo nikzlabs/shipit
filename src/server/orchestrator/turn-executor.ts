@@ -40,6 +40,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
 import { resetRunnerTurnState } from "./session-runner.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import {
+  clearConversationThread,
   markSessionStatusStale,
   shouldNudgeForStatusCard,
   statusNudgePrompt,
@@ -414,7 +415,7 @@ export async function executeAgentTurn(
     const current = deps.listenerDeps.sessionManager.get(sessionId)?.agentSessionId;
     if (current !== invalidId) return false;
     automaticRecoveryInProgress = true;
-    deps.listenerDeps.sessionManager.clearAgentSessionId(sessionId);
+    clearConversationThread(deps.listenerDeps, sessionId);
     if (runner) {
       const partial = buildTurnMessages(
         runner.chatMessageGroups,
@@ -634,7 +635,9 @@ export async function executeAgentTurn(
   let sawOwnResult = false;
 
   // ---- docs/303 — status-card settlement (req 11–15) ----
-  const statusCardOn = deps.statusCardEnabled?.() ?? false;
+  // Read at each use, never captured: the user can turn the setting off mid-turn, and the
+  // nudge must not then start a turn asking for a tool the agent no longer has (req 21).
+  const statusCardOn = (): boolean => deps.statusCardEnabled?.() ?? false;
   const statusDeps: SessionStatusDeps = {
     sessionManager: deps.listenerDeps.sessionManager,
     sseBroadcast: deps.listenerDeps.sseBroadcast,
@@ -643,18 +646,14 @@ export async function executeAgentTurn(
 
   let turnFacts: TurnStatusFacts | null = null;
   /**
-   * First thing on every terminal path, BEFORE its drain: the drained successor resets
-   * `statusUpdated` and `wasInterrupted`, and starts before the network post-turn work.
-   * The stale mark is immediate, so the card never reads as current between a missing
-   * update and the end of that flow; its `writeSeq` guard makes it a no-op once a later
-   * turn has written.
-   *
-   * It CANNOT throw. Its call sites are the head of the terminal sequence, before the
-   * hold and outside `postTurnStep`, so a throw here would abandon the drain and the
-   * commit behind it (invariant 3) — and the status read it makes touches SQLite.
+   * Taken before the drain, because the drained successor resets the runner state these
+   * read (docs/303 plan.md → Turn settlement). It CANNOT throw: its call sites are the
+   * head of the terminal sequence, before the hold and outside `postTurnStep`, so a throw
+   * would abandon the commit behind it (invariant 3), and the status read touches SQLite.
    */
   const settleTurnFacts = (): TurnStatusFacts => {
     if (turnFacts) return turnFacts;
+    const cardOn = statusCardOn();
     const facts: TurnStatusFacts = {
       statusUpdated: runner?.statusUpdated ?? false,
       wasInterrupted: runner?.wasInterrupted ?? false,
@@ -668,12 +667,12 @@ export async function executeAgentTurn(
     };
     try {
       // Nothing to read while the feature is off, and nothing will be decided from it.
-      if (statusCardOn) facts.writeSeq = storedStatus()?.writeSeq ?? 0;
+      if (cardOn) facts.writeSeq = storedStatus()?.writeSeq ?? 0;
     } catch (err) {
       console.error(`[turn] reading the status card for ${sessionId} failed:`, err);
     }
     turnFacts = facts;
-    if (statusCardOn && !facts.silent && !facts.statusUpdated) {
+    if (cardOn && !facts.silent && !facts.statusUpdated) {
       void markSessionStatusStale(statusDeps, sessionId, facts.writeSeq).catch((err: unknown) => {
         console.error(`[turn] marking the status card stale for ${sessionId} failed:`, err);
       });
@@ -689,7 +688,7 @@ export async function executeAgentTurn(
   const decideStatusNudge = (): void => {
     if (nudgeDecided) return;
     nudgeDecided = true;
-    if (!statusCardOn || !runner) return;
+    if (!statusCardOn() || !runner) return;
     nudgePending = shouldNudgeForStatusCard(
       settleTurnFacts(),
       storedStatus(),
@@ -699,6 +698,9 @@ export async function executeAgentTurn(
 
   const dispatchStatusNudge = (): void => {
     if (!nudgePending || nudgeDispatched || !runner || runner.disposed) return;
+    // Re-read rather than trust the decision: a setting turned off since then takes the
+    // tool with it, and the turn would ask for something the agent cannot call.
+    if (!statusCardOn()) return;
     // Re-checked here, not only at the decision: the deferral is about the session's
     // state when the nudge would start, and that turn is checked afresh when it ends.
     if (runner.running || runner.systemTurnInProgress || runner.mergeHold) return;
@@ -1222,8 +1224,13 @@ export async function executeAgentTurn(
       }
 
       if (useStreaming) {
-        // Crash paths need a commit even with no queued turn and no agent_result.
-        if (runner) runner.running = false;
+        // Crash paths need a commit even with no queued turn and no agent_result. Only
+        // while this turn still owns the runner, though: a successor started during this
+        // turn's post-turn sequence — a drained entry, or the docs/303 status nudge — has
+        // already claimed `running`, and clearing it here reports that live turn as idle
+        // and lets the enforcer reclaim its runner (invariant 5). `tryDrain` below has
+        // carried the same guard all along.
+        if (runner && turnIsCurrent()) runner.running = false;
         await postTurnStep("drain", tryDrain);
         await postTurnStep("finished-sse", broadcastFinishedIfIdle);
         await postTurnStep("commit", runCommitAndPr);

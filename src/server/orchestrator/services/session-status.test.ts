@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  clearConversationThread,
   markAllSessionStatusesStale,
   markSessionStatusStale,
   recordSessionStatus,
@@ -368,6 +369,40 @@ describe("runStatusExclusive", () => {
       status: "Ready to merge.",
       fresh: true,
     });
+  });
+});
+
+describe("clearConversationThread", () => {
+  it("marks the card stale and tells viewers, once", async () => {
+    const { d } = await seededCard();
+    const cleared = { calls: 0 };
+    const sessions = {
+      clearAgentSessionId: () => {
+        cleared.calls += 1;
+        const stored = d.sessionManager.get("s1")!.sessionStatus!;
+        if (!stored.fresh) return false;
+        d.sessionManager.setSessionStatus("s1", { ...stored, fresh: false });
+        return true;
+      },
+      list: () => [],
+    };
+    const deps = { sessionManager: sessions as never, sseBroadcast: vi.fn() };
+
+    clearConversationThread(deps, "s1");
+    expect(d.sessionManager.get("s1")!.sessionStatus!.fresh).toBe(false);
+    expect(deps.sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [] });
+
+    // An already-stale card is not a change, so viewers are not told again.
+    clearConversationThread(deps, "s1");
+    expect(cleared.calls).toBe(2);
+    expect(deps.sseBroadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the thread even where no broadcast is wired", () => {
+    const cleared: string[] = [];
+    const sessions = { clearAgentSessionId: (id: string) => { cleared.push(id); return true; }, list: () => [] };
+    clearConversationThread({ sessionManager: sessions as never }, "s1");
+    expect(cleared).toEqual(["s1"]);
   });
 });
 

@@ -151,7 +151,12 @@ an orchestrator restart show the same card with no extra request.
   lives inside `SessionManager.clearAgentSessionId`, beside the goal's clear,
   because that one method is what every reset and rewind reaches — nine call
   sites, of which a shared helper would only be remembered by some. It returns
-  whether the card changed, and `rollback-handlers.ts` broadcasts on that.
+  whether the card changed, and `clearConversationThread`
+  (`services/session-status.ts`) pairs that with the `session_list` broadcast,
+  so a viewer cannot keep a card that reads current. The two recovery paths that
+  discard a thread — `recoverMissingConversation` and the credential-repair
+  `onRecover` — go through it too; `SessionAgentEnvDeps` gained an optional
+  `sseBroadcast` for the second.
 - Fork (`forkSession`, `session-fork-merge.ts`): copy the parent's card,
   marked stale. It is the fork's starting point.
 - Archive: the row keeps the column; restore brings the card back.
@@ -229,7 +234,17 @@ background work a system turn would destroy. The nudge is a dispatched system tu
 the reply follows, the post-turn flow runs as for any turn (req 12). The
 prompt opens with `[ShipIt]`, says the last turn ended without a status
 update, lists the current offers with their taken state, and asks for one
-`session_status` call and nothing else — a bare one if nothing changed.
+`session_status` call and nothing else — a bare one if nothing changed. Its
+prose is `prompts/status-card-nudge.md`, loaded once at module load, with only
+the offer list composed in TypeScript.
+
+**And the nudge is a successor like any other.** It starts inside the
+predecessor's post-turn sequence and, being a system turn, replaces the resident
+process — so that process's own late `done` must not clear `runner.running`,
+which by then belongs to the nudge. The streaming `done` branch now carries the
+`turnIsCurrent()` guard `tryDrain` beside it always had; without it the live
+turn read as idle and its runner was reclaimable (invariant 5). Any successor
+drained during a streaming turn's post-turn had the same exposure.
 
 **Identity.** `statusNudge: true` is a typed dispatch option on
 `AgentDispatchOptions`, added to `AgentDispatchInit` and
@@ -244,7 +259,9 @@ which was not forwarded before.
 (`credentialStore.getSessionStatusCard()`, wired in `runner-registry-factory.ts`
 and `ws-handlers/agent-execution.ts`). With the setting off, neither the
 freshness mark nor the decision runs, so a session that never had a card is
-never asked for one.
+never asked for one. It is read at each use rather than captured at turn start:
+the setting takes the tool with it, and a nudge decided while it was on must not
+start a turn asking for something the agent can no longer call.
 
 **Bound (req 15).** The step says no for a turn whose snapshot has
 `statusNudge`. An ignored nudge leaves the card stale; the next ordinary turn

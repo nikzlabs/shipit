@@ -36,6 +36,7 @@ import {
   linkAgentHomeToCredentials,
 } from "./local-agent-credentials.js";
 import { provisionSessionSshFromGrant } from "./ssh-provision.js";
+import { clearConversationThread } from "./services/session-status.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { agentHome, codexHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
@@ -107,6 +108,8 @@ export interface SessionAgentEnvDeps {
   providerAccountManager?: ProviderAccountManager;
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
   chatHistoryManager?: Pick<ChatHistoryManager, "load" | "replaceInProgress" | "append">;
+  /** Optional: without it a discarded conversation still marks the card stale, unannounced. */
+  sseBroadcast?: (event: string, data: unknown) => void;
 }
 
 // Run-parameter construction consumes this replay in the same turn.
@@ -476,7 +479,7 @@ export async function prepareSessionAgentEnvironment(
           overrideAgentSessionId = null;
           if (current) {
             console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable conversation found on disk)`);
-            deps.sessionManager.clearAgentSessionId(sessionId);
+            clearConversationThread(deps, sessionId);
             armConversationReplay(deps, sessionId);
           }
           return;

@@ -36,7 +36,7 @@ async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 5000)
 }
 
 function harness(opts: {
-  statusCardEnabled?: boolean;
+  statusCardEnabled?: boolean | (() => boolean);
   streaming?: boolean;
   card?: SessionStatus;
   /** Commit indices to park on, to observe what the terminal sequence has done before them. */
@@ -72,6 +72,8 @@ function harness(opts: {
   const agents: FakeAgent[] = [];
   const prompts: string[] = [];
   const emitted: { type: string; text?: string }[] = [];
+  const rows: { role: string; text: string }[] = [];
+  const appendRow = vi.fn((_id: string, row: { role: string; text: string }) => { rows.push(row); });
   const runner = new SessionRunner({
     sessionId: "s1",
     sessionDir: "/tmp/status-settlement",
@@ -101,14 +103,17 @@ function harness(opts: {
       return null;
     },
     scheduleAutoPush: vi.fn(),
-    statusCardEnabled: () => opts.statusCardEnabled ?? true,
+    statusCardEnabled: () =>
+      (typeof opts.statusCardEnabled === "function"
+        ? opts.statusCardEnabled()
+        : opts.statusCardEnabled) ?? true,
     ...(opts.streaming ? { steerInputs: () => ({ liveSteering: true, steeringCapable: true }) } : {}),
     listenerDeps: {
       sessionManager: sessionManager as never,
       chatHistoryManager: {
         replaceInProgress: vi.fn(),
         finalizeInProgress: vi.fn(),
-        append: vi.fn(),
+        append: appendRow,
         updateLastMessage: vi.fn().mockReturnValue(null),
         indexOfMessageId: vi.fn().mockReturnValue(-1),
       } as never,
@@ -142,6 +147,7 @@ function harness(opts: {
     agents,
     prompts,
     emitted,
+    rows,
     state,
     parkedOn: (index: number) => state.entered.includes(index) && state.commits === index,
     releaseCommit: (index = 0) => gateFor(index).release(),
@@ -339,6 +345,24 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     h.runner.dispose({ force: true });
   });
 
+  // The setting takes the tool with it, so a nudge decided while it was on must not start
+  // a turn asking for something the agent can no longer call (req 21).
+  it("does not start the nudge when the setting is turned off mid-turn", async () => {
+    const enabled = { value: true };
+    const h = harness({ card: { ...seeded }, statusCardEnabled: () => enabled.value });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    enabled.value = false;
+    h.agents[0]!.emit("done", 0);
+    await waitFor(() => !h.runner.running, "turn finished");
+    await flush();
+
+    expect(h.agents).toHaveLength(1);
+    expect(h.nudges()).toHaveLength(0);
+  });
+
   it("does not nudge a driver-owned turn (postTurn: none)", async () => {
     const h = harness({ card: { ...seeded } });
 
@@ -396,10 +420,13 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     finishTurn(h.agents[0]!);
     await waitFor(() => h.agents.length === 2, "the nudge turn started");
 
-    const row = h.emitted.find(
+    expect(h.emitted.some(
       (m) => m.type === "system_user_message" && m.text?.startsWith("[ShipIt] The last turn ended"),
-    );
-    expect(row).toBeDefined();
+    )).toBe(true);
+    // And persisted, so a reload still shows why the follow-up turn happened.
+    expect(h.rows.some(
+      (r) => r.role === "user" && r.text.startsWith("[ShipIt] The last turn ended"),
+    )).toBe(true);
 
     finishTurn(h.agents[1]!);
     await waitFor(() => !h.runner.running, "the nudge turn finished");
@@ -456,6 +483,26 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
 
     h.releaseCommit(1);
     await waitFor(() => !h.runner.running, "the adopted turn finished");
+    h.runner.dispose({ force: true });
+  });
+
+  // Invariant 5: the nudge starts inside the predecessor's post-turn sequence and replaces
+  // the resident process, so that process's own late exit must not report the live turn idle.
+  it("a predecessor's late exit does not disown the live nudge turn", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    expect(h.runner.running).toBe(true);
+
+    h.agents[0]!.emit("done", 0);
+    await flush();
+    await flush();
+
+    expect(h.runner.running, "the nudge still owns the runner").toBe(true);
+    expect(h.runner.agentBusy, "the runner is not reclaimable").toBe(true);
     h.runner.dispose({ force: true });
   });
 

@@ -550,6 +550,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
           chatHistoryManager: ctx.chatHistoryManager,
+          sseBroadcast: ctx.sseBroadcast,
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
       });
