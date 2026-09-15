@@ -169,12 +169,19 @@ export async function executeAgentTurn(
   */
   let ownTurn: "unsubmitted" | "queued" | "running" | "ended" = "unsubmitted";
   let cliTurnPending = false;
+  let resultsObserved = 0;
 
-  // Submitting makes this prompt the running turn, unless the CLI is in one of
-  // its own: then it waits behind that, and a result is owed to that turn first.
-  const noteSubmissionAccepted = (): void => {
+  /**
+   * Submitting makes this prompt the running turn only when nothing else can
+   * have taken that place: no turn of the CLI's own is pending, and no result
+   * has passed since the submission was made. A result in that window may have
+   * ended a turn this prompt was folded into, so the prompt waits rather than
+   * claiming the CLI's attention — which is what stops a later turn's result
+   * from reaching its receipt.
+   */
+  const noteSubmissionAccepted = (resultsIntervened: boolean): void => {
     if (ownTurn !== "unsubmitted") return;
-    ownTurn = cliTurnPending ? "queued" : "running";
+    ownTurn = cliTurnPending || resultsIntervened ? "queued" : "running";
   };
 
   const noteSubmitted = (): void => {
@@ -182,31 +189,37 @@ export async function executeAgentTurn(
     // A synchronous submission has landed when the call returns; a proxied one
     // has not, and a resident CLI can finish a turn of its own in that window.
     if (!settled) {
-      noteSubmissionAccepted();
+      noteSubmissionAccepted(false);
       return;
     }
+    const resultsAtSubmission = resultsObserved;
     void (async () => {
       try {
         await settled;
-        noteSubmissionAccepted();
+        noteSubmissionAccepted(resultsObserved !== resultsAtSubmission);
       } catch {
         // The submission failed; the adapter's error path owns the turn.
       }
     })();
   };
 
-  // The two events ShipIt already reads as a turn the CLI began for itself, the
-  // ones `beginRearm` answers to. Only a process this prompt did not spawn can
-  // be in one: a fresh spawn exists for this prompt alone, and its first output
-  // can race the proxied submission. And a signal reaching an executor whose own
-  // turn is RUNNING is part of that turn — a finished background task, a late
-  // assistant block — not a turn of its own. Merely awaiting a result is not
-  // enough: after a turn the CLI started ends, whether this prompt went into it
-  // is exactly what is unknown, so a further wake is recorded rather than
-  // assumed away.
-  const noteCliStartedTurn = (): void => {
+  /**
+   * The two events ShipIt already reads as a turn the CLI began for itself, the
+   * ones `beginRearm` answers to — but they do not prove the same thing, so they
+   * are not read the same way. A **wake** is the CLI saying it resumed work of
+   * its own, and counts unless this prompt is the turn already running (a
+   * finished background task notifies mid-turn). Top-level **output** only
+   * announces a turn whose start went unseen, so it counts only before this
+   * prompt was submitted: once the prompt is waiting its turn, its own output
+   * looks exactly the same, and reading that as the CLI's would leave a prompt
+   * the agent read perfectly well unable to acknowledge at all.
+   *
+   * Neither is read on a process this prompt spawned: it exists for this prompt
+   * alone, and its first output can race the proxied submission.
+   */
+  const noteCliStartedTurn = (signal: "wake" | "output"): void => {
     if (input.reuseExistingAgent !== true) return;
-    if (ownTurn === "running") return;
+    if (signal === "output" ? ownTurn !== "unsubmitted" : ownTurn === "running") return;
     cliTurnPending = true;
   };
 
@@ -1130,7 +1143,7 @@ export async function executeAgentTurn(
 
   agent.on("event", async (event: AgentEvent) => {
     if (event.type === "agent_self_wake") {
-      noteCliStartedTurn();
+      noteCliStartedTurn("wake");
       await beginRearm("self-wake");
       return;
     }
@@ -1141,7 +1154,7 @@ export async function executeAgentTurn(
     if (event.type === "agent_assistant") {
       if (!adoptsCliStartedTurns) return;
       if (!event.parentToolUseId) {
-        noteCliStartedTurn();
+        noteCliStartedTurn("output");
         await beginRearm("cli-started turn");
       }
       return;
@@ -1149,11 +1162,14 @@ export async function executeAgentTurn(
     if (event.type !== "agent_result") return;
     // Capture before an await lets adoption reset the live summary.
     if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
+    // Which turn this result ends is decided by the order events arrived in, so
+    // it is taken BEFORE yielding: the await below can span a replay or a wake,
+    // and a result must not answer a turn that began while it was waiting.
+    resultsObserved += 1;
+    const answersThisPrompt = takeResultAttribution();
     if (rearmInFlight) await rearmInFlight;
     receivedResult = true;
     sawOwnResult = true;
-    // Taken before any early return below: a result ends one turn either way.
-    const answersThisPrompt = takeResultAttribution();
     runner?.emit("turn_result", { compact: input.compact === true });
     // Claude can report quota exhaustion as successful final text, without event.error.
     const exhausted = event.error

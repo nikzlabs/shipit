@@ -1641,16 +1641,23 @@ land after the result it confirms, and re-arming the prompt there would hand its
 receipt to whatever the CLI does next.
 
 A turn the CLI began is the two events `beginRearm` already answers to —
-`agent_self_wake`, and a top-level `agent_assistant` on a harness that
-`startsOwnTurns` — read under two conditions (`noteCliStartedTurn`): only on a
-**reused** process, because a spawn exists for this prompt alone and its first
-output can beat the proxied submission's confirmation; and only while this
-prompt's turn is `"running"`, because a finished background task notifies
-mid-turn and a late assistant block belongs to the turn already running.
-`"queued"` deliberately does not suppress it. Once a turn the CLI started has
-ended, whether this prompt went into it is exactly what is unknown — so a further
-wake is recorded as a turn of its own rather than assumed to be part of one, and
-its result cannot reach a receipt two turns behind it.
+`agent_self_wake` and a top-level `agent_assistant` on a harness that
+`startsOwnTurns` — but they do not prove the same thing, so `noteCliStartedTurn`
+does not read them the same way. A **wake** is the CLI saying it resumed work of
+its own, and counts unless this prompt is the turn already `"running"`, since a
+finished background task notifies mid-turn. `"queued"` deliberately does not
+suppress it: once a turn the CLI started has ended, whether this prompt went into
+it is exactly what is unknown, so a further wake is recorded as a turn in its own
+right rather than assumed to be part of one, and its result cannot reach a
+receipt two turns behind it.
+
+Top-level **output** proves less — it only announces a turn whose start went
+unseen — so it counts only from `"unsubmitted"`. A prompt waiting its turn
+produces output that looks exactly the same, and an earlier version read that as
+the CLI's: the prompt then consumed a CLI turn on every assistant block and could
+never acknowledge at all, which is the reminder req 8's second clause exists to
+prevent. Neither signal is read on a process this prompt spawned: it exists for
+this prompt alone, and its first output can beat the proxied submission.
 
 **This replaces two state flags that the same defect defeated in opposite
 directions, which is why it is a record of turns rather than a third flag.**
@@ -1674,13 +1681,14 @@ said the executor was serving an adopted turn right now:
 (`isReplay` on Claude, synthesized by Codex — docs/140, the same signal
 `agent-listeners.ts` reads to mark a steer delivered). A replay of this prompt's
 exact text means the CLI read it inside the turn now running, so it clears
-`cliTurnPending` and sets `ownTurnPending`. That is what keeps the common case
+`cliTurnPending` and makes the prompt `"running"`. That is what keeps the common case
 whole: a prompt steered into a turn the CLI had already woken for is absorbed by
 it, and the single result that ends that turn acknowledges the notice instead of
 withholding one the agent read perfectly well.
 
-**What is left is a delay, never a loss** — see *A notice can be delayed by a
-turn* under the limitations below.
+**What is left is bounded by what ShipIt can see the CLI start** — see *The carry
+holds against every turn ShipIt can see the CLI start* under the limitations
+below.
 
 `submissionSettled()` is what makes leaving `"unsubmitted"` mean the prompt was
 *accepted*, and it took two review rounds to get right. The executor's listeners
@@ -1792,18 +1800,26 @@ turn's own post-turn commit instead.
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
 
-**A notice can be delayed by a turn, and cannot be lost by one.** One shape is
-left undecidable, and it is bounded: the CLI absorbs a prompt steered into a turn
-it had already woken for, one result covers both, and the harness sends no
-replay to say so. `agent_user_replay` answers it on Claude and Codex — the only
-two harnesses that steer at all, so the only two that can reach this shape — and
-where a replay is missing the result is attributed to the woken turn, the receipt
-stays live, and the notice rides the next turn. Requirement 8's first clause
-holds unconditionally; its second can cost one repeat, in a window that needs a
-wake inside the dispatch's `prepareAgentEnv`, absorption rather than queueing,
-and no replay. The earlier trade ran the other way — the notice was **lost**
-whenever that dispatched turn then failed — and the direction of this one is the
-design's throughout: hold the notice back rather than assume delivery.
+**The carry holds against every turn ShipIt can see the CLI start, and that is
+the honest bound.** Two shapes are left, and they sit on opposite sides.
+
+A notice can be **delayed** by a turn: the CLI absorbs a prompt steered into a
+turn it had already woken for, one result covers both, and no replay says so.
+`agent_user_replay` answers that on Claude and Codex — the only two harnesses
+that steer at all, so the only two that can reach it — and without a replay the
+result is attributed to the woken turn, the receipt stays live, and the notice
+rides the next turn. A repeat, never a loss, and the safe direction.
+
+A notice can still be **lost** to a turn the CLI starts with no wake and no
+output of its own to distinguish it: a prompt sitting `"queued"` cannot tell that
+turn's result from its own, so the result answers the prompt and the receipt is
+spent. Every announced start is covered — that is what the wake rule is — and
+this is the residue of reading output as the prompt's rather than the CLI's,
+which is the trade that stops a queued prompt from never acknowledging at all.
+Both halves of it cannot be had at once without an identity on `agent_result`,
+and the harnesses do not put one there. The earlier trade lost the notice on a
+far commoner shape — any dispatched turn that failed after a wake — so this is
+narrower, but it is not nothing and it is not claimed away.
 
 Duplicates remain possible by design: a turn that ran and was interrupted, and a
 turn queued behind one that has not yet acknowledged, both carry the notice
