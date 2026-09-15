@@ -16,6 +16,7 @@ import {
   projectSetting,
   refusalSentence,
   renderAddress,
+  renderLine,
   renderOwn,
   renderValue,
 } from "../../shared/settings-catalogue/index.js";
@@ -977,7 +978,10 @@ function itemsDisplay(addresses: Rendered[]): Rendered {
   const shown = addresses.slice(0, ADDRESSES_IN_INDEX);
   const rest = addresses.length - shown.length;
   const more = rest > 0 ? `, … (+${rest} more)` : "";
-  return renderOwn(
+  // `renderLine`, not `renderOwn`: an address is emitted BARE for the agent to
+  // pass back to `--item`, and collapsing runs of space would print one it
+  // cannot address (planning#537).
+  return renderLine(
     `${addresses.length} item${addresses.length === 1 ? "" : "s"}: ${joinRendered(shown)}${more}`,
   );
 }

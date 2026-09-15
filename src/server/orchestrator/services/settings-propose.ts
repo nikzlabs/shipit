@@ -5,6 +5,7 @@ import {
   joinRendered,
   projectSetting,
   refusalSentence,
+  renderLine,
   renderOwn,
   renderValue,
 } from "../../shared/settings-catalogue/index.js";
@@ -70,8 +71,16 @@ import { ServiceError } from "./types.js";
  * breadcrumb, `from` and `to` — comes from the registry and from this read.
  */
 
-/** A refusal the agent reads, never a failure: nothing was written. */
-function refuse(message: string): never {
+/**
+ * A refusal the agent reads, never a failure: nothing was written.
+ *
+ * {@link Rendered} rather than rendering here, because a refusal names the key,
+ * the address and the value the call carried, and each of those has a mint that
+ * says what it is — quoting a stored value, flattening ShipIt's own prose. A
+ * `renderOwn` inside this function would take all of them undifferentiated, and
+ * leave the next message free to be written with no mint at all (planning#537).
+ */
+function refuse(message: Rendered): never {
   throw new ServiceError(400, message);
 }
 
@@ -166,12 +175,15 @@ function resolveTarget(
   if (!declaration) {
     throw new ServiceError(
       404,
-      `No ShipIt setting is called "${echoSupplied(input.key)}". List them with \`shipit settings list\`.`,
+      renderLine(
+        `No ShipIt setting is called "${echoSupplied(input.key)}". `
+          + "List them with `shipit settings list`.",
+      ),
     );
   }
   if (declaration.propose.kind === "no") {
     const { reason } = declaration.propose;
-    refuse(`${declaration.key} cannot be changed on your behalf (${reason}). ${refusalSentence(reason)}`);
+    refuse(renderOwn(`${declaration.key} cannot be changed on your behalf (${reason}). ${refusalSentence(reason)}`));
   }
   const kind = input.operation ?? "set";
   const operation = findOperation(declaration, kind);
@@ -183,16 +195,16 @@ function resolveTarget(
     // replaced).
     const fields = available.length === 0 ? proposableFieldsOf(declaration.key) : [];
     if (fields.length > 0) {
-      refuse(
+      refuse(renderOwn(
         `${declaration.key} is the whole list, and a proposal changes one entry of it. Propose `
           + `${fields.join(" or ")} instead, naming the entry with --item.`,
-      );
+      ));
     }
     const alternatives = available.length > 0 ? `; it can ${available.join(" and ")} this setting` : "";
-    refuse(
+    refuse(renderOwn(
       `ShipIt cannot ${kind} ${declaration.key} from a proposal card yet${alternatives}. `
         + "Tell the user which setting it is, what it is set to, and what it has to become.",
-    );
+    ));
   }
 
   const itemAddressed = declaration.address?.kind === "item"
@@ -205,13 +217,13 @@ function resolveTarget(
     const noun = declaration.address && "noun" in declaration.address
       ? declaration.address.noun
       : "the entry";
-    refuse(
+    refuse(renderOwn(
       `${declaration.key} exists once per item, so a proposal has to name which: pass --item with `
         + `${noun}. \`shipit settings get ${declaration.key}\` lists the ones that exist.`,
-    );
+    ));
   }
   if (!needsItem && supplied) {
-    refuse(`${declaration.key} exists once, so there is no item to name.`);
+    refuse(renderOwn(`${declaration.key} exists once, so there is no item to name.`));
   }
   const item = supplied && operation.normalizeItem ? operation.normalizeItem(supplied) : supplied;
 
@@ -219,10 +231,10 @@ function resolveTarget(
   if (declaration.scope === "project" || addressesARepository(declaration.address)) {
     repoUrl = deps.read.sessionManager.get(sessionId)?.remoteUrl || undefined;
     if (!repoUrl) {
-      refuse(
+      refuse(renderOwn(
         `${declaration.key} is a per-repository setting and this session binds no repository, so `
           + "there is nothing to change it on.",
-      );
+      ));
     }
   }
 
@@ -262,10 +274,10 @@ async function readCurrent(
 ): Promise<CurrentValue> {
   const entry = await getSettingForAgent(deps.read, sessionId, declaration.key);
   if (!entry.readable) {
-    refuse(
+    refuse(renderOwn(
       `ShipIt cannot read ${declaration.key} right now (${entry.unreadableReason ?? "read_failed"}), `
         + "so a card cannot show what would change.",
-    );
+    ));
   }
   if (!target.item) return { display: entry.display, value: entry.value, entry };
   const item = entry.items?.find((candidate) => candidate.address === target.item);
@@ -292,11 +304,11 @@ function knownAddresses(entry: SettingDetailEntry): string {
 function requireDisplayable(declaration: AnySettingDeclaration, side: string, text: string): void {
   const unshowable = unshowableCharacter(text);
   if (!unshowable) return;
-  refuse(
+  refuse(renderOwn(
     `The ${side} value of ${declaration.key} contains ${unshowable}, so the card would show `
       + "something other than what Apply would write. It is not offered as one click; tell the "
       + "user what to change instead.",
-  );
+  ));
 }
 
 /**
@@ -310,11 +322,11 @@ function requireDisplayable(declaration: AnySettingDeclaration, side: string, te
  */
 function requireShowable(declaration: AnySettingDeclaration, side: string, text: Rendered): void {
   if (text.length <= CARD_VALUE_MAX) return;
-  refuse(
+  refuse(renderOwn(
     `The ${side} value of ${declaration.key} needs ${text.length} characters to show in full, and `
       + `a proposal card shows at most ${CARD_VALUE_MAX}. A change the user cannot check by looking `
       + "at the card is not offered as one click; tell them what to change instead.",
-  );
+  ));
 }
 
 /**
@@ -352,24 +364,24 @@ function showableChange(
     if (text.length > CARD_TEXT_MAX) {
       // Which side is over decides what the agent can do about it: a proposal it
       // wrote can be made smaller, and a value the user already has cannot.
-      refuse(
+      refuse(renderOwn(
         `The ${side} value of ${declaration.key} is ${text.length.toLocaleString("en-US")} `
           + `characters, and a proposal card carries at most ${CARD_TEXT_MAX.toLocaleString("en-US")} `
           + `of them. Past that the click is not an approval, ${side === "proposed"
             ? "so propose a smaller edit or tell the user what to change."
             : "and this is the value the user already has — this setting has to be edited by hand."}`,
-      );
+      ));
     }
   }
   const textChange = buildTextChange(before, after);
   const lines = textChange.before.lines + textChange.after.lines;
   if (lines > CARD_TEXT_LINES_MAX) {
-    refuse(
+    refuse(renderOwn(
       `The change to ${declaration.key} comes to ${lines.toLocaleString("en-US")} lines between the `
         + `two versions, and a proposal card carries at most `
         + `${CARD_TEXT_LINES_MAX.toLocaleString("en-US")}. Nobody checks that many before clicking; `
         + "tell the user what to change instead.",
-    );
+    ));
   }
   // The prose moves into the diff and out of `from`/`to`, which keep ShipIt's
   // own summary — what the collapsed line, `lastProposal` and the CLI's echo all
@@ -402,10 +414,10 @@ function requireEmittable(declaration: AnySettingDeclaration, value: unknown): v
   const shape = declaration.emits.kind === "user_name"
     ? " A name is letters, digits, spaces and . _ + ( ) [ ] - ; anything URL-shaped is named by nothing."
     : "";
-  refuse(
+  refuse(renderOwn(
     `ShipIt would not read that value back for ${declaration.key}, so a card would show the setting `
       + `becoming "not set" while the write stored something else.${shape}`,
-  );
+  ));
 }
 
 interface ProposedChange {
@@ -433,7 +445,7 @@ function membershipChange(
   // Both refusals say the same thing — the entry is already in the state this
   // operation would move it to — so both quote `to` and never `from`.
   if (present === (kind === "add")) {
-    refuse(`"${echoSupplied(target.item ?? "")}" is already ${wording.to}, so there is nothing to change.`);
+    refuse(renderLine(`"${echoSupplied(target.item ?? "")}" is already ${wording.to}, so there is nothing to change.`));
   }
   return {
     from: renderOwn(wording.from),
@@ -467,17 +479,17 @@ function valueChange(
   target: SettingsProposalTarget,
 ): ProposedChange {
   if (target.item && current.item === undefined) {
-    refuse(
+    refuse(renderLine(
       `${declaration.key} has no instance called "${echoSupplied(target.item)}". It exists for: `
         + `${knownAddresses(current.entry)}.`,
-    );
+    ));
   }
   requireEmittable(declaration, proposedValue);
   // Through the catalogue's own door, exactly as the read's value was: the card
   // must show `from` and `to` in one another's terms.
   const to = formatSetting(declaration, projectSetting(declaration, proposedValue));
   if (to === current.display) {
-    refuse(`${declaration.key} is already ${to}, so there is nothing to change.`);
+    refuse(renderLine(`${declaration.key} is already ${to}, so there is nothing to change.`));
   }
   return { from: current.display, fromValue: current.value, to, proposedValue };
 }
@@ -497,10 +509,10 @@ async function requireBaseline(
     baselineTargetOf(resolved.declaration, resolved.target),
   );
   if (baseline.kind !== "revision") {
-    refuse(
+    refuse(renderOwn(
       `ShipIt cannot read ${resolved.declaration.key}'s stored value, so it could not tell whether `
         + `the setting moved before the user clicked. ${baseline.reason}`,
-    );
+    ));
   }
   return baseline;
 }

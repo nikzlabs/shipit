@@ -562,7 +562,7 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
         deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
       );
     expect(attempt).toThrow(
-      /cannot run: No model "deepseek-flash" is offered by anthropic on the "sub" billing mode\./,
+      /cannot run: No model "deepseek-flash" is offered by "anthropic" on the "sub" billing mode\./,
     );
     expect(attempt).not.toThrow(/Name --/);
   });
@@ -646,7 +646,7 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
         deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
       );
     expect(attempt).toThrow(
-      /cannot run: No model "no-such-model" is offered by deepseek on the "key" billing mode\./,
+      /cannot run: No model "no-such-model" is offered by "deepseek" on the "key" billing mode\./,
     );
     expect(attempt).not.toThrow(/Name --/);
   });
@@ -1104,5 +1104,29 @@ describe("joinRolePrompt (req 8)", () => {
   it("still refuses an over-long task when no role is involved", async () => {
     const { joinRolePrompt } = await import("./roles.js");
     expect(() => joinRolePrompt("x".repeat(200), {}, 100)).toThrow(/exceeds/);
+  });
+});
+
+/**
+ * A refusal quotes the role's stored parameters, so it has to quote the ones
+ * that are stored (planning#537). `renderOwn` collapses runs of space, which
+ * reaches inside the quotes another mint put there; `renderLine` does not.
+ */
+describe("a role refusal reports the stored value exactly", () => {
+  it("keeps the spacing inside a model id it quotes back", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const spaced = "opus  5";
+    const role = pinnedRole("deep-dive", {
+      harnessId: "claude",
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: spaced,
+    });
+
+    expect(() => resolveRoleByName("deep-dive", {}, CLAUDE_IMPLEMENTER, {
+      credentialStore: storeWith({ routes: [ANTHROPIC_KEY], roles: [role] }),
+      env: EMPTY_ENV,
+      isInstalled: ALL_INSTALLED,
+    })).toThrow(`No model "${spaced}" is offered`);
   });
 });

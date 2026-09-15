@@ -208,7 +208,9 @@ describe("modelSelection", () => {
     const live = firstLiveSelection();
     if (live) expect(type.validate(live, "Background work").ok).toBe(true);
     expect(type.validate({ serviceId: "nope", billingMode: "key", modelId: "gone" }, "Background work"))
-      .toEqual({ ok: false, message: "No catalogue entry for nope/key/gone" });
+      // Quoted: the three ids are the caller's own text, and nothing in the
+      // catalogue matched them (planning#537).
+      .toEqual({ ok: false, message: `No catalogue entry for "nope"/"key"/"gone"` });
   });
 
   it("stores nothing for a cleared pin", () => {

@@ -13,17 +13,29 @@
  * agent-proposed from text that originated in a repository file or a web page.
  *
  * So no raw string is ever put on a line. Everything goes through one of the
- * four mints below, each of which returns {@link Rendered} — a branded string
- * the type system will not accept a plain one in place of. All four guarantee
+ * five mints below, each of which returns {@link Rendered} — a branded string
+ * the type system will not accept a plain one in place of. All five guarantee
  * the same thing: **the result contains no character that can begin a new line.**
- * They differ only in how the result reads, so choosing the wrong one costs
- * legibility and never the guarantee.
+ * They differ in how the result reads, and in one case in more than that:
+ * {@link renderOwn} collapses runs of space, so composing a sentence around an
+ * already-rendered value with it reports a different value from the stored one.
+ * Compose with {@link renderLine} wherever a mint's output is embedded.
  *
  * The rule covers `--json` as well as the text output. `JSON.stringify` escapes
  * the C0 controls and stops there, so a document serialized for `--json` goes
  * through {@link renderJson} — a value carrying U+2028 otherwise puts a real
  * line break in the agent's stdout while `display`, beside it in the same
  * document, is correctly escaped.
+ *
+ * **A value is not the only thing that reaches a line, and this file is not
+ * where the rule is enforced** (planning#537). Refusals, `ServiceError`
+ * messages and validator output are text a service composes, and each was found
+ * to be a path of its own after the one before it had been minted — so the types
+ * now demand a `Rendered` at each of those hand-offs
+ * (`SettingsOperation.preflight`, `RoleParamsCheck.message`,
+ * `ValidationResult.message`), and the shim that PRINTS the settings output
+ * accepts nothing else (`session/agent-shim/settings-out.ts`, which states
+ * exactly what that does and does not close).
  */
 
 declare const RENDERED: unique symbol;
@@ -71,11 +83,35 @@ function escaped(ch: string): string {
  * caller here that is not ShipIt's own text. Not quoted, because the reader is
  * meant to read the result as ShipIt speaking.
  *
- * It flattens rather than trusting its caller, so passing it the friendlier mint
- * by mistake costs legibility and not the guarantee.
+ * It flattens rather than trusting its caller, so it is safe on anything. But it
+ * is the wrong mint for a sentence that EMBEDS a rendered value: the collapse
+ * reaches inside the quotes and reports a label the user never set. Compose
+ * those with {@link renderLine}.
  */
 export function renderOwn(text: string): Rendered {
   return text.replace(RUN_OF_SPACE, " ").trim() as Rendered;
+}
+
+/**
+ * One line, kept exactly as written apart from what could break it — the mint
+ * for text whose interior spacing carries meaning, and for text another process
+ * already rendered.
+ *
+ * {@link renderOwn} collapses runs of space and trims, which is right for a
+ * sentence and wrong for a line of a formatted report: it would eat the
+ * indentation the agent's settings output uses to show what belongs to what.
+ * This one replaces each line breaker with a space and touches nothing else, so
+ * it is a no-op on text that is already single-line — which is what makes it
+ * the right mint on the far side of a process boundary, where a value the
+ * orchestrator rendered arrives over HTTP as a plain string with the brand
+ * stripped off.
+ *
+ * It is not the mint for a bare stored value in a sentence: that is
+ * {@link renderValue}, whose quoting says where the value starts and stops.
+ * This one keeps the guarantee and not the legibility.
+ */
+export function renderLine(text: string): Rendered {
+  return text.replace(EVERY_LINE_BREAKER, " ") as Rendered;
 }
 
 /**
