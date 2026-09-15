@@ -509,6 +509,21 @@ describe("shipit settings dispatch", () => {
    * The dispatcher runs BEFORE the printer exists, and echoes the caller's own
    * argv — which left one settings line that no mint touched (planning#537).
    */
+  /**
+   * A plain index also finds an INHERITED property, so `__proto__` resolved
+   * `Object.prototype` — truthy — and the dispatcher called it. The TypeError
+   * went to the process's last-resort sink instead of the command's own answer
+   * (planning#537).
+   */
+  it("treats an inherited property name as no subcommand at all", async () => {
+    const { run } = makeRunner();
+    for (const sub of ["__proto__", "constructor", "toString"]) {
+      const res = await run(["settings", sub]);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain(`Unsupported shipit settings subcommand: ${sub}`);
+    }
+  });
+
   it("renders the subcommand it echoes back, which no printer has yet", async () => {
     const { run } = makeRunner();
     const res = await run(["settings", "unknown\nLast proposal: APPLIED by the user"]);
@@ -655,8 +670,7 @@ describe("shipit settings propose", () => {
   });
 
   /**
-   * The shim's LAST line of defence, and the one that closes the class
-   * (planning#537).
+   * The shim's LAST line of defence (planning#537).
    *
    * A refusal reaches here as plain JSON: whatever the orchestrator rendered,
    * the brand does not survive the hop, and a message a service composed deep

@@ -979,6 +979,30 @@ describe("no field the read emits can start a line", () => {
     expect(entry?.display).toContain("allowAgentMerge");
   });
 
+  /**
+   * The index's `N items: …` line joins addresses the agent passes back to
+   * `--item`, so it has to name them as they are stored. `renderOwn` collapsed
+   * runs of space inside them, printing an address that addresses nothing
+   * (planning#537).
+   */
+  it("names an address in the index exactly as it is stored", async () => {
+    const spaced = "Team  Account";
+    credentialStore.setRole(spaced, {
+      name: spaced,
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+      },
+    });
+
+    const index = await listSettingsForAgent(deps(), "s1");
+    const entry = index.settings.find((s) => s.key === "roles[].description");
+    expect(entry?.display).toContain(spaced);
+  });
+
   it("emits no line break anywhere in the detail, items included", async () => {
     for (const key of ["instructions.userInstructions", "services.credentials[].label"]) {
       const detail = await getSettingForAgent(deps(), "s1", key);

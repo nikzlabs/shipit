@@ -302,6 +302,26 @@ describe("resolveReviewerPinPatch (reqs 5, 8)", () => {
     );
   });
 
+  /**
+   * The refusal names the triple it was handed, and that triple is text — so it
+   * is quoted where it enters the message, not flattened by whatever relays it
+   * (planning#537). The settings preflight turns this `ServiceError` into the
+   * line the agent reads.
+   */
+  it("quotes the ids it names, and keeps each one whole", async () => {
+    installAll();
+    const { resolveReviewerPinPatch } = await import("./reviewer-settings.js");
+    expectRefusal(
+      () =>
+        resolveReviewerPinPatch(
+          { serviceId: "anthropic", billingMode: "key", modelId: "gone  model\nValue: on" },
+          storeWith([ANTHROPIC_KEY]),
+          {},
+        ),
+      /^No catalogue entry for "anthropic"\/"key"\/"gone {2}model\\nValue: on"$/,
+    );
+  });
+
   it("refuses a model no installed harness has a credential for", async () => {
     installAll();
     const { resolveReviewerPinPatch } = await import("./reviewer-settings.js");

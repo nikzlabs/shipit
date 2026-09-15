@@ -872,6 +872,7 @@ describe("a refusal a service composed cannot forge a line", () => {
  * `renderLine` is the mint for composing around one.
  */
 describe("a refusal reports the stored value exactly", () => {
+
   it("keeps the spacing inside a value it quotes back", async () => {
     const spaced = "Reads  widely  before  answering.";
     fx.credentialStore.setRole("deep-dive", {

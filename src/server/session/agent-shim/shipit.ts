@@ -449,6 +449,18 @@ See /shipit-docs/sessions.md for the full reference, including allowed
 flags and the list of intentionally-rejected operations
 (\`shipit session delete\`, \`shipit source edit\`, cross-repo spawns, etc.).`;
 
+/**
+ * A subcommand names a handler, or it names nothing.
+ *
+ * A plain index also finds what a subcommand INHERITS: `shipit settings
+ * __proto__` resolved `Object.prototype`, which is truthy, so the dispatcher
+ * called it and the TypeError went to the process's last-resort sink rather
+ * than to the command's own "unsupported subcommand" answer (planning#537).
+ */
+function handlerFor<T>(table: Record<string, T>, sub: string): T | undefined {
+  return Object.hasOwn(table, sub) ? table[sub] : undefined;
+}
+
 export interface RunDeps {
   env: ShimEnv;
   io: ShimIO;
@@ -729,7 +741,7 @@ export async function runShim(
     );
   }
 
-  const handler = SESSION_HANDLERS[sub];
+  const handler = handlerFor(SESSION_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit session subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -772,7 +784,7 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
         "See /shipit-docs/sessions.md.",
     );
   }
-  const handler = SOURCE_HANDLERS[sub];
+  const handler = handlerFor(SOURCE_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit source subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -798,7 +810,7 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
         "See /shipit-docs/issues.md.",
     );
   }
-  const handler = ISSUE_HANDLERS[sub];
+  const handler = handlerFor(ISSUE_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit issue subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -815,7 +827,7 @@ async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise
     success(io, HELP);
     return;
   }
-  const handler = AGENT_HANDLERS[sub];
+  const handler = handlerFor(AGENT_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit agent subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -841,7 +853,7 @@ async function dispatchService(args: string[], deps: RunDeps, io: ShimIO): Promi
         "See /shipit-docs/compose.md.",
     );
   }
-  const handler = SERVICE_HANDLERS[sub];
+  const handler = handlerFor(SERVICE_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit service subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -880,7 +892,7 @@ async function dispatchSettings(args: string[], deps: RunDeps, io: ShimIO): Prom
         + "See /shipit-docs/settings.md.",
     );
   }
-  const handler = SETTINGS_HANDLERS[sub];
+  const handler = handlerFor(SETTINGS_HANDLERS, sub);
   if (!handler) {
     // The caller's own argv, echoed from BEFORE `settingsDeps` builds the
     // printer — the one settings line no mint would otherwise touch (planning#537).
@@ -908,7 +920,7 @@ async function dispatchRelease(args: string[], deps: RunDeps, io: ShimIO): Promi
         "See /shipit-docs/release.md.",
     );
   }
-  const handler = RELEASE_HANDLERS[sub];
+  const handler = handlerFor(RELEASE_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit release subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -938,7 +950,11 @@ function stripNodeArgs(argv: string[]): string[] {
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   runShim(process.argv.slice(2)).catch((err: unknown) => {
     if (err instanceof Error && err.message === "__shim_exit__") return;
-    shimWrite(process.stderr, `shipit: ${err instanceof Error ? err.message : String(err)}\n`);
+    // The process's last-resort sink, reached by a throw rather than by any
+    // command's own output path — so it renders here, since nothing downstream
+    // of a crash can (planning#537).
+    const message = err instanceof Error ? err.message : String(err);
+    shimWrite(process.stderr, `shipit: ${renderLine(message)}\n`);
     exitAfterFlush(1);
   });
 }

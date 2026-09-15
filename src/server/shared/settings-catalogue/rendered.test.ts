@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { joinRendered, renderAddress, renderJson, renderOwn, renderValue } from "./rendered.js";
+import { joinRendered, renderAddress, renderJson, renderLine, renderOwn, renderValue } from "./rendered.js";
 
 /**
  * planning#577: `shipit settings list` and `get` are a line-oriented format an
@@ -130,5 +130,35 @@ describe("renderAddress", () => {
 describe("joinRendered", () => {
   it("joins pieces that are already rendered", () => {
     expect(joinRendered([renderValue("a"), renderValue("b")])).toBe('"a", "b"');
+  });
+});
+
+describe("renderLine", () => {
+  /**
+   * The whole deny-set, not the newline the fixtures happen to use: an
+   * implementation that replaced `\n` alone would pass every other test in this
+   * file's adversarial cases and leave NEL, the Unicode separators and every
+   * format character as themselves (planning#537).
+   */
+  it("removes every character the deny-set covers, not just the newline", () => {
+    for (let code = 0; code <= 0x10ffff; code++) {
+      // Lone surrogates are not code points a string can carry on their own.
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      const ch = String.fromCodePoint(code);
+      if (!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(ch)) continue;
+      expect(renderLine(`a${ch}b`)).toBe("a b");
+    }
+  });
+
+  it("keeps indentation and repeated spaces, which is what it is for", () => {
+    // `renderOwn` collapses both; composing an output line with it would eat the
+    // indentation the settings output uses, and the spacing inside a quoted value.
+    expect(renderLine('      x = "Team  Account"')).toBe('      x = "Team  Account"');
+    expect(renderOwn('      x = "Team  Account"')).toBe('x = "Team Account"');
+  });
+
+  it("is a no-op on text the orchestrator already rendered", () => {
+    const already = renderValue(`a role\n${FORGED_FIELD}`);
+    expect(renderLine(already)).toBe(already);
   });
 });

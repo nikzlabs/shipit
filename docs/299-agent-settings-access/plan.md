@@ -488,9 +488,10 @@ flattens where it turns one into text.
 so quoting a value again there would quote what is already quoted — but the
 brand does not survive the hop, so every line is minted with `renderLine`, which
 keeps such text byte-for-byte. What the shim composes itself is the `--item`
-echo and the two JSON blobs in `get`, and those go through `renderJson` —
-`JSON.stringify` escapes the C0 controls and leaves U+2028, U+2029 and U+0085 as
-themselves.
+echo — flattened with `renderOwn`, that address being the argument THIS call
+supplied rather than anything the read rendered — and the two JSON blobs in
+`get`, which go through `renderJson`: `JSON.stringify` escapes the C0 controls
+and leaves U+2028, U+2029 and U+0085 as themselves.
 
 **"Trust what the read sent" was the hole, and the boundary is now structural.**
 Three fixes for this one class each guarded the path in front of them and left

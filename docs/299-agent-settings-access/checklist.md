@@ -817,3 +817,22 @@ value and stored another. Both re-verified at the code.
       is widened (`settings-out.test.ts`)
 - [x] `echoSupplied` stopped flattening with `\s+`, which leaves U+0085 and every
       format character as themselves, and goes through `renderOwn`
+- [x] Second review round, on the changed diff. Three more, each verified at the
+      code and guarded: `shipit settings __proto__` resolved an INHERITED
+      property from the handler table, so the dispatcher called
+      `Object.prototype` and the TypeError went to the process's last-resort
+      sink — every dispatcher now looks up with `Object.hasOwn`, and that sink
+      renders. `reviewer-settings.ts` built its two refusals from the pin's ids
+      unquoted; they are quoted where they enter now. And `itemsDisplay`
+      (pre-existing) wrapped already-rendered ADDRESSES in `renderOwn`, printing
+      `Team Account` for a role stored as `Team  Account` — an address that
+      addresses nothing
+- [x] One reachability claim NOT taken at face value: the review's end-to-end
+      reproduction of the reviewer-pin case wrote a pin straight into the store,
+      and `getReviewerPin` drops a selection the catalogue does not carry unless
+      it is retired — so the mint was wrong but that exploit is not reachable
+      through the read. The guard is a unit test of `resolveReviewerPinPatch`,
+      which is what the fix is actually about
+- [x] `renderLine` has a test over the whole deny-set, not the `\n` its
+      adversarial fixtures happen to use: an implementation replacing only the
+      newline passed every other case in the file

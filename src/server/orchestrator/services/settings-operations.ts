@@ -442,7 +442,9 @@ function rolePreflight(patch: RolePatch): NonNullable<SettingsOperation["preflig
       // A patch builder raises an ordinary `ServiceError`, whose message is a
       // plain string built wherever it was thrown — so this is the one place
       // that message becomes a refusal, and the one place it is minted.
-      if (err instanceof ServiceError) return renderOwn(err.message);
+      // `renderLine`: such a message may already quote a stored value, and
+      // collapsing runs of space would reach inside those quotes.
+      if (err instanceof ServiceError) return renderLine(err.message);
       throw err;
     }
     if (params.kind !== "pinned") return null;
@@ -631,7 +633,7 @@ function reviewerLevelRefusal(
   try {
     resolved = resolveReviewerPinPatch(patch as unknown as ReviewerPinPatch, credentialStore);
   } catch (err) {
-    if (err instanceof ServiceError) return renderOwn(err.message);
+    if (err instanceof ServiceError) return renderLine(err.message);
     throw err;
   }
   if (requested === undefined || resolved.reasoningEffort === requested) return null;
