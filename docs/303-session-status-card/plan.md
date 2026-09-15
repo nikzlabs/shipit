@@ -172,7 +172,17 @@ interrupt at `agent-listeners.ts:616` (the worker synthesizes the tool_use in
 `session-worker.ts` `registerAskEndpoint`), which sets `runner.wasInterrupted`;
 plan approval sets the same flag.
 
-**The facts are taken at settlement, before the drain.** `wasInterrupted`
+**The facts are taken at settlement, after any adoption handover and before the
+drain.** `settleTurnFacts` runs at the head of the terminal sequence, before the
+post-turn hold and outside `postTurnStep`, so it may not throw: its status read
+is guarded and skipped entirely while the setting is off, or a failed read would
+abandon the commit behind it (invariant 3). It runs *after* `await
+rearmInFlight`, because a turn adopted there owns the path it landed on and the
+predecessor's snapshot would be discarded by the re-arm. And it reads a separate
+`sawOwnResult`, not `receivedResult`, which adoption deliberately keeps from the
+predecessor: a crashed adopted turn produced no result of its own to judge.
+
+`wasInterrupted`
 and the accumulator are runner state that the drained successor resets
 (`session-runner.ts:448`), and the successor starts before the network
 post-turn work and `idle`. So a helper `settleTurnFacts()` runs first thing
@@ -206,10 +216,15 @@ step after `idle` records the decision and tries the dispatch, and `finishTurn`
 tries it again once it has cleared the hold. Both are needed — a system turn's
 hold is still on at the first, and an ordinary streaming turn whose CLI stays
 resident never reaches the second, because `finishTurn` runs only when the
-process exits. The dispatch itself enqueues the nudge and runs the drain entry
-(`input.drainNext()`), re-checking there that the runner is free: a successor
-that started meanwhile defers the nudge rather than queueing behind it, and
-that turn is checked afresh when it ends. The nudge is a dispatched system turn, not
+process exits. The dispatch re-checks there that the runner is free — a
+successor that started meanwhile defers the nudge rather than queueing behind
+it, and that turn is checked afresh when it ends — and then goes through
+`runner.dispatch`, not an enqueue plus a drain entry: only that path owns
+recovery when turn setup rejects, and without it a user message that queued
+during setup is left with nothing to start it. Two gates are pre-checked
+instead of queueing behind them, since one attempt is all a missing update gets
+(req 15): a runner with no dispatch dependencies, and a resident agent with
+background work a system turn would destroy. The nudge is a dispatched system turn, not
 `silent`: its prompt is echoed as the turn's user row (`system_user_message`),
 the reply follows, the post-turn flow runs as for any turn (req 12). The
 prompt opens with `[ShipIt]`, says the last turn ended without a status

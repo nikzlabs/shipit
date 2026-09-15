@@ -35,13 +35,31 @@ async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 5000)
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-function harness(opts: { statusCardEnabled?: boolean; streaming?: boolean; card?: SessionStatus } = {}) {
+function harness(opts: {
+  statusCardEnabled?: boolean;
+  streaming?: boolean;
+  card?: SessionStatus;
+  /** Commit indices to park on, to observe what the terminal sequence has done before them. */
+  holdCommits?: number[];
+} = {}) {
   const cards = new Map<string, SessionStatus | undefined>();
   if (opts.card) cards.set("s1", opts.card);
+  const state = { readThrows: false, commits: 0, entered: [] as number[] };
+  const gates = new Map<number, { parked: Promise<void>; release: () => void }>();
+  const gateFor = (index: number) => {
+    let release = (): void => {};
+    const parked = new Promise<void>((resolve) => { release = resolve; });
+    const gate = gates.get(index) ?? { parked, release };
+    gates.set(index, gate);
+    return gate;
+  };
   const sessionManager = {
     setAgentSessionId: vi.fn(),
     setLastTurnErrored: vi.fn(),
-    get: (id: string) => ({ id, sessionStatus: cards.get(id) }),
+    get: (id: string) => {
+      if (state.readThrows) throw new Error("database connection is not open");
+      return { id, sessionStatus: cards.get(id) };
+    },
     track: vi.fn(),
     setMuted: vi.fn(),
     list: () => [],
@@ -53,6 +71,7 @@ function harness(opts: { statusCardEnabled?: boolean; streaming?: boolean; card?
 
   const agents: FakeAgent[] = [];
   const prompts: string[] = [];
+  const emitted: { type: string; text?: string }[] = [];
   const runner = new SessionRunner({
     sessionId: "s1",
     sessionDir: "/tmp/status-settlement",
@@ -73,6 +92,14 @@ function harness(opts: { statusCardEnabled?: boolean; streaming?: boolean; card?
       secretFindings: [],
       unreadable: null,
     }),
+    // The real post-turn commit, which the executor prefers over `autoCommit`.
+    commitTurn: async () => {
+      const index = state.commits;
+      state.entered.push(index);
+      if (opts.holdCommits?.includes(index)) await gateFor(index).parked;
+      state.commits += 1;
+      return null;
+    },
     scheduleAutoPush: vi.fn(),
     statusCardEnabled: () => opts.statusCardEnabled ?? true,
     ...(opts.streaming ? { steerInputs: () => ({ liveSteering: true, steeringCapable: true }) } : {}),
@@ -108,10 +135,16 @@ function harness(opts: { statusCardEnabled?: boolean; streaming?: boolean; card?
     await recordSessionStatus(statusDeps, "s1", { status });
   };
 
+  runner.on("message", (msg) => emitted.push(msg as { type: string; text?: string }));
+
   return {
     runner,
     agents,
     prompts,
+    emitted,
+    state,
+    parkedOn: (index: number) => state.entered.includes(index) && state.commits === index,
+    releaseCommit: (index = 0) => gateFor(index).release(),
     card: () => cards.get("s1"),
     nudges: () => prompts.filter((p) => p.includes("[ShipIt] The last turn ended without a status-card update")),
     agentWritesCard,
@@ -317,6 +350,112 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
 
     expect(h.agents).toHaveLength(1);
     expect(h.nudges()).toHaveLength(0);
+    h.runner.dispose({ force: true });
+  });
+
+  // Invariant 3: the snapshot runs at the head of the terminal sequence, before the hold
+  // and outside `postTurnStep`, so it must not be able to abandon the commit behind it.
+  it("commits even when reading the stored card throws", async () => {
+    const h = harness({ card: { ...seeded } });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    h.state.readThrows = true;
+    finishTurn(h.agents[0]!);
+    await waitFor(() => !h.runner.running, "turn finished");
+    await flush();
+
+    expect(h.state.commits).toBe(1);
+  });
+
+  // The mark is immediate, not a by-product of the nudge: the card must never read as
+  // current while the rest of the terminal sequence is still running.
+  it("marks the card stale before the commit that follows in the same sequence", async () => {
+    const h = harness({ card: { ...seeded }, holdCommits: [0] });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    finishTurn(h.agents[0]!);
+
+    await waitFor(() => !h.card()!.fresh, "the card went stale");
+    expect(h.state.commits).toBe(0);
+
+    h.releaseCommit();
+    await waitFor(() => h.state.commits === 1, "commit ran");
+    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    h.runner.dispose({ force: true });
+  });
+
+  it("echoes the nudge as a visible user row, so the follow-up turn is not invisible (req 12)", async () => {
+    const h = harness({ card: { ...seeded } });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    finishTurn(h.agents[0]!);
+    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+
+    const row = h.emitted.find(
+      (m) => m.type === "system_user_message" && m.text?.startsWith("[ShipIt] The last turn ended"),
+    );
+    expect(row).toBeDefined();
+
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    h.runner.dispose({ force: true });
+  });
+
+  // Adoption keeps the predecessor's `receivedResult` for its own recovery semantics, so
+  // the settlement cannot read it: a crashed adopted turn produced no result to judge.
+  it("does not nudge an adopted turn that crashed without a result of its own", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    await h.agentWritesCard("Routes done.");
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.runner.running, "the first turn settled");
+
+    // The CLI starts a turn of its own on the resident process, and then falls over.
+    h.agents[0]!.emit("event", { type: "agent_self_wake" });
+    await flush();
+    h.agents[0]!.emit("done", 1);
+    await flush();
+    await flush();
+
+    expect(h.nudges()).toHaveLength(0);
+    // The adopted turn produced nothing, so the card no longer speaks for the session.
+    expect(h.card()!.fresh).toBe(false);
+    h.runner.dispose({ force: true });
+  });
+
+  // A turn adopted from the CLI owns the terminal path it lands on, so the snapshot has to
+  // come from it — after the handover, not from the predecessor that was about to hand over.
+  it("settles the ADOPTED turn's facts, so its own commit does not run against a card reading current", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true, holdCommits: [0, 1] });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    await h.agentWritesCard("Routes done.");
+
+    // The predecessor's post-turn flow parks on its commit…
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.parkedOn(0), "the predecessor parked on its commit");
+
+    // …the CLI starts a turn of its own, so the handover waits on that parked flow…
+    h.agents[0]!.emit("event", { type: "agent_self_wake" });
+    await flush();
+    // …and the adopted turn falls over while the handover is still in flight.
+    h.agents[0]!.emit("done", 1);
+    await flush();
+    h.releaseCommit(0);
+
+    await waitFor(() => h.parkedOn(1), "the adopted turn parked on its own commit");
+    expect(h.card()!.fresh).toBe(false);
+
+    h.releaseCommit(1);
+    await waitFor(() => !h.runner.running, "the adopted turn finished");
     h.runner.dispose({ force: true });
   });
 

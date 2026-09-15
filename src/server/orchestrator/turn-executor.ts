@@ -37,7 +37,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
     : "";
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
-import { resetRunnerTurnState, toQueuedMessage } from "./session-runner.js";
+import { resetRunnerTurnState } from "./session-runner.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import {
   markSessionStatusStale,
@@ -47,6 +47,7 @@ import {
   type TurnStatusFacts,
 } from "./services/session-status.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
+import { systemTurnBlockedByResidentWork } from "./turn-admission.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
@@ -226,7 +227,7 @@ export async function executeAgentTurn(
       // docs/303 — a system turn holds systemTurnInProgress until here, so a nudge decided
       // during its post-turn sequence could only have queued behind it. Dispatch now that
       // the hold is off; the call is a no-op once the nudge has gone out.
-      void dispatchStatusNudge();
+      dispatchStatusNudge();
     }
   };
 
@@ -296,8 +297,8 @@ export async function executeAgentTurn(
   };
   // Recovery owns teardown after done stands down. Adoption must finish handing over its guards.
   const settleTurnWithoutRedispatch = async (): Promise<void> => {
-    settleTurnFacts();
     if (rearmInFlight) await rearmInFlight;
+    settleTurnFacts();
     holdPostTurn();
     try {
       if (runner) runner.running = false;
@@ -628,6 +629,9 @@ export async function executeAgentTurn(
   };
 
   let receivedResult = false;
+  // Distinct from `receivedResult`, which adoption retains from the predecessor so its
+  // recovery semantics hold: this says THIS turn produced a result of its own.
+  let sawOwnResult = false;
 
   // ---- docs/303 — status-card settlement (req 11–15) ----
   const statusCardOn = deps.statusCardEnabled?.() ?? false;
@@ -644,18 +648,30 @@ export async function executeAgentTurn(
    * The stale mark is immediate, so the card never reads as current between a missing
    * update and the end of that flow; its `writeSeq` guard makes it a no-op once a later
    * turn has written.
+   *
+   * It CANNOT throw. Its call sites are the head of the terminal sequence, before the
+   * hold and outside `postTurnStep`, so a throw here would abandon the drain and the
+   * commit behind it (invariant 3) — and the status read it makes touches SQLite.
    */
   const settleTurnFacts = (): TurnStatusFacts => {
     if (turnFacts) return turnFacts;
     const facts: TurnStatusFacts = {
       statusUpdated: runner?.statusUpdated ?? false,
       wasInterrupted: runner?.wasInterrupted ?? false,
-      receivedResult,
+      // Not `receivedResult`: adoption keeps that from the predecessor on purpose, and a
+      // crashed adopted turn produced no result of its own to judge.
+      receivedResult: sawOwnResult,
       silent: input.silent === true,
       statusNudge: input.statusNudge === true,
       postTurn,
-      writeSeq: storedStatus()?.writeSeq ?? 0,
+      writeSeq: 0,
     };
+    try {
+      // Nothing to read while the feature is off, and nothing will be decided from it.
+      if (statusCardOn) facts.writeSeq = storedStatus()?.writeSeq ?? 0;
+    } catch (err) {
+      console.error(`[turn] reading the status card for ${sessionId} failed:`, err);
+    }
     turnFacts = facts;
     if (statusCardOn && !facts.silent && !facts.statusUpdated) {
       void markSessionStatusStale(statusDeps, sessionId, facts.writeSeq).catch((err: unknown) => {
@@ -681,7 +697,7 @@ export async function executeAgentTurn(
     );
   };
 
-  const dispatchStatusNudge = async (): Promise<void> => {
+  const dispatchStatusNudge = (): void => {
     if (!nudgePending || nudgeDispatched || !runner || runner.disposed) return;
     // Re-checked here, not only at the decision: the deferral is about the session's
     // state when the nudge would start, and that turn is checked afresh when it ends.
@@ -690,11 +706,18 @@ export async function executeAgentTurn(
       nudgePending = false;
       return;
     }
+    // A system turn would replace the resident process and destroy its background work.
+    // One attempt per missing update (req 15), so a blocked nudge is simply not made: the
+    // card stays stale and the next ordinary turn is checked afresh.
+    if (!runner.canRunDispatchedTurn || systemTurnBlockedByResidentWork(runner, true)) return;
     nudgeDispatched = true;
     // The nudge is this turn's post-turn work until the turn it starts takes over.
     runner.beginPostTurnWork();
     try {
-      runner.enqueue(toQueuedMessage(prepareDispatch({
+      // Through `dispatch`, not an enqueue plus a drain: only that path owns recovery when
+      // turn setup rejects, and without it a message queued during setup is stranded with
+      // nothing left to start it.
+      runner.dispatch(prepareDispatch({
         text: statusNudgePrompt(storedStatus()),
         agentInterface: undefined,
         messageOrigin: undefined,
@@ -713,9 +736,7 @@ export async function executeAgentTurn(
         compactContext: undefined,
         silent: undefined,
         statusNudge: true,
-      })));
-      runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-      await input.drainNext({ ownsSystemHold: ownsSystemHold() });
+      }));
     } catch (err) {
       console.error(`[turn] dispatching the status-card nudge for ${sessionId} failed:`, err);
     } finally {
@@ -723,9 +744,9 @@ export async function executeAgentTurn(
     }
   };
 
-  const settleStatusCard = async (): Promise<void> => {
+  const settleStatusCard = (): void => {
     decideStatusNudge();
-    await dispatchStatusNudge();
+    dispatchStatusNudge();
   };
 
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
@@ -747,8 +768,8 @@ export async function executeAgentTurn(
     // An adapter error can be terminal without a later done event, even with an empty queue.
     onError: async () => {
       agentErrored = true;
-      settleTurnFacts();
       if (rearmInFlight) await rearmInFlight;
+      settleTurnFacts();
       holdPostTurn();
       try {
         finishTurn();
@@ -1006,6 +1027,7 @@ export async function executeAgentTurn(
     resultTurnSummary = null;
     // The adopted turn is a turn of its own: it settles its own facts and is decided afresh.
     turnFacts = null;
+    sawOwnResult = false;
     nudgeDecided = false;
     nudgePending = false;
     nudgeDispatched = false;
@@ -1040,6 +1062,7 @@ export async function executeAgentTurn(
     if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
     if (rearmInFlight) await rearmInFlight;
     receivedResult = true;
+    sawOwnResult = true;
     runner?.emit("turn_result", { compact: input.compact === true });
     // Claude can report quota exhaustion as successful final text, without event.error.
     const exhausted = event.error
@@ -1109,8 +1132,10 @@ export async function executeAgentTurn(
     // Recovery owns teardown and any hold it opened; do not release it here.
     if (automaticRecoveryInProgress) return;
     if (quotaRetryInProgress) return;
-    settleTurnFacts();
+    // After the handover, never before it: a turn adopted here owns this terminal path,
+    // and the predecessor's snapshot would be discarded by the re-arm anyway.
     if (rearmInFlight) await rearmInFlight;
+    settleTurnFacts();
     holdPostTurn();
     try {
       if (runner) {
