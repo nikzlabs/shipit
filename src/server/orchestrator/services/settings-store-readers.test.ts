@@ -655,8 +655,11 @@ describe("SSH destinations", () => {
     whole of what the agent could learn about a destination: its name.
   */
   it("reads where a granted destination is, who it logs in as and on which port", async () => {
-    expect(await itemDisplays("integrations.sshHosts[].address")).toEqual({ prod: "prod.example.com" });
-    expect(await itemDisplays("integrations.sshHosts[].user")).toEqual({ prod: "deploy" });
+    // The two text fields are quoted by `renderValue` (planning#577) and the
+    // port is not, because a number cannot carry a line break. The item ADDRESS
+    // stays bare either way — it is what `--item` takes back.
+    expect(await itemDisplays("integrations.sshHosts[].address")).toEqual({ prod: '"prod.example.com"' });
+    expect(await itemDisplays("integrations.sshHosts[].user")).toEqual({ prod: '"deploy"' });
     expect(await itemDisplays("integrations.sshHosts[].port")).toEqual({ prod: "2222" });
     expect((await detail("integrations.sshHosts")).value).toEqual(["prod"]);
   });
