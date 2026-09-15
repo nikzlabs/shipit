@@ -370,9 +370,9 @@ meets one, and every offer shows its description (req 26).
   an untaken one carries "RECOMMENDED", and leaves only when the agent removes
   it (req 17). It stays TICKABLE: an agent can crash or ignore the message, and
   re-sending is a second tick rather than a control of its own — `taken` is
-  presentation, not a lock. untaken
+  presentation, not a lock. Untaken
   offers stay selectable while the card is stale (req 24); an offer whose
-  message has been sent is unselectable at once, without waiting for the
+  message has been sent reads as taken at once, without waiting for the
   server's `takenAt`. The card keeps the transcript card's submit button,
   its "Add comment…" shortcut and its delivery-failure notice (req 26); it has
   no single-button variant, because an offer list that changes shape with its
@@ -430,6 +430,9 @@ and absent in the flag-off ones, never its wording.
 
 ## Tests
 
+Names below are the design's; where the build put a test somewhere else, the
+built file is named in brackets. Every one of them exists.
+
 - `session-status-validation.test.ts` — limits; a bare call is valid;
   `needsYou: []` is a clear; empty list only with `replaceActions`; items
   through `validateActionItems`.
@@ -439,12 +442,14 @@ and absent in the flag-off ones, never its wording.
   moves only on agent writes; `markSessionStatusStale` with an old
   `writeSeq` is a no-op; writes serialize per session; the nudge decision
   table on a snapshot (each "no" condition; plain turn → nudge).
-- `api-routes-session-status.test.ts` — validate → persist → broadcast →
+- `api-routes-session-status.test.ts`
+  [`integration_tests/session-status-route.test.ts`] — validate → persist → broadcast →
   `statusUpdated`; a bare call with a stored card → current, `writeSeq`
   moved, nothing else changed; a bare call with no stored card → 400
   naming `status`; 409 without a runner; the reply lists offers.
-- `api-routes-propose-actions.test.ts` — 409 under the flag; unchanged
-  otherwise.
+- `api-routes-propose-actions.test.ts`
+  [`integration_tests/propose-actions-route.test.ts`] — 409 under the flag;
+  unchanged otherwise.
 - `prepared-dispatch.test.ts`, `queue-drain.test.ts` — `statusNudge` and
   `silent` survive `toQueuedMessage` → `queuedMessageToDispatchOptions`.
 - `integration_tests/dispatched-turn-race.test.ts` — a dispatched turn retires a
@@ -464,17 +469,29 @@ and absent in the flag-off ones, never its wording.
   `services/session-fork-merge.test.ts` — the lifecycle marks.
 - `send-message.test.ts` — offers taken after admission on each path, not
   on a refused enqueue; old cards still get `submittedAt`.
-- `settings.test.ts` — the save hook marks stored cards stale on false → true
-  and broadcasts.
+- `settings.test.ts` [`integration_tests/settings-derivation.test.ts`] — the
+  save hook fires on false → true, and the toggle hook in both directions;
+  the sweep itself is `services/session-status.test.ts`
+  (`markAllSessionStatusesStale`) and the resident retirement is
+  `resident-spawn-guard.test.ts`.
 - Integration (`integration_tests/session-status-nudge.test.ts`, FakeClaude):
-  a turn without the call → stale at once, one dispatched follow-up whose
-  user row starts with `[ShipIt]`; the follow-up calls the tool → fresh; a
-  follow-up that skips it → no third turn; a question turn → no follow-up; a
-  queued successor → deferred; streaming `agent_result` + `done` → one
-  decision; a predecessor settling after its successor wrote → no stale
-  mark, no nudge; a resident agent spanning a toggle → respawned with the
-  other tool list; flag off → today's behavior, byte for byte, per harness.
-- `MessageList.test.tsx` — the card renders after the last transcript row
+  the whole path in one tree, asserted as the outcomes a viewer can see — a turn
+  without the call → stale at once, one dispatched follow-up whose user row
+  starts with `[ShipIt]`; the follow-up calls the tool → fresh, nothing after it;
+  a follow-up that skips it → no third turn; a question turn → no follow-up; a
+  queued successor → deferred, with nothing queued behind it, and that turn
+  checked afresh; a streaming `agent_result` + `done` → exactly one follow-up
+  spawned; a predecessor exiting long after a later turn wrote → the card stays
+  current; a resident agent spanning a toggle → retired and respawned with the
+  other prompt and no spawn flag; flag off → no card, no mark, no follow-up, and
+  a card stored before the toggle left untouched. The races underneath those
+  outcomes — the deferral decision, the settlement snapshot, the `writeSeq`
+  guard — are pinned where they are decided, in `turn-status-settlement.test.ts`
+  and `services/session-status.test.ts`; this file demonstrates the outcome, not
+  the mechanism. The per-harness flag-off tool lists are byte-for-byte in
+  `mcp-tool-spec.test.ts` and each adapter's `mcp-writer.test.ts`, which is where
+  the spec is chosen.
+- `MessageList.test.tsx` [`src/client/components/MessageList.test.tsx`] — the card renders after the last transcript row
   inside the scroll content, and not at all without a stored status.
 - `SessionStatusCard.test.tsx` — the markdown status; the two subtitles; the
   manual-step toggles and their "I've done this" names; "Stale" only when
@@ -486,6 +503,14 @@ and absent in the flag-off ones, never its wording.
 - `ActionChecklistCard.test.tsx` — unchanged behavior after the split.
 - `agent-instructions.test.ts` — section present in flag-on variants, absent
   in flag-off ones.
+
+**What the dogfood instance cannot show.** Local mode has no session worker, so
+`LOCAL_SHIPIT_BRIDGE` is `null` (`local-agent-mcp.ts`) and **no** shipit MCP tool
+reaches an inner agent — `session_status` and `propose_actions` alike. So an
+inner turn can never satisfy the nudge (it answers that the tool is
+unavailable), and every ordinary inner turn is nudged once. Everything around
+the tool is observable there — the mark, the one visible follow-up turn, the
+card, submission, the toggle — and the call itself is the route's own tests.
 
 ## Key files
 
