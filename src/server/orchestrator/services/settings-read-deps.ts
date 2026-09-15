@@ -30,7 +30,19 @@ export interface SettingsReadDeps {
   egressEnforcementStatus?: EgressEnforcementStatus | undefined;
   egressEnforcementActive?: boolean | undefined;
   containerManager?: {
-    get(sessionId: string): { status?: string; egressContainedAtStart?: boolean } | undefined;
+    /**
+     * What the container is actually running under. `egressUserHostsExcluded` is
+     * the exclusion its applied egress config carries, which `resolveEgress`
+     * cannot answer because that describes the next start — and it is read from
+     * the applied config rather than the session's stored capabilities, which
+     * can move without the container moving (`settings-read.ts` →
+     * `egressAllowlistEffect`). Undefined means unknown for both fields.
+     */
+    get(sessionId: string): {
+      status?: string;
+      egressContainedAtStart?: boolean;
+      egressUserHostsExcluded?: boolean;
+    } | undefined;
     /** The shipped resolver, so sandbox capabilities are honoured, not re-derived. */
     resolveEgress(sessionId: string): { contained: boolean; userHostsExcluded?: boolean } | undefined;
   } | undefined;

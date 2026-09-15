@@ -345,6 +345,44 @@ describe("saved is not effective", () => {
     expect(entry.effect.detail).toContain("network capability");
   });
 
+  /*
+    Which setting DECIDES this session's containment is a question about the
+    stored capability — `sandboxLifelineEgressConfig` intercepts a network-off
+    sandbox at every resolution, so the global setting is irrelevant to it now
+    and at every future start. What that says nothing about is the container in
+    front of the user: revoking the capability saves without rebuilding it
+    (`updateSandboxCapabilities`), so a session that started open is still open.
+    Returning on the capability alone dropped that answer.
+  */
+  it("names the capability AND what the container it is running in is doing", async () => {
+    const entry = await getSettingForAgent(
+      network(
+        { globalEnabled: false },
+        { status: "running", egressContainedAtStart: false },
+        { contained: true, userHostsExcluded: true },
+      ),
+      "s1",
+      "network.egressContained",
+    );
+    expect(entry.effect.state).toBe("excluded");
+    expect(entry.effect.detail).toContain("network capability");
+    expect(entry.effect.detail).toContain("started open");
+  });
+
+  it("names a per-session override AND what the container it is running in is doing", async () => {
+    const entry = await getSettingForAgent(
+      network(
+        { globalEnabled: false, override: true },
+        { status: "running", egressContainedAtStart: false },
+      ),
+      "s1",
+      "network.egressContained",
+    );
+    expect(entry.effect.state).toBe("excluded");
+    expect(entry.effect.detail).toContain("own network mode");
+    expect(entry.effect.detail).toContain("started open");
+  });
+
   it("says uncertain when a running container's boot mode is unknown", async () => {
     // A container rediscovered after a ShipIt restart records no boot policy.
     const entry = await getSettingForAgent(
@@ -497,7 +535,7 @@ describe("saved is not effective", () => {
         "network.egress.hosts",
       );
       expect(entry.effect.state).toBe("restart-dependent");
-      expect(entry.effect.detail).toContain("took its allowlist when it started");
+      expect(entry.effect.detail).toContain("took its allowlist when it was last given one");
       expect(entry.effect.detail).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
     });
   });

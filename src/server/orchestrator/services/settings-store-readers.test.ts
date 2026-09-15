@@ -701,12 +701,119 @@ describe("the global egress allowlist", () => {
     const entry = await detail("network.egress.hosts[].host", {
       egressEnforcementStatus: "active",
       containerManager: {
-        get: () => ({ status: "running", egressContainedAtStart: true }),
+        // Sealed when its policy was applied too: nothing changed under it.
+        get: () => ({ status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true }),
         resolveEgress: () => ({ contained: true, userHostsExcluded: true }),
       },
     });
     expect(entry.effect.state).toBe("excluded");
     expect(entry.effect.detail).toContain("network capability");
+  });
+
+  /*
+    Revoking a sandbox's network capability saves WITHOUT rebuilding the
+    container (`services/session-settings.ts` → `updateSandboxCapabilities`,
+    which emits a `pendingRestart` card), so the resolver's `userHostsExcluded`
+    answers for the next start while the container is still enforcing the policy
+    it was configured with. Reading the exclusion off the resolver alone told
+    such a session it was sealed from the allowlist — req 3's exact failure, on
+    the surface that exists to explain a blocker.
+
+    The container's own `egressUserHostsExcluded` is what is in force, and it is
+    NOT the session's stored capabilities: `app-lifecycle.ts` snapshots those
+    before creation resolves egress, and `reloadEgress` re-applies the current
+    policy to a running container afterwards.
+  */
+  describe("a policy that changed after the container was configured", () => {
+    const applied = (
+      container: {
+        status?: string;
+        egressContainedAtStart?: boolean;
+        egressUserHostsExcluded?: boolean;
+      } | undefined,
+      resolved: { contained: boolean; userHostsExcluded?: boolean },
+    ): Partial<SettingsReadDeps> => ({
+      egressEnforcementStatus: "active",
+      containerManager: { get: () => container, resolveEgress: () => resolved },
+    });
+
+    it("does not tell a container that started open that it is sealed from the allowlist", async () => {
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: false, egressUserHostsExcluded: false },
+        { contained: true, userHostsExcluded: true },
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      // What is in force: nothing restricts it, and the user is owed that first.
+      expect(entry.effect.detail).toContain("started open");
+      // And what the next start does, which is why the state is still excluded.
+      expect(entry.effect.detail).toContain("switched off since");
+      expect(entry.effect.detail).toContain("does not reach it then either");
+    });
+
+    it("says a still-contained container is enforcing the list it took, before the sealing", async () => {
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: false },
+        { contained: true, userHostsExcluded: true },
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      expect(entry.effect.detail).toContain("still enforcing");
+      expect(entry.effect.detail).toContain("switched off since");
+    });
+
+    it("invents no history for a container it has no record of", async () => {
+      // A container rediscovered after a ShipIt restart recorded no policy at
+      // all. "Switched off since" would assert a change that may never have
+      // happened — the capability may have been off for this container's whole
+      // life.
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running" },
+        { contained: true, userHostsExcluded: true },
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      expect(entry.effect.detail).toContain("rediscovered");
+      expect(entry.effect.detail).not.toContain("since");
+      expect(entry.effect.detail).toContain("after a restart either");
+    });
+
+    it("says the list adds nothing to a sealed container, once the capability is back", async () => {
+      // The mirror image: granting the capability leaves the running container
+      // sealed to ShipIt's own lifeline hosts until it restarts. It is not that
+      // NO host on the list is reachable — the lifeline hosts are on the list
+      // too — it is that the list adds nothing.
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true },
+        { contained: true },
+      ));
+      expect(entry.effect.state).toBe("restart-dependent");
+      expect(entry.effect.detail).toContain("adds nothing to what it can reach");
+      expect(entry.effect.detail).toContain("from its next start");
+    });
+
+    it("does not call a contained container uncontained when its next start is open", async () => {
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true },
+        { contained: false },
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      expect(entry.effect.detail).toContain("adds nothing to what it can reach");
+      // The session IS contained right now; only its next start is open.
+      expect(entry.effect.detail).not.toContain("nothing contains the session");
+      expect(entry.effect.detail).toContain("next start is open");
+    });
+
+    it("leaves a sandbox nothing changed under saying exactly what it said before", async () => {
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true },
+        { contained: true, userHostsExcluded: true },
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      // Not "no host here is reachable": the lifeline base is a subset of this
+      // list's shipped defaults, so hosts on the list ARE reachable from a
+      // sealed session. What the list does not do is widen what it reaches.
+      expect(entry.effect.detail).toContain("shuts it out of the allowlist");
+      expect(entry.effect.detail).toContain("adds nothing to what it can reach");
+      expect(entry.effect.detail).toContain("network capability is what has to");
+    });
   });
 
   it("emits nothing of an entry that is not shaped like a host, and gives it no address", async () => {

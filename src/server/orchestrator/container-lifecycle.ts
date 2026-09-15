@@ -746,6 +746,12 @@ export async function createContainer(
 
     const egressCfg = deps.resolveEgressConfig?.(config.sessionId) ?? { contained: true, extraHosts: [] };
     sc.egressContainedAtStart = egressCfg.contained;
+    // From the config that is about to be applied, not from the capability
+    // snapshot `app-lifecycle.ts` took before this resolved — and true only
+    // where a sealing policy is actually installed: with enforcement off, or an
+    // uncontained container, nothing shuts the user's hosts out.
+    sc.egressUserHostsExcluded =
+      !!deps.egressEnforce && egressCfg.contained && egressCfg.userHostsExcluded === true;
     // Network joins must append ACCEPT rules after the installer's OUTPUT flush. Resolve on failure too.
     sc.egressFirewallReady = new Promise<void>((resolve) => {
       signalEgressFirewallReady = resolve;
