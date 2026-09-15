@@ -970,6 +970,13 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "ssh_host_key")) return;
     db.exec("ALTER TABLE messages ADD COLUMN ssh_host_key TEXT");
   },
+
+  // docs/303-session-status-card — the card the agent writes, as JSON. Never a
+  // transcript row, so it rides the session record and every viewer, reload and
+  // restart reads the same card with no extra request.
+  (db) => {
+    addSessionColumnIfMissing(db, "session_status");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

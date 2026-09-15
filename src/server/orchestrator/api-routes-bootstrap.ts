@@ -40,6 +40,7 @@ import {
   refreshAgentEnvForAllSessions,
   selectAgentEnvForPush,
 } from "./session-agent-env.js";
+import { markAllSessionStatusesStale } from "./services/session-status.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerBootstrapRoutes(
@@ -155,6 +156,12 @@ export async function registerBootstrapRoutes(
           },
           onAutoFixCiEnabled: () => {
             deps.prStatusPoller?.broadcastAllSnapshots();
+          },
+          onSessionStatusCardEnabled: () => {
+            void markAllSessionStatusesStale({
+              sessionManager: deps.sessionManager,
+              sseBroadcast: deps.sseBroadcast,
+            });
           },
           ...pickDeclaredSettings(request.body),
           ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),

@@ -120,6 +120,18 @@ function PrAutomationsSettings() {
   );
 }
 
+function SessionStatusCardSettings() {
+  return (
+    <div className="space-y-3">
+      <DeclaredToggle
+        settingKey="advanced.sessionStatusCard"
+        testId="settings-session-status-card"
+        heading
+      />
+    </div>
+  );
+}
+
 function MultiAgentSettings() {
   return (
     <div className="space-y-3">
@@ -422,6 +434,10 @@ export function AdvancedTab({
       <div className="border-t border-(--color-border-secondary)" />
 
       <MultiAgentSettings />
+
+      <div className="border-t border-(--color-border-secondary)" />
+
+      <SessionStatusCardSettings />
 
       <div className="border-t border-(--color-border-secondary)" />
 

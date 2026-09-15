@@ -315,6 +315,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get recordedCards(): RecordedChatCard[] { return this.turn.recordedCards; }
   set recordedCards(m: RecordedChatCard[]) { this.turn.recordedCards = m; }
 
+  get statusUpdated(): boolean { return this.turn.statusUpdated; }
+  set statusUpdated(v: boolean) { this.turn.statusUpdated = v; }
+
   /** Stable reference, mutable contents. */
   get committedBodyIds(): CommittedBodyIds { return this.turn.committedBodyIds; }
 

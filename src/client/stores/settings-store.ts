@@ -191,6 +191,7 @@ interface SettingsState {
   autoResolveConflicts: boolean;
 
   autoFixCi: boolean;
+  sessionStatusCard: boolean;
 
   autoResetMergedBranch: boolean;
 
@@ -327,6 +328,7 @@ interface SettingsState {
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
+  setSessionStatusCard: (enabled: boolean) => void;
 
   setFailoverCutoffs: (modeKey: string, cutoffs: { session: number; weekly: number }) => void;
   setAccountSelectionMode: (modeKey: string, mode: "strict" | "balanced") => void;
@@ -437,6 +439,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   liveSteering: true,
   autoResolveConflicts: false,
   autoFixCi: false,
+  sessionStatusCard: false,
   autoResetMergedBranch: true,
   enableSubAgents: true,
   failoverCutoffs: {},
@@ -574,6 +577,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
+  setSessionStatusCard: (enabled) => set({ sessionStatusCard: enabled }),
   setFailoverCutoffs: (modeKey, cutoffs) =>
     set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [modeKey]: cutoffs } })),
   setAccountSelectionMode: (modeKey, mode) =>

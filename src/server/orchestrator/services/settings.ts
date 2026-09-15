@@ -227,6 +227,7 @@ interface SaveHookContext {
   credentialStore: CredentialStore;
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
+  onSessionStatusCardEnabled?: () => void;
 }
 
 /**
@@ -251,6 +252,13 @@ const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
   "advanced.autoFixCi": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onAutoFixCiEnabled?.();
+    },
+  },
+  // docs/303 req 23 — the earlier card reappears at once, marked stale, and the
+  // next turn refreshes it.
+  "advanced.sessionStatusCard": {
+    after: (value, previous, ctx) => {
+      if (value === true && previous !== true) ctx.onSessionStatusCardEnabled?.();
     },
   },
   "services.nonTurnModel": {
@@ -302,6 +310,7 @@ export interface SaveGlobalSettingsOptions extends GlobalSettingsPatch {
   providerAccountManager?: ProviderAccountManager;
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
+  onSessionStatusCardEnabled?: () => void;
   // Addressed per service or per item; not derived from the catalogue yet.
   failoverCutoffs?: Record<string, Partial<FailoverCutoffs>>;
   accountSelectionMode?: Record<string, AccountSelectionMode>;
@@ -397,6 +406,8 @@ export async function saveGlobalSettings(
     ...(opts.onAutoResolveConflictsEnabled
       ? { onAutoResolveConflictsEnabled: opts.onAutoResolveConflictsEnabled } : {}),
     ...(opts.onAutoFixCiEnabled ? { onAutoFixCiEnabled: opts.onAutoFixCiEnabled } : {}),
+    ...(opts.onSessionStatusCardEnabled
+      ? { onSessionStatusCardEnabled: opts.onSessionStatusCardEnabled } : {}),
   };
 
   // Everything is validated before anything is written. A save that ends in a

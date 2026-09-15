@@ -36,6 +36,8 @@ export interface WsGlobalSettings {
   autoFixCi?: boolean;
   autoResetMergedBranch?: boolean;
   enableSubAgents?: boolean;
+  /** docs/303 — gates the status card, the nudge and which action tool the agent has. */
+  sessionStatusCard?: boolean;
 }
 
 export interface WsTemplateApplied {

@@ -32,6 +32,8 @@ import type {
 import type { ChatHistoryManager } from "../chat-history.js";
 import { MAX_CREDENTIAL_LABEL_LENGTH } from "../credential-store.js";
 import type { CredentialStore } from "../credential-store.js";
+import type { SessionManager } from "../sessions.js";
+import { markAllSessionStatusesStale } from "./session-status.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
@@ -127,6 +129,8 @@ export interface SettingsOperationDeps {
   containerManager?: { reloadEgress(sessionId: string): Promise<boolean> } | undefined;
   /** The two enable hooks the settings route supplies; a proposal does the same. */
   prStatusPoller?: { broadcastAllSnapshots(): void } | undefined;
+  /** docs/303 — a proposal that turns the status card on marks the stored cards stale, as the dialog does. */
+  sessionManager?: SessionManager | undefined;
 }
 
 export interface SettingsOperation {
@@ -291,15 +295,23 @@ function saveOptions(
   deps: SettingsOperationDeps,
   patch: Partial<SaveGlobalSettingsOptions>,
 ): SaveGlobalSettingsOptions {
+  const sessionManager = deps.sessionManager;
   return {
     ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
-    // The two hooks the settings route supplies. A proposal that turns auto-fix
+    // The hooks the settings route supplies. A proposal that turns auto-fix
     // CI on has to do what the dialog does, or the feature stays asleep until
     // something else broadcasts.
     ...(deps.prStatusPoller
       ? {
           onAutoResolveConflictsEnabled: () => deps.prStatusPoller?.broadcastAllSnapshots(),
           onAutoFixCiEnabled: () => deps.prStatusPoller?.broadcastAllSnapshots(),
+        }
+      : {}),
+    ...(sessionManager
+      ? {
+          onSessionStatusCardEnabled: () => {
+            void markAllSessionStatusesStale({ sessionManager, sseBroadcast: deps.sseBroadcast });
+          },
         }
       : {}),
     ...patch,

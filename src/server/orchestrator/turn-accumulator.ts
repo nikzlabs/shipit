@@ -14,6 +14,12 @@ export class TurnAccumulator {
   needsNewMessageGroup = true;
   steeredMessages: SteeredMessage[] = [];
   recordedCards: RecordedChatCard[] = [];
+  /**
+   * docs/303 req 11 — the agent wrote or confirmed the status card this turn.
+   * Sticky within the turn and reset with the rest of it, so a turn that writes
+   * the card and then keeps working still counts as updated.
+   */
+  statusUpdated = false;
 
   private _messageQueue: QueuedMessage[] = [];
   private _turnEventBuffer: WsServerMessage[] = [];
