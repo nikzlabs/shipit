@@ -128,6 +128,7 @@ export interface QueuedMessage {
   resetMergedBranch?: boolean;
   compactContext?: boolean;
   silent?: boolean;
+  statusNudge?: boolean;
 }
 
 export interface AgentDispatchOptions {
@@ -153,6 +154,8 @@ export interface AgentDispatchOptions {
   compactContext?: boolean;
   /** Suppress the user bubble and row for a ShipIt-initiated compaction turn. */
   silent?: boolean;
+  /** docs/303 — ShipIt's own follow-up asking for the status update the last turn skipped. */
+  statusNudge?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -335,6 +338,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
   if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
   if (opts.silent !== undefined) queued.silent = opts.silent;
+  if (opts.statusNudge !== undefined) queued.statusNudge = opts.statusNudge;
   return queued;
 }
 
@@ -465,6 +469,8 @@ export interface SystemTurnDeps {
     deferPushArm?: (arm: () => void) => void;
   }) => Promise<string | null>;
   steerInputs?: () => { liveSteering: boolean; steeringCapable: boolean };
+  /** docs/303 req 21 — with the setting off, the freshness mark and the nudge do not run. */
+  statusCardEnabled?: () => boolean;
 }
 
 export function resetRunnerTurnState(runner: SessionRunnerInterface): void {

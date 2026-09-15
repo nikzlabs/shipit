@@ -373,6 +373,7 @@ async function decideAndRunSend(
         resetMergedBranch: msg.resetMergedBranch,
         compactContext: msg.compactContext,
         silent: undefined,
+        statusNudge: undefined,
       }));
       checklistAccepted();
       return;
@@ -543,6 +544,7 @@ async function decideAndRunSend(
       resetMergedBranch: msg.resetMergedBranch,
       compactContext: msg.compactContext,
       silent: undefined,
+      statusNudge: undefined,
       execution: "interactive",
       // Queue raw inputs; the drain resolves uploads again.
       images: msg.images,
@@ -574,6 +576,7 @@ async function decideAndRunSend(
       resetMergedBranch: msg.resetMergedBranch,
       compactContext: msg.compactContext,
       silent: undefined,
+      statusNudge: undefined,
       execution: "interactive",
       images: msg.images,
       files: msg.files,
@@ -627,6 +630,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
       resetMergedBranch: msg.resetMergedBranch,
       compactContext: msg.compactContext,
       silent: undefined,
+      statusNudge: undefined,
       execution: "interactive",
       images: undefined,
       files: undefined,

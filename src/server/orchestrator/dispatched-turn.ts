@@ -118,6 +118,7 @@ async function runDispatchedTurnInner(
       resetMergedBranch: undefined,
       compactContext: undefined,
       silent: true,
+      statusNudge: undefined,
     }), createAgent);
     return;
   }
@@ -339,6 +340,8 @@ async function runDispatchedTurnInner(
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
+      ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+      ...(opts.statusNudge !== undefined ? { statusNudge: opts.statusNudge } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
       emitUserEcho: attempt === 0 && !opts.silent,

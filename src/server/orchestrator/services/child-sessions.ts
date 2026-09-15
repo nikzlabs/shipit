@@ -423,6 +423,7 @@ export async function spawnChildSession(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
+    statusNudge: undefined,
   }));
 
   console.log(
@@ -639,6 +640,7 @@ export async function sendChildMessage(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
+    statusNudge: undefined,
   }));
   return {
     queuePosition: wasRunning ? runner.queueLength : 0,

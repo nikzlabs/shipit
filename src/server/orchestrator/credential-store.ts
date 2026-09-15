@@ -904,6 +904,14 @@ export class CredentialStore {
     this.setDeclaredSetting("advanced.autoResetMergedBranch", enabled);
   }
 
+  getSessionStatusCard(): boolean {
+    return this.getDeclaredSetting("advanced.sessionStatusCard");
+  }
+
+  setSessionStatusCard(enabled: boolean): void {
+    this.setDeclaredSetting("advanced.sessionStatusCard", enabled);
+  }
+
   getEnableSubAgents(): boolean {
     return this.getDeclaredSetting("advanced.enableSubAgents");
   }

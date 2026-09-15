@@ -8,6 +8,7 @@ import { archiveSession, forkSession, forkReportSinks } from "../services/sessio
 import { gitRemoteCredentialResolver } from "../services/github.js";
 import type { PersistedMessage, RewindSnapshotInfo } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { clearConversationThread } from "../services/session-status.js";
 import { generateBranchSlug, generateBranchPrefix } from "../git-utils.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { onWorkspaceRewritten, type WorkspaceRewriteRunner } from "../workspace-rewrite.js";
@@ -214,7 +215,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       ctx.chatHistoryManager.saveMessages(sessionId, truncated);
       const replay = buildConversationReplay(truncated);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      clearConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -309,7 +310,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         ctx.chatHistoryManager.saveMessages(sessionId, truncated);
         const replay = buildConversationReplay(truncated);
         if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-        ctx.sessionManager.clearAgentSessionId(sessionId);
+        clearConversationThread(ctx, sessionId);
         ctx.send({
           type: "rewind_complete",
           gapPosition,
@@ -341,7 +342,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "code", headHash, flippedMessageIds });
       const replay = buildConversationReplay(allMessages);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      clearConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -374,7 +375,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       });
       const replay = buildConversationReplay(truncated);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      clearConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -416,7 +417,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       ctx.chatHistoryManager.saveMessages(targetSessionId, snapshot.messages);
       const replay = buildConversationReplay(snapshot.messages);
       if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      clearConversationThread(ctx, targetSessionId);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "chat" });
       return;
     }
@@ -433,7 +434,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       if (!git) throw new Error("No workspace available for code restore");
       await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash, ctx.getRunnerRegistry().get(targetSessionId));
       ctx.chatHistoryManager.clearRolledBack(targetSessionId, snapshot.flippedMessageIds);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      clearConversationThread(ctx, targetSessionId);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "code" });
       return;
     }
@@ -442,7 +443,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       ctx.chatHistoryManager.saveMessages(targetSessionId, snapshot.messages);
       const replay = buildConversationReplay(snapshot.messages);
       if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      clearConversationThread(ctx, targetSessionId);
       if (!git) throw new Error("No workspace available for code restore");
       await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash, ctx.getRunnerRegistry().get(targetSessionId));
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "both" });
