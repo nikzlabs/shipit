@@ -267,6 +267,21 @@ start a turn asking for something the agent can no longer call.
 `statusNudge`. An ignored nudge leaves the card stale; the next ordinary turn
 is checked afresh.
 
+**Known gap: an orchestrator restart during a nudge turn loses the marker.**
+`statusNudge` survives queueing and ordinary dispatch, but `adoptInFlightTurn`
+rebuilds an adopted turn from what the worker reports (`agentId`, `deliveryId`,
+`streaming`), so the restarted nudge settles as an ordinary turn and can be
+nudged once more. The fix belongs with the worker's in-flight turn info rather
+than here; the cost of the gap is one extra visible turn in that window.
+
+**Its own lease spans the dispatch, not just the call.** `dispatch` sets
+`running` synchronously, but the turn epoch — what tells a predecessor its exit
+no longer owns the runner — only advances when the successor enters its
+executor, and setup (`preTurnReset`, attachment resolution) awaits in between. So
+the nudge holds `beginPostTurnWork` until its `TurnHandle` settles. `PostTurnHold`
+expires on its own, so a turn outliving the deadline is covered by `running` and
+the epoch by then.
+
 ## Client (req 6–9, 14, 17, 18, 20, 24, 26–29)
 
 `SessionStatusCard` (`src/client/components/SessionStatusCard.tsx`), rendered

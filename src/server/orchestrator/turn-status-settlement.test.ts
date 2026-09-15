@@ -44,7 +44,8 @@ function harness(opts: {
 } = {}) {
   const cards = new Map<string, SessionStatus | undefined>();
   if (opts.card) cards.set("s1", opts.card);
-  const state = { readThrows: false, commits: 0, entered: [] as number[] };
+  const state = { readThrows: false, commits: 0, entered: [] as number[], preTurnResets: 0 };
+  let preTurnReset: ((call: number) => Promise<{ agentPrefix: string }>) | null = null;
   const gates = new Map<number, { parked: Promise<void>; release: () => void }>();
   const gateFor = (index: number) => {
     let release = (): void => {};
@@ -103,6 +104,10 @@ function harness(opts: {
       return null;
     },
     scheduleAutoPush: vi.fn(),
+    preTurnReset: async () => {
+      state.preTurnResets += 1;
+      return preTurnReset ? await preTurnReset(state.preTurnResets) : { agentPrefix: "" };
+    },
     statusCardEnabled: () =>
       (typeof opts.statusCardEnabled === "function"
         ? opts.statusCardEnabled()
@@ -149,6 +154,7 @@ function harness(opts: {
     emitted,
     rows,
     state,
+    setPreTurnReset: (fn: (call: number) => Promise<{ agentPrefix: string }>) => { preTurnReset = fn; },
     parkedOn: (index: number) => state.entered.includes(index) && state.commits === index,
     releaseCommit: (index = 0) => gateFor(index).release(),
     card: () => cards.get("s1"),
@@ -361,6 +367,39 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
 
     expect(h.agents).toHaveLength(1);
     expect(h.nudges()).toHaveLength(0);
+  });
+
+  // Invariant 5, in the window `turnIsCurrent()` cannot cover: `dispatch` sets `running`
+  // synchronously, but the turn epoch only advances when the nudge enters its executor, so
+  // a predecessor exiting during the setup in between still reads as current.
+  it("keeps the runner busy while the nudge's own setup is still running", async () => {
+    let releaseSetup = (): void => {};
+    const setupGate = new Promise<void>((resolve) => { releaseSetup = resolve; });
+    const h = harness({ card: { ...seeded }, streaming: true });
+    // preTurnReset runs inside the dispatched turn's setup, before its executor is entered.
+    // Park the nudge's, not the first turn's.
+    h.setPreTurnReset(async (call) => {
+      if (call === 2) await setupGate;
+      return { agentPrefix: "" };
+    });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn started");
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.state.preTurnResets === 2, "the nudge's setup started");
+
+    h.agents[0]!.emit("done", 0);
+    await flush();
+    await flush();
+    expect(h.runner.agentBusy, "the runner is not reclaimable mid-setup").toBe(true);
+    expect(h.runner.dispose(), "an unforced dispose declines").toBeUndefined();
+    expect(h.runner.disposed).toBe(false);
+
+    releaseSetup();
+    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    h.runner.dispose({ force: true });
   });
 
   it("does not nudge a driver-owned turn (postTurn: none)", async () => {

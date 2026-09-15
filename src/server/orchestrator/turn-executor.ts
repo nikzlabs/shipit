@@ -713,13 +713,24 @@ export async function executeAgentTurn(
     // card stays stale and the next ordinary turn is checked afresh.
     if (!runner.canRunDispatchedTurn || systemTurnBlockedByResidentWork(runner, true)) return;
     nudgeDispatched = true;
-    // The nudge is this turn's post-turn work until the turn it starts takes over.
+    // The nudge is this turn's post-turn work until the turn it starts takes over — and
+    // "takes over" is not when `dispatch` returns. It sets `running` synchronously, but the
+    // turn epoch only advances when the successor enters its executor, so a predecessor
+    // exiting during the async setup in between still reads as current and clears the
+    // reservation. The lease spans that window; `PostTurnHold` expires on its own, so a
+    // turn that outlives the deadline is covered by `running` and the epoch by then.
     runner.beginPostTurnWork();
+    let leaseHeld = true;
+    const releaseLease = (): void => {
+      if (!leaseHeld) return;
+      leaseHeld = false;
+      runner.endPostTurnWork();
+    };
     try {
       // Through `dispatch`, not an enqueue plus a drain: only that path owns recovery when
       // turn setup rejects, and without it a message queued during setup is stranded with
       // nothing left to start it.
-      runner.dispatch(prepareDispatch({
+      const handle = runner.dispatch(prepareDispatch({
         text: statusNudgePrompt(storedStatus()),
         agentInterface: undefined,
         messageOrigin: undefined,
@@ -739,10 +750,10 @@ export async function executeAgentTurn(
         silent: undefined,
         statusNudge: true,
       }));
+      void handle.settled.then(releaseLease, releaseLease);
     } catch (err) {
       console.error(`[turn] dispatching the status-card nudge for ${sessionId} failed:`, err);
-    } finally {
-      runner.endPostTurnWork();
+      releaseLease();
     }
   };
 
