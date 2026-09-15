@@ -83,8 +83,9 @@ agent is the actor.
    outcome waits for the turn after rather than being lost.
 9. A setting whose value is prose — the user's own instructions, an ops session's
    instructions, a role's standing instructions — is proposable like any other
-   setting, and not only in principle. The card shows what the change does to the
-   text, in a form the user can read and check before they click. A value too
+   setting, and not only in principle. The card **says a change is proposed and
+   how big it is**; the change itself is read in a dialog the card opens, and the
+   user can read it in full before they click. A value too
    long for anyone to check that way is still refused rather than shown in part,
    and the agent is told where that line is before it writes a value, not after.
 
@@ -132,6 +133,13 @@ agent is the actor.
 
 ## Resolved questions
 
+- 2026-09-15 — *Where does a long change get read — inline on the card, or
+  somewhere the card opens?* The first build put the whole diff in the transcript,
+  in a height-capped scroll region. The user: **"let's make the card just say that
+  there is a change, for a case of a long values. And the full diff should be
+  shown in a dialog."** So the card carries the summary ShipIt authored — the two
+  sizes and the `+n −n` — and a control that opens the change; a prose value never
+  occupies the scrollback. → requirement 9's second sentence.
 - 2026-09-15 — *A prose setting declares a 50,000-character limit and reads as
   fully proposable, but no realistic prose value fits the 200 characters a
   proposal card will show — so it is proposable in principle and unproposable in

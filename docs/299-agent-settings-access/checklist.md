@@ -472,8 +472,8 @@ change.
       dialog's box
 - [x] `shipit settings propose <key> --value-file -`, because prose does not fit
       in one shell word
-- [x] The card renders the diff height-capped, as plain text, with the server's
-      counts — verified in both themes
+- [x] The card carries ShipIt's summary and the dialog carries the diff, plain
+      text, with the server's counts on the card — verified in both themes
 - [x] `shipit-docs/settings.md` and the capability wiki
 - [x] Every new guard proven red on its own
 - [x] An independent review, each finding verified at the code
@@ -512,3 +512,17 @@ change.
       `git.identity`, which is the case that still reaches the chip refusal now
       that prose does not; a new guard pins that the same measure chooses the
       diff. Both proven red alone
+
+### The diff moved into a dialog
+
+- [x] The user, on the first build: *"let's make the card just say that there is
+      a change, for a case of a long values. And the full diff should be shown in
+      a dialog."* Receipt under `requirements.md` → *Resolved questions*, and
+      req 9's second sentence rewritten to match
+- [x] The card is a summary row — two sizes, `+n −n`, and *Review the change* —
+      so a prose value never occupies the scrollback, and the card's height no
+      longer depends on the value at all
+- [x] The dialog keeps every property the inline block had: full context, plain
+      text, per-line Added/Removed labels, and a bounded scrolling region
+- [x] The counts stay on the CARD, so padding a value cannot make the control
+      look cheaper to skip than it is

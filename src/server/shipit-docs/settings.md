@@ -226,10 +226,11 @@ way to name another one.
 ### Proposing prose
 
 A setting that holds prose — the user's own instructions, an ops session's
-instructions, a role's standing instructions — is proposable like any other, and
-the card shows it as a **diff** rather than as two values: the whole current text
-and the whole proposed text, with the lines that move marked. That is what the
-user checks before pressing Apply.
+instructions, a role's standing instructions — is proposable like any other. The
+card does not show the text: it says a change is proposed and how big it is, and
+**Review the change** opens the whole thing as a diff — the whole current text
+against the whole proposed text, with the lines that move marked. That is what
+the user reads before pressing Apply.
 
 Pass it on stdin rather than squeezing it into one shell word:
 

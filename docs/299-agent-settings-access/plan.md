@@ -810,13 +810,25 @@ The refusal underneath is right and is not overturned: a change the user cannot
 check by looking is not offered as one click. What was wrong is that the card had
 only one way to show a value, in one piece.
 
-**So the card renders a line diff instead of two chips** whenever either side is
-longer than a chip shows (`CARD_VALUE_MAX`, still 200). It is a **full-context**
-diff — every line of both versions is in it, unchanged lines included — so it is
-not a summary that elides part of what is being written: the whole before and the
-whole after are on the card, marked with what changed. The block is height-capped
-and scrolls, so a longer value makes the card no taller and can never push Apply
-and Dismiss out of view.
+**So a third shape replaces the two chips** whenever either side is longer than a
+chip shows (`CARD_VALUE_MAX`, still 200): **the card says a change is proposed
+and how big it is, and the change itself is read in a dialog the card opens.**
+Two sizes, a `+n −n`, and a *Review the change* control — that is the whole of
+what a prose change occupies in the scrollback.
+
+The dialog holds a **full-context** diff — every line of both versions, unchanged
+lines included — so it is not a summary that elides part of what is being
+written; the whole before and the whole after are there, marked with what
+changed.
+
+**The split is the user's, and the reason is where a transcript's room goes.** An
+earlier build put the diff inline in the card, height-capped. It worked, and it
+spent several screens of the conversation on pages of the user's own text that
+they were about to read once and never again — so the summary stays in the
+scrollback and the reading happens somewhere it can have the room. Two
+consequences fall out rather than needing to be designed: the card's height no
+longer depends on the value at all, so nothing can push Apply and Dismiss out of
+view; and a card the user scrolls past later costs one line.
 
 **"Longer than a chip shows" is measured over the RENDERED text**, which is the
 same measure `requireShowable` refuses on: a value is quoted and its line breaks
@@ -893,14 +905,16 @@ put text shaped like ShipIt's own words. The equivalent is four rules:
 
 - **The card's own words stay the registry's.** Label, description, breadcrumb,
   the character and line counts and the `+n −n` are ShipIt's, and the diff is the
-  only region carrying anyone else's text. Unchanged from today, and stated
-  because that region is now big enough to be mistaken for chrome.
+  only region carrying anyone else's text. That the diff is in a dialog helps
+  here and is not relied on: a surface the user opened deliberately, with a title
+  ShipIt wrote, is harder to mistake for chrome than a block inside the card.
 - **The diff renders as plain text, never as markdown.** A heading, a link or a
   rule rendered out of the proposed value is exactly how it stops reading as
   content.
-- **The counts come from the server.** A value padded with blank lines so its
-  substance sits outside the visible region still says `412 lines` when the
-  region shows twelve.
+- **The counts come from the server, and they are on the CARD.** A change the
+  user has not opened yet is still described by its real size — padding a value
+  with blank lines cannot make *Review the change* look cheaper to skip than it
+  is.
 - **Every changed line says so in words, not only in colour.** The `+`/`−` glyph
   is decorative, so a screen reader would otherwise hear both halves of a
   replaced line with nothing saying which one Apply writes.
@@ -1544,7 +1558,8 @@ Beyond the persistence round-trip tests:
 - **Frozen project target** — a card for repo A is refused after a rebind.
 - **A prose change is proposable** — several hundred characters of
   `instructions.userInstructions`, the case req 9 came from, produces a card, and
-  the card carries the whole before and the whole after as a diff. At
+  the card summarises it and its dialog carries the whole before and the whole
+  after. At
   `CARD_TEXT_MAX + 1` and at `CARD_TEXT_LINES_MAX + 1` the refusal still happens,
   naming the bound rather than the chip's 200.
 - **The click writes what the diff showed** — a propose-then-apply round trip
