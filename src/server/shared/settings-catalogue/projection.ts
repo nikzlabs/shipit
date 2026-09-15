@@ -1,3 +1,4 @@
+import { joinRendered, renderOwn, renderValue, type Rendered } from "./rendered.js";
 import type {
   AnySettingDeclaration,
   Projection,
@@ -70,30 +71,37 @@ export function projectSetting(
   return applyProjection(declaration.emits, raw);
 }
 
-function formatScalar(value: unknown): string {
-  if (value === null || value === undefined) return "not set";
-  if (typeof value === "boolean") return value ? "on" : "off";
-  if (typeof value === "string") return value.length > 0 ? value : "empty";
-  if (typeof value === "number") return String(value);
-  return JSON.stringify(value);
-}
-
 /**
- * One line of text for a read.
+ * One line of text for a read, and the one mint of it.
  *
  * Takes the outcome, never the declaration's stored value: a formatter handed
  * the raw value is exactly how a projection gets bypassed in the one output
  * path nobody re-checks.
+ *
+ * The result is {@link Rendered} rather than a string, which is what carries the
+ * rule past this file (planning#577): the fields that carry a VALUE into the
+ * agent's line-oriented output are declared as that type, so shortening one
+ * afterwards, or formatting a stored value some other way, is a type error
+ * rather than the one line nobody re-checks. It does not govern the fields that
+ * carry ShipIt's own prose — a note, an effect's detail, a refusal sentence —
+ * which are literals in this repository and stay plain strings.
  */
-export function formatSetting(declaration: AnySettingDeclaration, outcome: ProjectionOutcome): string {
-  if (!outcome.readable) return outcome.explanation;
+export function formatSetting(
+  declaration: AnySettingDeclaration,
+  outcome: ProjectionOutcome,
+): Rendered {
+  if (!outcome.readable) return renderOwn(outcome.explanation);
   if (declaration.emits.kind === "configured_only") {
-    return (outcome.value as { configured: boolean }).configured ? "configured" : "not configured";
+    return renderOwn(
+      (outcome.value as { configured: boolean }).configured ? "configured" : "not configured",
+    );
   }
   if (Array.isArray(outcome.value)) {
-    return outcome.value.length === 0 ? "empty" : outcome.value.map(formatScalar).join(", ");
+    return outcome.value.length === 0
+      ? renderOwn("empty")
+      : joinRendered(outcome.value.map(renderValue));
   }
-  return formatScalar(outcome.value);
+  return renderValue(outcome.value);
 }
 
 /**

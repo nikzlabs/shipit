@@ -161,10 +161,12 @@ describe("the settings outcome notice (docs/299-agent-settings-access req 8)", (
   });
 
   it("flattens every interpolated field, so none of them can add a line", () => {
+    // Not only `\n`: `\s` matches none of U+0085, U+2028 and U+2029, and a
+    // reader treats each of them as the end of a line (planning#577).
     resolve("set-a", "partial", {
-      label: "Git\nidentity",
-      path: "Settings\n› Git",
-    }, { key: "mcp.servers[].enabled", item: "no\ntion" });
+      label: "Git\u2028identity",
+      path: "Settings\u0085› Git",
+    }, { key: "mcp.servers[].enabled", item: "no\u2029tion" });
     const notice = buildSettingsOutcomeNotice(pendingSettingsOutcomes(deps(), SESSION));
 
     // Opener, one bullet, closer. Any unflattened field adds a fourth line, and

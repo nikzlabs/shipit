@@ -12,13 +12,18 @@ import {
   findSetting,
   formatSetting,
   isPayloadDeclaration,
+  joinRendered,
   projectSetting,
   refusalSentence,
+  renderAddress,
+  renderOwn,
+  renderValue,
 } from "../../shared/settings-catalogue/index.js";
 import type {
   AnySettingDeclaration,
   OwnRouteSettingKey,
   RefusalReason,
+  Rendered,
   SettingAddress,
   SettingScope,
   SettingTab,
@@ -125,11 +130,11 @@ export interface SettingAddressView {
 
 /** One addressed instance of an item-addressed setting, in `get` only. */
 export interface SettingItemView {
-  /** How a change names this instance. */
-  address: string;
+  /** How a change names this instance, through {@link renderAddress}. */
+  address: Rendered;
   /** Projected through the declaration's `emits`, exactly as a scalar value is. */
   value: unknown;
-  display: string;
+  display: Rendered;
   /** What ShipIt already computes about this instance, so the agent says why (req 3). */
   notes?: string[];
   /** The last proposal about THIS instance; a sibling item's says nothing about it. */
@@ -150,8 +155,13 @@ export interface SettingIndexEntry {
    * instances in `display` and `get` carries what each is set to.
    */
   value: unknown;
-  /** The value on one line, in the form a change to it would name. */
-  display: string;
+  /**
+   * The value on one line, in the form a change to it would name. `Rendered`,
+   * because this is the field a line-oriented output interpolates: a stored
+   * newline here would start a line that reads as one of ShipIt's own fields
+   * (planning#577).
+   */
+  display: Rendered;
   readable: boolean;
   unreadableReason?: SettingUnreadableReason;
   propose: SettingProposeView;
@@ -176,11 +186,18 @@ export interface SettingProposalSummary {
   cardId: string;
   phase: SettingsProposalPhase;
   operation: SettingsProposalOperation;
-  /** The instance it was about, where the setting has more than one. */
-  item?: string;
-  /** Both as the proposal recorded them: the projected value, never the stored one. */
-  from: unknown;
-  proposed: unknown;
+  /**
+   * The instance it was about, where the setting has more than one — flattened,
+   * because a card's target is the address the proposing agent supplied.
+   */
+  item?: Rendered;
+  /**
+   * Both as the proposal recorded them: the projected value, never the stored
+   * one — and rendered, because `get` puts them on the `Last proposal` line and
+   * the proposed half is a value some other session's agent supplied.
+   */
+  from: Rendered;
+  proposed: Rendered;
   proposedAt: string;
   resolvedAt?: string;
   /** The session the card is in, which may not be the one reading this. */
@@ -309,7 +326,7 @@ function proposeView(declaration: AnySettingDeclaration): SettingProposeView {
 
 export interface ProjectedValue {
   value: unknown;
-  display: string;
+  display: Rendered;
   notes: string[];
   /** A `withheld` projection: the declaration gives the read no value at all. */
   withheld?: RefusalReason;
@@ -340,7 +357,9 @@ export function projectSettingValue(
   const shortened = `${outcome.value.slice(0, LIST_TEXT_MAX).trimEnd()}…`;
   return {
     value: shortened,
-    display: oneLine(shortened),
+    // Back through the same door: shortening produces a new string, and a
+    // formatter of its own beside the catalogue's is what planning#577 was.
+    display: renderValue(shortened),
     notes: [
       ...notes,
       `Shortened to ${LIST_TEXT_MAX} characters here; the whole value is ${outcome.value.length} characters and comes back from a read of this one setting.`,
@@ -898,9 +917,16 @@ async function readValue(
  * collection's projection refuses to name — a URL pasted into the allowlist
  * box, whose userinfo and query are where a token travels — is named by
  * nothing, so it produces no item at all.
+ *
+ * `renderAddress` is the last word on the way out (planning#577). An address is
+ * emitted BARE, because the agent passes it back to `--item`, so it cannot be
+ * quoted out of harm's way — and the collections do not all gate their names to
+ * one line: the credential and provider-account ones emit ids their projection
+ * only filters for being strings. An address that could start a line of its own
+ * is named by nothing here, which the read already reports a count of.
  */
-function itemAddress(declarationKey: string, name: ItemName): string | null {
-  if (name.kind === "shipit") return name.address;
+function itemAddress(declarationKey: string, name: ItemName): Rendered | null {
+  if (name.kind === "shipit") return renderAddress(name.address);
   const collectionKey = collectionKeyOf(declarationKey);
   const collection = collectionKey ? findSetting(collectionKey) : undefined;
   if (!collection) return null;
@@ -908,23 +934,25 @@ function itemAddress(declarationKey: string, name: ItemName): string | null {
   if (!outcome.readable || !Array.isArray(outcome.value)) return null;
   const [emitted] = outcome.value as unknown[];
   if (typeof emitted !== "string" || emitted.length === 0) return null;
-  return name.prefix ? `${name.prefix}:${emitted}` : emitted;
+  return renderAddress(name.prefix ? `${name.prefix}:${emitted}` : emitted);
 }
 
 /** Up to this many addresses are named in the index; `get` carries them all. */
 const ADDRESSES_IN_INDEX = 8;
 
-function itemsDisplay(addresses: string[]): string {
-  if (addresses.length === 0) return "no items";
+function itemsDisplay(addresses: Rendered[]): Rendered {
+  if (addresses.length === 0) return renderOwn("no items");
   const shown = addresses.slice(0, ADDRESSES_IN_INDEX);
   const rest = addresses.length - shown.length;
   const more = rest > 0 ? `, … (+${rest} more)` : "";
-  return `${addresses.length} item${addresses.length === 1 ? "" : "s"}: ${shown.join(", ")}${more}`;
+  return renderOwn(
+    `${addresses.length} item${addresses.length === 1 ? "" : "s"}: ${joinRendered(shown)}${more}`,
+  );
 }
 
 interface ProjectedItems {
   items: SettingItemView[];
-  display: string;
+  display: Rendered;
   notes: string[];
 }
 
@@ -1014,7 +1042,7 @@ function unreadableEntry(
     entry: {
       ...entryBase(declaration),
       value: null,
-      display: "unknown",
+      display: renderOwn("unknown"),
       readable: false,
       unreadableReason: reason,
       // An unreadable value cannot carry an effect claim. The reason is in
@@ -1191,9 +1219,9 @@ function summarize(row: SettingsProposalRow | null): SettingProposalSummary | un
     cardId: row.cardId,
     phase: row.phase,
     operation: row.operation,
-    ...(row.target.item ? { item: row.target.item } : {}),
-    from: row.from,
-    proposed: row.proposed,
+    ...(row.target.item ? { item: renderOwn(row.target.item) } : {}),
+    from: renderValue(row.from),
+    proposed: renderValue(row.proposed),
     proposedAt: row.createdAt,
     ...(row.resolvedAt ? { resolvedAt: row.resolvedAt } : {}),
     sessionId: row.sessionId,

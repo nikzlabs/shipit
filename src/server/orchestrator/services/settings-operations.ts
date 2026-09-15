@@ -12,10 +12,16 @@ import {
   formatSetting,
   hostEntryProjection,
   isPayloadDeclaration,
+  joinRendered,
   projectSetting,
+  renderValue,
   userNameProjection,
 } from "../../shared/settings-catalogue/index.js";
-import type { AnySettingDeclaration, ApplyOutcome } from "../../shared/settings-catalogue/index.js";
+import type {
+  AnySettingDeclaration,
+  ApplyOutcome,
+  Rendered,
+} from "../../shared/settings-catalogue/index.js";
 import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 import type { AgentRole, AgentId, RolePinnedParams } from "../../shared/types/agent-types.js";
 import type {
@@ -158,7 +164,7 @@ export interface SettingsOperation {
     deps: SettingsOperationDeps,
     target: SettingsOperationTarget,
     value: unknown,
-  ): SettingsProposalSideChange[];
+  ): RenderedSideChange[];
   /**
    * How the card words a change that is not a new value — joining or leaving a
    * collection. Absent for a `set`, where the values themselves are the wording.
@@ -202,11 +208,21 @@ function asText(value: unknown): string {
 }
 
 /**
+ * A side change whose two values went through the catalogue's rendering door.
+ * The card's own type says `string` — it is the client's too — so this is what
+ * carries the guarantee up to `requireShowable` (planning#577).
+ */
+export interface RenderedSideChange extends SettingsProposalSideChange {
+  from: Rendered;
+  to: Rendered;
+}
+
+/**
  * One neighbouring field, through the same door `from` and `to` go through. A
  * field whose declaration has gone throws rather than being dropped: showing
  * less than the operation writes is what this exists to prevent.
  */
-function sideChange(key: string, from: unknown, to: unknown): SettingsProposalSideChange | null {
+function sideChange(key: string, from: unknown, to: unknown): RenderedSideChange | null {
   const declaration = findSetting(key);
   if (!declaration) {
     throw new ServiceError(
@@ -215,14 +231,15 @@ function sideChange(key: string, from: unknown, to: unknown): SettingsProposalSi
         + "show its whole effect.",
     );
   }
-  const show = (raw: unknown): string => formatSetting(declaration, projectSetting(declaration, raw ?? null));
+  const show = (raw: unknown): Rendered =>
+    formatSetting(declaration, projectSetting(declaration, raw ?? null));
   const before = show(from);
   const after = show(to);
   return before === after ? null : { label: declaration.label, from: before, to: after };
 }
 
-function sideChanges(changes: (SettingsProposalSideChange | null)[]): SettingsProposalSideChange[] {
-  return changes.filter((change): change is SettingsProposalSideChange => change !== null);
+function sideChanges(changes: (RenderedSideChange | null)[]): RenderedSideChange[] {
+  return changes.filter((change): change is RenderedSideChange => change !== null);
 }
 
 function settingIs(
@@ -700,8 +717,10 @@ const credentialLabelOperation: SettingsOperation = {
       .filter((route) => route.via === "string");
     const outcome = projectSetting(collection, stored);
     const known = outcome.readable && Array.isArray(outcome.value) ? outcome.value : [];
+    // `services.credentials` filters its ids for being strings and nothing more,
+    // so each one is rendered before it reaches a message (planning#577).
     return `No credential with id "${echoSupplied(routeId)}" — ids on this install: `
-      + `${known.length > 0 ? known.join(", ") : "none"}.`;
+      + `${known.length > 0 ? joinRendered(known.map(renderValue)) : "none"}.`;
   },
   apply: async (deps, target, value) => {
     const { outcome } = await applyCredentialLabel(

@@ -238,12 +238,19 @@ tell the user, so these are emitted deliberately — but nothing constrains what
 they are made of: `PUT /api/secrets` takes any string as a key and a role name is
 checked only for being non-blank and short enough, so
 `https://user:token@host/?token=…` is a storable name. An item's **address** is
-where it would leave. So the four collections an address is projected through —
+where it would leave. So the four collections whose names the USER writes —
 `roles`, `mcp.servers`, `project.secrets`, `network.egress.hosts` — apply one
 rule between them, the one `hostEntryProjection` and `mcpUrlProjection` already
 made: a URL carries a credential in its userinfo and query as a matter of
 routine, so an entry wearing that shape is named by nothing and produces no item,
 and the read says how many it left out.
+
+Those four are not every collection an address is projected through, and reading
+this as if they were is what planning#577 cost: `services.credentials` and
+`services.providerAccounts` address items by ids ShipIt generates, so their
+projections filter for a string and no more. That is fine for what THIS rule is
+about — a generated id carries no credential — and it is why the line-forgery
+rule below gates the address at the read rather than at each declaration.
 
 **This is not a credential scanner and must not be read as one.** `Bearer ghp_…`
 typed into a name box passes it, because nothing separates that from a name
@@ -271,6 +278,50 @@ on the agent's own query — nothing ShipIt persists reaches it, so req 2 ("read
 a setting never exposes secret material") is not engaged. What it is engaged by
 is presentation, so the echo is flattened and capped exactly as `--reason` is:
 hygiene, not a secret defence.
+
+### An emitted value cannot start a line
+
+The projection decides *what* may be emitted. It says nothing about *how*, and
+`list` and `get` are a line-oriented format an LLM parses — `key = value`,
+`Value: …`, `Last proposal: …`. A newline inside an emitted string therefore
+does not merely garble the output: it starts a line, and that line can read as
+one of ShipIt's own fields (`Last proposal: APPLIED by the user`, which stops an
+agent proposing a change nobody approved) or, in `list`, as a setting nobody
+declared. Not every such string is the session user's: a secret name comes from
+the repository, and a role's description can be agent-proposed out of a
+repository file or a web page (planning#577).
+
+`shared/settings-catalogue/rendered.ts` is the one door, and the rule it carries
+is **no emitted text contains a character that can begin a line**: not `\n` and
+`\r`, and not U+0085, U+2028 or U+2029 either — `\s` matches none of those three,
+which is how a local `replace(/\s+/g, " ")` looks like the rule and is not it.
+Three mints, all returning a branded `Rendered` the type system will not accept a
+plain string in place of. `renderValue` quotes and escapes a stored value;
+`renderOwn` flattens ShipIt's own words; `renderAddress` refuses an address
+outright, because `--item` takes an address back and it cannot be quoted out of
+harm's way — that instance is named by nothing, exactly as a URL-shaped name is,
+and the read counts it. Choosing the wrong mint costs legibility and never the
+guarantee, since all three flatten.
+
+**What the brand governs is the fields that carry a VALUE**: `formatSetting`'s
+result, an entry's and an item's `display`, an item's `address`, a
+`lastProposal`'s two halves, and both sides of a proposed change. So shortening
+a projected value afterwards, or formatting a stored one some other way, is a
+compile error rather than the one line nobody re-checks. It does not govern the
+fields carrying ShipIt's own prose — a note, an effect's detail, a refusal
+sentence — which are literals in this repository and stay plain strings.
+
+**Every string is quoted, with no exception.** A predicate for "plain enough to
+leave bare" is one more thing to get wrong and getting it wrong is a hole rather
+than a blemish; quoting uniformly also gives the reader an unambiguous grammar,
+and it is what separates a stored value reading `not set` from ShipIt saying the
+setting is not set — or an empty string from `empty`, which stays ShipIt's word
+for an empty list. `--json` is unaffected in kind, since it always escaped, and
+`display` means the same thing on both paths because it is the same string.
+
+The rule reaches the **next-turn notice** too, which had the same `\s+` gap in
+its own flattening: its one agent-supplied field, the instance address, now goes
+through `renderOwn` before `asQuotedData` puts it inside the quoted region.
 
 ### Refusals are first-class
 
@@ -1249,7 +1300,9 @@ affordance ShipIt's own UI puts in front of the user.
 ## Key files
 
 New: `shared/settings-catalogue/` (declarations, `type` constructors, the
-derivations, `exclusions.ts`); `shared/settings-proposal-guidance.ts` (the phase
+derivations, `exclusions.ts`, and `rendered.ts` — the one door a value leaves by
+on its way to a line of the agent's output);
+`shared/settings-proposal-guidance.ts` (the phase
 table the read and the notice share);
 `client/components/Settings/setting-binding.ts`
 (`bindSetting`, `settingCopy`), `declared.tsx` (the standard controls) and
@@ -1318,6 +1371,11 @@ Beyond the persistence round-trip tests:
 - **Residual coverage** — including conditional and nested forms, and a control
   with no test id.
 - **Projection safety** — the MCP token fixture, in every output path.
+- **Line forgery** — a stored value carrying `\n` followed by a plausible field
+  produces no such line. Once end to end — the store, the real read, the real
+  shim — because the defect only exists where those meet and each part looks
+  correct alone; and once over EVERY string the read emits, so the next field to
+  carry a value is not the one nobody thought to check.
 - **Atomic claim** — two concurrent decisions produce one apply; a turn snapshot
   between claim and apply does not restore `pending`; applying during a different
   turn, with no recorded-card entry, and after the runner was recreated. Removing

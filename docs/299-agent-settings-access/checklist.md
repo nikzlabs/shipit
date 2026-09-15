@@ -425,3 +425,25 @@ Three findings, each verified at the code and each a defect rather than taste.
       write's first. Pre-existing for every operation that sets both; this change
       is what made the pair common
 - [x] Guard proven red alone
+
+### planning#577 — a value cannot forge a line of the agent's output
+
+- [x] `shared/settings-catalogue/rendered.ts`: one door, three mints, and a
+      branded `Rendered` on every field that carries a value into the text
+      output — so shortening a projected value, or formatting a stored one some
+      other way, is a compile error
+- [x] Every string quoted with no exception, decided against a "plain enough to
+      leave bare" predicate: getting that predicate wrong is a hole, not a
+      blemish, and quoting is what separates a stored `not set` from ShipIt's
+      own words for one
+- [x] The address gated at the read rather than at each declaration:
+      `services.credentials` and `services.providerAccounts` project ids their
+      collections only filter for being strings
+- [x] The same `\s+` gap closed in the next-turn notice, where `\s` matches
+      none of U+0085, U+2028 and U+2029
+- [x] `requireShowable` measures the rendered text, and its message says
+      "needs N characters to show in full" rather than reporting a value as
+      longer than it is
+- [x] Proven red alone: the end-to-end store → read → shim test, the read's
+      wire-contract walk, the propose refusal, and the notice's flattening all
+      fail on main's formatter

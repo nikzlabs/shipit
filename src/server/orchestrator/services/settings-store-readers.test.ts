@@ -137,13 +137,15 @@ describe("roles", () => {
   });
 
   it("reads each stored field of a role back, addressed by its name", async () => {
-    expect((await itemDisplays("roles[].harness"))["deep-dive"]).toBe("codex");
-    expect((await itemDisplays("roles[].reasoningEffort"))["deep-dive"]).toBe("high");
+    // Quoted: a displayed string value carries ShipIt's own quotes, so no value
+    // can become a line of the agent's output (planning#577).
+    expect((await itemDisplays("roles[].harness"))["deep-dive"]).toBe('"codex"');
+    expect((await itemDisplays("roles[].reasoningEffort"))["deep-dive"]).toBe('"high"');
     expect((await itemDisplays("roles[].description"))["deep-dive"]).toBe(
-      "Reads widely before answering.",
+      '"Reads widely before answering."',
     );
-    expect((await itemDisplays("roles[].prompt"))["deep-dive"]).toBe("Take your time.");
-    expect((await itemDisplays("roles[].name"))["deep-dive"]).toBe("deep-dive");
+    expect((await itemDisplays("roles[].prompt"))["deep-dive"]).toBe('"Take your time."');
+    expect((await itemDisplays("roles[].name"))["deep-dive"]).toBe('"deep-dive"');
   });
 
   it("reads the model tuple, which is the unit a change to it moves", async () => {
@@ -215,7 +217,7 @@ describe("roles", () => {
       expect(credentialStore.getRole(address)?.name).toBe(address);
     }
     // The bare one is still named, and reads as its OWN stored value.
-    expect((await itemDisplays("roles[].harness")).helper).toBe("claude");
+    expect((await itemDisplays("roles[].harness")).helper).toBe('"claude"');
     // The padded one is named by nothing, and the read says one was left out.
     expect(entry.notes?.join(" ")).toContain("1 stored instance is not listed");
   });
@@ -227,7 +229,7 @@ describe("reviewer slots", () => {
     const models = await detail("reviewers[].model");
     expect(models.items?.find((i) => i.address === "first")?.value).toEqual(selection);
     expect(models.items?.find((i) => i.address === "second")?.value).toBeNull();
-    expect((await itemDisplays("reviewers[].reasoningEffort")).first).toBe("high");
+    expect((await itemDisplays("reviewers[].reasoningEffort")).first).toBe('"high"');
   });
 
   it("says a slot whose pin cannot run supplies no reviewer, promising no fallback", async () => {
@@ -303,7 +305,7 @@ describe("credential routing", () => {
 
   it("reads the stored selection mode, not the shipped default", async () => {
     credentialStore.setSelectionMode(selection.serviceId, selection.billingMode, "balanced");
-    expect((await itemDisplays("services.accountSelectionMode"))[modeKey()]).toBe("balanced");
+    expect((await itemDisplays("services.accountSelectionMode"))[modeKey()]).toBe('"balanced"');
   });
 
   it("reads both failover cutoffs, not the shipped 90", async () => {
@@ -321,7 +323,7 @@ describe("credential routing", () => {
   });
 
   it("reads a credential's name, and reports its secret as configured and never as text", async () => {
-    expect((await itemDisplays("services.credentials[].label"))["route-fixture"]).toBe("Second key");
+    expect((await itemDisplays("services.credentials[].label"))["route-fixture"]).toBe('"Second key"');
     const secret = await detail("services.credentials[].secret");
     expect(secret.items?.find((i) => i.address === "route-fixture")?.display).toBe("configured");
     expect(JSON.stringify(secret)).not.toContain("secret-SENTINEL");
@@ -349,7 +351,7 @@ describe("provider accounts", () => {
     expect(connection[`${serviceId}:${connected.id}`]).toBe("configured");
     expect(Object.values(connection)).toContain("not configured");
     expect((await itemDisplays("services.providerAccounts[].label"))[`${serviceId}:${connected.id}`])
-      .toBe("Work plan");
+      .toBe('"Work plan"');
 
     const order = await detail("services.providerAccounts");
     expect(order.items?.find((i) => i.address === serviceId)?.value).toContain(connected.id);
@@ -402,7 +404,7 @@ describe("MCP servers", () => {
 
   it("names the servers and reads each one's transport and enabled flag", async () => {
     expect((await detail("mcp.servers")).value).toEqual(["local", "notion"]);
-    expect(await itemDisplays("mcp.servers[].type")).toEqual({ local: "stdio", notion: "http" });
+    expect(await itemDisplays("mcp.servers[].type")).toEqual({ local: '"stdio"', notion: '"http"' });
     // Stored false against a declared default of true: a reader falling back to
     // the default would report this server as enabled.
     expect(await itemDisplays("mcp.servers[].enabled")).toEqual({ local: "on", notion: "off" });

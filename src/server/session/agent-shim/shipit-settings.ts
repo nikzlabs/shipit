@@ -3,6 +3,7 @@ import {
   proposalPhaseGuidance,
   proposalPhaseHeadline,
 } from "../../shared/settings-proposal-guidance.js";
+import { renderOwn } from "../../shared/settings-catalogue/rendered.js";
 import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
 // ShipIt's own settings from inside a session (docs/299-agent-settings-access):
@@ -38,8 +39,9 @@ interface LastProposal {
   phase?: string;
   operation?: string;
   item?: string;
-  from?: unknown;
-  proposed?: unknown;
+  /** Both already one line: the read renders them. See {@link proposalValue}. */
+  from?: string;
+  proposed?: string;
   proposedAt?: string;
   resolvedAt?: string;
   sessionId?: string;
@@ -53,15 +55,18 @@ interface SettingItem {
   lastProposal?: LastProposal;
 }
 
-/** A projected value on one line. Both fields are `unknown`, so JSON is the honest form. */
-function proposalValue(value: unknown): string {
-  if (value === undefined) return "(not recorded)";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value) ?? "(not representable)";
-  } catch {
-    return "(not representable)";
-  }
+/**
+ * A value the read has already rendered, or a note that it recorded none.
+ *
+ * Every value-shaped field of a settings response — `display`, an item's
+ * `address`, a proposal's `from` and `proposed`, a card's `from` and `to` —
+ * leaves the orchestrator through `formatSetting`'s rendering door and arrives
+ * as one line (planning#577), so re-rendering it here would quote what is
+ * already quoted. What this shim renders is only what it composes itself from
+ * something the wire did not: the `--item` echo below.
+ */
+function proposalValue(value: string | undefined): string {
+  return value ? value : "(not recorded)";
 }
 
 /**
@@ -254,7 +259,10 @@ export async function handleSettingsPropose(args: string[], deps: RunDeps): Prom
   success(
     deps.io,
     [
-      `Proposed: ${asString(card.label) || key}${card.target?.item ? ` · ${card.target.item}` : ""}`
+      // The item is the address THIS call supplied, not something the read
+      // rendered, so it is flattened here before it goes on a line.
+      `Proposed: ${asString(card.label) || key}${
+        card.target?.item ? ` · ${renderOwn(card.target.item)}` : ""}`
         + ` — ${asString(card.from)} → ${asString(card.to)}`,
       `Card ${asString(card.cardId)} is in the chat, under ${asString(card.path)}.`,
       "",

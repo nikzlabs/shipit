@@ -2,10 +2,13 @@ import {
   addressesARepository,
   findSetting,
   formatSetting,
+  joinRendered,
   projectSetting,
   refusalSentence,
+  renderOwn,
+  renderValue,
 } from "../../shared/settings-catalogue/index.js";
-import type { AnySettingDeclaration } from "../../shared/settings-catalogue/index.js";
+import type { AnySettingDeclaration, Rendered } from "../../shared/settings-catalogue/index.js";
 import type { SettingsProposalCard, SettingsProposalTarget } from "../../shared/types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
@@ -225,7 +228,7 @@ export function baselineTargetOf(
 }
 
 interface CurrentValue {
-  display: string;
+  display: Rendered;
   value: unknown;
   entry: SettingDetailEntry;
   /** Present for an item-addressed setting whose instance exists. */
@@ -253,21 +256,29 @@ async function readCurrent(
   const item = entry.items?.find((candidate) => candidate.address === target.item);
   return item
     ? { display: item.display, value: item.value, entry, item }
-    : { display: "not set", value: null, entry };
+    : { display: renderValue(null), value: null, entry };
 }
 
 function knownAddresses(entry: SettingDetailEntry): string {
   const addresses = (entry.items ?? []).map((item) => item.address);
-  return addresses.length > 0 ? addresses.join(", ") : "none";
+  return addresses.length > 0 ? joinRendered(addresses) : "none";
 }
 
-/** Neither side of the card may be longer than the card can show. */
-function requireShowable(declaration: AnySettingDeclaration, side: string, text: string): void {
+/**
+ * Neither side of the card may be longer than the card can show.
+ *
+ * Measured over the RENDERED text, which is what the card carries: a value is
+ * quoted and its line breaks escaped on the way out (planning#577), so a short
+ * value made mostly of newlines needs more room than its own length. The message
+ * says "needs N characters to show in full" rather than "is N characters",
+ * because those two numbers are not the same one.
+ */
+function requireShowable(declaration: AnySettingDeclaration, side: string, text: Rendered): void {
   if (text.length <= CARD_VALUE_MAX) return;
   refuse(
-    `The ${side} value of ${declaration.key} is ${text.length} characters, and a proposal card `
-      + `shows at most ${CARD_VALUE_MAX}. A change the user cannot check by looking at the card is `
-      + "not offered as one click; tell them what to change instead.",
+    `The ${side} value of ${declaration.key} needs ${text.length} characters to show in full, and `
+      + `a proposal card shows at most ${CARD_VALUE_MAX}. A change the user cannot check by looking `
+      + "at the card is not offered as one click; tell them what to change instead.",
   );
 }
 
@@ -297,9 +308,10 @@ function requireEmittable(declaration: AnySettingDeclaration, value: unknown): v
 }
 
 interface ProposedChange {
-  from: string;
+  /** Both through the catalogue's rendering door, so neither can start a line. */
+  from: Rendered;
   fromValue: unknown;
-  to: string;
+  to: Rendered;
   proposedValue: unknown;
 }
 
@@ -323,9 +335,9 @@ function membershipChange(
     refuse(`"${echoSupplied(target.item ?? "")}" is already ${wording.to}, so there is nothing to change.`);
   }
   return {
-    from: wording.from,
+    from: renderOwn(wording.from),
     fromValue: present,
-    to: wording.to,
+    to: renderOwn(wording.to),
     proposedValue: kind === "add",
   };
 }
