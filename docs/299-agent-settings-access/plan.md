@@ -1616,48 +1616,52 @@ new executor, which records its own submission and acknowledges that.
 **Recorded as each turn begins, not inferred from the result.** `agent_result`
 carries no identity — no prompt id, no turn id, nothing that survives the round
 trip — and on a resident process the CLI starts turns ShipIt composed no prompt
-for. So the executor (`turn-executor.ts`) keeps a lifecycle for its own prompt
-and one flag for the CLI's:
+for. So the executor (`turn-executor.ts`) keeps a lifecycle for its own prompt:
 
-- **`ownTurn`** — `"unsubmitted"` → `"queued"` or `"running"` → `"ended"`. This
-  executor's prompt has exactly one turn, which is why this is a lifecycle and
-  not a pair of booleans. `"queued"` and `"running"` are both awaiting a result
-  and differ in the one thing a wake has to ask — whether the CLI is inside
-  *this* turn right now. `"ended"` is terminal.
-- **`cliTurnPending`** — the CLI began a turn of its own that has not produced a
-  result.
+**`ownTurn`** — `"unsubmitted"` → `"queued"` or `"running"` → `"ended"`. This
+executor's prompt has exactly one turn, which is why this is a lifecycle and not
+a set of flags. Only `"running"` — this prompt IS the turn the CLI is in —
+answers a result.
 
-Submitting makes the prompt `"running"`, unless a CLI turn is pending: then it is
-`"queued"` behind that turn. A result takes `cliTurnPending` first, because that
-turn began first, and only otherwise ends `ownTurn` and answers it.
+**`"queued"` is the honest answer to a question the harness does not make
+answerable**, and it is the whole of the design's humility. A prompt submitted
+behind a turn the CLI had already started cannot be told apart from that turn
+afterwards: the turn's end, the prompt's own output, a background task
+notifying, a further turn the CLI begins — every one of them looks the same from
+here. So a queued prompt **never acknowledges**. The receipt stays live and the
+notice rides the next dispatched turn, whose executor starts clear. Only the CLI
+replaying the prompt back moves it out of `"queued"`.
 
-**Three signals move the prompt, and they are ordered by how much they prove.**
-The CLI replaying the prompt (below) is the strongest and always acts. A result
-is next. The worker's answer to the submission is the weakest — it says only that
-the prompt was accepted, which anything else moving the state already implied —
-so it acts **only** from `"unsubmitted"`. That ordering is load-bearing: the
-worker's HTTP reply and the CLI's events travel separately, so a confirmation can
-land after the result it confirms, and re-arming the prompt there would hand its
-receipt to whatever the CLI does next.
+Three rounds of independent review each named the ordering the previous guess
+traded against — a later wake spending a receipt two turns behind it, a queued
+prompt's own output being counted against it, an adopted turn's result answering
+a prompt it never read. That is the evidence that this is **undecidable rather
+than unhandled**, and guessing either way had a shipped failure: read the signals
+as the CLI's and a prompt the agent read perfectly well could never acknowledge,
+so the notice repeated on every turn; read them as the prompt's and a turn that
+never saw it spent the receipt.
+
+**Three signals move the prompt, ordered by how much they prove.** The CLI
+replaying the prompt (below) is the strongest and always acts. A result is next.
+The worker's answer to the submission is the weakest — it says only that the
+prompt was accepted — so it acts **only** from `"unsubmitted"`, and even then
+puts the prompt in `"queued"` rather than `"running"` if a turn of the CLI's was
+already in flight **or** a result passed while the answer itself was in flight.
+The worker's HTTP reply and the CLI's events travel separately, so a confirmation
+can land after the result it confirms; letting it claim the running turn there
+would hand the receipt to whatever the CLI does next.
+
+Which turn a result ends is also taken **before** the handler yields to an
+in-flight re-arm. The CLI keeps emitting across that yield, and a replay landing
+inside it would otherwise hand an earlier result the turn that replay started.
 
 A turn the CLI began is the two events `beginRearm` already answers to —
 `agent_self_wake` and a top-level `agent_assistant` on a harness that
-`startsOwnTurns` — but they do not prove the same thing, so `noteCliStartedTurn`
-does not read them the same way. A **wake** is the CLI saying it resumed work of
-its own, and counts unless this prompt is the turn already `"running"`, since a
-finished background task notifies mid-turn. `"queued"` deliberately does not
-suppress it: once a turn the CLI started has ended, whether this prompt went into
-it is exactly what is unknown, so a further wake is recorded as a turn in its own
-right rather than assumed to be part of one, and its result cannot reach a
-receipt two turns behind it.
-
-Top-level **output** proves less — it only announces a turn whose start went
-unseen — so it counts only from `"unsubmitted"`. A prompt waiting its turn
-produces output that looks exactly the same, and an earlier version read that as
-the CLI's: the prompt then consumed a CLI turn on every assistant block and could
-never acknowledge at all, which is the reminder req 8's second clause exists to
-prevent. Neither signal is read on a process this prompt spawned: it exists for
-this prompt alone, and its first output can beat the proxied submission.
+`startsOwnTurns`. `noteCliStartedTurn` records either, and it matters only until
+the prompt is submitted, which is the only moment the record is read. It is not
+read at all on a process this prompt spawned: that process exists for this prompt
+alone, so no other turn can be running on it, and its first output can beat the
+proxied submission's confirmation.
 
 **This replaces two state flags that the same defect defeated in opposite
 directions, which is why it is a record of turns rather than a third flag.**
@@ -1678,17 +1682,15 @@ said the executor was serving an adopted turn right now:
 
 **Where an identity does survive the round trip, it is used.**
 `agent_user_replay` is the CLI echoing back a user message it has read
-(`isReplay` on Claude, synthesized by Codex — docs/140, the same signal
-`agent-listeners.ts` reads to mark a steer delivered). A replay of this prompt's
-exact text means the CLI read it inside the turn now running, so it clears
-`cliTurnPending` and makes the prompt `"running"`. That is what keeps the common case
-whole: a prompt steered into a turn the CLI had already woken for is absorbed by
-it, and the single result that ends that turn acknowledges the notice instead of
-withholding one the agent read perfectly well.
+(`isReplay` on Claude, synthesized by Codex — docs/140). A replay of this
+prompt's exact text means the CLI read it inside the turn now running, so the
+prompt becomes `"running"` whatever it was before. That is what keeps the common
+case whole, and ShipIt already trusts this signal exactly this far: a steer with
+no replay is treated as undelivered and re-queued
+(`requeueUndeliveredSteers`, `agent-listeners.ts`). A prompt steered into a turn
+the CLI had already woken for is absorbed by it, and the single result that ends
+that turn acknowledges the notice instead of withholding one the agent read.
 
-**What is left is bounded by what ShipIt can see the CLI start** — see *The carry
-holds against every turn ShipIt can see the CLI start* under the limitations
-below.
 
 `submissionSettled()` is what makes leaving `"unsubmitted"` mean the prompt was
 *accepted*, and it took two review rounds to get right. The executor's listeners
@@ -1776,50 +1778,54 @@ In `integration_tests/settings-outcome-notice.test.ts`: the wake-after-failure
 ordering waits for the adopted turn's own post-turn commit (a second `autoCommit`
 call) before asking whether the outcome is still pending; the
 wake-inside-preparation ordering parks the dispatch in `prepareAgentEnv`, wakes
-the CLI there, releases the prompt and then proves the woken turn's result does
-not settle it while the prompt's own result does; a third does the same through
-the assistant signal rather than the wake. Three more hold the terminal rules
-that review found missing from the first attempt — a later wake cannot settle a
-prompt absorbed into a failed turn, a submission confirmation landing after the
-result cannot put the prompt back in flight, and neither can a replay arriving
-after the turn ended. Two hold the other direction: a replayed prompt IS
-acknowledged by the turn that absorbed it, and a freshly spawned process whose
-output beats its submission confirmation still acknowledges. Each fails alone
-when its own condition is removed.
+the CLI there, releases the prompt and proves no result of that process settles
+the receipt; a third does the same through the assistant signal rather than the
+wake; a fourth holds it through a queued prompt's own turn, background task and
+all. Four hold the terminal and ordering rules review found missing — a later
+wake cannot settle a prompt absorbed into a failed turn, a submission
+confirmation landing after a result can neither claim the running turn nor unseat
+a prompt the CLI has taken, a replay after the turn ended cannot re-open it, and
+a turn beginning inside the re-arm yield cannot answer an earlier result. Three
+hold the other direction: a replayed prompt IS acknowledged by the turn that
+absorbed it, a prompt the CLI takes is still acknowledged when its confirmation
+arrives late, and a freshly spawned process whose output beats its submission
+confirmation still acknowledges. Every condition in the model fails at least one
+of these when removed singly, and none of them is left unguarded.
 
-**Both of the terminal rules were missing from the first attempt, and both were
-the original defect reached through the new mechanism.** `ownTurn` left standing
-past the turn it described made a later CLI-started turn invisible to
-`noteCliStartedTurn` *and* mis-consumed by the next result — so the safety of a
-model that records turn starts depends on every path that ends a turn saying so.
-The synchronisation matters as much: an acknowledgement decided behind an awaited
-re-arm is not visible to an assertion that flushes one tick, and two of these
-guards passed against a broken implementation until they waited on the woken
-turn's own post-turn commit instead.
+**What the three review rounds actually established is where the line of
+decidability is**, and each round moved a guess across it rather than adding a
+rule. `ownTurn` left standing past the turn it described; a confirmation
+reviving a finished prompt; attribution read after a yield the CLI kept emitting
+across; a queued prompt's own output counted against it. The first three are
+genuine ordering bugs and are fixed. The fourth is not a bug with a right
+answer — it is the undecidable case, and the design now says so instead of
+picking a side. The synchronisation matters as much: an acknowledgement decided
+behind an awaited re-arm is not visible to an assertion that flushes one tick,
+and two of these guards passed against a broken implementation until they waited
+on the woken turn's own post-turn commit instead.
 
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
 
-**The carry holds against every turn ShipIt can see the CLI start, and that is
-the honest bound.** Two shapes are left, and they sit on opposite sides.
+**A notice is delayed by a turn, and is not lost to one.** The cost falls
+entirely on the `"queued"` case above: a prompt submitted while the CLI had a
+turn of its own in flight — which needs a wake, or top-level output, inside that
+dispatch's `prepareAgentEnv` window. From there nothing acknowledges unless the
+CLI replays the prompt, so the outcome waits for the next dispatched turn, whose
+executor starts clear and acknowledges normally.
 
-A notice can be **delayed** by a turn: the CLI absorbs a prompt steered into a
-turn it had already woken for, one result covers both, and no replay says so.
-`agent_user_replay` answers that on Claude and Codex — the only two harnesses
-that steer at all, so the only two that can reach it — and without a replay the
-result is attributed to the woken turn, the receipt stays live, and the notice
-rides the next turn. A repeat, never a loss, and the safe direction.
+Both of the harnesses that can reach the case do emit the replay, so in practice
+it is narrower still: `agent_user_replay` is Claude's and Codex's, and steering
+is what makes a process reusable at all, so no other harness ever queues a
+prompt this way. Where the replay is missing, ShipIt's own steer bookkeeping
+already reads that as non-delivery and re-queues the message — so withholding the
+receipt agrees with the verdict ShipIt reaches elsewhere on the same evidence,
+rather than being a second, private guess.
 
-A notice can still be **lost** to a turn the CLI starts with no wake and no
-output of its own to distinguish it: a prompt sitting `"queued"` cannot tell that
-turn's result from its own, so the result answers the prompt and the receipt is
-spent. Every announced start is covered — that is what the wake rule is — and
-this is the residue of reading output as the prompt's rather than the CLI's,
-which is the trade that stops a queued prompt from never acknowledging at all.
-Both halves of it cannot be had at once without an identity on `agent_result`,
-and the harnesses do not put one there. The earlier trade lost the notice on a
-far commoner shape — any dispatched turn that failed after a wake — so this is
-narrower, but it is not nothing and it is not claimed away.
+This is a repeat at worst, never a loss, which is the direction the whole design
+takes. It is also strictly better than what it replaced: the previous
+acknowledgement **lost** the notice outright on a far commoner shape — any
+dispatched turn that failed after a wake.
 
 Duplicates remain possible by design: a turn that ran and was interrupted, and a
 turn queued behind one that has not yet acknowledged, both carry the notice

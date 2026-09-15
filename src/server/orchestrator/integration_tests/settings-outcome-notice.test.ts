@@ -561,15 +561,14 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
 
     // This result ends the woken turn. The prompt has been submitted but not read.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "flush");
+    await waitForTurn(() => true, "the woken turn's result");
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
 
-    // The prompt's own turn is what settles it.
+    // Nor does the result after it: which of the two ended the prompt's own turn
+    // is exactly what the harness does not say, so neither settles the receipt.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(
-      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
-      "the dispatched turn's outcome acknowledged",
-    );
+    await waitForTurn(() => true, "the result after it");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
   /*
@@ -589,14 +588,12 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "flush");
+    await waitForTurn(() => true, "the CLI-started turn's result");
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(
-      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
-      "the dispatched turn's outcome acknowledged",
-    );
+    await waitForTurn(() => true, "the result after it");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
   /*
@@ -641,12 +638,13 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
   });
 
   /*
-    A prompt waiting behind a turn the CLI started produces the same top-level
-    output that turn did, so reading its output as another CLI-started turn would
-    leave a prompt the agent read perfectly well unable to acknowledge — and a
-    reminder requirement 8's second clause exists to prevent.
+    A background task finishing during a queued prompt's own turn is the shape
+    that makes the queued state undecidable rather than merely unhandled: the
+    wake is indistinguishable from one starting a turn, and the prompt's own
+    output is indistinguishable from that turn's. Nothing here acknowledges, and
+    nothing here spends the receipt either.
   */
-  it("acknowledges a queued prompt that runs and produces output of its own", async () => {
+  it("holds the receipt through a queued prompt's turn rather than guessing", async () => {
     const { release } = await dispatchIntoPreparationWindow();
 
     agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
@@ -656,16 +654,16 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitForTurn(() => true, "the woken turn ending");
 
-    // The CLI now works through the prompt it had queued, without replaying it.
+    // The CLI works through the prompt it had queued, without replaying it, and
+    // a second background task reports in while it does.
     agents[0]!.emit("event", {
       type: "agent_assistant",
       content: [{ type: "text", text: "Reading the settings change." }],
     });
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-2", status: "completed" });
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(
-      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
-      "the queued prompt's own outcome acknowledged",
-    );
+    await waitForTurn(() => true, "the queued prompt's own result");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
   /*
@@ -855,6 +853,48 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
       "the woken turn's post-turn flow",
     );
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+  });
+
+  it("does not let a late confirmation unseat a prompt the CLI has taken", async () => {
+    // The confirmation is the weakest of the three signals, so it sets the
+    // prompt's state only when nothing stronger has. Here a result passed while
+    // it was in flight and the CLI then replayed the prompt: the replay is proof
+    // the prompt is the running turn, and the confirmation must not walk it back
+    // to one that can never acknowledge.
+    postAndResolve("set-a", "applied");
+    runner.dispatch(testDispatch({ text: "first" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "resident agent running",
+    );
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the first outcome acknowledged",
+    );
+
+    postAndResolve("set-b", "dismissed");
+    let acceptSubmission: () => void = () => {};
+    const submission = new Promise<void>((resolve) => { acceptSubmission = resolve; });
+    (agents[0]! as unknown as { submissionSettled(): Promise<unknown> }).submissionSettled =
+      () => submission;
+
+    runner.dispatch(testDispatch({ text: "second" }));
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
+    const steered = String(agents[0]!.sendUserMessage.mock.calls[0]?.[0]);
+
+    // A turn the CLI had already been running ends, then it takes the prompt.
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => true, "the earlier turn's result");
+    agents[0]!.emit("event", { type: "agent_user_replay", text: steered });
+    acceptSubmission();
+    await waitForTurn(() => true, "the confirmation landing after both");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the prompt's own outcome acknowledged",
+    );
   });
 
   it("does not let a replay arriving after the turn ended re-open it", async () => {

@@ -161,11 +161,15 @@ export async function executeAgentTurn(
     the result looks like the agent's own work" is true of a result that ends
     someone else's turn.
 
-    This prompt has exactly one turn, so its four states are a lifecycle and not
-    flags: "queued" and "running" are both awaiting a result and differ in the
-    one thing a wake has to ask — whether the CLI is inside THIS turn right now —
-    and "ended" is terminal, so a confirmation that lands after the result cannot
-    put the prompt back in flight.
+    This prompt has exactly one turn, so its states are a lifecycle and not
+    flags. Only "running" — this prompt IS the turn the CLI is in — answers a
+    result. "queued" is the honest answer to a question the harness does not
+    make answerable: the prompt went in behind a turn the CLI had already
+    started, and from there no result can be told from any other. A queued
+    prompt therefore never acknowledges; only the CLI replaying it back moves it
+    on, and otherwise the receipt stays live and the notice rides the next turn.
+    Three rounds of review each found the ordering the previous guess traded
+    against, which is what says this is undecidable rather than unhandled.
   */
   let ownTurn: "unsubmitted" | "queued" | "running" | "ended" = "unsubmitted";
   let cliTurnPending = false;
@@ -175,9 +179,7 @@ export async function executeAgentTurn(
    * Submitting makes this prompt the running turn only when nothing else can
    * have taken that place: no turn of the CLI's own is pending, and no result
    * has passed since the submission was made. A result in that window may have
-   * ended a turn this prompt was folded into, so the prompt waits rather than
-   * claiming the CLI's attention — which is what stops a later turn's result
-   * from reaching its receipt.
+   * ended a turn this prompt was folded into.
    */
   const noteSubmissionAccepted = (resultsIntervened: boolean): void => {
     if (ownTurn !== "unsubmitted") return;
@@ -205,21 +207,19 @@ export async function executeAgentTurn(
 
   /**
    * The two events ShipIt already reads as a turn the CLI began for itself, the
-   * ones `beginRearm` answers to — but they do not prove the same thing, so they
-   * are not read the same way. A **wake** is the CLI saying it resumed work of
-   * its own, and counts unless this prompt is the turn already running (a
-   * finished background task notifies mid-turn). Top-level **output** only
-   * announces a turn whose start went unseen, so it counts only before this
-   * prompt was submitted: once the prompt is waiting its turn, its own output
-   * looks exactly the same, and reading that as the CLI's would leave a prompt
-   * the agent read perfectly well unable to acknowledge at all.
+   * ones `beginRearm` answers to. This matters only until the prompt is
+   * submitted, which is when it is read: that is what decides whether the prompt
+   * goes in behind a turn of the CLI's own. Afterwards the two are
+   * indistinguishable from the prompt's own turn — a background task notifies
+   * mid-turn, and a queued prompt's output looks exactly like a CLI-started
+   * turn's — and neither reading would be safe, which is why a queued prompt
+   * never acknowledges rather than guessing.
    *
-   * Neither is read on a process this prompt spawned: it exists for this prompt
-   * alone, and its first output can race the proxied submission.
+   * Not read on a process this prompt spawned: it exists for this prompt alone,
+   * and its first output can race the proxied submission.
    */
-  const noteCliStartedTurn = (signal: "wake" | "output"): void => {
+  const noteCliStartedTurn = (): void => {
     if (input.reuseExistingAgent !== true) return;
-    if (signal === "output" ? ownTurn !== "unsubmitted" : ownTurn === "running") return;
     cliTurnPending = true;
   };
 
@@ -231,19 +231,14 @@ export async function executeAgentTurn(
   const notePromptReadBack = (text: string): void => {
     if (text.trim() !== prompt.trim()) return;
     if (ownTurn === "ended") return;
-    cliTurnPending = false;
     ownTurn = "running";
   };
 
-  // A result ends one turn, and a turn the CLI started takes precedence because
-  // it began first. Its end says nothing about where this prompt went, so the
-  // prompt stays queued rather than becoming the running turn.
+  // Only the running turn is this prompt's. A queued one stays queued: the
+  // result may have ended the turn the prompt went in behind, or a turn the CLI
+  // started after it, or the prompt's own, and nothing here can tell them apart.
   const takeResultAttribution = (): boolean => {
-    if (cliTurnPending) {
-      cliTurnPending = false;
-      return false;
-    }
-    if (ownTurn !== "queued" && ownTurn !== "running") return false;
+    if (ownTurn !== "running") return false;
     ownTurn = "ended";
     return true;
   };
@@ -1143,7 +1138,7 @@ export async function executeAgentTurn(
 
   agent.on("event", async (event: AgentEvent) => {
     if (event.type === "agent_self_wake") {
-      noteCliStartedTurn("wake");
+      noteCliStartedTurn();
       await beginRearm("self-wake");
       return;
     }
@@ -1154,7 +1149,7 @@ export async function executeAgentTurn(
     if (event.type === "agent_assistant") {
       if (!adoptsCliStartedTurns) return;
       if (!event.parentToolUseId) {
-        noteCliStartedTurn("output");
+        noteCliStartedTurn();
         await beginRearm("cli-started turn");
       }
       return;
