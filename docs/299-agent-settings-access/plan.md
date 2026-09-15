@@ -1434,6 +1434,28 @@ multi-write operation landed; **uncertain** means the writer cannot say. This is
 the first item of the apply extraction — every other guarantee is worthless if
 "applied" can be false.
 
+Two consequences for a **multi-write** operation, both found by a later
+conformance review of this same rule (planning#537). A pair of writes that can
+half-land has no honest outcome to report, so a global allowlist removal — the
+explicit rows, plus the suppression of a matching shipped default — is one SQLite
+transaction (`EgressAllowlistStore.removeGlobalHost`); ungrouped, a suppression
+that threw left the row deleted and reported `failed`, which says ShipIt verified
+nothing changed. `removeHost` is grouped for the same reason one layer down:
+rows that normalize alike are one host, and deleting them one by one could leave
+the host half off the list. And an operation whose writes landed while its *intent* did not
+is `partial`, never `failed`: removing a host a configured MCP server also
+supplies deletes the user's own row and leaves the host listed, and only a
+removal that wrote nothing at all may claim the list never moved.
+
+The same rule reaches past the outcome to what a write *does*. A save hook
+(`SAVE_HOOKS`) runs only for a value the store kept: a `failed` write is verified
+to hold the old value, and the hooks act on the new one — retiring idle resident
+agents, marking stored status cards stale, refreshing PR snapshots. Running them
+past a rolled-back write changed runtime and persisted state for a save the same
+response reported as refused. `uncertain` and `partial` still run them, because
+the value may be stored and a hook skipped for a stored value leaves the feature
+asleep.
+
 A write followed by a **read** needs the same separation, and a throw is what
 collapses it. `applyReleaseChannel` writes the channel and then checks for
 updates; re-raising the check's own 503 made the card report a change that was

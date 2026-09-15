@@ -793,3 +793,49 @@ value and stored another. Both re-verified at the code.
       left them unchanged — only the line numbers moved. The fix is the
       `refuse()` shape the two role modules now use: one entry point per module
       that renders the whole line
+
+## A fifth conformance review — two writes that reported the opposite of what happened
+
+Both findings re-verified at the code before being acted on.
+
+- [x] req 4 — a global allowlist removal is **one transaction**
+      (`EgressAllowlistStore.removeGlobalHost`). Deleting the explicit rows and
+      suppressing a matching shipped default were two ungrouped writes, so a
+      suppression that threw left the row gone and the catch reported `failed` —
+      the one status that claims ShipIt verified nothing changed, and the
+      strongest claim the vocabulary has
+- [x] req 4 — and a removal that *wrote* something while the host stayed listed
+      now reports `partial`. Taking off a host a configured MCP server also
+      supplies deletes the user's own row; taking off a shipped default an
+      operator also supplies stores the suppression. `failed` is left for the
+      removal that changed nothing, which a repeat removal still is — the store's
+      own `removed || suppressed` answer is what separates the two
+- [x] req 7 — a save hook runs only for a value the store kept. A failed
+      credential-store write rolls back, so `advanced.sessionStatusCard`
+      correctly reported `failed` while its hooks still retired idle resident
+      agents and scheduled the persisted cards to go stale. Each of the four
+      hooks was read against a rolled-back write rather than gated blanket: three
+      act on the stored value, and the background-model reseed reads the store,
+      so it is a no-op there and takes the same rule rather than being the one
+      exception to re-derive
+- [x] Both guards proven red alone, with the defect restored: the suppression
+      failing after a successful delete (the row survives, so `failed` is true),
+      the MCP- and operator-supplied removals reporting `failed` over a store
+      they had changed, and the status-card hooks firing on a write the same
+      save reports as failed
+
+### The independent review of those fixes
+
+Two findings, both the same class one layer down, both reproduced at the code.
+
+- [x] `removeHost` is itself a multi-write: rows that normalize alike are one
+      host, and it deleted them one by one. A delete that threw after an earlier
+      one committed left the host half off the list and reported `failed` over
+      it — at SESSION scope too, where no suppression follows. The loop is now
+      one transaction, which `removeGlobalHost` nests inside as a savepoint
+- [x] The same helper is what `unsuppressDefault` runs, so a global ADD of a
+      suppressed default had the identical half-landing shape: one suppression
+      row deleted, the default effective again, and the add reported `failed`.
+      Fixing the helper fixes both callers rather than either call site
+- [x] Proven red alone with a `BEFORE DELETE` trigger that refuses the second
+      row: without the transaction the first row stays deleted

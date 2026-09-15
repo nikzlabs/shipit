@@ -309,6 +309,36 @@ describe("Integration: settings derive from the catalogue (docs/299 req 7)", () 
     expect(toggles).toEqual([true, false]);
   });
 
+  // planning#537 — the store rolls a failed disk write back, so the save is
+  // correctly reported as failed. The hooks ran anyway: idle resident agents
+  // were retired and the stored status cards scheduled to go stale, for a
+  // setting the same response says did not move.
+  it("runs no save hook when the store rolled the write back", async () => {
+    const stale: string[] = [];
+    const toggles: boolean[] = [];
+    const before = credentialStore.getDeclaredSetting("advanced.sessionStatusCard");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // A real refused write, not a stubbed one: the staging file the store
+    // renames over cannot be created in a directory it may not write.
+    fs.chmodSync(tmpDir, 0o500);
+
+    try {
+      const { outcome } = await saveWith({
+        sessionStatusCard: true,
+        onSessionStatusCardEnabled: () => { stale.push("marked"); },
+        onSessionStatusCardToggled: (enabled: boolean) => { toggles.push(enabled); },
+      });
+
+      expect(outcome.status).toBe("failed");
+      expect(credentialStore.getDeclaredSetting("advanced.sessionStatusCard")).toBe(before);
+      expect(stale).toEqual([]);
+      expect(toggles).toEqual([]);
+    } finally {
+      fs.chmodSync(tmpDir, 0o700);
+      vi.restoreAllMocks();
+    }
+  });
+
   it("gives every credential-store setting a field of its own", () => {
     const fields = payloadDeclarations()
       .filter((d) => d.store.kind === "credential-store")
