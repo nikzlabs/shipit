@@ -26,6 +26,7 @@ import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 import type { AgentRole, AgentId, RolePinnedParams } from "../../shared/types/agent-types.js";
 import type {
   SettingsProposalOperation,
+  SettingsProposalCard,
   SettingsProposalSideChange,
   SettingsProposalTarget,
 } from "../../shared/types.js";
@@ -249,6 +250,28 @@ function settingIs(
 ): string {
   const instance = target.item ? ` · ${echoSupplied(target.item)}` : "";
   return `${declaration.label}${instance} is ${display}`;
+}
+
+/**
+ * ShipIt's account of what an applied card did.
+ *
+ * A prose card's `display` is a character count, so `settingIs` would resolve it
+ * to "Your Instructions is 305 characters" — true, and saying nothing about what
+ * the user just approved. The shape of the edit is what the scrollback wants
+ * (docs/299-agent-settings-access req 9). It overrides every operation's own
+ * wording, which today costs nothing: `textChange` exists only for a `set` on a
+ * prose declaration, and none of the bespoke-worded operations is one.
+ */
+export function appliedOutcome(
+  operation: SettingsOperation,
+  target: SettingsOperationTarget,
+  card: SettingsProposalCard,
+  declaration: AnySettingDeclaration,
+): string {
+  if (!card.textChange) return operation.applied(target, card.to, declaration);
+  const instance = target.item ? ` · ${echoSupplied(target.item)}` : "";
+  return `${declaration.label}${instance} changed `
+    + `(+${card.textChange.added} −${card.textChange.removed})`;
 }
 
 /**

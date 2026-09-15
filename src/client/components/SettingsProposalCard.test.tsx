@@ -87,6 +87,98 @@ describe("SettingsProposalCard — pending", () => {
     expect(screen.queryByTestId("settings-proposal-also")).not.toBeInTheDocument();
   });
 
+  /**
+   * A prose value gets a diff in place of the two chips
+   * (docs/299-agent-settings-access req 9). What the card owes the user is the
+   * WHOLE change — every line of both versions — because a summary of what Apply
+   * writes is not something anyone can approve by looking.
+   */
+  it("shows a prose change as a diff carrying both versions whole", () => {
+    render(<SettingsProposalCard card={card({
+      target: { key: "instructions.userInstructions" },
+      label: "Your Instructions",
+      from: "39 characters",
+      to: "78 characters",
+      textChange: {
+        lines: [
+          { kind: "context", text: "Always run the tests." },
+          { kind: "removed", text: "Use tabs." },
+          { kind: "added", text: "Use spaces." },
+          { kind: "added", text: "Prefer small PRs." },
+        ],
+        before: { chars: 39, lines: 2 },
+        after: { chars: 78, lines: 3 },
+        added: 2,
+        removed: 1,
+      },
+    })} />);
+
+    const diff = screen.getByTestId("settings-proposal-text-change");
+    expect(diff).toHaveTextContent("Always run the tests.");
+    expect(diff).toHaveTextContent("Use tabs.");
+    expect(diff).toHaveTextContent("Use spaces.");
+    expect(diff).toHaveTextContent("Prefer small PRs.");
+    // The server's counts, so a value padded with blank lines still reports its
+    // bulk where the scroll region shows a dozen lines of it.
+    expect(diff).toHaveTextContent("39 characters, 2 lines");
+    expect(diff).toHaveTextContent("78 characters, 3 lines");
+    // The chips would truncate; they are not rendered at all.
+    expect(screen.queryByTestId("settings-proposal-from")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-proposal-to")).not.toBeInTheDocument();
+  });
+
+  it("bounds the diff region's height and scrolls it, so Apply cannot be pushed away", () => {
+    const onDecide = vi.fn();
+    render(<SettingsProposalCard card={card({
+      label: "Your Instructions",
+      textChange: {
+        lines: Array.from({ length: 800 }, (_, i) => ({ kind: "added" as const, text: `line ${i}` })),
+        before: { chars: 0, lines: 0 },
+        after: { chars: 6_400, lines: 800 },
+        added: 800,
+        removed: 0,
+      },
+    })} onDecide={onDecide} />);
+
+    // jsdom lays nothing out, so the pair of classes is the whole of what can be
+    // asserted here: overflow alone does not bound a height, and a height alone
+    // clips instead of scrolling. Both are load-bearing and both are named.
+    const region = screen.getByLabelText("Proposed text, as a diff");
+    expect(region.className).toContain("max-h-64");
+    expect(region.className).toContain("overflow-auto");
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onDecide).toHaveBeenCalledWith("set-1", "apply");
+  });
+
+  /**
+   * Colour and a `+`/`−` glyph are the whole distinction on screen, and the
+   * glyph is `aria-hidden`. Without a label, a reader hears both versions of a
+   * replaced line and nothing saying which one Apply writes.
+   */
+  it("says which lines are added and removed, for a reader that gets no colour", () => {
+    render(<SettingsProposalCard card={card({
+      label: "Your Instructions",
+      textChange: {
+        lines: [
+          { kind: "removed", text: "Always run the tests." },
+          { kind: "added", text: "Never run the tests." },
+          { kind: "context", text: "Prefer small PRs." },
+        ],
+        before: { chars: 40, lines: 2 },
+        after: { chars: 39, lines: 2 },
+        added: 1,
+        removed: 1,
+      },
+    })} />);
+
+    const diff = screen.getByLabelText("Proposed text, as a diff");
+    expect(diff.textContent).toContain("Removed: −Always run the tests.");
+    expect(diff.textContent).toContain("Added: +Never run the tests.");
+    // A line neither side changed is not announced as either.
+    expect(diff.textContent).toContain(" Prefer small PRs.");
+    expect(diff.textContent).not.toContain("Added: + Prefer small PRs.");
+  });
+
   it("attributes the agent's reason, so it cannot read as ShipIt describing the change", () => {
     render(<SettingsProposalCard card={card()} />);
     expect(screen.getByText("The agent’s reason")).toBeInTheDocument();
@@ -111,6 +203,7 @@ describe("SettingsProposalCard — pending", () => {
 });
 
 describe("SettingsProposalCard — resolved", () => {
+
   const terminal: { phase: SettingsProposalPhase; headline: string; clause: RegExp }[] = [
     { phase: "applied", headline: "Applied", clause: /Multi-agent sessions is on/ },
     { phase: "dismissed", headline: "Dismissed", clause: /Multi-agent sessions/ },

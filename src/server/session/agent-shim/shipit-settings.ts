@@ -1,4 +1,4 @@
-import { asString, fail, parseFlags, success } from "./shim-common.js";
+import { asString, fail, parseFlags, readBodyFromFileOrStdin, success } from "./shim-common.js";
 import {
   proposalPhaseGuidance,
   proposalPhaseHeadline,
@@ -192,7 +192,13 @@ export async function handleSettingsList(args: string[], deps: RunDeps): Promise
  */
 export async function handleSettingsPropose(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--item": "item", "--reason": "reason", "--add": "add", "--remove": "remove" },
+    values: {
+      "--item": "item",
+      "--reason": "reason",
+      "--add": "add",
+      "--remove": "remove",
+      "--value-file": "valueFile",
+    },
     booleans: { "--json": "json" },
   });
   if (parsed.unsupported.length > 0) {
@@ -204,6 +210,7 @@ export async function handleSettingsPropose(args: string[], deps: RunDeps): Prom
   if (add !== undefined && remove !== undefined) {
     fail(deps.io, "shipit settings propose: --add and --remove are one change each, so pass one of them.");
   }
+  const valueFile = parsed.values.valueFile;
   const first = parsed.positional[0] ?? "";
   const eq = first.indexOf("=");
   const key = eq === -1 ? first : first.slice(0, eq);
@@ -213,16 +220,31 @@ export async function handleSettingsPropose(args: string[], deps: RunDeps): Prom
       "shipit settings propose: name the setting and the value, e.g.\n"
         + "  shipit settings propose advanced.enableSubAgents=true --reason \"why this unblocks the work\"\n"
         + "  shipit settings propose network.egress.hosts[].host --add registry.npmjs.org --reason \"…\"\n"
+        + "  shipit settings propose instructions.userInstructions --value-file - --reason \"…\" <<'EOF'\n"
         + "`shipit settings get <key>` is where the values it accepts are.",
     );
   }
   const list = add ?? remove;
-  if (eq === -1 && list === undefined) {
+  // Prose does not fit in one shell word, so a long value arrives the way every
+  // other body in this CLI does — on stdin or from a file
+  // (docs/299-agent-settings-access req 9).
+  if (valueFile !== undefined && (eq !== -1 || list !== undefined)) {
     fail(
       deps.io,
-      `shipit settings propose: ${key} needs a value — pass ${key}=<value>, or --add/--remove for a list entry.`,
+      "shipit settings propose: --value-file is the value, so pass the key on its own and no "
+        + "--add/--remove.",
     );
   }
+  if (eq === -1 && list === undefined && valueFile === undefined) {
+    fail(
+      deps.io,
+      `shipit settings propose: ${key} needs a value — pass ${key}=<value>, `
+        + `${key} --value-file - for prose, or --add/--remove for a list entry.`,
+    );
+  }
+  const fromFile = valueFile === undefined
+    ? undefined
+    : await readBodyFromFileOrStdin(valueFile, deps.io, "shipit settings propose", "value file");
   if (!parsed.values.reason) {
     fail(
       deps.io,
@@ -236,7 +258,10 @@ export async function handleSettingsPropose(args: string[], deps: RunDeps): Prom
     reason: parsed.values.reason,
     ...(list !== undefined
       ? { operation: add !== undefined ? "add" : "remove", item: list }
-      : { valueText: first.slice(eq + 1), ...(parsed.values.item ? { item: parsed.values.item } : {}) }),
+      : {
+          valueText: fromFile ?? first.slice(eq + 1),
+          ...(parsed.values.item ? { item: parsed.values.item } : {}),
+        }),
   };
 
   const res = await deps.call("POST", "/agent-ops/settings/propose", body, deps.env);
@@ -306,6 +331,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
     description?: string;
     valueType?: string;
     shape?: Record<string, unknown>;
+    proposeMaxLength?: number;
     live?: Record<string, unknown>;
     items?: SettingItem[];
     lastProposal?: LastProposal;
@@ -347,6 +373,17 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
   lines.push(...itemLines(entry));
   if (entry.shape && Object.keys(entry.shape).length > 0) {
     lines.push("", `Accepts: ${JSON.stringify(entry.shape)}`);
+  }
+  // The dialog's box and the card answer different questions, so the smaller of
+  // the two is said out loud rather than left to a refusal
+  // (docs/299-agent-settings-access req 9).
+  if (typeof entry.proposeMaxLength === "number") {
+    lines.push(
+      "",
+      `A proposal card carries at most ${entry.proposeMaxLength.toLocaleString("en-US")} characters `
+        + "of this. Longer than that is the user's own edit, not a one-click approval — pass a long "
+        + "value with `--value-file -`.",
+    );
   }
   if (entry.live && Object.keys(entry.live).length > 0) {
     lines.push("", `Resolved now: ${JSON.stringify(entry.live)}`);

@@ -138,6 +138,12 @@ export function text(opts: {
   /** Names the value in validation messages when the dialog label does not read well. */
   noun?: string;
   required?: boolean;
+  /**
+   * Set it wherever the WRITER trims, or the declaration describes a value
+   * nobody stores: a proposal card would then show a change — a leading blank
+   * line, a second trailing newline — that Apply silently discards
+   * (docs/299-agent-settings-access req 9).
+   */
   trim?: boolean;
 }): SettingValueType<string> {
   const defaultValue = opts.default ?? "";

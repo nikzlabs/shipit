@@ -38,6 +38,7 @@ import { StoreReadCache, bespokeReader } from "./settings-store-readers.js";
 import type { ItemName, StoreReadContext, StoredItem } from "./settings-store-readers.js";
 import type { SettingsReadDeps } from "./settings-read-deps.js";
 import type { SettingsProposalRow } from "../settings-proposal-store.js";
+import { CARD_TEXT_MAX } from "./settings-text-change.js";
 import { ServiceError } from "./types.js";
 
 export type { SettingsReadDeps };
@@ -210,6 +211,12 @@ export interface SettingDetailEntry extends SettingIndexEntry {
   valueType: SettingValueKind;
   /** Options, bounds, units, fields — whatever the declared `type` holds. */
   shape: Record<string, unknown>;
+  /**
+   * How much prose a proposal card carries, where that is less than the box in
+   * the dialog takes (req 9). Present only when the two differ, so the agent
+   * composes to the limit instead of meeting it in a refusal.
+   */
+  proposeMaxLength?: number;
   /** Facts a declaration cannot hold, resolved at read time. */
   live?: Record<string, unknown>;
   /** Present for an item-addressed setting: one entry per instance. */
@@ -1228,6 +1235,20 @@ function summarize(row: SettingsProposalRow | null): SettingProposalSummary | un
   };
 }
 
+/**
+ * What a proposal card can carry, where the dialog's box takes more (req 9).
+ *
+ * The two limits answer different questions and are allowed to differ: typing
+ * 50,000 characters of your own instructions is not the same act as approving
+ * 50,000 characters somebody else wrote. Reporting it is what stops the agent
+ * composing a value it can only discover is unproposable by being refused.
+ */
+function proposeTextLimit(declaration: AnySettingDeclaration): number | undefined {
+  if (declaration.propose.kind !== "yes" || declaration.type.kind !== "text") return undefined;
+  const declared = declaration.type.shape.maxLength;
+  return typeof declared === "number" && declared > CARD_TEXT_MAX ? CARD_TEXT_MAX : undefined;
+}
+
 /** The detail of one setting: its whole description, its value's shape, and what resolves live. */
 export async function getSettingForAgent(
   deps: SettingsReadDeps,
@@ -1243,6 +1264,7 @@ export async function getSettingForAgent(
   }
   const state = await readState(deps, sessionId);
   const { entry, items } = await buildEntry(declaration, deps, state, true);
+  const proposeLimit = proposeTextLimit(declaration);
   // Not gated on `readable`: the options are a different question from the
   // value, and a withheld setting is exactly one whose options the agent still
   // has to name (req 1). `LIVE_DETAILS` carries what that costs.
@@ -1268,6 +1290,7 @@ export async function getSettingForAgent(
     description: oneLine(declaration.description),
     valueType: declaration.type.kind,
     shape: declaration.type.shape,
+    ...(proposeLimit !== undefined ? { proposeMaxLength: proposeLimit } : {}),
     ...(live ? { live } : {}),
     ...(withProposals ? { items: withProposals } : {}),
     ...(last ? { lastProposal: last } : {}),

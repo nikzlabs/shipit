@@ -176,7 +176,7 @@ export const GLOBAL_SETTINGS = {
     description:
       "Custom instructions sent to the agent with every message. Use them to define project "
       + "conventions, preferred libraries, or style guidelines.",
-    type: text({ maxLength: 50_000, noun: "System prompt" }),
+    type: text({ maxLength: 50_000, noun: "System prompt", trim: true }),
     store: { kind: "system-prompt-file", promptScope: "standard" },
     wire: "systemPrompt",
     emits: userText("The user's own instructions, shown because they are theirs."),
@@ -192,7 +192,7 @@ export const GLOBAL_SETTINGS = {
       "Sent in an ops session instead of Your Instructions, which can contradict the read-only "
       + "host-debugging contract an ops session already carries. Leave it empty to send no "
       + "instructions of your own in an ops session.",
-    type: text({ maxLength: 50_000, noun: "Ops session prompt" }),
+    type: text({ maxLength: 50_000, noun: "Ops session prompt", trim: true }),
     store: { kind: "system-prompt-file", promptScope: "ops" },
     wire: "systemPromptOps",
     emits: userText("The user's own instructions, shown because they are theirs."),

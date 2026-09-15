@@ -121,7 +121,7 @@ export const ROLES_SETTINGS = {
     description:
       "What this role is for. The agent reads it to pick this role and to pitch the prompts it "
       + "sends here.",
-    type: text({ maxLength: 2_000, noun: "Role description" }),
+    type: text({ maxLength: 2_000, noun: "Role description", trim: true }),
     store: { kind: "bespoke", ownedBy: "credential-store roles (PUT /api/settings `roles`)" },
     emits: userText("The user's own words about their role, and the words the agent is meant to read."),
     propose: { kind: "yes" },
@@ -134,7 +134,7 @@ export const ROLES_SETTINGS = {
     address: ROLE_ADDRESS,
     label: "Standing instructions",
     description: "Added to whatever task the role is given.",
-    type: text({ maxLength: 50_000, noun: "Standing instructions" }),
+    type: text({ maxLength: 50_000, noun: "Standing instructions", trim: true }),
     store: { kind: "bespoke", ownedBy: "credential-store roles (PUT /api/settings `roles`)" },
     emits: userText("The user's own instructions for their role, shown because they are theirs."),
     propose: { kind: "yes" },

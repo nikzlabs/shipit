@@ -89,6 +89,19 @@ button.theme:hover { background:var(--color-bg-hover); }
 .val.to { background:var(--color-success-subtle); color:var(--color-success); font-weight:600; }
 .arrow { color:var(--color-text-tertiary); }
 
+.sizes { display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px;
+  color:var(--color-text-tertiary); flex-wrap:wrap; }
+.diff {
+  margin:6px 0 0; max-height:16rem; overflow:auto; border-radius:4px;
+  border:1px solid var(--color-border-secondary); background:var(--color-bg-tertiary);
+  padding:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px;
+  line-height:1.6; white-space:pre-wrap; word-break:break-word;
+}
+.diff span { display:block; }
+.diff .ctx { color:var(--color-text-secondary); }
+.diff .add { background:color-mix(in srgb, var(--color-success) 10%, transparent); color:var(--color-success); }
+.diff .del { background:color-mix(in srgb, var(--color-error) 10%, transparent); color:var(--color-error); }
+
 .reason {
   margin-top:10px; padding-left:10px; border-left:2px solid var(--color-border-secondary);
   color:var(--color-text-secondary); font-size:13px;
@@ -179,6 +192,86 @@ button.theme:hover { background:var(--color-bg-hover); }
     The setting name, the path, the description and both values come from the declaration and
     the server’s own read. Only the quoted reason is the agent’s text — flattened to one line,
     length-capped, and shown as attributed so it can never look like ShipIt describing the change.
+  </p>
+
+  <div class="divider"></div>
+
+  <h2>Pending — a prose value</h2>
+  <p class="note">
+    Two chips cannot carry the user's own instructions, so the change block becomes a
+    full-context diff: the whole current text and the whole proposed text, with what moves marked.
+    The region scrolls at a fixed height, so no length of proposed value makes the card taller
+    or pushes Apply out of view.
+  </p>
+
+  <div class="bubble">
+    Here’s the tighter version of your instructions you asked for.
+  </div>
+
+  <div class="card pending">
+    <div class="row">
+      <span class="icon" style="color:var(--color-accent)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="4" y1="8" x2="20" y2="8"/><circle cx="9" cy="8" r="2.4" fill="currentColor" stroke="none"/>
+          <line x1="4" y1="16" x2="20" y2="16"/><circle cx="16" cy="16" r="2.4" fill="currentColor" stroke="none"/>
+        </svg>
+      </span>
+      <div class="body">
+        <div class="title">Settings change proposed</div>
+        <div class="path">Settings › Instructions</div>
+
+        <div class="change">
+          <div class="label">Your Instructions</div>
+          <div class="desc">Custom instructions sent to the agent with every message.</div>
+          <div class="sizes">
+            <span>412 characters, 9 lines</span>
+            <span class="arrow" aria-hidden="true">→</span>
+            <span>358 characters, 7 lines</span>
+            <span style="color:var(--color-success)">+3</span>
+            <span style="color:var(--color-error)">−5</span>
+          </div>
+          <pre class="diff" tabindex="0" aria-label="Proposed text, as a diff">
+<span class="ctx"> Always run the tests before you finish.</span>
+<span class="del">-Use lint:dev, not the full lint, unless you suspect a cross-file rule.</span>
+<span class="del">-Use test:dev, not the full suite, unless the change is wide.</span>
+<span class="add">+Run the affected tests and the dev lint; reach for the full ones only</span>
+<span class="add">+when the change is wide or you suspect a cross-file rule.</span>
+<span class="ctx"> </span>
+<span class="ctx"> Prefer small, reviewable pull requests.</span>
+<span class="del">-Explain why a change was made, not only what changed.</span>
+<span class="del">-Keep the PR body's rationale section stable rather than appending logs.</span>
+<span class="add">+A PR body explains why, and its rationale section is edited rather than appended to.</span>
+<span class="ctx"> </span>
+<span class="ctx"> Never push to main.</span>
+<span class="del">-Ask before anything outward-facing.</span>
+<span class="ctx"> Read the feature doc before changing a feature.</span></pre>
+        </div>
+
+        <div class="reason">
+          <span class="who">The agent’s reason</span>
+          You asked for a tighter version; this keeps every rule and drops the repetition.
+        </div>
+
+        <div class="actions">
+          <button class="btn primary">Apply</button>
+          <button class="btn ghost">Dismiss</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="legend">
+    Four things about the diff region are load-bearing rather than styling. It is
+    <strong>height-capped</strong>, so no length of agent-authored value pushes the gate out of
+    view. Its lines are <strong>plain text, never markdown</strong>, so a heading or a link
+    written into the value cannot render as ShipIt’s own chrome. The <strong>counts come from
+    the server</strong>, so a value padded with blank lines still reports its bulk where the
+    visible region shows a dozen lines. And a value carrying a bidirectional override or an
+    invisible formatting character is <strong>refused before the card exists</strong> — a card
+    that displays something other than what Apply writes fails the one test this refusal is.
+    Past 10,000 characters a side, or 1,000 lines between the two versions, the refusal stands:
+    that edit is the user’s own to make. Each changed line also carries an “Added:” / “Removed:”
+    label for a reader that gets neither the colour nor the glyph.
   </p>
 
   <div class="divider"></div>

@@ -11,6 +11,7 @@ shipit settings list    [--tab NAME] [--json]
 shipit settings get     <key> [--json]
 shipit settings propose <key>=<value> [--item ADDRESS] --reason "..."
 shipit settings propose <key> --add|--remove <entry> --reason "..."
+shipit settings propose <key> --value-file - --reason "..."   (prose, on stdin)
 ```
 
 **Read before you tell the user a setting is the problem.** The value may
@@ -221,6 +222,39 @@ shipit settings propose "network.egress.hosts[].host" --add registry.npmjs.org \
 
 A per-repository setting is always **this session's own repository**; there is no
 way to name another one.
+
+### Proposing prose
+
+A setting that holds prose — the user's own instructions, an ops session's
+instructions, a role's standing instructions — is proposable like any other, and
+the card shows it as a **diff** rather than as two values: the whole current text
+and the whole proposed text, with the lines that move marked. That is what the
+user checks before pressing Apply.
+
+Pass it on stdin rather than squeezing it into one shell word:
+
+```
+shipit settings propose instructions.userInstructions --value-file - \
+  --reason "The tighter version of your own instructions you asked for." <<'EOF'
+Always run the tests before you finish.
+Prefer small, reviewable pull requests.
+EOF
+```
+
+`--value-file` takes a path too, and it replaces `key=value` rather than joining
+it. Two things to know before you write the value:
+
+- **A card carries less than the dialog's box does**, in characters and in lines.
+  `shipit settings get <key>` says how many characters when the two differ. Past
+  either bound the change is refused — an edit nobody can read through is the
+  user's own to make, not a one-click approval — so propose a smaller edit, or
+  tell them what to change. If it is the *current* value that is over, no
+  proposal can fix that and the refusal says so.
+- **Write plain text.** A value carrying a bidirectional override, an invisible
+  formatting character or a control character is refused, because the card would
+  then display something other than what Apply would write.
+- **Leading and trailing whitespace is not yours to propose.** These settings are
+  stored trimmed, so a card will not show a blank line the write would discard.
 
 ### What became of a card
 

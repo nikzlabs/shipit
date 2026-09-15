@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { runShim, type ShimIO } from "./shipit.js";
 
 interface RecordedCall {
@@ -16,6 +19,8 @@ function makeRunner() {
   let stderr = "";
   let exitCode: number | null = null;
   const calls: RecordedCall[] = [];
+  /** Request bodies, kept beside `calls` so the existing shape assertions stand. */
+  const bodies: unknown[] = [];
 
   const io: ShimIO = {
     stdout: (text) => { stdout += text; },
@@ -29,14 +34,22 @@ function makeRunner() {
   async function run(
     argv: string[],
     responses: Record<string, MockResponse> = {},
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; calls: RecordedCall[] }> {
+  ): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    calls: RecordedCall[];
+    bodies: unknown[];
+  }> {
     stdout = "";
     stderr = "";
     exitCode = null;
     calls.length = 0;
+    bodies.length = 0;
 
-    const fakeCall = async (method: "GET" | "POST" | "PATCH", path: string) => {
+    const fakeCall = async (method: "GET" | "POST" | "PATCH", path: string, body?: unknown) => {
       calls.push({ method, path });
+      bodies.push(body);
       return responses[`${method} ${path.split("?")[0]}`] ?? { status: 200, body: {} };
     };
 
@@ -45,7 +58,7 @@ function makeRunner() {
     } catch (err) {
       if (err instanceof Error && err.message !== "__shim_exit__") throw err;
     }
-    return { stdout, stderr, exitCode, calls: [...calls] };
+    return { stdout, stderr, exitCode, calls: [...calls], bodies: [...bodies] };
   }
 
   return { run };
@@ -495,6 +508,39 @@ describe("shipit settings propose", () => {
     const forged = res.stdout.split("\n").filter((line) => line.includes("allowAgentMerge"));
     expect(forged).toHaveLength(1);
     expect(forged[0]).toContain("Proposed:");
+  });
+
+  /**
+   * Prose does not fit in one shell word, so a long value arrives the way every
+   * other body in this CLI does (docs/299-agent-settings-access req 9).
+   */
+  it("reads a prose value from a file, newlines and all", async () => {
+    const { run } = makeRunner();
+    const file = path.join(os.tmpdir(), `shipit-settings-value-${process.pid}.md`);
+    const prose = "Always run the tests.\nPrefer small, reviewable pull requests.\n";
+    fs.writeFileSync(file, prose);
+    try {
+      const res = await run(
+        ["settings", "propose", "instructions.userInstructions", "--value-file", file, "--reason", "why"],
+        { "POST /agent-ops/settings/propose": PROPOSED },
+      );
+
+      expect(res.exitCode).toBe(0);
+      expect(res.bodies[0]).toMatchObject({ key: "instructions.userInstructions", valueText: prose });
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("takes the value from --value-file or from key=value, never both", async () => {
+    const { run } = makeRunner();
+    const res = await run([
+      "settings", "propose", "instructions.userInstructions=short", "--value-file", "-", "--reason", "why",
+    ]);
+
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("--value-file is the value");
+    expect(res.calls).toHaveLength(0);
   });
 
   it("requires a reason, because the user reads it on the card", async () => {

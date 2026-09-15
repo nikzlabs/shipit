@@ -150,6 +150,30 @@ export interface SettingsProposalSideChange {
   to: string;
 }
 
+/** One line of a proposal's diff, tagged with what the change does to it. */
+export interface SettingsProposalDiffLine {
+  kind: "context" | "added" | "removed";
+  text: string;
+}
+
+/**
+ * A prose change, shown as what it does to the text rather than as two values
+ * (docs/299-agent-settings-access req 9).
+ *
+ * `lines` is a FULL-CONTEXT diff: every line of both versions is in it,
+ * unchanged ones included, so the card carries the whole before and the whole
+ * after rather than a summary that elides part of what Apply writes. The counts
+ * are the server's own, so a value padded with blank lines still reports its
+ * bulk even where the card's scroll region shows twelve lines of it.
+ */
+export interface SettingsProposalTextChange {
+  lines: SettingsProposalDiffLine[];
+  before: { chars: number; lines: number };
+  after: { chars: number; lines: number };
+  added: number;
+  removed: number;
+}
+
 /**
  * One proposed settings change, as it appears in the transcript
  * (docs/299-agent-settings-access req 4). One card carries one change, and the
@@ -175,10 +199,20 @@ export interface SettingsProposalCard {
   description: string;
   /** Breadcrumb to the control, e.g. `Settings › Advanced`. */
   path: string;
-  /** The current value at propose time, formatted by the catalogue's own door. */
+  /**
+   * The current value at propose time, formatted by the catalogue's own door —
+   * or, where `textChange` carries the prose, ShipIt's one-line summary of it
+   * ("412 characters"), which is what the collapsed line and `lastProposal`
+   * want anyway.
+   */
   from: string;
   /** The proposed value, formatted the same way. */
   to: string;
+  /**
+   * Present instead of the `from → to` chips when either side is longer than a
+   * chip shows. The prose lives here and nowhere else on the card.
+   */
+  textChange?: SettingsProposalTextChange;
   /** Absent unless this one operation writes more than the field it names. */
   alsoChanges?: SettingsProposalSideChange[];
   /** The agent's words, flattened to one line and capped. */
