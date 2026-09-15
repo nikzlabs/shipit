@@ -4,9 +4,11 @@ import {
   markSessionStatusStale,
   recordSessionStatus,
   runStatusExclusive,
+  shouldNudgeForStatusCard,
+  statusNudgePrompt,
   takeOfferedActions,
 } from "./session-status.js";
-import type { SessionStatusDeps } from "./session-status.js";
+import type { SessionStatusDeps, TurnStatusFacts } from "./session-status.js";
 import type { SessionStatus } from "../../shared/types.js";
 
 /** Stores what it is given, so reconciliation runs against a real previous card. */
@@ -366,5 +368,68 @@ describe("runStatusExclusive", () => {
       status: "Ready to merge.",
       fresh: true,
     });
+  });
+});
+
+describe("shouldNudgeForStatusCard (docs/303 req 12–15)", () => {
+  const plainTurn = (over: Partial<TurnStatusFacts> = {}): TurnStatusFacts => ({
+    statusUpdated: false,
+    wasInterrupted: false,
+    receivedResult: true,
+    silent: false,
+    statusNudge: false,
+    postTurn: "commit-push",
+    writeSeq: 3,
+    ...over,
+  });
+
+  it("nudges a turn that produced a result and did not write the card", () => {
+    expect(shouldNudgeForStatusCard(plainTurn(), { writeSeq: 3 }, false)).toBe(true);
+  });
+
+  it("nudges a session that has no card at all yet (req 22 — the first ordinary turn writes it)", () => {
+    expect(shouldNudgeForStatusCard(plainTurn({ writeSeq: 0 }), undefined, false)).toBe(true);
+  });
+
+  const noCases: [string, Partial<TurnStatusFacts>][] = [
+    ["the agent wrote or confirmed the card", { statusUpdated: true }],
+    ["the turn was interrupted — a question, a plan approval or a stop", { wasInterrupted: true }],
+    ["no result came back — a crash has its own recovery", { receivedResult: false }],
+    ["the turn was silent — compaction", { silent: true }],
+    ["the turn was itself a nudge (req 15: one attempt)", { statusNudge: true }],
+    ["a driver owns the turn", { postTurn: "none" }],
+  ];
+  for (const [why, over] of noCases) {
+    it(`does not nudge when ${why}`, () => {
+      expect(shouldNudgeForStatusCard(plainTurn(over), { writeSeq: 3 }, false)).toBe(false);
+    });
+  }
+
+  it("does not nudge when a later turn already wrote the card", () => {
+    expect(shouldNudgeForStatusCard(plainTurn({ writeSeq: 3 }), { writeSeq: 4 }, false)).toBe(false);
+  });
+
+  it("defers while a successor is running or queued", () => {
+    expect(shouldNudgeForStatusCard(plainTurn(), { writeSeq: 3 }, true)).toBe(false);
+  });
+});
+
+describe("statusNudgePrompt", () => {
+  it("opens with [ShipIt] and asks for one call, bare if nothing changed", () => {
+    const prompt = statusNudgePrompt(undefined);
+    expect(prompt.startsWith("[ShipIt]")).toBe(true);
+    expect(prompt).toContain("session_status");
+    expect(prompt).toContain("no arguments");
+  });
+
+  it("lists the offers with their taken state, so the agent can keep or replace them knowingly", async () => {
+    const { d } = await seededCard();
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+    await takeOfferedActions(d, "s1", [stored.actions[0]!.offerId]);
+
+    const prompt = statusNudgePrompt(d.sessionManager.get("s1")!.sessionStatus);
+    expect(prompt).toContain("- Wire the webhook (already taken)");
+    expect(prompt).toContain("- Add a README section");
+    expect(prompt).not.toContain("- Add a README section (already taken)");
   });
 });

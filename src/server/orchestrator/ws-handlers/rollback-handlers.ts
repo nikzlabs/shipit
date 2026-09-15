@@ -33,6 +33,15 @@ async function rollbackAndRestoreLfs(
   onWorkspaceRewritten(runner, "rewind");
 }
 
+/**
+ * docs/303 — a rewind or a conversation reset can remove the work the status card
+ * describes, so the card is marked stale; broadcast so viewers see the mark at once.
+ */
+function resetConversationThread(ctx: RewindCtx, sessionId: string): void {
+  if (!ctx.sessionManager.clearAgentSessionId(sessionId)) return;
+  ctx.sseBroadcast("session_list", { sessions: ctx.sessionManager.list() });
+}
+
 function findCommitBeforeGap(messages: PersistedMessage[], gapPosition: number): string | null {
   for (let i = gapPosition - 1; i >= 0; i--) {
     const commitHash = messages[i].commitHash;
@@ -214,7 +223,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       ctx.chatHistoryManager.saveMessages(sessionId, truncated);
       const replay = buildConversationReplay(truncated);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      resetConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -309,7 +318,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         ctx.chatHistoryManager.saveMessages(sessionId, truncated);
         const replay = buildConversationReplay(truncated);
         if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-        ctx.sessionManager.clearAgentSessionId(sessionId);
+        resetConversationThread(ctx, sessionId);
         ctx.send({
           type: "rewind_complete",
           gapPosition,
@@ -341,7 +350,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "code", headHash, flippedMessageIds });
       const replay = buildConversationReplay(allMessages);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      resetConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -374,7 +383,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       });
       const replay = buildConversationReplay(truncated);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      resetConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -416,7 +425,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       ctx.chatHistoryManager.saveMessages(targetSessionId, snapshot.messages);
       const replay = buildConversationReplay(snapshot.messages);
       if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      resetConversationThread(ctx, targetSessionId);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "chat" });
       return;
     }
@@ -433,7 +442,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       if (!git) throw new Error("No workspace available for code restore");
       await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash, ctx.getRunnerRegistry().get(targetSessionId));
       ctx.chatHistoryManager.clearRolledBack(targetSessionId, snapshot.flippedMessageIds);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      resetConversationThread(ctx, targetSessionId);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "code" });
       return;
     }
@@ -442,7 +451,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       ctx.chatHistoryManager.saveMessages(targetSessionId, snapshot.messages);
       const replay = buildConversationReplay(snapshot.messages);
       if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      resetConversationThread(ctx, targetSessionId);
       if (!git) throw new Error("No workspace available for code restore");
       await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash, ctx.getRunnerRegistry().get(targetSessionId));
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "both" });

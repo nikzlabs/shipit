@@ -141,6 +141,7 @@ export function deliverRebaseFollowup(deps: RebaseFollowupDeps, followup: Rebase
       resetMergedBranch: undefined,
       compactContext: undefined,
       silent: undefined,
+      statusNudge: undefined,
       onTurnComplete: undefined,
       // Answer a user message typed during the rebase first, then run the follow-up.
     }), { whenBusy: "queue" });

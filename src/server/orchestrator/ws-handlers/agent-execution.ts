@@ -510,6 +510,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       return { commitHash, parentHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable };
     },
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
+    statusCardEnabled: () => ctx.credentialStore.getSessionStatusCard(),
     listenerDeps,
     buildRunParams: async (sessionId, id, p, turnRoute) => {
       // Env preparation can replace agentSessionId; read it again.
@@ -678,6 +679,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
       ...(opts.systemTurn ? { systemTurn: true } : {}),
+      ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       emitUserEcho: userEcho !== undefined,
       ...(userEcho ? { userEcho } : {}),
       persistUserMessage,

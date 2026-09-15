@@ -191,6 +191,69 @@ export function takeOfferedActions(
 }
 
 /**
+ * docs/303 — what a settling turn knew about itself, taken before its drain step: the
+ * drained successor resets the runner state these three come from, and it starts before
+ * the network post-turn work and `idle`.
+ */
+export interface TurnStatusFacts {
+  statusUpdated: boolean;
+  wasInterrupted: boolean;
+  receivedResult: boolean;
+  silent: boolean;
+  /** This turn IS a nudge; an ignored one is not nudged again (req 15). */
+  statusNudge: boolean;
+  postTurn: "commit-push" | "none";
+  /** The record as the turn saw it, so a predecessor can tell its own state from a later write. */
+  writeSeq: number;
+}
+
+/**
+ * req 12 — ShipIt checks at the end of each turn that the agent updated or confirmed the
+ * card, and asks for the update when it did not.
+ *
+ * A successor running or queued is a DEFERRAL, not an exemption: that turn is checked
+ * afresh when it ends, and nudging under it would ask about a session the successor is
+ * already changing.
+ */
+export function shouldNudgeForStatusCard(
+  facts: TurnStatusFacts,
+  stored: Pick<SessionStatus, "writeSeq"> | undefined,
+  successorPending: boolean,
+): boolean {
+  if (facts.statusUpdated) return false;
+  // A question, a plan approval or a user stop (req 13).
+  if (facts.wasInterrupted) return false;
+  // A crash has its own recovery; there is no turn to ask.
+  if (!facts.receivedResult) return false;
+  if (facts.silent) return false;
+  if (facts.statusNudge) return false;
+  // A driver owns this turn and the interval around it.
+  if (facts.postTurn === "none") return false;
+  if ((stored?.writeSeq ?? 0) !== facts.writeSeq) return false;
+  if (successorPending) return false;
+  return true;
+}
+
+/**
+ * The nudge's own prompt (req 12). It is a visible turn, so it opens with `[ShipIt]`, and
+ * it lists the offers because the agent must be able to keep or replace them knowingly.
+ */
+export function statusNudgePrompt(card: SessionStatus | undefined): string {
+  const offers = card?.actions ?? [];
+  const list = offers.length === 0
+    ? "The card offers no actions at the moment."
+    : ["The card currently offers:", ...offers.map(
+      (offer) => `- ${offer.label}${offer.takenAt ? " (already taken)" : ""}`,
+    )].join("\n");
+  return [
+    "[ShipIt] The last turn ended without a status-card update, so the card is marked stale.",
+    list,
+    "Call `session_status` once, and do nothing else this turn: pass the fields that changed, "
+    + "or call it with no arguments to confirm the card exactly as it stands.",
+  ].join("\n\n");
+}
+
+/**
  * req 23 — turning the setting back on shows the earlier card, marked stale, and
  * the next turn refreshes it. What a stored card claimed was true of the last
  * turn ShipIt watched, and nothing watched the turns in between.

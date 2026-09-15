@@ -1130,6 +1130,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         resetMergedBranch: undefined,
         compactContext: undefined,
         silent: undefined,
+        statusNudge: undefined,
       }));
       expect(runner.running).toBe(true);
       expect(runner.hasDelivery("delivery-running")).toBe(true);

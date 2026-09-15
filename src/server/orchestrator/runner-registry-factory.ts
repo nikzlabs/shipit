@@ -384,6 +384,7 @@ export function createRunnerRegistry(
               ...(deferPushArm ? { deferPushArm } : {}),
             },
           ),
+        statusCardEnabled: () => credentialStore?.getSessionStatusCard() ?? false,
         steerInputs: () => ({
           liveSteering: credentialStore?.getLiveSteering() ?? false,
           steeringCapable: getAgentCapabilities(runner.agentId)?.supportsSteering ?? false,
