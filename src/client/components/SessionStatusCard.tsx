@@ -142,7 +142,7 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
   return (
     <div
       data-testid="session-status-card"
-      className="relative rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2 text-xs"
+      className="relative rounded-lg border border-(--color-border-secondary)/60 bg-(--color-bg-secondary)/50 px-3 py-2 text-xs"
     >
       {/* req 27 — the status is markdown, so a list in it reads as a list. */}
       <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN} ${hasOffers || needsYou.length > 0 ? "" : clearOfStale}`}>
