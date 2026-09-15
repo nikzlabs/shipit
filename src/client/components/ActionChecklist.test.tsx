@@ -83,13 +83,13 @@ describe("useChecklistSelection", () => {
     expect(screen.getByTestId("selected")).toHaveTextContent(/^a$/);
   });
 
-  it("drops a selected item from the selection once it is taken", () => {
+  it("keeps a selected item selected when it becomes taken — sending it again is the user's call", () => {
     const { rerender } = render(<Harness items={[item({ key: "a" })]} />);
     fireEvent.click(screen.getAllByRole("checkbox")[0]);
     expect(screen.getByTestId("selected")).toHaveTextContent("a");
 
     rerender(<Harness items={[item({ key: "a", taken: true })]} />);
-    expect(screen.getByTestId("selected")).toBeEmptyDOMElement();
+    expect(screen.getByTestId("selected")).toHaveTextContent("a");
   });
 
   it("never pre-ticks a taken item", () => {
@@ -99,7 +99,7 @@ describe("useChecklistSelection", () => {
 });
 
 describe("ActionChecklist", () => {
-  it("renders a taken item unchecked and disabled even when the caller has it selected", () => {
+  it("shows a taken item as the caller has it: ticked again means send it again", () => {
     render(
       <ActionChecklist
         items={[item({ key: "a", taken: true })]}
@@ -109,24 +109,33 @@ describe("ActionChecklist", () => {
       />,
     );
     const box = screen.getByRole("checkbox") as HTMLInputElement;
-    expect(box.checked).toBe(false);
-    expect(box).toBeDisabled();
+    expect(box.checked).toBe(true);
+    expect(box).not.toBeDisabled();
   });
 
-  it("renders a taken item unchecked, disabled and greyed, with no RECOMMENDED badge", () => {
+  it("labels a taken item SENT, so its grey is not a mystery", () => {
+    render(<Harness items={[item({ key: "a", taken: true })]} />);
+    expect(screen.getByText("SENT")).toBeInTheDocument();
+  });
+
+  it("leaves an untaken item unlabelled", () => {
+    render(<Harness items={[item({ key: "a" })]} />);
+    expect(screen.queryByText("SENT")).not.toBeInTheDocument();
+  });
+
+  it("renders a taken item greyed and not pre-ticked, with no RECOMMENDED badge", () => {
     render(
       <Harness items={[item({ key: "a", label: "Add retries", defaultChecked: true, taken: true })]} />,
     );
     const box = screen.getByRole("checkbox") as HTMLInputElement;
     expect(box.checked).toBe(false);
-    expect(box).toBeDisabled();
     expect(screen.queryByText("RECOMMENDED")).not.toBeInTheDocument();
     expect(screen.getByText("Add retries").className).toContain("--color-text-tertiary");
   });
 
-  it("keeps a taken item out of the selection however it is clicked", () => {
+  it("lets the user tick a taken item again, so a crashed or ignored one can be re-sent", () => {
     render(<Harness items={[item({ key: "a", taken: true }), item({ key: "b" })]} />);
     fireEvent.click(screen.getAllByRole("checkbox")[0]);
-    expect(screen.getByTestId("selected")).toBeEmptyDOMElement();
+    expect(screen.getByTestId("selected")).toHaveTextContent("a");
   });
 });

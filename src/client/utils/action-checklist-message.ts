@@ -40,20 +40,42 @@ function offerProvenance(offer: OfferedAction): string {
   return s;
 }
 
-export function formatOfferedActionsMessage(selected: readonly OfferedAction[]): string {
-  const lead =
-    selected.length === 1
-      ? `${CARD_MARKER} I approved this action.`
-      : `${CARD_MARKER} I approved these ${selected.length} actions.`;
-  const body = selected
-    .map((offer, i) => `${i + 1}. ${offer.payload}\n   (${offerProvenance(offer)})`)
-    .join("\n");
-  return `${lead} ${INTENT_GUARD}\n\n${body}`;
+export function formatOfferedActionsMessage(
+  selected: readonly OfferedAction[],
+  doneSteps: readonly string[] = [],
+): string {
+  const parts: string[] = [];
+  if (selected.length > 0) {
+    const lead =
+      selected.length === 1
+        ? `${CARD_MARKER} I approved this action.`
+        : `${CARD_MARKER} I approved these ${selected.length} actions.`;
+    const body = selected
+      .map((offer, i) => `${i + 1}. ${offer.payload}\n   (${offerProvenance(offer)})`)
+      .join("\n");
+    parts.push(`${lead} ${INTENT_GUARD}\n\n${body}`);
+  }
+  // docs/303 req 29 — what the user did by hand rides the same message, so the
+  // agent learns it at the moment it is told to act.
+  if (doneSteps.length > 0) {
+    const lead = selected.length > 0 ? "" : `${CARD_MARKER} `;
+    const heading = doneSteps.length === 1
+      ? `${lead}I have done this manual step:`
+      : `${lead}I have done these manual steps:`;
+    parts.push(`${heading}\n${doneSteps.map((step) => `- ${step}`).join("\n")}`);
+  }
+  return parts.join("\n\n");
 }
 
 /** The status card's "Add comment…", the transcript card's snapshot per offer. */
-export function formatOfferedActionsComment(selected: readonly OfferedAction[]): string {
-  const lines = selected.map((offer) => `- ${offer.payload} (${offerProvenance(offer)})`);
+export function formatOfferedActionsComment(
+  selected: readonly OfferedAction[],
+  doneSteps: readonly string[] = [],
+): string {
+  const lines = [
+    ...selected.map((offer) => `- ${offer.payload} (${offerProvenance(offer)})`),
+    ...doneSteps.map((step) => `- done by hand: ${step}`),
+  ];
   return `Re: offered actions\n${lines.join("\n")}\n\n`;
 }
 

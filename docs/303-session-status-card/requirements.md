@@ -87,8 +87,9 @@ taken inside one session, without building an agent that talks to many.
 17. Offered actions persist across turns. A turn does not clear them; only
     the agent changes the list, by adding to it or replacing it. An action
     the user has taken — sent to the agent as a message — stays on the card,
-    greyed out, unselected and not selectable again, until the agent removes
-    it.
+    greyed out and unselected, until the agent removes it. It can be ticked
+    and sent again: the agent may have crashed, or never acted on it, and
+    telling it again must not need new machinery.
 18. The card shows every offered action that is relevant. Concise means no
     padding, not fewer actions than the agent has to offer; a separate card
     would not save height either.
@@ -131,8 +132,15 @@ taken inside one session, without building an agent that talks to many.
 28. The card is laid out as sections, not as a labelled column: the status
     opens the card with no label of its own, the things only the user can do
     follow under the subtitle "Manual steps", and the offered actions follow
-    under the subtitle "Follow-ups" — the subtitle is what separates them,
-    not a rule.
+    under the subtitle "Follow-ups". A rule opens each of those two sections,
+    above its subtitle. A taken action says "sent" on the row, so its grey is
+    never a mystery.
+29. Each manual step carries a toggle — "I've done this" — so the user can
+    report by hand what they have done. What they ticked is sent to the agent
+    together with the approved actions, in the same message; a step can be
+    reported with no action approved. The submit button is labelled "Submit".
+    A reported step behaves as a sent action does: greyed, unticked, and
+    sendable again.
 
 ## Open questions
 
@@ -140,6 +148,25 @@ taken inside one session, without building an agent that talks to many.
 
 ## Resolved questions
 
+- 2026-09-15 — Nik, on the drawn card, seventh round: "What happens if I send
+  an item and agent crashes or doesn't do it? It should be possible to re-sent
+  the same action or manual step" — and, on the first answer, which grew a
+  "Send again" control: "wait, just make it possible to select them. Why invent
+  new UI?" So a sent row stays greyed and tagged SENT but remains tickable, and
+  ticking it again re-sends it. → reqs 17, 29. Also: the checkbox sat a couple
+  of pixels below its text; it now centres on the row's first line.
+- 2026-09-15 — Nik, on the drawn card, sixth round: "for manual steps, let's
+  have some control at the beginning of each step, a toggle 'I've done this'.
+  This information needs to be sent together with the actions. The button
+  'Submit X actions' should be just 'Submit'." → req 29. A reported step goes
+  quiet ("SENT") until the agent rewrites the card, as a taken offer does.
+- 2026-09-15 — Nik, on the drawn card, fifth round: the subtitles must be more
+  visible, "not gray", and still "blend with the text" when only bold — so a
+  subtitle became an accent icon beside a larger semibold label, as the
+  transcript action card's header row is. Then: "let's add separators before
+  the subtitles", which reinstates a rule above each section (it replaces, not
+  contradicts, the fourth round: the subtitle names the section, the rule opens
+  it). And, asked why a greyed offer was grey, the row now says "SENT". → req 28.
 - 2026-09-15 — Nik, on the drawn card, fourth round: "remove Status/Needs you
   column. Instead the 'Needs you' should be a subtitle, and rename to 'Manual
   steps'. The actions should be separated by another subtitle 'Follow-ups'

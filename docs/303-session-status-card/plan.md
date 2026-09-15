@@ -219,7 +219,7 @@ as does `silent`, which is not forwarded today (`dispatched-turn.ts:307`).
 `statusNudge`. An ignored nudge leaves the card stale; the next ordinary turn
 is checked afresh.
 
-## Client (req 6–9, 14, 17, 18, 20, 24, 26–28)
+## Client (req 6–9, 14, 17, 18, 20, 24, 26–29)
 
 `SessionStatusCard` (`src/client/components/SessionStatusCard.tsx`), rendered
 as the last child of the `contentRef` element in
@@ -237,18 +237,20 @@ Billing service. Markdown, so a list reads as a list:
   - routes and tests done; PR #212 ready to merge
   - webhook not started
 
+────────────────────────────────────────────────────────────
 ✋ Manual steps
-  • Add the Stripe test key in Settings → Secrets.
-  • Review and merge PR #212.
+☐ Add the Stripe test key in Settings → Secrets.      ("I've done this")
+☐ Review and merge PR #212.
 
+────────────────────────────────────────────────────────────
 ☑ Follow-ups
 ☑ Wire the Stripe webhook            RECOMMENDED
   Adds /webhooks/stripe and its signature check.
 ☐ Add retry on 5xx from Stripe
   Three attempts, with backoff.
-☐ Add a README section on billing                (taken, greyed)
+☐ Add a README section on billing   SENT   (sent, greyed, tickable again)
   What the service does and how to run it locally.
-[ Submit 1 action ]  Add comment…                        Stale
+[ Submit ]  Add comment…                                 Stale
 ```
 
 `mockup.html` drew the offers as one wrapping row. That was the prototype,
@@ -261,11 +263,13 @@ meets one, and every offer shows its description (req 26).
   size; what only the user can do follows under the subtitle **"Manual steps"**
   (`needsYou` keeps its field name), omitted when the list is empty, one line
   for a single entry and a bulleted list for several (req 27); the offers
-  follow under the subtitle **"Follow-ups"**, which is what separates them —
-  there is no rule between the sections. A subtitle is the transcript action
-  card's header row — an accent icon beside a 13px semibold primary label —
-  because a heading in text colour alone, tertiary or primary, blends into the
-  markdown above it.
+  follow under the subtitle **"Follow-ups"**. A rule opens each of those two
+  sections, above its subtitle. A manual step is a checklist row of its own,
+  whose toggle means "I've done this" (req 29): the same rows as the offers,
+  with that hint as the row's title and in each checkbox's accessible name. A subtitle is the transcript action card's
+  header row — an accent icon beside a 13px semibold primary label — because a
+  heading in text colour alone, tertiary or primary, blends into the markdown
+  above it.
 - **Freshness.** A current card is a regular card. A stale card carries the
   word **"Stale"** (`text-[11px] font-semibold text-(--color-accent)`) in its
   bottom-right corner; the last row keeps right padding so text never runs
@@ -278,8 +282,11 @@ meets one, and every offer shows its description (req 26).
   card gets a wrapper of its own — same rows, same badge, same button (req
   26). On the status card: selection is keyed by
   `offerId`; `defaultChecked` applies when an offer first appears; a taken
-  offer renders in `--color-text-tertiary` with its checkbox disabled and
-  unchecked, and leaves only when the agent removes it (req 17); untaken
+  offer renders in `--color-text-tertiary`, unticked, with a "SENT" tag where
+  an untaken one carries "RECOMMENDED", and leaves only when the agent removes
+  it (req 17). It stays TICKABLE: an agent can crash or ignore the message, and
+  re-sending is a second tick rather than a control of its own — `taken` is
+  presentation, not a lock. untaken
   offers stay selectable while the card is stale (req 24); an offer whose
   message has been sent is unselectable at once, without waiting for the
   server's `takenAt`. The card keeps the transcript card's submit button,
@@ -289,7 +296,10 @@ meets one, and every offer shows its description (req 26).
   shape as the transcript card's, with each offer's own `offeredAt` and
   `headSha` (offers outlive status writes, so provenance is per offer, not
   per card), and carries the ticked `offerIds` as `sessionStatusOfferIds` on
-  `send_message`.
+  `send_message`. The steps the user reports doing ride the SAME message, under
+  their own heading (req 29), so one Submit covers the whole card; a reported
+  step needs no offer, so `sessionStatusOfferIds` is omitted when none was
+  ticked. The button is labelled "Submit", never a count.
 - Not on the sidebar row (req 7); not an input to `computeAttentionReason`
   (req 9). The field is on `SessionInfo`, so the sidebar could read it; it
   must not.

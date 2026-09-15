@@ -27,6 +27,9 @@ const NOTICE_MS = 5000;
  */
 const COMPACT_MARKDOWN = "[&_.prose]:text-xs [&_.prose]:leading-snug";
 
+/** A rule opens each section, above its subtitle. */
+const SECTION = "mt-2.5 pt-2.5 border-t border-(--color-border-secondary)";
+
 /**
  * The card's section headings. They are the transcript action card's header
  * row — an accent icon beside a medium primary label — because a heading in
@@ -61,6 +64,8 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
    * window would send the same work twice.
    */
   const [sent, setSent] = useState<ReadonlySet<string>>(() => new Set());
+  /** req 29 — manual steps the user has ticked and already told the agent about. */
+  const [reportedSteps, setReportedSteps] = useState<ReadonlySet<string>>(() => new Set());
   const [sendFailed, setSendFailed] = useState(false);
   const failedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // eslint-disable-next-line no-restricted-syntax -- timer cleanup on unmount
@@ -84,14 +89,26 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
   );
   const { selected, toggle, clear } = useChecklistSelection(items);
 
+  const stepItems = useMemo<ChecklistItem[]>(
+    () =>
+      (status.needsYou ?? []).map((entry) => ({
+        key: entry,
+        label: entry,
+        ...(reportedSteps.has(entry) ? { taken: true } : {}),
+      })),
+    [status.needsYou, reportedSteps],
+  );
+  const steps = useChecklistSelection(stepItems);
+
   const handleSubmit = useCallback(() => {
-    const chosen = status.actions.filter(
-      (offer) => !offer.takenAt && selected.has(offer.offerId),
-    );
-    if (chosen.length === 0) return;
+    // req 17 — a sent offer stays selectable, so a ticked one is re-sent on
+    // purpose: an agent that crashed or ignored it needs telling again.
+    const chosen = status.actions.filter((offer) => selected.has(offer.offerId));
+    const done = (status.needsYou ?? []).filter((entry) => steps.selected.has(entry));
+    if (chosen.length === 0 && done.length === 0) return;
     const offerIds = chosen.map((offer) => offer.offerId);
-    const delivered = onSubmit?.(formatOfferedActionsMessage(chosen), {
-      sessionStatusOfferIds: offerIds,
+    const delivered = onSubmit?.(formatOfferedActionsMessage(chosen, done), {
+      ...(offerIds.length > 0 ? { sessionStatusOfferIds: offerIds } : {}),
     }) ?? false;
     if (failedTimer.current) clearTimeout(failedTimer.current);
     // A refused message keeps the selection, so pressing submit again retries it.
@@ -102,18 +119,19 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
     }
     setSendFailed(false);
     setSent((prev) => new Set([...prev, ...offerIds]));
+    setReportedSteps((prev) => new Set([...prev, ...done]));
     clear();
-  }, [status.actions, selected, onSubmit, clear]);
+    steps.clear();
+  }, [status.actions, status.needsYou, selected, steps, onSubmit, clear]);
 
   const handleAddComment = useCallback(() => {
     const chosen = status.actions.filter((offer) => selected.has(offer.offerId));
-    useSessionStore.getState().setPrefillText(formatOfferedActionsComment(chosen));
+    const done = (status.needsYou ?? []).filter((entry) => steps.selected.has(entry));
+    useSessionStore.getState().setPrefillText(formatOfferedActionsComment(chosen, done));
     useUiStore.getState().setMobilePanel("chat");
-  }, [status.actions, selected]);
+  }, [status.actions, status.needsYou, selected, steps.selected]);
 
-  const submitLabel = selected.size > 0
-    ? `Submit ${selected.size} action${selected.size === 1 ? "" : "s"}`
-    : "Submit";
+  const nothingTicked = selected.size === 0 && steps.selected.size === 0;
 
   const stale = !status.fresh;
   // The "Stale" label is drawn over the card's bottom-right corner.
@@ -132,18 +150,17 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
       </div>
 
       {needsYou.length > 0 && (
-        <div className="mt-3">
+        <div className={SECTION}>
           <Subtitle icon={<HandIcon size={ICON_SIZE.SM} weight="fill" />}>Manual steps</Subtitle>
-          <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN} ${hasOffers ? "" : clearOfStale}`}>
-            {needsYou.length === 1
-              ? <MarkdownContent text={needsYou[0]} />
-              : (
-                <ul className="list-disc pl-4 space-y-0.5">
-                  {needsYou.map((entry) => (
-                    <li key={entry}><MarkdownContent text={entry} /></li>
-                  ))}
-                </ul>
-              )}
+          {/* req 29 — each step carries its own "I've done this" toggle. */}
+          <div>
+            <ActionChecklist
+              items={stepItems}
+              selected={steps.selected}
+              onToggle={steps.toggle}
+              ariaLabel="Manual steps"
+              toggleHint="I've done this"
+            />
           </div>
         </div>
       )}
@@ -151,7 +168,7 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
       {/* req 26 — the offers are the transcript action card's, extended rather
           than reduced: same rows, badge, buttons and delivery notice. */}
       {hasOffers && (
-        <div className="mt-3 flex flex-col gap-2">
+        <div className={SECTION}>
           <Subtitle icon={<ListChecksIcon size={ICON_SIZE.SM} />}>Follow-ups</Subtitle>
           <ActionChecklist
             items={items}
@@ -159,6 +176,13 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
             onToggle={toggle}
             ariaLabel="Follow-ups"
           />
+        </div>
+      )}
+
+      {/* One submit for the whole card: the approved offers and the steps the
+          user reports doing travel in one message (req 29). */}
+      {(hasOffers || needsYou.length > 0) && (
+        <div className="mt-2 flex flex-col gap-2">
           {sendFailed && (
             <div className="flex items-center gap-1.5 text-(--color-warning)" role="status">
               <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
@@ -168,8 +192,8 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
 
           <div className={`flex items-center gap-2 ${clearOfStale}`}>
             <ChecklistSubmitButton
-              label={submitLabel}
-              disabled={selected.size === 0}
+              label="Submit"
+              disabled={nothingTicked}
               onClick={handleSubmit}
             />
             <Button variant="ghost" size="md" onClick={handleAddComment}>

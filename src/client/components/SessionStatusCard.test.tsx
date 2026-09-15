@@ -62,16 +62,54 @@ describe("SessionStatusCard", () => {
     expect(bullets).toEqual(["routes done", "webhook not started"]);
   });
 
-  it("shows several things that need the user as a list, and one as a line", () => {
-    const { rerender } = render(
+  it("gives every manual step its own I've-done-this toggle", () => {
+    render(
       <SessionStatusCard status={card({ needsYou: ["Add the Stripe test key.", "Merge PR #212."] })} />,
     );
-    expect(screen.getAllByRole("listitem").map((li) => li.textContent))
-      .toEqual(["Add the Stripe test key.", "Merge PR #212."]);
+    const toggles = screen.getAllByRole("checkbox");
+    expect(toggles).toHaveLength(2);
+    expect(toggles[0]).toHaveAccessibleName("I've done this: Add the Stripe test key.");
+    expect(toggles[1]).toHaveAccessibleName("I've done this: Merge PR #212.");
+  });
 
-    rerender(<SessionStatusCard status={card({ needsYou: ["Add the Stripe test key."] })} />);
-    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
-    expect(screen.getByText("Add the Stripe test key.")).toBeInTheDocument();
+  it("sends the steps the user reports doing in the same message as the actions", () => {
+    const onSubmit = vi.fn(() => true);
+    render(
+      <SessionStatusCard
+        status={card({
+          needsYou: ["Add the Stripe test key."],
+          actions: [offer({ offerId: "o1", payload: "Wire the webhook" })],
+        })}
+        onSubmit={onSubmit}
+      />,
+    );
+    const [step, action] = screen.getAllByRole("checkbox");
+    fireEvent.click(step);
+    fireEvent.click(action);
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
+
+    const [text, options] = onSubmit.mock.calls[0] as unknown as [string, { sessionStatusOfferIds: string[] }];
+    expect(options.sessionStatusOfferIds).toEqual(["o1"]);
+    expect(text).toContain("Wire the webhook");
+    expect(text).toContain("I have done this manual step:");
+    expect(text).toContain("- Add the Stripe test key.");
+  });
+
+  it("submits a reported step on its own, with no action ticked and no offer ids", () => {
+    const onSubmit = vi.fn(() => true);
+    render(
+      <SessionStatusCard status={card({ needsYou: ["Add the Stripe test key."] })} onSubmit={onSubmit} />,
+    );
+    expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
+
+    const [text, options] = onSubmit.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(text).toContain("I have done this manual step:");
+    expect(options.sessionStatusOfferIds).toBeUndefined();
+    // Told once: the step is marked SENT, and can be told again by ticking it.
+    expect(screen.getByText("SENT")).toBeInTheDocument();
   });
 
   it("omits the manual-steps section when there is nothing for the user", () => {
@@ -87,7 +125,7 @@ describe("SessionStatusCard", () => {
     expect(screen.getByText("Stale").className).toContain("--color-accent");
   });
 
-  it("renders a taken offer greyed, unchecked and not selectable", () => {
+  it("renders a taken offer greyed and unticked, and still selectable", () => {
     render(
       <SessionStatusCard
         status={card({
@@ -97,7 +135,8 @@ describe("SessionStatusCard", () => {
     );
     const box = screen.getByRole("checkbox") as HTMLInputElement;
     expect(box.checked).toBe(false);
-    expect(box).toBeDisabled();
+    expect(box).not.toBeDisabled();
+    expect(screen.getByText("SENT")).toBeInTheDocument();
     expect(screen.getByText("Add a README section").className).toContain("--color-text-tertiary");
   });
 
@@ -163,7 +202,7 @@ describe("SessionStatusCard", () => {
     expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
   });
 
-  it("stops offering an offer whose message was sent, before the server says it is taken", () => {
+  it("marks an offer SENT as soon as its message goes, without waiting for the server", () => {
     const onSubmit = vi.fn(() => true);
     render(
       <SessionStatusCard status={card({ actions: [offer({ offerId: "o1" })] })} onSubmit={onSubmit} />,
@@ -171,11 +210,42 @@ describe("SessionStatusCard", () => {
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: /submit/i }));
 
-    const box = screen.getByRole("checkbox") as HTMLInputElement;
-    expect(box).toBeDisabled();
-    fireEvent.click(box);
+    expect(screen.getByText("SENT")).toBeInTheDocument();
+    // Unticked, so a second send is deliberate rather than a double click.
+    expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
     expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
     expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-sends an action the agent never acted on, by ticking it again", () => {
+    const onSubmit = vi.fn(() => true);
+    render(
+      <SessionStatusCard
+        status={card({
+          actions: [offer({ offerId: "o1", payload: "Wire the webhook", takenAt: "2026-09-14T11:00:00.000Z" })],
+        })}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+    const [text, options] = onSubmit.mock.calls[0] as unknown as [string, { sessionStatusOfferIds: string[] }];
+    expect(options.sessionStatusOfferIds).toEqual(["o1"]);
+    expect(text).toContain("Wire the webhook");
+  });
+
+  it("re-sends a manual step the same way", () => {
+    const onSubmit = vi.fn(() => true);
+    render(
+      <SessionStatusCard status={card({ needsYou: ["Add the Stripe test key."] })} onSubmit={onSubmit} />,
+    );
+    for (let i = 0; i < 2; i++) {
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+    }
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("SENT")).toBeInTheDocument();
   });
 
   it("keeps the selection and says so when the message was refused", () => {
