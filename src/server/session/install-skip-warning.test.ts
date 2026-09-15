@@ -36,31 +36,4 @@ describe("installSkipOutputWarning", () => {
   it("stays quiet on an explicit opt-out", () => {
     expect(installSkipOutputWarning(["npm run build"], [])).toBeNull();
   });
-
-  // The custom-dep-dirs bail-out rested on ShipIt honouring every declared dir. When one is
-  // absent after a skip, the step that fills it did not run (docs/183 FINDINGS, 2026-09-15).
-  it("warns past the custom dep-dirs bail-out when a declared dir is absent", () => {
-    const warning = installSkipOutputWarning(
-      ["npm ci", "sh tools/blender/install.sh"],
-      ["node_modules", ".tools/blender"],
-      [".tools/blender"],
-    );
-    expect(warning).not.toBeNull();
-    expect(warning).toContain(".tools/blender");
-    expect(warning).toContain("sh tools/blender/install.sh");
-  });
-
-  it("stays quiet on an absent dir when every install step is a plain dependency install", () => {
-    expect(installSkipOutputWarning(["npm ci"], ["node_modules", "dist"], ["dist"])).toBeNull();
-  });
-
-  // An implicit `node_modules` was never declared by the repo, so an absent one must not be
-  // described as a missing declared output — the default path keeps its original wording.
-  it("leaves the DEFAULT dep-dirs warning untouched when node_modules is absent", () => {
-    const withAbsent = installSkipOutputWarning(
-      ["npm ci", "npm run build"], ["node_modules"], ["node_modules"],
-    );
-    expect(withAbsent).toBe(installSkipOutputWarning(["npm ci", "npm run build"], ["node_modules"]));
-    expect(withAbsent).not.toContain("not present in this workspace");
-  });
 });

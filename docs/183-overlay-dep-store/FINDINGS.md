@@ -1111,9 +1111,19 @@ way to notice was diffing two sessions' lines.
 
 Fixed (this PR): the ignored-ancestor rule above; `prepareOverlayDirs` creates the missing
 ancestors chowned to the session worker (Docker would create them as root); the pre-stamp
-refuses when any **declared** dir is unmounted; drops are reported per-dir with a reason in
-`[overlay-measure]` and warned at provisioning; and the skip warning fires past its
-custom-dep-dirs bail-out when a declared dir is absent.
+refuses when any **declared** dir is unmounted; and drops are reported per-dir with a reason
+in `[overlay-measure]` and warned at provisioning.
+
+**`installSkipOutputWarning` was deliberately left alone**, after a first cut changed it and
+CI caught the contradiction. Widening it to fire whenever a declared dep dir is absent on disk
+breaks the contract its own test states — *"says nothing when dep-dirs covers the build
+output"*: declaring the directory is how a repo opts out of that warning, and a declared dir
+is often legitimately absent (the exemption at the top of `overlay-dep-check.ts`). The useful
+signal is not "absent on disk" but "missing from the **effective** set" — a dir ShipIt itself
+dropped — and the session worker cannot tell those apart, since a dep dir is also unmounted
+when the flag is off or the repo is pnpm. The orchestrator knows, and now says so at both
+places it decides: the provisioning warning and the pre-stamp refusal. Fixing the cause
+removed the need for the backstop.
 
 **Review caught a second, narrower form of the same mistake in the fix itself.** The first cut
 asked "is this ancestor ignored?" with the bare-plus-slash query PR #1256 established. But
