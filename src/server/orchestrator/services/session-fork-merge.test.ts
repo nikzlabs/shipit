@@ -259,7 +259,7 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
     const card: SessionStatus = {
       status: "Routes done.",
-      needsYou: "Add the Stripe key.",
+      needsYou: ["Add the Stripe key."],
       actions: [{ id: "webhook", label: "Wire it", payload: "Add the route.", offerId: "o-1", offeredAt: "2026-09-15T00:00:00.000Z" }],
       fresh: true,
       writeSeq: 3,
