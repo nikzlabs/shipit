@@ -194,6 +194,7 @@ describe("applyEgressHostRemove: `applied` means the host came off", () => {
     dbs.push(dbManager);
     return {
       store,
+      db: dbManager.db,
       deps: { sseBroadcast: () => {}, egressAllowlistStore: store, credentialStore },
       effective: () =>
         buildEffectiveAllowlist({
@@ -241,6 +242,28 @@ describe("applyEgressHostRemove: `applied` means the host came off", () => {
     // Now nothing is left for this write to change, so `failed` is true of it.
     const again = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, ".github.com");
     expect(again.status).toBe("failed");
+  });
+
+  it("leaves both rows of one host in place when the second delete fails", async () => {
+    const fx = fixture();
+    // The legacy shape `removeHost` deletes row by row for: a host stored before
+    // `normalizeHost` stripped trailing dots is two rows and one host, so the
+    // removal is two writes even at session scope, where no suppression follows.
+    const insert = fx.db.prepare(
+      "INSERT INTO egress_allowlist (scope, host, created_at) VALUES (?, ?, ?)",
+    );
+    insert.run("sess-1", "a.test", new Date().toISOString());
+    insert.run("sess-1", "a.test.", new Date().toISOString());
+    fx.db.exec(
+      "CREATE TRIGGER refuse_second BEFORE DELETE ON egress_allowlist "
+      + "WHEN OLD.host = 'a.test.' BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END",
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const outcome = await applyEgressHostRemove(fx.deps, "sess-1", "a.test");
+
+    expect(outcome.status).toBe("failed");
+    expect(fx.store.listHosts("sess-1")).toEqual(["a.test", "a.test."]);
   });
 
   it("leaves the row in place when the suppression fails, so `failed` is true", async () => {
