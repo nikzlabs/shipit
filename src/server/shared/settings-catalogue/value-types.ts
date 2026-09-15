@@ -4,6 +4,14 @@ import type { GitIdentity, SettingValueType, ValidationResult } from "./types.js
 
 // A declaration's `type` carries the value's default, its validation and the
 // shape the detail view renders, so none of the three is authored twice.
+//
+// One contract binds the three together: **`validate` returns the value the
+// store will hold**, so `read(serialize(v))` is `v` for anything it accepts
+// (`store-round-trip.test.ts`). A type that normalises — `text`'s trim, a
+// numeric's "below this is unset" — normalises HERE, because every caller reads
+// the validated value back as the change it is about to make: a proposal card
+// names it before the click (docs/299-agent-settings-access req 4) and the
+// dialog echoes it after.
 
 function ok<T>(value: T): ValidationResult<T> {
   return { ok: true, value };
@@ -72,7 +80,9 @@ interface NumberOpts {
   /**
    * A stored value below this reads as "not set", and writing one removes the
    * field — so a budget of zero falls back to the default rather than capping
-   * the install at nothing.
+   * the install at nothing. `validate` therefore answers `null` for such a
+   * value, because what it returns is what the store will hold
+   * (docs/299-agent-settings-access req 4).
    */
   unsetBelow?: number;
 }
@@ -122,6 +132,14 @@ export function numeric(
           max === undefined ? null : `at most ${max}`,
         ].filter(Boolean).join(" and ");
         return fail(`${noun} must be ${bounds}${unit ? ` ${unit}` : ""}`);
+      }
+      if (!isSet(value)) {
+        // Serialising this removes the field, so returning the number would hand
+        // a caller a value the store never holds — a proposal card showing
+        // "4096 → 0" over a write that stores nothing.
+        return nullable
+          ? ok(null)
+          : fail(`${noun} must be at least ${unsetBelow}${unit ? ` ${unit}` : ""}`);
       }
       return ok(value);
     },

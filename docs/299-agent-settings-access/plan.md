@@ -1279,6 +1279,45 @@ check's error is therefore **returned** beside an `applied` outcome that says
 what could not be confirmed, and the route that answers with an update status is
 what raises it.
 
+### And "applied" has to mean what the card showed
+
+A writer reporting `applied` says the write landed, not that it landed as the
+card displayed it. Those came apart twice: `advanced.memoryBudgetMb` showed
+`4096 → 0` over a write that *removes* the field, and clearing
+`services.nonTurnModel` showed "not set" over a save hook that seeds a
+replacement selection in the same call. Requirement 4 is about what the user can
+check before clicking, so a card the store then contradicts is the requirement
+failing.
+
+Three defences, prospective first, because a card corrected after the click is
+already a card someone approved wrongly:
+
+1. **A declared type answers with the value the store will hold**
+   (`value-types.ts`): `read(serialize(v))` is `v` for anything `validate`
+   accepts. `text`'s `trim` already worked this way; `unsetBelow` now does, so a
+   budget of `0` validates to `null` and the card says "not set". Held over the
+   whole registry by `store-round-trip.test.ts`, so a declaration added tomorrow
+   is covered without a second step (req 7).
+2. **A change that cannot be shown truthfully is refused**, which is the rule
+   `hostPreflight` and `requireEmittable` already apply. Clearing the
+   background-model pin joins them: `seedNonTurnModel` runs from the save hook
+   AND from every build of the settings payload, so "not set" is not a state
+   that setting can be left in while a model is eligible. The seeded model is
+   not named back either — what the seed picks at apply time is not what it
+   picks now.
+3. **The store has the last word.** After an `applied` write the apply reads the
+   setting back through the agent's own read surface — the same read that
+   already answers `effect`, so no second round trip — and compares it with the
+   card's `to` through the door that `to` came through. A disagreement resolves
+   the card `partial` naming both values, rather than `applied`. Only a `set` is
+   compared: a membership card displays ShipIt's own wording, and those writers
+   already answer from the resulting membership. An operation that moves the
+   entry its card is addressed to declares `renamesItem` (`roles[].name`), or
+   its read-back finds nothing and reports a change that landed.
+
+Defences 1 and 2 cover what can be known before the click; 3 is what covers a
+save hook, whose side effects nothing before the write can see.
+
 ## How the agent learns the outcome
 
 `shipit settings get <key>` carries `lastProposal`, and the agent reads before
@@ -1303,7 +1342,7 @@ differently.
 | `dismissed` | does not re-propose *that value* unless asked |
 | `applied` | does nothing; `value` reflects it |
 | `stale` / `refused` | may propose again, from the current value |
-| `partial` | says which half landed and proposes the rest |
+| `partial` | says what did not land — a half of a multi-part write, or a value the store did not keep — and proposes the rest |
 | `failed` | may propose again, saying the last attempt failed |
 | `uncertain` / `unknown` | reads the value and says the outcome was not verified |
 

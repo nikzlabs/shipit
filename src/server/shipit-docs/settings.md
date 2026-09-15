@@ -274,7 +274,7 @@ card about the `reviewer` role says nothing about `deep-dive`.
 | `dismissed` | The user declined. Do not propose that value again unless asked. |
 | `stale` | The setting moved after the card was written, so nothing was applied. You may propose again, from the current value. |
 | `refused` | The change was no longer valid at the click. You may propose again. |
-| `partial` | Some of a multi-part write landed. Say which, and propose the rest. |
+| `partial` | Some of what the card showed did not land — a half of a multi-part write, or a value the store did not keep. Read the value, say what differs, and propose the rest. |
 | `failed` | Verified that nothing changed. You may propose again, saying the last attempt failed. |
 | `uncertain` | The write could not confirm what it did. Read the value; do not claim it worked. |
 | `unknown` | ShipIt restarted mid-apply. It is never retried — read the value and say the outcome was not verified. |

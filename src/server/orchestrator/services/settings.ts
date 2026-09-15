@@ -54,6 +54,29 @@ export function resolveHarnessOnboarding(
   return stamped ? { canRunTurns, harnessOnboardingCompletedAt: stamped } : { canRunTurns };
 }
 
+/**
+ * The model an unpinned install would be seeded with, or nothing.
+ *
+ * Read by the seeding below AND by the proposal that would clear the pin
+ * (`settings-operations.ts`): where this answers a selection, "not set" is not
+ * a state the setting can be left in, and a card promising it would be
+ * contradicted by its own write (docs/299-agent-settings-access req 4). One
+ * function so the refusal and the seed cannot come to different answers.
+ */
+export function nonTurnModelSeedCandidate(
+  credentialStore: CredentialStore | undefined,
+  agentRegistry: AgentRegistry,
+  env: NodeJS.ProcessEnv = process.env,
+): NonTurnModelSelection | undefined {
+  if (!credentialStore) return undefined;
+  // A permanent seed needs a confirmed installation and completed account login.
+  const installed = new Set(agentRegistry.list().filter((a) => a.installed).map((a) => a.id));
+  return firstEligibleNonTurnSelection(
+    listConfiguredCredentials(credentialStore, env, { requireReadyAccounts: true }),
+    { isInstalled: (harnessId) => installed.has(harnessId) },
+  )?.selection;
+}
+
 export function seedNonTurnModel(
   credentialStore: CredentialStore | undefined,
   agentRegistry: AgentRegistry,
@@ -61,14 +84,9 @@ export function seedNonTurnModel(
 ): void {
   if (!credentialStore) return;
   if (credentialStore.getNonTurnModel()) return;
-  // A permanent seed needs a confirmed installation and completed account login.
-  const installed = new Set(agentRegistry.list().filter((a) => a.installed).map((a) => a.id));
-  const first = firstEligibleNonTurnSelection(
-    listConfiguredCredentials(credentialStore, env, { requireReadyAccounts: true }),
-    { isInstalled: (harnessId) => installed.has(harnessId) },
-  );
+  const first = nonTurnModelSeedCandidate(credentialStore, agentRegistry, env);
   if (!first) return;
-  credentialStore.stampNonTurnModel(first.selection);
+  credentialStore.stampNonTurnModel(first);
 }
 
 export function buildNonTurnModelSettings(

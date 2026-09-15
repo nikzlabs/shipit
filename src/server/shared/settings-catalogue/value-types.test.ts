@@ -86,10 +86,19 @@ describe("numeric", () => {
     expect(budget.serialize(8192.7)).toBe(8192);
   });
 
-  it("accepts null and a value that means unset, as the shipped route did", () => {
+  it("answers null for a value that means unset, because that is what the store keeps", () => {
     expect(budget.validate(null, "Memory budget")).toEqual({ ok: true, value: null });
-    expect(budget.validate(-1, "Memory budget")).toEqual({ ok: true, value: -1 });
-    expect(budget.serialize(-1)).toBeUndefined();
+    // Accepted, as the shipped route always accepted it — but answered as the
+    // "not set" it becomes, so a caller showing the validated value shows the
+    // change the write makes (docs/299-agent-settings-access req 4).
+    expect(budget.validate(-1, "Memory budget")).toEqual({ ok: true, value: null });
+    expect(budget.validate(0, "Memory budget")).toEqual({ ok: true, value: null });
+    // Without a null to answer with there is no value the store would hold, so
+    // the same input is a refusal rather than a silently dropped write.
+    expect(numeric({ default: 512, unsetBelow: 1, unit: "MB" }).validate(0, "Slice")).toEqual({
+      ok: false,
+      message: "Slice must be at least 1 MB",
+    });
     for (const nonsense of ["8192", Infinity, NaN]) {
       expect(budget.validate(nonsense, "Memory budget")).toEqual({
         ok: false,

@@ -3,6 +3,7 @@ import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { SettingsProposalStore } from "../settings-proposal-store.js";
 import type { SettingsProposalCard, SettingsProposalPhase } from "../../shared/types.js";
+import { PROPOSAL_PHASE_GUIDANCE } from "../../shared/settings-proposal-guidance.js";
 import {
   buildSettingsOutcomeNotice,
   pendingSettingsOutcomes,
@@ -127,7 +128,7 @@ describe("the settings outcome notice (docs/299-agent-settings-access req 8)", (
     const notice = buildSettingsOutcomeNotice(pendingSettingsOutcomes(deps(), SESSION));
 
     expect(notice).toContain("PARTIALLY applied");
-    expect(notice).toContain("Say which half landed, and propose the rest.");
+    expect(notice).toContain(PROPOSAL_PHASE_GUIDANCE.partial.guidance);
     // The state is an internal enum; its prose is not.
     expect(notice).toContain("In effect: restart-dependent.");
     for (const supplied of [

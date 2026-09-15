@@ -65,6 +65,7 @@ import {
   domainsForSettingsSave,
   providerAccountDomains,
 } from "./settings-apply.js";
+import { nonTurnModelSeedCandidate } from "./settings.js";
 import type { SaveGlobalSettingsOptions } from "./settings.js";
 import {
   egressScopeDomain,
@@ -180,6 +181,14 @@ export interface SettingsOperation {
    * the write will actually make rather than the spelling it arrived in.
    */
   normalizeItem?(item: string): string;
+  /**
+   * This operation moves the entry the card is ADDRESSED to, so reading the
+   * setting back at that address after the write finds nothing. Set it, or the
+   * read-back in `settings-decision.ts` reports a change that landed as a
+   * mismatch — a loud wrong answer rather than a silent one, which is the side
+   * to fail on.
+   */
+  renamesItem?: boolean;
   /** ShipIt's own account of what the click did, for the resolved card. */
   applied(target: SettingsOperationTarget, display: string, declaration: AnySettingDeclaration): string;
 }
@@ -728,6 +737,31 @@ function modeAddressed(preflight?: SettingsOperation["preflight"]): SettingsOper
 }
 
 /**
+ * Clearing the background-model pin, where clearing it is not a state the
+ * setting can be left in.
+ *
+ * Unsetting the pin is what makes ShipIt seed one: `seedNonTurnModel` runs from
+ * the save hook that stores the clear (`services/settings.ts`) and again
+ * whenever the settings payload is built, so on an install with an eligible
+ * model the value is a different pin before anyone reads it. A card saying
+ * "not set" would therefore promise something the click cannot produce, and an
+ * operation whose full effect cannot be displayed is refused rather than shown
+ * wrong (docs/299-agent-settings-access req 4). The seeded model is NOT named
+ * back: what the seed picks at apply time is not what it picks now, so naming
+ * it would be a second claim the card cannot keep.
+ *
+ * Where nothing is eligible the clear is a real clear, and it is allowed.
+ */
+function nonTurnClearRefusal(deps: SettingsOperationDeps, value: unknown): string | null {
+  if (value !== null) return null;
+  const seeded = nonTurnModelSeedCandidate(deps.credentialStore, deps.agentRegistry);
+  if (!seeded) return null;
+  return "Clearing this does not leave it unset: ShipIt immediately pins the first model it can "
+    + "run background work on, so a card promising \"not set\" would be undone by its own write. "
+    + "Propose the model you want instead, or tell the user.";
+}
+
+/**
  * A label the writer would refuse. The declaration's own limit is wider than
  * what `updateStringCredential` and `ProviderAccountManager.rename` store, and a
  * card that could only ever resolve `refused` is not a change the user makes
@@ -819,7 +853,7 @@ const providerAccountLabelOperation: SettingsOperation = {
  * Renaming a role, expressed by the KEY of the roles map with the old name as
  * `previousName` rather than by a `name` field.
  */
-const roleNameOperation: SettingsOperation = savingOperation(
+const roleNameOperation: SettingsOperation = { ...savingOperation(
   (deps, target, value) => {
     const role = storedRole(deps, target.item);
     if (!role) throw new ServiceError(400, `No role named "${echoSupplied(target.item ?? "")}".`);
@@ -852,7 +886,7 @@ const roleNameOperation: SettingsOperation = savingOperation(
       return rolePreflight(() => ({}))(deps, target, value);
     },
   },
-);
+), renamesItem: true };
 
 // ---------------------------------------------------------------------------
 // The registry
@@ -910,6 +944,11 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     (_deps, target, value) => ({ failoverCutoffs: { [modeKey(target)]: { weekly: value as number } } }),
     () => domainsOfSave({ failoverCutoffs: {} }),
     { preflight: modeAddressed() },
+  ),
+  "services.nonTurnModel::set": savingOperation(
+    (_deps, _target, value) => ({ nonTurnModel: value as ModelSelection | null }),
+    () => domainsOfSave({ nonTurnModel: null }),
+    { preflight: (deps, _target, value) => nonTurnClearRefusal(deps, value) },
   ),
 
   // The release channel writes through its own route. `applyReleaseChannel`
