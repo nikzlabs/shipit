@@ -169,6 +169,58 @@ describe("a stored value cannot forge a line of `shipit settings` output", () =>
     expect(listed).not.toContain(FORGED_FIELD);
   });
 
+  it("does not let a stored PROPOSAL's own metadata forge a second field", async () => {
+    // Same prerequisite as a malformed credential status: ShipIt writes an
+    // ISO timestamp here, and the row is read back from SQLite with a cast, so
+    // a restore or a migration decides what is actually in the column. `get`
+    // puts it on the `Last proposal:` line, which is the field an agent reads
+    // to decide whether the user has already dealt with a change.
+    fx.proposals.create({
+      cardId: "set-real",
+      sessionId: fx.sessionId,
+      target: { key: "instructions.userInstructions" },
+      operation: "set",
+      phase: "dismissed",
+      from: "before",
+      proposed: "after",
+      createdAt: `2026-09-15T00:00:00.000Z\n${FORGED_FIELD}`,
+    });
+
+    const detail = await getSettingForAgent(
+      fx.deps.read,
+      fx.sessionId,
+      "instructions.userInstructions",
+    );
+    const out = await shim(detail, ["settings", "get", "instructions.userInstructions"]);
+
+    // Exactly one — the real one, which says DISMISSED. A second saying APPLIED
+    // is what stops an agent proposing a change the user already declined.
+    const fields = out.split("\n").filter((line) => line.trim().startsWith("Last proposal:"));
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toContain("DISMISSED");
+    expect(detail.lastProposal?.proposedAt).not.toMatch(/[\n\r\u0085\u2028\u2029]/);
+  });
+
+  it("escapes a line separator in --json, which JSON.stringify leaves as itself", async () => {
+    // `value` carries the prose raw — it is the machine-readable half — and
+    // `JSON.stringify` escapes the C0 controls and stops there, so U+2028 in a
+    // stored value put a real line break in the agent's stdout while `display`,
+    // beside it in the same document, was correctly escaped.
+    const separated = `Be helpful.\u2028${FORGED_FIELD}`;
+    await writeGlobalSystemPrompt(fx.tmpDir, separated);
+
+    const detail = await getSettingForAgent(
+      fx.deps.read,
+      fx.sessionId,
+      "instructions.userInstructions",
+    );
+    const json = await shim(detail, ["settings", "get", "instructions.userInstructions", "--json"]);
+
+    expect(json).not.toMatch(/[\u0085\u2028\u2029]/);
+    // Escaped, not altered: what the agent PARSES is the value that was stored.
+    expect((JSON.parse(json) as { value: string }).value).toBe(separated);
+  });
+
   it("does not let a value become a field under one instance", async () => {
     const now = Date.now();
     fx.credentialStore.upsertCredentialRoute({

@@ -427,9 +427,35 @@ machine-readable half, never a line.
 
 **The rule is a type assertion rather than a habit.**
 `settings-read.test.ts` holds a compile-time guard (`PlainStringFields`) over
-each view: a new string-typed field fails `npm run typecheck` until it is minted
-or named in the allow-list. The store readers mint at their own constructor
-(`unreadable()`), so a reader added later cannot supply a raw reason.
+each view: a new string-typed field fails `npm run typecheck` until it is
+minted, and `key` is the only name the allow-list grants. The store readers mint
+at their own constructor (`unreadable()`), so a reader added later cannot supply
+a raw reason.
+
+The guard **looks through arrays and nested objects**, and the first version did
+not — it tested each direct property, so `notes: string[]`, the very regression
+it exists to prevent, passed it. A guard that cannot fail on the defect it was
+written for is worse than none, because it is read as coverage. `unknown` is
+deliberately not flagged: `value`, `shape` and `live` are the machine-readable
+half, and TypeScript admits no way to print one as text without serializing it,
+which goes through `renderJson`.
+
+**`--json` is part of the boundary, not an escape from it.** `JSON.stringify`
+escapes the C0 controls and stops, so a stored value carrying U+2028 put a real
+line break in the agent's stdout while `display`, beside it in the same
+document, was correctly escaped. The three `--json` paths serialize through
+`renderJson`, which escapes the three survivors in the JSON spelling of the same
+character — so what a reader parses is unchanged and only the bytes on the line
+differ.
+
+**A proposal's own metadata is stored text too.** `summarize` copied `cardId`,
+`createdAt`, `resolvedAt` and `sessionId` from SQLite into the `Last proposal:`
+line unrendered, and `proposalPhaseHeadline` echoed an unrecognised phase raw —
+so a malformed row forged a SECOND `Last proposal:` line, which is the field an
+agent reads to decide whether the user has already dealt with a change. All four
+are `Rendered` now and the headline flattens its fallback. `phase` and
+`operation` stay their unions, because the agent switches on them; each renderer
+flattens where it turns one into text.
 
 **The shim renders what it composes itself and trusts what the read sent.** The
 wire is `Rendered`, so re-rendering a value there would quote what is already

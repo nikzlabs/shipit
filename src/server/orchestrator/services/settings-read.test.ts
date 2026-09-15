@@ -22,10 +22,12 @@ import {
   listSettingsForAgent,
   projectSettingValue,
   scopeUnreadableReason,
+  type SettingAddressView,
   type SettingDetailEntry,
   type SettingEffect,
   type SettingIndexEntry,
   type SettingItemView,
+  type SettingProposalSummary,
   type SettingProposeView,
   type SettingsReadDeps,
 } from "./settings-read.js";
@@ -42,28 +44,54 @@ import {
  * string-typed field on any of these views fails `npm run typecheck` until it
  * is either minted as {@link Rendered} or named below.
  *
- * What may stay plain is only what cannot carry a line break by construction:
- * ShipIt's own generated ids and timestamps, and `key`, which is a declared
- * catalogue constant and the address a caller passes back. `value` is `unknown`
- * — it is the machine-readable half, never a line; `display` is the line.
+ * **It looks THROUGH arrays and nested objects**, which the first version of
+ * this guard did not: it tested each direct property, so `notes: string[]` —
+ * the exact regression it exists to prevent — passed it, and so would a nested
+ * `{ text: string }`. A leaf anywhere under a field is a leaf the shim can
+ * print.
+ *
+ * What may stay plain is `key` alone: a declared catalogue constant, and the
+ * address a caller passes back.
+ *
+ * `unknown` is deliberately NOT flagged. It is the machine-readable half of the
+ * response — `value`, `shape`, `live` — which no renderer can put on a line
+ * without serializing it first, and serializing goes through `renderJson`.
+ * TypeScript will not let it be printed as text any other way.
  */
+type HasPlainString<V> =
+  [V] extends [string]
+    // A branded string (`Rendered`) and a union of literals are string SUBtypes,
+    // and neither is a plain string: the test is whether `string` fits in it.
+    ? string extends V ? true : false
+    : V extends readonly (infer E)[]
+      ? HasPlainString<E>
+      : V extends object
+        ? true extends { [K in keyof V]-?: HasPlainString<Required<V>[K]> }[keyof V]
+          ? true
+          : false
+        : false;
+
 type PlainStringFields<T> = {
-  [K in keyof T]-?: string extends Required<T>[K] ? K : never;
+  [K in keyof T]-?: HasPlainString<Required<T>[K]> extends true ? K : never;
 }[keyof T];
 
 type AssertPlainFields<T, Allowed> = PlainStringFields<T> extends Allowed ? true : never;
 
-const _indexFieldsAreRendered: AssertPlainFields<SettingIndexEntry, "key" | "value"> = true;
-const _detailFieldsAreRendered: AssertPlainFields<SettingDetailEntry, "key" | "value"> = true;
-const _itemFieldsAreRendered: AssertPlainFields<SettingItemView, "value"> = true;
+const _indexFieldsAreRendered: AssertPlainFields<SettingIndexEntry, "key"> = true;
+const _detailFieldsAreRendered: AssertPlainFields<SettingDetailEntry, "key"> = true;
+const _itemFieldsAreRendered: AssertPlainFields<SettingItemView, never> = true;
 const _effectFieldsAreRendered: AssertPlainFields<SettingEffect, never> = true;
 const _proposeFieldsAreRendered: AssertPlainFields<SettingProposeView, never> = true;
+const _addressFieldsAreRendered: AssertPlainFields<SettingAddressView, never> = true;
+const _proposalFieldsAreRendered: AssertPlainFields<SettingProposalSummary, never> = true;
 void [
   _indexFieldsAreRendered,
   _detailFieldsAreRendered,
   _itemFieldsAreRendered,
   _effectFieldsAreRendered,
   _proposeFieldsAreRendered,
+  _addressFieldsAreRendered,
+  _proposalFieldsAreRendered,
 ];
 
 let tmpDir: string;

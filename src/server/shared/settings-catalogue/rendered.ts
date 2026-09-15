@@ -13,11 +13,17 @@
  * agent-proposed from text that originated in a repository file or a web page.
  *
  * So no raw string is ever put on a line. Everything goes through one of the
- * three mints below, each of which returns {@link Rendered} — a branded string
- * the type system will not accept a plain one in place of. All three guarantee
+ * four mints below, each of which returns {@link Rendered} — a branded string
+ * the type system will not accept a plain one in place of. All four guarantee
  * the same thing: **the result contains no character that can begin a new line.**
  * They differ only in how the result reads, so choosing the wrong one costs
  * legibility and never the guarantee.
+ *
+ * The rule covers `--json` as well as the text output. `JSON.stringify` escapes
+ * the C0 controls and stops there, so a document serialized for `--json` goes
+ * through {@link renderJson} — a value carrying U+2028 otherwise puts a real
+ * line break in the agent's stdout while `display`, beside it in the same
+ * document, is correctly escaped.
  */
 
 declare const RENDERED: unique symbol;
@@ -75,16 +81,22 @@ export function renderValue(value: unknown): Rendered {
   if (value === null || value === undefined) return "not set" as Rendered;
   if (typeof value === "boolean") return (value ? "on" : "off") as Rendered;
   if (typeof value === "number") return String(value) as Rendered;
-  return quoted(value);
+  return renderJson(value);
 }
 
 /**
+ * A whole JSON document on one line — the mint for the text a caller SERIALIZES
+ * rather than the text a value formats to.
+ *
  * `JSON.stringify` escapes the quote, the backslash and the C0 controls, which
  * is most of the work. It leaves U+0085, U+2028, U+2029 and the format
  * characters as themselves, so those are escaped here — U+2028 inside a quoted
- * string is still a line break to a reader that honours it.
+ * string is still a line break to a reader that honours it, and `--json` puts
+ * the whole document on one line of the agent's stdout. The escape is the JSON
+ * spelling of the same character, so what a reader PARSES is unchanged: only
+ * the bytes on the line differ.
  */
-function quoted(value: unknown): Rendered {
+export function renderJson(value: unknown): Rendered {
   let json: string | undefined;
   try {
     json = JSON.stringify(value);

@@ -729,3 +729,20 @@ value and stored another. Both re-verified at the code.
 - [x] Guard red alone: the read discloses the bound, then the same change is
       refused by it (`settings-propose.test.ts`), and the CLI prints both
       sentences (`shipit-settings.test.ts`)
+- [x] Three gaps the independent review found in the first pass of this work,
+      each confirmed at the code before fixing: the compile-time guard tested
+      only DIRECT properties, so `notes: string[]` — the regression it exists to
+      prevent — passed it; `--json` serialized with `JSON.stringify`, which
+      leaves U+0085/U+2028/U+2029 as themselves, so a value's line separator
+      reached stdout raw beside a correctly escaped `display`; and a proposal
+      summary's `cardId`, `createdAt`, `resolvedAt` and `sessionId` went from
+      SQLite onto the `Last proposal:` line unrendered, with
+      `proposalPhaseHeadline` echoing an unknown phase raw
+- [x] The guard now looks through arrays and nested objects, proved by reverting
+      three shapes one at a time: `notes` to `string[]`, a nested
+      `{ text: string }`, and a raw string two levels down inside `lastProposal`
+- [x] `renderJson` is the fourth mint — the one for text a caller SERIALIZES —
+      and the escape is the JSON spelling of the same character, so what a
+      reader parses is unchanged. Guard: a stored U+2028 through the real read
+      and the real shim, asserting both that stdout carries none and that the
+      parsed value is still the stored one

@@ -3,7 +3,7 @@ import {
   proposalPhaseGuidance,
   proposalPhaseHeadline,
 } from "../../shared/settings-proposal-guidance.js";
-import { renderOwn, renderValue } from "../../shared/settings-catalogue/rendered.js";
+import { renderJson, renderOwn } from "../../shared/settings-catalogue/rendered.js";
 import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
 // ShipIt's own settings from inside a session (docs/299-agent-settings-access):
@@ -86,7 +86,9 @@ function proposalLines(proposal: LastProposal | undefined, indent: string): stri
   const change = `${proposalValue(proposal.from)} → ${proposalValue(proposal.proposed)}`;
   const when = proposal.proposedAt ? ` on ${asString(proposal.proposedAt)}` : "";
   const resolved = proposal.resolvedAt ? `, resolved ${asString(proposal.resolvedAt)}` : "";
-  const operation = proposal.operation ? `${asString(proposal.operation)}: ` : "";
+  // The operation is a discriminant the agent switches on, not a line the read
+  // rendered, so the shim flattens it where it turns it into text.
+  const operation = proposal.operation ? `${renderOwn(asString(proposal.operation))}: ` : "";
   lines.push(`${indent}  ${operation}${change}${when}${resolved}`);
   const guidance = proposalPhaseGuidance(phase);
   if (guidance) lines.push(`${indent}  ${guidance}`);
@@ -146,7 +148,7 @@ export async function handleSettingsList(args: string[], deps: RunDeps): Promise
     fail(deps.io, formatError(res, "Failed to list ShipIt settings"), 1);
   }
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.stdout(`${renderJson(res.body)}\n`);
     deps.io.exit(0);
     return;
   }
@@ -271,7 +273,7 @@ export async function handleSettingsPropose(args: string[], deps: RunDeps): Prom
     fail(deps.io, formatError(res, `Failed to propose a change to ${key}`), 1);
   }
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.stdout(`${renderJson(res.body)}\n`);
     deps.io.exit(0);
     return;
   }
@@ -324,7 +326,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
     fail(deps.io, formatError(res, `Failed to read ShipIt setting ${key}`), 1);
   }
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.stdout(`${renderJson(res.body)}\n`);
     deps.io.exit(0);
     return;
   }
@@ -375,7 +377,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
   lines.push("", asString(entry.description));
   lines.push(...itemLines(entry));
   if (entry.shape && Object.keys(entry.shape).length > 0) {
-    lines.push("", `Accepts: ${renderValue(entry.shape)}`);
+    lines.push("", `Accepts: ${renderJson(entry.shape)}`);
   }
   // The dialog's box and the card answer different questions, so the smaller of
   // the two is said out loud rather than left to a refusal
@@ -398,7 +400,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
     );
   }
   if (entry.live && Object.keys(entry.live).length > 0) {
-    lines.push("", `Resolved now: ${renderValue(entry.live)}`);
+    lines.push("", `Resolved now: ${renderJson(entry.live)}`);
   }
   for (const note of new Set(entry.notes ?? [])) lines.push("", `Note: ${note}`);
 

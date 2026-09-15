@@ -188,7 +188,7 @@ export interface SettingIndexEntry {
  * indefinite veto from a session the user has forgotten.
  */
 export interface SettingProposalSummary {
-  cardId: string;
+  cardId: Rendered;
   phase: SettingsProposalPhase;
   operation: SettingsProposalOperation;
   /**
@@ -203,10 +203,10 @@ export interface SettingProposalSummary {
    */
   from: Rendered;
   proposed: Rendered;
-  proposedAt: string;
-  resolvedAt?: string;
+  proposedAt: Rendered;
+  resolvedAt?: Rendered;
   /** The session the card is in, which may not be the one reading this. */
-  sessionId: string;
+  sessionId: Rendered;
 }
 
 export interface SettingDetailEntry extends SettingIndexEntry {
@@ -1252,16 +1252,22 @@ function lastProposalFor(
 
 function summarize(row: SettingsProposalRow | null): SettingProposalSummary | undefined {
   if (!row) return undefined;
+  // Every free-text half of the row, rendered. An id and a timestamp are
+  // ShipIt's own and cannot carry a line break when ShipIt wrote them — but they
+  // are read back from SQLite with a cast, and `get` puts them on the
+  // `Last proposal:` line, so the line's guarantee is this read's rather than
+  // the writer's. `phase` and `operation` stay their unions: the agent switches
+  // on them, and each renderer flattens where it turns one into text.
   return {
-    cardId: row.cardId,
+    cardId: renderOwn(row.cardId),
     phase: row.phase,
     operation: row.operation,
     ...(row.target.item ? { item: renderOwn(row.target.item) } : {}),
     from: renderValue(row.from),
     proposed: renderValue(row.proposed),
-    proposedAt: row.createdAt,
-    ...(row.resolvedAt ? { resolvedAt: row.resolvedAt } : {}),
-    sessionId: row.sessionId,
+    proposedAt: renderOwn(row.createdAt),
+    ...(row.resolvedAt ? { resolvedAt: renderOwn(row.resolvedAt) } : {}),
+    sessionId: renderOwn(row.sessionId),
   };
 }
 
