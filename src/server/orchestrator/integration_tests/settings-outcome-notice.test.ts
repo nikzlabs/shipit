@@ -509,6 +509,118 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
       .toContain("[ShipIt] Since your last turn");
   });
 
+  /**
+   * Set up a resident process whose first turn has already been acknowledged,
+   * then dispatch a second turn that carries a fresh outcome and park it inside
+   * environment preparation. `release()` lets the prompt be sent.
+   */
+  async function dispatchIntoPreparationWindow(): Promise<{ release: () => void }> {
+    postAndResolve("set-a", "applied");
+    runner.dispatch(testDispatch({ text: "first" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "resident agent running",
+    );
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the first outcome acknowledged",
+    );
+
+    postAndResolve("set-b", "dismissed");
+    let releasePrep: () => void = () => {};
+    const prepBegan = { count: 0 };
+    (deps.prepareAgentEnv as unknown) = vi.fn(async () => {
+      prepBegan.count += 1;
+      await new Promise<void>((resolve) => { releasePrep = resolve; });
+      return undefined;
+    });
+    runner.dispatch(testDispatch({ text: "second" }));
+    await waitForTurn(() => prepBegan.count === 1, "the second turn's env preparation");
+    return { release: () => releasePrep() };
+  }
+
+  /*
+    The second ordering of the same defect. A wake that lands inside the new
+    turn's environment preparation finds no result of this executor's to re-arm
+    past, so the adoption flag is never set — and by the time the woken turn's
+    result arrives the prompt HAS been submitted, so every state flag reads
+    exactly as it does for a turn that ran the prompt. The result must be
+    attributed to the turn it ends, not to what it looks like.
+  */
+  it("does not spend a newly dispatched prompt's receipt on a wake already in flight", async () => {
+    const { release } = await dispatchIntoPreparationWindow();
+
+    // Background work finishes and the resident CLI resumes on a turn of its own.
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+
+    release();
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
+    expect(String(agents[0]!.sendUserMessage.mock.calls[0]?.[0]))
+      .toContain("[ShipIt] Since your last turn");
+
+    // This result ends the woken turn. The prompt has been submitted but not read.
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => true, "flush");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+
+    // The prompt's own turn is what settles it.
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the dispatched turn's outcome acknowledged",
+    );
+  });
+
+  /*
+    The same window, reached through the other signal ShipIt reads as a turn the
+    CLI began for itself: a top-level assistant block with no wake before it. The
+    defect is a property of the ordering, not of which event announced the turn.
+  */
+  it("does not spend the receipt on a CLI-started turn that announced itself in output", async () => {
+    const { release } = await dispatchIntoPreparationWindow();
+
+    agents[0]!.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Picking the background task back up." }],
+    });
+
+    release();
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => true, "flush");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the dispatched turn's outcome acknowledged",
+    );
+  });
+
+  /*
+    The same window, with the CLI absorbing the steered prompt into the turn it
+    had already woken for — one result covering both. The replay is the harness
+    saying it has read this exact prompt, so the notice did reach the agent and
+    withholding it here would repeat a reminder requirement 8 exists to prevent.
+  */
+  it("acknowledges when the CLI replays the prompt into a turn it had woken for", async () => {
+    const { release } = await dispatchIntoPreparationWindow();
+
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    release();
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
+    const steered = String(agents[0]!.sendUserMessage.mock.calls[0]?.[0]);
+
+    agents[0]!.emit("event", { type: "agent_user_replay", text: steered });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the outcome acknowledged on the replayed prompt's result",
+    );
+  });
+
   it("does not acknowledge when a proxied submission is never accepted", async () => {
     // `ProxyAgentProcess.sendUserMessage` returns while its worker request is
     // still in flight, so returning from it proves nothing. A resident CLI can
@@ -539,5 +651,41 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     rejectSubmission(new Error("the session worker never accepted the prompt"));
     await waitForTurn(() => true, "flush");
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+  });
+
+  it("acknowledges on a freshly spawned process whose output beats its submission", async () => {
+    // The same in-flight window, on a process spawned FOR this prompt. Output
+    // arriving before the worker confirms the submission is this prompt's own
+    // work — there is no earlier turn on a new process for it to belong to —
+    // so reading it as a turn the CLI started would withhold a delivered notice.
+    postAndResolve("set-a", "applied");
+
+    let acceptSubmission: () => void = () => {};
+    const submission = new Promise<void>((resolve) => { acceptSubmission = resolve; });
+    (deps.agentFactory as unknown) = () => {
+      const agent = makeFakeAgent() as FakeAgent & { submissionSettled(): Promise<unknown> };
+      agent.submissionSettled = () => submission;
+      agents.push(agent);
+      return agent;
+    };
+
+    runner.dispatch(testDispatch({ text: "unblock me" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "the proxied agent run",
+    );
+
+    agents[0]!.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "On it." }],
+    });
+    acceptSubmission();
+    await waitForTurn(() => true, "flush");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the outcome acknowledged",
+    );
   });
 });

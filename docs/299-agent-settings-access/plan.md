@@ -1598,60 +1598,82 @@ shipped shapes rule that out, both found in review:
   settlement is lost for good and the notice repeats on every turn forever.
 
 So `delivered()` is called from **one place**: the `agent_result` handler, after
-the `exhausted` check and the failover decision, and under five conditions —
+the `exhausted` check and the failover decision, and under three conditions —
 the result is not a refusal, it `resultIsTheAgentsOwn` (neither `event.error` nor
 `status === "error"` — a conservative filter, since an error result can follow
-partial work, not proof the prompt never ran), **`promptSubmitted`**,
-**not `wasSuperseded`**, and **not `servingCliStartedTurn()`**.
+partial work, not proof the prompt never ran), and it **answers this prompt**.
 
-`wasSuperseded` is the retired-process shape: a superseded turn settles
-`interrupted` with its work discarded, but its listeners are still attached, so
-the old process emitting a result for its own prompt would spend the receipt on a
-turn nobody reads — and the successor, which carries the same notice, would have
-none left to settle. Failover and the quota retry deliberately do **not** set the
-flag: those re-dispatch the same prompt, and their own attempt acknowledges.
+`wasSuperseded` is a fourth, and the one exception to that framing: a superseded
+turn settles `interrupted` with its work discarded, but its listeners are still
+attached, so the old process emitting a result for a prompt that genuinely IS its
+own would spend the receipt on a turn nobody reads — and the successor, which
+carries the same notice, would have none left to settle. Failover and the quota
+retry deliberately do **not** set the flag: those re-dispatch the same prompt on a
+new executor, which records its own submission and acknowledges that.
 
-`servingCliStartedTurn()` draws the same distinction from the other side, and is
-what makes the woken-turn limitation below true rather than merely stated. The
-executor is **re-armed** for a turn the CLI began on its own
-(`rearmForCliStartedTurn`), keeping `promptSubmitted` and `input.noticeDeliveries`
-— the receipts of the prompt it was built for. A dispatched turn that failed with
-a non-auth, non-quota error result leaves those receipts unspent, correctly; a
-self-wake then producing a result of its own would call them, for a turn carrying
-no notice at all, and the next dispatched turn would lose the carry.
+### Which turn a result answers
 
-**Neither condition gives identity between a result and a prompt, and one window
-is left open.** A dispatch that reuses a resident process installs fresh
-listeners and then awaits `prepareAgentEnv`. A CLI self-wake landing in that
-window finds `streamingPostTurnFired` false, so `beginRearm` returns without
-setting the adoption flag — correctly, since this executor has produced no result
-of its own to re-arm past. If preparation then completes, the submission is
-confirmed, and the woken turn's result arrives after it, that result meets every
-condition and acknowledges the NEW prompt's receipt. The notice did ride that
-prompt, so it is lost only if the dispatched turn then fails.
+**Recorded as each turn begins, not inferred from the result.** `agent_result`
+carries no identity — no prompt id, no turn id, nothing that survives the round
+trip — and on a resident process the CLI starts turns ShipIt composed no prompt
+for. So the executor (`turn-executor.ts`) keeps two facts, and a result consumes
+exactly one of them:
 
-Narrowing it means latching that a wake was observed before this executor's own
-result and holding the acknowledgement on that latch. The cost is paid in the
-common case rather than the rare one: an ordinary turn that followed a wake and
-was read perfectly well would go unacknowledged, and the notice would arrive
-again on the turn after — the reminder requirement 8's second clause exists to
-prevent. The loss it would avoid needs the wake to land inside the preparation
-window AND the dispatched turn to fail afterwards. It is recorded rather than
-traded blind, and a signal that distinguishes the two results would settle it
-properly.
+- **`ownTurnPending`** — this prompt's submission was confirmed and its result has
+  not arrived. Set from `noteSubmitted`.
+- **`cliTurnPending`** — the CLI began a turn of its own that has not produced a
+  result.
 
-`promptSubmitted` is the nearest thing to prompt ownership available here, and it
-took two review rounds to get right. The executor's listeners go live before its
-`await prepareAgentEnv`, so on a **resident** process a CLI-started turn of the
-agent's own can land a result in that gap and preparation can then fail with the
-prompt never sent. Returning from the submission is not enough either:
-`ProxyAgentProcess.run` / `.sendUserMessage` post to the session worker and
-return before the answer (`proxy-agent-process.ts`), so a result in *that* window
-would be written off against a prompt the worker went on to reject. So the proxy
-exposes `submissionSettled()` and the executor waits for it; a synchronous
-submission has none and is landed when the call returns. What this still does not
-give is identity between a result and a prompt — a result that beats the
-confirmation leaves the notice for the next turn, which is the safe direction.
+A result takes `cliTurnPending` first, because that turn began first, and only
+otherwise takes `ownTurnPending`. A turn the CLI began is the two events
+`beginRearm` already answers to — `agent_self_wake`, and a top-level
+`agent_assistant` on a harness that `startsOwnTurns` — read under two conditions
+(`noteCliStartedTurn`): only on a **reused** process, because a spawn exists for
+this prompt alone and its first output can beat the proxied submission's
+confirmation; and only while this prompt's own turn is not in flight, because a
+finished background task notifies mid-turn and a late assistant block belongs to
+the turn already running.
+
+**This replaces two state flags that the same defect defeated in opposite
+directions, which is why it is a record of turns rather than a third flag.**
+`promptSubmitted` said the prompt had been sent, and `servingCliStartedTurn()`
+said the executor was serving an adopted turn right now:
+
+- A wake **after** a failed dispatched turn re-arms the executor
+  (`rearmForCliStartedTurn`), which keeps `input.noticeDeliveries` — the receipts
+  of the prompt it was built for. The adopted turn's successful result met every
+  condition. The adoption flag closed it; consuming `ownTurnPending` on the
+  failed turn's own result closes it now, and the flag is no longer read here.
+- A wake landing **inside** a reusing dispatch's `await prepareAgentEnv` finds
+  `streamingPostTurnFired` false, so `beginRearm` returns without setting that
+  flag — correctly, since this executor has produced no result to re-arm past. By
+  the time the woken turn's result arrives the prompt has been submitted and
+  nothing is being adopted, so both flags read exactly as they do for a turn that
+  ran the prompt. No flag describing "what is happening now" can see this one.
+
+**Where an identity does survive the round trip, it is used.**
+`agent_user_replay` is the CLI echoing back a user message it has read
+(`isReplay` on Claude, synthesized by Codex — docs/140, the same signal
+`agent-listeners.ts` reads to mark a steer delivered). A replay of this prompt's
+exact text means the CLI read it inside the turn now running, so it clears
+`cliTurnPending` and sets `ownTurnPending`. That is what keeps the common case
+whole: a prompt steered into a turn the CLI had already woken for is absorbed by
+it, and the single result that ends that turn acknowledges the notice instead of
+withholding one the agent read perfectly well.
+
+**What is left is a delay, never a loss** — see *A notice can be delayed by a
+turn* under the limitations below.
+
+`submissionSettled()` is what makes `ownTurnPending` mean the prompt was
+*accepted*, and it took two review rounds to get right. The executor's listeners
+go live before its `await prepareAgentEnv`, so on a resident process a result can
+land in that gap and preparation can then fail with the prompt never sent.
+Returning from the submission is not enough either: `ProxyAgentProcess.run` /
+`.sendUserMessage` post to the session worker and return before the answer
+(`proxy-agent-process.ts`), so a result in *that* window would be written off
+against a prompt the worker went on to reject. So the proxy exposes
+`submissionSettled()` and the executor waits for it; a synchronous submission has
+none and is landed when the call returns.
 
 Sequencing after the failover decision is what puts the acknowledgement past
 ShipIt's credential-failure classification (`quotaRetryInProgress`): a retry
@@ -1707,28 +1729,49 @@ Three turn kinds are left out, and none is a judgement about settings:
 In all three, the outcome is left pending and rides the next turn — the same
 at-least-once carry that covers a turn which never ran.
 
-**For the woken turn that took a fix, because the earlier reasoning was wrong.**
-It ran: the wake path prepares no notice of its own, the re-arm reuses the
-finished turn's receipt, and *that receipt has already been acknowledged*, so a
-wake cannot spend one. The middle step holds only when the dispatched turn
-succeeded. A turn that failed with a non-auth, non-quota error result is
-acknowledged by none of the five conditions above — the whole point of
-`resultIsTheAgentsOwn` — and leaves its receipt live for the next dispatched
-turn. The self-wake, re-armed on the same executor with `promptSubmitted` intact,
-then met every condition and spent it. `servingCliStartedTurn()` is the
-condition that was missing, and the limitation is now what the code does.
+**For the woken turn that took two fixes, because the earlier reasoning was
+wrong twice.** It first ran: the wake path prepares no notice of its own, the
+re-arm reuses the finished turn's receipt, and *that receipt has already been
+acknowledged*, so a wake cannot spend one. The middle step holds only when the
+dispatched turn succeeded — a turn that failed with a non-auth, non-quota error
+result is acknowledged by none of the conditions above and leaves its receipt
+live. The second reasoning was that excluding an adopted turn closed it. It
+closed one ordering: the other puts the wake *before* the prompt is submitted, so
+nothing is being adopted when the woken turn's result arrives. Both are closed
+now by attributing a result to the turn it ends rather than by describing the
+executor's current state — *Which turn a result answers*, above — and the
+limitation is what the code does.
 
-**And it has a guard.** An earlier attempt at one stayed green against a broken
-implementation and was dropped as worse than a recorded gap — it asserted
-straight after emitting the wake, and the re-arm completes later with nothing to
-synchronise on. What that needed was an observable, not an exception:
-`integration_tests/settings-outcome-notice.test.ts` waits for the adopted turn's
-own post-turn commit (a second `autoCommit` call) before asking whether the
-outcome is still pending, and then goes on to prove the next dispatched turn
-still carries it. It fails on the unfixed code, at that assertion.
+**And it has guards, one per ordering.** An early attempt at one stayed green
+against a broken implementation and was dropped as worse than a recorded gap — it
+asserted straight after emitting the wake, and the re-arm completes later with
+nothing to synchronise on. What that needed was an observable, not an exception.
+In `integration_tests/settings-outcome-notice.test.ts`: the wake-after-failure
+ordering waits for the adopted turn's own post-turn commit (a second `autoCommit`
+call) before asking whether the outcome is still pending; the
+wake-inside-preparation ordering parks the dispatch in `prepareAgentEnv`, wakes
+the CLI there, releases the prompt and then proves the woken turn's result does
+not settle it while the prompt's own result does; a third does the same through
+the assistant signal rather than the wake; and two more hold the other direction
+— a replayed prompt IS acknowledged by the turn that absorbed it, and a freshly
+spawned process whose output beats its submission confirmation still
+acknowledges. Each fails alone when its own condition is removed.
 
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
+
+**A notice can be delayed by a turn, and cannot be lost by one.** One shape is
+left undecidable, and it is bounded: the CLI absorbs a prompt steered into a turn
+it had already woken for, one result covers both, and the harness sends no
+replay to say so. `agent_user_replay` answers it on Claude and Codex — the only
+two harnesses that steer at all, so the only two that can reach this shape — and
+where a replay is missing the result is attributed to the woken turn, the receipt
+stays live, and the notice rides the next turn. Requirement 8's first clause
+holds unconditionally; its second can cost one repeat, in a window that needs a
+wake inside the dispatch's `prepareAgentEnv`, absorption rather than queueing,
+and no replay. The earlier trade ran the other way — the notice was **lost**
+whenever that dispatched turn then failed — and the direction of this one is the
+design's throughout: hold the notice back rather than assume delivery.
 
 Duplicates remain possible by design: a turn that ran and was interrupted, and a
 turn queued behind one that has not yet acknowledged, both carry the notice
