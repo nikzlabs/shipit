@@ -1,7 +1,7 @@
 ---
 issue: planning#550
 title: Session status card — design
-description: Behind a setting, one agent tool carrying status, needs-you and persistent offered actions; one session-record column; one pinned element just above the composer; a ShipIt-started follow-up turn when a turn ends without an update.
+description: Behind a setting, one agent tool carrying status, needs-you and persistent offered actions; one session-record column; one element at the end of the conversation, just above the composer; a ShipIt-started follow-up turn when a turn ends without an update.
 ---
 
 # Session status card — design
@@ -66,7 +66,7 @@ load and picked per turn by the flag — the prompt-cache contract of the
 |---|---|
 | Agent tool `session_status` | `propose_actions` (`src/server/session/mcp-tools/propose-actions.ts`), which it stands in for while the flag is on |
 | Session-record column, broadcast with `session_list` | `agent_goal` (docs/154, `services/agent-goal.ts`) |
-| Pinned element just above the composer | `GoalChip` in `App.tsx` |
+| Last element of the scrolling conversation | the trailing rewind point at the end of the `contentRef` element in `src/client/components/MessageList/MessageList.tsx` |
 | ShipIt-started follow-up turn | the dispatch path `wakeSessionWithTurn` uses (`wake-session.ts`, `dispatched-turn.ts`) |
 
 Nothing enters the transcript except the nudge turn itself, so none of the
@@ -81,13 +81,21 @@ rehydration) is involved.
 
 | Field | Limit | Meaning |
 |---|---|---|
-| `status` | required, ≤ 240 chars | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. |
-| `needsYou` | optional, ≤ 240 chars | The decision or hand action only the user can take. Empty when nothing. |
+| `status` | optional, ≤ 240 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. |
+| `needsYou` | optional, ≤ 240 chars; omitted: unchanged; `""`: cleared | The decision or hand action only the user can take. Empty when nothing. |
 | `actions` | optional list; each item `id`, `label`, `description?`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared | Agent work the user approves with a click. |
 | `replaceActions` | optional boolean, default false | `false`: add the given items to the offered list. `true`: the given list becomes the offered list; an empty list clears it. |
 
 An empty `actions` is valid only with `replaceActions: true`. There is no
 count limit on offers (req 18); the length limits are the concision (req 2).
+
+**Confirming (req 14).** A call with no arguments changes nothing and marks
+the card current: it is the agent saying the card still holds. Every field
+is a delta on the stored card — omitted means unchanged — so a partial call
+("only `needsYou` changed") is the same mechanism. A bare call on a session
+with no stored card is refused with a message asking for `status`. Every
+accepted call, bare or not, sets the turn's `statusUpdated` and bumps
+`writeSeq`.
 
 **Offer identity and reconciliation (req 17).** Every stored offer carries a
 server-assigned `offerId`. On any write, an incoming item that equals a
@@ -117,13 +125,15 @@ item's taken state, so the agent can keep or replace offers knowingly.
   `OfferedAction` is the item plus `offerId`, `offeredAt`, `branch?`,
   `headSha?`, `takenAt?`. Migration via `addSessionColumnIfMissing`
   (`database.ts`).
-- `writeSeq` increments only on an agent status write. Freshness marks and
+- `writeSeq` increments only on an accepted agent `session_status` call, a
+  bare confirmation included. Freshness marks and
   taken marks change the record but not `writeSeq`; it is the guard the
   settlement step uses to tell "a later turn wrote" from its own mutations.
 - `SessionInfo.sessionStatus?: SessionStatus` (`domain-types/session.ts`),
   read in `sessions.ts` `fromRow`, written by `SessionManager.setSessionStatus`.
-- `services/session-status.ts`: `recordSessionStatus` (agent write, bumps
-  `writeSeq`, sets `fresh: true`), `markSessionStatusStale(sessionId,
+- `services/session-status.ts`: `recordSessionStatus` (any accepted agent
+  call: merges the given fields into the stored card, bumps `writeSeq`,
+  sets `fresh: true`), `markSessionStatusStale(sessionId,
   ifWriteSeq)` (no-op when `writeSeq` moved), `takeOfferedActions(sessionId,
   offerIds)` (stamps `takenAt`; an unknown `offerId` marks nothing). Each runs
   inside `runStatusExclusive`, the `runGoalExclusive` chain copied from
@@ -149,8 +159,9 @@ an orchestrator restart show the same card with no extra request.
 
 ## Turn settlement (req 11–15)
 
-**One flag on `TurnAccumulator`**, `statusUpdated`, set by the route and
-reset with the accumulator at turn start (`session-runner.ts:452`, reached by
+**One flag on `TurnAccumulator`**, `statusUpdated`, set by the route on
+every accepted call — a bare confirmation included — and reset with the
+accumulator at turn start (`session-runner.ts:452`, reached by
 interactive, dispatched and adopted turns: `turn-executor.ts:169`,
 `dispatched-turn.ts:307`, `agent-listeners.ts:145`). A question needs no
 flag: Claude's native `AskUserQuestion` and the MCP `ask` tool both reach the
@@ -194,7 +205,7 @@ entry (`input.drainNext()`). The nudge is a dispatched system turn, not
 the reply follows, the post-turn flow runs as for any turn (req 12). The
 prompt opens with `[ShipIt]`, says the last turn ended without a status
 update, lists the current offers with their taken state, and asks for one
-`session_status` call and nothing else.
+`session_status` call and nothing else — a bare one if nothing changed.
 
 **Identity.** `statusNudge: true` is a typed dispatch option on
 `AgentDispatchOptions`, added to `AgentDispatchInit`,
@@ -211,9 +222,15 @@ is checked afresh.
 ## Client (req 6–9, 14, 17, 18, 20, 24)
 
 `SessionStatusCard` (`src/client/components/SessionStatusCard.tsx`), rendered
-in `App.tsx` where `GoalChip` renders, between the message list and the
-composer. Reads `currentSession.sessionStatus`; renders nothing without one.
-`text-xs`, semantic tokens only, no header row:
+as the last child of the `contentRef` element in
+`src/client/components/MessageList/MessageList.tsx`, after the trailing
+rewind point. It is inside the scroll container, so it scrolls away with
+the conversation (req 6); the question card, a transcript row, sits above
+it (req 8); and `useMessageScroll`'s observer on that element already keeps
+the view pinned to the bottom when the card appears or grows. It is not a
+transcript row: it reads `currentSession.sessionStatus` from the session
+store and renders nothing without one. `text-xs`, semantic tokens only, no
+header row:
 
 ```
 Status      Billing service: routes and tests done; PR #212 ready to merge. Webhook not started.
@@ -230,8 +247,8 @@ Needs you   Add the Stripe test key in Settings → Secrets.
 - **Actions.** The presentational checklist of `ActionChecklistCard` — items,
   selection, the Send button — is extracted into a shared piece; the
   existing transcript-row wrapper keeps its formatting, repeat-submission,
-  delivery-failure and "Add comment…" behavior unchanged, and the pinned
-  card gets a wrapper of its own. On the pinned card: selection is keyed by
+  delivery-failure and "Add comment…" behavior unchanged, and the status
+  card gets a wrapper of its own. On the status card: selection is keyed by
   `offerId`; `defaultChecked` applies when an offer first appears; a taken
   offer renders in `--color-text-tertiary` with its checkbox disabled and
   unchecked, and leaves only when the agent removes it (req 17); untaken
@@ -245,14 +262,13 @@ Needs you   Add the Stripe test key in Settings → Secrets.
 - Not on the sidebar row (req 7); not an input to `computeAttentionReason`
   (req 9). The field is on `SessionInfo`, so the sidebar could read it; it
   must not.
-- The question card is a transcript row at the end of the list, above this
-  element (req 8).
 
 ## Evolving the action card (req 19, 21)
 
-- With the flag on, `propose_actions` is absent from every tool list and its
-  route (`api-routes-propose-actions.ts`) answers 409 naming `session_status`,
-  so a resident process from before a toggle cannot post a transcript card.
+- With the flag on, `propose_actions` is absent from every tool list, so no
+  description of it reaches the model (req 21), and its route
+  (`api-routes-propose-actions.ts`) answers 409 naming `session_status`, so
+  a resident process from before a toggle cannot post a transcript card.
   With the flag off, tool, route, validator and prompt section are untouched.
   No alias: a callable alias would carry the old tool's own instruction to
   call it and end the turn (`propose-actions.ts:87`, advertised by
@@ -267,13 +283,16 @@ Needs you   Add the Stripe test key in Settings → Secrets.
   marks an offer taken. The callback stays synchronous; the serialized write
   is chained, not awaited.
 
-## Prompt (req 5, 20)
+## Prompt (req 5, 20, 25)
 
 A "Session status" section in `src/server/orchestrator/prompts/skeleton.md`
 that **replaces** the "Proposing optional follow-up actions" section in the
-flag-on variant. It says: the two fields and the action list; the status
-describes the session, not the turn; call it as the last act of a turn; a
-turn ending in a question needs no call; "Needs you" is what only the user
+flag-on variant. It is part of the system prompt ShipIt injects, so the
+agent has it on every turn without loading anything (req 25); a skill with
+a longer treatment may come later and is not part of this design. It says:
+the two fields and the action list; the status describes the session, not
+the turn; call it as the last act of a turn, and call it bare when nothing
+changed (req 14); a turn ending in a question needs no call; "Needs you" is what only the user
 can do by hand, an action is agent work approved with a click; offers
 persist — add to them, replace them when no longer relevant or when the user
 asks, drop taken ones once done; reviewing or merging the PR is ShipIt's
@@ -286,8 +305,9 @@ and absent in the flag-off ones, never its wording.
 
 ## Tests
 
-- `session-status-validation.test.ts` — limits; required fields; empty list
-  only with `replaceActions`; items through `validateActionItems`.
+- `session-status-validation.test.ts` — limits; a bare call is valid;
+  `needsYou: ""` is a clear; empty list only with `replaceActions`; items
+  through `validateActionItems`.
 - `services/session-status.test.ts` — reconciliation (unchanged item keeps
   `offerId` and `takenAt`; changed payload → new untaken offer; replace;
   clear); `takeOfferedActions` with an unknown id marks nothing; `writeSeq`
@@ -295,7 +315,9 @@ and absent in the flag-off ones, never its wording.
   `writeSeq` is a no-op; writes serialize per session; the nudge decision
   table on a snapshot (each "no" condition; plain turn → nudge).
 - `api-routes-session-status.test.ts` — validate → persist → broadcast →
-  `statusUpdated`; 409 without a runner; the reply lists offers.
+  `statusUpdated`; a bare call with a stored card → current, `writeSeq`
+  moved, nothing else changed; a bare call with no stored card → 400
+  naming `status`; 409 without a runner; the reply lists offers.
 - `api-routes-propose-actions.test.ts` — 409 under the flag; unchanged
   otherwise.
 - `prepared-dispatch.test.ts`, `session-runner.test.ts` — `statusNudge` and
@@ -312,6 +334,8 @@ and absent in the flag-off ones, never its wording.
   decision; a predecessor settling after its successor wrote → no stale
   mark, no nudge; a resident agent spanning a toggle → respawned with the
   other tool list; flag off → today's behavior, byte for byte, per harness.
+- `MessageList.test.tsx` — the card renders after the last transcript row
+  inside the scroll content, and not at all without a stored status.
 - `SessionStatusCard.test.tsx` — rows; hidden `Needs you`; "Stale" only when
   stale; selection keyed by `offerId` survives a replacement as a new
   unselected item; taken offers greyed, disabled, unchecked; stale card's
@@ -338,7 +362,7 @@ and absent in the flag-off ones, never its wording.
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, `src/server/orchestrator/services/session-fork-merge.ts` — stale on rewind, copy-as-stale on fork.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts`, `src/server/shared/types/domain-types/session.ts` — column and type.
 - `src/server/orchestrator/prompts/skeleton.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
-- `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/App.tsx` — the element, the shared checklist, the wrappers.
+- `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation.
 
 ## Rejected alternatives
 
@@ -372,4 +396,6 @@ Each is reversible without touching a numbered requirement.
 - A successor turn running or queued defers the check to that turn's end;
   `postTurn: "none"` driver-owned turns are not checked.
 - The setting is global scope on the advanced tab.
-- The pinned card has one Send: no comment shortcut, no single-button variant.
+- The status card has one Send: no comment shortcut, no single-button variant.
+- Every tool field is a delta on the stored card: omitted means unchanged,
+  `needsYou: ""` clears; a bare call with no stored card is refused.

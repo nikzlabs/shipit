@@ -37,12 +37,14 @@ taken inside one session, without building an agent that talks to many.
    not yet started — and "Needs you" — the decision or hand action, empty
    when there is none. Below them it carries the agent's offered follow-up
    actions (req 16).
-5. The agent writes the card at the end of its turn, except a turn that
-   ends with a question card (req 13).
+5. The agent writes the card at the end of its turn, or confirms it when
+   nothing changed (req 14), except a turn that ends with a question card
+   (req 13).
 6. The card sits at the bottom of the conversation, just above the input
    field: the place where the user already reads the agent's last sentences.
-   It is a separate element that does not scroll away with the conversation,
-   not a message in the transcript.
+   It is the last element of the conversation and scrolls with it, so that
+   on a small screen it never takes space from the conversation. It is not a
+   message in the transcript.
 7. The card does not appear in the session sidebar. The sidebar already
    carries a lot, and one more line per session would not read at a glance.
 8. The card is shown also on a turn that ends with a question card. The
@@ -57,7 +59,8 @@ taken inside one session, without building an agent that talks to many.
     as of that turn — the two fields and the offered actions alike — or it is
     visibly marked as possibly stale (req 14). It is never presented as
     current when it may be behind.
-12. ShipIt checks at the end of each turn that the agent updated the card.
+12. ShipIt checks at the end of each turn that the agent updated or confirmed
+    the card.
     If it did not, ShipIt sends the agent a further turn that asks for the
     update, on every harness alike, except in the cases of req 13 and
     req 15. That turn is visible in the conversation, as a regular turn, for
@@ -65,14 +68,17 @@ taken inside one session, without building an agent that talks to many.
 13. A turn that ended with a question card is complete without a card
     update. The card may lag by a turn there; updating it would waste tokens
     and turns. The card then shows that it may be behind (req 14).
-14. The card always shows whether it is current. Current means the last
-    finished turn updated the whole card. When the last finished turn did not
-    update it, whatever the reason, the card is visibly marked as possibly
-    stale, in one visual language for every cause, so it is always clear to
-    the user. Freshness is judged when a turn ends. No title text is spent
-    on it: a current
-    card looks like a regular card; a stale card carries a small "Stale"
-    label in its bottom-right corner, in the theme's accent color.
+14. The card always shows whether it is current. Current means the agent
+    confirmed the whole card at the end of the last finished turn. A
+    confirmation may change nothing: when the status, "Needs you" and the
+    offered actions still hold, the agent says so without rewriting them,
+    and the card is current. When the last finished turn neither updated
+    nor confirmed it, whatever the reason, the card is visibly marked as
+    possibly stale, in one visual language for every cause, so it is always
+    clear to the user. Freshness is judged when a turn ends. No title text
+    is spent on it: a current card looks like a regular card; a stale card
+    carries a small "Stale" label in its bottom-right corner, in the
+    theme's accent color.
 15. ShipIt nudges once per missing update. If the agent ignores the nudge,
     ShipIt does not nudge again for that turn; the card is marked stale
     (req 14) and the next ordinary turn is checked afresh.
@@ -94,9 +100,11 @@ taken inside one session, without building an agent that talks to many.
     with a click.
 21. The whole feature sits behind a global setting, off by default, so the
     user can try it for a few days before it is released. With the setting
-    on, the agent offers actions through the status card and cannot post a
-    follow-up action card. With the setting off, nothing changes from today:
-    no card, no nudge, and the follow-up action card as it is now.
+    on, the agent offers actions through the status card, and the means to
+    post a follow-up action card is not in the agent's context at all: not
+    present and refused, but absent. With the setting off, nothing changes
+    from today: no card, no nudge, and the follow-up action card as it is
+    now.
 22. Before the first status write — a new session, or one whose first turn
     ended with a question — there is no card. The first ordinary turn
     produces it.
@@ -105,6 +113,11 @@ taken inside one session, without building an agent that talks to many.
     refreshes it.
 24. While the card is marked stale, its offered actions can still be taken.
     Staleness is about the words; the agent owns the action list.
+25. With the setting on, the agent has clear instructions for the card in
+    the system prompt ShipIt injects: when to write or confirm it, what the
+    two fields mean, how to offer actions. The gist is in that prompt, on
+    every turn, not in a skill the agent has to load. A skill may carry a
+    longer explanation of how to use the card.
 
 ## Open questions
 
@@ -112,6 +125,16 @@ taken inside one session, without building an agent that talks to many.
 
 ## Resolved questions
 
+- 2026-09-15 — Second review of this document by Nik. The card must scroll
+  away with the conversation, or the conversation is hard to read on mobile
+  → req 6: the last element of the conversation, not a fixed one. "Current"
+  means the agent issued the update call; the call may carry zero changes
+  when the status and actions did not change, and the API must allow that
+  → reqs 5, 12, 14. The tool that posts a follow-up action card must not
+  even be in the agent's context while the setting is on → req 21. With the
+  setting on, the agent needs clear instructions for the tool directly in
+  the ShipIt-injected prompt, not in a skill; a skill may hold the longer
+  explanation → req 25.
 - 2026-09-14 — Whole-PR review (ShipIt reviewer, run 917edd86) found that
   the sentence "between turns and while a turn runs, the card shows the state
   as of the last finished turn", added by the agent as a clarification of
