@@ -1616,23 +1616,41 @@ new executor, which records its own submission and acknowledges that.
 **Recorded as each turn begins, not inferred from the result.** `agent_result`
 carries no identity — no prompt id, no turn id, nothing that survives the round
 trip — and on a resident process the CLI starts turns ShipIt composed no prompt
-for. So the executor (`turn-executor.ts`) keeps two facts, and a result consumes
-exactly one of them:
+for. So the executor (`turn-executor.ts`) keeps a lifecycle for its own prompt
+and one flag for the CLI's:
 
-- **`ownTurnPending`** — this prompt's submission was confirmed and its result has
-  not arrived. Set from `noteSubmitted`.
+- **`ownTurn`** — `"unsubmitted"` → `"queued"` or `"running"` → `"ended"`. This
+  executor's prompt has exactly one turn, which is why this is a lifecycle and
+  not a pair of booleans. `"queued"` and `"running"` are both awaiting a result
+  and differ in the one thing a wake has to ask — whether the CLI is inside
+  *this* turn right now. `"ended"` is terminal.
 - **`cliTurnPending`** — the CLI began a turn of its own that has not produced a
   result.
 
-A result takes `cliTurnPending` first, because that turn began first, and only
-otherwise takes `ownTurnPending`. A turn the CLI began is the two events
-`beginRearm` already answers to — `agent_self_wake`, and a top-level
-`agent_assistant` on a harness that `startsOwnTurns` — read under two conditions
-(`noteCliStartedTurn`): only on a **reused** process, because a spawn exists for
-this prompt alone and its first output can beat the proxied submission's
-confirmation; and only while this prompt's own turn is not in flight, because a
-finished background task notifies mid-turn and a late assistant block belongs to
-the turn already running.
+Submitting makes the prompt `"running"`, unless a CLI turn is pending: then it is
+`"queued"` behind that turn. A result takes `cliTurnPending` first, because that
+turn began first, and only otherwise ends `ownTurn` and answers it.
+
+**Three signals move the prompt, and they are ordered by how much they prove.**
+The CLI replaying the prompt (below) is the strongest and always acts. A result
+is next. The worker's answer to the submission is the weakest — it says only that
+the prompt was accepted, which anything else moving the state already implied —
+so it acts **only** from `"unsubmitted"`. That ordering is load-bearing: the
+worker's HTTP reply and the CLI's events travel separately, so a confirmation can
+land after the result it confirms, and re-arming the prompt there would hand its
+receipt to whatever the CLI does next.
+
+A turn the CLI began is the two events `beginRearm` already answers to —
+`agent_self_wake`, and a top-level `agent_assistant` on a harness that
+`startsOwnTurns` — read under two conditions (`noteCliStartedTurn`): only on a
+**reused** process, because a spawn exists for this prompt alone and its first
+output can beat the proxied submission's confirmation; and only while this
+prompt's turn is `"running"`, because a finished background task notifies
+mid-turn and a late assistant block belongs to the turn already running.
+`"queued"` deliberately does not suppress it. Once a turn the CLI started has
+ended, whether this prompt went into it is exactly what is unknown — so a further
+wake is recorded as a turn of its own rather than assumed to be part of one, and
+its result cannot reach a receipt two turns behind it.
 
 **This replaces two state flags that the same defect defeated in opposite
 directions, which is why it is a record of turns rather than a third flag.**
@@ -1642,8 +1660,8 @@ said the executor was serving an adopted turn right now:
 - A wake **after** a failed dispatched turn re-arms the executor
   (`rearmForCliStartedTurn`), which keeps `input.noticeDeliveries` — the receipts
   of the prompt it was built for. The adopted turn's successful result met every
-  condition. The adoption flag closed it; consuming `ownTurnPending` on the
-  failed turn's own result closes it now, and the flag is no longer read here.
+  condition. The adoption flag closed it; the failed turn's own result ending
+  `ownTurn` closes it now, and the flag is no longer read here.
 - A wake landing **inside** a reusing dispatch's `await prepareAgentEnv` finds
   `streamingPostTurnFired` false, so `beginRearm` returns without setting that
   flag — correctly, since this executor has produced no result to re-arm past. By
@@ -1664,7 +1682,7 @@ withholding one the agent read perfectly well.
 **What is left is a delay, never a loss** — see *A notice can be delayed by a
 turn* under the limitations below.
 
-`submissionSettled()` is what makes `ownTurnPending` mean the prompt was
+`submissionSettled()` is what makes leaving `"unsubmitted"` mean the prompt was
 *accepted*, and it took two review rounds to get right. The executor's listeners
 go live before its `await prepareAgentEnv`, so on a resident process a result can
 land in that gap and preparation can then fail with the prompt never sent.
@@ -1752,10 +1770,24 @@ call) before asking whether the outcome is still pending; the
 wake-inside-preparation ordering parks the dispatch in `prepareAgentEnv`, wakes
 the CLI there, releases the prompt and then proves the woken turn's result does
 not settle it while the prompt's own result does; a third does the same through
-the assistant signal rather than the wake; and two more hold the other direction
-— a replayed prompt IS acknowledged by the turn that absorbed it, and a freshly
-spawned process whose output beats its submission confirmation still
-acknowledges. Each fails alone when its own condition is removed.
+the assistant signal rather than the wake. Three more hold the terminal rules
+that review found missing from the first attempt — a later wake cannot settle a
+prompt absorbed into a failed turn, a submission confirmation landing after the
+result cannot put the prompt back in flight, and neither can a replay arriving
+after the turn ended. Two hold the other direction: a replayed prompt IS
+acknowledged by the turn that absorbed it, and a freshly spawned process whose
+output beats its submission confirmation still acknowledges. Each fails alone
+when its own condition is removed.
+
+**Both of the terminal rules were missing from the first attempt, and both were
+the original defect reached through the new mechanism.** `ownTurn` left standing
+past the turn it described made a later CLI-started turn invisible to
+`noteCliStartedTurn` *and* mis-consumed by the next result — so the safety of a
+model that records turn starts depends on every path that ends a turn saying so.
+The synchronisation matters as much: an acknowledgement decided behind an awaited
+re-arm is not visible to an assertion that flushes one tick, and two of these
+guards passed against a broken implementation until they waited on the woken
+turn's own post-turn commit instead.
 
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.

@@ -159,25 +159,36 @@ export async function executeAgentTurn(
     req 8). `agent_result` carries no identity of its own and a resident CLI
     starts turns ShipIt composed no prompt for, so "the prompt was submitted and
     the result looks like the agent's own work" is true of a result that ends
-    someone else's turn. Both are consumed by a result: a result ends exactly one
-    turn, and a turn the CLI started takes precedence because it began first.
+    someone else's turn.
+
+    This prompt has exactly one turn, so its four states are a lifecycle and not
+    flags: "queued" and "running" are both awaiting a result and differ in the
+    one thing a wake has to ask — whether the CLI is inside THIS turn right now —
+    and "ended" is terminal, so a confirmation that lands after the result cannot
+    put the prompt back in flight.
   */
-  let ownTurnPending = false;
+  let ownTurn: "unsubmitted" | "queued" | "running" | "ended" = "unsubmitted";
   let cliTurnPending = false;
 
-  // Set once this turn's prompt is known to have been accepted by the process.
+  // Submitting makes this prompt the running turn, unless the CLI is in one of
+  // its own: then it waits behind that, and a result is owed to that turn first.
+  const noteSubmissionAccepted = (): void => {
+    if (ownTurn !== "unsubmitted") return;
+    ownTurn = cliTurnPending ? "queued" : "running";
+  };
+
   const noteSubmitted = (): void => {
     const settled = agent.submissionSettled?.();
     // A synchronous submission has landed when the call returns; a proxied one
     // has not, and a resident CLI can finish a turn of its own in that window.
     if (!settled) {
-      ownTurnPending = true;
+      noteSubmissionAccepted();
       return;
     }
     void (async () => {
       try {
         await settled;
-        ownTurnPending = true;
+        noteSubmissionAccepted();
       } catch {
         // The submission failed; the adapter's error path owns the turn.
       }
@@ -187,29 +198,40 @@ export async function executeAgentTurn(
   // The two events ShipIt already reads as a turn the CLI began for itself, the
   // ones `beginRearm` answers to. Only a process this prompt did not spawn can
   // be in one: a fresh spawn exists for this prompt alone, and its first output
-  // can race the proxied submission this flag is waiting on. And a signal
-  // reaching an executor whose own turn is in flight is part of that turn — a
-  // finished background task, a late assistant block — not a turn of its own.
+  // can race the proxied submission. And a signal reaching an executor whose own
+  // turn is RUNNING is part of that turn — a finished background task, a late
+  // assistant block — not a turn of its own. Merely awaiting a result is not
+  // enough: after a turn the CLI started ends, whether this prompt went into it
+  // is exactly what is unknown, so a further wake is recorded rather than
+  // assumed away.
   const noteCliStartedTurn = (): void => {
     if (input.reuseExistingAgent !== true) return;
-    if (ownTurnPending) return;
+    if (ownTurn === "running") return;
     cliTurnPending = true;
   };
 
-  /** The CLI echoing this prompt back is the one positive proof it has read it. */
+  /**
+   * The CLI echoing this prompt back is the one positive proof it has read it —
+   * stronger than the worker's own answer to the submission, and it can arrive
+   * first, so it does not wait for one. Only a turn already ended stays ended.
+   */
   const notePromptReadBack = (text: string): void => {
     if (text.trim() !== prompt.trim()) return;
+    if (ownTurn === "ended") return;
     cliTurnPending = false;
-    ownTurnPending = true;
+    ownTurn = "running";
   };
 
+  // A result ends one turn, and a turn the CLI started takes precedence because
+  // it began first. Its end says nothing about where this prompt went, so the
+  // prompt stays queued rather than becoming the running turn.
   const takeResultAttribution = (): boolean => {
     if (cliTurnPending) {
       cliTurnPending = false;
       return false;
     }
-    if (!ownTurnPending) return false;
-    ownTurnPending = false;
+    if (ownTurn !== "queued" && ownTurn !== "running") return false;
+    ownTurn = "ended";
     return true;
   };
 

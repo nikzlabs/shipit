@@ -605,6 +605,41 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     saying it has read this exact prompt, so the notice did reach the agent and
     withholding it here would repeat a reminder requirement 8 exists to prevent.
   */
+  /*
+    The absorbed prompt again, without the replay that would have said so, and
+    with the combined turn failing. The prompt's own state is left awaiting a
+    result that will never come — so a LATER wake has to be recorded as a turn of
+    its own, or its result spends a receipt for a prompt two turns behind it.
+  */
+  it("does not let a later wake settle a prompt absorbed into a failed turn", async () => {
+    const { release } = await dispatchIntoPreparationWindow();
+
+    const autoCommit = deps.autoCommit as unknown as ReturnType<typeof vi.fn>;
+    const commitsBefore = autoCommit.mock.calls.length;
+
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    release();
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
+
+    // The CLI absorbs the steered prompt into the turn it had woken for and that
+    // turn fails, so nothing more is owed to the prompt.
+    agents[0]!.emit("event", { type: "agent_result", status: "error", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => autoCommit.mock.calls.length === commitsBefore + 1,
+      "the combined turn's post-turn flow",
+    );
+
+    // The re-arm this wake starts completes after the result below is emitted,
+    // so the acknowledgement is decided inside that turn's post-turn flow.
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-2", status: "completed" });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => autoCommit.mock.calls.length === commitsBefore + 2,
+      "the later woken turn's post-turn flow",
+    );
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+  });
+
   it("acknowledges when the CLI replays the prompt into a turn it had woken for", async () => {
     const { release } = await dispatchIntoPreparationWindow();
 
@@ -650,6 +685,78 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
 
     rejectSubmission(new Error("the session worker never accepted the prompt"));
     await waitForTurn(() => true, "flush");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+  });
+
+  it("does not let a late submission confirmation put a finished prompt back in flight", async () => {
+    // The worker's answer to `/agent/message` and the CLI's events travel
+    // separately, so a confirmation can land after the result it confirms. The
+    // prompt ran and failed; re-arming it on the confirmation would hand its
+    // receipt to whatever the CLI does next.
+    postAndResolve("set-a", "applied");
+    runner.dispatch(testDispatch({ text: "first" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "resident agent running",
+    );
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the first outcome acknowledged",
+    );
+
+    postAndResolve("set-b", "dismissed");
+    let acceptSubmission: () => void = () => {};
+    const submission = new Promise<void>((resolve) => { acceptSubmission = resolve; });
+    (agents[0]! as unknown as { submissionSettled(): Promise<unknown> }).submissionSettled =
+      () => submission;
+
+    runner.dispatch(testDispatch({ text: "second" }));
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
+    const steered = String(agents[0]!.sendUserMessage.mock.calls[0]?.[0]);
+
+    // The CLI reads the prompt and its turn fails, all before the worker answers.
+    const autoCommit = deps.autoCommit as unknown as ReturnType<typeof vi.fn>;
+    const commitsBefore = autoCommit.mock.calls.length;
+    agents[0]!.emit("event", { type: "agent_user_replay", text: steered });
+    agents[0]!.emit("event", { type: "agent_result", status: "error", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => autoCommit.mock.calls.length === commitsBefore + 1,
+      "the failed turn's post-turn flow",
+    );
+    acceptSubmission();
+    await waitForTurn(() => true, "the confirmation landing after it");
+
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => autoCommit.mock.calls.length === commitsBefore + 2,
+      "the woken turn's post-turn flow",
+    );
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+  });
+
+  it("does not let a replay arriving after the turn ended re-open it", async () => {
+    // This executor's prompt has one turn, and its acknowledgement was decided
+    // when that turn ended. A replay landing after it — the CLI re-emitting a
+    // message it has already consumed — must not make the next CLI-started turn
+    // look like this prompt's.
+    postAndResolve("set-a", "applied");
+    const autoCommit = deps.autoCommit as unknown as ReturnType<typeof vi.fn>;
+
+    runner.dispatch(testDispatch({ text: "unblock me" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "resident agent running",
+    );
+    const sent = promptOfAttempt(0);
+    agents[0]!.emit("event", { type: "agent_result", status: "error", sessionId: "agent-sid" });
+    await waitForTurn(() => autoCommit.mock.calls.length === 1, "the failed turn's post-turn flow");
+
+    agents[0]!.emit("event", { type: "agent_user_replay", text: sent });
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => autoCommit.mock.calls.length === 2, "the woken turn's post-turn flow");
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
