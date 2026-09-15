@@ -25,16 +25,36 @@
  * and whether a `wholeTab` or `region` exemption is honest — are claims made in
  * prose and checked by review.
  *
- * **And a third, which is not prose but a different guard.** This walk reads the
- * rendered DOM, so it can establish that a control names *a* declaration and
- * never that the declaration is the one whose property the handler saves: a new
- * box bound to `mcp.servers[].command` while writing something else passes here.
- * What the DOM cannot say, the STORED TYPE can —
+ * **And a third, which is not prose but a different guard.** A binding is an
+ * ASSERTION about which stored field the control's handler saves, and the DOM
+ * holds no handler. What the DOM cannot say, the STORED TYPE can —
  * `MCP_SERVER_FIELD_SETTINGS` (`settings-catalogue/integrations-settings.ts`) is
  * keyed by `keyof McpServerConfig`, so a field added to the persisted shape is a
- * compile error until it is declared or explained. The two guards run in
- * opposite directions: this one finds a control nobody declared, that one finds
- * a stored field nobody declared.
+ * compile error until it is declared or explained; `SSH_HOST_FIELD_SETTINGS` and
+ * `ROLE_FIELD_SETTINGS` do the same for the other two typed collections. The two
+ * guards run in opposite directions: this one finds a control nobody declared,
+ * those find a stored field nobody declared.
+ *
+ * What this walk CAN take from that rule is its arithmetic: **one declaration
+ * describes one field, so one declaration is held by one control**
+ * ({@link duplicateBindings}). A second box claiming a setting means one of the
+ * two saves something else, and that is decidable from the DOM. It is what
+ * catches the shape a same-tab check cannot — a new browser preference writing a
+ * `localStorage` key of its own while binding a boolean that is already declared
+ * on that tab — because the setting it borrowed still renders a control of its
+ * own. Three exemptions are stated where the rule is: an item declaration is one
+ * field per row, a composite value is several boxes by construction, and a
+ * segmented choice is admitted only because each button NAMES the value it sets.
+ *
+ * **What stays undecidable here, and is named rather than covered.** A control
+ * bound to a different field of the SAME collection item — two rows are not
+ * distinguishable in the DOM, which is the gap `ROLE_FIELD_SETTINGS` closes from
+ * the stored side for roles, and which no map closes for a collection whose
+ * stored shape is untyped. A control claiming a declaration whose own control
+ * cannot be on screen at the same time — the MCP form renders a command or a
+ * URL and never both, so nothing is there to be counted twice. And a control
+ * that saves the declared field to the wrong store. The first two are the honest
+ * residue of reading rendered DOM; the third belongs to the store, not here.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -58,8 +78,20 @@ import {
 import type { AgentOption } from "../../agent-types.js";
 import type { RoleView, ReviewerSlotView } from "../../../server/shared/types/agent-types.js";
 
-const INTERACTIVE =
-  'input, select, button, textarea, [role="switch"], [role="menuitemcheckbox"], [role="menuitemradio"]';
+/**
+ * Every shape a control can take, rather than the handful the dialogs use
+ * today: the ARIA roles that carry a value are here beside the tags, because a
+ * control this selector does not name is a control no rule below can fail on.
+ * A `contenteditable` box and a hand-rolled `role="checkbox"` were both such
+ * blind spots.
+ */
+const INTERACTIVE = [
+  "input", "select", "button", "textarea",
+  '[contenteditable=""]', '[contenteditable="true"]',
+  '[role="switch"]', '[role="checkbox"]', '[role="radio"]', '[role="combobox"]',
+  '[role="textbox"]', '[role="slider"]', '[role="spinbutton"]',
+  '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
+].join(", ");
 
 /**
  * Pressable, and NOT part of what the walk accounts for: a plain menu item picks
@@ -147,9 +179,79 @@ function describeControl(el: Element): string {
  * bind — so the test is the checked/pressed state a value control carries.
  */
 function editsAValue(el: Element): boolean {
+  const role = el.getAttribute("role") ?? "";
   return ["input", "select", "textarea"].includes(el.tagName.toLowerCase())
+    || ["textbox", "combobox", "slider", "spinbutton"].includes(role)
+    || isEditableText(el)
     || el.hasAttribute("aria-checked")
     || el.hasAttribute("aria-pressed");
+}
+
+/** A `contenteditable` box: a text field with no tag of its own. */
+function isEditableText(el: Element): boolean {
+  const flag = el.getAttribute("contenteditable");
+  return flag === "" || flag === "true";
+}
+
+/**
+ * One option of a choice rather than one control of its own.
+ *
+ * A segmented picker is several buttons over one stored field, so it must SAY so
+ * — `data-setting-option` names the value each button sets (`bindSetting.ts`).
+ * A native radio says the same thing in the platform's own vocabulary. A row of
+ * plain bindings on one declaration says nothing, and stays a failure.
+ */
+function isOneOfAChoice(el: Element): boolean {
+  const role = el.getAttribute("role");
+  return el.hasAttribute("data-setting-option")
+    || el.getAttribute("type") === "radio" || role === "radio" || role === "menuitemradio";
+}
+
+/**
+ * Value kinds one control cannot hold: the git identity is a name AND an email,
+ * a secret bag is a row per secret, a model selection is a service, a model and
+ * an effort. Several boxes over one declaration is what these ARE.
+ */
+const COMPOSITE_KINDS: ReadonlySet<string> = new Set([
+  "gitIdentity", "secretBag", "modelSelection", "collection",
+]);
+
+/**
+ * **One value control per declaration** — the rule that makes a binding
+ * checkable at all (docs/299-agent-settings-access req 7).
+ *
+ * A binding is an assertion about which stored field the control's handler
+ * saves, and the DOM cannot read a handler. The stored-type maps
+ * (`MCP_SERVER_FIELD_SETTINGS`, `SSH_HOST_FIELD_SETTINGS`,
+ * `ROLE_FIELD_SETTINGS`) check the same thing from the other side for the three
+ * collections whose shape is typed, and their rule is that one declaration
+ * describes one field. This is that rule where the DOM can see it: a second box
+ * claiming a declaration means one of the two saves something else, and the
+ * agent has no declaration for whatever that is.
+ *
+ * It is what catches the shape the walk used to pass — a new preference writing
+ * a new `localStorage` key while binding an existing same-tab boolean — because
+ * the setting it borrowed still renders a control of its own.
+ *
+ * Item declarations are exempt: `mcp.servers[].name` is one field per server,
+ * so a list of them is many controls binding one declaration honestly. Inside a
+ * single row it is still one field, and telling two rows apart in the DOM is not
+ * something this can do — the file's header records that as undecidable here.
+ */
+function duplicateBindings(holders: Map<string, Element[]>): string[] {
+  const complaints: string[] = [];
+  for (const [key, controls] of holders) {
+    if (controls.length < 2) continue;
+    const declaration = findSetting(key);
+    if (declaration?.address?.kind === "item") continue;
+    if (declaration?.address?.kind === "repository-item") continue;
+    if (declaration && COMPOSITE_KINDS.has(declaration.type.kind)) continue;
+    const named = controls.map(describeControl).sort().join(", ");
+    complaints.push(
+      `${controls.length} controls each hold the value of "${key}", which is one field: ${named}`,
+    );
+  }
+  return complaints;
 }
 
 function visible(el: Element): boolean {
@@ -275,6 +377,7 @@ function walkSurface(surface: Surface, tab: SettingTab): WalkResult {
   const unaccounted: string[] = [];
   const bound = new Set<string>();
   const valueBound = new Set<string>();
+  const holders = new Map<string, Element[]>();
 
   for (const el of surface.controls) {
     if (inExcusedRegion(el)) continue;
@@ -307,12 +410,16 @@ function walkSurface(surface: Surface, tab: SettingTab): WalkResult {
         unaccounted.push(`${describeControl(el)} edits a value but binds the collection "${key}"`);
       } else {
         bound.add(key);
-        if (editsAValue(el)) valueBound.add(key);
+        if (editsAValue(el)) {
+          valueBound.add(key);
+          if (!isOneOfAChoice(el)) holders.set(key, [...(holders.get(key) ?? []), el]);
+        }
       }
       continue;
     }
     if (!wholeTab && !excused.has(accessibleName(el))) unaccounted.push(describeControl(el));
   }
+  unaccounted.push(...duplicateBindings(holders));
 
   const drift: string[] = [];
   const rendered: Record<"label" | "description", Set<string>> = {
@@ -628,15 +735,25 @@ function selectedTab(): string | null {
 }
 
 /**
- * A control that might DISCLOSE more controls: a button that runs something, or
- * a choice that repaints the fields around it. A switch and a toggle card are
- * not — they carry their own value, and the walk already accounts for them.
+ * A control that might DISCLOSE more controls: a button that runs something, a
+ * choice that repaints the fields around it, **or a toggle that gates a field
+ * on being switched on**.
+ *
+ * The toggles were left out on the reasoning that they carry their own value and
+ * the walk already accounts for them — true of the toggle, and not of what it
+ * gates. Voice delivery renders its webhook fields only once delivery is
+ * external, and the fixture had to seed that state by hand for those boxes to be
+ * on screen at all; a gate nobody thought to seed is a form the crawl could not
+ * open. Flipping one is as safe as pressing *Reset Everything* already is, and
+ * for the same reason: every write in both dialogs leaves through `fetch`, which
+ * the fixture rejects.
  */
 function isDisclosureTrigger(el: Element): boolean {
   if ((el as HTMLButtonElement).disabled) return false;
   const tag = el.tagName.toLowerCase();
   if (tag === "select") return true;
-  return tag === "button" && !el.hasAttribute("aria-checked");
+  if (tag === "input") return ["checkbox", "radio"].includes(el.getAttribute("type") ?? "");
+  return tag === "button" || el.hasAttribute("aria-checked");
 }
 
 function isChooser(el: Element): boolean {
@@ -917,6 +1034,85 @@ describe("every control in the Settings dialog is declared or excused", () => {
     expect(walk(pane, "roles").unaccounted).toEqual([
       expect.stringContaining("declared for the advanced tab"),
     ]);
+  });
+
+  /*
+    The other half of the same hole, and the one a same-tab check cannot see: a
+    new preference writing a stored field of its own while binding a boolean
+    that is already declared on that tab. It passed every rule above — the key
+    exists, the tab matches, the declaration is not a collection — and left the
+    agent with no declaration for what the control actually saves.
+
+    One declaration describes one field, which is the rule the stored-type maps
+    make over MCP servers, SSH destinations and roles. Two controls holding one
+    declaration's value means one of them is saving something else.
+  */
+  it("catches a second control claiming a value another control already holds", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <button role="switch" aria-checked="false"
+        data-setting="advanced.notifyOnFinish" aria-label="Browser notification"></button>
+      <button role="switch" aria-checked="false"
+        data-setting="advanced.notifyOnFinish" aria-label="Also chime on a mention"></button>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([
+      expect.stringContaining('2 controls each hold the value of "advanced.notifyOnFinish"'),
+    ]);
+  });
+
+  /*
+    And the shape that is honestly several controls over one field. It is
+    accepted because each button NAMES the value it sets, not because a group of
+    buttons is assumed to be a picker — drop the attribute and the test above is
+    what it becomes.
+  */
+  it("accepts a segmented choice whose buttons name the value each one sets", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = ["stable", "edge"].map((channel) => `
+      <button aria-pressed="false" aria-label="${channel}"
+        data-setting="advanced.releaseChannel" data-setting-option="${channel}"></button>
+    `).join("");
+    expect(walk(pane, "advanced").unaccounted).toEqual([]);
+  });
+
+  /*
+    A control the selector did not name was a control no rule here could fail
+    on, whatever it bound. These two are the shapes it missed: a text box with no
+    tag of its own, and a checkbox hand-rolled out of a div.
+  */
+  it("sees a control that is not an input, a select or a button", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <div contenteditable="true" aria-label="Standing instructions"></div>
+      <div role="checkbox" aria-checked="false" aria-label="Quietly"></div>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([
+      expect.stringContaining('named "Standing instructions"'),
+      expect.stringContaining('named "Quietly"'),
+    ]);
+  });
+
+  /*
+    A toggle was excluded from the crawl's triggers because the walk already
+    accounts for the toggle. What it does not account for is the field the toggle
+    GATES: until this, a box that renders only once something is switched on was
+    never on screen, so it was a control no rule could fail on either.
+  */
+  it("switches a toggle on, so a field it gates is walked", async () => {
+    const pane = paneFixture(`
+      <button role="switch" aria-checked="false"
+        data-setting="advanced.liveSteering" aria-label="Live steering"></button>
+      <span data-form></span>
+    `);
+    const toggle = pane.querySelector('[role="switch"]')!;
+    toggle.addEventListener("click", () => {
+      toggle.setAttribute("aria-checked", "true");
+      pane.querySelector("[data-form]")!.innerHTML =
+        '<input data-setting="advanced.steeringHandover" aria-label="Handover" />';
+    });
+
+    expect(undeclaredBindings(await crawl(async () => pane, "advanced")))
+      .toEqual(["advanced.steeringHandover"]);
   });
 
   /*

@@ -17,6 +17,7 @@ import {
   DeclaredToggle,
   SettingCopy,
   bindSetting,
+  bindSettingOption,
   settingCopy,
 } from "../declared.js";
 
@@ -462,7 +463,7 @@ export function VoiceTab() {
                 onClick={() => setTtsSpeed(s)}
                 aria-label={`Playback speed ${s}×`}
                 aria-pressed={ttsSpeed === s}
-                {...bindSetting("voice.ttsSpeed")}
+                {...bindSettingOption("voice.ttsSpeed", String(s))}
                 className={`rounded-md border px-3 py-1 text-sm transition-colors ${
                   ttsSpeed === s
                     ? "border-(--color-accent) bg-(--color-accent)/15 text-(--color-text-primary)"

@@ -469,6 +469,46 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     );
   });
 
+  /*
+    requirements.md records a turn the CLI wakes itself for as carrying no notice
+    and waiting for the next dispatched turn — which is only true if the wake
+    does not SPEND the receipt of the turn before it. The executor is re-armed
+    for the adopted turn and keeps `promptSubmitted` and the dispatched prompt's
+    receipts, so a wake whose result is the agent's own would otherwise settle a
+    notice it never carried, and the next dispatched turn would lose the carry.
+  */
+  it("does not spend a failed turn's receipt on a turn the CLI woke itself for", async () => {
+    postAndResolve("set-a", "applied");
+    const autoCommit = deps.autoCommit as unknown as ReturnType<typeof vi.fn>;
+
+    runner.dispatch(testDispatch({ text: "unblock me" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "resident agent running",
+    );
+    expect(promptOfAttempt(0)).toContain("[ShipIt] Since your last turn");
+
+    // A failure that is neither auth nor quota, so nothing re-dispatches this
+    // prompt: the outcome correctly stays pending for a later turn.
+    agents[0]!.emit("event", { type: "agent_result", status: "error", sessionId: "agent-sid" });
+    await waitForTurn(() => autoCommit.mock.calls.length === 1, "the failed turn's post-turn flow");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+
+    // Background work finishes and the resident CLI resumes on its own. ShipIt
+    // observes that turn rather than composing it, so it carries no notice.
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => autoCommit.mock.calls.length === 2, "the adopted turn's post-turn flow");
+
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+
+    // And the next dispatched turn still carries it, which is what the carry is for.
+    runner.dispatch(testDispatch({ text: "and now" }));
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the next dispatch");
+    expect(String(agents[0]!.sendUserMessage.mock.calls[0]?.[0]))
+      .toContain("[ShipIt] Since your last turn");
+  });
+
   it("does not acknowledge when a proxied submission is never accepted", async () => {
     // `ProxyAgentProcess.sendUserMessage` returns while its worker request is
     // still in flight, so returning from it proves nothing. A resident CLI can
