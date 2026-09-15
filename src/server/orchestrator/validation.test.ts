@@ -153,6 +153,24 @@ describe("attachment resolution refuses what cannot be read", () => {
     }
   });
 
+  /** The handle is judged, so what the path points AT decides — not the link itself. */
+  it("follows a symlink: refuses one pointing at a FIFO, reads one pointing at a file", async () => {
+    execFileSync("mkfifo", [path.join(dir, "real-pipe")]);
+    fs.writeFileSync(path.join(dir, "real-file.txt"), "via a link");
+    fs.symlinkSync(path.join(dir, "real-pipe"), path.join(dir, "link-to-pipe.txt"));
+    fs.symlinkSync(path.join(dir, "real-file.txt"), path.join(dir, "link-to-file.txt"));
+
+    const refused = await within(
+      resolveFileAttachments([{ path: "link-to-pipe.txt" }], dir),
+      "resolveFileAttachments on a symlink to a FIFO",
+    );
+    expect(refused.error).toBe("Not a readable file: link-to-pipe.txt");
+
+    const ok = await resolveFileAttachments([{ path: "link-to-file.txt" }], dir);
+    expect(ok.error).toBeNull();
+    expect(ok.files[0]?.content).toBe("via a link");
+  });
+
   it("refuses a directory, and still reads an ordinary file", async () => {
     fs.mkdirSync(path.join(dir, "src"));
     fs.writeFileSync(path.join(dir, "hello.ts"), "const x = 42;");
