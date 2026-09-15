@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChatCircleDotsIcon, ListChecksIcon, StepsIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { ChatCircleDotsIcon, CheckSquareOffsetIcon, ListChecksIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import type { SessionStatus } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -151,7 +151,7 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
 
       {needsYou.length > 0 && (
         <div className={SECTION}>
-          <Subtitle icon={<StepsIcon size={ICON_SIZE.SM} />}>Manual steps</Subtitle>
+          <Subtitle icon={<CheckSquareOffsetIcon size={ICON_SIZE.SM} weight="duotone" />}>Manual steps</Subtitle>
           {/* req 29 — each step carries its own "I've done this" toggle. */}
           <div>
             <ActionChecklist
