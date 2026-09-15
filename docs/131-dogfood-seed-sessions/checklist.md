@@ -1,5 +1,26 @@
 # 131 — Dogfood seed sessions: checklist
 
+## Sample transcript (req 13, 2026-09-15)
+
+- [x] `scripts/seed-inner-transcript.ts` — one session, a labelled list of
+      turns, written as database rows rather than produced by an agent.
+- [x] Covers both shapes requirement 13 names, plus the other collapsed forms:
+      error row, notice, a card that still needs the user, the same card after
+      the user acted, a file-only reply, a long reply, and the newest turn.
+- [x] Direct SQLite write justified against the code, not assumed: WAL, no row
+      cache in either manager, and the step ordered behind one that waits for
+      the orchestrator. Skips when the database is absent rather than creating
+      one and racing the migrations.
+- [x] Keyed on the session id and leaves an existing session alone, so real
+      turns typed into it survive a restart; `--force` rewrites it.
+- [x] `scripts/seed-inner-transcript.test.ts`, and `seed-inner.test.ts`'s step
+      order extended to four steps.
+- [x] Seeded into the real `dev` service and read in the inner UI with compact
+      conversation on: four turns collapse to a button, the tool-only turn shows
+      "Turn ended without an agent reply.", and expanding one restores its tools.
+- [x] `.claude/skills/dogfooding-shipit/SKILL.md` — the seeding section names
+      four steps and what the transcript is for.
+
 Implemented and smoke-tested end to end on a real dogfood stack (2026-08-04),
 with a real agent turn. Credential seeding (reqs 11–12) added and smoke-tested
 the same way 2026-08-11. Role seeding added and smoke-tested the same way

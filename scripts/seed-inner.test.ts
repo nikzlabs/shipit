@@ -8,8 +8,8 @@ import { SEED_STEPS, runAll } from "./seed-inner.js";
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("the seed step order", () => {
-  it("seeds credentials, then roles, then repos", () => {
-    expect(SEED_STEPS.map((s) => s.name)).toEqual(["credentials", "roles", "repos"]);
+  it("seeds credentials, then roles, then the transcript, then repos", () => {
+    expect(SEED_STEPS.map((s) => s.name)).toEqual(["credentials", "roles", "transcript", "repos"]);
   });
 });
 

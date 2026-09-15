@@ -50,10 +50,12 @@ below.
   `isTestMode ≠ runtimeMode === "local"`). v1 seeds repo-backed sessions only,
   which is the realistic test target anyway.
 - Persisting inner state across outer sessions. Explicitly rejected — see above.
-- Seeding chat history / running turns as part of the fixture. The seed makes
-  the repo ready to work in; creating a session and exercising it is the caller's
-  job. (This is also why the seed does not create sessions — see "Why not
-  `claim-session`" below.)
+- **Running turns** as part of the fixture. Still a non-goal: a fixture must not
+  cost model spend or depend on an agent's output being stable. Seeding chat
+  *history* was a non-goal on the same line until 2026-09-15, when requirement 13
+  asked for a conversation to look at — see
+  [A sample transcript, written as rows](#a-sample-transcript-written-as-rows-req-13).
+  It is written as database rows, so the reason above is untouched.
 - Changing anything in the orchestrator code *for the seeding half* (reqs 1–7):
   that is entirely the seed script + the compose file + a fixture file. Reqs
   8–10 are not covered by this claim.
@@ -481,15 +483,48 @@ Two deliberate differences:
   screen), so a batch would let one refused role take the good ones down with it
   — the opposite of req 5.
 
-## One seed step, three things seeded
+## A sample transcript, written as rows (req 13)
 
-There are three things to seed and they arrived one at a time, so the `dev`
-service's `command:` had grown into a chain of three interpreter invocations with
-the ordering rationale in a YAML comment. Nothing required that: all three
-modules already export dependency-injected functions, so `scripts/seed-inner.ts`
-is the single entry point compose names, and the order lives next to the code
-that depends on it. Each step keeps its own entry block, so any of them can still
-be run alone while debugging.
+Iterating on how a conversation *renders* — docs/299's collapsed turns and its
+expand button were the occasion — needs a conversation. Producing one by talking
+to an agent is slow, costs spend, and gives a different transcript each time, so
+the only shapes you get are the ones that turn happened to produce.
+
+`scripts/seed-inner-transcript.ts` writes one instead. It opens
+`$SHIPIT_STATE_DIR/.shipit.db` directly — `SessionManager.track` for the session
+row, `ChatHistoryManager.saveMessages` for the transcript — rather than driving
+the HTTP API, because no endpoint writes history and nothing should: this is a
+fixture, not a feature. Three facts make the direct write safe, and each was
+checked rather than assumed: the database is in WAL mode (`database.ts`), so a
+second writer is fine; neither manager caches rows, so the next `GET /history`
+reads what the seeder wrote; and the step runs after the two steps that wait on
+`GET /api/bootstrap`, so the orchestrator has finished its migrations. If the
+database is not there yet, the step says so and skips — it never creates one, or
+it would race those migrations.
+
+**The fixture is a list of turns, each labelled with the rendering shape it
+covers** (`--list` prints them). Requirement 13 names two — a turn that ends in
+an agent reply, and a turn with no agent response text — and the rest are the
+other forms a collapsed turn takes: a failed tool call inside a turn that still
+answers, an error row, a notice, a card that still needs the user, the same card
+after the user acted, a reply that is a file rather than prose, a long reply, and
+an ordinary newest turn as the control. A turn is added by adding an entry.
+
+Idempotency differs from its siblings on purpose. The others key on the thing
+they create; this one keys on the session id and **leaves an existing session
+alone**, because the user can send real turns into it and a reseed would delete
+them. `--force` rewrites it, which is the loop while iterating on the fixture
+itself.
+
+## One seed step, four things seeded
+
+There are four things to seed and they arrived one at a time, so the `dev`
+service's `command:` had grown into a chain of interpreter invocations with the
+ordering rationale in a YAML comment. Nothing required that: every module
+already exports dependency-injected functions, so `scripts/seed-inner.ts` is the
+single entry point compose names, and the order lives next to the code that
+depends on it. Each step keeps its own entry block, so any of them can still be
+run alone while debugging.
 
 The order is load-bearing twice over:
 
@@ -497,8 +532,12 @@ The order is load-bearing twice over:
    and a model, and the role seeder resolves those against the models this
    install can actually run — so planning before the credentials are stored
    plans against a narrower install and seeds fewer, or no, roles.
-2. **Repos last**, because a cold bare-cache clone takes minutes and the other
-   two are seconds of HTTP each.
+2. **Repos last**, because a cold bare-cache clone takes minutes and the others
+   are seconds of HTTP, or one local transaction, each.
+
+The transcript sits third for a smaller reason: it is the only step that opens
+the database itself, and the two steps before it have already waited for the
+orchestrator that owns it.
 
 Consolidating adds exactly one guarantee: a step that throws something
 unexpected is logged and the **remaining steps still run**. Three separate
@@ -518,7 +557,9 @@ instead of looking like success.
 
 | File | Change |
 |---|---|
-| `scripts/seed-inner.ts` | New. The single entry point compose runs: credentials → roles → repos, sequential, each step's unexpected throw logged without cancelling the rest. Owns the order and the reason for it. |
+| `scripts/seed-inner.ts` | New. The single entry point compose runs: credentials → roles → transcript → repos, sequential, each step's unexpected throw logged without cancelling the rest. Owns the order and the reason for it. |
+| `scripts/seed-inner-transcript.ts` | New (req 13). The sample transcript: a labelled list of turns, written to the inner database as rows. `--list` prints what each turn covers, `--force` rewrites an existing one, `DOGFOOD_SEED_TRANSCRIPT=0` disables it alone. |
+| `scripts/seed-inner-transcript.test.ts` | New. The fixture's invariants (both shapes req 13 names, one user row per turn, every tool call answered, a stable build) and the seeding contract (write, leave-alone, force, disabled, no database). |
 | `scripts/seed-inner.test.ts` | New. Step order, continue-after-throw, and the guard that `docker-compose.yml`'s `dev` command actually runs the entry point under `tsx`. |
 | `scripts/seed-inner-roles.ts` | New. Resolves a committed set of role *recipes* against `settings.agents` and writes each with one `PUT /api/settings`. Never writes `reviewer`; derives one deliberately-`disconnected` role from the catalogue. `DOGFOOD_SEED_ROLES=0` disables it alone. TypeScript, run under `npx tsx` — it imports the catalogue. |
 | `scripts/seed-inner-roles.test.ts` | New. Unit tests for the recipe resolution, the derived unavailable role, idempotency and the failure contract. |
