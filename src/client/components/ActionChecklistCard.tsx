@@ -2,9 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircleIcon,
-  CheckIcon,
   ChatCircleDotsIcon,
-  ArrowRightIcon,
   ListChecksIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
@@ -13,6 +11,12 @@ import type { ActionChecklistCard as ActionChecklistCardData } from "../../serve
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { Button } from "./ui/button.js";
+import {
+  ActionChecklist,
+  ChecklistSubmitButton,
+  useChecklistSelection,
+  type ChecklistItem,
+} from "./ActionChecklist.js";
 import { formatProposalMessage, formatCommentSnapshot } from "../utils/action-checklist-message.js";
 
 export interface ActionChecklistCardProps {
@@ -26,11 +30,17 @@ const ACK_MS = 5000;
 export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps) {
   const isSingle = card.actions.length === 1;
 
-  const initialSelected = useMemo(
-    () => new Set(card.actions.filter((a) => a.defaultChecked).map((a) => a.id)),
+  const items = useMemo<ChecklistItem[]>(
+    () =>
+      card.actions.map((a) => ({
+        key: a.id,
+        label: a.label,
+        description: a.description,
+        defaultChecked: a.defaultChecked,
+      })),
     [card.actions],
   );
-  const [selected, setSelected] = useState<Set<string>>(initialSelected);
+  const { selected, toggle: toggleSelection, clear: clearSelection } = useChecklistSelection(items);
 
   const [ackCount, setAckCount] = useState<number | null>(null);
   const [sendFailed, setSendFailed] = useState(false);
@@ -53,14 +63,9 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
   const toggle = useCallback(
     (id: string) => {
       clearAck();
-      setSelected((prev) => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        return next;
-      });
+      toggleSelection(id);
     },
-    [clearAck],
+    [clearAck, toggleSelection],
   );
 
   const selectedActions = useMemo(
@@ -82,10 +87,10 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
       return;
     }
     setSendFailed(false);
-    setSelected(new Set());
+    clearSelection();
     setAckCount(chosen.length);
     ackTimer.current = setTimeout(() => setAckCount(null), ACK_MS);
-  }, [isSingle, card, selected, onSubmit]);
+  }, [isSingle, card, selected, onSubmit, clearSelection]);
 
   const handleAddComment = useCallback(() => {
     const selectedIds = isSingle ? new Set(card.actions.map((a) => a.id)) : selected;
@@ -134,47 +139,12 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
           )}
         </div>
       ) : (
-        <div className="flex flex-col gap-0.5" role="group" aria-label={card.title ?? "Optional follow-ups"}>
-          {card.actions.map((a) => {
-            const checked = selected.has(a.id);
-            return (
-              <label
-                key={a.id}
-                className={`flex items-start gap-2.5 rounded-md px-2 py-1.5 cursor-pointer transition-colors ${
-                  checked ? "bg-(--color-accent-subtle)" : "hover:bg-(--color-bg-hover)"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={checked}
-                  onChange={() => toggle(a.id)}
-                />
-                <span
-                  aria-hidden="true"
-                  className={`shrink-0 mt-0.5 inline-flex items-center justify-center w-4 h-4 rounded border transition-colors ${
-                    checked
-                      ? "bg-(--color-accent) border-(--color-accent) text-(--color-accent-text)"
-                      : "border-(--color-border-primary) text-transparent"
-                  }`}
-                >
-                  <CheckIcon size={ICON_SIZE.XS} weight="bold" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="text-(--color-text-primary) font-medium">{a.label}</span>
-                  {a.defaultChecked && (
-                    <span className="ml-1.5 align-middle text-[10px] font-semibold tracking-wide text-(--color-text-link) bg-(--color-accent-subtle) rounded-full px-1.5 py-px">
-                      RECOMMENDED
-                    </span>
-                  )}
-                  {a.description && (
-                    <span className="block text-(--color-text-secondary) mt-0.5">{a.description}</span>
-                  )}
-                </span>
-              </label>
-            );
-          })}
-        </div>
+        <ActionChecklist
+          items={items}
+          selected={selected}
+          onToggle={toggle}
+          ariaLabel={card.title ?? "Optional follow-ups"}
+        />
       )}
 
       {sendFailed && (
@@ -194,10 +164,7 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
       )}
 
       <div className="flex items-center gap-2">
-        <Button variant="primary" size="md" onClick={handleSubmit} disabled={submitDisabled}>
-          <ArrowRightIcon size={ICON_SIZE.SM} weight="bold" />
-          {submitLabel}
-        </Button>
+        <ChecklistSubmitButton label={submitLabel} disabled={submitDisabled} onClick={handleSubmit} />
         <Button variant="ghost" size="md" onClick={handleAddComment}>
           <ChatCircleDotsIcon size={ICON_SIZE.SM} />
           Add comment…
