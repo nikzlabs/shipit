@@ -165,15 +165,9 @@ interface GatedSend {
   releaseTurnClaim: () => void;
 }
 
+/** The release is called twice on the normal path; the gate documents that as harmless. */
 async function acquireSendGate(sessionId: string | undefined): Promise<() => void> {
-  if (!sessionId) return () => {};
-  const release = await acquireTurnClaimGate(sessionId);
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    release();
-  };
+  return sessionId ? acquireTurnClaimGate(sessionId) : () => {};
 }
 
 /** The region planning#575 serialises: everything that reads or claims turn state. */

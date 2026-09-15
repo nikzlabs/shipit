@@ -77,6 +77,22 @@ export function formatFileContext(files: FileAttachment[]): string {
   return wrapUntrustedContent({ source: "file", content: inner });
 }
 
+/**
+ * `fs.readFile` opens before it reads, and opening a FIFO with no writer never
+ * returns — no timeout, no error, a wedged handler and one libuv thread fewer
+ * for the whole process. A workspace holds whatever the agent put in it, so an
+ * attachment's type is established before it is read. `stat`, not `lstat`: it
+ * does not block, and following a symlink to a regular file is what these
+ * callers have always done.
+ */
+async function pathKind(p: string): Promise<"regular" | "missing" | "other"> {
+  try {
+    return (await fs.stat(p)).isFile() ? "regular" : "other";
+  } catch {
+    return "missing";
+  }
+}
+
 export async function resolveFileAttachments(
   refs: FileContextRef[],
   sessionDir: string,
@@ -102,6 +118,10 @@ export async function resolveFileAttachments(
     if (!resolved.startsWith(`${sessionDir  }/`) && resolved !== sessionDir) {
       return { files: [], error: `Invalid file path: ${filePath}` };
     }
+
+    const kind = await pathKind(resolved);
+    if (kind === "missing") return { files: [], error: `File not found: ${filePath}` };
+    if (kind === "other") return { files: [], error: `Not a readable file: ${filePath}` };
 
     let content: string;
     try {
@@ -193,6 +213,13 @@ export async function resolveUploadRefs(
 
     const ext = path.extname(ref.path).toLowerCase();
     const imageMime = IMAGE_EXT_TO_MIME[ext];
+
+    // Only the branches that read: the binary-upload branch never opens the file.
+    // A missing upload keeps its own message, from the read's own catch below.
+    const willRead = imageMime !== undefined || !isBinaryUpload(ref.path);
+    if (willRead && await pathKind(hostPath) === "other") {
+      return { files: [], images: [], imageHostPaths: [], error: `Upload is not a readable file: ${ref.path}` };
+    }
 
     if (imageMime) {
       // Preserve the upload path so history recognizes it as already sent.

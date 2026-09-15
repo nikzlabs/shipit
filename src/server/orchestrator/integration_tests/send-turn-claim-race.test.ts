@@ -25,11 +25,17 @@ type AnyMsg = Record<string, unknown> & { type: string };
 /**
  * planning#575 — `handleSendMessage` used to read `running` before its awaits and
  * set it after them, so two sends could both pass the check and the SLOWER one
- * lost its own turn. The slowness is not artificial: attachments are resolved
- * inside that window, one file read at a time, so a message carrying files is
- * overtaken by a plain message the user sent right after it.
+ * lost its own turn to the message sent after it, along with the per-message
+ * flags that turn carried. The slowness is not artificial: attachments are
+ * resolved inside that window, one file read at a time.
+ *
+ * The first test reproduces the inversion through that real timing difference
+ * rather than an injected delay, so it is a race reproduction and not a proof
+ * of the ordering — it was red on every one of six pre-fix runs. What the fix
+ * makes deterministic is the other direction: order no longer depends on which
+ * preamble finishes first.
  */
-describe("Integration: two sends cannot both claim the same turn (planning#575)", () => {
+describe("Integration: a send cannot be overtaken by the send after it (planning#575)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
