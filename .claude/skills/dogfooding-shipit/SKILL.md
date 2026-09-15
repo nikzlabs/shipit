@@ -77,15 +77,29 @@ Never test onboarding by deleting credentials from inner Settings or wiping `.in
 
 ## Seeding
 
-At `dev`-service boot, `scripts/seed-inner.ts` runs in the background and seeds three things in order, all prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
+At `dev`-service boot, `scripts/seed-inner.ts` runs in the background and seeds four things in order, all prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
 
 1. **Credentials** (`scripts/seed-inner-credentials.ts`) — every supplied service key becomes a credential route, labelled `… (dogfood secret)` in inner Settings → Model providers.
 2. **Roles** (`scripts/seed-inner-roles.ts`) — a few agent roles, so the role surfaces are not empty: `deep-dive`, `quick-look`, `second-opinion`, and `needs-a-credential`. Second **because it reads what the install can run** — a role's harness, model and level are resolved out of `settings.agents`, which step 1 has just widened.
-3. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate. Last, because a cold clone takes minutes.
+3. **A sample transcript** (`scripts/seed-inner-transcript.ts`) — one session, "Sample transcript (seeded)", whose conversation is fixture data. See below.
+4. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate. Last, because a cold clone takes minutes.
 
-Behavior for all three: skips what is already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`, and has a switch of its own — `DOGFOOD_SEED_CREDENTIALS=0`, `DOGFOOD_SEED_ROLES=0`. A step that throws is logged and the remaining steps still run.
+Behavior for all four: skips what is already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`, and has a switch of its own — `DOGFOOD_SEED_CREDENTIALS=0`, `DOGFOOD_SEED_ROLES=0`, `DOGFOOD_SEED_TRANSCRIPT=0`. A step that throws is logged and the remaining steps still run.
 
 Already-present means *left completely alone*: a credential or role you edited in the inner UI survives a restart, and rotating the outer secret does **not** propagate — delete the inner credential to re-seed it. The **name** is a role's identity, so a re-pointed `deep-dive` is never reconciled back.
+
+### The sample transcript — a conversation to look at, without talking to an agent
+
+Any change to how a conversation renders needs a conversation with the awkward shapes in it. This one is a committed list of turns, each labelled with the shape it covers: a turn that ends in an agent reply, a turn with **no agent response text at all**, a failed tool call inside a turn that still answers, an error row, a notice, a card that still needs the user, the same card after the user acted, a reply that is a file rather than prose, a long reply, and an ordinary newest turn as the control.
+
+```bash
+npx tsx scripts/seed-inner-transcript.ts --list     # what each turn covers
+npx tsx scripts/seed-inner-transcript.ts --force    # rewrite it after editing the fixture
+```
+
+It writes `$SHIPIT_STATE_DIR/.shipit.db` directly, so **you can run it from your own container** — `/workspace/.inner-shipit` is bind-mounted — and the inner UI picks it up on the next history load, no restart. Add a turn by adding an entry, then `--force`.
+
+Unlike the other steps it keys on the session id and leaves an existing session completely alone, including turns you typed into it yourself. `--force` is the only thing that overwrites, and it overwrites the whole transcript.
 
 ### What the seeded roles are for
 

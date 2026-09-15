@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { ActionChecklistItem, OfferedAction, SessionStatus } from "../../shared/types.js";
 import type { ValidatedSessionStatus } from "../../shared/session-status-validation.js";
 import type { SessionManager } from "../sessions.js";
+import { loadPrompt, fillPromptTokens } from "../load-prompt.js";
+
+const STATUS_NUDGE_PROMPT = loadPrompt(import.meta.url, "../prompts/status-card-nudge.md");
 
 export interface SessionStatusDeps {
   sessionManager: Pick<SessionManager, "get" | "list" | "setSessionStatus" | "sessionIdsWithStatus">;
@@ -188,6 +191,84 @@ export function takeOfferedActions(
     deps.sessionManager.setSessionStatus(sessionId, { ...stored, actions });
     broadcast(deps);
   });
+}
+
+/**
+ * Conversation reset, rewind and the two recovery paths that discard the agent's thread.
+ *
+ * docs/303 — the card is kept and marked stale rather than cleared: after a rewind it may
+ * describe work that is gone, and "Stale" is how it says so. The mark itself lives in
+ * `clearAgentSessionId`, beside the goal's clear, so no caller can forget it; this wraps it
+ * with the broadcast, so viewers never keep a card that reads current.
+ */
+export function clearConversationThread(
+  deps: {
+    sessionManager: Pick<SessionManager, "clearAgentSessionId" | "list">;
+    sseBroadcast?: (event: string, data: unknown) => void;
+  },
+  sessionId: string,
+): void {
+  if (!deps.sessionManager.clearAgentSessionId(sessionId)) return;
+  deps.sseBroadcast?.("session_list", { sessions: deps.sessionManager.list() });
+}
+
+/**
+ * docs/303 — what a settling turn knew about itself, taken before its drain step: the
+ * drained successor resets the runner state these three come from, and it starts before
+ * the network post-turn work and `idle`.
+ */
+export interface TurnStatusFacts {
+  statusUpdated: boolean;
+  wasInterrupted: boolean;
+  receivedResult: boolean;
+  silent: boolean;
+  /** This turn IS a nudge; an ignored one is not nudged again (req 15). */
+  statusNudge: boolean;
+  postTurn: "commit-push" | "none";
+  /** The record as the turn saw it, so a predecessor can tell its own state from a later write. */
+  writeSeq: number;
+}
+
+/**
+ * req 12 — ShipIt checks at the end of each turn that the agent updated or confirmed the
+ * card, and asks for the update when it did not.
+ *
+ * A successor running or queued is a DEFERRAL, not an exemption: that turn is checked
+ * afresh when it ends, and nudging under it would ask about a session the successor is
+ * already changing.
+ */
+export function shouldNudgeForStatusCard(
+  facts: TurnStatusFacts,
+  stored: Pick<SessionStatus, "writeSeq"> | undefined,
+  successorPending: boolean,
+): boolean {
+  if (facts.statusUpdated) return false;
+  // A question, a plan approval or a user stop (req 13).
+  if (facts.wasInterrupted) return false;
+  // A crash has its own recovery; there is no turn to ask.
+  if (!facts.receivedResult) return false;
+  if (facts.silent) return false;
+  if (facts.statusNudge) return false;
+  // A driver owns this turn and the interval around it.
+  if (facts.postTurn === "none") return false;
+  if ((stored?.writeSeq ?? 0) !== facts.writeSeq) return false;
+  if (successorPending) return false;
+  return true;
+}
+
+/**
+ * The nudge's own prompt (req 12). The offer list is composed here; the prose is the
+ * `.md` above, loaded once at module load, per the `prompt-architecture` skill.
+ */
+export function statusNudgePrompt(card: SessionStatus | undefined): string {
+  const offers = card?.actions ?? [];
+  // The agent has to see the taken state to keep or replace an offer knowingly (req 17).
+  const list = offers.length === 0
+    ? "The card offers no actions at the moment."
+    : ["The card currently offers:", ...offers.map(
+      (offer) => `- ${offer.label}${offer.takenAt ? " (already taken)" : ""}`,
+    )].join("\n");
+  return fillPromptTokens(STATUS_NUDGE_PROMPT, { OFFERS: list }).trim();
 }
 
 /**

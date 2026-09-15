@@ -163,9 +163,17 @@ an orchestrator restart show the same card with no extra request.
 **Lifecycle.**
 
 - New session: no card until the first write (req 22).
-- Conversation reset and rewind (`clearAgentSessionId`, also reached from
-  `rollback-handlers.ts:348`): keep status and offers, mark stale. After a
-  rewind the card may describe work that is gone; "Stale" says so.
+- Conversation reset and rewind: keep status and offers, mark stale. After a
+  rewind the card may describe work that is gone; "Stale" says so. The mark
+  lives inside `SessionManager.clearAgentSessionId`, beside the goal's clear,
+  because that one method is what every reset and rewind reaches — nine call
+  sites, of which a shared helper would only be remembered by some. It returns
+  whether the card changed, and `clearConversationThread`
+  (`services/session-status.ts`) pairs that with the `session_list` broadcast,
+  so a viewer cannot keep a card that reads current. The two recovery paths that
+  discard a thread — `recoverMissingConversation` and the credential-repair
+  `onRecover` — go through it too; `SessionAgentEnvDeps` gained an optional
+  `sseBroadcast` for the second.
 - Fork (`forkSession`, `session-fork-merge.ts`): copy the parent's card,
   marked stale. It is the fork's starting point.
 - Archive: the row keeps the column; restore brings the card back.
@@ -186,7 +194,17 @@ interrupt at `agent-listeners.ts:616` (the worker synthesizes the tool_use in
 `session-worker.ts` `registerAskEndpoint`), which sets `runner.wasInterrupted`;
 plan approval sets the same flag.
 
-**The facts are taken at settlement, before the drain.** `wasInterrupted`
+**The facts are taken at settlement, after any adoption handover and before the
+drain.** `settleTurnFacts` runs at the head of the terminal sequence, before the
+post-turn hold and outside `postTurnStep`, so it may not throw: its status read
+is guarded and skipped entirely while the setting is off, or a failed read would
+abandon the commit behind it (invariant 3). It runs *after* `await
+rearmInFlight`, because a turn adopted there owns the path it landed on and the
+predecessor's snapshot would be discarded by the re-arm. And it reads a separate
+`sawOwnResult`, not `receivedResult`, which adoption deliberately keeps from the
+predecessor: a crashed adopted turn produced no result of its own to judge.
+
+`wasInterrupted`
 and the accumulator are runner state that the drained successor resets
 (`session-runner.ts:448`), and the successor starts before the network
 post-turn work and `idle`. So a helper `settleTurnFacts()` runs first thing
@@ -213,28 +231,73 @@ successor is running or queued (a deferral, not an exemption — the check
 repeats when that turn ends). Otherwise it dispatches the nudge.
 
 **Dispatch.** Not during the post-turn hold: a completed system turn keeps
-`systemTurnInProgress` until `finishTurn` (`turn-executor.ts:149`), and a
+`systemTurnInProgress` until `finishTurn` (`turn-executor.ts`), and a
 dispatch made before that queues behind it after the final drain has run
-(`session-runner.ts:235`). The step therefore records the decision and
-`finishTurn`, after clearing the hold, enqueues the nudge and runs the drain
-entry (`input.drainNext()`). The nudge is a dispatched system turn, not
+(`session-runner.ts`). Deciding and dispatching are therefore two steps: the
+step after `idle` records the decision and tries the dispatch, and `finishTurn`
+tries it again once it has cleared the hold. Both are needed — a system turn's
+hold is still on at the first, and an ordinary streaming turn whose CLI stays
+resident never reaches the second, because `finishTurn` runs only when the
+process exits. The dispatch re-checks there that the runner is free — a
+successor that started meanwhile defers the nudge rather than queueing behind
+it, and that turn is checked afresh when it ends — and then goes through
+`runner.dispatch`, not an enqueue plus a drain entry: only that path owns
+recovery when turn setup rejects, and without it a user message that queued
+during setup is left with nothing to start it. Two gates are pre-checked
+instead of queueing behind them, since one attempt is all a missing update gets
+(req 15): a runner with no dispatch dependencies, and a resident agent with
+background work a system turn would destroy. The nudge is a dispatched system turn, not
 `silent`: its prompt is echoed as the turn's user row (`system_user_message`),
 the reply follows, the post-turn flow runs as for any turn (req 12). The
 prompt opens with `[ShipIt]`, says the last turn ended without a status
 update, lists the current offers with their taken state, and asks for one
-`session_status` call and nothing else — a bare one if nothing changed.
+`session_status` call and nothing else — a bare one if nothing changed. Its
+prose is `prompts/status-card-nudge.md`, loaded once at module load, with only
+the offer list composed in TypeScript.
+
+**And the nudge is a successor like any other.** It starts inside the
+predecessor's post-turn sequence and, being a system turn, replaces the resident
+process — so that process's own late `done` must not clear `runner.running`,
+which by then belongs to the nudge. The streaming `done` branch now carries the
+`turnIsCurrent()` guard `tryDrain` beside it always had; without it the live
+turn read as idle and its runner was reclaimable (invariant 5). Any successor
+drained during a streaming turn's post-turn had the same exposure.
 
 **Identity.** `statusNudge: true` is a typed dispatch option on
-`AgentDispatchOptions`, added to `AgentDispatchInit`,
-`queuedMessageToDispatchOptions` (`prepared-dispatch.ts`, whose coverage
+`AgentDispatchOptions`, added to `AgentDispatchInit` and
+`queuedMessageToDispatchOptions` (`prepared-dispatch.ts`, whose type-level
 asserts catch an omission), **and** to `QueuedMessage` and the hand-written
-`toQueuedMessage` (`session-runner.ts:317`), which the asserts do not cover
-and which compaction uses (`dispatched-turn.ts:96`). It reaches `TurnInput`,
-as does `silent`, which is not forwarded today (`dispatched-turn.ts:307`).
+`toQueuedMessage` (`session-runner.ts`), which compaction uses
+(`dispatched-turn.ts`) and which `queue-drain.test.ts`'s `Required<>`
+round-trip is what actually guards. It reaches `TurnInput`, as does `silent`,
+which was not forwarded before.
+
+**The flag.** The settlement reads it through `SystemTurnDeps.statusCardEnabled`
+(`credentialStore.getSessionStatusCard()`, wired in `runner-registry-factory.ts`
+and `ws-handlers/agent-execution.ts`). With the setting off, neither the
+freshness mark nor the decision runs, so a session that never had a card is
+never asked for one. It is read at each use rather than captured at turn start:
+the setting takes the tool with it, and a nudge decided while it was on must not
+start a turn asking for something the agent can no longer call.
 
 **Bound (req 15).** The step says no for a turn whose snapshot has
 `statusNudge`. An ignored nudge leaves the card stale; the next ordinary turn
 is checked afresh.
+
+**Known gap: an orchestrator restart during a nudge turn loses the marker.**
+`statusNudge` survives queueing and ordinary dispatch, but `adoptInFlightTurn`
+rebuilds an adopted turn from what the worker reports (`agentId`, `deliveryId`,
+`streaming`), so the restarted nudge settles as an ordinary turn and can be
+nudged once more. The fix belongs with the worker's in-flight turn info rather
+than here; the cost of the gap is one extra visible turn in that window.
+
+**Its own lease spans the dispatch, not just the call.** `dispatch` sets
+`running` synchronously, but the turn epoch — what tells a predecessor its exit
+no longer owns the runner — only advances when the successor enters its
+executor, and setup (`preTurnReset`, attachment resolution) awaits in between. So
+the nudge holds `beginPostTurnWork` until its `TurnHandle` settles. `PostTurnHold`
+expires on its own, so a turn outliving the deadline is covered by `running` and
+the epoch by then.
 
 ## Client (req 6–9, 14, 17, 18, 20, 24, 26–29)
 
@@ -381,8 +444,17 @@ and absent in the flag-off ones, never its wording.
   naming `status`; 409 without a runner; the reply lists offers.
 - `api-routes-propose-actions.test.ts` — 409 under the flag; unchanged
   otherwise.
-- `prepared-dispatch.test.ts`, `session-runner.test.ts` — `statusNudge` and
+- `prepared-dispatch.test.ts`, `queue-drain.test.ts` — `statusNudge` and
   `silent` survive `toQueuedMessage` → `queuedMessageToDispatchOptions`.
+- `turn-status-settlement.test.ts` — the settlement and the nudge driven
+  through the real executor: stale at once and one nudge on a plain turn; the
+  nudge turn not nudged again; no nudge after a question, a crash, a silent
+  compaction, a `postTurn: "none"` driver turn, or with the setting off; a
+  queued successor deferring with nothing left in the queue; a streaming
+  `agent_result` + `done` giving one nudge; a predecessor's late exit leaving
+  the successor's card current.
+- `sessions.test.ts`, `integration_tests/rewind-fork.test.ts`,
+  `services/session-fork-merge.test.ts` — the lifecycle marks.
 - `send-message.test.ts` — offers taken after admission on each path, not
   on a refused enqueue; old cards still get `submittedAt`.
 - `settings.test.ts` — the save hook marks stored cards stale on false → true
@@ -419,7 +491,7 @@ and absent in the flag-off ones, never its wording.
 - `src/server/session/agent-ops-routes.ts` — worker relay.
 - `src/server/orchestrator/api-routes-session-status.ts` — the route; `api-routes-propose-actions.ts` — refuses under the flag.
 - `src/server/shared/session-status-validation.ts`, `src/server/shared/propose-actions-validation.ts` — envelope; shared `validateActionItems`.
-- `src/server/orchestrator/services/session-status.ts` — record, stale, take, reconciliation, the decision, the nudge prompt.
+- `src/server/orchestrator/services/session-status.ts` — record, stale, take, reconciliation, `shouldNudgeForStatusCard`, `statusNudgePrompt`.
 - `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts`, the memoized decision, dispatch from `finishTurn`; `silent` and `statusNudge` on `TurnInput`.
 - `src/server/orchestrator/prepared-dispatch.ts`, `src/server/orchestrator/session-runner.ts` (`toQueuedMessage`, `QueuedMessage`), `src/server/shared/types/agent-types.ts` — the dispatch option.
 - `src/server/orchestrator/turn-accumulator.ts` — `statusUpdated`.

@@ -202,6 +202,12 @@ export async function forkSession(
     skipBranchRename: true,
   });
 
+  // docs/303 — the fork starts from the parent's card, marked stale: it describes the
+  // session the fork came from, and only the fork's own next turn can confirm it.
+  if (activeSession?.sessionStatus) {
+    sessionManager.setSessionStatus(newSessionId, { ...activeSession.sessionStatus, fresh: false });
+  }
+
   const newSession = sessionManager.get(newSessionId)!;
   console.log("[server] Forked session:", newSessionId, "branch:", trimmed);
   return {

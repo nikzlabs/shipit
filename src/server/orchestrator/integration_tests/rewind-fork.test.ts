@@ -207,6 +207,36 @@ describe("Integration: rewind and fork", () => {
     client.close();
   });
 
+  // docs/303 req 11 — a rewind can remove the work the card describes, so it must never
+  // read as current afterwards.
+  it("marks the session status card stale on rewind", async () => {
+    const { sessionId } = await createSession();
+    sessionManager.setSessionStatus(sessionId, {
+      status: "Routes done.",
+      actions: [],
+      fresh: true,
+      writeSeq: 2,
+    });
+
+    chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "discard" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "chat" });
+    await client.receiveType("rewind_complete");
+
+    expect(sessionManager.get(sessionId)?.sessionStatus).toMatchObject({
+      status: "Routes done.",
+      fresh: false,
+      writeSeq: 2,
+    });
+
+    client.close();
+  });
+
   it("keeps an upload a retained message still references", async () => {
     const { sessionId, sessionDir } = await createSession();
     const uploadsDir = path.join(sessionDir, "uploads");

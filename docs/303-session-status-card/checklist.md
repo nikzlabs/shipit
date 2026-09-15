@@ -9,9 +9,9 @@ docs-only PR and their review history is on planning#550.
 - [x] Orchestrator route: validate, merge the delta, provenance, reconcile offers, persist, broadcast, `statusUpdated`, reply with the offered list; refuse a bare call with no stored card. `propose_actions` route refuses under the flag.
 - [x] `sessions.session_status` column and `SessionInfo.sessionStatus`; `recordSessionStatus`, `markSessionStatusStale(ifWriteSeq)`, `takeOfferedActions`, `runStatusExclusive`.
 - [x] `statusUpdated` on `TurnAccumulator`.
-- [ ] `settleTurnFacts` on all four terminal paths before the drain, with the immediate guarded stale mark; reset on adoption; memoized decision after idle; dispatch from `finishTurn` via the drain entry.
-- [ ] `statusNudge` and `silent` through `AgentDispatchInit`, `QueuedMessage`, `toQueuedMessage`, `queuedMessageToDispatchOptions`, `TurnInput`.
-- [ ] Lifecycle: stale on rewind/reset; copy-as-stale on fork.
+- [x] `settleTurnFacts` on all four terminal paths before the drain, with the immediate guarded stale mark; reset on adoption; memoized decision after idle; dispatch from `finishTurn` via the drain entry.
+- [x] `statusNudge` and `silent` through `AgentDispatchInit`, `QueuedMessage`, `toQueuedMessage`, `queuedMessageToDispatchOptions`, `TurnInput`.
+- [x] Lifecycle: stale on rewind/reset; copy-as-stale on fork.
 - [x] `checklistAccepted` takes offers by `offerId` after admission; busy-path ordering fix.
 - [x] Split `ActionChecklistCard` into the shared checklist and two wrappers; per-offer provenance in the status card's submit message.
 - [x] `SessionStatusCard` as the last child of the message list's content element, scrolling with the conversation: two fields, offers with one Send, taken offers greyed and disabled, "Stale" label bottom-right.

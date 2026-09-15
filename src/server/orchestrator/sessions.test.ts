@@ -1370,6 +1370,22 @@ describe("setSessionStatus (docs/303 req 10)", () => {
     expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
   });
 
+  it("marks the card stale when the conversation is reset or rewound, and says it changed", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    mgr.setSessionStatus("c1", card);
+    mgr.setAgentSessionId("c1", "thread-1");
+
+    // The card is kept, not cleared: a rewind can remove the work it describes.
+    expect(mgr.clearAgentSessionId("c1")).toBe(true);
+    expect(mgr.get("c1")?.sessionStatus).toEqual({ ...card, fresh: false });
+
+    // Nothing to broadcast the second time, and nothing at all without a card.
+    expect(mgr.clearAgentSessionId("c1")).toBe(false);
+    mgr.track("c2");
+    expect(mgr.clearAgentSessionId("c2")).toBe(false);
+  });
+
   it("reads a corrupt or shapeless card as no card", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("c1");
