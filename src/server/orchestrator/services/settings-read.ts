@@ -38,7 +38,7 @@ import { StoreReadCache, bespokeReader } from "./settings-store-readers.js";
 import type { ItemName, StoreReadContext, StoredItem } from "./settings-store-readers.js";
 import type { SettingsReadDeps } from "./settings-read-deps.js";
 import type { SettingsProposalRow } from "../settings-proposal-store.js";
-import { CARD_TEXT_MAX } from "./settings-text-change.js";
+import { CARD_TEXT_LINES_MAX, CARD_TEXT_MAX } from "./settings-text-change.js";
 import { ServiceError } from "./types.js";
 
 export type { SettingsReadDeps };
@@ -86,8 +86,11 @@ export interface SettingEffect {
    * Why it is not live — or, where the stored value IS what the next use reads
    * and that use fails, what being live costs. Both are words the agent repeats
    * to the user, which is the point of req 3.
+   *
+   * {@link Rendered} like every other field that becomes a line: `list` prints
+   * it in the effect marker and `get` on its own `In effect:` line.
    */
-  detail?: string;
+  detail?: Rendered;
 }
 
 /**
@@ -114,7 +117,7 @@ export type SettingUnreadableReason =
 export interface SettingProposeView {
   allowed: boolean;
   refusal?: RefusalReason;
-  explanation?: string;
+  explanation?: Rendered;
 }
 
 /**
@@ -126,7 +129,7 @@ export interface SettingProposeView {
 export interface SettingAddressView {
   kind: SettingAddress["kind"];
   /** What names one instance, e.g. "a role name". */
-  noun?: string;
+  noun?: Rendered;
 }
 
 /** One addressed instance of an item-addressed setting, in `get` only. */
@@ -137,16 +140,17 @@ export interface SettingItemView {
   value: unknown;
   display: Rendered;
   /** What ShipIt already computes about this instance, so the agent says why (req 3). */
-  notes?: string[];
+  notes?: readonly Rendered[];
   /** The last proposal about THIS instance; a sibling item's says nothing about it. */
   lastProposal?: SettingProposalSummary;
 }
 
 export interface SettingIndexEntry {
+  /** A declared key, so it is ShipIt's own and the one field a caller addresses back. */
   key: string;
-  label: string;
+  label: Rendered;
   /** The declared description's first sentence; `get` carries it whole (req 7). */
-  summary: string;
+  summary: Rendered;
   tab: SettingTab;
   scope: SettingScope;
   address: SettingAddressView;
@@ -168,7 +172,7 @@ export interface SettingIndexEntry {
   propose: SettingProposeView;
   effect: SettingEffect;
   /** What the existing views already compute, so the agent says why (req 3). */
-  notes: string[];
+  notes: Rendered[];
 }
 
 /**
@@ -184,7 +188,7 @@ export interface SettingIndexEntry {
  * indefinite veto from a session the user has forgotten.
  */
 export interface SettingProposalSummary {
-  cardId: string;
+  cardId: Rendered;
   phase: SettingsProposalPhase;
   operation: SettingsProposalOperation;
   /**
@@ -199,24 +203,31 @@ export interface SettingProposalSummary {
    */
   from: Rendered;
   proposed: Rendered;
-  proposedAt: string;
-  resolvedAt?: string;
+  proposedAt: Rendered;
+  resolvedAt?: Rendered;
   /** The session the card is in, which may not be the one reading this. */
-  sessionId: string;
+  sessionId: Rendered;
 }
 
 export interface SettingDetailEntry extends SettingIndexEntry {
   /** The declared description, whole — the same words the dialog shows (req 7). */
-  description: string;
+  description: Rendered;
   valueType: SettingValueKind;
   /** Options, bounds, units, fields — whatever the declared `type` holds. */
   shape: Record<string, unknown>;
   /**
-   * How much prose a proposal card carries, where that is less than the box in
-   * the dialog takes (req 9). Present only when the two differ, so the agent
-   * composes to the limit instead of meeting it in a refusal.
+   * How much prose a proposal card carries per side, where that is less than
+   * the box in the dialog takes (req 9). Present only when the two differ, so
+   * the agent composes to the limit instead of meeting it in a refusal.
    */
   proposeMaxLength?: number;
+  /**
+   * And how many lines the two versions may come to BETWEEN them — the current
+   * value plus the proposed one, added together (req 9). A separate bound from
+   * the characters, and the one an agent reading only `proposeMaxLength` is
+   * refused by: a change well inside the character limit can be over this.
+   */
+  proposeMaxLines?: number;
   /** Facts a declaration cannot hold, resolved at read time. */
   live?: Record<string, unknown>;
   /** Present for an item-addressed setting: one entry per instance. */
@@ -272,17 +283,19 @@ function echoSupplied(supplied: string): string {
  * only before a capital or the string's end, so "(e.g. a second opinion)" does
  * not cut the summary in half.
  */
-function firstSentence(description: string): string {
+function firstSentence(description: string): Rendered {
   const flat = oneLine(description);
   const end = /[.!?](?:\s+(?=[A-Z])|$)/.exec(flat);
   const sentence = end ? flat.slice(0, end.index + 1) : flat;
-  return sentence.length > SUMMARY_MAX ? `${sentence.slice(0, SUMMARY_MAX).trimEnd()}…` : sentence;
+  return renderOwn(
+    sentence.length > SUMMARY_MAX ? `${sentence.slice(0, SUMMARY_MAX).trimEnd()}…` : sentence,
+  );
 }
 
 type ReadOutcome =
   | { ok: true; kind: "value"; value: unknown }
   | { ok: true; kind: "items"; items: StoredItem[] }
-  | { ok: false; reason: SettingUnreadableReason; note: string };
+  | { ok: false; reason: SettingUnreadableReason; note: Rendered };
 
 type OwnRouteReader = (deps: SettingsReadDeps) => Promise<ReadOutcome> | ReadOutcome;
 
@@ -315,7 +328,11 @@ export const OWN_ROUTE_READERS: Record<OwnRouteSettingKey, OwnRouteReader> = {
   "network.egressContained": (deps) =>
     deps.egressAllowlistStore
       ? { ok: true, kind: "value", value: deps.egressAllowlistStore.getGlobalEnabled() }
-      : { ok: false, reason: "read_failed", note: "This install has no egress allowlist store, so the containment setting cannot be read." },
+      : {
+          ok: false,
+          reason: "read_failed",
+          note: renderOwn("This install has no egress allowlist store, so the containment setting cannot be read."),
+        },
 };
 
 /** The reader for a key held as a plain string; present for every own-route one. */
@@ -328,13 +345,13 @@ function proposeView(declaration: AnySettingDeclaration): SettingProposeView {
   const { reason } = declaration.propose;
   // The catalogue owns the sentence, so a refused read and a refused change say
   // the same thing about the same setting.
-  return { allowed: false, refusal: reason, explanation: refusalSentence(reason) };
+  return { allowed: false, refusal: reason, explanation: renderOwn(refusalSentence(reason)) };
 }
 
 export interface ProjectedValue {
   value: unknown;
   display: Rendered;
-  notes: string[];
+  notes: Rendered[];
   /** A `withheld` projection: the declaration gives the read no value at all. */
   withheld?: RefusalReason;
 }
@@ -353,7 +370,7 @@ export function projectSettingValue(
   const outcome = projectSetting(declaration, raw);
   const display = formatSetting(declaration, outcome);
   if (!outcome.readable) {
-    return { value: null, display, notes: [outcome.explanation], withheld: outcome.reason };
+    return { value: null, display, notes: [renderOwn(outcome.explanation)], withheld: outcome.reason };
   }
   const notes = projectionNotes(declaration);
   // Shortening applies to what the door emitted, never to the stored value, and
@@ -369,25 +386,27 @@ export function projectSettingValue(
     display: renderValue(shortened),
     notes: [
       ...notes,
-      `Shortened to ${LIST_TEXT_MAX} characters here; the whole value is ${outcome.value.length} characters and comes back from a read of this one setting.`,
+      renderOwn(
+        `Shortened to ${LIST_TEXT_MAX} characters here; the whole value is ${outcome.value.length} characters and comes back from a read of this one setting.`,
+      ),
     ],
   };
 }
 
 /** What the declaration says about its own output, for a reader checking it. */
-function projectionNotes(declaration: AnySettingDeclaration): string[] {
+function projectionNotes(declaration: AnySettingDeclaration): Rendered[] {
   switch (declaration.emits.kind) {
     case "configured_only":
-      return ["ShipIt reports only whether this is configured, never its value."];
+      return [renderOwn("ShipIt reports only whether this is configured, never its value.")];
     case "user_text":
     case "user_name":
-      return [declaration.emits.reason];
+      return [renderOwn(declaration.emits.reason)];
     case "derived":
       return [
-        `ShipIt emits ${declaration.emits.describes}, and nothing else of this value.`,
+        renderOwn(`ShipIt emits ${declaration.emits.describes}, and nothing else of this value.`),
         // The `user_text` mark on a derived projection, said out loud: what the
         // function emits is the user's own words, not something ShipIt computed.
-        ...(declaration.emits.userText ? [declaration.emits.userText] : []),
+        ...(declaration.emits.userText ? [renderOwn(declaration.emits.userText)] : []),
       ];
     default:
       return [];
@@ -419,7 +438,7 @@ function enforcementDisabledEffect(
   return enforcementStatus(deps) === "disabled"
     ? {
         state: "excluded",
-        detail: `Egress enforcement is switched off on this install (SESSION_EGRESS_ENFORCE=0), so no session is contained and ${restricts}.`,
+        detail: renderOwn(`Egress enforcement is switched off on this install (SESSION_EGRESS_ENFORCE=0), so no session is contained and ${restricts}.`),
       }
     : null;
 }
@@ -464,7 +483,7 @@ function startupRefusal(deps: SettingsReadDeps, contained: boolean): string {
  */
 function alsoSay(effect: SettingEffect, sentence: string): SettingEffect {
   if (!sentence) return effect;
-  return { state: effect.state, detail: `${effect.detail ?? ""} ${sentence}`.trim() };
+  return { state: effect.state, detail: renderOwn(`${effect.detail ?? ""} ${sentence}`) };
 }
 
 /**
@@ -490,13 +509,13 @@ function runningContainmentEffect(
       // "…what settles it", not "…what makes the stored value certain": this
       // sentence is carried by the branches that have just said the stored value
       // will never apply to this session, and the two must not contradict.
-      detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know which network mode it started under. Restarting the session is what settles it.",
+      detail: renderOwn("This session's container was rediscovered after a ShipIt restart, so ShipIt does not know which network mode it started under. Restarting the session is what settles it."),
     };
   }
   if (startedContained === resolved) return null;
   return {
     state: "restart-dependent",
-    detail: `This session's container started ${startedContained ? "contained" : "open"} and stays that way until it is restarted.`,
+    detail: renderOwn(`This session's container started ${startedContained ? "contained" : "open"} and stays that way until it is restarted.`),
   };
 }
 
@@ -518,7 +537,10 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
   if (disabled) return disabled;
   const store = deps.egressAllowlistStore;
   if (!store) {
-    return { state: "uncertain", detail: "This install has no egress allowlist store to resolve containment against." };
+    return {
+      state: "uncertain",
+      detail: renderOwn("This install has no egress allowlist store to resolve containment against."),
+    };
   }
   // The shipped resolver, not a re-derivation: a sandbox whose network
   // capability is off is contained by `sandboxLifelineEgressConfig` no matter
@@ -532,14 +554,14 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
     // containment on, so the start is refused for the second reason too.
     return alsoSay(alsoSay({
       state: "excluded",
-      detail: "This session's own network capability decides its containment, and no restart makes the global setting apply to it. The session's network capability is what has to change.",
+      detail: renderOwn("This session's own network capability decides its containment, and no restart makes the global setting apply to it. The session's network capability is what has to change."),
     }, running?.detail ?? ""), blocked);
   }
   const override = store.getSessionOverride(sessionId);
   if (override !== null) {
     return alsoSay(alsoSay({
       state: "excluded",
-      detail: `This session sets its own network mode (${override ? "contained" : "open"}), which wins over the global setting. Changing the global one does not change this session.`,
+      detail: renderOwn(`This session sets its own network mode (${override ? "contained" : "open"}), which wins over the global setting. Changing the global one does not change this session.`),
     }, running?.detail ?? ""), blocked);
   }
   if (running) return alsoSay(running, blocked);
@@ -583,7 +605,10 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
   if (disabled) return disabled;
   const store = deps.egressAllowlistStore;
   if (!store) {
-    return { state: "uncertain", detail: "This install has no egress allowlist store to resolve containment against." };
+    return {
+      state: "uncertain",
+      detail: renderOwn("This install has no egress allowlist store to resolve containment against."),
+    };
   }
   const config = deps.containerManager?.resolveEgress(sessionId);
   const contained = config?.contained ?? store.resolveContained(sessionId);
@@ -612,16 +637,16 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
     if (excludedNow === true || !running) {
       return alsoSay({
         state: "excluded",
-        detail: `This session's own network capability shuts it out of the allowlist: ${ADDS_NOTHING} No restart changes that, and the session's network capability is what has to.`,
+        detail: renderOwn(`This session's own network capability shuts it out of the allowlist: ${ADDS_NOTHING} No restart changes that, and the session's network capability is what has to.`),
       }, blocked);
     }
     // A container ShipIt has no record for gets no history invented for it: the
     // capability may have been off all along.
     return alsoSay({
       state: "excluded",
-      detail: excludedNow === undefined
+      detail: renderOwn(excludedNow === undefined
         ? `${allowlistInForce(container)} This session's network capability is off, so adding a host here does not reach it after a restart either.`
-        : `${allowlistInForce(container)} This session's network capability has been switched off since, so restarting it seals the session — and adding a host here does not reach it then either.`,
+        : `${allowlistInForce(container)} This session's network capability has been switched off since, so restarting it seals the session — and adding a host here does not reach it then either.`),
     }, blocked);
   }
   if (excludedNow === true) {
@@ -634,11 +659,11 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
       contained
         ? {
             state: "restart-dependent",
-            detail: `${now} The capability is on again now, and the allowlist applies to the session from its next start.`,
+            detail: renderOwn(`${now} The capability is on again now, and the allowlist applies to the session from its next start.`),
           }
         : {
             state: "excluded",
-            detail: `${now} The capability is on again now and its next start is open, so the allowlist will not restrict it then either.`,
+            detail: renderOwn(`${now} The capability is on again now and its next start is open, so the allowlist will not restrict it then either.`),
           },
       blocked,
     );
@@ -650,7 +675,7 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
     if (startedContained === undefined) {
       return alsoSay({
         state: "uncertain",
-        detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know whether it is enforcing the allowlist. Restarting the session is what settles it.",
+        detail: renderOwn("This session's container was rediscovered after a ShipIt restart, so ShipIt does not know whether it is enforcing the allowlist. Restarting the session is what settles it."),
       }, blocked);
     }
     if (!startedContained) {
@@ -658,26 +683,26 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
         contained
           ? {
               state: "restart-dependent",
-              detail: "This session's container started open, so the allowlist does not restrict it. It starts contained next time, and the allowlist applies from then on.",
+              detail: renderOwn("This session's container started open, so the allowlist does not restrict it. It starts contained next time, and the allowlist applies from then on."),
             }
           : {
               state: "excluded",
-              detail: "This session is not contained, so its network access does not depend on the allowlist.",
+              detail: renderOwn("This session is not contained, so its network access does not depend on the allowlist."),
             },
         blocked,
       );
     }
     return alsoSay({
       state: "restart-dependent",
-      detail: contained
+      detail: renderOwn(contained
         ? "This session's container took its allowlist when it was last given one; a change here applies the next time it starts."
-        : "This session's container started contained and is still enforcing the allowlist it has. It starts open next time, and the allowlist stops applying to it.",
+        : "This session's container started contained and is still enforcing the allowlist it has. It starts open next time, and the allowlist stops applying to it."),
     }, blocked);
   }
   if (!contained) {
     return {
       state: "excluded",
-      detail: "This session is not contained, so its network access does not depend on the allowlist.",
+      detail: renderOwn("This session is not contained, so its network access does not depend on the allowlist."),
     };
   }
   return alsoSay({ state: "live" }, blocked);
@@ -805,9 +830,9 @@ const LIVE_DETAILS: Record<string, LiveDetail> = {
 
 // Only this read's own two reasons; the catalogue's four come from
 // `refusalSentence`, so a withheld setting says the same thing everywhere.
-const UNREADABLE_NOTES: Record<"no_repository" | "read_failed", string> = {
-  no_repository: "This is a per-repository setting and this session binds no repository.",
-  read_failed: "ShipIt could not read this setting's stored value.",
+const UNREADABLE_NOTES: Record<"no_repository" | "read_failed", Rendered> = {
+  no_repository: renderOwn("This is a per-repository setting and this session binds no repository."),
+  read_failed: renderOwn("ShipIt could not read this setting's stored value."),
 };
 
 interface ReadState {
@@ -828,9 +853,9 @@ interface ReadState {
  * reaches the agent in text, in `--json` and in a card — so the projection
  * boundary holds here too, and the detail goes to the server log instead.
  */
-function readFailureNote(key: string, err: unknown): string {
+function readFailureNote(key: string, err: unknown): Rendered {
   console.error(`[settings-read] reading ${key} failed:`, err);
-  return "ShipIt could not read this setting's value. The failure is in the server log.";
+  return renderOwn("ShipIt could not read this setting's value. The failure is in the server log.");
 }
 
 /**
@@ -854,7 +879,7 @@ export function scopeUnreadableReason(
 function addressView(declaration: AnySettingDeclaration): SettingAddressView {
   const address = declaration.address ?? { kind: "none" as const };
   const noun = "noun" in address ? address.noun : undefined;
-  return { kind: address.kind, ...(noun ? { noun } : {}) };
+  return { kind: address.kind, ...(noun ? { noun: renderOwn(noun) } : {}) };
 }
 
 function isItemAddressed(declaration: AnySettingDeclaration): boolean {
@@ -881,7 +906,7 @@ async function readValue(
   // it", it is a value ShipIt's server never holds.
   if (declaration.emits.kind === "withheld") {
     const { reason } = declaration.emits;
-    return { ok: false, reason, note: refusalSentence(reason) };
+    return { ok: false, reason, note: renderOwn(refusalSentence(reason)) };
   }
   const scoped = scopeUnreadableReason(declaration, state.repoUrl !== null);
   if (scoped) return { ok: false, reason: scoped, note: UNREADABLE_NOTES[scoped] };
@@ -905,7 +930,7 @@ async function readValue(
     return {
       ok: false,
       reason: "read_failed",
-      note: `${UNREADABLE_NOTES.read_failed} It is ${storeLocation(declaration)}.`,
+      note: renderOwn(`${UNREADABLE_NOTES.read_failed} It is ${storeLocation(declaration)}.`),
     };
   }
   const ctx: StoreReadContext = { deps, sessionId: state.sessionId, repoUrl: state.repoUrl };
@@ -960,7 +985,7 @@ function itemsDisplay(addresses: Rendered[]): Rendered {
 interface ProjectedItems {
   items: SettingItemView[];
   display: Rendered;
-  notes: string[];
+  notes: Rendered[];
 }
 
 /**
@@ -992,9 +1017,11 @@ function projectItems(
   }
   const notes = unnamed > 0
     ? [
-        `${unnamed} stored ${unnamed === 1 ? "instance is" : "instances are"} not listed: what `
-          + "identifies each is not an address this setting can emit as it is stored, so ShipIt "
-          + "does not repeat it back.",
+        renderOwn(
+          `${unnamed} stored ${unnamed === 1 ? "instance is" : "instances are"} not listed: what `
+            + "identifies each is not an address this setting can emit as it is stored, so ShipIt "
+            + "does not repeat it back.",
+        ),
       ]
     : [];
   return { items, display: itemsDisplay(items.map((i) => i.address)), notes };
@@ -1043,7 +1070,7 @@ function unreadableEntry(
   declaration: AnySettingDeclaration,
   detail: boolean,
   reason: SettingUnreadableReason,
-  note: string,
+  note: Rendered,
 ): BuiltEntry {
   return {
     entry: {
@@ -1063,7 +1090,7 @@ function unreadableEntry(
 function entryBase(declaration: AnySettingDeclaration) {
   return {
     key: declaration.key,
-    label: declaration.label,
+    label: renderOwn(declaration.label),
     summary: firstSentence(declaration.description),
     tab: declaration.tab,
     scope: declaration.scope,
@@ -1073,8 +1100,9 @@ function entryBase(declaration: AnySettingDeclaration) {
 }
 
 /** `get` says the same thing with the items themselves, so this is list-only. */
-function listOnlyNotes(declaration: AnySettingDeclaration, detail: boolean): string[] {
-  return detail ? [] : [itemNote(declaration)].filter((n): n is string => !!n);
+function listOnlyNotes(declaration: AnySettingDeclaration, detail: boolean): Rendered[] {
+  const note = detail ? null : itemNote(declaration);
+  return note ? [note] : [];
 }
 
 async function buildReadableEntry(
@@ -1123,12 +1151,14 @@ async function buildReadableEntry(
  * many roles or MCP servers someone has, for the same reason option sets live in
  * `get`.
  */
-function itemNote(declaration: AnySettingDeclaration): string | null {
+function itemNote(declaration: AnySettingDeclaration): Rendered | null {
   if (!isItemAddressed(declaration)) return null;
   const noun = "noun" in (declaration.address ?? {})
     ? (declaration.address as { noun: string }).noun
     : "an item";
-  return `One of these exists per item, addressed by ${noun}. \`shipit settings get ${declaration.key}\` is where the items are.`;
+  return renderOwn(
+    `One of these exists per item, addressed by ${noun}. \`shipit settings get ${declaration.key}\` is where the items are.`,
+  );
 }
 
 async function readState(deps: SettingsReadDeps, sessionId: string): Promise<ReadState> {
@@ -1202,7 +1232,7 @@ function resolveLiveDetail(
   } catch (err) {
     console.error(`[settings-read] resolving live detail for ${key} failed:`, err);
     entry.notes.push(
-      "ShipIt could not resolve this setting's live options. The failure is in the server log.",
+      renderOwn("ShipIt could not resolve this setting's live options. The failure is in the server log."),
     );
     return undefined;
   }
@@ -1222,31 +1252,59 @@ function lastProposalFor(
 
 function summarize(row: SettingsProposalRow | null): SettingProposalSummary | undefined {
   if (!row) return undefined;
+  // Every free-text half of the row, rendered. An id and a timestamp are
+  // ShipIt's own and cannot carry a line break when ShipIt wrote them — but they
+  // are read back from SQLite with a cast, and `get` puts them on the
+  // `Last proposal:` line, so the line's guarantee is this read's rather than
+  // the writer's. `phase` and `operation` stay their unions: the agent switches
+  // on them, and each renderer flattens where it turns one into text.
   return {
-    cardId: row.cardId,
+    cardId: renderOwn(row.cardId),
     phase: row.phase,
     operation: row.operation,
     ...(row.target.item ? { item: renderOwn(row.target.item) } : {}),
     from: renderValue(row.from),
     proposed: renderValue(row.proposed),
-    proposedAt: row.createdAt,
-    ...(row.resolvedAt ? { resolvedAt: row.resolvedAt } : {}),
-    sessionId: row.sessionId,
+    proposedAt: renderOwn(row.createdAt),
+    ...(row.resolvedAt ? { resolvedAt: renderOwn(row.resolvedAt) } : {}),
+    sessionId: renderOwn(row.sessionId),
   };
 }
 
 /**
  * What a proposal card can carry, where the dialog's box takes more (req 9).
  *
- * The two limits answer different questions and are allowed to differ: typing
- * 50,000 characters of your own instructions is not the same act as approving
- * 50,000 characters somebody else wrote. Reporting it is what stops the agent
- * composing a value it can only discover is unproposable by being refused.
+ * The limits answer a different question from the dialog's and are allowed to
+ * differ: typing 50,000 characters of your own instructions is not the same act
+ * as approving 50,000 characters somebody else wrote. Reporting them is what
+ * stops the agent composing a value it can only discover is unproposable by
+ * being refused — req 9 asks for the bounds to be known BEFORE the value is
+ * written, so a bound enforced and not disclosed is the requirement half met.
+ *
+ * **There are two of them, and the second is the one an agent gets wrong.**
+ * `settings-propose.ts` refuses a prose change on characters PER SIDE and on
+ * lines COMBINED — the two versions added together, not each — so 600 lines
+ * replaced by 601 is refused at 1,201 lines while both versions sit far inside
+ * the character bound. Each is disclosed only where it can bind before the
+ * setting's own declared `maxLength` does: the character bound where the
+ * declaration allows more than a card carries, and the line bound where the
+ * declaration allows enough characters to reach it (a side of N characters is
+ * at most N + 1 lines, so the two sides can only pass the bound once
+ * 2N + 2 exceeds it).
  */
-function proposeTextLimit(declaration: AnySettingDeclaration): number | undefined {
-  if (declaration.propose.kind !== "yes" || declaration.type.kind !== "text") return undefined;
+interface ProposeCardBounds {
+  maxLength?: number;
+  maxLines?: number;
+}
+
+function proposeCardBounds(declaration: AnySettingDeclaration): ProposeCardBounds {
+  if (declaration.propose.kind !== "yes" || declaration.type.kind !== "text") return {};
   const declared = declaration.type.shape.maxLength;
-  return typeof declared === "number" && declared > CARD_TEXT_MAX ? CARD_TEXT_MAX : undefined;
+  if (typeof declared !== "number") return {};
+  return {
+    ...(declared > CARD_TEXT_MAX ? { maxLength: CARD_TEXT_MAX } : {}),
+    ...(2 * declared + 2 > CARD_TEXT_LINES_MAX ? { maxLines: CARD_TEXT_LINES_MAX } : {}),
+  };
 }
 
 /** The detail of one setting: its whole description, its value's shape, and what resolves live. */
@@ -1264,7 +1322,7 @@ export async function getSettingForAgent(
   }
   const state = await readState(deps, sessionId);
   const { entry, items } = await buildEntry(declaration, deps, state, true);
-  const proposeLimit = proposeTextLimit(declaration);
+  const bounds = proposeCardBounds(declaration);
   // Not gated on `readable`: the options are a different question from the
   // value, and a withheld setting is exactly one whose options the agent still
   // has to name (req 1). `LIVE_DETAILS` carries what that costs.
@@ -1287,10 +1345,11 @@ export async function getSettingForAgent(
   });
   return {
     ...entry,
-    description: oneLine(declaration.description),
+    description: renderOwn(declaration.description),
     valueType: declaration.type.kind,
     shape: declaration.type.shape,
-    ...(proposeLimit !== undefined ? { proposeMaxLength: proposeLimit } : {}),
+    ...(bounds.maxLength !== undefined ? { proposeMaxLength: bounds.maxLength } : {}),
+    ...(bounds.maxLines !== undefined ? { proposeMaxLines: bounds.maxLines } : {}),
     ...(live ? { live } : {}),
     ...(withProposals ? { items: withProposals } : {}),
     ...(last ? { lastProposal: last } : {}),

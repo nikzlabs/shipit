@@ -219,6 +219,37 @@ describe("proposeSettingChange", () => {
     expect(fx.emitted).toHaveLength(0);
   });
 
+  /*
+    Req 9 asks for the bounds to be known BEFORE the value is written, and the
+    card enforces two of them: characters PER SIDE and lines COMBINED. A change
+    can sit far inside the first and be refused by the second, so a read that
+    disclosed only the characters left the agent to find this one by being
+    refused — which is the dead end req 9 exists to remove.
+  */
+  it("refuses on the COMBINED line bound, which the read disclosed before the value was written", async () => {
+    const before = Array.from({ length: 600 }, () => "x").join("\n");
+    await writeGlobalSystemPrompt(fx.tmpDir, before);
+
+    const entry = await getSettingForAgent(fx.deps.read, fx.sessionId, "instructions.userInstructions");
+    expect(entry.proposeMaxLength).toBe(CARD_TEXT_MAX);
+    expect(entry.proposeMaxLines).toBe(CARD_TEXT_LINES_MAX);
+
+    // 601 lines against 600: 1,201 combined, and both versions are an order of
+    // magnitude inside the character bound the read also reported.
+    const after = Array.from({ length: 601 }, () => "y").join("\n");
+    expect(before.length).toBeLessThan(entry.proposeMaxLength!);
+    expect(after.length).toBeLessThan(entry.proposeMaxLength!);
+
+    const message = await refusal({
+      key: "instructions.userInstructions",
+      valueText: after,
+      reason: "why",
+    });
+    expect(message).toContain(`${(1_201).toLocaleString("en-US")} lines`);
+    expect(message).toContain(`at most ${CARD_TEXT_LINES_MAX.toLocaleString("en-US")}`);
+    expect(fx.emitted).toHaveLength(0);
+  });
+
   it("tells the agent it cannot shrink a CURRENT value that is over the bound", async () => {
     fs.mkdirSync(path.join(fx.tmpDir, ".shipit"), { recursive: true });
     fs.writeFileSync(

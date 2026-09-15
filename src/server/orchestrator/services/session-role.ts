@@ -6,6 +6,8 @@ import type {
 import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
+import { namesForMessage } from "../../shared/settings-catalogue/projection.js";
+import { renderOwn } from "../../shared/settings-catalogue/rendered.js";
 import { checkRolePinnedParams, type RoleValidatorDeps } from "./roles.js";
 import { ServiceError } from "./types.js";
 
@@ -33,29 +35,41 @@ function unavailableMessage(name: string, reason: RoleUnavailableReason, detail:
   }
 }
 
+/**
+ * Every refusal this module raises, on ONE line — the same rule and the same
+ * shape as `roles.ts` → `refuse` (docs/299-agent-settings-access req 2).
+ * `shipit session create --role` reaches these from inside a session, and each
+ * names either the supplied role name or the role's own stored harness,
+ * service, model and level.
+ */
+function refuse(message: string): never {
+  throw new ServiceError(400, renderOwn(message));
+}
+
 export function resolveUserRole(name: string, deps: UserRoleDeps): ResolvedUserRole {
   const role = deps.credentialStore.getRole(name);
+  // The stored names go through the projection door; the supplied one is
+  // echoed, being the caller's own argument. {@link refuse} renders the line it
+  // lands on, so it needs no flattening of its own.
+  const shown = name;
   if (!role) {
     const known = listUserSelectableRoles(deps).map((r) => r.name);
-    throw new ServiceError(
-      400,
+    refuse(
       known.length > 0
-        ? `Unknown role "${name}". Roles on this install: ${known.join(", ")}.`
-        : `Unknown role "${name}". No roles are configured — create one in Settings → Roles.`,
+        ? `Unknown role "${shown}". Roles on this install: ${namesForMessage(known)}.`
+        : `Unknown role "${shown}". No roles are configured — create one in Settings → Roles.`,
     );
   }
   if (role.name === RESERVED_ROLE_NAME || role.params.kind !== "pinned") {
-    throw new ServiceError(
-      400,
+    refuse(
       `The "${RESERVED_ROLE_NAME}" role picks the agent furthest from whatever produced the work, `
         + "so it only means something when an agent starts it. Pick another role.",
     );
   }
   const checked = checkRolePinnedParams(role.params, deps);
   if (!checked.ok) {
-    throw new ServiceError(
-      400,
-      unavailableMessage(name, checked.kind === "credential" ? "disconnected" : "stranded", checked.message),
+    refuse(
+      unavailableMessage(shown, checked.kind === "credential" ? "disconnected" : "stranded", checked.message),
     );
   }
   return { role, params: checked.params };

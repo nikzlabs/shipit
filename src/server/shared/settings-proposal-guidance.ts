@@ -1,3 +1,4 @@
+import { renderOwn, type Rendered } from "./settings-catalogue/rendered.js";
 import type { SettingsProposalPhase } from "./types/domain-types/chat.js";
 
 /**
@@ -64,9 +65,16 @@ export const PROPOSAL_PHASE_GUIDANCE: Record<SettingsProposalPhase, ProposalPhas
   },
 };
 
-/** The phase's headline, falling back to the raw string for a phase this build does not know. */
-export function proposalPhaseHeadline(phase: string): string {
-  return PROPOSAL_PHASE_GUIDANCE[phase as SettingsProposalPhase]?.headline ?? phase.toUpperCase();
+/**
+ * The phase's headline, falling back to the STORED string for a phase this build
+ * does not know — flattened, because that fallback is the one path here that
+ * puts persisted text on a line (`Last proposal: …`, planning#577). The phase is
+ * typed as a union and read back from SQLite with a cast, so the type says it is
+ * one of ten and the row is whatever a restore or a migration left there.
+ */
+export function proposalPhaseHeadline(phase: string): Rendered {
+  const known = PROPOSAL_PHASE_GUIDANCE[phase as SettingsProposalPhase]?.headline;
+  return renderOwn(known ?? phase.toUpperCase());
 }
 
 /** The phase's one-sentence instruction, or "" where it asks for nothing. */

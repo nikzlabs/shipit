@@ -686,3 +686,110 @@ value and stored another. Both re-verified at the code.
 - [x] The release-channel fixture stubbed a reader that could not see its own
       mocked write, so the apply's read-back was right to call it `partial`. The
       fixture now moves with the write, as the real file-backed pair does
+
+### The output boundary holds on its own, on every free-text field
+
+- [x] req 2 — an item's `notes` went through no mint: `routeStatusNote`
+      interpolated a credential route's stored `status`, `settings-read.ts`
+      copied it and the shim printed it, so a persisted status carrying a newline
+      emitted lines that read as ShipIt's own fields. The prerequisite is
+      malformed persisted data (a restore, a migration — `credential-store.ts`
+      casts what it parses without validating the field), and the boundary has to
+      hold without depending on the writer upstream being well behaved
+- [x] Branded rather than patched: `notes`, `label`, `summary`, `description`,
+      an address's `noun`, a refusal's `explanation` and an effect's `detail` are
+      all `Rendered`, minted where the entry is built. The store readers mint at
+      their own constructor, so a reader added later cannot supply a raw reason
+- [x] A compile-time guard makes it self-enforcing — `PlainStringFields` in
+      `settings-read.test.ts` fails `npm run typecheck` on a new string-typed
+      field until it is minted or named in the allow-list. Proved by reverting
+      `SettingEffect.detail` to `string`: typecheck goes red at the guard
+- [x] The same class on the surface beside it: `services/roles.ts` joined every
+      stored role name verbatim into the unknown-role error on the
+      `shipit agent run` path, and `services/session-role.ts` did the same for
+      `shipit session create --role`. `namesForMessage` moved out of
+      `settings-operations.ts` into `settings-catalogue/projection.ts` and all
+      three surfaces call it; the name each message ECHOES back is flattened,
+      since that one is the caller's own argument
+- [x] Guards red alone: a route status carrying a forged row and a forged field,
+      asserted through `list`, `get` and `--json`
+      (`integration_tests/settings-line-forgery.test.ts`); a URL-shaped role name
+      against both role surfaces (`roles.test.ts`, `session-role.test.ts`)
+
+### req 9 discloses both bounds, not one
+
+- [x] `settings-propose.ts` refuses on characters PER SIDE and on lines
+      COMBINED, and the read advertised only the characters — so a change inside
+      the advertised bound was refused by an undisclosed one (600 lines replaced
+      by 601: ~1,200 characters a side, 1,201 lines)
+- [x] `proposeMaxLines` joins `proposeMaxLength` in `get`, disclosed where the
+      declaration allows enough characters to reach it, and the CLI prints both
+      with the combined arithmetic spelled out. `shipit-docs/settings.md` says
+      the same in the agent's own reference
+- [x] Guard red alone: the read discloses the bound, then the same change is
+      refused by it (`settings-propose.test.ts`), and the CLI prints both
+      sentences (`shipit-settings.test.ts`)
+- [x] Three gaps the independent review found in the first pass of this work,
+      each confirmed at the code before fixing: the compile-time guard tested
+      only DIRECT properties, so `notes: string[]` — the regression it exists to
+      prevent — passed it; `--json` serialized with `JSON.stringify`, which
+      leaves U+0085/U+2028/U+2029 as themselves, so a value's line separator
+      reached stdout raw beside a correctly escaped `display`; and a proposal
+      summary's `cardId`, `createdAt`, `resolvedAt` and `sessionId` went from
+      SQLite onto the `Last proposal:` line unrendered, with
+      `proposalPhaseHeadline` echoing an unknown phase raw
+- [x] The guard now looks through arrays and nested objects, proved by reverting
+      three shapes one at a time: `notes` to `string[]`, a nested
+      `{ text: string }`, and a raw string two levels down inside `lastProposal`
+- [x] `renderJson` is the fourth mint — the one for text a caller SERIALIZES —
+      and the escape is the JSON spelling of the same character, so what a
+      reader parses is unchanged. Guard: a stored U+2028 through the real read
+      and the real shim, asserting both that stdout carries none and that the
+      parsed value is still the stored one
+- [x] A second review round, on the changed diff, found four more: the escape
+      emitted only the first UTF-16 unit of a match, so a supplementary format
+      character (the tag block, U+1BCA0) came back from `--json` as a lone
+      surrogate — the round-trip the mint promises, broken by the mint; the
+      guard admitted every mixed union (`string | null`, `string | number`, a
+      union of objects, a `Record` of a union); the next-turn notice still
+      interpolated the stored setting key and the card's recorded effect state;
+      and both role errors appended `checked.message`, which names the role's
+      stored harness, service, billing mode, model and level
+- [x] Two of this round's own tests were blind by construction before they were
+      fixed: the unknown-phase one filtered case-sensitively while the fallback
+      UPPER-CASES what it echoes, and the notice one asserted that no line
+      EQUALS the forged text while a forged line arrives carrying whatever
+      followed it in the template. Both now assert on what opens a line
+- [x] A third review round: a role run with a model override throws inside
+      `applyOverrides`, a step BEFORE the validator whose message this work had
+      flattened, and interpolates the role's stored service and billing mode. So
+      both role modules gained a `refuse()` — one entry point for raising an
+      agent-facing error — and every throw in them goes through it. The
+      per-name flattening beside it was REMOVED rather than tested twice: a
+      second partial defence is what invites the next message to be written
+      without one
+- [x] The guard's third pass: `{}` and `{}[]` accept any string and have no key
+      for the walk to find it in, so a type a plain string is assignable to is
+      flagged before the walk. Its remaining edge — a template-literal type — is
+      recorded in the comment rather than claimed away
+- [x] Doc claims corrected against the code: the mints are four not three, the
+      ids and timestamps are `Rendered` now, the allow-list is four names and
+      not one, `renderJson`'s `(not representable)` refusal is deliberately not
+      JSON, and `\s` excludes U+0085 rather than all three separators
+
+### Not fixed here — the same class, in a file this session is scoped out of
+
+- [ ] `services/settings-operations.ts:421` (`rolePreflight`) returns
+      `checkRolePinnedParams`'s `message` straight out, and `:605`
+      (`reviewerLevelRefusal`) returns `resolveReviewerPinPatch`'s error, both
+      reaching the propose response and the CLI unrendered. A stored harness or
+      reviewer model carrying a newline forges a line through either. Error
+      handling runs BEFORE the `--json` branch, so that flag does not cover
+      them. `:416` is a third return of the same shape — a `ServiceError` from
+      the patch — whose reachable messages were not traced exhaustively, since
+      that file belongs to another session; the ones composed in it use
+      `echoSupplied` for the supplied item. Both cited returns predate this
+      branch (`git blame`: 8b62d1248) and the req-4 slice merged underneath it
+      left them unchanged — only the line numbers moved. The fix is the
+      `refuse()` shape the two role modules now use: one entry point per module
+      that renders the whole line

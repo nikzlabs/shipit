@@ -8,7 +8,12 @@ import type { CredentialBillingMode, CredentialRoute } from "../../shared/types.
 import type { McpServerConfig } from "../../shared/types/mcp-types.js";
 import type { ReviewerSlotView, RoleView } from "../../shared/types/agent-types.js";
 import type { SshHostPublic } from "../../shared/types/domain-types/ssh.js";
-import type { BespokeSettingKey } from "../../shared/settings-catalogue/index.js";
+import {
+  renderOwn,
+  renderValue,
+  type BespokeSettingKey,
+  type Rendered,
+} from "../../shared/settings-catalogue/index.js";
 import { buildReviewerSettings } from "./reviewer-settings.js";
 import { buildRoleSettings } from "./roles.js";
 import { listCredentialRoutes } from "./credential-routes.js";
@@ -54,15 +59,23 @@ export interface StoredItem {
   readonly name: ItemName;
   /** This declaration's field, for this instance. Stored, never projected. */
   readonly raw: unknown;
-  /** ShipIt-derived sentences about this instance; never any of its value. */
-  readonly notes?: string[];
+  /**
+   * ShipIt-derived sentences about this instance; never any of its value.
+   *
+   * {@link Rendered}, because a note is a LINE of the agent's output like every
+   * other (planning#577): `get` prints one per line under the instance it
+   * belongs to. The sentences are ShipIt's own, but the facts inside them are
+   * not always — a credential route's stored `status` was interpolated into one
+   * — so the type carries the guarantee rather than each note's author.
+   */
+  readonly notes?: readonly Rendered[];
 }
 
 export type StoredRead =
   | { readonly kind: "value"; readonly raw: unknown }
   | { readonly kind: "items"; readonly items: StoredItem[] }
   /** No value, and the note says why — never a default standing in for one. */
-  | { readonly kind: "unreadable"; readonly note: string };
+  | { readonly kind: "unreadable"; readonly note: Rendered };
 
 export interface StoreReadContext {
   readonly deps: SettingsReadDeps;
@@ -206,8 +219,14 @@ function items(list: StoredItem[]): StoredRead {
   return { kind: "items", items: list };
 }
 
+/**
+ * Minted here rather than at each call site: this is the only constructor of the
+ * variant, so every reason a reader gives leaves through one door and a new
+ * reader cannot add a raw one. `renderOwn` flattens rather than trusting its
+ * caller, so a note that ever carries a stored fact is safe by construction.
+ */
 function unreadable(note: string): StoredRead {
-  return { kind: "unreadable", note };
+  return { kind: "unreadable", note: renderOwn(note) };
 }
 
 function needsCredentialStore(ctx: StoreReadContext): StoredRead | null {
@@ -216,23 +235,27 @@ function needsCredentialStore(ctx: StoreReadContext): StoredRead | null {
 
 // Roles ---------------------------------------------------------------------
 
-function roleNote(role: RoleView): string[] {
+function roleNote(role: RoleView): Rendered[] {
   if (role.params.kind === "auto") {
     return [
-      "ShipIt resolves this role per review from the two reviewer candidate slots, so the role "
-        + "itself pins nothing.",
+      renderOwn(
+        "ShipIt resolves this role per review from the two reviewer candidate slots, so the role "
+          + "itself pins nothing.",
+      ),
     ];
   }
   switch (role.unavailableReason) {
     case "stranded":
       return [
-        `This role names something this install does not have${role.invalidField ? ` (its ${role.invalidField})` : ""}`
-          + ", so it cannot run until it is edited.",
+        renderOwn(
+          `This role names something this install does not have${role.invalidField ? ` (its ${role.invalidField})` : ""}`
+            + ", so it cannot run until it is edited.",
+        ),
       ];
     case "disconnected":
-      return ["The credential this role runs on is not connected, so the role cannot run today."];
+      return [renderOwn("The credential this role runs on is not connected, so the role cannot run today.")];
     case "quota_exhausted":
-      return ["Every credential this role could run on is out of quota."];
+      return [renderOwn("Every credential this role could run on is out of quota.")];
     default:
       return [];
   }
@@ -267,17 +290,19 @@ function rolePinnedSelection(role: RoleView): unknown {
 
 // Reviewer slots ------------------------------------------------------------
 
-function reviewerNote(slot: ReviewerSlotView): string[] {
+function reviewerNote(slot: ReviewerSlotView): Rendered[] {
   switch (slot.unavailableReason) {
     case "pin_unavailable":
       // No fallback: `resolveSlotPlan` returns no target for a pinned slot it
       // cannot run (`reviewer-model.ts:311`), so the slot supplies nothing.
       return [
-        "This slot's pinned model cannot run with the credentials configured, so the slot supplies "
-          + "no reviewer at all until the pin is changed, cleared, or made runnable.",
+        renderOwn(
+          "This slot's pinned model cannot run with the credentials configured, so the slot supplies "
+            + "no reviewer at all until the pin is changed, cleared, or made runnable.",
+        ),
       ];
     case "nothing_eligible":
-      return ["No configured credential can run a reviewer, so this slot resolves to nothing."];
+      return [renderOwn("No configured credential can run a reviewer, so this slot resolves to nothing.")];
     default:
       return [];
   }
@@ -323,8 +348,18 @@ function modeItems(
   );
 }
 
-function routeStatusNote(route: CredentialRoute): string[] {
-  return route.status === "ready" ? [] : [`ShipIt records this credential as "${route.status}".`];
+/**
+ * The one note in this file whose sentence carries something STORED, and the
+ * reason the whole notes path is branded (planning#577). `status` is typed as a
+ * union and stored as whatever a restore or a migration left there —
+ * `credential-store.ts` casts parsed data without validating the field — so the
+ * value goes through the value mint, which quotes it and escapes anything that
+ * could start a line of its own. The status is what an agent repeats to the
+ * user, so it is emitted rather than withheld.
+ */
+function routeStatusNote(route: CredentialRoute): Rendered[] {
+  if (route.status === "ready") return [];
+  return [renderOwn(`ShipIt records this credential as ${renderValue(route.status)}.`)];
 }
 
 function routeItems(
@@ -457,7 +492,7 @@ function shipItStoresReference(envKey: string): boolean {
 function mcpReferences(
   ctx: StoreReadContext,
   field: McpReferringField | null,
-): { raw: unknown; notes: string[] } {
+): { raw: unknown; notes: Rendered[] } {
   if (!field || field.values.length === 0) return { raw: null, notes: [] };
   const env = ctx.deps.credentialStore ? collectMcpAgentEnv(ctx.deps.credentialStore) : {};
   let missingStored = 0;
@@ -470,17 +505,21 @@ function mcpReferences(
   }
   const total = field.values.length;
   const named = (n: number): string => `${n} of ${total} ${total === 1 ? field.noun.one : field.noun.many}`;
-  const notes: string[] = [];
+  const notes: Rendered[] = [];
   if (missingStored > 0) {
     notes.push(
-      `${named(missingStored)} refers to a stored value ShipIt does not have, so this server `
-        + "cannot start until it is set.",
+      renderOwn(
+        `${named(missingStored)} refers to a stored value ShipIt does not have, so this server `
+          + "cannot start until it is set.",
+      ),
     );
   }
   if (undecidable > 0) {
     notes.push(
-      `${named(undecidable)} refers to a value ShipIt does not store, so it is supplied — or not `
-        + "— by the session's own environment, and this read cannot say which.",
+      renderOwn(
+        `${named(undecidable)} refers to a value ShipIt does not store, so it is supplied — or not `
+          + "— by the session's own environment, and this read cannot say which.",
+      ),
     );
   }
   return { raw: missingStored > 0 ? null : field.raw, notes };

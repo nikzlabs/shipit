@@ -245,11 +245,21 @@ EOF
 `--value-file` takes a path too, and it replaces `key=value` rather than joining
 it. Two things to know before you write the value:
 
-- **A card carries less than the dialog's box does**, in characters and in lines.
-  `shipit settings get <key>` says how many characters when the two differ. Past
-  either bound the change is refused — an edit nobody can read through is the
-  user's own to make, not a one-click approval — so propose a smaller edit, or
-  tell them what to change. If it is the *current* value that is over, no
+- **A card carries less than the dialog's box does**, in characters and in
+  lines, and `shipit settings get <key>` reports **both** bounds before you
+  write anything — `proposeMaxLength` and `proposeMaxLines` under `--json`, two
+  sentences in the plain output. They are measured differently, and the second
+  is the one to watch:
+  - **Characters are per version.** Your proposed value must fit, and so must
+    the value the user already has.
+  - **Lines are combined.** The current value's line count **plus** the proposed
+    value's, added together — not each on its own. So replacing 600 short lines
+    with 601 comes to 1,201 lines and is refused, while both versions sit around
+    1,200 characters, nowhere near the character bound.
+
+  Past either bound the change is refused — an edit nobody can read through is
+  the user's own to make, not a one-click approval — so propose a smaller edit,
+  or tell them what to change. If it is the *current* value that is over, no
   proposal can fix that and the refusal says so.
 - **Write plain text.** A value carrying a bidirectional override, an invisible
   formatting character or a control character is refused, because the card would

@@ -22,8 +22,102 @@ import {
   listSettingsForAgent,
   projectSettingValue,
   scopeUnreadableReason,
+  type SettingAddressView,
+  type SettingDetailEntry,
+  type SettingEffect,
+  type SettingIndexEntry,
+  type SettingItemView,
+  type SettingProposalSummary,
+  type SettingProposeView,
   type SettingsReadDeps,
 } from "./settings-read.js";
+
+/**
+ * No field of the read may be a plain string — the guard that stops the next
+ * one being added raw (docs/299-agent-settings-access req 2, planning#577).
+ *
+ * `shipit settings list` and `get` are a line-oriented format, so every
+ * free-text field of these views becomes a LINE of what an LLM parses. The
+ * first version of this rule was applied field by field and missed the one that
+ * was not a literal — an item's `notes`, which interpolated a credential
+ * route's stored `status`. So the rule is stated as a TYPE here instead: a new
+ * string-typed field on any of these views fails `npm run typecheck` until it
+ * is either minted as {@link Rendered} or named below.
+ *
+ * **It looks THROUGH arrays, nested objects and union members**, and took three
+ * passes to get there: the first tested each direct property, so `notes:
+ * string[]` — the exact regression it exists to prevent — passed it; the second
+ * tested a union whole, so `string | null` passed; the third walked `{}` looking
+ * for a dangerous key and found none, though `{}` accepts any string at all.
+ * What it still does not catch is a template-literal type
+ * (`` `status:${string}` ``), which is a string subtype no mint produces and
+ * nothing here has ever declared — recorded as its edge rather than claimed
+ * away.
+ *
+ * Three names are exempt, and the exemption is a decision rather than a claim
+ * about what TypeScript prevents — nothing stops `String(x)` printing an
+ * `unknown`. `value`, `shape` and `live` are the machine-readable half of the
+ * response: the shim serializes `shape` and `live` through `renderJson` and
+ * never prints `value` at all, `display` being the line that carries it. A
+ * fourth name added here needs the same argument made at the renderer.
+ *
+ * `key` stays plain as a declared catalogue constant, and the address a caller
+ * passes back. `items` is exempt on the detail entry only because it carries
+ * `value` at one remove — `SettingItemView` has an assertion of its own below,
+ * which is what actually covers an item's fields.
+ */
+type PlainStringIn<V> =
+  // Distributes, so a UNION is judged member by member: `string | null` fails
+  // `[V] extends [string]` as a whole and is a plain string in the half that
+  // matters. The first version of this guard tested the union whole and let
+  // every mixed field through.
+  V extends unknown
+    ? [V] extends [string]
+      // A branded string (`Rendered`) and a string literal are string SUBtypes,
+      // and neither is a plain string: the test is whether `string` fits in it.
+      ? string extends V ? true : false
+      : V extends readonly (infer E)[]
+        ? HasPlainString<E>
+        // Anything a plain string is ASSIGNABLE to, before the walk: `{}`,
+        // `unknown` and `any` all take one, and `{}` has no keys for the walk
+        // below to find it in.
+        : string extends V
+          ? true
+          : V extends object
+            ? true extends { [K in keyof V]-?: HasPlainString<Required<V>[K]> }[keyof V]
+              ? true
+              : false
+            : false
+    : never;
+
+/** Collapsed to one answer, so a `true | false` from a union still reads as true. */
+type HasPlainString<V> = true extends PlainStringIn<V> ? true : false;
+
+type PlainStringFields<T> = {
+  [K in keyof T]-?: HasPlainString<Required<T>[K]> extends true ? K : never;
+}[keyof T];
+
+type AssertPlainFields<T, Allowed> = PlainStringFields<T> extends Allowed ? true : never;
+
+const _indexFieldsAreRendered: AssertPlainFields<SettingIndexEntry, "key" | "value"> = true;
+const _detailFieldsAreRendered: AssertPlainFields<
+  SettingDetailEntry,
+  "key" | "value" | "shape" | "live" | "items"
+> = true;
+const _itemFieldsAreRendered: AssertPlainFields<SettingItemView, "value"> = true;
+const _effectFieldsAreRendered: AssertPlainFields<SettingEffect, never> = true;
+const _proposeFieldsAreRendered: AssertPlainFields<SettingProposeView, never> = true;
+const _addressFieldsAreRendered: AssertPlainFields<SettingAddressView, never> = true;
+const _proposalFieldsAreRendered: AssertPlainFields<SettingProposalSummary, never> = true;
+void [
+  _indexFieldsAreRendered,
+  _detailFieldsAreRendered,
+  _itemFieldsAreRendered,
+  _effectFieldsAreRendered,
+  _proposeFieldsAreRendered,
+  _addressFieldsAreRendered,
+  _proposalFieldsAreRendered,
+];
 
 let tmpDir: string;
 let credentialStore: CredentialStore;

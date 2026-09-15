@@ -13,9 +13,9 @@ import {
   hostEntryProjection,
   isPayloadDeclaration,
   joinRendered,
+  namesForMessage,
   projectSetting,
   renderValue,
-  userNameProjection,
 } from "../../shared/settings-catalogue/index.js";
 import type {
   AnySettingDeclaration,
@@ -293,25 +293,6 @@ const SUPPLIED_ECHO_MAX = 80;
 export function echoSupplied(supplied: string): string {
   const flat = supplied.replace(/\s+/g, " ").trim();
   return flat.length > SUPPLIED_ECHO_MAX ? `${flat.slice(0, SUPPLIED_ECHO_MAX)}…` : flat;
-}
-
-/**
- * Stored names an error message may repeat, and how many it may not: no message
- * interpolates a stored value that did not come through the projection door
- * (req 2, plan.md → `emits` is an allowlist of derived values). A role name is
- * arbitrary user text, and the read emits no item at all for one shaped like a
- * URL.
- */
-function namesForMessage(names: string[]): string {
-  const shown = names
-    .map(userNameProjection)
-    .filter((name): name is string => name !== null);
-  const withheld = names.length - shown.length;
-  const rest = withheld > 0
-    ? `${shown.length > 0 ? ", and " : ""}${withheld} ShipIt does not name back`
-    : "";
-  if (shown.length === 0 && withheld === 0) return "none";
-  return `${shown.join(", ")}${rest}`;
 }
 
 // ---------------------------------------------------------------------------

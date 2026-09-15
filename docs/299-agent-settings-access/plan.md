@@ -396,23 +396,109 @@ repository file or a web page (planning#577).
 
 `shared/settings-catalogue/rendered.ts` is the one door, and the rule it carries
 is **no emitted text contains a character that can begin a line**: not `\n` and
-`\r`, and not U+0085, U+2028 or U+2029 either — `\s` matches none of those three,
+`\r`, and not U+0085, U+2028 or U+2029 either — `\s` does not match U+0085,
 which is how a local `replace(/\s+/g, " ")` looks like the rule and is not it.
-Three mints, all returning a branded `Rendered` the type system will not accept a
+Four mints, all returning a branded `Rendered` the type system will not accept a
 plain string in place of. `renderValue` quotes and escapes a stored value;
+`renderJson` escapes a whole serialized document — and answers
+`(not representable)`, which is deliberately not JSON, for a value
+`JSON.stringify` refuses;
 `renderOwn` flattens ShipIt's own words; `renderAddress` refuses an address
 outright, because `--item` takes an address back and it cannot be quoted out of
 harm's way — that instance is named by nothing, exactly as a URL-shaped name is,
 and the read counts it. Choosing the wrong mint costs legibility and never the
 guarantee, since all three flatten.
 
-**What the brand governs is the fields that carry a VALUE**: `formatSetting`'s
-result, an entry's and an item's `display`, an item's `address`, a
-`lastProposal`'s two halves, and both sides of a proposed change. So shortening
-a projected value afterwards, or formatting a stored one some other way, is a
-compile error rather than the one line nobody re-checks. It does not govern the
-fields carrying ShipIt's own prose — a note, an effect's detail, a refusal
-sentence — which are literals in this repository and stay plain strings.
+**The brand governs every free-text field of the read, not only the
+value-bearing ones.** It began narrower — `formatSetting`'s result, an entry's
+and an item's `display`, an item's `address`, a `lastProposal`'s two halves,
+both sides of a proposed change — on the reasoning that ShipIt's own prose is
+made of literals in this repository. One such field was not: an item's `notes`
+interpolated a credential route's stored `status` (`routeStatusNote`), so the
+same forgery walked through the door beside the value's. A fact about a value is
+not a literal because the sentence around it is, and a rule applied field by
+field recreates the omission it was written for — `CLAUDE.md` → centralise the
+act, not the read.
+
+So `notes`, `label`, `summary`, `description`, an address's `noun`, a refusal's
+`explanation`, an effect's `detail` and a `lastProposal`'s `cardId`,
+`proposedAt`, `resolvedAt` and `sessionId` are `Rendered` too, minted where the
+entry is built. The last four look like ShipIt's own — it writes an id and an
+ISO timestamp — but they come back from SQLite with a cast, so the line's
+guarantee is the read's rather than the writer's.
+
+What stays plain: the union-typed fields (`phase`, `operation`, `state`,
+`unreadableReason`), because the agent switches on them and each renderer
+flattens where it turns one into text; `key`, a catalogue constant and the
+address a caller passes back; and `value`, `shape` and `live`, the
+machine-readable half — `value` is never printed, `display` being the line that
+carries it, and the other two are serialized through `renderJson`.
+
+**The escape covers a character of two code units.** The deny-set is matched
+with the `u` flag, so one match can be one code point of two UTF-16 units — the
+tag block and U+1BCA0 are format characters — and escaping the lead surrogate
+alone left the trail one behind as a lone surrogate. On the text path that is a
+garbled character; on `--json` it silently changed the value a reader parses,
+which is the one thing that escape promises not to do.
+
+**The rule reaches the surfaces beside the read.** The next-turn notice composes
+one bullet from three persisted pieces — the setting key, the card's recorded
+effect state, and a phase this build may not know — and it is rendered whole
+rather than piece by piece, which is the shape of the `notes` defect one surface
+over. The two role errors flatten `checked.message` for the same reason: it
+names the role's stored harness, service, billing mode, model and level.
+
+**The rule is a type assertion rather than a habit.**
+`settings-read.test.ts` holds a compile-time guard (`PlainStringFields`) over
+each view: a new string-typed field fails `npm run typecheck` until it is
+minted. The allow-list grants four names — `key`, `value`, `shape`, `live` —
+and each is a decision argued at the renderer rather than a claim about what
+TypeScript prevents, since nothing stops `String(x)` printing an `unknown`. The
+store readers mint at their own constructor (`unreadable()`), so a reader added
+later cannot supply a raw reason.
+
+The guard **looks through arrays, nested objects and union members**, and took
+three passes to get there. The first tested each direct property, so
+`notes: string[]` — the very regression it exists to prevent — passed it; the
+second tested a union whole, so `string | null` passed; the third walked `{}`
+for a dangerous key and found none, though `{}` accepts any string there is. A
+guard that cannot fail on the defect it was written for is worse than none,
+because it is read as coverage. Its remaining edge is a template-literal type,
+which no mint produces and nothing here declares — recorded rather than claimed
+away.
+
+**`--json` is part of the boundary, not an escape from it.** `JSON.stringify`
+escapes the C0 controls and stops, so a stored value carrying U+2028 put a real
+line break in the agent's stdout while `display`, beside it in the same
+document, was correctly escaped. The three `--json` paths serialize through
+`renderJson`, which escapes the three survivors in the JSON spelling of the same
+character — so what a reader parses is unchanged and only the bytes on the line
+differ.
+
+**A proposal's own metadata is stored text too.** `summarize` copied `cardId`,
+`createdAt`, `resolvedAt` and `sessionId` from SQLite into the `Last proposal:`
+line unrendered, and `proposalPhaseHeadline` echoed an unrecognised phase raw —
+so a malformed row forged a SECOND `Last proposal:` line, which is the field an
+agent reads to decide whether the user has already dealt with a change. All four
+are `Rendered` now and the headline flattens its fallback. `phase` and
+`operation` stay their unions, because the agent switches on them; each renderer
+flattens where it turns one into text.
+
+**The shim renders what it composes itself and trusts what the read sent.** The
+wire is `Rendered`, so re-rendering a value there would quote what is already
+quoted; what the shim composes itself is the `--item` echo and the two JSON
+blobs in `get`, and those go through `renderJson` — `JSON.stringify` escapes
+the C0 controls and leaves U+2028, U+2029 and U+0085 as themselves.
+
+**The same enumeration exists outside the settings surface.** A role name is
+arbitrary user text, and three agent-facing messages list stored names: a
+settings operation's refusal, `shipit agent run --role` on an unknown name
+(`services/roles.ts`), and `shipit session create --role`
+(`services/session-role.ts`). The first had the projection and the other two
+joined every stored name verbatim, so `namesForMessage` moved into
+`settings-catalogue/projection.ts` beside the projection it is made of, and all
+three call it. It projects each name, emits it through `renderAddress` and
+reports the rest as a count.
 
 **Every string is quoted, with no exception.** A predicate for "plain enough to
 leave bare" is one more thing to get wrong and getting it wrong is a hole rather
@@ -1011,10 +1097,18 @@ have them (`roles[].model`, `roles[].harness`, `reviewers[].model`) write a
 harness id and a reasoning level. Long text arriving there is a declaration that
 has outgrown the card, not something to render.
 
-**The agent is told where the line is before it writes a value.** `get` on a
-proposable text setting whose declared `maxLength` is wider than the card reports
-`proposeMaxLength`, and both renderers print it — so the agent composes to the
-limit instead of discovering it in a refusal, which is the second half of req 9.
+**The agent is told where the line is before it writes a value — BOTH lines.**
+`get` on a proposable text setting reports `proposeMaxLength` where the declared
+`maxLength` is wider than the card, and `proposeMaxLines` where the declaration
+allows enough characters to reach the line bound (a side of N characters is at
+most N + 1 lines, so the two sides can only pass 1,000 once 2N + 2 does). Both
+renderers print both, and the line one says out loud that it is COMBINED —
+current plus proposed, added together — because that is the half an agent gets
+wrong: 600 one-character lines replaced by 601 is 1,201 lines and ~1,200
+characters a side, refused by a bound the read used to enforce without
+disclosing. A bound enforced and not disclosed is req 9 half met, and it leaves
+the agent to find the line by being refused, which is the dead end req 9 exists
+to remove.
 
 **And the value reaches the command through a file, not through argv.**
 `shipit settings propose <key> --value-file -` takes the prose on stdin, the same
