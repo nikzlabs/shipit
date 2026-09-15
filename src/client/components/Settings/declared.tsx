@@ -17,14 +17,16 @@ import type { ReactNode, RefObject } from "react";
 import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import { ToggleSwitch } from "./ToggleSwitch.js";
 import { inputClass } from "./shared.js";
-import { bindSetting, settingCopy, settingOptions, type DeclaredOption } from "./setting-binding.js";
+import { bindSetting, bindSettingOption, settingCopy, settingOptions, type DeclaredOption } from "./setting-binding.js";
 import { useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
 
 export { saveDeclaredBoolean, useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
 
 export {
   SETTING_ATTR,
+  SETTING_OPTION_ATTR,
   bindSetting,
+  bindSettingOption,
   settingCopy,
   settingOf,
   settingOptions,
@@ -241,7 +243,7 @@ export function DeclaredEnumCards({
               aria-pressed={active}
               aria-label={option.label}
               data-testid={`${testIdPrefix}-${option.value}`}
-              {...bindSetting(settingKey)}
+              {...bindSettingOption(settingKey, option.value)}
               onClick={() => onChange(option.value)}
               className={`flex-1 rounded-md border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
                 active

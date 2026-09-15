@@ -17,6 +17,7 @@ import {
   DeclaredToggle,
   SettingCopy,
   bindSetting,
+  bindSettingOption,
   settingCopy,
 } from "../declared.js";
 
@@ -455,14 +456,21 @@ export function VoiceTab() {
 
         <div className="space-y-1.5">
           <SettingCopy settingKey="voice.ttsSpeed" />
-          <div className="flex items-center gap-2" data-testid="tts-speed">
+          {/* A named group, because the speeds are one choice over one field —
+              which is what `settings-coverage.test.tsx` counts them as. */}
+          <div
+            className="flex items-center gap-2"
+            role="group"
+            aria-label={settingCopy("voice.ttsSpeed").label}
+            data-testid="tts-speed"
+          >
             {speeds.map((s) => (
               <button
                 key={s}
                 onClick={() => setTtsSpeed(s)}
                 aria-label={`Playback speed ${s}×`}
                 aria-pressed={ttsSpeed === s}
-                {...bindSetting("voice.ttsSpeed")}
+                {...bindSettingOption("voice.ttsSpeed", String(s))}
                 className={`rounded-md border px-3 py-1 text-sm transition-colors ${
                   ttsSpeed === s
                     ? "border-(--color-accent) bg-(--color-accent)/15 text-(--color-text-primary)"

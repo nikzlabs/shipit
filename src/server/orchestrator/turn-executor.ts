@@ -937,14 +937,25 @@ export async function executeAgentTurn(
     // notice back rather than proves delivery, which is the safe direction
     // (docs/299-agent-settings-access plan.md → And a notice on the next turn).
     //
-    // `wasSuperseded` is the last of them: a retired process can emit a result
+    // `wasSuperseded` is one of them: a retired process can emit a result
     // for its own prompt AFTER a successor took the agent slot, and this turn is
     // then settled `interrupted` with its work discarded. Acknowledging there
     // spends the receipt on a turn whose output nobody reads, and the successor
     // — which carries the same notice — has no receipt left to settle. The
     // failover and quota-retry paths do NOT set the flag, deliberately: those
     // re-dispatch the same prompt, and their attempt acknowledges its own.
-    if (promptSubmitted && !exhausted && !wasSuperseded && resultIsTheAgentsOwn(event)) {
+    //
+    // `servingCliStartedTurn` is the last, and draws the same distinction from
+    // the other side. This executor is re-armed for a turn the CLI began on its
+    // own, keeping `promptSubmitted` and the receipts of the prompt it was built
+    // for — so a self-wake following a failed dispatched turn would call that
+    // prompt's receipt for a turn carrying no notice at all. requirements.md
+    // records a woken turn as carrying none and waiting for the next dispatched
+    // one; spending the receipt here is what would make that untrue.
+    if (
+      promptSubmitted && !exhausted && !wasSuperseded && !servingCliStartedTurn()
+      && resultIsTheAgentsOwn(event)
+    ) {
       notePromptDelivered();
     }
     // Retry decisions still need adoption state; finalization after a result does not.

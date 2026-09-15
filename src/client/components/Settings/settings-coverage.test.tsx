@@ -25,16 +25,45 @@
  * and whether a `wholeTab` or `region` exemption is honest — are claims made in
  * prose and checked by review.
  *
- * **And a third, which is not prose but a different guard.** This walk reads the
- * rendered DOM, so it can establish that a control names *a* declaration and
- * never that the declaration is the one whose property the handler saves: a new
- * box bound to `mcp.servers[].command` while writing something else passes here.
- * What the DOM cannot say, the STORED TYPE can —
+ * **And a third, which is not prose but a different guard.** A binding is an
+ * ASSERTION about which stored field the control's handler saves, and the DOM
+ * holds no handler. What the DOM cannot say, the STORED TYPE can —
  * `MCP_SERVER_FIELD_SETTINGS` (`settings-catalogue/integrations-settings.ts`) is
  * keyed by `keyof McpServerConfig`, so a field added to the persisted shape is a
- * compile error until it is declared or explained. The two guards run in
- * opposite directions: this one finds a control nobody declared, that one finds
- * a stored field nobody declared.
+ * compile error until it is declared or explained; `SSH_HOST_FIELD_SETTINGS` and
+ * `ROLE_FIELD_SETTINGS` do the same for the other two typed collections. The two
+ * guards run in opposite directions: this one finds a control nobody declared,
+ * those find a stored field nobody declared.
+ *
+ * What this walk CAN take from that rule is its arithmetic: **one declaration
+ * describes one field, so one declaration is held by one control**
+ * ({@link duplicateBindings}). A second box claiming a setting means one of the
+ * two saves something else, and that is decidable from the DOM. It is what
+ * catches the shape a same-tab check cannot — a new browser preference writing a
+ * `localStorage` key of its own while binding a boolean that is already declared
+ * on that tab — because the setting it borrowed still renders a control of its
+ * own. What it counts is a VALUE, not a control, and three exemptions are stated
+ * where the rule is: an item declaration is one field per row, a composite value
+ * is several boxes by construction, and a segmented choice counts once because
+ * one component renders one picker into one container.
+ *
+ * **What stays undecidable here, and is named rather than covered.** A control
+ * bound to a different field of the SAME collection item — two rows are not
+ * distinguishable in the DOM, which is the gap `ROLE_FIELD_SETTINGS` closes from
+ * the stored side for roles, and which no map closes for a collection whose
+ * stored shape is untyped. A control claiming a declaration whose own control
+ * cannot be on screen at the same time — the MCP form renders a command or a
+ * URL and never both, so nothing is there to be counted twice. And a control
+ * that saves the declared field to the wrong store. The first two are the honest
+ * residue of reading rendered DOM; the third belongs to the store, not here.
+ *
+ * A fourth that is the fixture's rather than the DOM's: a **declared** global
+ * toggle saves optimistically and rolls back when the write fails
+ * (`saveDeclaredBoolean`), and every write here fails — so a field gated behind
+ * one can be gone again before the crawl looks. No gate in either dialog has
+ * that shape today; the ones that exist are browser-store values, which never
+ * call `fetch` and so never roll back. `plan.md` carries why the alternative
+ * fixture is not obviously better.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -58,8 +87,21 @@ import {
 import type { AgentOption } from "../../agent-types.js";
 import type { RoleView, ReviewerSlotView } from "../../../server/shared/types/agent-types.js";
 
-const INTERACTIVE =
-  'input, select, button, textarea, [role="switch"], [role="menuitemcheckbox"], [role="menuitemradio"]';
+/**
+ * Well ahead of the shapes the dialogs use today: the ARIA roles that carry a
+ * value are here beside the tags, because a control this selector does not name
+ * is a control no rule below can fail on. A `contenteditable` box and a
+ * hand-rolled `role="checkbox"` were both such blind spots.
+ *
+ * It is still an ENUMERATION, so it is kept ahead of what is in use rather than
+ * level with it — a shape missing from here fails nothing and says nothing.
+ */
+const INTERACTIVE = [
+  "input", "select", "button", "textarea", "[contenteditable]",
+  '[role="switch"]', '[role="checkbox"]', '[role="radio"]', '[role="combobox"]',
+  '[role="textbox"]', '[role="slider"]', '[role="spinbutton"]', '[role="listbox"]',
+  '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
+].join(", ");
 
 /**
  * Pressable, and NOT part of what the walk accounts for: a plain menu item picks
@@ -147,9 +189,171 @@ function describeControl(el: Element): string {
  * bind — so the test is the checked/pressed state a value control carries.
  */
 function editsAValue(el: Element): boolean {
+  const role = el.getAttribute("role") ?? "";
   return ["input", "select", "textarea"].includes(el.tagName.toLowerCase())
+    || ["textbox", "combobox", "slider", "spinbutton", "listbox"].includes(role)
+    || isEditableText(el)
     || el.hasAttribute("aria-checked")
     || el.hasAttribute("aria-pressed");
+}
+
+/**
+ * A `contenteditable` box: a text field with no tag of its own. Every value the
+ * attribute can take counts except an explicit `false`, so
+ * `contenteditable="plaintext-only"` is a text field like the rest.
+ */
+function isEditableText(el: Element): boolean {
+  const flag = el.getAttribute("contenteditable");
+  return flag !== null && flag !== "false";
+}
+
+const OPTION_ATTR = "data-setting-option";
+
+/** The element a group of options is rendered into, in the platform's vocabulary. */
+const CHOICE_CONTAINER = '[role="group"], [role="radiogroup"]';
+
+/** An option is SELECTED, never typed into: a box is a field however it is labelled. */
+function isSelectable(el: Element): boolean {
+  const type = el.getAttribute("type");
+  return el.hasAttribute("aria-pressed") || el.hasAttribute("aria-checked")
+    || type === "radio" || type === "checkbox";
+}
+
+/**
+ * The choice a control is one option OF, or `null` when it holds a value of its
+ * own — the unit {@link duplicateBindings} counts, so a picker counts once
+ * however many buttons it has.
+ *
+ * A segmented picker is several buttons over one stored field and must SAY so:
+ * `data-setting-option` names the value each button sets (`setting-binding.ts`).
+ * A native radio says the same thing in the platform's own vocabulary. Either
+ * way the group is **counted, not exempted**: excusing a control because it
+ * carries the attribute is how the first version of this rule swallowed itself,
+ * since any control could then join an existing declaration by writing one word.
+ *
+ * So what makes two choices two is the **container**, named as one:
+ * `role="group"` or `role="radiogroup"`, which a picker ought to carry anyway.
+ * The parent element is not enough on its own — options wrapped one to a `span`
+ * would read as one choice each, and two pickers rendered through fragments into
+ * one parent would merge. An option outside any such container falls through to
+ * its own value, which fails the count rather than passing it.
+ */
+function choiceOf(el: Element): Element | string | null {
+  const optioned = el.hasAttribute(OPTION_ATTR);
+  const role = el.getAttribute("role");
+  const radio = el.getAttribute("type") === "radio" || role === "radio" || role === "menuitemradio";
+  if (!optioned && !radio) return null;
+  if (optioned && !isSelectable(el)) return null;
+  const container = el.parentElement?.closest(CHOICE_CONTAINER);
+  if (container) return container;
+  // A native radio group is named; an unnamed, uncontained one is nothing yet.
+  const name = radio ? el.getAttribute("name") : null;
+  return name ? `radio:${name}` : null;
+}
+
+/** The values a declaration offers, when it declares a set at all. */
+function declaredOptions(declaration: { type: { shape: Record<string, unknown> } }): Set<string> | null {
+  const { options } = declaration.type.shape;
+  if (!Array.isArray(options)) return null;
+  return new Set(options.map((option) => String((option as { value: unknown }).value)));
+}
+
+/**
+ * What a choice has to be for counting it once to be honest, asked **per group**
+ * — the options of one picker are distinct, and are the ones the declaration
+ * offers. Across groups it cannot be asked at all: two rows of a collection each
+ * render a picker over the same values, honestly.
+ *
+ * Without this, `data-setting-option` is a word that buys an exemption. With it
+ * the attribute is a claim the walk tests: the buttons of one picker set
+ * different values, a control that names a value the setting does not have is
+ * not one of its options, and a box that is typed into is not an option at all.
+ */
+function malformedChoices(
+  key: string,
+  declaration: ReturnType<typeof findSetting>,
+  controls: Element[],
+): string[] {
+  const complaints: string[] = [];
+  const offered = declaration ? declaredOptions(declaration) : null;
+  const groups = new Map<Element | string, string[]>();
+  for (const el of controls) {
+    if (!el.hasAttribute(OPTION_ATTR)) continue;
+    if (!isSelectable(el)) {
+      complaints.push(
+        `${describeControl(el)} is an option of "${key}" that is typed into rather than selected`,
+      );
+      continue;
+    }
+    const group = choiceOf(el) ?? el;
+    groups.set(group, [...(groups.get(group) ?? []), el.getAttribute(OPTION_ATTR) ?? ""]);
+  }
+  for (const values of groups.values()) {
+    if (new Set(values).size !== values.length) {
+      complaints.push(`two options of "${key}" set the same value; a choice's options are distinct`);
+    }
+    const stray = offered ? [...new Set(values.filter((v) => !offered.has(v)))].sort() : [];
+    if (stray.length > 0) {
+      complaints.push(`"${key}" renders options ${JSON.stringify(stray)}, which it does not offer`);
+    }
+  }
+  return complaints;
+}
+
+/**
+ * Value kinds one control cannot hold: the git identity is a name AND an email,
+ * a secret bag is a row per secret, a model selection is a service, a model and
+ * an effort. Several boxes over one declaration is what these ARE.
+ */
+const COMPOSITE_KINDS: ReadonlySet<string> = new Set([
+  "gitIdentity", "secretBag", "modelSelection", "collection",
+]);
+
+/**
+ * **One value control per declaration** — the rule that makes a binding
+ * checkable at all (docs/299-agent-settings-access req 7).
+ *
+ * A binding is an assertion about which stored field the control's handler
+ * saves, and the DOM cannot read a handler. The stored-type maps
+ * (`MCP_SERVER_FIELD_SETTINGS`, `SSH_HOST_FIELD_SETTINGS`,
+ * `ROLE_FIELD_SETTINGS`) check the same thing from the other side for the three
+ * collections whose shape is typed, and their rule is that one declaration
+ * describes one field. This is that rule where the DOM can see it: a second box
+ * claiming a declaration means one of the two saves something else, and the
+ * agent has no declaration for whatever that is.
+ *
+ * It is what catches the shape the walk used to pass — a new preference writing
+ * a new `localStorage` key while binding an existing same-tab boolean — because
+ * the setting it borrowed still renders a control of its own.
+ *
+ * What is counted is a VALUE, not a control: a choice counts once however many
+ * buttons it has ({@link choiceOf}), which is the only way a picker can be
+ * honest without the exemption becoming a way out of the rule.
+ *
+ * Item declarations are exempt: `mcp.servers[].name` is one field per server,
+ * so a list of them is many controls binding one declaration honestly. Inside a
+ * single row it is still one field, and telling two rows apart in the DOM is not
+ * something this can do — the file's header records that as undecidable here.
+ */
+function duplicateBindings(holders: Map<string, Element[]>): string[] {
+  const complaints: string[] = [];
+  for (const [key, controls] of holders) {
+    const declaration = findSetting(key);
+    complaints.push(...malformedChoices(key, declaration, controls));
+    if (controls.length < 2) continue;
+    if (declaration?.address?.kind === "item") continue;
+    if (declaration?.address?.kind === "repository-item") continue;
+    if (declaration && COMPOSITE_KINDS.has(declaration.type.kind)) continue;
+    const values = new Set<Element | string>(
+      controls.map((el, index) => choiceOf(el) ?? `own:${index}`),
+    );
+    if (values.size < 2) continue;
+    const named = controls.map(describeControl).sort().join(", ");
+    complaints.push(
+      `${values.size} separate values are held for "${key}", which is one field: ${named}`,
+    );
+  }
+  return complaints;
 }
 
 function visible(el: Element): boolean {
@@ -275,6 +479,7 @@ function walkSurface(surface: Surface, tab: SettingTab): WalkResult {
   const unaccounted: string[] = [];
   const bound = new Set<string>();
   const valueBound = new Set<string>();
+  const holders = new Map<string, Element[]>();
 
   for (const el of surface.controls) {
     if (inExcusedRegion(el)) continue;
@@ -307,12 +512,16 @@ function walkSurface(surface: Surface, tab: SettingTab): WalkResult {
         unaccounted.push(`${describeControl(el)} edits a value but binds the collection "${key}"`);
       } else {
         bound.add(key);
-        if (editsAValue(el)) valueBound.add(key);
+        if (editsAValue(el)) {
+          valueBound.add(key);
+          holders.set(key, [...(holders.get(key) ?? []), el]);
+        }
       }
       continue;
     }
     if (!wholeTab && !excused.has(accessibleName(el))) unaccounted.push(describeControl(el));
   }
+  unaccounted.push(...duplicateBindings(holders));
 
   const drift: string[] = [];
   const rendered: Record<"label" | "description", Set<string>> = {
@@ -628,15 +837,26 @@ function selectedTab(): string | null {
 }
 
 /**
- * A control that might DISCLOSE more controls: a button that runs something, or
- * a choice that repaints the fields around it. A switch and a toggle card are
- * not — they carry their own value, and the walk already accounts for them.
+ * A control that might DISCLOSE more controls: a button that runs something, a
+ * choice that repaints the fields around it, **or a toggle that gates a field
+ * on being switched on**.
+ *
+ * The toggles were left out on the reasoning that they carry their own value and
+ * the walk already accounts for them — true of the toggle, and not of what it
+ * gates. Voice delivery renders its webhook fields only once delivery is
+ * external, and the fixture had to seed that state by hand for those boxes to be
+ * on screen at all; a gate nobody thought to seed is a form the crawl could not
+ * open. Flipping one is as safe as pressing *Reset Everything* already is: a
+ * write either leaves through `fetch`, which the fixture rejects, or lands in
+ * this test's own `localStorage`. Neither outlives the test. What a rejected
+ * write can do is roll the toggle back — see the header's fourth residue.
  */
 function isDisclosureTrigger(el: Element): boolean {
   if ((el as HTMLButtonElement).disabled) return false;
   const tag = el.tagName.toLowerCase();
   if (tag === "select") return true;
-  return tag === "button" && !el.hasAttribute("aria-checked");
+  if (tag === "input") return ["checkbox", "radio"].includes(el.getAttribute("type") ?? "");
+  return tag === "button" || el.hasAttribute("aria-checked");
 }
 
 function isChooser(el: Element): boolean {
@@ -917,6 +1137,262 @@ describe("every control in the Settings dialog is declared or excused", () => {
     expect(walk(pane, "roles").unaccounted).toEqual([
       expect.stringContaining("declared for the advanced tab"),
     ]);
+  });
+
+  /*
+    The other half of the same hole, and the one a same-tab check cannot see: a
+    new preference writing a stored field of its own while binding a boolean
+    that is already declared on that tab. It passed every rule above — the key
+    exists, the tab matches, the declaration is not a collection — and left the
+    agent with no declaration for what the control actually saves.
+
+    One declaration describes one field, which is the rule the stored-type maps
+    make over MCP servers, SSH destinations and roles. Two controls holding one
+    declaration's value means one of them is saving something else.
+  */
+  it("catches a second control claiming a value another control already holds", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <button role="switch" aria-checked="false"
+        data-setting="advanced.notifyOnFinish" aria-label="Browser notification"></button>
+      <button role="switch" aria-checked="false"
+        data-setting="advanced.notifyOnFinish" aria-label="Also chime on a mention"></button>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([
+      expect.stringContaining('2 separate values are held for "advanced.notifyOnFinish"'),
+    ]);
+  });
+
+  /*
+    And the shape that is honestly several controls over one field. It is
+    accepted because each button NAMES the value it sets, not because a group of
+    buttons is assumed to be a picker — drop the attribute and the test above is
+    what it becomes.
+  */
+  it("accepts a segmented choice whose buttons name the value each one sets", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <div role="group" aria-label="Release channel">
+        ${["stable", "edge"].map((channel) => `
+          <button aria-pressed="false" aria-label="${channel}"
+            data-setting="advanced.releaseChannel" data-setting-option="${channel}"></button>
+        `).join("")}
+      </div>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([]);
+  });
+
+  /*
+    The exemption is counted, not granted. Its first version excused any control
+    carrying the attribute from the count entirely, so a new box could join an
+    existing declaration by writing one word — the rule swallowing itself. A
+    choice is its CONTAINER, because one component renders one picker into one
+    place: the box outside it is a second value held for the same field.
+  */
+  it("catches a control that carries an option attribute to escape the count", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <div role="group" aria-label="Release channel">
+        <button aria-pressed="true" aria-label="Stable"
+          data-setting="advanced.releaseChannel" data-setting-option="stable"></button>
+      </div>
+      <button aria-pressed="false" aria-label="Pre-release builds"
+        data-setting="advanced.releaseChannel" data-setting-option="edge"></button>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([
+      expect.stringContaining('2 separate values are held for "advanced.releaseChannel"'),
+    ]);
+  });
+
+  /*
+    Inside the container, too. A choice's options are selected; a box is typed
+    into, so it is a field of its own however it is labelled — and appending one
+    to a real picker's container is the nearest thing to a plausible mistake
+    here, since `voice.ttsSpeed` declares no option set for the value to be
+    checked against.
+  */
+  it("catches a box that joins a picker's container carrying an option attribute", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <div role="group" aria-label="Playback speed">
+        <button aria-pressed="true" aria-label="1×"
+          data-setting="voice.ttsSpeed" data-setting-option="1"></button>
+        <input aria-label="Pitch" data-setting="voice.ttsSpeed" data-setting-option="1.3" />
+      </div>
+    `;
+    expect(walk(pane, "voice").unaccounted).toEqual([
+      expect.stringContaining('is an option of "voice.ttsSpeed" that is typed into'),
+      expect.stringContaining('2 separate values are held for "voice.ttsSpeed"'),
+    ]);
+  });
+
+  /*
+    And the same rule read the other way: one picker stays one choice however its
+    options are wrapped. Grouping on the immediate parent made each `span` its own
+    choice, which is a false failure — the container the picker NAMES is what
+    holds the group together.
+  */
+  it("keeps one picker one choice when its options are wrapped individually", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <div role="group" aria-label="Release channel">
+        ${["stable", "edge"].map((channel) => `
+          <span><button aria-pressed="false" aria-label="${channel}"
+            data-setting="advanced.releaseChannel" data-setting-option="${channel}"></button></span>
+        `).join("")}
+      </div>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([]);
+  });
+
+  /*
+    Two ARIA radio groups with no `name` between them collapsed into one, so a
+    second picker could borrow the first's declaration — and `RepoColorPicker`
+    renders exactly that shape, a `role="radiogroup"` of unnamed `role="radio"`
+    buttons. The container is what tells them apart.
+  */
+  it("counts two unnamed ARIA radio groups as two values", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = ["Repository", "Badge"].map((what) => `
+      <div role="radiogroup" aria-label="${what} color">
+        <button role="radio" aria-checked="true" aria-label="${what} red"
+          data-setting="project.colorIndex"></button>
+      </div>
+    `).join("");
+    expect(walk(pane, "project-appearance").unaccounted).toEqual([
+      expect.stringContaining('2 separate values are held for "project.colorIndex"'),
+    ]);
+  });
+
+  /*
+    Per group, not per declaration. Two rows of a collection each render a picker
+    over the same values, honestly — checking distinctness across the whole tab
+    made that a failure.
+  */
+  it("allows two rows to offer the same options", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = ["one", "two"].map(() => `
+      <div role="group" aria-label="Transport">
+        ${["stdio", "http"].map((transport) => `
+          <button aria-pressed="false" aria-label="${transport}"
+            data-setting="mcp.servers[].type" data-setting-option="${transport}"></button>
+        `).join("")}
+      </div>
+    `).join("");
+    expect(walk(pane, "integrations").unaccounted).toEqual([]);
+  });
+
+  /*
+    Two buttons of one picker setting the same value is the other way the
+    attribute can be untrue — it is a claim about what the control writes, so a
+    repeat means one of them writes something else.
+  */
+  it("catches two options of one choice that set the same value", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <div role="group" aria-label="Release channel">
+        ${["stable", "stable"].map((channel, n) => `
+          <button aria-pressed="false" aria-label="Channel ${n}"
+            data-setting="advanced.releaseChannel" data-setting-option="${channel}"></button>
+        `).join("")}
+      </div>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([
+      expect.stringContaining('two options of "advanced.releaseChannel" set the same value'),
+    ]);
+  });
+
+  /*
+    And the same attribute naming a value the setting does not have. A choice's
+    options are the declaration's options, so a control that sets something else
+    is not one of them, whatever it says it is.
+  */
+  it("catches an option that names a value the setting does not offer", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <button aria-pressed="false" aria-label="Nightly"
+        data-setting="advanced.releaseChannel" data-setting-option="nightly"></button>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([
+      expect.stringContaining('renders options ["nightly"], which it does not offer'),
+    ]);
+  });
+
+  /*
+    Native radios say what the attribute says, in the platform's vocabulary — and
+    `name` is what makes two groups two. Exempting them by role alone let a
+    second, independently named group claim a setting the first one holds.
+  */
+  it("counts two independently named radio groups as two values", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = ["first", "second"].flatMap((group) => ["on", "off"].map((value) => `
+      <input type="radio" name="${group}" aria-label="${group} ${value}"
+        data-setting="advanced.notifyOnFinish" />
+    `)).join("");
+    expect(walk(pane, "advanced").unaccounted).toEqual([
+      expect.stringContaining('2 separate values are held for "advanced.notifyOnFinish"'),
+    ]);
+  });
+
+  /*
+    Being SEEN and being counted are two steps, and a role added to the selector
+    without being added to `editsAValue` passes the first and fails the second:
+    the listbox was visible to the walk and held no value, so it could borrow a
+    declaration a box beside it already holds.
+  */
+  it("counts a listbox as a value, not only as a control", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <input data-setting="voice.ttsVoice" aria-label="Voice" />
+      <div role="listbox" data-setting="voice.ttsVoice" aria-label="Alternate voice"></div>
+    `;
+    expect(walk(pane, "voice").unaccounted).toEqual([
+      expect.stringContaining('2 separate values are held for "voice.ttsVoice"'),
+    ]);
+  });
+
+  /*
+    A control the selector did not name was a control no rule here could fail
+    on, whatever it bound. These two are the shapes it missed: a text box with no
+    tag of its own, and a checkbox hand-rolled out of a div.
+  */
+  it("sees a control that is not an input, a select or a button", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML = `
+      <div contenteditable="true" aria-label="Standing instructions"></div>
+      <div contenteditable="plaintext-only" aria-label="Ops instructions"></div>
+      <div role="checkbox" aria-checked="false" aria-label="Quietly"></div>
+      <div role="listbox" aria-label="Voices"></div>
+    `;
+    expect(walk(pane, "advanced").unaccounted).toEqual([
+      expect.stringContaining('named "Standing instructions"'),
+      expect.stringContaining('named "Ops instructions"'),
+      expect.stringContaining('named "Quietly"'),
+      expect.stringContaining('named "Voices"'),
+    ]);
+  });
+
+  /*
+    A toggle was excluded from the crawl's triggers because the walk already
+    accounts for the toggle. What it does not account for is the field the toggle
+    GATES: until this, a box that renders only once something is switched on was
+    never on screen, so it was a control no rule could fail on either.
+  */
+  it("switches a toggle on, so a field it gates is walked", async () => {
+    const pane = paneFixture(`
+      <button role="switch" aria-checked="false"
+        data-setting="advanced.liveSteering" aria-label="Live steering"></button>
+      <span data-form></span>
+    `);
+    const toggle = pane.querySelector('[role="switch"]')!;
+    toggle.addEventListener("click", () => {
+      toggle.setAttribute("aria-checked", "true");
+      pane.querySelector("[data-form]")!.innerHTML =
+        '<input data-setting="advanced.steeringHandover" aria-label="Handover" />';
+    });
+
+    expect(undeclaredBindings(await crawl(async () => pane, "advanced")))
+      .toEqual(["advanced.steeringHandover"]);
   });
 
   /*
