@@ -263,8 +263,11 @@ deliberately:** `sendChildMessage` (`services/child-sessions.ts`) throws
 `ResolvedChildMessageError` when a parent messages a resolved child. A parent can
 now message a child whose workspace is blocked. That is the intent — a child with
 an unresolved rebase is precisely one a parent instructs to repair itself, and it
-is not finished. A second grouping-only predicate was rejected: near-identical
-copies are how these exemptions drifted apart in the first place.
+is not finished. A second grouping-only predicate was rejected twice over:
+near-identical copies are how these exemptions drifted apart in the first place,
+and `docs/233-child-session-report req 5` makes the sharing a *requirement* —
+"the shared resolved-session classification controls eligibility" — so a
+grouping-only fork would have put this file in breach of it.
 
 `computeAttentionReason` gains `workspaceBlockKind`, placed:
 
