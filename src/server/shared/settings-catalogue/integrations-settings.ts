@@ -340,7 +340,10 @@ export const INTEGRATIONS_SETTINGS = {
     // but the alias every granted session types is DERIVED from this name, and
     // numbered when it collides with another, so a card reading
     // `prod → Prod Server` cannot show that `ssh prod` becomes `ssh prod-server`
-    // — or `prod-server-2`. The same reason `mcp.servers[].name` is refused.
+    // — or `prod-server-2`. The same reason `mcp.servers[].name` is refused, and
+    // `alsoChanges` is not the answer to it: that names a stored value changing
+    // beside the one asked for, while an alias is computed per granted session
+    // in `ssh-provision.ts` and is a different string in each of them.
     propose: { kind: "no", reason: "unsafe_to_display" },
   }),
 
@@ -367,6 +370,11 @@ export const INTEGRATIONS_SETTINGS = {
     // Either write — the `add` or the in-place edit — points the destination at
     // a machine, and it is inert there until the user installs its public line
     // on that machine. ShipIt cannot reach it to do so.
+    //
+    // `requireAddress` also LOWERCASES what it stores, which no value-type option
+    // describes — the way `trim` describes the trim (req 9). It costs nothing
+    // while this refuses, since no card can show a change Apply would alter; a
+    // later change making it proposable has to answer it first.
     propose: { kind: "no", reason: "external_flow" },
   }),
 
@@ -414,6 +422,11 @@ export const INTEGRATIONS_SETTINGS = {
     // (docs/305-ssh-hosts req 13). `2222 → 22` shows none of that, which is why
     // req 14 makes the DIALOG say it before the change is saved — a warning
     // beside the boxes that a proposal card has no equivalent of.
+    //
+    // `alsoChanges` could name the key being forgotten, since that IS a stored
+    // value moving. It cannot name the part that matters: whether the next
+    // connection succeeds is decided later, by a scan of the new endpoint that
+    // no card can run at the moment the user clicks.
     propose: { kind: "no", reason: "unsafe_to_display" },
   }),
 
