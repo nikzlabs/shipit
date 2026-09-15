@@ -779,10 +779,17 @@ value and stored another. Both re-verified at the code.
 
 ### Not fixed here — the same class, in a file this session is scoped out of
 
-- [ ] `services/settings-operations.ts:418` (`rolePreflight`) returns
-      `checked.message` straight out, and `:602` (`reviewerLevelRefusal`)
-      returns the resolver's error, both reaching the propose response and the
-      CLI unrendered. A stored harness or reviewer model carrying a newline
-      forges a line through either. Error handling runs BEFORE the `--json`
-      branch, so that flag does not cover them. Another session owns that file;
-      the fix is the `refuse()` shape the role modules now use
+- [ ] `services/settings-operations.ts:421` (`rolePreflight`) returns
+      `checkRolePinnedParams`'s `message` straight out, and `:605`
+      (`reviewerLevelRefusal`) returns `resolveReviewerPinPatch`'s error, both
+      reaching the propose response and the CLI unrendered. A stored harness or
+      reviewer model carrying a newline forges a line through either. Error
+      handling runs BEFORE the `--json` branch, so that flag does not cover
+      them. `:416` is a third return of the same shape — a `ServiceError` from
+      the patch — whose reachable messages were not traced exhaustively, since
+      that file belongs to another session; the ones composed in it use
+      `echoSupplied` for the supplied item. Both cited returns predate this
+      branch (`git blame`: 8b62d1248) and the req-4 slice merged underneath it
+      left them unchanged — only the line numbers moved. The fix is the
+      `refuse()` shape the two role modules now use: one entry point per module
+      that renders the whole line
