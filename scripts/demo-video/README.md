@@ -37,9 +37,9 @@ export FFMPEG=/persist/ffmpeg/bin/ffmpeg                  # static build; ffprob
 #    storyboard's repo.commit; the driver refuses to run against any other.
 scripts/demo-video/make-demo-repo.sh /workspace/.inner-shipit/demo-video/demo-repo.git http://172.16.37.3:8787
 
-# 2a. Authoring: the proxy in record mode (a real key on the host, never in the repo).
-DEMO_PROXY_ANTHROPIC_API_KEY=sk-ant-... \
-  node scripts/demo-video/proxy.mjs --record scripts/demo-video/scenarios/<name>/cassette &
+# 2a. Authoring: the proxy in record mode. It forwards the session's own key;
+#     DEMO_PROXY_ANTHROPIC_API_KEY=sk-ant-... in front records with a different one.
+node scripts/demo-video/proxy.mjs --record scripts/demo-video/scenarios/<name>/cassette &
 
 # 2b. Production: replay the committed cassette, paced at the storyboard's pace.textCharsPerSecond.
 node scripts/demo-video/proxy.mjs --replay scripts/demo-video/scenarios/<name>/cassette \
@@ -90,20 +90,22 @@ Click targets: `new-session`, `merge`, `trust`.
 ## Proxy
 
 The Claude CLI in the demo session reaches the proxy through the demo repo's
-`.claude/settings.json` (`ANTHROPIC_BASE_URL` plus a dummy `ANTHROPIC_API_KEY`).
-Requests are counted per lane, where the lane is the auth header kind:
-`x-api-key` (the dummy key) or `bearer` (anything else).
+`.claude/settings.json` (`ANTHROPIC_BASE_URL` only; the CLI sends the
+`ANTHROPIC_API_KEY` ShipIt already delivers into the session). Requests are
+counted per lane, where the lane is the auth header kind: `x-api-key` or
+`bearer` (anything else).
 
 Record mode forwards `POST /v1/messages*` to `https://api.anthropic.com` with
-the headers verbatim except the dummy `x-api-key`, which becomes the proxy's own
-(`DEMO_PROXY_ANTHROPIC_API_KEY`); a bearer request is forwarded untouched. The
-body is read whole and sent with a `content-length` (a chunked request's
-`transfer-encoding` is dropped). Each response is saved as `<lane>/NNN.sse`
-(status line, headers, blank line, body bytes verbatim) and one line per request
-goes to `fingerprints.jsonl` (`model`, message count, tool count, body bytes,
-stream flag). Request bodies are not saved. The cassette directory must not
-already hold a take. `--upstream <url>` points the recorder elsewhere (the tests
-use a local fake).
+the headers verbatim, including the caller's `x-api-key`; set
+`DEMO_PROXY_ANTHROPIC_API_KEY` to swap that one header for a different key (to
+record with a vendor key the instance does not use). A bearer request is
+forwarded untouched. The body is read whole and sent with a `content-length` (a
+chunked request's `transfer-encoding` is dropped). Each response is saved as
+`<lane>/NNN.sse` (status line, headers, blank line, body bytes verbatim) and one
+line per request goes to `fingerprints.jsonl` (`model`, message count, tool
+count, body bytes, stream flag). Request headers and bodies are not saved, so no
+key enters the cassette. The cassette directory must not already hold a take.
+`--upstream <url>` points the recorder elsewhere (the tests use a local fake).
 
 Replay mode answers lane request *n* with `<lane>/NNN.sse`. `content_block_delta`
 text is paced at `--pace-chars-per-second` (the storyboard's

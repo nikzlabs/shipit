@@ -1,7 +1,7 @@
 #!/bin/sh
 # Starts proxy.mjs from the DEMO_PROXY_* env, or idles on a misconfiguration
-# (missing cassette, missing key, an already-recorded take) so `compose up`
-# never crash-loops under restart: unless-stopped.
+# (missing cassette, an already-recorded take) so `compose up` never
+# crash-loops under restart: unless-stopped.
 set -eu
 
 MODE="${DEMO_PROXY_MODE:-replay}"
@@ -21,7 +21,6 @@ case "$MODE" in
     exec node /app/proxy.mjs --replay "$CASSETTE" --pace-chars-per-second "$PACE" --port 8787 --host 0.0.0.0
     ;;
   record)
-    [ -n "${DEMO_PROXY_ANTHROPIC_API_KEY:-}" ] || idle "record mode needs DEMO_PROXY_ANTHROPIC_API_KEY in /root/shipit-demo-proxy.env"
     for lane in x-api-key bearer; do
       [ -e "$CASSETTE/$lane/001.sse" ] && idle "$CASSETTE already holds a $lane take; delete it or point DEMO_PROXY_CASSETTE elsewhere"
     done
