@@ -14,6 +14,7 @@ import {
 } from "../agent-auth-base.js";
 import {
   createCliLineRelay,
+  type CliLineRelay,
   credentialParseFailure,
   sanitizeAuthDiagnostic,
   type AgentAuthLogLevel,
@@ -206,6 +207,7 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
   private proc: ChildProcess | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private outputBuffer = "";
+  private relay: CliLineRelay | null = null;
   private pendingEmitted = false;
   private lastPendingEvent: CodexAuthPendingEvent | null = null;
   private spawnFn: SpawnFn;
@@ -266,14 +268,23 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
    * Antigravity manager, whose long submitted code came out as
    * `4/[redacted].private-tail`).
    */
+  /**
+   * Everything this manager prints about the CLI goes through here, not only
+   * what the panel shows: a credential kept off the screen and written to the
+   * orchestrator's log is still a credential in a log.
+   */
+  private redacted(text: string): string {
+    return sanitizeAuthDiagnostic(
+      stripAnsi(text).replace(USER_CODE_EVERY_OCCURRENCE, CODE_MARKER),
+    );
+  }
+
   private emitDiagnosticLog(
     level: AgentAuthLogLevel,
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    const sanitized = sanitizeAuthDiagnostic(
-      stripAnsi(message).replace(USER_CODE_EVERY_OCCURRENCE, CODE_MARKER),
-    );
+    const sanitized = this.redacted(message);
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -405,6 +416,7 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     const relay = createCliLineRelay((source, line) => {
       if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
     });
+    this.relay = relay;
 
     /**
      * The liveness guard is taken ONCE here rather than inside each consumer. A
@@ -455,8 +467,13 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
       }
 
       if (this.outputBuffer.length > 0) {
-        const redacted = this.outputBuffer.substring(0, 500);
-        console.log("[codex-auth] Buffer (truncated, %d chars total):", this.outputBuffer.length, redacted);
+        // Redact the WHOLE buffer, then truncate: truncating first can cut a
+        // secret below a rule's threshold, or cut an exact code match in half.
+        console.log(
+          "[codex-auth] Buffer (truncated, %d chars total):",
+          this.outputBuffer.length,
+          this.redacted(this.outputBuffer).substring(0, 500),
+        );
       }
 
       const failMessage = code === 0 ? "credentials file not written" : `codex login exited with code ${code ?? "null"}`;
@@ -485,6 +502,10 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
   cancel(): void {
     if (!this.proc) return;
     console.log("[codex-auth] Cancelling device-auth flow");
+    // Before the scope is cleared, or the flushed line arrives with no account
+    // and no attempt on it, and the client drops what it cannot place.
+    this.relay?.flush();
+    this.relay = null;
     // Remove listeners before kill so cancellation does not emit a failure.
     const proc = this.proc;
     this.proc = null;
@@ -516,7 +537,9 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     const cleaned = stripAnsi(raw);
     this.outputBuffer += cleaned;
     if (cleaned.trim()) {
-      console.log("[codex-auth output]", cleaned.trim());
+      // A chunk, not a line: this is the detection path, which cannot wait for
+      // the relay — so it is redacted here rather than printed as it arrived.
+      console.log("[codex-auth output]", this.redacted(cleaned.trim()));
     }
     this.maybeEmitPending();
   }

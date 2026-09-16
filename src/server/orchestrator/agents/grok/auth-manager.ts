@@ -10,6 +10,7 @@ import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { ensureConfigDir, firstEpochMs, probeNestedString } from "../agent-auth-base.js";
 import {
   createCliLineRelay,
+  type CliLineRelay,
   credentialParseFailure,
   sanitizeAuthDiagnostic,
   type AgentAuthLogLevel,
@@ -191,6 +192,7 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
   private proc: ChildProcess | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private outputBuffer = "";
+  private relay: CliLineRelay | null = null;
   private pendingEmitted = false;
   private lastPendingEvent: XaiAuthPendingEvent | null = null;
   private spawnFn: SpawnFn;
@@ -251,14 +253,23 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
    * Antigravity manager, whose long submitted code came out as
    * `4/[redacted].private-tail`).
    */
+  /**
+   * Everything this manager prints about the CLI goes through here, not only
+   * what the panel shows: a credential kept off the screen and written to the
+   * orchestrator's log is still a credential in a log.
+   */
+  private redacted(text: string): string {
+    return sanitizeAuthDiagnostic(
+      stripAnsi(text).replace(USER_CODE_EVERY_OCCURRENCE, CODE_MARKER),
+    );
+  }
+
   private emitDiagnosticLog(
     level: AgentAuthLogLevel,
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    const sanitized = sanitizeAuthDiagnostic(
-      stripAnsi(message).replace(USER_CODE_EVERY_OCCURRENCE, CODE_MARKER),
-    );
+    const sanitized = this.redacted(message);
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -358,6 +369,7 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
     const relay = createCliLineRelay((source, line) => {
       if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
     });
+    this.relay = relay;
 
     /**
      * The liveness guard is taken ONCE here rather than inside each consumer. A
@@ -409,7 +421,13 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
       }
 
       if (this.outputBuffer.length > 0) {
-        console.log("[xai-auth] Buffer (truncated, %d chars total):", this.outputBuffer.length, this.outputBuffer.slice(0, 500));
+        // Redact the WHOLE buffer, then truncate: truncating first can cut a
+        // secret below a rule's threshold, or cut an exact code match in half.
+        console.log(
+          "[xai-auth] Buffer (truncated, %d chars total):",
+          this.outputBuffer.length,
+          this.redacted(this.outputBuffer).slice(0, 500),
+        );
       }
 
       const message = code === 0
@@ -437,6 +455,10 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
   cancel(): void {
     if (!this.proc) return;
     console.log("[xai-auth] Cancelling device-auth flow");
+    // Before the scope is cleared, or the flushed line arrives with no account
+    // and no attempt on it, and the client drops what it cannot place.
+    this.relay?.flush();
+    this.relay = null;
     // Remove listeners before kill so cancellation does not emit a failure.
     const proc = this.proc;
     this.proc = null;
@@ -467,7 +489,9 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
   private handleOutput(raw: string): void {
     const cleaned = stripAnsi(raw);
     this.outputBuffer += cleaned;
-    if (cleaned.trim()) console.log("[xai-auth output]", cleaned.trim());
+    // A chunk, not a line: this is the detection path, which cannot wait for
+    // the relay — so it is redacted here rather than printed as it arrived.
+    if (cleaned.trim()) console.log("[xai-auth output]", this.redacted(cleaned.trim()));
     this.maybeEmitPending();
   }
 

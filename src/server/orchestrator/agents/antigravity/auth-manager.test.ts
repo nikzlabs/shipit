@@ -225,6 +225,52 @@ describe("AntigravityAuthManager", () => {
   });
 
   /**
+   * req 4's own example, copied from requirements.md. The redaction rules now
+   * run over the refusal — a `Error: token exchange failed: access_token=…`
+   * reached `failed.message` whole otherwise — and this is what says that does
+   * not cost the user the sentence naming the fix.
+   */
+  it("passes Google's eligibility sentence through byte for byte", () => {
+    const sentence = "Eligibility check failed: Your current account is not eligible for"
+      + " Antigravity. To use Antigravity you must be 18 years old or older. If you think you"
+      + " are receiving this message in error, please ensure you have verified your age and try"
+      + " to log in again.";
+    start();
+    proc.emitData(`Error: ${sentence}\n`);
+    proc.emitExit(1);
+
+    expect(failed[0]?.message).toBe(sentence);
+  });
+
+  it("keeps a credential the CLI quoted back out of the refusal", () => {
+    start();
+    proc.emitData("Error: token exchange failed: access_token=short.secret/value\n");
+    proc.emitExit(1);
+
+    expect(failed[0]?.message).not.toContain("short.secret/value");
+    expect(failed[0]?.message).toContain("token exchange failed");
+  });
+
+  /**
+   * `fail()` clears the account and the attempt id, and the client drops a log
+   * line it cannot place against either — so the flush has to happen while the
+   * attempt still has a scope.
+   */
+  it("gives the timeout's flushed line an attempt to belong to", async () => {
+    const bounded = new AntigravityAuthManager({ spawn: () => proc, timeoutMs: 10 });
+    const seen: AgentAuthLogPayload[] = [];
+    bounded.on("log", (l) => seen.push(l));
+    bounded.start({ credentialDir: home, accountId: "acct-1" });
+    proc.emitData("Error: connection refused".padEnd(80, "."));
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    const flushed = seen.find((l) => l.message.includes("connection refused"));
+    expect(flushed?.accountId).toBe("acct-1");
+    expect(flushed?.attemptId).not.toBe("unknown");
+  });
+
+  /**
    * A held line is held because it might be half a secret, and cancelling is
    * when the user most wants to read why. The exit callback that flushes is
    * gated on the process the manager has already detached, so nothing else
@@ -240,6 +286,20 @@ describe("AntigravityAuthManager", () => {
     manager.cancel();
 
     expect(logs.map((l) => l.message).join("")).toContain("Error: the CLI refused");
+  });
+
+  /**
+   * The flush publishes whatever the CLI had printed, and mid-echo that is the
+   * first half of the code — which no whole-code match recognises.
+   */
+  it("keeps a half-echoed code out of what cancelling flushes", () => {
+    start();
+    manager.submitCode("4/short.private/code");
+    proc.emitData("4/short.private/");
+
+    manager.cancel();
+
+    expect(logs.map((l) => l.message).join("")).not.toContain("4/short.private/");
   });
 
   /**

@@ -598,6 +598,21 @@ describe("what the Codex sign-in reports to the panel", () => {
   });
 
   /**
+   * `cancel()` detaches `close`, so the flush that path does never runs — and a
+   * CLI that stopped part-way through its last sentence is exactly the failure
+   * the user is cancelling to read about.
+   */
+  it("flushes the unterminated final line when the sign-in is cancelled", async () => {
+    const { mgr, proc, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, "Error: your account is not eligible.");
+    await settle();
+
+    mgr.cancel();
+
+    expect(panel()).toContain("Error: your account is not eligible.");
+  });
+
+  /**
    * A cancelled run keeps draining — `cancel()` detaches `close` and `error`,
    * never `data` — and by then the manager may be running the NEXT account's
    * flow, so unguarded output lands on that account's panel and its expired

@@ -356,6 +356,21 @@ describe("what the Grok sign-in reports to the panel", () => {
   }
 
   /**
+   * `cancel()` detaches `close`, so the flush that path does never runs — and a
+   * CLI that stopped part-way through its last sentence is exactly the failure
+   * the user is cancelling to read about.
+   */
+  it("flushes the unterminated final line when the sign-in is cancelled", async () => {
+    const { mgr, proc, panel } = startWithDiagnostics();
+    emit(proc.stderr, "Error: your account is not eligible.");
+    await settle();
+
+    mgr.cancel();
+
+    expect(panel()).toContain("Error: your account is not eligible.");
+  });
+
+  /**
    * Grok 1.0.1 prints everything — the challenge included — on stderr, so a
    * stderr line here is ordinary progress. The source says which stream it came
    * from; levelling it `error` would paint a healthy sign-in red.

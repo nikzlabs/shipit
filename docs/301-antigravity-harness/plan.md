@@ -476,33 +476,59 @@ one non-npm branch, gated on `contains antigravity $selected`:
   long panel line — the successor's text is read as part of the first line's
   URL, so a short diagnostic after a full-width one can be redacted away with
   it. Reading the display width exactly means emulating a terminal, which none
-  of this is worth. Two consequences of aggregating lines needed answering.
-  Joining has **its own cap, far below the buffered-line cap** (8 KiB against
-  64 KiB), because a join aggregates unrelated rows where the line cap only
-  ever held one line: 64 KiB of joined near-addresses cost one
-  `sanitizeAuthDiagnostic` call **5.6 seconds** on the thread that serves the
-  UI, so the email rule's local part and domain now carry RFC 5321's length
-  bounds. And the join's cap **is** reachable by ordinary output, unlike the
-  line cap, so a secret can straddle it — the forced break carries the last
-  `wrapWidth` characters into the next line rather than dropping them, which
-  costs the panel one duplicated line's worth of text and keeps the split from
-  being a leak. Every path that ends a run flushes, **cancellation included**:
-  the exit callback that flushes is gated on a process the manager has already
-  detached, so a cancelled run's held line — the user's only record of why they
-  cancelled — was dropped. The two gaps that shared planning#586's cause closed
-  with it: the sanitizer now reads a token assignment written as quoted JSON
+  of this is worth.
+- **A cap withholds; it never publishes a fragment.** Joining lines forced this
+  rule and then generalized it. Two rounds of review broke the same assumption
+  from opposite sides: the relay first published the aggregate at its cap and
+  carried the tail forward so the *next* line could be redacted against it,
+  which review answered by pointing at the other half — the fragment published
+  at the break can itself be the first half of a secret, and nothing retracts
+  it. **Every bound has that property**, the pre-existing 64 KiB buffered-line
+  cap included (`" ".repeat(65530) + "https://h/?sta"` then `te=…` leaked
+  through that one on main). So a cap now drops instead, keeps dropping until a
+  line arrives that does not fill the width — the lines between are the rest of
+  the same block — and relays one `[N characters … withheld]` notice in place of
+  what it dropped. The join's own cap is far below the line cap (8 KiB against
+  64 KiB) because a join aggregates unrelated rows where the line cap only ever
+  held one line, and the sanitizer's cost is paid on whatever it is handed:
+  64 KiB of joined near-addresses cost one call **5.6 seconds** on the thread
+  that serves the UI. Three quadratic paths were fixed rather than bounded
+  around — the email rule now carries RFC 5321's length bounds (5.2 s → 23 ms),
+  trailing whitespace is trimmed per line instead of by a pattern that rescans
+  every suffix of a run of spaces (3.7 s → 0 ms), and `stripAnsi`'s OSC body
+  excludes ESC, which also lets it end at the string terminator the way a
+  terminal reads it (425 ms → 0 ms).
+- **Every path that ends a run flushes, cancellation included.** The exit
+  callback that flushes is gated on a process the manager has already detached,
+  so a cancelled run's held line — the user's only record of why they cancelled
+  — was dropped, and Codex and Grok never flushed on cancel at all. The flush
+  also has to happen **before** the attempt's scope is cleared, since a log line
+  with no `accountId` and `attemptId: "unknown"` is dropped by the client
+  (`useServerEvents.ts`) — which is what Antigravity's timeout was doing by
+  failing before it killed. And what a flush publishes can be **half** an echoed
+  code, which no whole-code match recognises, so the code removal takes a
+  trailing prefix of a code as well as the code.
+- **The rest of planning#586's family, each reproduced before it was fixed.**
+  The sanitizer reads a token assignment written as quoted JSON
   (`{"access_token":"short.secret/value"}` matched no rule at all, being below
-  the long-secret threshold), with the value ending at **its own** quote, since
-  excluding both quote characters let `"short'private/secret"` through whole
-  and published the tail of `"short\"private/secret"`; and the refusal text —
-  which req 4 keeps out of the generic rules — has the submitted code taken out
-  by name before it reaches `failed.message`, **tolerating whitespace inside
-  the code**, because the refusal is read from the raw buffer where the CLI's
-  wrap can fall inside it and an exact match then fails on `4/0AY\n-code`. One
-  more line was the same defect in all four managers: a credential file that
-  will not parse was logged with the parse error whole, and Node quotes the
-  bytes it tripped over, so a half-written token file put part of the token in
-  the orchestrator's log (`Unexpected token 'y', ..."ss_token":ya29.secre"...`).
+  the long-secret threshold), with the value ending at **its own** quote — since
+  excluding both quote characters let `"short'private/secret"` through whole and
+  published the tail of `"short\"private/secret"` — and that rule runs **before**
+  the URL rule, which rewrites the escaping it reads. The refusal text goes
+  through the same rules: req 4 is about which sentence the user gets, not about
+  publishing it unread, and the requirement's own example passes through byte
+  for byte (a guard test pins that with the sentence copied out of
+  requirements.md), while `Error: token exchange failed: access_token=…` used to
+  reach `failed.message` whole. Code removal takes the **longest** code first,
+  because replacing `4/short` before `4/short.private/long` leaves the longer
+  one's tail behind with nothing left to match it, and it tolerates whitespace
+  **between** characters while being built from the code without its own: 16
+  spaces inside a submitted code took 10 s on one line. Codex and Grok printed
+  the CLI's raw chunks to the orchestrator log from their detection path, and
+  both truncated their failure-buffer dump before redacting it rather than
+  after. And a credential file that will not parse was logged with the parse
+  error whole in all four managers, where Node quotes the bytes it tripped over
+  (`Unexpected token 'y', ..."ss_token":ya29.secre"...`);
   `credentialParseFailure` drops the quoted context and keeps the reason.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —

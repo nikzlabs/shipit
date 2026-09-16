@@ -275,21 +275,11 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   }
 
   /**
-   * **Escapes first, then the known code, then the generic rules.** A pty
-   * colours its echo, so an escape inside the code defeats an exact match until
-   * it is stripped; and once a generic rule has rewritten part of the code, no
-   * later exact match can recognise the rest — the two together published a
-   * code's tail as ordinary text.
-   *
-   * Everything this manager prints about the CLI goes through here, not only
-   * what the panel shows: a credential kept off the screen and written to the
-   * orchestrator's log is still a credential in a log.
-   *
-   * The strip is unreachable from the RELAY, which hands over an already
-   * stripped line, so the guard tests pin it there rather than here. It stays
-   * for the callers that skip the relay — the wizard dump reads `outputBuffer`,
-   * which is stripped a chunk at a time and so can still hold a reassembled
-   * escape.
+   * **Escapes first, then the known code, then the generic rules.** An escape
+   * inside the echoed code defeats an exact match until it is stripped, and a
+   * generic rule run first rewrites the code's middle, after which no exact
+   * match recognises the rest. Everything this manager prints goes through
+   * here, the terminal included: a credential in a log is still a credential.
    */
   private redacted(text: string): string {
     return sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(text)));

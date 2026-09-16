@@ -624,6 +624,28 @@ describe("AuthManager / auth diagnostics", () => {
   });
 
   /**
+   * The flush publishes whatever the CLI had printed, and mid-echo that is the
+   * first half of the code — which no whole-code match recognises. It reaches
+   * the `[auth output]` log as well as the panel, from the same string.
+   */
+  it("keeps a half-echoed code out of what cancelling flushes", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "https://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("4/short.private/code");
+    ptyHoisted.dataHandlers[0]("4/short.private/");
+
+    mgr.cancel();
+
+    expect(logs.map((l) => l.message).join("")).not.toContain("4/short.private/");
+  });
+
+  /**
    * A pty colours its echo, so an escape sequence can land inside the code, and
    * split across two chunks neither half is recognisable — which is why chunks
    * are buffered raw and the escapes are stripped off the assembled line.

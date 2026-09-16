@@ -158,10 +158,12 @@ Antigravity-specific is in [plan.md](./plan.md).
       (`agents/auth-diagnostics.ts`), the manager emits `progress` and `log`, and
       the panel renders for any harness that reports anything
 - [x] The redaction gaps a whole-line relay could not close (planning#586): the
-      relay unwraps at the width the spawn passed, the sanitizer reads a token
-      assignment written as quoted JSON, the refusal text loses the submitted
-      code without losing Google's sentence, and a credential file's parse error
-      no longer carries the bytes it tripped over into the log. The link
+      relay unwraps at the width the spawn passed, a cap withholds instead of
+      publishing half a secret, every path that ends a run flushes while the
+      attempt still has a scope, the sanitizer reads a token assignment written
+      as quoted JSON and no longer scans quadratically, the refusal text loses a
+      credential without losing Google's sentence, and a credential file's parse
+      error no longer carries the bytes it tripped over into the log. The link
       extractor's own wrap handling is **not** part of that — over-inclusion is
       safe for a redaction and breaks a link, so it is planning#588
 - [x] Account identity is honestly ABSENT: a `consumer` sign-in's token has no

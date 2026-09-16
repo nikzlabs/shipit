@@ -71,8 +71,6 @@ interface TokenStamp {
  * Stamped only when the file holds an actual credential. A sign-in is announced
  * off this, so "the file changed" is not enough: a save that died part-way
  * leaves a short, unparseable file whose mtime moved like any other write.
- * `isConfigured` keeps the looser size test on purpose — it reports what the
- * account HAS, while this claims what a run just DID.
  */
 function tokenStamp(home: string): TokenStamp | null {
   try {
@@ -437,15 +435,16 @@ export class AntigravityAuthManager
         this.clearActiveScope();
         return;
       }
-      // req 4 keeps Google's sentence, so the generic rules stay off it — but
-      // the authorization code is ShipIt's to remove, not part of what Google
-      // said, and a refusal that quoted it back would carry a credential into
-      // the failure payload the panel's copy is redacted to keep out.
+      // **req 4 is about which sentence the user gets, not about publishing it
+      // unread.** Its own example comes through these rules byte for byte —
+      // the guard test pins that with the sentence from requirements.md — and
+      // what they take out is a credential the CLI quoted back, which reached
+      // `failed.message` whole while the panel's copy of it was clean.
       this.fail(
         "error",
         refusal === undefined
           ? this.exitMessage(exitCode, signal, hadPending)
-          : this.withoutSubmittedCode(stripAnsi(refusal)),
+          : this.redacted(refusal),
       );
     });
 
@@ -454,10 +453,14 @@ export class AntigravityAuthManager
       // Past a printed link this bound is not the one that matters — the CLI's
       // own 60 s window closed long before — so it is a hung process, not a
       // missing link, and saying "no link" contradicts the link on screen.
-      this.fail("timeout", this.lastPendingDetails
+      const message = this.lastPendingDetails
         ? "The Antigravity sign-in did not finish. Start again."
-        : "The Antigravity CLI printed no sign-in link.");
+        : "The Antigravity CLI printed no sign-in link.";
+      // The kill is what drains the relay, and it has to happen while the
+      // attempt still has a scope: `fail` clears the account and the attempt id,
+      // and the client drops a log line it cannot place against either.
       this.kill();
+      this.fail("timeout", message);
     }, this.timeoutMs);
   }
 
@@ -484,20 +487,11 @@ export class AntigravityAuthManager
   }
 
   /**
-   * **Escapes first, then the known code, then the generic rules.** A pty
-   * colours its echo, so an escape inside the code defeats an exact match until
-   * it is stripped; and once a generic rule has rewritten part of the code, no
-   * later exact match can recognise the rest — the two together published a
-   * code's tail as ordinary text.
-   *
-   * Everything this manager prints about the CLI goes through here, not only
-   * what the panel shows: a credential kept off the screen and written to the
-   * orchestrator's log is still a credential in a log.
-   *
-   * The strip is unreachable from the RELAY, which hands over an already
-   * stripped line, so the guard tests pin it there rather than here. It stays
-   * for a caller that skips the relay: the ordering only holds if whatever
-   * reaches `withoutSubmittedCode` is escape-free.
+   * **Escapes first, then the known code, then the generic rules.** An escape
+   * inside the echoed code defeats an exact match until it is stripped, and a
+   * generic rule run first rewrites the code's middle, after which no exact
+   * match recognises the rest. Everything this manager prints goes through
+   * here, the terminal included: a credential in a log is still a credential.
    */
   private redacted(text: string): string {
     return sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(text)));
