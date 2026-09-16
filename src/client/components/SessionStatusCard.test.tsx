@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
 import { SessionStatusCard } from "./SessionStatusCard.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { OfferedAction, SessionStatus } from "../../server/shared/types.js";
@@ -51,12 +51,22 @@ describe("SessionStatusCard", () => {
     expect(text.indexOf("Next steps")).toBeLessThan(text.indexOf("Wired the webhook route."));
   });
 
-  it("gives each of the three a cap of its own (req 33)", () => {
-    render(<SessionStatusCard status={card({ lastTurn: "Wired the webhook route." })} />);
-    for (const cap of ["Status", "Last turn"]) {
+  it("gives each of the three an accent-filled cap over a tinted body (req 33)", () => {
+    render(
+      <SessionStatusCard
+        status={card({ lastTurn: "Wired the webhook route.", actions: [offer({ offerId: "o1" })] })}
+      />,
+    );
+    for (const title of ["Status", "Next steps", "Last turn"]) {
       // A cap is accent-filled with inverse text; a subtitle inside a card is not.
-      expect(screen.getByText(cap).parentElement?.className).toContain("bg-(--color-accent)");
+      const cap = screen.getByText(title).parentElement!;
+      expect(cap.className).toContain("bg-(--color-accent)");
+      expect(cap.className).toContain("text-(--color-accent-text)");
     }
+    const tinted = screen
+      .getByTestId("session-status-card")
+      .querySelectorAll(".bg-\\(--color-accent-subtle\\)");
+    expect(tinted).toHaveLength(3);
   });
 
   it("hides the last-turn card on a stale card, where it would be a turn behind (req 31)", () => {
@@ -75,9 +85,10 @@ describe("SessionStatusCard", () => {
     render(
       <SessionStatusCard status={card({ fresh: false, actions: [offer({ offerId: "o1" })] })} />,
     );
-    const mark = screen.getByText("Stale");
-    expect(mark.parentElement).toBe(screen.getByText("Status").parentElement);
-    expect(mark.className).toContain("--color-accent-text");
+    const statusCap = screen.getByText("Status").closest("div")!;
+    expect(within(statusCap).getByText("Stale").className).toContain("--color-accent-text");
+    // Never faded: the accent/accent-text pair has no contrast to spare.
+    expect(within(statusCap).getByText("Stale").className).not.toMatch(/accent-text\)\/\d/);
   });
 
   it("puts the offers under a Follow-ups subtitle", () => {
@@ -91,7 +102,15 @@ describe("SessionStatusCard", () => {
         status={card({ needsYou: ["Add the key."], actions: [offer({ offerId: "o1" })] })}
       />,
     );
-    expect(screen.getAllByText("Next steps")).toHaveLength(1);
+    // Both lists and the Submit live inside the one card, not merely on screen.
+    const nextSteps = screen.getByText("Next steps").closest("div")!.parentElement!;
+    // The scope is one card, not the stack: the status is outside it.
+    expect(within(nextSteps).queryByText("Status")).not.toBeInTheDocument();
+    for (const name of ["Manual steps", "Follow-ups"]) {
+      expect(within(nextSteps).getByText(name)).toBeInTheDocument();
+    }
+    expect(within(nextSteps).getAllByRole("checkbox")).toHaveLength(2);
+    expect(within(nextSteps).getByRole("button", { name: /^submit$/i })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /^submit$/i })).toHaveLength(1);
   });
 

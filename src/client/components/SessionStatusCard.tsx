@@ -197,8 +197,10 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
           ? {
               // req 14 — one mark for the whole stack, on the first cap, since
               // the stack has no single bottom-right corner any more.
+              // Full strength, never faded: it is already the smallest text on
+              // the cap, and the accent/accent-text pair has no contrast to spare.
               trailing: (
-                <span className="ml-auto text-[11px] font-semibold text-(--color-accent-text)/85">
+                <span className="ml-auto text-[11px] font-semibold text-(--color-accent-text)">
                   Stale
                 </span>
               ),
