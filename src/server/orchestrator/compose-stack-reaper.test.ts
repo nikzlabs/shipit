@@ -126,6 +126,7 @@ describe("compose-stack-reaper", () => {
     runners?: Record<string, object>;
     serviceManagers?: Map<string, unknown>;
     unprobed?: Set<string>;
+    stackName?: string;
   }) {
     const sessions = opts.sessions ?? { [SID]: session() };
     return {
@@ -134,7 +135,13 @@ describe("compose-stack-reaper", () => {
       runnerRegistry: { get: (id: string) => opts.runners?.[id] } as unknown as SessionRunnerRegistry,
       serviceManagers: opts.serviceManagers ?? new Map<string, unknown>(),
       ...(opts.unprobed ? { unprobed: opts.unprobed } : {}),
+      ...(opts.stackName ? { stackName: opts.stackName } : {}),
     };
+  }
+
+  function stackContainer(sessionId: string, id: string, stack: string | undefined): FakeContainer {
+    const c = serviceContainer(sessionId, id);
+    return stack ? { ...c, Labels: { ...c.Labels, "shipit-stack": stack } } : c;
   }
 
   beforeEach(() => {
@@ -178,6 +185,24 @@ describe("compose-stack-reaper", () => {
       const h = fakeDocker({ containers: [serviceContainer(OTHER, "other-1")] });
       expect(await downComposeStackByProject(h.docker, SID)).toBe(0);
       expect(h.removed).toEqual([]);
+    });
+
+    // planning#584: the same session id on two instances (a restored backup) is two stacks.
+    it("with a stack filter, takes only that stack's containers and networks for the session", async () => {
+      const project = composeProjectName(SID);
+      const h = fakeDocker({
+        containers: [stackContainer(SID, "ours", "shipit-a"), stackContainer(SID, "theirs", "shipit-b"), stackContainer(SID, "legacy", undefined)],
+        networks: [
+          { Id: "n-a", Name: `shipit-session-${SID}`, Labels: { [COMPOSE_PROJECT_LABEL]: project, "shipit-stack": "shipit-a" } },
+          { Id: "n-b", Name: `shipit-session-${SID}`, Labels: { [COMPOSE_PROJECT_LABEL]: project, "shipit-stack": "shipit-b" } },
+        ],
+      });
+
+      expect(await downComposeStackByProject(h.docker, SID, ["shipit-stack=shipit-a"])).toBe(1);
+
+      expect(h.removed).toEqual(["ours"]);
+      expect(h.networksRemoved).toEqual(["n-a"]);
+      expect([...h.live.keys()].sort()).toEqual(["legacy", "theirs"]);
     });
 
     it("treats a 404 from remove as the outcome it wanted", async () => {
@@ -236,6 +261,32 @@ describe("compose-stack-reaper", () => {
       const h = fakeDocker({ containers: [serviceContainer(SID, "c1")] });
       expect(await reapSurvivingComposeStacks(deps({ docker: h.docker }))).toBe(1);
       expect(h.removed).toEqual(["c1"]);
+    });
+
+    // planning#584: a restored backup gives another instance this very session id, and its
+    // stack is not this process's to take, however idle the local row looks.
+    it("takes only this stack's surviving stack when another instance runs the same session id", async () => {
+      const h = fakeDocker({
+        containers: [
+          stackContainer(SID, "ours", "shipit-a"),
+          stackContainer(SID, "theirs", "shipit-b"),
+          stackContainer(SID, "legacy", undefined),
+        ],
+      });
+
+      expect(await reapSurvivingComposeStacks(deps({ docker: h.docker, stackName: "shipit-a" }))).toBe(1);
+
+      expect(h.removed).toEqual(["ours"]);
+      expect([...h.live.keys()].sort()).toEqual(["legacy", "theirs"]);
+    });
+
+    it("does not count, or touch, a session id that survives only on the other stack", async () => {
+      const h = fakeDocker({ containers: [stackContainer(SID, "theirs", "shipit-b")] });
+
+      expect(await reapSurvivingComposeStacks(deps({ docker: h.docker, stackName: "shipit-a" }))).toBe(0);
+
+      expect(h.removed).toEqual([]);
+      expect(h.stopped).toEqual([]);
     });
 
     it("keeps a stack whose session has a live runner (its turn was adopted at boot)", async () => {

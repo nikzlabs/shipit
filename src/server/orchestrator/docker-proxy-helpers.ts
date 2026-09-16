@@ -1,4 +1,5 @@
 import http from "node:http";
+import { stackLabel } from "./stack-label.js";
 
 export interface SessionInfo {
   sessionId: string;
@@ -20,9 +21,19 @@ export interface DockerProxyDeps {
   socketPath?: string;
   /** Suspend cached API trust checks across container starts; return the release callback. */
   onTopologyChange?: () => () => void;
+  /** DOCKER_STACK (planning#584). */
+  stackName?: string;
 }
 
 export const PARENT_SESSION_LABEL = "shipit-parent-session";
+
+/**
+ * Ownership the proxy writes over whatever labels the caller sent. The stack label is what the
+ * boot sweeps and stop scripts select by; without it a session's own `docker run` outlived them.
+ */
+export function ownershipLabels(ctx: Pick<RequestContext, "session" | "stackName">): Record<string, string> {
+  return { [PARENT_SESSION_LABEL]: ctx.session.sessionId, ...stackLabel(ctx.stackName) };
+}
 export const MAX_BODY_SIZE = 10 * 1024 * 1024;
 export const DOCKER_SOCKET = "/var/run/docker.sock";
 
@@ -41,6 +52,7 @@ export interface RequestContext {
   socketPath: string;
   /** Open only after reading and authorizing a start request, to limit caller-controlled holds. */
   beginTopologyChange?: () => () => void;
+  stackName?: string;
 }
 
 export function respond(res: http.ServerResponse, status: number, body: unknown): void {

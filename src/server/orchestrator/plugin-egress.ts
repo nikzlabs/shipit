@@ -58,6 +58,8 @@ export interface PreparePluginNetnsOptions {
   holderImage: string;
   policy: PluginEgressPolicy;
   setupTimeoutMs?: number;
+  /** Ownership labels for the holder and its sidecars (planning#584). */
+  labels?: Record<string, string>;
 }
 
 // Contain a separate holder before starting plugin code. Sharing the session netns exposes its broker.
@@ -77,7 +79,7 @@ export async function preparePluginNetns(
   }
 
   // Do not add shipit-parent-session: Compose's stale-container sweep would delete this holder.
-  const labels = { [PLUGIN_NETNS_LABEL]: opts.sessionId };
+  const labels = { ...(opts.labels ?? {}), [PLUGIN_NETNS_LABEL]: opts.sessionId };
 
   const holder = await opts.docker.createContainer({
     Image: opts.holderImage,

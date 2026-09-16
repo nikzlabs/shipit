@@ -4,6 +4,7 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import { holdsActiveReservation } from "./sessions.js";
 import { getMessage, sleep } from "./disk-utils.js";
 import { serializeStackOp } from "./stack-op-queue.js";
+import { stackLabelFilters } from "./stack-label.js";
 
 export const COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
 export const PARENT_SESSION_LABEL = "shipit-parent-session";
@@ -12,15 +13,19 @@ export function composeProjectName(sessionId: string): string {
   return `shipit-${sessionId.slice(0, 12)}`;
 }
 
-/** Caller must hold the session's stack queue. Preserves volumes. */
+/**
+ * Caller must hold the session's stack queue. Preserves volumes. `labelFilters` narrows the
+ * selection further (the boot reaper passes the stack filter, planning#584).
+ */
 export async function downComposeStackByProject(
   docker: Docker,
   sessionId: string,
+  labelFilters: string[] = [],
 ): Promise<number> {
   const project = composeProjectName(sessionId);
-  const label = `${COMPOSE_PROJECT_LABEL}=${project}`;
+  const labels = [`${COMPOSE_PROJECT_LABEL}=${project}`, ...labelFilters];
   const list = (): Promise<{ Id: string; State?: string }[]> =>
-    docker.listContainers({ all: true, filters: { label: [label] } });
+    docker.listContainers({ all: true, filters: { label: labels } });
   let removed = 0;
 
   const containers = await list();
@@ -61,7 +66,7 @@ export async function downComposeStackByProject(
   }
 
   try {
-    const networks = await docker.listNetworks({ filters: { label: [label] } });
+    const networks = await docker.listNetworks({ filters: { label: labels } });
     for (const ni of networks ?? []) {
       try {
         await docker.getNetwork(ni.Id).remove();
@@ -85,6 +90,8 @@ export interface ComposeStackReapDeps {
   unprobed?: ReadonlySet<string>;
   liveWork?: ReadonlySet<string>;
   paceMs?: number;
+  /** DOCKER_STACK (planning#584). */
+  stackName?: string;
 }
 
 function holdReason(sessionId: string, deps: ComposeStackReapDeps): string | null {
@@ -103,11 +110,12 @@ export async function reapSurvivingComposeStacks(
   deps: ComposeStackReapDeps,
 ): Promise<number> {
   // Both labels exclude agent egress sidecars and identify the full session ID.
+  const stackFilters = stackLabelFilters(deps.stackName);
   let containers;
   try {
     containers = await deps.docker.listContainers({
       all: true,
-      filters: { label: [PARENT_SESSION_LABEL, COMPOSE_PROJECT_LABEL] },
+      filters: { label: [PARENT_SESSION_LABEL, COMPOSE_PROJECT_LABEL, ...stackFilters] },
     });
   } catch (err) {
     console.warn("[compose-reap] listing surviving compose stacks failed:", getMessage(err));
@@ -138,7 +146,7 @@ export async function reapSurvivingComposeStacks(
       const outcome = await serializeStackOp(sessionId, async () => {
         const late = holdReason(sessionId, deps);
         if (late) return late;
-        return await downComposeStackByProject(deps.docker, sessionId);
+        return await downComposeStackByProject(deps.docker, sessionId, stackFilters);
       });
       if (typeof outcome === "string") {
         console.log(`[compose-reap] Keeping the surviving stack for ${sessionId} — ${outcome}`);

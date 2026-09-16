@@ -184,7 +184,9 @@ export async function setupContainerManager(
       const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
-      const composeOrphans = await cleanupOrphanComposeResources(containerManager.getDockerClient(), activeIds);
+      const composeOrphans = await cleanupOrphanComposeResources(
+        containerManager.getDockerClient(), activeIds, { stackName: process.env.DOCKER_STACK },
+      );
       if (composeOrphans > 0) console.log(`[server] Cleaned up ${composeOrphans} orphan compose container(s)`);
       const rediscovered = await containerManager.rediscover(activeIds, (sessionId) => {
         const session = sessionManager.get(sessionId);
@@ -218,7 +220,9 @@ export async function setupContainerManager(
     await containerManager.reapStandbyContainers(liveIds);
     // Compose previews carry parent-session labels, not the standby label.
     const docker = containerManager.getDockerClient?.();
-    if (docker) await cleanupOrphanComposeResources(docker, liveIds);
+    if (docker) {
+      await cleanupOrphanComposeResources(docker, liveIds, { stackName: process.env.DOCKER_STACK });
+    }
   }
 
   let dockerProxyServer: HttpServer | null = null;
@@ -238,6 +242,7 @@ export async function setupContainerManager(
           };
         },
         onTopologyChange: () => containerManager.beginContainerTopologyChange(),
+        stackName: process.env.DOCKER_STACK,
       });
       await new Promise<void>((resolve) => {
         proxy.listen(0, "0.0.0.0", () => {

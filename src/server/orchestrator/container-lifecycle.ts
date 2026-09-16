@@ -930,16 +930,21 @@ async function removeStaleContainer(
   }
 }
 
+/**
+ * `labelFilters` narrows every query further; the boot sweep passes the stack filter so a
+ * session id that exists on two instances (a restored backup) takes only this one's (planning#584).
+ */
 export async function cleanupSessionDockerResources(
   docker: Docker,
   sessionId: string,
+  opts: { labelFilters?: string[] } = {},
 ): Promise<void> {
-  const parentLabel = `shipit-parent-session=${sessionId}`;
+  const labels = [`shipit-parent-session=${sessionId}`, ...(opts.labelFilters ?? [])];
 
   try {
     const containers = await docker.listContainers({
       all: true,
-      filters: { label: [parentLabel] },
+      filters: { label: labels },
     });
     for (const ci of containers) {
       try {
@@ -961,7 +966,7 @@ export async function cleanupSessionDockerResources(
 
   try {
     const networks = await docker.listNetworks({
-      filters: { label: [parentLabel] },
+      filters: { label: labels },
     });
     for (const ni of networks) {
       try {
@@ -977,7 +982,7 @@ export async function cleanupSessionDockerResources(
 
   try {
     const volumes = await docker.listVolumes({
-      filters: { label: [parentLabel] },
+      filters: { label: labels },
     });
     for (const vi of (volumes?.Volumes ?? [])) {
       try {

@@ -40,6 +40,7 @@ import {
   type PluginNetns,
 } from "./plugin-egress.js";
 import { PLUGIN_CLI_LABEL, sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
+import { stackLabel, stackLabelFilters } from "./stack-label.js";
 import { pluginContainerEnv, PLUGIN_TOOLCHAIN_DIRS } from "./plugin-container-env.js";
 import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
 import { readInstallRecord, writeInstallRecord, type PluginInstallOutcome } from "./plugin-install-record.js";
@@ -65,6 +66,8 @@ export interface PluginInstallDeps {
   stateRoot?: string;
   timeoutMs?: number;
   egress?: () => PluginEgressPolicy;
+  /** DOCKER_STACK (planning#584). */
+  stackName?: string;
 }
 
 interface InstallCommand {
@@ -193,7 +196,7 @@ async function runInstallOnce(
       // Overlay permissions come from the lower directory. Hand over the worktree
       // without changing ownership of hardlinked objects in the shared bare cache.
       handPluginCheckoutToWorker(job.stagingDir);
-      await createPluginOverlay(deps.docker, spec);
+      await createPluginOverlay(deps.docker, spec, stackLabel(deps.stackName));
     } catch (err) {
       const reason = `could not prepare the plugin's writable layer: ${message(err)}`;
       record("failed", reason);
@@ -212,6 +215,7 @@ async function runInstallOnce(
         network: PLUGIN_INSTALL_NETWORK,
         holderImage: deps.image,
         policy,
+        labels: stackLabel(deps.stackName),
       });
       outcome = { ok: true };
       for (const { plugin, command } of commands) {
@@ -366,7 +370,7 @@ async function runInstallContainer(
   const depCache = resolveDepCacheMount(deps, job);
   const container = await deps.docker.createContainer({
     Image: deps.image,
-    Labels: { [PLUGIN_INSTALL_LABEL]: deps.sessionId },
+    Labels: { [PLUGIN_INSTALL_LABEL]: deps.sessionId, ...stackLabel(deps.stackName) },
     Entrypoint: ["/bin/sh", "-c"],
     // Shared caches and promoted trees need group writes across session UIDs.
     Cmd: [`umask 002; mkdir -p ${PLUGIN_TOOLCHAIN_DIRS.join(" ")}; ${command}`],
@@ -452,22 +456,24 @@ function clip(text: string): string {
   return text.length > REASON_MAX_CHARS ? `…${text.slice(-REASON_MAX_CHARS)}` : text;
 }
 
-// Boot only: these workloads belong to the previous process. Remove containers
-// before volumes; live-session prefixes would otherwise exempt volumes from the janitor.
+// Boot only: these workloads belong to the previous process — of THIS stack; another
+// instance's install may be mid-flight (planning#584). Remove containers before volumes;
+// live-session prefixes would otherwise exempt volumes from the janitor.
 export async function reapOrphanPluginInstalls(
   docker: Docker,
-  opts: { paceMs?: number } = {},
+  opts: { paceMs?: number; stackName?: string } = {},
 ): Promise<number> {
   let removed = 0;
   const pace = async (): Promise<void> => {
     if (opts.paceMs) await sleep(opts.paceMs);
   };
+  const stackFilters = stackLabelFilters(opts.stackName);
 
   for (const label of [PLUGIN_INSTALL_LABEL, PLUGIN_CLI_LABEL, PLUGIN_NETNS_LABEL]) {
     try {
     const containers = await docker.listContainers({
       all: true,
-      filters: { label: [label] },
+      filters: { label: [label, ...stackFilters] },
     });
     for (const { Id } of containers) {
       try {
@@ -484,7 +490,9 @@ export async function reapOrphanPluginInstalls(
   }
 
   try {
-    const volumes = await docker.listVolumes({ filters: { label: [PLUGIN_OVERLAY_LABEL] } });
+    const volumes = await docker.listVolumes({
+      filters: { label: [PLUGIN_OVERLAY_LABEL, ...stackFilters] },
+    });
     for (const { Name } of volumes.Volumes ?? []) {
       if (await removePluginOverlay(docker, Name)) removed++;
       await pace();

@@ -439,6 +439,56 @@ describe("createPluginInstallRunner", () => {
     expect(removed).toEqual(["install-1", "cli-1", "netns-1"]);
   });
 
+  // planning#584 — another ShipIt instance on the same daemon may have an install mid-flight.
+  it("reaps only this stack's plugin containers and volumes, not another instance's", async () => {
+    const containers: { Id: string; Labels: Record<string, string> }[] = [
+      { Id: "install-a", Labels: { "shipit-plugin-install": "s1", "shipit-stack": "shipit-a" } },
+      { Id: "install-b", Labels: { "shipit-plugin-install": "s2", "shipit-stack": "shipit-b" } },
+      { Id: "cli-old", Labels: { "shipit-plugin-cli": "s3" } },
+    ];
+    const volumes = [
+      { Name: "vol-a", Labels: { "shipit-plugin-generation": "vol-a", "shipit-stack": "shipit-a" } },
+      { Name: "vol-b", Labels: { "shipit-plugin-generation": "vol-b", "shipit-stack": "shipit-b" } },
+    ];
+    const matches = (labels: Record<string, string>, filters: string[]): boolean =>
+      filters.every((f) => {
+        const eq = f.indexOf("=");
+        return eq < 0 ? f in labels : labels[f.slice(0, eq)] === f.slice(eq + 1);
+      });
+    const removed: string[] = [];
+    const docker = {
+      listContainers: async (opts: { filters: { label: string[] } }) =>
+        containers.filter((c) => matches(c.Labels, opts.filters.label)),
+      getContainer: (id: string) => ({ remove: async () => { removed.push(id); } }),
+      listVolumes: async (opts: { filters: { label: string[] } }) => ({
+        Volumes: volumes.filter((v) => matches(v.Labels, opts.filters.label)),
+      }),
+      getVolume: (name: string) => ({
+        remove: async () => { removed.push(name); },
+        inspect: async () => { throw Object.assign(new Error("gone"), { statusCode: 404 }); },
+      }),
+    } as unknown as Docker;
+
+    expect(await reapOrphanPluginInstalls(docker, { stackName: "shipit-a" })).toBe(2);
+    expect(removed).toEqual(["install-a", "vol-a"]);
+  });
+
+  it("stamps the stack on the netns holder, the install container and the generation volume", async () => {
+    const fake = fakeDocker();
+    const run = createPluginInstallRunner({
+      docker: fake.docker, image: "worker:test", sessionId: "s1", stateDir, stackName: "shipit-a",
+      egress: () => CONTAINED_EGRESS,
+    });
+
+    expect(await run(job([exportWith("probe", "npm ci")]))).toEqual({ ok: true });
+
+    const [holder, install] = fake.containers;
+    expect((holder.opts.Labels as Record<string, string>)["shipit-stack"]).toBe("shipit-a");
+    expect((install.opts.Labels as Record<string, string>)["shipit-stack"]).toBe("shipit-a");
+    const volume = fake.createdVolumes[0] as { Labels?: Record<string, string> };
+    expect(volume.Labels).toMatchObject({ "shipit-stack": "shipit-a" });
+  });
+
   it("denies its own subnet at the orchestrator API before any container joins", async () => {
     clearUntrustedContainerNetworks();
     const { docker, networksCreated } = fakeDocker();

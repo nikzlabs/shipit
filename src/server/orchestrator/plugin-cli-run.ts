@@ -33,6 +33,7 @@ import {
 } from "./plugin-egress.js";
 import { holdGeneration, type ReleaseHold } from "./plugin-leases.js";
 import { assertOverlayVolumesMatch } from "./overlay-volume.js";
+import { stackLabel } from "./stack-label.js";
 import {
   ensurePluginRuntimeOverlay,
   pluginRuntimeOverlaySpec,
@@ -78,6 +79,8 @@ export interface PluginCliDeps {
   // Host grants and session policy can change between calls.
   egress?: () => PluginEgressPolicy;
   isCancelled?: () => boolean;
+  /** DOCKER_STACK (planning#584). */
+  stackName?: string;
 }
 
 export interface PluginCliRequest {
@@ -216,6 +219,7 @@ async function runHeldPluginCommand(
         stateDir,
         checkoutDir: pinned.dir,
         ...(deps.depStoreDir ? { depStoreDir: deps.depStoreDir } : {}),
+        ...(deps.stackName ? { stackName: deps.stackName } : {}),
         ...roots,
       };
       overlaySpec = pluginRuntimeOverlaySpec(overlayArgs);
@@ -293,6 +297,7 @@ async function runHeldPluginCommand(
       network: PLUGIN_CLI_NETWORK,
       holderImage: deps.image,
       policy: deps.egress?.() ?? UNCONTAINED_PLUGIN_EGRESS,
+      labels: stackLabel(deps.stackName),
     });
   } catch (err) {
     return refuse(`this session's network policy could not be applied to the plugin container: ${message(err)}`);
@@ -424,7 +429,7 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
   const identity = identityForSession(deps.sessionId);
   const container = await deps.docker.createContainer({
     Image: deps.image,
-    Labels: { [PLUGIN_CLI_LABEL]: deps.sessionId },
+    Labels: { [PLUGIN_CLI_LABEL]: deps.sessionId, ...stackLabel(deps.stackName) },
     // Bypass the worker entrypoint, which prepares mounts this container does not have.
     Entrypoint: [spec.entry],
     Cmd: spec.args,

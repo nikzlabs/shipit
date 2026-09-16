@@ -340,6 +340,7 @@ describe("Docker API proxy", () => {
     const deps: DockerProxyDeps = {
       getSessionByContainerIp: (ip) => sessionMap.get(ip),
       socketPath: daemon.socketPath,
+      stackName: "shipit-a",
       onTopologyChange: () => {
         openBrackets++;
         bracketOpensSeen++;
@@ -644,6 +645,18 @@ describe("Docker API proxy", () => {
       expect(container?.labels["other-label"]).toBe("kept");
     });
 
+    // planning#584: the stop scripts and boot sweeps select by the stack label, so a session's
+    // own `docker run` must carry it or it outlives them.
+    it("overwrites the stack label with the instance's own", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        Labels: { "shipit-stack": "shipit-b" },
+        HostConfig: {},
+      });
+      expect(res.status).toBe(201);
+      expect(daemon.containers.get((res.body as any).Id)?.labels["shipit-stack"]).toBe("shipit-a");
+    });
+
     it("rejects bind mounts outside session workspace", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine",
@@ -888,6 +901,7 @@ describe("Docker API proxy", () => {
 
       const network = [...daemon.networks.values()][0];
       expect(network.labels[PARENT_SESSION_LABEL]).toBe("session-1");
+      expect(network.labels["shipit-stack"]).toBe("shipit-a");
     });
 
     it("GET /networks filters to session networks", async () => {
@@ -939,6 +953,7 @@ describe("Docker API proxy", () => {
 
       const volume = daemon.volumes.get("my-vol");
       expect(volume?.labels[PARENT_SESSION_LABEL]).toBe("session-1");
+      expect(volume?.labels["shipit-stack"]).toBe("shipit-a");
     });
 
     it("rejects volume create with DriverOpts (host-path escape)", async () => {

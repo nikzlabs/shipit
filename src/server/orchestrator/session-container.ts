@@ -63,6 +63,7 @@ import {
 import { reloadEgressSidecars } from "./egress-reload.js";
 import { listEgressAllowedHosts } from "./egress-policy.js";
 import type { PluginEgressPolicy } from "./plugin-egress.js";
+import { STACK_LABEL } from "./stack-label.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { SessionCapabilities, SessionInfo } from "../shared/types.js";
 
@@ -236,7 +237,7 @@ const DEFAULT_WORKER_PORT = 9100;
 export const CONTAINER_LABEL_KEY = "shipit-session";
 export const CONTAINER_LABEL_VALUE = "true";
 export const CONTAINER_SESSION_ID_LABEL = "shipit-session-id";
-export const CONTAINER_STACK_LABEL = "shipit-stack";
+export const CONTAINER_STACK_LABEL = STACK_LABEL;
 export const CONTAINER_STANDBY_LABEL = "shipit-standby";
 export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 

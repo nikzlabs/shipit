@@ -7,6 +7,7 @@ import {
   readBody,
   forwardToDocker,
   pipeToDocker,
+  ownershipLabels,
   PARENT_SESSION_LABEL,
   MAX_BODY_SIZE,
   DOCKER_SOCKET,
@@ -64,6 +65,7 @@ function buildRoutes(): Route[] {
       if (result.error) {
         forbidden(ctx.res, result.error); return;
       }
+      body.Labels = { ...(body.Labels as Record<string, string>), ...ownershipLabels(ctx) };
 
       const sanitizedBody = Buffer.from(JSON.stringify(body));
       const dockerResult = await forwardToDocker(
@@ -188,9 +190,7 @@ function buildRoutes(): Route[] {
       const bodyBuf = await readBody(ctx.req, MAX_BODY_SIZE);
       const body = JSON.parse(bodyBuf.toString()) as Record<string, unknown>;
 
-      const labels = (body.Labels ?? {}) as Record<string, string>;
-      labels[PARENT_SESSION_LABEL] = ctx.session.sessionId;
-      body.Labels = labels;
+      body.Labels = { ...((body.Labels ?? {}) as Record<string, string>), ...ownershipLabels(ctx) };
 
       const sanitizedBody = Buffer.from(JSON.stringify(body));
       const dockerResult = await forwardToDocker(
@@ -322,9 +322,7 @@ function buildRoutes(): Route[] {
         forbidden(ctx.res, `Volume driver "${body.Driver as string}" is not allowed`); return;
       }
 
-      const labels = (body.Labels ?? {}) as Record<string, string>;
-      labels[PARENT_SESSION_LABEL] = ctx.session.sessionId;
-      body.Labels = labels;
+      body.Labels = { ...((body.Labels ?? {}) as Record<string, string>), ...ownershipLabels(ctx) };
 
       const sanitizedBody = Buffer.from(JSON.stringify(body));
       const dockerResult = await forwardToDocker(
@@ -449,6 +447,7 @@ export function createDockerProxy(deps: DockerProxyDeps): http.Server {
       const ctx: RequestContext = {
         req, res, session, socketPath,
         ...(deps.onTopologyChange ? { beginTopologyChange: deps.onTopologyChange } : {}),
+        ...(deps.stackName ? { stackName: deps.stackName } : {}),
       };
 
       for (const route of routes) {

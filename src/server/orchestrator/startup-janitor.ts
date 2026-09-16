@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type Docker from "dockerode";
 import { reapOrphanEgressSidecars } from "./egress-orphan-reaper.js";
+import { stackLabelFilters } from "./stack-label.js";
 import { reapOrphanPluginInstalls } from "./plugin-install.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
@@ -37,6 +38,8 @@ export interface DiskJanitorDeps {
   sweepOrphanBranches?: boolean;
   docker?: Docker;
   paceMs?: number;
+  /** DOCKER_STACK; the Docker sweeps select only resources labelled with it (planning#584). */
+  stackName?: string;
 }
 
 export interface DiskJanitorResult {
@@ -75,16 +78,18 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   if (deps.docker) {
     try {
       result.orphanPluginInstallsRemoved = await reapOrphanPluginInstalls(
-        deps.docker, { paceMs },
+        deps.docker, { paceMs, stackName: deps.stackName },
       );
     } catch (err) {
       console.warn("[disk-janitor] orphan plugin-install sweep failed:", getMessage(err));
     }
   }
 
+  const stackFilterArgs = stackLabelFilters(deps.stackName).flatMap((f) => ["--filter", `label=${f}`]);
+
   try {
     result.orphanVolumesRemoved = await sweepOrphanSessionVolumes(
-      deps.sessionManager, runDocker, paceMs,
+      deps.sessionManager, runDocker, paceMs, stackFilterArgs,
     );
   } catch (err) {
     console.warn("[disk-janitor] orphan volume sweep failed:", getMessage(err));
@@ -92,7 +97,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.orphanNetworksRemoved = await sweepOrphanSessionNetworks(
-      deps.sessionManager, runDocker, paceMs,
+      deps.sessionManager, runDocker, paceMs, stackFilterArgs,
     );
   } catch (err) {
     console.warn("[disk-janitor] orphan network sweep failed:", getMessage(err));
@@ -274,6 +279,7 @@ async function sweepOrphanSessionVolumes(
   sessionManager: SessionManager,
   runDocker: (args: string[]) => Promise<string>,
   paceMs: number,
+  stackFilterArgs: string[],
 ): Promise<number> {
   const SESSION_VOLUME_RE = /^shipit-([a-f0-9-]{12})_/;
 
@@ -286,10 +292,13 @@ async function sweepOrphanSessionVolumes(
 
   let listOut: string;
   try {
+    // "Not in this session store" only means orphan within this stack: another instance's
+    // stopped database is a dangling volume this store has never heard of (planning#584).
     listOut = await runDocker([
       "volume", "ls", "-q",
       "--filter", "name=shipit-",
       "--filter", "dangling=true",
+      ...stackFilterArgs,
     ]);
   } catch (err) {
     console.warn("[disk-janitor] volume ls failed:", getMessage(err));
@@ -327,6 +336,7 @@ async function sweepOrphanSessionNetworks(
   sessionManager: SessionManager,
   runDocker: (args: string[]) => Promise<string>,
   paceMs: number,
+  stackFilterArgs: string[],
 ): Promise<number> {
   const SESSION_NETWORK_RE = /^shipit-(?:session|egress)-([a-f0-9-]{12})/;
 
@@ -343,6 +353,7 @@ async function sweepOrphanSessionNetworks(
       "network", "ls",
       "--filter", "name=shipit-",
       "--filter", "dangling=true",
+      ...stackFilterArgs,
       "--format", "{{.Name}}",
     ]);
   } catch (err) {

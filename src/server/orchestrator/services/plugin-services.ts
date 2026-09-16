@@ -26,6 +26,7 @@ export interface PluginServiceDeps {
   stateRoot?: string;
   depStoreDir?: string;
   containEgress: boolean;
+  stackName?: string;
 }
 
 export async function resolveSessionPluginServices(
@@ -200,6 +201,7 @@ async function ensurePluginVolumes(
         stateDir,
         checkoutDir,
         ...(deps.depStoreDir ? { depStoreDir: deps.depStoreDir } : {}),
+        ...(deps.stackName ? { stackName: deps.stackName } : {}),
         ...roots,
       });
       volumes.set(repoName, volumeName);
