@@ -5,41 +5,78 @@
     "url": "https://github.com/nicolasalt-shipit/shipit-demo-app",
     "commit": "af344fbed791e454f6a0b96245b48f377b2d7aa3"
   },
-  "settings": { "autoCreatePr": true },
+  "settings": {
+    "autoCreatePr": true
+  },
   "permissionMode": "auto",
   "waitCeilingSeconds": 1800,
-  "viewport": { "width": 1440, "height": 900 },
-  "pace": { "textCharsPerSecond": 120, "typingCharsPerSecond": 30 },
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "pace": {
+    "textCharsPerSecond": 120,
+    "typingCharsPerSecond": 30
+  },
   "cursor": true,
   "beats": [
     {
       "id": "new-session",
       "click": "new-session",
       "pane": "transcript",
-      "wait": [{ "composer": "ready" }],
+      "wait": [
+        {
+          "composer": "ready"
+        },
+        {
+          "preview_text": "Hello React"
+        }
+      ],
       "lead": 0,
       "hold": 1
     },
     {
       "id": "build",
-      "type": "Build a habit tracker: a list of daily habits, a check button on each, and a streak counter that goes up when you check one.",
+      "type": "Build a habit tracker with a light theme: a list of daily habits, a check button on each, and a streak counter that goes up when you check one. Seed three example habits with streaks of 4, 2 and 0.",
       "pane": "transcript",
-      "wait": [{ "turn": "running" }],
+      "wait": [
+        {
+          "turn": "running"
+        }
+      ],
       "lead": 4,
       "hold": 1
     },
     {
       "id": "agent-works",
-      "pane": "preview",
-      "wait": [{ "preview_text": "habit" }, { "pr_card": "open" }],
+      "pane": "files",
+      "wait": [
+        {
+          "preview_text": "habit"
+        },
+        {
+          "pr_card": "open"
+        }
+      ],
       "lead": 6,
-      "hold": 6
+      "hold": 6,
+      "holdPane": "preview"
     },
     {
       "id": "dark-mode",
       "type": "Switch it to dark mode with a violet accent, and retitle the page 'Streaks'.",
       "pane": "preview",
-      "wait": [{ "turn": "finished" }, { "preview_text": "Streaks" }, { "merge_button": "visible" }],
+      "wait": [
+        {
+          "turn": "finished"
+        },
+        {
+          "preview_text": "Streaks"
+        },
+        {
+          "merge_button": "visible"
+        }
+      ],
       "lead": 5,
       "hold": 6
     },
@@ -47,7 +84,11 @@
       "id": "merge",
       "click": "merge",
       "pane": "pr-card",
-      "wait": [{ "pr_card": "merged" }],
+      "wait": [
+        {
+          "pr_card": "merged"
+        }
+      ],
       "lead": 3,
       "hold": 4
     }

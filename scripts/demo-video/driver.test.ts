@@ -158,11 +158,12 @@ describe("beatFootageEnd", () => {
     { id: "work", lead: 6, hold: 6 },
   ];
 
-  it("is the later of the lead's end and the hold's end", () => {
-    // A turn that outlasts its lead: the hold decides.
+  it("ends where the hold ends, and the hold starts at the later of readyAt and the lead's end", () => {
+    // A turn that outlasts its (zero) lead: the hold runs from readyAt.
     expect(beatFootageEnd([{ id: "session", actionAt: 2.4, readyAt: 4.7 }], story)).toBe(5.7);
-    // A turn shorter than its lead: the lead decides, so the typing footage is complete.
-    expect(beatFootageEnd([{ id: "session", actionAt: 2.4, readyAt: 4.7 }, { id: "prompt", actionAt: 5.7, readyAt: 9 }], story)).toBe(13.7);
+    // A turn shorter than its lead: the lead [5.7, 13.7] is kept whole and the hold [13.7, 15.7] follows it,
+    // so the beat still costs lead + hold — the fixed budget the cut relies on.
+    expect(beatFootageEnd([{ id: "session", actionAt: 2.4, readyAt: 4.7 }, { id: "prompt", actionAt: 5.7, readyAt: 9 }], story)).toBe(15.7);
     expect(beatFootageEnd([{ id: "session", actionAt: 2.4, readyAt: 4.7 }, { id: "prompt", actionAt: 5.7, readyAt: 40 }], story)).toBe(42);
   });
 
@@ -172,8 +173,9 @@ describe("beatFootageEnd", () => {
       { id: "prompt", actionAt: 5.7, readyAt: 9 },
       { id: "work", actionAt: null, readyAt: 12 },
     ];
-    // prompt's hold ends at 11; work's lead is [11, 17], its hold [12, 18].
-    expect(beatFootageEnd(log, story)).toBe(18);
+    // prompt: lead [5.7, 13.7], hold [13.7, 15.7]; work's lead is [15.7, 21.7] and,
+    // being ready (12) before that lead ends, its hold is [21.7, 27.7].
+    expect(beatFootageEnd(log, story)).toBe(27.7);
   });
 
   it("makes the kept footage exactly Σ(lead + hold) when every turn outlasts its lead", async () => {

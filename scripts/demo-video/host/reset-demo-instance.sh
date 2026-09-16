@@ -12,8 +12,11 @@
 #   demo-proxy project up
 #
 # Idempotent: every step tolerates its state already being the case. Refuses to
-# run unless the install's Compose project is `shipit-prod` — the guard against
-# pointing it at any other ShipIt on a machine.
+# run unless (a) the install's Compose project is `shipit-prod` and (b) the demo
+# marker `$SHIPIT_HOME/.shipit-demo-instance` exists and names this host.
+# `shipit-prod` is the local install's DEFAULT project name, so (a) alone would
+# pass on any ordinary ShipIt host and wipe its workspace; the marker is placed
+# by the operator on the demo host only (plan §9).
 #
 # Usage: reset-demo-instance.sh [--dry-run] [--shipit-home DIR] [--proxy-compose FILE]
 #   --dry-run prints each command instead of running it.
@@ -54,6 +57,13 @@ LIB="$SHIPIT_HOME/deployment/local/lib.sh"
 [ "${COMPOSE_STACK:-}" = "$EXPECTED_STACK" ] || die "refusing: lib.sh names Compose stack '${COMPOSE_STACK:-}', expected $EXPECTED_STACK"
 grep -Eq "^name:[[:space:]]*$EXPECTED_STACK[[:space:]]*$" "$COMPOSE_FILE" \
   || die "refusing: $COMPOSE_FILE is not the $EXPECTED_STACK project"
+
+# The marker is what makes this the demo instance and not a standard install.
+MARKER="$SHIPIT_HOME/.shipit-demo-instance"
+[ -f "$MARKER" ] || die "refusing: no demo marker at $MARKER — '$EXPECTED_STACK' is the local install's default project name, so it proves nothing; the operator creates the marker (containing this host's name) on the demo host only"
+MARKER_HOST="$(tr -d '[:space:]' < "$MARKER")"
+[ -n "$MARKER_HOST" ] && [ "$MARKER_HOST" = "$(hostname)" ] \
+  || die "refusing: $MARKER names '${MARKER_HOST:-}', but this host is '$(hostname)'"
 
 WORKSPACE_VOLUME="${EXPECTED_STACK}_workspace"
 CREDENTIALS_VOLUME="${EXPECTED_STACK}_credentials"
