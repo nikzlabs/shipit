@@ -148,7 +148,7 @@ person.
 | An egress prompt is pending | `phase === "pending"` (`EgressPromptCard.tsx:21`) |
 | A release is proposed but not confirmed | `phase === "proposed"` (`ReleaseLifecycleCard.tsx:173`) |
 | A bug report is not filed | the card store, seeded on every load (`session-data.ts:331`) |
-| An action checklist was never submitted | a new `submittedAt`, below |
+| An action card, always | the card's presence — `isCompactDetail` keeps it whether or not `submittedAt` is set (req 12) |
 
 **No tool is ever kept, and requirement 2 has no exception.** An earlier draft
 carved one out for an unanswered question, reading "the tool has no result" as
@@ -212,15 +212,19 @@ its producing execution is still running is exactly the case that a
 database-only write loses, at the next persistence boundary or snapshot.
 
 **The card stays reusable.** `submittedAt` records that the user acted; it locks
-nothing, so the documented contract at `chat.ts:71` still holds. Expanding the
-turn brings the card back in full working order.
+nothing, so the documented contract at `chat.ts:71` still holds. The card is on
+screen in the collapsed turn, in full working order.
 
-**The accepted cost.** A user who ticks one action now and means to tick another
-later finds the card collapsed after the first submission. Any finer rule —
-recording which action ids were submitted, and keeping the card visible while
-one is unclaimed — keeps a partly-used checklist on screen for the life of the
-session, which is the retain-forever failure that removed the issue-write
-exception above. One submission means acted upon.
+**The flag no longer hides the card (req 12, 2026-09-16).** It was written to
+decide that, and the cost it carried — a user who ticks one action now and means
+to tick another later finding the card gone — is what the user rejected on
+seeing it. An action card is now kept unconditionally, which removes the cost
+without the finer rule that was rejected with it (recording which action ids
+were claimed keeps a partly-used checklist on screen for the life of the
+session, the retain-forever failure that removed the issue-write exception
+above). `submittedAt` stays: it is still set at acceptance, persisted and
+broadcast, as the record that the user acted — nothing reads it to decide
+visibility any more.
 
 ## Client
 
@@ -266,11 +270,42 @@ that does not exist.
 
 ## The expand control (req 8)
 
-One real button per collapsed turn, above the turn's content: a `Button` with
-`variant="secondary"` and a `CaretDown` icon at `ICON_SIZE.SM`, not the current
-ghost text (`MessageList.tsx:331`). It keeps `aria-expanded` and
-`aria-controls`. No hidden-row count, and no failure status beside it —
+One button per collapsed turn, **on the rewind strip that closes it** (req 14):
+a `Button` with `variant="ghost"`, holding a caret at `ICON_SIZE.XS` in
+`--color-accent`, at the left of an 8px row whose remaining width is the anchor.
+The caret is 12px in that 8px row and overflows it by 2px each side, into the
+gap the rows already leave — so the control adds **no height at all**, which is
+what the earlier forms were really paying. The accent is what makes it findable
+at that size. It keeps `aria-expanded`, `aria-controls` and the accessible name
+("Show full turn: <the user's message>"). No failure status beside it —
 requirement 11 already keeps the error row on screen.
+
+**The touch target is a pseudo-element, so it is not part of the layout.** Under
+`pointer-coarse:` the caret's `::before` is 44×44 offset `-8px, -8px`, measured
+in an emulated phone: the button box stays 20×12 and the row stays 8px, and a
+tap 18px *below* the caret — outside the button, inside that area — toggles the
+turn. Growing the button itself, or the row, would give the height straight
+back. The area reaches down the left gutter, which is free precisely because the
+row below is the next user's message and user bubbles are right-aligned; where a
+long bubble does reach that far, the bubble wins the tap, since it is positioned
+and later in the DOM. jsdom has no layout, so the component test asserts the
+classes and the geometry is verified in a browser.
+
+**The tooltip counts what the fold holds**: `"Show full turn — 3 tool calls ·
+1 message · 2 cards"`, each part dropped when it is zero. `countHidden` tallies
+it in the same pass that decides what is hidden (`useCompactConversation`),
+never in a second walk that could disagree with what is on screen, and
+`describeHidden` renders the tally. A to-do panel counts as a card — it is a
+panel rather than prose, and a fourth noun would make the label a list. The
+counts live in the tooltip rather than beside the caret because a row carrying
+text carries its height.
+
+Three earlier forms were rejected, and their reasons are what this one answers.
+A bordered `variant="secondary"` button carrying "Show full turn" read as too
+heavy beside a turn's own prose. A ghost chevron alone was "too big, blends with
+everything else, takes a lot of vertical space". A full-width fold rule with the
+counts on it fixed the blending — a hairline is unmistakably structure — but
+still spent a 14px line on a control, which the strip does not.
 
 docs/296's "Turn ended without an agent reply." note survives, on a narrower
 condition: a turn that keeps **nothing**, so its collapsed form is the button
@@ -279,6 +314,20 @@ which put the note beside a turn whose reply was an image — and suppressed it
 for a turn whose only content was an error row, where it was redundant anyway.
 Both are decided by the same classification that hides the rows, so the note
 cannot disagree with what is on screen.
+
+**Which strip is the closing one, and who draws it.** A run's closing gap sits
+before `run.end` — the user message that ended the turn — so the row that draws
+it is *outside* the run, and the hook says so: `closingIndex` maps `run.end` to
+its run, and that row's view carries a `ClosingControl` describing the turn
+*above* it (its open state, its `aria-controls` ids, what the fold holds). The
+row then draws caret and anchor together and passes `showGapBefore={false}` to
+`TranscriptRow`, so the strip is never drawn twice. A run whose closing row has
+no anchor — no rewind controls, or a notice in the way — still gets the strip,
+with the caret alone on it.
+
+Putting the control there is also what let the earlier hoisting go: nothing at
+the head of the run needs reordering any more, so the opening gap is drawn by
+whichever row owns it, as it was before.
 
 Follow the `design-language` skill: semantic color tokens only, no hardcoded
 palette values, `@phosphor-icons/react` for the icon.
@@ -332,7 +381,8 @@ agent message and all cards", which this design contradicts
 - An appended error row does not displace the turn's ordinary reply.
 - A code rollback notice stays visible when its row is hidden.
 - Every card in the "still needs the user" table stays visible in its pending
-  state and hides once resolved, including after a reload.
+  state and hides once resolved, including after a reload — except an action
+  card, which stays either way (req 12).
 - A checklist submitted during a running turn still reads as submitted after the
   turn finishes and after a reload.
 - Pressing a control in a transcript that has a protected turn performs the

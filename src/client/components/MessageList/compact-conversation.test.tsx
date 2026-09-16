@@ -333,6 +333,89 @@ describe("collapsed turns", () => {
     expect(container.querySelectorAll("[data-compact-content]").length).toBeGreaterThan(0);
   });
 
+  it("says what the fold is holding — tool calls, messages and cards (req 8)", () => {
+    compactOn();
+    const { rerender } = render(<MessageList messages={transcript()} isLoading={false} />);
+    expect(screen.getByRole("button", { name: /Show full turn/ }))
+      .toHaveAttribute("title", "Show full turn — 1 tool call · 1 message · 1 card");
+
+    const plural = [user("Task"), bot("Step one"), bot("Step two"), {
+      ...bot(""),
+      toolUse: [
+        { type: "tool_use" as const, id: "a", name: "Read", input: {} },
+        { type: "tool_use" as const, id: "b", name: "Edit", input: {} },
+      ],
+      toolResults: [{ toolUseId: "a", content: "ok" }, { toolUseId: "b", content: "ok" }],
+    }, { ...bot(""), compaction: { trigger: "auto" } }, bot("Done"),
+      user("Next"), bot("Working now")] as ChatMessage[];
+    rerender(<MessageList messages={plural} isLoading={false} />);
+    expect(screen.getByRole("button", { name: /Show full turn/ }))
+      .toHaveAttribute("title", "Show full turn — 2 tool calls · 2 messages · 1 card");
+  });
+
+  it("gives the control a finger-sized touch target on a coarse pointer (req 8)", () => {
+    compactOn();
+    render(<MessageList messages={transcript()} isLoading={false} />);
+    // jsdom has no layout, so the classes are the contract here; the geometry
+    // (44x44 over an 8px row, and a tap below the caret toggling the turn) was
+    // verified in a coarse-pointer browser.
+    const cls = screen.getByRole("button", { name: /Show full turn/ }).className;
+    expect(cls).toContain("relative");
+    // Without the content and the positioning there is no box to hit at all.
+    expect(cls).toContain("pointer-coarse:before:content-['']");
+    expect(cls).toContain("pointer-coarse:before:absolute");
+    expect(cls).toContain("pointer-coarse:before:h-11");
+    expect(cls).toContain("pointer-coarse:before:w-11");
+  });
+
+  it("counts a split-out subagent call once, not twice (req 8)", () => {
+    compactOn();
+    // A subagent call always splits into its own element, while the standalone
+    // question stays attached to the prose row: the row must count only its own.
+    const data = [user("Task"), {
+      ...bot("Handing the search off."),
+      toolUse: [
+        { type: "tool_use" as const, id: "t", name: "Task", input: { description: "search" } },
+        { type: "tool_use" as const, id: "q", name: "AskUserQuestion", input: { questions: [] } },
+      ],
+      toolResults: [{ toolUseId: "t", content: "done" }, { toolUseId: "q", content: "answered" }],
+    }, bot("Done"), user("Next"), bot("Working now")] as ChatMessage[];
+    render(<MessageList messages={data} isLoading={false} />);
+    expect(screen.getByRole("button", { name: /Show full turn/ }))
+      .toHaveAttribute("title", "Show full turn — 2 tool calls · 1 message");
+  });
+
+  it("does not leave an empty row where the control used to sit", () => {
+    compactOn();
+    const { container } = render(<MessageList messages={transcript()} isLoading={false} />);
+    // `textContent` sees through `hidden`, so ask what the wrapper actually
+    // draws: a visible wrapper whose every child is hidden renders nothing and
+    // still takes the group's spacing.
+    const empties = [...container.querySelectorAll("[data-compact-content]")]
+      .map((row) => row.parentElement!)
+      .filter((wrapper) => !wrapper.hidden
+        && [...wrapper.children].every((child) => (child as HTMLElement).hidden));
+    expect(empties).toHaveLength(0);
+  });
+
+  it("puts the control on the strip that closes the turn, below the reply (req 14)", () => {
+    compactOn();
+    const { container } = render(<MessageList messages={transcript()} isLoading={false} onRewindAtGap={vi.fn()} />);
+    const control = () => screen.getByRole("button", { name: /Show (full|compact) turn/ });
+    const strip = () => [...control().parentElement!.querySelectorAll('[data-testid="rewind-point"]')];
+    // The closing strip's anchor is the one under an agent reply, so left-aligned.
+    expect(strip()).toHaveLength(1);
+    expect(strip()[0]).toHaveAttribute("data-align", "left");
+    // Below the reply it folds, and the turn's opening anchor is not disturbed.
+    expect(screen.getByText("Search is ready").compareDocumentPosition(control()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('[data-testid="rewind-point"][data-align="right"]')).toHaveLength(2);
+
+    fireEvent.click(control());
+    expect(strip()).toHaveLength(1);
+    expect(screen.getByText("Checking files")).toBeVisible();
+    expect(container.querySelectorAll('[data-testid="rewind-point"][data-align="right"]')).toHaveLength(2);
+  });
+
   it("keeps later row DOM parents fixed when an early run is expanded", () => {
     compactOn();
     const data = Array.from({ length: 30 }, (_, i) => [user(`Task ${i}`), bot(`Progress ${i}`), bot(`Result ${i}`)]).flat();
@@ -433,17 +516,21 @@ describe("collapsed turns", () => {
     expect(window.getSelection()?.toString()).toBe("Selected outside the conversation");
   });
 
-  it("hides an action checklist once the server has recorded a submission", () => {
+  it("keeps an action checklist in a collapsed turn, submitted or not (req 12)", () => {
     compactOn();
     const base = { cardId: "a1", actions: [{ id: "1", label: "Open a PR", payload: "Open a PR" }], createdAt: "2026-09-13T00:00:00.000Z" };
     const withCard = (card: typeof base & { submittedAt?: string }): ChatMessage[] =>
-      [user("Task"), { ...bot(""), actionChecklist: card }, user("Next"), bot("Working now")];
+      [user("Task"), bot("Working on it"), { ...bot(""), actionChecklist: card }, bot("Done"),
+        user("Next"), bot("Working now")];
 
     const { rerender } = render(<MessageList messages={withCard(base)} isLoading={false} />);
     expect(screen.getByTestId("action-checklist-card")).toBeVisible();
 
     rerender(<MessageList messages={withCard({ ...base, submittedAt: "2026-09-13T01:00:00.000Z" })} isLoading={false} />);
-    expect(screen.getByTestId("action-checklist-card")).not.toBeVisible();
+    expect(screen.getByTestId("action-checklist-card")).toBeVisible();
+    // The turn is genuinely collapsed around it: the reply stays, the rest goes.
+    expect(screen.getByText("Done")).toBeVisible();
+    expect(screen.getByText("Working on it")).not.toBeVisible();
   });
 
   it("reads each pending card's own source of truth (req 12)", () => {

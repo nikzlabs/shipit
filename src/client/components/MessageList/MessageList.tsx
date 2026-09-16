@@ -362,8 +362,15 @@ export function MessageList({
     // docs/299 — the rollback pill explains the response it sits above, so it
     // lives between the rows rather than inside one a collapsed turn can hide.
     const rollbackHash = isBubble && anchorMsg?.rolledBack ? anchorMsg.codeRollbackHash : undefined;
-    const showsSomething = !view.hidden || !!view.first || !!rollbackHash
-      || (isBubble && shouldShowGapBefore(el.index));
+    const gapBefore = isBubble && shouldShowGapBefore(el.index);
+    // docs/299-collapsed-turns req 14 — this row's strip closes the turn above
+    // it, so the strip carries that turn's caret and this row draws both.
+    const closes = view.closes;
+    // The note is the only thing the run's FIRST row draws now that the control
+    // has moved below the turn; without it a hidden first row is an empty box
+    // the group still spaces around.
+    const emptyTurnNote = !!(view.first && view.run && !view.open && view.empty);
+    const showsSomething = !view.hidden || emptyTurnNote || !!rollbackHash || gapBefore || !!closes;
     return {
       key,
       // planning#491 — a row that can MOVE within the list must not be allowed
@@ -372,25 +379,40 @@ export function MessageList({
       visible: showsSomething,
       node: (
         <div key={key} hidden={!showsSomething}>
-          {view.first && view.run && (
-            <div className="text-xs text-(--color-text-secondary) flex items-center gap-2 py-0.5">
-              {/* req 8 — a real button, not ghost text that reads as content. */}
-              <Button variant="secondary" size="sm"
-                aria-expanded={view.open}
-                aria-controls={view.controls}
-                aria-label={`${view.open ? "Show compact turn" : "Show full turn"}: ${view.run.identity.text.slice(0, 80) || "Agent response"}`}
-                aria-disabled={view.search || undefined}
-                title={view.search ? "Revealed by the active search" : undefined}
-                onClick={() => { if (!view.search) compact.toggle(view.run, view.open); }}>
-                {view.open
+          {/* req 8 — the caret rides the rewind strip that closes the turn, at
+              its left end, so the control costs no height of its own. What the
+              fold holds is named in the tooltip rather than drawn beside it: a
+              label on this row would put the height back. */}
+          {closes ? (
+            <div className="flex items-center gap-1 h-2">
+              {/* The touch target is a pseudo-element, so a 44px tap area costs
+                  no layout: it reaches down the left gutter beside the next
+                  user bubble, which is right-aligned, and the bubble is
+                  positioned and later in the DOM, so it wins where they meet.
+                  The lift is `relative`, so it never changes the strip; the up
+                  caret takes 1px less of it to sit where the down one does. */}
+              <Button variant="ghost" size="icon"
+                className={`relative ${closes.open ? "-top-px" : "-top-0.5"} -my-1 px-1 py-0 rounded-sm
+                  text-(--color-accent) hover:text-(--color-accent-hover)
+                  pointer-coarse:before:absolute pointer-coarse:before:content-[''] pointer-coarse:before:-top-2
+                  pointer-coarse:before:-left-2 pointer-coarse:before:h-11 pointer-coarse:before:w-11`}
+                aria-expanded={closes.open}
+                aria-controls={closes.controls}
+                aria-label={`${closes.open ? "Show compact turn" : "Show full turn"}: ${closes.run.identity.text.slice(0, 80) || "Agent response"}`}
+                aria-disabled={closes.search || undefined}
+                title={closes.search ? "Revealed by the active search"
+                  : `${closes.open ? "Show compact turn" : "Show full turn"}${closes.holds ? ` — ${closes.holds}` : ""}`}
+                onClick={() => { if (!closes.search) compact.toggle(closes.run, closes.open); }}>
+                {closes.open
                   ? <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
                   : <CaretDownIcon size={ICON_SIZE.XS} weight="bold" />}
-                {view.open ? "Show compact turn" : "Show full turn"}
               </Button>
-              {!view.open && view.empty && <span>Turn ended without an agent reply.</span>}
+              <div className="flex-1 min-w-0">{gapBefore && renderRewindPoint(el.index)}</div>
             </div>
+          ) : view.hidden && gapBefore && renderRewindPoint(el.index)}
+          {emptyTurnNote && (
+            <div className="text-xs text-(--color-text-secondary)">Turn ended without an agent reply.</div>
           )}
-          {view.hidden && isBubble && shouldShowGapBefore(el.index) && renderRewindPoint(el.index)}
           {rollbackHash && <CodeRollbackNotice hash={rollbackHash} />}
           <div id={`compact-row-${rowIndex}`} data-compact-content data-compact-index={anchorIndex} hidden={view.hidden}>
         <TranscriptRow
@@ -406,7 +428,7 @@ export function MessageList({
           hasRewindControls={hasRewindControls}
           forkDefaultName={forkDefaultName}
           rewindPreviews={rewindPreviews}
-          showGapBefore={!view.hidden && isBubble && shouldShowGapBefore(el.index)}
+          showGapBefore={!view.hidden && gapBefore && !closes}
           gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
           collapseTools={view.collapseTools}
         />

@@ -42,6 +42,12 @@ describe("the sample turns", () => {
     expect(SAMPLE_TURNS.some((turn) => !hasText(turn))).toBe(true);
   });
 
+  it("covers a turn that has both hidden work and an action card", () => {
+    expect(SAMPLE_TURNS.some((turn) =>
+      turn.assistant.some((m) => m.actionChecklist) && turn.assistant.some((m) => m.toolUse?.length),
+    )).toBe(true);
+  });
+
   it("alternates user and assistant rows, one user row per turn", () => {
     const messages = buildTranscript();
     expect(messages.filter((m) => m.role === "user")).toHaveLength(SAMPLE_TURNS.length);

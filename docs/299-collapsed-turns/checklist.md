@@ -52,6 +52,32 @@
       nothing, so it cannot contradict what the collapsed turn shows.
 - [x] Update the Settings help text, which promises "all cards" today.
 
+## Iteration on the expand control
+
+- [x] Hoist the run's rewind anchor above the control, and suppress the row's
+      own copy in the collapsed and the expanded path (req 14).
+- [x] Keep an action card in a collapsed turn whether or not it was sent, and
+      take the checklist's submitted flag out of the visibility rule (req 12).
+- [x] Add a fixture turn with hidden work *and* an action card, so the control
+      and a kept card can be looked at together.
+- [x] Make the control a chevron on a ghost button with no visible text, keeping
+      its accessible name and adding it as the tooltip (req 8).
+- [x] Replace it with the fold rule: a caret, a count of what the fold holds
+      (tool calls, messages, cards) and a hairline across the column (req 8).
+- [x] Move the caret onto the rewind strip, in the accent colour, with the
+      counts in its tooltip, so the control costs no height (req 8, req 14).
+- [x] Put it on the strip that CLOSES the turn rather than the one that opens
+      it, and retire the hoisting that the earlier arrangement needed (req 14).
+- [x] Give it a 44px touch target on coarse pointers, as a pseudo-element that
+      adds no layout, and verify the geometry and a tap in a browser (req 8).
+- [x] Independent review of the iteration. Four findings, all fixed: the empty
+      row the moved control left behind, a tooltip that counted a split-out
+      subagent call twice, a touch-target test that missed the two classes that
+      matter, and docs — `plan.md` and the capability wiki — still describing a
+      submitted action card as hidden.
+- [x] Add a fixture turn whose hidden rows include a card, so the third count
+      can be seen in the dogfood instance.
+
 ## Tests
 
 - [x] Component tests, including one that goes red without each new guard.

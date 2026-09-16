@@ -163,7 +163,7 @@ export const SAMPLE_TURNS: readonly SampleTurn[] = [
     ],
   },
   {
-    covers: "the same card after the user acted — hidden with the rest",
+    covers: "the same card after the user acted — kept too, not hidden (req 12)",
     user: "Do the first one.",
     assistant: [
       say("Added the rule and fixed the eleven files it flagged."),
@@ -184,6 +184,69 @@ export const SAMPLE_TURNS: readonly SampleTurn[] = [
           ],
         },
       },
+    ],
+  },
+  {
+    covers: "hidden work AND an action card — the expand control and a kept card in one turn",
+    user: "Make the theme follow the system setting.",
+    assistant: [
+      say("Checking where the stored theme is read."),
+      tool("Grep", { pattern: "shipit-theme", glob: "src/client/**/*.ts*" },
+        "src/client/stores/settings-store.ts:41:  const stored = localStorage.getItem(\"shipit-theme\");"),
+      tool("Read", { file_path: "src/client/stores/settings-store.ts" },
+        " 38\texport function initialTheme(): Theme {\n 39\t  // falls back to \"dark\" with nothing stored\n"
+        + " 40\t  const stored = localStorage.getItem(\"shipit-theme\");"),
+      tool("Edit", { file_path: "src/client/stores/settings-store.ts", old_string: "…", new_string: "…" },
+        "The file has been updated."),
+      say(
+        "The theme now starts from `prefers-color-scheme` and only stops following it once you "
+        + "pick one yourself. Nothing changes for anyone who has already chosen.",
+      ),
+      {
+        role: "assistant",
+        text: "",
+        actionChecklist: {
+          cardId: "seed-checklist-after-work",
+          title: "Follow-ups",
+          createdAt: "2026-09-14T10:41:00.000Z",
+          actions: [
+            {
+              id: "system-theme-test",
+              label: "Cover the system-theme path with a test",
+              description: "The fallback only runs with nothing stored, which no test reaches today.",
+              defaultChecked: true,
+              payload: "Add a settings-store test for the prefers-color-scheme fallback when no theme is stored.",
+            },
+            {
+              id: "listen",
+              label: "Follow the setting while the app is open",
+              description: "Right now it is read once at startup.",
+              payload: "Subscribe to the prefers-color-scheme media query so the theme follows a change made while ShipIt is open.",
+            },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    covers: "a hidden card — one the user cannot act on, folded away and counted",
+    user: "Keep going, you are running out of room.",
+    assistant: [
+      say("Compacting first, then carrying on."),
+      {
+        role: "assistant",
+        text: "",
+        compaction: {
+          id: "seed-compaction",
+          trigger: "auto",
+          preTokens: 174000,
+          postTokens: 21400,
+          durationMs: 8200,
+          createdAt: "2026-09-14T10:52:00.000Z",
+        },
+      },
+      tool("Bash", { command: "npm run typecheck" }, "tsc --noEmit — no errors"),
+      say("Carried on from the summary; the typecheck is still clean."),
     ],
   },
   {

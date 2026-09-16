@@ -208,9 +208,12 @@ whole reply aloud.
 
 **Collapsed turns.** *Compact completed turns*, in **Settings → Advanced**,
 collapses every turn but the newest down to the user's message and your last
-reply: tool calls, progress and cards are hidden, while errors and any card that
-still needs them stay. Each collapsed turn carries a **Show full turn** button.
-It is saved per browser, so it does not follow the user to their phone.
+reply: tool calls, progress and cards are hidden, while errors, action cards and
+any card that still needs them stay — an action card stays whether or not it has
+been sent, so an offer is never folded away. Each collapsed turn ends with a
+small caret, on the rewind strip below it, that opens the turn again; hovering
+it says what the fold is holding ("2 tool calls · 1 message"). The setting is
+saved per browser, so it does not follow the user to their phone.
 
 **Search.** The magnifying glass in the strip at the very top of the
 conversation opens a search bar, with a match count and next/previous (Enter and
