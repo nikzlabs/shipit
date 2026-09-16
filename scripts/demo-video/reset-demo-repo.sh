@@ -177,4 +177,4 @@ else
   log "reset $DEFAULT_BRANCH ${HEAD_SHA:-?} → $PIN"
 fi
 
-log "done${DRY_RUN:+ (dry run)}"
+if [ "$DRY_RUN" -eq 1 ]; then log "done (dry run)"; else log "done"; fi
