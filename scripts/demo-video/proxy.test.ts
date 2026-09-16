@@ -1,12 +1,13 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import os from "node:os";
 import {
+  chooseRecording,
   describeDrift,
   fingerprintOf,
   frameDelayMs,
@@ -130,6 +131,23 @@ describe("pure helpers", () => {
     expect(describeDrift(fp, fp)).toBeNull();
     expect(describeDrift(fp, { ...fp, messages: 3, bodyBytes: 999 })).toBe('messages: recorded=2 got=3');
   });
+
+  it("chooses among unused recordings by model/tools/stream, ranking by messages distance then number", () => {
+    const fp = (messages: number, tools = 2) => ({ model: "m", messages, tools, bodyBytes: 0, stream: true });
+    const rec = (n: number, fingerprint: ReturnType<typeof fp> | null) => ({ n, file: `${n}.sse`, fingerprint, used: false });
+    const lane = [rec(1, fp(1)), rec(2, fp(5)), rec(3, fp(3)), rec(4, fp(1, 0)), rec(5, null)];
+    expect(chooseRecording(lane, fp(3))?.n).toBe(3);
+    // Distance 1 both ways: the lower number wins.
+    expect(chooseRecording(lane, fp(4))?.n).toBe(2);
+    expect(chooseRecording(lane, fp(9))?.n).toBe(2);
+    // The tool count is a must-match, not a ranking.
+    expect(chooseRecording(lane, fp(9, 0))?.n).toBe(4);
+    // Nothing matches (unfingerprinted 005 never does): lowest unused number.
+    lane[0].used = true;
+    expect(chooseRecording(lane, fp(1, 7))?.n).toBe(2);
+    for (const r of lane) r.used = true;
+    expect(chooseRecording(lane, fp(3))).toBeNull();
+  });
 });
 
 describe("replay mode", () => {
@@ -166,9 +184,9 @@ describe("replay mode", () => {
 
     // Drift was logged as a warning but every request above was still answered.
     expect(p.stderr()).not.toContain("cassette drift lane=x-api-key n=1");
-    expect(p.stderr()).toContain("cassette drift lane=x-api-key n=2: messages: recorded=3 got=2");
-    expect(p.stderr()).toMatch(/replay lane=x-api-key n=1 POST \/v1\/messages\?beta=true 200 \d+ms/);
-    expect(p.stderr()).toMatch(/replay lane=bearer n=1 POST \/v1\/messages\?beta=true 200 \d+ms/);
+    expect(p.stderr()).toContain("cassette drift lane=x-api-key n=2 take=002: messages: recorded=3 got=2");
+    expect(p.stderr()).toMatch(/replay lane=x-api-key n=1 take=001 POST \/v1\/messages\?beta=true 200 \d+ms/);
+    expect(p.stderr()).toMatch(/replay lane=bearer n=1 take=001 POST \/v1\/messages\?beta=true 200 \d+ms/);
   });
 
   it("answers HEAD /api/hello with 200 and anything else with 404 JSON", async () => {
@@ -237,10 +255,87 @@ describe("replay mode", () => {
 
       // The abandoned take was settled the moment the client left — its log line is
       // already there, well before the 2 s the 240-char delta would have taken to pace.
-      expect(p.stderr()).toMatch(/replay lane=x-api-key n=1 POST \/v1\/messages 200 \d+ms client disconnected after \d+\/\d+ frames/);
+      expect(p.stderr()).toMatch(/replay lane=x-api-key n=1 take=001 POST \/v1\/messages 200 \d+ms client disconnected after \d+\/\d+ frames/);
     } finally {
       await stopProxy(p);
     }
+  });
+});
+
+describe("replay matching", () => {
+  /**
+   * The bearer lane as measured on the demo instance (2026-09-16): one turn is
+   * two concurrent requests, a small side call (n=1, no tools) and the turn
+   * itself (n=2, 59 tools), and n=2 finished first. Arrival order alone would
+   * hand a take to the wrong request when they land the other way round.
+   */
+  const SIDE_CALL = { model: "claude-opus-5", messages: [{}], stream: true };
+  const TURN = { model: "claude-opus-5", messages: [{}, {}], tools: Array.from({ length: 59 }, () => ({})), stream: true };
+  const takeBody = (n: number) => Buffer.from(`event: message_stop\ndata: {"take":"bearer/${n}"}\n\n`);
+
+  function writeCassette(): string {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-match-"));
+    mkdirSync(join(dir, "bearer"));
+    const lines = [
+      { lane: "bearer", n: 1, ...fingerprintOf(Buffer.from(JSON.stringify(SIDE_CALL))), bodyBytes: 4154 },
+      { lane: "bearer", n: 2, ...fingerprintOf(Buffer.from(JSON.stringify(TURN))), bodyBytes: 189669 },
+    ];
+    for (const { n } of lines) {
+      writeFileSync(join(dir, "bearer", `00${n}.sse`), serializeResponse(200, { "content-type": "text/event-stream" }, takeBody(n)));
+    }
+    writeFileSync(join(dir, "fingerprints.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    return dir;
+  }
+
+  const bodyOf = async (res: Response) => Buffer.from(await res.arrayBuffer()).toString();
+  /** The request's log line is written after its response ends, so it may trail the body by a tick. */
+  async function logged(pattern: RegExp): Promise<string> {
+    const deadline = Date.now() + 2000;
+    while (!pattern.test(p!.stderr()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    return p!.stderr();
+  }
+
+  let dir: string;
+  let p: RunningProxy | undefined;
+  beforeEach(async () => {
+    dir = writeCassette();
+    p = await startProxy(["--replay", dir]);
+  });
+  afterEach(async () => {
+    await stopProxy(p);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("answers each request with the recording whose fingerprint matches it, whatever order they arrive in", async () => {
+    const turn = await messagesRequest(p!, BEARER, TURN);
+    expect(turn.status).toBe(200);
+    expect(await bodyOf(turn)).toBe(takeBody(2).toString());
+
+    const side = await messagesRequest(p!, BEARER, SIDE_CALL);
+    expect(side.status).toBe(200);
+    expect(await bodyOf(side)).toBe(takeBody(1).toString());
+
+    const log = await logged(/replay lane=bearer n=2 take=001 POST/);
+    expect(log).toMatch(/replay lane=bearer n=1 take=002 POST/);
+    expect(log).not.toContain("drift");
+  });
+
+  it("falls back to the lowest unused recording when nothing matches, and logs the drift", async () => {
+    const res = await messagesRequest(p!, BEARER, { ...TURN, model: "claude-elsewhere" });
+    expect(res.status).toBe(200);
+    expect(await bodyOf(res)).toBe(takeBody(1).toString());
+    expect(await logged(/cassette drift/)).toContain(
+      'cassette drift lane=bearer n=1 take=001: model: recorded="claude-opus-5" got="claude-elsewhere", messages: recorded=1 got=2, tools: recorded=0 got=59 (bodyBytes recorded=4154 got=',
+    );
+  });
+
+  it("uses each recording once: a third request is exhaustion even though it matches a used take", async () => {
+    expect((await messagesRequest(p!, BEARER, TURN)).status).toBe(200);
+    expect((await messagesRequest(p!, BEARER, SIDE_CALL)).status).toBe(200);
+    const again = await messagesRequest(p!, BEARER, SIDE_CALL);
+    expect(again.status).toBe(400);
+    expect(await again.json()).toMatchObject({ error: { type: "invalid_request_error", message: expect.stringContaining("exhausted") as string } });
+    expect(await logged(/n=3/)).toMatch(/replay lane=bearer n=3 take=- POST \/v1\/messages\?beta=true 400/);
   });
 });
 

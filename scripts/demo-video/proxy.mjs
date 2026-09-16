@@ -6,9 +6,10 @@
 //
 //   --record <cassette-dir>   forward POST /v1/messages* to the upstream and
 //                             save every response, byte for byte, per lane
-//   --replay <cassette-dir>   answer lane request n with <lane>/NNN.sse,
-//                             pacing text deltas so the transcript types at a
-//                             human rate
+//   --replay <cassette-dir>   answer each request with the lane's unused
+//                             recording whose fingerprint matches it, pacing
+//                             text deltas so the transcript types at a human
+//                             rate
 //
 // A lane is the auth header kind: `x-api-key` (the instance's own key, which
 // ShipIt delivers into the session as ANTHROPIC_API_KEY; forwarded as is, or
@@ -385,6 +386,8 @@ function loadFingerprints(cassetteDir) {
 
 /** Fields whose drift means the take is not the one the cassette was cut from. */
 const DRIFT_FIELDS = ["model", "messages", "tools", "stream"];
+/** Fields a recording must equal to count as a match; `messages` only ranks matches. */
+const MATCH_FIELDS = ["model", "tools", "stream"];
 
 export function describeDrift(recorded, actual) {
   const drift = DRIFT_FIELDS.filter((f) => recorded[f] !== actual[f]).map(
@@ -393,9 +396,41 @@ export function describeDrift(recorded, actual) {
   return drift.length ? drift.join(", ") : null;
 }
 
+/** A lane's recordings in file order, each with its fingerprint when the cassette has one. */
+function loadLane(cassetteDir, lane, fingerprints) {
+  const laneDir = path.join(cassetteDir, lane);
+  if (!fs.existsSync(laneDir)) return null;
+  return fs
+    .readdirSync(laneDir)
+    .filter((f) => /^\d{3}\.sse$/.test(f))
+    .map((f) => Number(f.slice(0, 3)))
+    .sort((a, b) => a - b)
+    .map((n) => ({ n, file: path.join(laneDir, `${pad3(n)}.sse`), fingerprint: fingerprints.get(`${lane}/${n}`) ?? null, used: false }));
+}
+
+/**
+ * Pick the recording for a request from the lane's unused ones: the first whose
+ * fingerprint matches on MATCH_FIELDS, ranked by `messages` distance (exact
+ * first), then by number. Nothing matches → the lowest-numbered unused one,
+ * which `describeDrift` then reports. Within a turn the CLI's side call and the
+ * turn itself race on one lane and finish in either order, which is why arrival
+ * order alone cannot pick (docs/296 plan §2).
+ */
+export function chooseRecording(recordings, actual) {
+  const unused = recordings.filter((r) => !r.used);
+  if (unused.length === 0) return null;
+  const matching = unused.filter((r) => r.fingerprint && MATCH_FIELDS.every((f) => r.fingerprint[f] === actual[f]));
+  if (matching.length === 0) return unused[0];
+  const distance = (r) => Math.abs(r.fingerprint.messages - actual.messages);
+  matching.sort((a, b) => distance(a) - distance(b) || a.n - b.n);
+  return matching[0];
+}
+
 function createReplayer(opts) {
   if (!fs.existsSync(opts.cassetteDir)) throw new Error(`cassette dir not found: ${opts.cassetteDir}`);
   const fingerprints = loadFingerprints(opts.cassetteDir);
+  const lanes = {};
+  for (const lane of [LANE_API_KEY, LANE_BEARER]) lanes[lane] = loadLane(opts.cassetteDir, lane, fingerprints);
   const counters = { [LANE_API_KEY]: 0, [LANE_BEARER]: 0 };
 
   return async function replay(req, res, raw) {
@@ -403,19 +438,15 @@ function createReplayer(opts) {
     const n = ++counters[lane];
     const startedAt = Date.now();
     const actual = fingerprintOf(raw);
-    const recorded = fingerprints.get(`${lane}/${n}`);
-    if (recorded) {
-      const drift = describeDrift(recorded, actual);
-      if (drift) {
-        log(`cassette drift lane=${lane} n=${n}: ${drift} (bodyBytes recorded=${recorded.bodyBytes} got=${actual.bodyBytes})`);
-      }
-    }
-
-    const file = path.join(opts.cassetteDir, lane, `${pad3(n)}.sse`);
+    // Chosen and marked used before the first await, so two in-flight requests cannot share a take.
+    const recording = chooseRecording(lanes[lane] ?? [], actual);
+    if (recording) recording.used = true;
+    const take = recording ? pad3(recording.n) : "-";
     const finish = (status, suffix = "") =>
-      log(`replay lane=${lane} n=${n} ${req.method} ${req.url} ${status} ${Date.now() - startedAt}ms${suffix}`);
-    if (!fs.existsSync(file)) {
-      if (lane !== LANE_API_KEY && !fs.existsSync(path.join(opts.cassetteDir, lane))) {
+      log(`replay lane=${lane} n=${n} take=${take} ${req.method} ${req.url} ${status} ${Date.now() - startedAt}ms${suffix}`);
+
+    if (!recording) {
+      if (lane !== LANE_API_KEY && lanes[lane] === null) {
         // Plan §2: a lane the cassette never recorded is refused, not exhausted.
         json(res, 401, { error: { type: "authentication_error", message: `demo-proxy: no ${lane} lane in this cassette` } });
         finish(401);
@@ -424,15 +455,25 @@ function createReplayer(opts) {
       // 400, not 500: the Claude CLI retries a 5xx (measured: 16 attempts over
       // ~90 s), which would hang the driver instead of ending the turn with a
       // visible error. An invalid_request_error is final on the first answer.
+      const total = lanes[lane]?.length ?? 0;
       json(res, 400, {
         type: "error",
-        error: { type: "invalid_request_error", message: `demo-proxy: cassette exhausted (${lane} lane has no request ${n})` },
+        error: {
+          type: "invalid_request_error",
+          message: `demo-proxy: cassette exhausted (${lane} lane request ${n}, all ${total} recordings used)`,
+        },
       });
       finish(400);
       return;
     }
 
-    const { status, headers, body } = parseResponseFile(fs.readFileSync(file));
+    const drift = recording.fingerprint ? describeDrift(recording.fingerprint, actual) : "no recorded fingerprint";
+    if (drift) {
+      const recordedBytes = recording.fingerprint?.bodyBytes ?? null;
+      log(`cassette drift lane=${lane} n=${n} take=${take}: ${drift} (bodyBytes recorded=${recordedBytes} got=${actual.bodyBytes})`);
+    }
+
+    const { status, headers, body } = parseResponseFile(fs.readFileSync(recording.file));
     res.writeHead(status, headers);
     if (isEventStream(headers)) {
       const { sent, total, disconnected } = await streamPaced(res, body, opts.charsPerSecond);
