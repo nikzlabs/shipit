@@ -1,7 +1,7 @@
-import { useMemo, useRef, useDeferredValue, type ReactNode } from "react";
+import { Fragment, useMemo, useRef, useDeferredValue, type ReactNode } from "react";
 import { CompactLayout } from "./CompactLayout.js";
 import { useCompactConversation } from "./hooks/useCompactConversation.js";
-import { elementMessageIndex } from "./compact-turns.js";
+import { elementLastMessageIndex, elementMessageIndex } from "./compact-turns.js";
 import { CaretDownIcon, CaretUpIcon } from "@phosphor-icons/react";
 import { Button } from "../ui/button.js";
 import { ICON_SIZE } from "../../design-tokens.js";
@@ -61,6 +61,28 @@ const ROWS_PER_GROUP = 20;
 const ROW_PLACEHOLDER_REM = 5;
 
 const ROW_GAP_REM = 0.5;
+
+/**
+ * docs/303-session-status-card req 30 — how much of the conversation was
+ * settled when a turn started.
+ *
+ * Trailing user rows belong to the turn that is starting, and trimming them
+ * makes the anchor independent of whether the store appends the user's row
+ * before or after it sets `isLoading`, so the user's own message always renders
+ * below the card. A trailing STREAMING row is trimmed for a different reason: a
+ * viewer joining mid-turn freezes on what it has, and a streaming row goes on
+ * growing in place rather than appending, so counting it settled would leave
+ * the turn's own text above the card.
+ */
+function settledMessageCount(messages: ChatMessage[]): number {
+  let count = messages.length;
+  while (count > 0) {
+    const message = messages[count - 1];
+    if (message.role !== "user" && !message.streaming) break;
+    count--;
+  }
+  return count;
+}
 
 export function MessageList({
   messages: messagesProp,
@@ -141,12 +163,37 @@ export function MessageList({
   );
   const messages = deferred.messages;
 
-  const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor } = useMessageScroll(messages, isLoading, currentMatch);
+  const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor, canPreserveAcrossCardMove } = useMessageScroll(messages, isLoading, currentMatch);
 
   const sessionStatusCardEnabled = useSettingsStore((s) => s.sessionStatusCard);
   const sessionStatus = useSessionStore((s) =>
     s.sessions.find((session) => session.id === s.sessionId)?.sessionStatus,
   );
+
+  // docs/303 req 30 — the card keeps the place it had when the turn started, so
+  // the turn's output renders below it. Frozen on the first render of a turn,
+  // which is also what a viewer joining mid-turn gets: it never saw the start,
+  // so its anchor is the whole conversation it has.
+  const turnAnchorRef = useRef<{ sessionId: string | null; anchor: number | null }>({
+    sessionId: null,
+    anchor: null,
+  });
+  if (turnAnchorRef.current.sessionId !== (deferred.sessionId ?? null)) {
+    turnAnchorRef.current = { sessionId: deferred.sessionId ?? null, anchor: null };
+  }
+  if (!isLoading) turnAnchorRef.current.anchor = null;
+  // Against `messagesProp`, not the deferred copy: `isLoading` is not deferred,
+  // so pairing the two mixes generations. A successor turn starting before the
+  // predecessor's last reply has caught up would see that reply still marked
+  // `streaming` and freeze one row short of it, for the whole turn.
+  //
+  // And not while the transcript is empty: switching to a running session
+  // clears the messages and sets `isLoading` before the history arrives, and
+  // freezing there would anchor the card above the whole conversation.
+  else if (messagesProp.length > 0) {
+    turnAnchorRef.current.anchor ??= settledMessageCount(messagesProp);
+  }
+  const turnAnchor = turnAnchorRef.current.anchor;
 
   const compactConversation = useSettingsStore((s) => s.compactConversation);
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
@@ -368,18 +415,46 @@ export function MessageList({
     };
   });
 
+  const statusCard = sessionStatusCardEnabled && sessionStatus
+    ? (
+      <SessionStatusCard
+        key="session-status-card"
+        status={sessionStatus}
+        onSubmit={onSendFollowUp}
+      />
+    )
+    : null;
+
+  // docs/303 req 30 — the row the card is rendered after while a turn runs.
+  // `null` puts it at the end: the agent is idle, there is no card, or the turn
+  // has produced nothing yet, which is the same place.
+  const cardRowIndex = useMemo(() => {
+    if (turnAnchor === null) return null;
+    // The element's LAST message, so a tool-group that merged the settled
+    // tools with the turn's own still falls below the card rather than taking
+    // the turn's output above it with them.
+    const index = visualElements.findIndex((el) => elementLastMessageIndex(el) >= turnAnchor);
+    return index < 0 ? null : index;
+  }, [turnAnchor, visualElements]);
+
   // FRONT, and that is the load-bearing detail. A row that changes group changes
 
-  const rowGroups: ReactNode[] = [];
+  const flow: ReactNode[] = [];
   let anchorsSeen = 0;
-  let current: { visible: number; children: ReactNode[] } | null = null;
+  let openedByCard = false;
+  let current: { key: string; visible: number; children: ReactNode[] } | null = null;
   const flushGroup = () => {
     if (!current) return;
-    const { visible, children } = current;
-    rowGroups.push(
+    const { key, visible, children } = current;
+    flow.push(
       <div
 
-        key={`g-${rowGroups.length}`}
+        // Keyed by the chunk it belongs to, so a group keeps its identity when
+        // the row indices shift under it. docs/303 req 30 — the card's anchor
+        // can split one chunk in two; the second half is named after the same
+        // chunk, so removing the split re-parents only that half's rows and
+        // leaves every group past it alone.
+        key={`g-${key}`}
         data-compact-group
         hidden={visible === 0}
         className="space-y-3 sm:space-y-2 [content-visibility:auto]"
@@ -394,16 +469,49 @@ export function MessageList({
     );
     current = null;
   };
-  rows.forEach((row) => {
-    if (!row.movable && anchorsSeen > 0 && anchorsSeen % ROWS_PER_GROUP === 0) flushGroup();
-    const group = (current ??= { visible: 0, children: [] });
-    if (row.visible) group.visible++;
-    if (!row.movable) {
-      anchorsSeen++;
+  rows.forEach((row, index) => {
+    if (statusCard && index === cardRowIndex) {
+      flushGroup();
+      flow.push(statusCard);
+      openedByCard = anchorsSeen % ROWS_PER_GROUP !== 0;
     }
+    if (!row.movable && anchorsSeen > 0 && anchorsSeen % ROWS_PER_GROUP === 0) {
+      flushGroup();
+      openedByCard = false;
+    }
+    const group = (current ??= {
+      key: `${Math.floor(anchorsSeen / ROWS_PER_GROUP)}${openedByCard ? "b" : ""}`,
+      visible: 0,
+      children: [],
+    });
+    if (row.visible) group.visible++;
+    if (!row.movable) anchorsSeen++;
     group.children.push(row.node);
   });
   flushGroup();
+
+  /*
+    planning#280 — the durable pending consult card (inline, at the call site) is
+    now the primary in-flight surface. The transient chip is only shown for a
+    spawn that has no card in the transcript yet, so the two can never render
+    two spinners for the same consult.
+  */
+  for (const chip of Object.values(subAgentSpawns)) {
+    if (messages.some((m) => m.subAgentConsult?.spawnId === chip.spawnId)) continue;
+    flow.push(<SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />);
+  }
+
+  if (!isLoading && messages.length > 0) {
+    // A keyed fragment, so the rewind point keeps its place in this list without
+    // a wrapper element between it and the scrolling content.
+    flow.push(<Fragment key="trailing-rewind">{renderRewindPoint(messages.length, true)}</Fragment>);
+  }
+
+  // docs/303 req 6 — the last element of the conversation while the agent is
+  // idle. The card is one element of this keyed list in both places, so moving
+  // it reorders the DOM node instead of remounting the component, and the rows
+  // it knows to be sent survive the move (req 30).
+  if (statusCard && cardRowIndex === null) flow.push(statusCard);
 
   return (
     <ShipitPointerSessionProvider value={deferred.sessionId ?? null}>
@@ -446,29 +554,16 @@ export function MessageList({
           A turn whose reply is kept but whose tools are collapsed changes
           nothing in the hidden half, so without "t" expanding it would move the
           reading position. */}
+      {/* Everything that scrolls with the conversation is one keyed list, so the
+          status card can move between the rows and the end without remounting
+          (docs/303 req 30). `CompactLayout` renders it as a fragment, so each
+          entry stays a direct child of the scrolling content. */}
       <CompactLayout visibility={compact.rows.map((row) => row.hidden ? "1" : row.collapseTools ? "t" : "0").join("")}
-        containerRef={containerRef} canRestoreReadingAnchor={canRestoreReadingAnchor}>
-        {rowGroups}
+        cardAnchor={statusCard ? cardRowIndex : null}
+        containerRef={containerRef} canRestoreReadingAnchor={canRestoreReadingAnchor}
+        canPreserveAcrossCardMove={canPreserveAcrossCardMove}>
+        {flow}
       </CompactLayout>
-      {/*
-        planning#280 — the durable pending consult card (inline, at the call site) is
-        now the primary in-flight surface. The transient chip is only shown for a
-        spawn that has no card in the transcript yet, so the two can never render
-        two spinners for the same consult.
-      */}
-      {Object.values(subAgentSpawns)
-        .filter((chip) => !messages.some((m) => m.subAgentConsult?.spawnId === chip.spawnId))
-        .map((chip) => (
-          <SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />
-        ))}
-
-      {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
-
-      {/* docs/303 req 6 — inside the scroll container, after the last row, so
-          the card scrolls away with the conversation. */}
-      {sessionStatusCardEnabled && sessionStatus && (
-        <SessionStatusCard status={sessionStatus} onSubmit={onSendFollowUp} />
-      )}
     </div>
     </div>
     </RowHandlersProvider>

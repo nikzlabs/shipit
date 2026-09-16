@@ -42,14 +42,15 @@ taken inside one session, without building an agent that talks to many.
    (req 13).
 6. The card sits at the bottom of the conversation, just above the input
    field: the place where the user already reads the agent's last sentences.
-   It is the last element of the conversation and scrolls with it, so that
-   on a small screen it never takes space from the conversation. It is not a
-   message in the transcript.
+   While the agent is idle it is the last element of the conversation, and it
+   scrolls with it, so that on a small screen it never takes space from the
+   conversation. While a turn runs it moves out of the way (req 30). It is not
+   a message in the transcript.
 7. The card does not appear in the session sidebar. The sidebar already
    carries a lot, and one more line per session would not read at a glance.
-8. The card is shown also on a turn that ends with a question card. The
-   question card is the last thing in the conversation; the status card stays
-   below it, just above the input field.
+8. The card is shown also on a turn that ends with a question card. Once that
+   turn has ended, the question card is the last thing in the conversation and
+   the status card stays below it, just above the input field.
 9. The card does not make a session "need attention". The needs-attention
    indicator works today; the user reads the card after the agent has
    finished, when they already know the session needs them.
@@ -142,12 +143,36 @@ taken inside one session, without building an agent that talks to many.
     A reported step behaves as a sent action does: greyed, unticked, and
     sendable again.
 
+30. The card is at the bottom only while the agent has stopped. When a turn
+    starts, the card keeps the place it already had — the end of the finished
+    conversation — and everything the running turn produces appears below it,
+    so the card leaves the view of its own accord as the agent writes and the
+    live output is what the user follows. It does not disappear while the turn
+    runs. When the turn stops, the card is at the end of the conversation
+    again, and that return never moves what a user who has scrolled up is
+    reading.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
 
+- 2026-09-16 — Nik, after a few days of using the shipped card: "I have
+  enabled the session card, and it works well. Let's iterate on the user
+  experience. It should not always be at the bottom. It should be at the bottom
+  only when the agent turn has stopped. Because what happens now is that if I
+  send the actions, I see only the card, especially on mobile, but I don't see
+  what's happening. It does not scroll up. Sometimes I want to see what the
+  agent is doing." Asked how the card should get out of the way while a turn
+  runs, he chose: it scrolls up and away — the card keeps its place at the end
+  of the finished conversation, the running turn's output renders below it, so
+  it slides out of view by itself as the agent writes, and it returns to the
+  bottom when the turn stops. He rejected removing the card during a turn,
+  because it must not blink out from under his finger the moment he presses
+  Submit. → req 30; reqs 6 and 8 amended, since they said the card is the last
+  element of the conversation without qualification and that now holds only
+  while the agent is idle.
 - 2026-09-15 — Nik, on the drawn card, seventh round: "What happens if I send
   an item and agent crashes or doesn't do it? It should be possible to re-sent
   the same action or manual step" — and, on the first answer, which grew a

@@ -5,7 +5,7 @@ import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
-import type { SessionInfo } from "../../server/shared/types.js";
+import type { SessionInfo, SessionStatus } from "../../server/shared/types.js";
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
@@ -1939,14 +1939,14 @@ describe("MessageList — agent-authored pointers", () => {
 // docs/303 req 6 — the card is the last element of the conversation, inside the
 // scroll container, and is read from the session record rather than the transcript.
 describe("session status card slot", () => {
-  const status = {
+  const status: SessionStatus = {
     status: "Billing routes done; PR #212 ready to merge.",
     actions: [],
     fresh: true,
     writeSeq: 1,
   };
 
-  function seed(sessionStatus?: typeof status): void {
+  function seed(sessionStatus?: SessionStatus): void {
     useSessionStore.setState({
       sessionId: "s1",
       sessions: [{
@@ -1995,5 +1995,175 @@ describe("session status card slot", () => {
     useSettingsStore.setState({ sessionStatusCard: false });
     render(<MessageList messages={[msg("assistant", "done")]} isLoading={false} />);
     expect(screen.queryByTestId("session-status-card")).toBeNull();
+  });
+
+  // docs/303 req 30 — at the bottom only once the agent has stopped.
+  describe("while a turn runs", () => {
+    const settled = [msg("user", "do it"), msg("assistant", "done")];
+
+    /** Whether `first` comes before `second` in the rendered document. */
+    function precedes(first: Element, second: Element): boolean {
+      return (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    }
+
+    it("keeps the place it had, so the turn's output renders below it", () => {
+      seed(status);
+      const { rerender } = render(<MessageList messages={settled} isLoading={false} />);
+      rerender(<MessageList messages={[...settled, msg("user", "next")]} isLoading={true} />);
+      rerender(
+        <MessageList
+          messages={[...settled, msg("user", "next"), msg("assistant", "working on it")]}
+          isLoading={true}
+        />,
+      );
+      const card = screen.getByTestId("session-status-card");
+      expect(precedes(screen.getByText("done"), card)).toBe(true);
+      // The user's own message belongs to the turn that is starting, not to the
+      // finished conversation, so it renders below the card too.
+      expect(precedes(card, screen.getByText("next"))).toBe(true);
+      expect(precedes(card, screen.getByText("working on it"))).toBe(true);
+    });
+
+    it("is the last element again once the turn stops", () => {
+      seed(status);
+      const running = [...settled, msg("user", "next"), msg("assistant", "finished")];
+      // Idle first, so the anchor is frozen above the turn and has to clear.
+      const { container, rerender } = render(<MessageList messages={settled} isLoading={false} />);
+      rerender(<MessageList messages={running} isLoading={true} />);
+      rerender(<MessageList messages={running} isLoading={false} />);
+      const card = screen.getByTestId("session-status-card");
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild).toBe(card);
+      expect(precedes(screen.getByText("finished"), card)).toBe(true);
+    });
+
+    it("moves without remounting, so a row the user has just ticked stays ticked", () => {
+      seed({
+        ...status,
+        actions: [{
+          offerId: "o1",
+          offeredAt: "2026-09-16T00:00:00Z",
+          id: "wire-webhook",
+          label: "Wire the Stripe webhook",
+          description: "Adds /webhooks/stripe.",
+          payload: "Wire the Stripe webhook.",
+        }],
+      });
+      const { rerender } = render(<MessageList messages={settled} isLoading={false} />);
+      const offer = screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ });
+      fireEvent.click(offer);
+      expect(screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ })).toBeChecked();
+
+      const running = [...settled, msg("user", "go"), msg("assistant", "on it")];
+      rerender(<MessageList messages={[...settled, msg("user", "go")]} isLoading={true} />);
+      rerender(<MessageList messages={running} isLoading={true} />);
+      expect(screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ })).toBeChecked();
+
+      // And back again: the return to the end is the other half of the move.
+      rerender(<MessageList messages={running} isLoading={false} />);
+      expect(screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ })).toBeChecked();
+    });
+
+    it("keeps a submitted offer greyed and tagged through the move and back", () => {
+      seed({
+        ...status,
+        actions: [{
+          offerId: "o1",
+          offeredAt: "2026-09-16T00:00:00Z",
+          id: "wire-webhook",
+          label: "Wire the Stripe webhook",
+          description: "Adds /webhooks/stripe.",
+          payload: "Wire the Stripe webhook.",
+        }],
+        needsYou: ["Add the Stripe test key."],
+      });
+      const { rerender } = render(
+        <MessageList messages={settled} isLoading={false} onSendFollowUp={() => true} />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ }));
+      fireEvent.click(screen.getByRole("checkbox", { name: /Add the Stripe test key/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+      expect(screen.getAllByText("SENT")).toHaveLength(2);
+
+      const running = [...settled, msg("user", "go"), msg("assistant", "on it")];
+      rerender(<MessageList messages={running} isLoading={true} onSendFollowUp={() => true} />);
+      expect(screen.getAllByText("SENT")).toHaveLength(2);
+      rerender(<MessageList messages={running} isLoading={false} onSendFollowUp={() => true} />);
+      expect(screen.getAllByText("SENT")).toHaveLength(2);
+    });
+
+    // The card's anchor flushes a row group early, which shifts every later
+    // group's ordinal. Groups are keyed by the row they start at so that only
+    // the split group is re-parented; an ordinal key would remount the tail of
+    // the transcript every time a turn starts or stops.
+    it("leaves the groups past its own untouched when the anchor moves", () => {
+      seed(status);
+      const line = (i: number) => msg("assistant", `line ${i}`);
+      const settledRows = Array.from({ length: 50 }, (_, i) => line(i));
+      const turnRows = Array.from({ length: 15 }, (_, i) => line(50 + i));
+      const { rerender } = render(<MessageList messages={settledRows} isLoading={false} />);
+      rerender(<MessageList messages={settledRows} isLoading={true} />);
+      rerender(<MessageList messages={[...settledRows, ...turnRows]} isLoading={true} />);
+      const tail = screen.getByText("line 60");
+      rerender(<MessageList messages={[...settledRows, ...turnRows]} isLoading={false} />);
+      expect(screen.getByText("line 60")).toBe(tail);
+    });
+
+    it("does not anchor on the empty transcript a session switch leaves behind", () => {
+      seed(status);
+      // Switching to a running session clears the messages and sets isLoading
+      // before the history arrives.
+      const { rerender } = render(<MessageList messages={[]} isLoading={true} />);
+      rerender(<MessageList messages={settled} isLoading={true} />);
+      rerender(<MessageList messages={[...settled, msg("assistant", "the rest")]} isLoading={true} />);
+      const card = screen.getByTestId("session-status-card");
+      expect(precedes(screen.getByText("done"), card)).toBe(true);
+      expect(precedes(card, screen.getByText("the rest"))).toBe(true);
+    });
+
+    it("puts a streaming reply below the card rather than growing it above", () => {
+      seed(status);
+      const streaming = (text: string) => ({ ...msg("assistant", text), streaming: true });
+      const { rerender } = render(
+        <MessageList messages={[...settled, streaming("half a sen")]} isLoading={true} />,
+      );
+      rerender(<MessageList messages={[...settled, streaming("half a sentence and more")]} isLoading={true} />);
+      const card = screen.getByTestId("session-status-card");
+      expect(precedes(screen.getByText("done"), card)).toBe(true);
+      expect(precedes(card, screen.getByText("half a sentence and more"))).toBe(true);
+    });
+
+    // A turn with no user row of its own — a dispatched one — can leave its
+    // first tools in the same group as the settled turn's last ones. One row
+    // cannot sit on both sides of the anchor: the whole group goes below the
+    // card, so the turn's output is never above it, at the cost of taking a
+    // settled tool down with it. The trade-off is argued in plan.md.
+    it("puts a tool group that straddles the boundary below the card, not the card below it", () => {
+      seed(status);
+      const read = (id: string, path: string): ChatMessage => ({
+        role: "assistant",
+        text: "",
+        toolUse: [{ type: "tool_use", id, name: "Read", input: { file_path: path } }],
+      });
+      const before = [msg("assistant", "done"), read("t1", "settled.ts")];
+      const { rerender } = render(<MessageList messages={before} isLoading={false} />);
+      rerender(<MessageList messages={before} isLoading={true} />);
+      rerender(<MessageList messages={[...before, read("t2", "live.ts")]} isLoading={true} />);
+      const card = screen.getByTestId("session-status-card");
+      const group = screen.getByTestId("tool-call-group");
+      expect(group.textContent).toContain("live.ts");
+      expect(precedes(screen.getByText("done"), card)).toBe(true);
+      expect(precedes(card, group)).toBe(true);
+    });
+
+    it("anchors at the end of what a viewer joining mid-turn already has", () => {
+      seed(status);
+      const joined = [...settled, msg("assistant", "half done")];
+      const { rerender } = render(<MessageList messages={joined} isLoading={true} />);
+      rerender(<MessageList messages={[...joined, msg("assistant", "the rest")]} isLoading={true} />);
+      const card = screen.getByTestId("session-status-card");
+      expect(precedes(screen.getByText("half done"), card)).toBe(true);
+      expect(precedes(card, screen.getByText("the rest"))).toBe(true);
+    });
   });
 });

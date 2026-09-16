@@ -300,12 +300,13 @@ the nudge holds `beginPostTurnWork` until its `TurnHandle` settles. `PostTurnHol
 expires on its own, so a turn outliving the deadline is covered by `running` and
 the epoch by then.
 
-## Client (req 6–9, 14, 17, 18, 20, 24, 26–29)
+## Client (req 6–9, 14, 17, 18, 20, 24, 26–30)
 
 `SessionStatusCard` (`src/client/components/SessionStatusCard.tsx`), rendered
-as the last child of the `contentRef` element in
-`src/client/components/MessageList/MessageList.tsx`, after the trailing
-rewind point. It is inside the scroll container, so it scrolls away with
+as a direct child of the `contentRef` element in
+`src/client/components/MessageList/MessageList.tsx` — last while the agent is
+idle, after the trailing rewind point; at the frozen turn anchor while a turn
+runs (req 30, below). It is inside the scroll container, so it scrolls away with
 the conversation (req 6); the question card, a transcript row, sits above
 it (req 8); and `useMessageScroll`'s observer on that element already keeps
 the view pinned to the bottom when the card appears or grows. It is not a
@@ -387,6 +388,130 @@ meets one, and every offer shows its description (req 26).
 - Not on the sidebar row (req 7); not an input to `computeAttentionReason`
   (req 9). The field is on `SessionInfo`, so the sidebar could read it; it
   must not.
+
+### Out of the way while a turn runs (req 30)
+
+The card's place in the conversation is an **anchor**: the number of messages
+that were settled when the current turn started. While a turn runs the card is
+rendered after the rows for those messages, so everything the turn produces
+renders below it and it leaves the viewport the ordinary way. When the turn
+stops the anchor clears and the card is the last element again.
+
+**Freezing the anchor.** A ref in `MessageList`, `{ sessionId, anchor }`.
+While `isLoading` is false the anchor is null. On the first render with
+`isLoading` true, a non-empty transcript and no anchor, it is set to the
+message count **less the trailing run of user rows and streaming rows**. It is
+read from `messagesProp`, not the `useDeferredValue` copy the rows are built
+from: `isLoading` is not deferred, and pairing the two mixes generations — a
+successor turn starting before the predecessor's last reply has caught up would
+see that reply still marked `streaming` and freeze one row short of it, for the
+whole turn. A
+user row belongs to the turn that is starting rather than to the finished
+conversation, so trimming it makes the anchor independent of whether the store
+appends that row before or after it sets `isLoading`. A streaming row is
+trimmed for a different reason: it goes on growing **in place** rather than
+appending, so counting it settled would leave the turn's own text above the
+card. The ref is cleared when the session changes.
+
+**Empty is not an anchor.** Switching to a session whose turn is already
+running clears the messages and sets `isLoading` before the history arrives, so
+the first loading render can see an empty transcript; freezing there would
+anchor the card above the whole conversation once the history landed. The
+anchor waits for a non-empty transcript. A viewer who **joins mid-turn** then
+freezes on what it has: the card sits after it and the rest of the turn renders
+below — the same experience, one turn late.
+
+**From messages to rows.** `elementLastMessageIndex` turns the message anchor
+into a row count: the first visual element whose **last** message reaches the
+anchor. The last, not the first, because a tool-group merges consecutive
+groupable tools across messages and only a user row breaks the run — so a turn
+with no user row of its own (a dispatched one) can leave its first tools in the
+same group as the settled turn's last ones. Keying on the group's first message
+would put that group, the turn's tools included, above the card. A rewind that
+truncates the transcript past the anchor leaves the count at the end of the
+rows, which is the idle position.
+
+**Where it goes in the DOM.** `MessageList` builds one keyed array — the row
+groups, the sub-agent chips, the trailing rewind point and the card — and hands
+it to `CompactLayout`, which renders its children as a fragment, so all of them
+stay direct children of `contentRef` as they are today. The card is one keyed
+element of that array in both states, so moving it is a **reorder**, not a
+remount: its ticked offers, its locally-known "SENT" rows and its reported
+manual steps survive the move. Two JSX sites would remount it, and the moment
+that matters is the one right after Submit — the submission starts a turn, and
+a remount there would drop the grey from the rows the user had just sent.
+
+**The group boundary.** Rows are chunked into `content-visibility` groups of
+`ROWS_PER_GROUP` (planning#491). A partial last group would keep absorbing the
+turn's new rows, which would then render *above* the card, so the anchor
+**flushes a group**, splitting one chunk in two. Chunking is unaffected either
+side of the split — the row counter runs on, so the next boundary is still the
+next multiple of `ROWS_PER_GROUP` — and the split's second half is keyed after
+the **same chunk** it belongs to, with a suffix. So removing the split
+re-parents only that half's rows — under `ROWS_PER_GROUP` anchored rows, plus a
+task panel if one sits in that half — and every other group keeps its identity. A key naming the group's ordinal among
+groups would re-key the whole tail each time the anchor moves; a key naming its
+first row would survive that but not a mid-transcript removal, which shifts
+every row index under it — a case `transcript-row-groups.test.ts` already
+holds to ≤2 remounts. Only the live boundary is kept — one extra group at a
+time — because a boundary per turn would grow the number of
+`content-visibility` elements without bound, which is the cost planning#491
+measured.
+
+**Not yanking the view (req 30).** Moving the card back to the end removes it
+from above a reader who has scrolled up, which would shift their content by the
+card's height. `CompactLayout` already restores a reading anchor across a
+row-structure change with `getSnapshotBeforeUpdate`, and it now takes the
+card's anchor as a second input to that snapshot. Two details are load-bearing,
+and both were found by watching a real turn in the dogfood instance rather than
+by reading the code:
+
+- **The card's move has its own guard**, `canPreserveAcrossCardMove`, which
+  measures the container instead of reading `autoScrollRef`. That flag is
+  deliberately sticky — an appended user row arms it and pins — and a
+  *dispatched* turn's user row (a status-card nudge) goes through the same
+  path, so it can read true while the view sits a thousand pixels above the
+  bottom. And because the move changes no height, no `ResizeObserver` fires to
+  correct it: the reader's row simply drops by the card's height. Near the
+  bottom nothing is needed at all, since `scrollHeight` is unchanged.
+- **The anchor row is re-found by id, not held as a node.** The boundary flush
+  re-parents the rows just under the card, so React remounts them — and the row
+  the snapshot measured is one of those. Holding the element gives a
+  disconnected node and the restore returns silently, which is exactly the
+  failure the restore exists to prevent.
+
+A live text **selection** does not stand the restore down, unlike every
+auto-scroll path: those would move content the user is holding still, while
+this one cancels a displacement they did not ask for, and a selection below the
+card is precisely what the card's departure drags out from under the cursor. A
+live scroll **gesture** does stand it down — writing `scrollTop` into a fling
+fights it, and a reader mid-fling is not holding a row.
+
+**The cases, each decided:**
+
+| Case | What happens |
+|---|---|
+| Turn ends | Anchor clears; the card moves below the turn's last row. A reader at the bottom needs nothing — the move leaves `scrollHeight` alone, so the bottom stays the bottom; a reader scrolled up keeps their row through the snapshot restore. |
+| Switching into a running session | The anchor waits for the history, then freezes at the end of it. |
+| A second turn starts straight after | `isLoading` drops and rises, so the anchor re-freezes at the new end: the card sits below the first turn's output and above the second's. If the runner never goes idle between them, the anchor stays where it was and the card stays above both — the same promise, one anchor. |
+| A queued message | It is appended after the anchor was frozen, so it renders below the card with the rest of the live output. |
+| A turn that produces no output | The anchor equals the end of the rows, so the card is already in its idle place and nothing moves. |
+| A turn that ends without a status update | Position is unchanged by freshness: the card returns to the end and carries the "Stale" label (req 14). |
+| A tool group straddling the boundary | Placed below the card whole, so a settled tool can end up under it. See the trade-off below. |
+| The setting is off, or no card is stored | No card element enters the array and no group is flushed — the transcript is byte-for-byte today's. |
+
+**One trade-off, stated.** A tool-group is a single row spanning several
+messages, and only a user row breaks the run — so a turn with no user row of
+its own can leave its first tools grouped with the settled turn's last ones.
+That one row cannot be on both sides of the anchor, and req 30 asks for two
+things of it: the card keeps the place it had, and the turn's output renders
+below it. The second is the requirement's purpose — it is the defect Nik
+reported — so the whole group goes below the card, and a settled tool can end
+up under it in that case. Splitting the visual group at the turn boundary would
+honour both, at the cost of changing `buildVisualElements`, which is shared,
+performance-critical and covered by contracts of its own (planning#491,
+docs/299); it is not worth that for a row shape only a dispatched turn
+produces.
 
 ## Evolving the action card (req 19, 21)
 
@@ -492,7 +617,22 @@ built file is named in brackets. Every one of them exists.
   `mcp-tool-spec.test.ts` and each adapter's `mcp-writer.test.ts`, which is where
   the spec is chosen.
 - `MessageList.test.tsx` [`src/client/components/MessageList.test.tsx`] — the card renders after the last transcript row
-  inside the scroll content, and not at all without a stored status.
+  inside the scroll content, and not at all without a stored status. Req 30:
+  while a turn runs the card keeps its place and the turn's rows — the user's
+  own message included — render below it; the turn stopping puts it last again;
+  the move does not remount it, so an offer ticked before the turn is still
+  ticked after and a submitted one stays greyed and tagged through the move and
+  back; a viewer joining mid-turn anchors at the end of what it has; the empty
+  transcript a session switch leaves behind is not an anchor; a streaming reply
+  renders below the card; a tool group straddling the boundary falls below it;
+  and a group past the card's own keeps its DOM node when the anchor moves.
+- `MessageList/CompactLayout.test.tsx` — the reading anchor is restored when
+  the card's anchor moves with the visibility string unchanged, under the
+  card's own guard rather than the auto-follow one; and the anchor row is
+  re-found when the reflow remounted it.
+- `MessageList/hooks/useMessageScroll.test.tsx` — `canPreserveAcrossCardMove`
+  asks the container, so a dispatched turn's user row arming auto-follow does
+  not suppress it, and a reader at the bottom is left alone.
 - `SessionStatusCard.test.tsx` — the markdown status; the two subtitles; the
   manual-step toggles and their "I've done this" names; "Stale" only when
   stale; selection keyed by `offerId` survives a replacement as a new

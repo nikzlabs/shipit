@@ -7,6 +7,16 @@ export function elementMessageIndex(el: VisualElement): number {
   return el.messageIndex;
 }
 
+/**
+ * The LAST message an element draws. A tool-group spans several, and it can
+ * span a turn boundary when no user row separates them, so an element that
+ * starts before a boundary may still carry rows from after it.
+ */
+export function elementLastMessageIndex(el: VisualElement): number {
+  if (el.kind === "tool-group") return el.messageIndices[el.messageIndices.length - 1] ?? 0;
+  return elementMessageIndex(el);
+}
+
 export interface CompactRun {
   start: number;
   end: number;

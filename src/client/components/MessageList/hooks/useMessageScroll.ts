@@ -111,6 +111,7 @@ export function useMessageScroll(
   contentRef: React.RefObject<HTMLDivElement | null>;
   currentMatchRef: React.RefObject<HTMLElement | null>;
   canRestoreReadingAnchor: () => boolean;
+  canPreserveAcrossCardMove: () => boolean;
 } {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -266,5 +267,33 @@ export function useMessageScroll(
   const canRestoreReadingAnchor = useCallback(() => !autoScrollRef.current
     && !hasActiveSelectionInside(containerRef.current)
     && !userIsDriving(touchDraggingRef, lastGestureAtRef), []);
-  return { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor };
+
+  /**
+   * docs/303-session-status-card req 30 — whether the status card returning to
+   * the end of the conversation must keep the reader's row where it is.
+   *
+   * It asks the container, not `autoScrollRef`. The flag is deliberately sticky
+   * — an appended user message sets it true and pins, so that the settle loop
+   * can keep pinning while a tall row paints — and a dispatched turn's own user
+   * row goes through that path too. So it can read true while the view sits
+   * thousands of pixels above the bottom, and the card's move changes no
+   * height, so no ResizeObserver corrects it: the reader's row would simply
+   * jump by the card's height. Near the bottom nothing is needed, since the
+   * move leaves `scrollHeight` alone.
+   *
+   * A live text SELECTION is not a reason to stand down, unlike the auto-scroll
+   * paths: those would move content the user is holding still, while this one
+   * cancels a displacement they did not ask for — a selection below the card is
+   * exactly what the card's departure drags out from under the cursor. A live
+   * scroll GESTURE still is: writing `scrollTop` into a fling fights it, and a
+   * reader mid-fling is not holding a row.
+   */
+  const canPreserveAcrossCardMove = useCallback(() => {
+    const container = containerRef.current;
+    return !!container
+      && !isNearBottom(container)
+      && !userIsDriving(touchDraggingRef, lastGestureAtRef);
+  }, []);
+
+  return { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor, canPreserveAcrossCardMove };
 }
