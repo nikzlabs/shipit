@@ -14,7 +14,10 @@ import { antigravityStderrErrorText } from "../../../shared/antigravity-stream.j
 import { ensureConfigDir } from "../agent-auth-base.js";
 import {
   createCliLineRelay,
+  credentialParseFailure,
+  withoutSubmittedCodes,
   sanitizeAuthDiagnostic,
+  type CliLineRelay,
   type AgentAuthLogLevel,
   type AgentAuthLogPayload,
   type AgentAuthLogSource,
@@ -45,6 +48,13 @@ const SIGN_IN_TIMEOUT_MS = 3 * 60 * 1000;
 /** The prompt is irrelevant; the run exists to carry the OAuth exchange. */
 const SIGN_IN_PROMPT = "Reply with the single word pong.";
 
+/**
+ * The pty width the sign-in runs at. **The relay unwraps at the same number**,
+ * so the two must stay one constant: the CLI wraps its own output to this width
+ * and a secret broken across the wrap is only half-redacted otherwise.
+ */
+const SIGN_IN_COLS = 80;
+
 // Match either host the sign-in link can use.
 export const GOOGLE_AUTH_URL_PATTERN = /https:\/\/(?:accounts\.google\.com|antigravity\.google)\/[^\s"']+/;
 
@@ -61,8 +71,6 @@ interface TokenStamp {
  * Stamped only when the file holds an actual credential. A sign-in is announced
  * off this, so "the file changed" is not enough: a save that died part-way
  * leaves a short, unparseable file whose mtime moved like any other write.
- * `isConfigured` keeps the looser size test on purpose — it reports what the
- * account HAS, while this claims what a run just DID.
  */
 function tokenStamp(home: string): TokenStamp | null {
   try {
@@ -105,7 +113,7 @@ function readTokenFile(home: string): Record<string, unknown> | null {
       ? (parsed as Record<string, unknown>)
       : null;
   } catch (err) {
-    console.warn("[antigravity-auth] could not parse the token file:", err instanceof Error ? err.message : err);
+    console.warn("[antigravity-auth] could not parse the token file:", credentialParseFailure(err));
     return null;
   }
 }
@@ -233,6 +241,7 @@ export class AntigravityAuthManager
   private activeAttemptId: string | null = null;
   private activeAttemptStartedAt = 0;
   private submittedCodes: string[] = [];
+  private relay: CliLineRelay | null = null;
   private terminalEmitted = false;
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
@@ -291,17 +300,7 @@ export class AntigravityAuthManager
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    // **Escapes first, then the known code, then the generic rules.** A pty
-    // colours its echo, so an escape inside the code defeats an exact match
-    // until it is stripped; and once a generic rule has rewritten part of the
-    // code, no later exact match can recognise the rest — the two together
-    // published a code's tail as ordinary text.
-    //
-    // The strip is unreachable from the RELAY, which hands over an already
-    // stripped line, so the guard tests pin it there rather than here. It stays
-    // for a caller that skips the relay: the ordering only holds if whatever
-    // reaches `withoutSubmittedCode` is escape-free.
-    const sanitized = sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(message)));
+    const sanitized = this.redacted(message);
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -354,13 +353,14 @@ export class AntigravityAuthManager
       proc = this.spawnFn(
         this.command,
         ["-p", SIGN_IN_PROMPT, "--output-format", "text", "--dangerously-skip-permissions"],
-        { name: "xterm-color", cols: 80, rows: 40, env },
+        { name: "xterm-color", cols: SIGN_IN_COLS, rows: 40, env },
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn("[antigravity-auth] could not spawn the sign-in run:", message);
+      console.warn("[antigravity-auth] could not spawn the sign-in run:", this.redacted(message));
       this.emitDiagnosticLog("error", "shipit", `Could not spawn the Antigravity CLI: ${message}`);
-      this.fail("error", message);
+      // The panel's copy is redacted; the failure card's was not.
+      this.fail("error", this.redacted(message));
       return;
     }
 
@@ -370,9 +370,13 @@ export class AntigravityAuthManager
     // sentence is read from.
     // Whole lines, from the shared relay: the reason is in `createCliLineRelay`,
     // and the same boundary already cost the link itself once (`handleOutput`).
-    const relay = createCliLineRelay((source, line) => {
-      if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
-    });
+    const relay = createCliLineRelay(
+      (source, line) => {
+        if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
+      },
+      { wrapWidth: SIGN_IN_COLS },
+    );
+    this.relay = relay;
 
     proc.onData((chunk) => {
       // A cancelled run keeps draining, and by then `this.proc` may be the NEXT
@@ -432,7 +436,17 @@ export class AntigravityAuthManager
         this.clearActiveScope();
         return;
       }
-      this.fail("error", refusal ?? this.exitMessage(exitCode, signal, hadPending));
+      // **req 4 is about which sentence the user gets, not about publishing it
+      // unread.** Its own example comes through these rules byte for byte —
+      // the guard test pins that with the sentence from requirements.md — and
+      // what they take out is a credential the CLI quoted back, which reached
+      // `failed.message` whole while the panel's copy of it was clean.
+      this.fail(
+        "error",
+        refusal === undefined
+          ? this.exitMessage(exitCode, signal, hadPending)
+          : this.redacted(refusal),
+      );
     });
 
     this.timeoutHandle = setTimeout(() => {
@@ -440,10 +454,14 @@ export class AntigravityAuthManager
       // Past a printed link this bound is not the one that matters — the CLI's
       // own 60 s window closed long before — so it is a hung process, not a
       // missing link, and saying "no link" contradicts the link on screen.
-      this.fail("timeout", this.lastPendingDetails
+      const message = this.lastPendingDetails
         ? "The Antigravity sign-in did not finish. Start again."
-        : "The Antigravity CLI printed no sign-in link.");
+        : "The Antigravity CLI printed no sign-in link.";
+      // The kill is what drains the relay, and it has to happen while the
+      // attempt still has a scope: `fail` clears the account and the attempt id,
+      // and the client drops a log line it cannot place against either.
       this.kill();
+      this.fail("timeout", message);
     }, this.timeoutMs);
   }
 
@@ -465,22 +483,19 @@ export class AntigravityAuthManager
     this.emit("pending", details);
   }
 
-  /**
-   * A pty echoes what is written to it, so the authorization code comes back on
-   * the CLI's own output — which is relayed to the panel. The sanitizer's
-   * long-secret rule would probably catch it; "probably" is not good enough for
-   * a credential, so the exact string we submitted is taken out first.
-   *
-   * **The marker carries no whitespace.** A URL match ends at the first space,
-   * so a spaced marker substituted inside a link truncates what the sanitizer
-   * then sees and publishes every parameter after it.
-   */
   private withoutSubmittedCode(text: string): string {
-    let out = text;
-    for (const code of this.submittedCodes) {
-      if (out.includes(code)) out = out.split(code).join("[code-redacted]");
-    }
-    return out;
+    return withoutSubmittedCodes(text, this.submittedCodes);
+  }
+
+  /**
+   * **Escapes first, then the known code, then the generic rules.** An escape
+   * inside the echoed code defeats an exact match until it is stripped, and a
+   * generic rule run first rewrites the code's middle, after which no exact
+   * match recognises the rest. Everything this manager prints goes through
+   * here, the terminal included: a credential in a log is still a credential.
+   */
+  private redacted(text: string): string {
+    return sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(text)));
   }
 
   /** `hadPending` is passed in: the exit handler clears the field before it asks. */
@@ -516,7 +531,10 @@ export class AntigravityAuthManager
       this.emitDiagnosticLog("info", "shipit", "Authorization code delivered to the CLI.");
       this.emitProgress("checking_credentials", "Code submitted — completing sign-in…");
     } catch (err) {
-      console.warn(`[antigravity-auth] could not deliver the authorization code: ${String(err)}`);
+      // The write that threw carried the code, so the error may quote it back.
+      console.warn(
+        `[antigravity-auth] could not deliver the authorization code: ${this.redacted(String(err))}`,
+      );
       this.emitDiagnosticLog(
         "error",
         "shipit",
@@ -538,6 +556,12 @@ export class AntigravityAuthManager
 
   kill(): void {
     this.clearTimeout();
+    // Before the process is detached, because the exit callback that would
+    // otherwise flush is gated on it: a cancelled run's held line — the one the
+    // relay is holding precisely because it might be half a secret — was
+    // dropped, and it is the user's only record of why they cancelled.
+    this.relay?.flush();
+    this.relay = null;
     const proc = this.proc;
     this.proc = null;
     this.lastPendingDetails = null;

@@ -7,6 +7,8 @@ import type { IPty } from "node-pty";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import {
   createCliLineRelay,
+  credentialParseFailure,
+  withoutSubmittedCodes,
   sanitizeAuthDiagnostic,
   type CliLineRelay,
   type AgentAuthLogPayload,
@@ -122,6 +124,15 @@ const CLAUDE_CREDENTIAL_FILES = [".credentials.json", "credentials.json", "auth.
 
 // Flattened Ink output can omit spaces at any boundary.
 const CODE_PASTE_TRIGGER = /paste\s*code\s*here(?:\s*if\s*prompted)?/i;
+
+/**
+ * The pty width the login runs at. **The relay unwraps at the same number**, so
+ * the two must stay one constant: Ink wraps its own output to this width, and
+ * the OAuth link is longer than any width worth spawning — a capture of a real
+ * login at 80 columns breaks it across three lines — so a secret split at the
+ * wrap is only half-redacted unless the relay puts the line back together.
+ */
+const LOGIN_COLS = 200;
 
 function ensureOnboardingComplete(userConfig: string, configDir: string): void {
   try {
@@ -240,22 +251,8 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     this.emit("progress", payload);
   }
 
-  /**
-   * A pty echoes what is written to it, so the pasted authorization code comes
-   * back on the CLI's own output — which this panel shows. The sanitizer's
-   * long-secret rule would probably catch it; "probably" is not good enough for
-   * a credential, so the exact string we submitted is taken out first.
-   *
-   * **The marker carries no whitespace.** A URL match ends at the first space,
-   * so a spaced marker substituted inside a link truncates what the sanitizer
-   * then sees and publishes every parameter after it.
-   */
   private withoutSubmittedCode(text: string): string {
-    let out = text;
-    for (const code of this.submittedCodes) {
-      if (out.includes(code)) out = out.split(code).join("[code-redacted]");
-    }
-    return out;
+    return withoutSubmittedCodes(text, this.submittedCodes);
   }
 
   /**
@@ -266,30 +263,23 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
    * through a chunk-at-a-time sanitize.
    */
   private newRelay(): CliLineRelay {
-    return createCliLineRelay((source, line) => {
-      if (!line.trim()) return;
-      // Logged from what the panel got: the same redaction has to cover both.
-      const shown = this.emitDiagnosticLog("info", source, line.trim());
-      if (shown) console.log("[auth output]", shown);
-    });
+    return createCliLineRelay(
+      (source, line) => {
+        if (!line.trim()) return;
+        // Logged from what the panel got: the same redaction has to cover both.
+        const shown = this.emitDiagnosticLog("info", source, line.trim());
+        if (shown) console.log("[auth output]", shown);
+      },
+      { wrapWidth: LOGIN_COLS },
+    );
   }
 
   /**
-   * **Escapes first, then the known code, then the generic rules.** A pty
-   * colours its echo, so an escape inside the code defeats an exact match until
-   * it is stripped; and once a generic rule has rewritten part of the code, no
-   * later exact match can recognise the rest — the two together published a
-   * code's tail as ordinary text.
-   *
-   * Everything this manager prints about the CLI goes through here, not only
-   * what the panel shows: a credential kept off the screen and written to the
-   * orchestrator's log is still a credential in a log.
-   *
-   * The strip is unreachable from the RELAY, which hands over an already
-   * stripped line, so the guard tests pin it there rather than here. It stays
-   * for the callers that skip the relay — the wizard dump reads `outputBuffer`,
-   * which is stripped a chunk at a time and so can still hold a reassembled
-   * escape.
+   * **Escapes first, then the known code, then the generic rules.** An escape
+   * inside the echoed code defeats an exact match until it is stripped, and a
+   * generic rule run first rewrites the code's middle, after which no exact
+   * match recognises the rest. Everything this manager prints goes through
+   * here, the terminal included: a credential in a log is still a credential.
    */
   private redacted(text: string): string {
     return sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(text)));
@@ -343,7 +333,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
           };
         }
       } catch (err) {
-        console.warn(`[auth] Failed to parse ${fullPath}:`, err instanceof Error ? err.message : err);
+        console.warn(`[auth] Failed to parse ${fullPath}:`, credentialParseFailure(err));
       }
     }
 
@@ -432,7 +422,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
 
     this.proc = pty.spawn("claude", ["/login"], {
       name: "xterm-256color",
-      cols: 200,
+      cols: LOGIN_COLS,
       rows: 24,
       env: loginEnv,
     });
@@ -626,6 +616,10 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
         console.log("[auth] Credentials poll timed out — no fresh credentials written to", configDir);
         this.clearCredentialsPoll();
         if (!this.claimTerminalOutcome()) return;
+        // Ends the attempt without killing the process, so nothing else drains
+        // the relay — and what it is holding is the CLI's last word on why the
+        // credentials never arrived.
+        this.relay.flush();
         this.emitProgress("failed", "Timed out waiting for Claude credentials.");
         this.emitDiagnosticLog("error", "shipit", "Credentials poll timed out after 30 seconds.");
         this.lastPendingDetails = null;
@@ -665,6 +659,9 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
 
   // Claim before teardown so its asynchronous exit cannot emit another outcome.
   kill(): void {
+    // Before anything else: a cancelled run's held line is the user's only
+    // record of why they cancelled, and no other path drains it.
+    this.relay.flush();
     this.claimTerminalOutcome();
     // A killed pty keeps draining, and the generation is what both callbacks
     // test: without this, a cancelled run's output still reached the panel and

@@ -13,14 +13,14 @@ import {
 } from "./auth-manager.js";
 
 const ptyHoisted = vi.hoisted(() => ({
-  calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string> } }[],
+  calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string>; cols?: number } }[],
   exitHandlers: [] as ((e: { exitCode: number }) => void)[],
   dataHandlers: [] as ((data: string) => void)[],
   writes: [] as string[],
   killed: 0,
 }));
 vi.mock("node-pty", () => ({
-  spawn: (cmd: string, args: readonly string[], opts: { env?: Record<string, string> }) => {
+  spawn: (cmd: string, args: readonly string[], opts: { env?: Record<string, string>; cols?: number }) => {
     ptyHoisted.calls.push({ cmd, args, opts });
     return {
       pid: 4242,
@@ -568,6 +568,108 @@ describe("AuthManager / auth diagnostics", () => {
 
     expect(logs.map((l) => l.message).join("")).not.toContain(secret);
     mgr.kill();
+  });
+
+  /**
+   * A chunk boundary is not the only break in the stream: the CLI wraps its own
+   * output at the width ShipIt spawned it with, newline included — a capture of
+   * this login at 80 columns breaks the link across three lines — so a whole
+   * line is still half a secret. Taking the width back from the spawn call is
+   * the property under test: a relay unwrapping at a different number is the
+   * same defect.
+   */
+  it("redacts a link the CLI wrapped at the width it was spawned with", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    const cols = ptyHoisted.calls[0].opts.cols ?? 0;
+    // The break falls inside `state`, which is where the leak lives: split
+    // anywhere else and the assignment rule still recognises the key on the
+    // second line, so the test would pass with no unwrapping at all.
+    const base = "https://claude.ai/oauth/authorize?hint=";
+    const url = `${base}${"x".repeat(cols - base.length - 3)}state=private-state-value`;
+    expect(url.slice(0, cols)).toMatch(/sta$/);
+
+    ptyHoisted.dataHandlers[0](`${url.slice(0, cols)}\n${url.slice(cols)}\n`);
+
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel).not.toContain("private-state-value");
+    // Relaying nothing at all would satisfy the line above.
+    expect(panel).toContain("https://claude.ai/oauth/authorize?[redacted]");
+    mgr.kill();
+  });
+
+  /**
+   * A held line is held because it might be half a secret, and cancelling is
+   * when the user most wants to read why. `kill()` is the only path left that
+   * can drain it — the exit callback runs on a process that has been detached.
+   */
+  it("relays a held line when the login is cancelled", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    const cols = ptyHoisted.calls[0].opts.cols ?? 0;
+    const line = "The Claude CLI could not reach the authentication service.".padEnd(cols, ".");
+    ptyHoisted.dataHandlers[0](`${line}\n`);
+    expect(logs.map((l) => l.message).join(""), "relayed before the line could be joined")
+      .not.toContain("could not reach");
+
+    mgr.cancel();
+
+    expect(logs.map((l) => l.message).join("")).toContain("could not reach");
+  });
+
+  /**
+   * The credential poll's timeout ends the attempt without killing the process,
+   * so nothing else drains the relay — and what it holds is the CLI's last word
+   * on why the credentials never arrived.
+   */
+  it("flushes what the CLI last printed when the credential poll times out", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-poll-"));
+    try {
+      const mgr = new AuthManager();
+      const logs: { message: string }[] = [];
+      mgr.on("log", (l: { message: string }) => logs.push(l));
+      mgr.startOAuthFlow({ accountId: "acct-1", credentialDir: tmp });
+      mgr.sendCode("4/short.private/code");
+      ptyHoisted.dataHandlers[0]("Error: the token exchange did not complete");
+
+      vi.advanceTimersByTime(31_000);
+
+      expect(logs.map((l) => l.message).join("")).toContain("the token exchange did not complete");
+      mgr.kill();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The flush publishes whatever the CLI had printed, and mid-echo that is the
+   * first half of the code — which no whole-code match recognises. It reaches
+   * the `[auth output]` log as well as the panel, from the same string.
+   */
+  it("keeps a half-echoed code out of what cancelling flushes", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "https://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("4/short.private/code");
+    ptyHoisted.dataHandlers[0]("4/short.private/");
+
+    mgr.cancel();
+
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel).not.toContain("4/short.private/");
+    // Flushing nothing at all would satisfy the line above.
+    expect(panel).toContain("[code-redacted]");
   });
 
   /**
