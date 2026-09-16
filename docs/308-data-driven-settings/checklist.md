@@ -1,16 +1,11 @@
 # Data-driven settings UI — checklist
 
-Design is settled: [requirements.md](requirements.md), [plan.md](plan.md),
-[inventory.md](inventory.md). Each slice below is one pull request.
+This branch's deliverable is the design set. The implementation order lives in
+[plan.md](plan.md) → *Slices*, and the work is tracked on planning#580.
 
-- [x] Requirements written, with all three open questions answered and receipted
-- [x] Per-setting inventory: all 77 declarations, 15 problems and dependencies
-- [x] Design: two declaration fields, a shared scalar reader and writer, a control table by value kind
+- [x] Requirements written, from what the user asked for
+- [x] Per-setting inventory: all 77 declarations, with their store, agent policy and target control
+- [x] Design: two declaration fields, a machine-readable route store, a shared scalar reader and writer, a control table by value kind
 - [x] Subtraction review, and the design cut down to what it found
-- [ ] Slice 1 — the spine, delivered on Advanced: value record, `useSetting` / `saveSetting`, the control table, `section`, the whole Advanced tab
-- [ ] Slice 2 — Instructions, Git, Network: the textarea convention and conflict state (P14), the git identity control, `own-route` writes (P2)
-- [ ] Slice 3 — Voice: the remaining browser values, the TTS choices component (P7), the webhook pair (P9), the webhook always visible (P13)
-- [ ] Slice 4 — Integrations: the two credential rows (P10), `autoCreatePr` always visible (P13)
-- [ ] Slice 5 — panels: register the nine components and bind them to their declarations
-- [ ] Slice 6 — Project Settings: the second dialog, its repo-scoped write, the colour picker, the secrets panel (req 10)
-- [ ] Slice 7 — cleanup: delete the coverage walk and `data-setting` (req 12, P15)
+- [x] Pull-request review, and its corrections folded in — P17 to P19
+- [ ] Requirement 12 reopened: decide what replaces the coverage walk's copy and reachability guarantees

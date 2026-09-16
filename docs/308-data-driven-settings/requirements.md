@@ -71,7 +71,18 @@ they stand are not a requirement; they are how the code grew.
 
 ## Open questions
 
-None. All three were answered on 2026-09-16; the receipts are below.
+- **Requirement 12 was answered on a premise that turned out to be incomplete, so
+  it is open again.** The coverage walk proves **three** things, not one: that no
+  control is undeclared, that **the dialog's copy is the declaration's copy**
+  (`data-setting-label` / `data-setting-description` compared against the
+  declaration), and that **no declaration is unreachable** — every setting has a
+  control somewhere, with the exceptions listed in `UNREACHED`
+  (`src/client/components/Settings/settings-coverage.test.tsx:1512`). Generating
+  the rows makes the first impossible for rows, but not for the nine panels, and
+  does nothing about the other two. So: delete it anyway and accept losing the
+  copy and reachability guarantees, delete it once something structural replaces
+  them, or keep a much smaller walk over the panels. The 2026-09-16 receipt below
+  records the answer given before this was known.
 
 ## Resolved questions
 
@@ -90,13 +101,17 @@ None. All three were answered on 2026-09-16; the receipts are below.
 - 2026-09-16 — *Does this cover both dialogs, or only the main one?* Both. The
   user chose it over leaving Project Settings hand-written, which would have kept
   a second way of building controls — the thing this feature removes. Project
-  Settings adds 5 declarations over 3 tabs, 2 of which become ordinary rows
-  because that dialog is already open for one repository. → requirement 10.
+  Settings adds 5 declarations over 3 tabs. → requirement 10. (The receipt
+  originally said 2 of them become ordinary rows; the design settled on one row
+  and one colour picker. The answer is unchanged; the explanation was wrong.)
 - 2026-09-16 — *Once rows are generated, is `settings-coverage.test.tsx` (1617
   lines) deleted, narrowed to the panels, or kept?* Deleted. A generated row
   cannot exist without a declaration, so the class the walk detects becomes
   impossible. The compile-time stored-shape maps stay: they run in the opposite
   direction and cost nothing. → requirement 12, and `inventory.md` P15.
+  **Reopened 2026-09-16**: that argument covered one of the walk's three
+  guarantees. See the open question above; the answer may well stand, but it was
+  given on incomplete information.
 - 2026-09-16 — *May the visible order and grouping of rows change?* Yes. Order
   comes from each declaration, and rows will move. The alternative — choosing
   order numbers that reproduce today's layout exactly — would have encoded how
