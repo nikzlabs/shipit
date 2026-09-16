@@ -3,6 +3,7 @@ import type { McpServerConfig } from "../../shared/types/mcp-types.js";
 import {
   APPLIED,
   applyFailed,
+  applyPartial,
   applyUncertain,
   combineOutcomes,
   payloadDeclarations,
@@ -441,8 +442,16 @@ export async function applyEgressHostAdd(
  * list is assembled from several sources and a write reaches two of them
  * (plan.md → "Saved" has to mean saved). A session's list has one source, its
  * own rows, so its write already is the resulting state.
+ *
+ * `wrote` is the other half, and without it a removal that DID change the store
+ * still reported `failed` — the one status that claims ShipIt verified nothing
+ * changed. Removing a host an MCP server also supplies deletes the user's own
+ * row and leaves the host listed from the server; removing a shipped default an
+ * operator also supplies stores the suppression and leaves the operator's entry.
+ * Both are `partial`: what this write owns came off, and the host is still
+ * allowed from somewhere it does not reach (planning#537).
  */
-function globalRemovalOutcome(deps: EgressApplyDeps, host: string): ApplyOutcome {
+function globalRemovalOutcome(deps: EgressApplyDeps, host: string, wrote: boolean): ApplyOutcome {
   const store = deps.egressAllowlistStore;
   const target = normalizeHost(host);
   const remaining = buildEffectiveAllowlist({
@@ -452,13 +461,16 @@ function globalRemovalOutcome(deps: EgressApplyDeps, host: string): ApplyOutcome
   });
   const stillListed = remaining.find((entry) => entry.host === target);
   if (stillListed) {
-    return applyFailed(
-      stillListed.source === "mcp"
-        ? `${stillListed.host} is still allowed: a configured MCP server needs it, so removing it here does not take it off.`
-        : stillListed.source === "operator"
-          ? `${stillListed.host} is still allowed: this deployment's operator supplies it, and no removal here takes it off.`
-          : `${stillListed.host} is still on the global allowlist after the removal, so nothing about what sessions can reach changed.`,
-    );
+    const detail = stillListed.source === "mcp"
+      ? `${stillListed.host} is still allowed: a configured MCP server needs it, so removing it here does not take it off.`
+      : stillListed.source === "operator"
+        ? `${stillListed.host} is still allowed: this deployment's operator supplies it, and no removal here takes it off.`
+        : `${stillListed.host} is still on the global allowlist after the removal, so nothing about what sessions can reach changed.`;
+    return wrote
+      ? applyPartial(
+        `${detail} The entries this removal can reach are gone, so removing it again changes nothing.`,
+      )
+      : applyFailed(detail);
   }
   // Entries are patterns, so removing `api.github.com` leaves the shipped
   // `.github.com` matching it. Membership, not reachability: whether a session
@@ -480,20 +492,21 @@ export async function applyEgressHostRemove(
 ): Promise<ApplyOutcome> {
   return withConflictDomains([egressScopeDomain(scope)], () => {
     const isGlobal = scope === EGRESS_GLOBAL_SCOPE;
+    let wrote: boolean;
     try {
-      // Both, never one or the other. A host can be a shipped default AND an
-      // explicit row, and the old branch suppressed the default first and
-      // returned — leaving the row effective, advertised again as the user's
-      // own, and every further removal reporting success while changing nothing.
-      deps.egressAllowlistStore.removeHost(scope, host);
-      if (isGlobal && isBuiltinDefault(host)) deps.egressAllowlistStore.suppressDefault(host);
+      // A global removal is the store's own transaction: it deletes the explicit
+      // rows and suppresses a matching shipped default, and a half-landed pair
+      // has no honest outcome to report (`removeGlobalHost`).
+      wrote = isGlobal
+        ? deps.egressAllowlistStore.removeGlobalHost(host)
+        : deps.egressAllowlistStore.removeHost(scope, host);
     } catch (err) {
       console.error(`[settings-apply] removing egress host ${host} from ${scope} failed:`, err);
       return outcomeOf(err);
     }
     deps.broadcastEgressSettings?.();
     broadcastSettingsChanged(deps, ["network.egress.hosts"]);
-    return isGlobal ? globalRemovalOutcome(deps, host) : APPLIED;
+    return isGlobal ? globalRemovalOutcome(deps, host, wrote) : APPLIED;
   });
 }
 
