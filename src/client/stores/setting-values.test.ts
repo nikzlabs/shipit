@@ -84,8 +84,8 @@ describe("a browser value that was never saved", () => {
   });
 });
 
-describe("the record covers the settings this slice generates", () => {
-  it("holds every row on the two converted tabs and nothing else", () => {
+describe("the record covers the settings the converted tabs generate", () => {
+  it("holds every row on the converted tabs and nothing else", () => {
     expect(GENERATED_SETTINGS.map((d) => d.key)).toEqual([
       "advanced.releaseChannel",
       "advanced.enableSubAgents",
@@ -95,6 +95,10 @@ describe("the record covers the settings this slice generates", () => {
       "advanced.autoResolveConflicts",
       "advanced.autoResetMergedBranch",
       "advanced.memoryBudgetMb",
+      "git.identity",
+      "instructions.userInstructions",
+      "instructions.opsInstructions",
+      "instructions.agentInstructionsEnabled",
       "network.egressContained",
       "advanced.compactConversation",
       "advanced.notifyOnFinish",
@@ -146,6 +150,32 @@ describe("a browser value the store cannot spell", () => {
 
   it("is a generated row for a kind the codec does spell", () => {
     expect(isGeneratedRow(declarationOf("advanced.compactConversation"))).toBe(true);
+  });
+});
+
+/*
+  The textarea rule as a GATE (plan.md → The renderer). `text`'s control is a
+  textarea and the `system-prompt-file` store is what says a value is prose —
+  which is why the design rejected a `presentation: "multiline"` field. So a
+  `text` row over another store has no control yet and must not be generated,
+  and this is written against the rule rather than against today's catalogue:
+  the first such declaration is a slice away, and by then a row that renders and
+  cannot be shown would already have shipped.
+*/
+describe("a text value whose store is not the prompt files", () => {
+  const credentialText = {
+    ...declarationOf("instructions.userInstructions"),
+    key: "instructions.somethingTyped",
+    store: { kind: "credential-store", field: "somethingTyped" },
+  } as AnySettingDeclaration;
+
+  it("is not a generated row, because the control table has no input", () => {
+    expect(credentialText.type.kind).toBe("text");
+    expect(isGeneratedRow(credentialText)).toBe(false);
+  });
+
+  it("is a generated row when the store is the one whose values are prose", () => {
+    expect(isGeneratedRow(declarationOf("instructions.userInstructions"))).toBe(true);
   });
 });
 

@@ -13,17 +13,24 @@
  * the value goes comes from `store.kind`, the payload field is the declaration's
  * `wire`, the storage key is its `localStorageKey`, and the toast names the
  * declaration's own label.
+ *
+ * A row that commits on a button rather than on change uses the other half of
+ * this module: {@link useSettingDraft} holds the edit, and
+ * {@link commitSettings} stores several of them in one write.
  */
 
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { mirrorFieldOf } from "../../stores/setting-values.js";
+import { GENERATED_SETTINGS, mirrorFieldOf, sameSettingValue } from "../../stores/setting-values.js";
 import { settingOf } from "./setting-binding.js";
-import type {
-  GlobalSettingKey,
-  GlobalSettingsCatalogue,
-  SettingKey,
-  SettingValue,
+import {
+  isPayloadDeclaration,
+  type AnySettingDeclaration,
+  type GlobalSettingKey,
+  type GlobalSettingsCatalogue,
+  type SettingKey,
+  type SettingTab,
+  type SettingValue,
 } from "../../../server/shared/settings-catalogue/index.js";
 
 type Settings = ReturnType<typeof useSettingsStore.getState>;
@@ -100,22 +107,26 @@ interface SaveState {
 
 const SAVES = new Map<string, SaveState>();
 
+const SETTINGS_PATH = "/api/settings";
+
 /**
  * The request that stores one setting's value.
  *
  * The settings payload takes every value it carries under the declaration's
- * `wire`; a setting the payload does not carry takes the method, the path and
- * the body field its own store names (inventory.md P2) — the two that use it
- * post different body shapes, so a route string could not have produced either
- * payload.
+ * `wire`, whichever of the three stores holds it — the credential store, an
+ * instructions file or the git config all reach it through the same PUT, and
+ * the declaration's `wire` is the only thing that differs. A setting the
+ * payload does not carry takes the method, the path and the body field its own
+ * store names (inventory.md P2) — the two that use it post different body
+ * shapes, so a route string could not have produced either payload.
  */
 function requestFor(
-  declaration: ReturnType<typeof settingOf>,
+  declaration: AnySettingDeclaration,
   value: unknown,
 ): { path: string; method: string; body: Record<string, unknown> } | null {
   const { store } = declaration;
-  if (store.kind === "credential-store" && declaration.wire) {
-    return { path: "/api/settings", method: "PUT", body: { [declaration.wire]: value } };
+  if (isPayloadDeclaration(declaration)) {
+    return { path: SETTINGS_PATH, method: "PUT", body: { [declaration.wire]: value } };
   }
   if (store.kind === "own-route") {
     return { path: store.path, method: store.method, body: { [store.bodyField]: value } };
@@ -186,6 +197,107 @@ export function useSetting(key: SettingKey): {
 } {
   const value = useSettingsStore((state) => currentValue(state, key));
   return { value, set: (next) => { void saveSetting(key, next); } };
+}
+
+export interface SettingDraftView {
+  /** What the control shows: the draft while there is one, otherwise the stored value. */
+  value: unknown;
+  /** The stored value moved since this edit began (inventory.md P14). */
+  changedElsewhere: boolean;
+  set: (next: unknown) => void;
+}
+
+/**
+ * An explicit-commit row's value.
+ *
+ * A draft exists from the user's first keystroke until the write that carries it
+ * lands, or until the dialog closes — **it is never dropped because it happens
+ * to equal something**. A box that has been typed in therefore always shows what
+ * was typed, which is the whole of "no keystroke is lost": dropping a draft that
+ * had returned to the value it started from left a stale seed behind, and the
+ * next edit after an outside change then vanished.
+ *
+ * So a box the user has NOT touched has no draft and adopts a value that moves
+ * underneath it, which is what stops Save writing back a stale value nobody saw;
+ * one they have touched keeps what they typed and reports that the stored value
+ * moved (P14).
+ */
+export function useSettingDraft(key: SettingKey): SettingDraftView {
+  const stored = useSettingsStore((state) => currentValue(state, key));
+  const draft = useSettingsStore((state) => state.settingDrafts[key]);
+  return {
+    value: draft ? draft.value : stored,
+    changedElsewhere: draft !== undefined && !sameSettingValue(stored, draft.seed),
+    set: (next) => { useSettingsStore.getState().setSettingDraft(key, next, stored); },
+  };
+}
+
+export interface PendingEdit {
+  declaration: AnySettingDeclaration;
+  key: SettingKey;
+  value: unknown;
+}
+
+/** Every uncommitted edit on one tab, in declaration order. */
+export function useTabDrafts(tab: SettingTab): readonly PendingEdit[] {
+  const drafts = useSettingsStore((state) => state.settingDrafts);
+  return GENERATED_SETTINGS.flatMap((declaration) => {
+    const draft = drafts[declaration.key];
+    if (declaration.tab !== tab || !draft) return [];
+    return [{ declaration, key: declaration.key as SettingKey, value: draft.value }];
+  });
+}
+
+/**
+ * Store several settings in ONE write, and tell the caller whether it landed.
+ *
+ * This is what an explicit Save is: the settings payload takes every field at
+ * once, so a button committing two boxes sends one request rather than two —
+ * which is what the catalogue's `instructions.commit` exclusion describes, and
+ * what a per-row Save would have changed.
+ *
+ * **No optimistic write and no rollback** (plan.md → One writer, for the
+ * scalars). A row that commits on a button has its edit in the draft, where the
+ * user can still see it; the record moves only once the server has answered, and
+ * it moves to the value the server ECHOED — the writers trim, so the stored
+ * value is not always the one that was sent. A refused write moves nothing and
+ * keeps every draft, because that is the user's unsaved work.
+ *
+ * **Nothing here sequences two overlapping commits**, and the one caller does not
+ * produce them: `DeclaredCommit` is disabled while its write is in flight.
+ */
+export async function commitSettings(
+  entries: readonly (readonly [SettingKey, unknown])[],
+): Promise<boolean> {
+  if (entries.length === 0) return true;
+  const pending = entries.map(([key, value]) => {
+    const declaration = settingOf(key);
+    if (!isPayloadDeclaration(declaration)) {
+      throw new Error(`Cannot commit "${key}": ${declaration.store.kind} has no shared write`);
+    }
+    return { key, value, declaration };
+  });
+  const body = Object.fromEntries(pending.map((p) => [p.declaration.wire, p.value]));
+
+  try {
+    const res = await fetch(SETTINGS_PATH, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const stored = await res.json() as Record<string, unknown>;
+    const { setSettingValue, settleSettingDrafts } = useSettingsStore.getState();
+    for (const { key, declaration } of pending) setSettingValue(key, stored[declaration.wire]);
+    settleSettingDrafts(pending.map(({ key, value }) => ({ key, value })));
+    return true;
+  } catch (err) {
+    useUiStore.getState().setToast({
+      message: `Failed to save ${pending.map((p) => p.declaration.label).join(" and ")}`,
+    });
+    console.error(`[settings] committing ${entries.map(([key]) => key).join(", ")} failed:`, err);
+    return false;
+  }
 }
 
 /** {@link useSetting} for a control that is a switch, so the value is a boolean. */

@@ -211,9 +211,21 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     scope: "global",
     label: "Save · Cancel",
     reason: "action",
-    why: "Save commits both instruction boxes in one write, so it belongs to neither "
-      + "declaration; Cancel closes the dialog. The two textareas above are the settings.",
-    controls: ["Save", "Cancel"],
+    why: "Save commits every edited box on the tab in one write, so it belongs to neither "
+      + "declaration; Cancel closes the dialog, discarding what was not saved. The two "
+      + "textareas above are the settings.",
+    controls: ["Save", "Saved", "Cancel"],
+  },
+  {
+    id: "git.commit",
+    tab: "git",
+    scope: "global",
+    label: "Save (the git identity)",
+    reason: "action",
+    why: "The same tab-level commit as the Instructions tab's: it stores whichever declared "
+      + "rows the user edited and holds no value of its own. The name and email boxes are the "
+      + "setting, and they are one setting because they are written together.",
+    controls: ["Save", "Saved"],
   },
   {
     id: "skills.tab",

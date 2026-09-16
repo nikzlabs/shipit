@@ -89,7 +89,7 @@ it:**
 |---|---|
 | Conditional visibility | Requirement 4 removed it. Two rows are conditional today (P13) |
 | `order` | Declaration order is the order. No setting needs a rank independent of it, and requirement 11 accepts what that produces |
-| `presentation: "multiline"` | Its only consumers are the two instruction boxes, and both are the only `system-prompt-file` settings. That store *is* the signal |
+| `presentation: "multiline"` | Its only consumers are the two instruction boxes, and both are the only `system-prompt-file` settings. That store *is* the signal — and in slice 3 it became the **gate**: a `text` row over any other store has no control yet, so it is not generated at all |
 | An enum option source | Its only generated consumers were the TTS provider, voice and speed, which depend on each other and share one component. The other dynamic enums are already inside custom editors |
 | A numeric display unit | Its only consumer is the memory budget, which stores MB, shows GB, has an explicit Save and a saved state — a component, not a field on the type |
 
@@ -300,6 +300,11 @@ stop carrying their own bounds in JSX.
 the value kind can carry a control for it. The voice webhook is a URL and a token
 saved together with one button, so it is a component.
 
+*Slice 3 confirmed the first half at the code:* `gitIdentity` is a control-table
+entry, two boxes over one declaration, and it needed nothing the kind does not
+already carry — the coverage walk's one-control rule already exempts composite
+kinds for exactly this shape, and its Save is the tab's rather than the row's.
+
 **P10 — The credentials are not one shape.** Of the 14 `configuredOnly`
 declarations, `integrations.github.connection` is a **personal access token
 form** (`src/client/components/GitHubTokenForm.tsx`) and
@@ -321,11 +326,20 @@ that list, which is a component; the renderer must not treat it as a standalone
 row.
 
 **P12 — Tabs hold content that is not a setting, and it stays hand-placed.** The
-update panel, the egress enforcement warning, the instruction conflict notice.
-These need **no schema**: a tab file is still a React component that puts the
-generated block and the chrome where it wants them. (The Linear team picker is no
-longer an example — `src/client/components/SettingsTrackers.tsx` describes it as
-a read-only team lookup now.)
+update panel, the egress enforcement warning, the built-in agent instructions and
+the CLAUDE.md sentence beside them. These need **no schema**: a tab file is still
+a React component that puts the generated block and the chrome where it wants
+them. (The Linear team picker is no longer an example —
+`src/client/components/SettingsTrackers.tsx` describes it as a read-only team
+lookup now. Nor is the instruction conflict notice: slice 3 found it belongs to
+the row rather than to the tab — see P14.)
+
+*Slice 3 found one limit:* a `note` renders at the **top** of its section, so
+chrome that belongs *under* a row — the View-instructions disclosure under the
+toggle that enables it — is placed after the whole block instead, and the row it
+belongs to has to be last. That is why the built-in-instructions toggle is at the
+bottom of the Instructions tab. A second prop for chrome under a section was not
+worth one user.
 
 **P13 — Two rows become permanently visible, not one.** The voice webhook pair,
 hidden unless delivery is external or both
@@ -338,6 +352,16 @@ while GitHub is disconnected. Requirement 4 accepts both.
 `system-prompt-file` settings carry a conflict notice when the file changed while
 the user was editing. That is an explicit-commit row with a conflict state —
 either a declared capability, or these two keep a component.
+
+*Resolved in slice 3: neither.* The notice is a property of **being an
+explicit-commit row**, not of these two settings. Such a row holds a draft and
+the stored value it started from, and comparing the two against what is stored
+now answers the whole question: an untouched box adopts a value that moved
+underneath it, an edited one keeps the draft and says the stored value moved. So
+it is derived, like the commit mode itself (P5). A declaration field would have
+had exactly one user, which requirement 5 refuses; a component would have made
+custom presentation out of something that is not presentation. The same code
+covers the git identity, which nobody had listed as needing it.
 
 **P15 — The coverage walk proves three things, and generation replaces one.**
 `settings-coverage.test.tsx` (1617 lines) asserts that **no control is

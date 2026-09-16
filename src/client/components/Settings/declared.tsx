@@ -13,7 +13,7 @@
  * `settings-coverage.test.tsx` for what reads it.
  */
 
-import type { ReactNode, RefObject } from "react";
+import type { ReactNode } from "react";
 import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import { ToggleSwitch } from "./ToggleSwitch.js";
 import { inputClass } from "./shared.js";
@@ -271,18 +271,12 @@ export function DeclaredTextarea({
   settingKey,
   value,
   onChange,
-  placeholder,
-  textareaRef,
   className,
-  testId,
 }: {
   settingKey: SettingKey;
   value: string;
   onChange: (value: string) => void;
-  placeholder?: string;
-  textareaRef?: RefObject<HTMLTextAreaElement | null>;
   className?: string;
-  testId?: string;
 }) {
   const { label, description } = settingCopy(settingKey);
   return (
@@ -302,14 +296,11 @@ export function DeclaredTextarea({
         </p>
       </div>
       <textarea
-        {...(textareaRef ? { ref: textareaRef } : {})}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         aria-label={label}
-        {...(placeholder ? { placeholder } : {})}
         {...(className ? { className } : {})}
         {...bindSetting(settingKey)}
-        {...(testId ? { "data-testid": testId } : {})}
       />
     </>
   );

@@ -218,7 +218,6 @@ export default function App() {
 
   const gitCommits = useGitStore((s) => s.commits);
   const gitIdentityNeeded = useGitStore((s) => s.identityNeeded);
-  const gitIdentity = useGitStore((s) => s.identity);
   const turnDiff = useGitStore((s) => s.turnDiff);
   const diffDialogOpen = useGitStore((s) => s.diffDialogOpen);
   const diffDialogTitle = useGitStore((s) => s.diffDialogTitle);
@@ -272,11 +271,6 @@ export default function App() {
   const pendingFiles = useSettingsStore((s) => s.pendingFiles);
   const githubStatus = useSettingsStore((s) => s.githubStatus);
   const hasSystemPrompt = useSettingsStore((s) => s.hasSystemPrompt);
-  const systemPromptContent = useSettingsStore((s) => s.systemPromptContent);
-  const systemPromptOpsContent = useSettingsStore((s) => s.systemPromptOpsContent);
-  const agentSystemInstructions = useSettingsStore(
-    (s) => s.agentSystemInstructions,
-  );
 
   const rightTabRaw = useUiStore((s) => s.rightTab);
   const runtimeMode = useUiStore((s) => s.runtimeMode);
@@ -882,17 +876,10 @@ export default function App() {
             roles?: RoleView[];
           };
         }>("/api/bootstrap");
-        useGitStore.getState().setIdentity(data.settings.gitIdentity);
         if (data.settings.canRunTurns !== undefined)
           {useSettingsStore.getState().setCanRunTurns(data.settings.canRunTurns);}
         useSettingsStore.getState()
           .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
-        useSettingsStore
-          .getState()
-          .setSystemPromptContent(data.settings.systemPrompt);
-        useSettingsStore
-          .getState()
-          .setSystemPromptOpsContent(data.settings.systemPromptOps ?? "");
         useSettingsStore
           .getState()
           .setHasSystemPrompt(data.settings.systemPrompt.length > 0);
@@ -902,12 +889,6 @@ export default function App() {
         // where a read that failed at boot gets another go.
         hydrateSettingValues(data.settings);
         void refreshOwnRouteSettings();
-        if (data.settings.agentSystemInstructionsEnabled !== undefined)
-          {useSettingsStore
-            .getState()
-            .setAgentSystemInstructionsEnabled(
-              data.settings.agentSystemInstructionsEnabled,
-            );}
         if (data.settings.agentSystemInstructions)
           {useSettingsStore
             .getState()
@@ -1203,14 +1184,6 @@ export default function App() {
     },
     [send],
   );
-
-  const handleInstructionsSave = useCallback(async (content: string, opsContent: string) => {
-    await useSettingsStore
-      .getState()
-      .saveInstructions(content, opsContent)
-      .catch(() => {});
-    useUiStore.getState().setSettingsOpen(false);
-  }, []);
 
   const effectivePreviewStatus = deriveEffectivePreviewStatus(
     previewStatus,
@@ -1785,9 +1758,6 @@ export default function App() {
         )}
         {settingsOpen && (
           <Settings
-            initialContent={systemPromptContent}
-            initialOpsContent={systemPromptOpsContent}
-            onSaveInstructions={handleInstructionsSave}
             githubStatus={githubStatus}
             onGitHubTokenSubmit={async (token) => {
               const result = await useSettingsStore
@@ -1810,14 +1780,6 @@ export default function App() {
                 console.error("[settings] Full reset failed:", err);
               }
             }}
-            gitIdentity={gitIdentity}
-            onGitIdentitySave={(name, email) =>
-              useGitStore
-                .getState()
-                .submitGitIdentity(name, email)
-                .catch(() => {})
-            }
-            agentSystemInstructions={agentSystemInstructions}
             hasActiveSession={!!sessionId}
             onClose={() => {
               useUiStore.getState().setSettingsOpen(false);

@@ -655,16 +655,10 @@ const reviewerSlots: ReviewerSlotView[] = [
 ];
 
 const settingsProps: SettingsProps = {
-  initialContent: "",
-  initialOpsContent: "",
-  onSaveInstructions: vi.fn(),
   githubStatus: { authenticated: true, username: "nik" },
   onGitHubTokenSubmit: vi.fn(),
   onGitHubLogout: vi.fn(),
   agentList: agents,
-  gitIdentity: { name: "Nik", email: "nik@example.com" },
-  onGitIdentitySave: vi.fn(),
-  agentSystemInstructions: "You are working inside ShipIt.",
   hasActiveSession: true,
   onClose: vi.fn(),
 };
@@ -1544,6 +1538,9 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   "advanced.releaseChannel",
   "advanced.sessionStatusCard",
   "advanced.soundOnFinish",
+  // Generated in slice 3, which is what put the declared LABEL on screen: the
+  // hand-written tab rendered the description alone.
+  "git.identity",
   "instructions.agentInstructionsEnabled",
   "instructions.opsInstructions",
   "instructions.userInstructions",

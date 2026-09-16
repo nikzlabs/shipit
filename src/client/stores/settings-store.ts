@@ -17,10 +17,22 @@ import {
   getSavedPermissionModeBySession, savePermissionModeBySession,
 } from "../utils/local-storage.js";
 import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
-import { initialSettingValues, mirrorFieldOf, recordHolds, writeBrowserValue } from "./setting-values.js";
+import {
+  initialSettingValues,
+  mirrorFieldOf,
+  recordHolds,
+  sameSettingValue,
+  writeBrowserValue,
+} from "./setting-values.js";
 import { findSetting, type SettingKey } from "../../server/shared/settings-catalogue/index.js";
 import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js";
 import type { AgentAuthPhase, WsAgentAuthLog } from "../../server/shared/types/ws-server-messages/auth.js";
+
+/** An uncommitted edit, and the stored value it started from. */
+export interface SettingDraft {
+  seed: unknown;
+  value: unknown;
+}
 
 /**
  * Keyed by the LOGIN FLOW that produced the challenge, not by the harness that
@@ -114,6 +126,22 @@ interface SettingsState {
    */
   settingValues: Record<string, unknown>;
   /**
+   * docs/308-data-driven-settings — what the user has typed into an
+   * explicit-commit row and not saved yet, keyed by `SettingKey`.
+   *
+   * It lives beside the values rather than inside the control because the Save
+   * that commits it is not the control's: one button commits every edited row
+   * on its tab in a single write, which is what the catalogue's own
+   * `instructions.commit` exclusion says the instruction boxes do.
+   *
+   * A draft exists from the first keystroke until the write carrying it lands or
+   * the dialog closes, and is never dropped for looking unchanged — so a box
+   * that was typed in always shows what was typed. `seed` is the stored value it
+   * started from, and it is what says whether a value that moved underneath the
+   * dialog moved because of somebody else (inventory.md P14).
+   */
+  settingDrafts: Record<string, SettingDraft>;
+  /**
    * docs/257 req 8 — whether this install can actually run a turn, as computed
    * by the server (`computeCanRunTurns`). Never re-derived here from
    * `agentList`: the composer, the starter-prompts gate and (from phase 2) the
@@ -159,10 +187,12 @@ interface SettingsState {
    *    component's state and setters are already gone.
    */
   providerAccountNotices: Partial<Record<LoginIntegrationId, ProviderAccountNotice>>;
+  /**
+   * Whether the user has instructions of their own — the only thing outside the
+   * Instructions tab that cares, and it only tints the settings button. The
+   * instruction TEXT is a generated row's value and lives in the record.
+   */
   hasSystemPrompt: boolean;
-  systemPromptContent: string;
-  /** Sent instead of systemPromptContent in an ops session. */
-  systemPromptOpsContent: string;
   /**
    * Default permission mode used by the pre-session (new-session) view and
    * as a fallback for any session that hasn't made an explicit choice yet.
@@ -177,7 +207,6 @@ interface SettingsState {
   githubRateLimit: { resetAt: number | null } | null;
   pendingFiles: FileContextRef[];
   memoryBudgetMb: number | null;
-  agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
   compactConversation: boolean;
   notifyOnFinish: boolean;
@@ -314,12 +343,15 @@ interface SettingsState {
 
   setProviderAccountNotice: (loginId: LoginIntegrationId, notice: ProviderAccountNotice | null) => void;
   setHasSystemPrompt: (has: boolean) => void;
-  setSystemPromptContent: (content: string) => void;
-  setSystemPromptOpsContent: (content: string) => void;
-  setAgentSystemInstructionsEnabled: (enabled: boolean) => void;
   setAgentSystemInstructions: (text: string) => void;
   /** Update one generated setting's value in the browser, record and mirror alike. */
   setSettingValue: (key: SettingKey, value: unknown) => void;
+  /** Hold an uncommitted edit. `seed` is used only when the draft is a new one. */
+  setSettingDraft: (key: SettingKey, value: unknown, seed: unknown) => void;
+  /** A committed write's effect on the drafts it wrote. */
+  settleSettingDrafts: (committed: readonly { key: SettingKey; value: unknown }[]) => void;
+  /** Discard every uncommitted edit, which is what closing the dialog does. */
+  clearSettingDrafts: () => void;
 
   getKeybinding: (id: KeybindingId) => string;
 
@@ -395,7 +427,6 @@ interface SettingsState {
   setPendingFiles: (files: FileContextRef[]) => void;
   reset: () => void;
 
-  saveInstructions: (content: string, opsContent: string) => Promise<void>;
   submitGitHubToken: (token: string) => Promise<{
     repos: {
       fullName: string;
@@ -417,19 +448,17 @@ function initial(key: SettingKey): boolean {
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   settingValues: INITIAL_SETTING_VALUES,
+  settingDrafts: {},
   canRunTurns: false,
   harnessOnboardingCompletedAt: null,
   providerAccountNotices: {},
   hasSystemPrompt: false,
-  systemPromptContent: "",
-  systemPromptOpsContent: "",
   permissionMode: "auto",
   permissionModeBySession: getSavedPermissionModeBySession(),
   githubStatus: { authenticated: false },
   githubRateLimit: null,
   pendingFiles: [],
   memoryBudgetMb: null,
-  agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "",
   compactConversation: initial("advanced.compactConversation"),
   notifyOnFinish: initial("advanced.notifyOnFinish"),
@@ -482,12 +511,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
-  setSystemPromptContent: (content) => set({ systemPromptContent: content }),
-
-  setSystemPromptOpsContent: (content) => set({ systemPromptOpsContent: content }),
-
-  setAgentSystemInstructionsEnabled: (enabled) => set({ agentSystemInstructionsEnabled: enabled }),
-
   setAgentSystemInstructions: (text) => set({ agentSystemInstructions: text }),
 
   setSettingValue: (key, value) => {
@@ -504,6 +527,44 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       ...(field && field in state ? { [field]: value } : {}),
     }));
   },
+
+  setSettingDraft: (key, value, seed) =>
+    set((state) => ({
+      settingDrafts: {
+        ...state.settingDrafts,
+        // The seed is whatever the FIRST edit started from: re-seeding on every
+        // keystroke would make an outside change look like the user's own.
+        [key]: { seed: state.settingDrafts[key]?.seed ?? seed, value },
+      },
+    })),
+
+  /**
+   * What a successful write does to the drafts it carried.
+   *
+   * A draft still holding the value that was sent is **done** and goes. One the
+   * user has typed in since — a save is a round trip, and typing does not stop
+   * for it — is their unsaved work and stays; its seed advances to what is now
+   * stored, because this write is the user's own and not the outside change the
+   * seed exists to detect.
+   */
+  settleSettingDrafts: (committed) =>
+    set((state) => {
+      const done = new Set(
+        committed
+          .filter(({ key, value }) => sameSettingValue(state.settingDrafts[key]?.value, value))
+          .map(({ key }) => key as string),
+      );
+      const kept: Record<string, SettingDraft> = Object.fromEntries(
+        Object.entries(state.settingDrafts).filter(([key]) => !done.has(key)),
+      );
+      for (const { key } of committed) {
+        const draft = kept[key];
+        if (draft) kept[key] = { seed: state.settingValues[key], value: draft.value };
+      }
+      return { settingDrafts: kept };
+    }),
+
+  clearSettingDrafts: () => { set({ settingDrafts: {} }); },
 
   getKeybinding: (id) => get().keybindings[id] ?? getKeybindingDef(id).defaultBinding,
 
@@ -720,23 +781,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setPendingFiles: (files) => set({ pendingFiles: files }),
 
   reset: () => set({ pendingFiles: [] }),
-
-  saveInstructions: async (content, opsContent) => {
-    const res = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ systemPrompt: content, systemPromptOps: opsContent }),
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to save instructions: ${res.status}`);
-    }
-    const result = await res.json() as { systemPrompt: string; systemPromptOps?: string };
-    set({
-      systemPromptContent: result.systemPrompt,
-      systemPromptOpsContent: result.systemPromptOps ?? "",
-      hasSystemPrompt: !!result.systemPrompt,
-    });
-  },
 
   submitGitHubToken: async (token) => {
     const res = await fetch("/api/github/token", {
