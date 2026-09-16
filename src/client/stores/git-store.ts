@@ -11,7 +11,6 @@ interface RebaseConflict {
 interface GitState {
   commits: GitCommit[];
   identityNeeded: boolean;
-  identity: { name: string; email: string };
   lastCommitPair: { from: string; to: string } | null;
   turnDiff: TurnDiffData | null;
   diffDialogOpen: boolean;
@@ -25,7 +24,6 @@ interface GitState {
   setCommits: (commits: GitCommit[]) => void;
   prependCommit: (commit: GitCommit) => void;
   setIdentityNeeded: (needed: boolean) => void;
-  setIdentity: (identity: { name: string; email: string }) => void;
   setLastCommitPair: (pair: { from: string; to: string } | null) => void;
   setTurnDiff: (diff: TurnDiffData | null) => void;
   openDiffDialog: (title?: string) => void;
@@ -39,7 +37,6 @@ interface GitState {
   fetchLog: (sessionId: string) => Promise<void>;
   fetchDiff: (sessionId: string, from: string, to: string) => Promise<void>;
   fetchDiffVsBranch: (sessionId: string, baseBranch?: string) => Promise<void>;
-  submitGitIdentity: (name: string, email: string) => Promise<void>;
   startRebase: (sessionId: string, baseBranch: string) => Promise<void>;
   resetBranchToBase: (sessionId: string) => Promise<void>;
   abortRebase: (sessionId: string) => Promise<void>;
@@ -48,7 +45,6 @@ interface GitState {
 const initialState = {
   commits: [] as GitCommit[],
   identityNeeded: false,
-  identity: { name: "", email: "" },
   lastCommitPair: null as { from: string; to: string } | null,
   turnDiff: null as TurnDiffData | null,
   diffDialogOpen: false,
@@ -68,8 +64,6 @@ export const useGitStore = create<GitState>((set) => ({
     set((state) => ({ commits: [commit, ...state.commits] })),
 
   setIdentityNeeded: (needed) => set({ identityNeeded: needed }),
-
-  setIdentity: (identity) => set({ identity }),
 
   setLastCommitPair: (pair) => set({ lastCommitPair: pair }),
 
@@ -115,19 +109,6 @@ export const useGitStore = create<GitState>((set) => ({
     }
     const data = await res.json() as TurnDiffData;
     set({ turnDiff: data });
-  },
-
-  submitGitIdentity: async (name, email) => {
-    const res = await fetch("/api/settings/git-identity", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email }),
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to save git identity: ${res.status}`);
-    }
-    const result = await res.json() as { name: string; email: string };
-    set({ identity: result });
   },
 
   startRebase: async (sessionId, baseBranch) => {

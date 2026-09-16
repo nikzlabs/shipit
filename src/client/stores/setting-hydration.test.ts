@@ -10,11 +10,45 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hydrateSettingValues, refreshOwnRouteSettings } from "./setting-hydration.js";
-import { GENERATED_SETTINGS, OWN_ROUTE_SETTINGS, initialSettingValues, ownRouteOf } from "./setting-values.js";
+import {
+  GENERATED_SETTINGS,
+  OWN_ROUTE_SETTINGS,
+  initialSettingValues,
+  mirrorFieldOf,
+  ownRouteOf,
+} from "./setting-values.js";
 import { useSettingsStore } from "./settings-store.js";
+import type { AnySettingDeclaration } from "../../server/shared/settings-catalogue/index.js";
 
 /** Every generated row the settings payload carries, which is every one with a `wire`. */
 const PAYLOAD_ROWS = GENERATED_SETTINGS.filter((d) => d.wire !== undefined);
+
+/**
+ * A value of each kind, written the way the payload carries it. Enumerated so a
+ * kind that joins the record without a fixture fails here rather than being
+ * hydrated with something nothing stores.
+ */
+function storedSample(declaration: AnySettingDeclaration): unknown {
+  switch (declaration.type.kind) {
+    case "bool": return declaration.type.defaultValue !== true;
+    case "number": return 4096;
+    case "text": return "what the user typed";
+    case "gitIdentity": return { name: "Ada", email: "ada@example.com" };
+    default:
+      throw new Error(`no fixture for a ${declaration.type.kind} row (${declaration.key})`);
+  }
+}
+
+/**
+ * The rows the store ALSO holds under a named field (P1): the 51 read sites
+ * keep reading those, so hydration has to move both. A row whose `wire` names
+ * no field of the store — the instruction boxes, the git identity — is read
+ * from the record alone.
+ */
+const MIRRORED = PAYLOAD_ROWS.filter((d) => {
+  const field = mirrorFieldOf(d);
+  return field !== undefined && field in useSettingsStore.getState();
+});
 
 function recorded(key: string): unknown {
   return useSettingsStore.getState().settingValues[key];
@@ -33,17 +67,24 @@ afterEach(() => {
 describe("a payload's generated rows", () => {
   for (const declaration of PAYLOAD_ROWS) {
     it(`reads ${declaration.key} back from ${declaration.wire!}`, () => {
-      const stored = declaration.type.kind === "bool"
-        ? !declaration.type.defaultValue
-        : 4096;
+      const stored = storedSample(declaration);
 
       hydrateSettingValues({ [declaration.wire!]: stored });
 
-      expect(recorded(declaration.key)).toBe(stored);
-      // The named field the other 51 read sites use is a view over the record.
+      expect(recorded(declaration.key)).toEqual(stored);
+    });
+  }
+
+  // The named field the other 51 read sites use is a view over the record.
+  for (const declaration of MIRRORED) {
+    it(`keeps ${declaration.wire!} in step with ${declaration.key}`, () => {
+      const stored = storedSample(declaration);
+
+      hydrateSettingValues({ [declaration.wire!]: stored });
+
       expect(
         (useSettingsStore.getState() as unknown as Record<string, unknown>)[declaration.wire!],
-      ).toBe(stored);
+      ).toEqual(stored);
     });
   }
 

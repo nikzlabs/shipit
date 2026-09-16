@@ -16,47 +16,10 @@ import type {
   AnySettingDeclaration,
   SettingKey,
   SettingTab,
-  SettingValueKind,
 } from "../../../server/shared/settings-catalogue/index.js";
 import { GENERATED_SETTINGS } from "../../stores/setting-values.js";
-import { useSetting } from "./declared-setting.js";
-import { DeclaredEnumCards, DeclaredToggle } from "./declared.js";
+import { CONTROLS } from "./declared-controls.js";
 import { SETTING_COMPONENTS } from "./components/registry.js";
-
-function GeneratedToggle({ settingKey }: { settingKey: SettingKey }) {
-  const { value, set } = useSetting(settingKey);
-  return <DeclaredToggle settingKey={settingKey} enabled={value === true} onToggle={set} />;
-}
-
-/**
- * A choice as a row of cards, each carrying its own declared description.
- *
- * The plan's control table also names a `<select>`, for an enum whose options
- * are many or produced by the install rather than written down. Nothing on the
- * tabs this slice generates is one — the release channel is two options with a
- * sentence each — so the select arrives with the settings that need it, in
- * slice 4.
- */
-function GeneratedEnumCards({ settingKey }: { settingKey: SettingKey }) {
-  const { value, set } = useSetting(settingKey);
-  return (
-    <DeclaredEnumCards
-      settingKey={settingKey}
-      value={typeof value === "string" ? value : ""}
-      onChange={set}
-    />
-  );
-}
-
-/**
- * The control each value kind gets. A kind absent from here has no generated
- * row, which is how a slice converts the settings it supports and leaves the
- * rest hand-written rather than rendering a row that cannot save (P18).
- */
-const CONTROLS: Partial<Record<SettingValueKind, (key: SettingKey) => ReactNode>> = {
-  bool: (key) => <GeneratedToggle settingKey={key} />,
-  enum: (key) => <GeneratedEnumCards settingKey={key} />,
-};
 
 /**
  * What one declaration renders: its component where it names one, otherwise the
@@ -67,7 +30,7 @@ const CONTROLS: Partial<Record<SettingValueKind, (key: SettingKey) => ReactNode>
  * slice 4 — is what decides how a pair renders once, and guessing that here
  * would be a branch nothing runs.
  */
-function controlFor(declaration: AnySettingDeclaration): ReactNode {
+export function controlFor(declaration: AnySettingDeclaration): ReactNode {
   const key = declaration.key as SettingKey;
   const name = declaration.component;
   if (name === undefined) return CONTROLS[declaration.type.kind]?.(key);

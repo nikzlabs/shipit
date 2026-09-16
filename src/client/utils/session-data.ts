@@ -585,7 +585,6 @@ export async function refreshGlobalSettings(): Promise<void> {
 
 function applyGlobalSettings(settings: BootstrapResponse["settings"]): void {
   const data = { settings };
-  useGitStore.getState().setIdentity(data.settings.gitIdentity);
   if (!data.settings.gitIdentity.name && !data.settings.gitIdentity.email) {
     useGitStore.getState().setIdentityNeeded(true);
   }
@@ -603,9 +602,6 @@ function applyGlobalSettings(settings: BootstrapResponse["settings"]): void {
   useSettingsStore.getState()
     .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
-  useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
-  useSettingsStore.getState().setSystemPromptOpsContent(data.settings.systemPromptOps ?? "");
-  if (data.settings.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(data.settings.agentSystemInstructionsEnabled);
   if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
   if (data.settings.autoCreatePr !== undefined) useSettingsStore.getState().setAutoCreatePr(data.settings.autoCreatePr);
 

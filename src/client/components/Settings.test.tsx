@@ -27,6 +27,7 @@ afterEach(() => {
     // The generated rows' values outlive a render, so a test that changes one
     // would otherwise seed the next.
     settingValues: initialSettingValues(),
+    settingDrafts: {},
   });
 });
 
@@ -53,16 +54,10 @@ const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, hasRu
 const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
 
 const defaultProps: SettingsProps = {
-  initialContent: "",
-  initialOpsContent: "",
-  onSaveInstructions: vi.fn(),
   githubStatus: { authenticated: false },
   onGitHubTokenSubmit: vi.fn(),
   onGitHubLogout: vi.fn(),
   agentList: [claudeAuthed],
-  gitIdentity: { name: "", email: "" },
-  onGitIdentitySave: vi.fn(),
-  agentSystemInstructions: "You are working inside ShipIt.",
   hasActiveSession: false,
   onClose: vi.fn(),
 };
@@ -433,123 +428,36 @@ describe("Settings - Integrations tab (GitHub)", () => {
 });
 
 describe("Settings - Git tab", () => {
-  async function renderOnGitTab(props: Partial<SettingsProps> = {}) {
-    const result = render(<Settings {...defaultProps} {...props} />);
+  async function renderOnGitTab() {
+    const result = render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Git" }));
     return result;
   }
 
-  it("shows description text", async () => {
+  it("shows the declared row: its description, and a box for each half", async () => {
+    useSettingsStore.getState().setSettingValue("git.identity", { name: "Alice", email: "alice@example.com" });
     await renderOnGitTab();
+
     expect(screen.getByText(/git identity used for automatic commits/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Alice");
+    expect(screen.getByLabelText("Email")).toHaveValue("alice@example.com");
   });
-
-  it("shows name and email inputs", async () => {
-    await renderOnGitTab();
-    expect(screen.getByTestId("settings-git-name")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-git-email")).toBeInTheDocument();
-  });
-
-  it("pre-fills inputs from gitIdentity prop", async () => {
-    await renderOnGitTab({ gitIdentity: { name: "Alice", email: "alice@example.com" } });
-    expect(screen.getByTestId("settings-git-name")).toHaveValue("Alice");
-    expect(screen.getByTestId("settings-git-email")).toHaveValue("alice@example.com");
-  });
-
-  it("Save button is disabled when name is empty", async () => {
-    await renderOnGitTab({ gitIdentity: { name: "", email: "a@b.com" } });
-    expect(screen.getByTestId("settings-git-save")).toBeDisabled();
-  });
-
-  it("Save button is disabled when email is empty", async () => {
-    await renderOnGitTab({ gitIdentity: { name: "Alice", email: "" } });
-    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "" } });
-    expect(screen.getByTestId("settings-git-save")).toBeDisabled();
-  });
-
-  it("calls onGitIdentitySave with trimmed values on Save click", async () => {
-    const onGitIdentitySave = vi.fn();
-    await renderOnGitTab({ onGitIdentitySave });
-    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "  Bob  " } });
-    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "  bob@test.com  " } });
-    await userEvent.click(screen.getByTestId("settings-git-save"));
-    expect(onGitIdentitySave).toHaveBeenCalledWith("Bob", "bob@test.com");
-  });
-
-  it("shows Saved label after saving", async () => {
-    const onGitIdentitySave = vi.fn();
-    await renderOnGitTab({ onGitIdentitySave });
-    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Bob" } });
-    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "bob@test.com" } });
-    await userEvent.click(screen.getByTestId("settings-git-save"));
-    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Saved");
-  });
-
-  it("resets Saved label when input changes", async () => {
-    const onGitIdentitySave = vi.fn();
-    await renderOnGitTab({ onGitIdentitySave });
-    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Bob" } });
-    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "bob@test.com" } });
-    await userEvent.click(screen.getByTestId("settings-git-save"));
-    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Saved");
-    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Charlie" } });
-    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Save");
-  });
-
 });
 
 describe("Settings - Instructions tab", () => {
-  async function renderOnInstructionsTab(props: Partial<SettingsProps> = {}) {
-    const result = render(<Settings {...defaultProps} {...props} />);
+  async function renderOnInstructionsTab() {
+    const result = render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
     return result;
   }
 
-  it("renders textarea with placeholder", async () => {
+  it("shows both declared boxes with their stored values", async () => {
+    useSettingsStore.getState().setSettingValue("instructions.userInstructions", "Always use TypeScript.");
+    useSettingsStore.getState().setSettingValue("instructions.opsInstructions", "Report a timeline.");
     await renderOnInstructionsTab();
-    const textarea = screen.getByTestId("settings-textarea");
-    expect(textarea).toHaveValue("");
-    expect(textarea).toHaveAttribute("placeholder");
-  });
 
-  it("renders with existing content from initialContent", async () => {
-    await renderOnInstructionsTab({ initialContent: "Always use TypeScript." });
-    expect(screen.getByTestId("settings-textarea")).toHaveValue("Always use TypeScript.");
-  });
-
-  it("displays character count", async () => {
-    await renderOnInstructionsTab({ initialContent: "Hello" });
-    expect(screen.getByText("5 / 50,000")).toBeInTheDocument();
-  });
-
-  it("updates character count as user types", async () => {
-    await renderOnInstructionsTab();
-    fireEvent.change(screen.getByTestId("settings-textarea"), {
-      target: { value: "Use strict mode." },
-    });
-    expect(screen.getByText("16 / 50,000")).toBeInTheDocument();
-  });
-
-  it("calls onSaveInstructions when Save is clicked", async () => {
-    const onSaveInstructions = vi.fn();
-    await renderOnInstructionsTab({ initialContent: "Original", onSaveInstructions });
-    fireEvent.change(screen.getByTestId("settings-textarea"), {
-      target: { value: "Updated content" },
-    });
-    await userEvent.click(screen.getByTestId("settings-save"));
-    expect(onSaveInstructions).toHaveBeenCalledWith("Updated content", "");
-  });
-
-  it("calls onClose when Cancel is clicked", async () => {
-    const onClose = vi.fn();
-    await renderOnInstructionsTab({ onClose });
-    await userEvent.click(screen.getByText("Cancel"));
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
-  it("disables Save when content exceeds 50,000 characters", async () => {
-    await renderOnInstructionsTab({ initialContent: "x".repeat(50_001) });
-    expect(screen.getByTestId("settings-save")).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Your Instructions" })).toHaveValue("Always use TypeScript.");
+    expect(screen.getByRole("textbox", { name: "Ops Session Instructions" })).toHaveValue("Report a timeline.");
   });
 
   it("shows CLAUDE.md note", async () => {
@@ -557,53 +465,31 @@ describe("Settings - Instructions tab", () => {
     expect(screen.getByText(/CLAUDE\.md/)).toBeInTheDocument();
   });
 
-  it("calls onSaveInstructions on Ctrl+Enter", async () => {
-    const onSaveInstructions = vi.fn();
-    await renderOnInstructionsTab({ initialContent: "Test content", onSaveInstructions });
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter", ctrlKey: true });
-    expect(onSaveInstructions).toHaveBeenCalledWith("Test content", "");
+  // The built-in instructions are not a setting: the toggle beside them is, and
+  // this only shows and hides the text ShipIt ships.
+  it("discloses the built-in agent instructions under their toggle", async () => {
+    useSettingsStore.getState().setAgentSystemInstructions("You are working inside ShipIt.");
+    await renderOnInstructionsTab();
+
+    await userEvent.click(screen.getByTestId("agent-instructions-expand"));
+
+    expect(screen.getByTestId("agent-instructions-content"))
+      .toHaveTextContent("You are working inside ShipIt.");
   });
 
-  it("saves with empty string when content is cleared", async () => {
-    const onSaveInstructions = vi.fn();
-    await renderOnInstructionsTab({ initialContent: "Existing", onSaveInstructions });
-    fireEvent.change(screen.getByTestId("settings-textarea"), {
-      target: { value: "" },
+  // Closing is what discards an unsaved edit, now that the drafts outlive the
+  // control that holds them (docs/308-data-driven-settings).
+  it("drops an uncommitted draft when the dialog closes", async () => {
+    useSettingsStore.getState().setSettingValue("instructions.userInstructions", "Be brief.");
+    const { unmount } = await renderOnInstructionsTab();
+    fireEvent.change(screen.getByRole("textbox", { name: "Your Instructions" }), {
+      target: { value: "Be brief. Always." },
     });
-    await userEvent.click(screen.getByTestId("settings-save"));
-    expect(onSaveInstructions).toHaveBeenCalledWith("", "");
-  });
+    expect(useSettingsStore.getState().settingDrafts["instructions.userInstructions"]).toBeDefined();
 
-  it("saves the ops block separately from Your Instructions", async () => {
-    const onSaveInstructions = vi.fn();
-    await renderOnInstructionsTab({
-      initialContent: "Be concise.",
-      initialOpsContent: "Report a timeline.",
-      onSaveInstructions,
-    });
-    fireEvent.change(screen.getByTestId("settings-textarea-ops"), {
-      target: { value: "Name the evidence." },
-    });
-    await userEvent.click(screen.getByTestId("settings-save"));
-    expect(onSaveInstructions).toHaveBeenCalledWith("Be concise.", "Name the evidence.");
-  });
+    unmount();
 
-  it("disables Save when the ops block exceeds 50,000 characters", async () => {
-    await renderOnInstructionsTab({ initialOpsContent: "x".repeat(50_001) });
-    expect(screen.getByTestId("settings-save")).toBeDisabled();
-  });
-
-  // A rejected save closes the modal and drops the draft, so Ctrl+Enter must
-  // honour the same limit the button does.
-  it("does not save on Ctrl+Enter while a box is over the limit", async () => {
-    const onSaveInstructions = vi.fn();
-    await renderOnInstructionsTab({
-      initialContent: "Be concise.",
-      initialOpsContent: "x".repeat(50_001),
-      onSaveInstructions,
-    });
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter", ctrlKey: true });
-    expect(onSaveInstructions).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().settingDrafts).toEqual({});
   });
 });
 
@@ -1091,14 +977,14 @@ describe("Settings - Tab switching", () => {
   it("clicking Git tab switches to git section", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Git" }));
-    expect(screen.getByTestId("settings-git-name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toBeInTheDocument();
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
   it("clicking Instructions tab switches to instructions section", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
-    expect(screen.getByTestId("settings-textarea")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Your Instructions" })).toBeInTheDocument();
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 

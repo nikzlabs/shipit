@@ -21,18 +21,44 @@ import {
  * half-converted tab either duplicates a control or renders a row that cannot
  * save (inventory.md P18).
  */
-const GENERATED_TABS: readonly SettingTab[] = ["advanced", "network"];
-
-/** The stores `saveSetting` can write. */
-const WRITABLE_STORES: ReadonlySet<string> = new Set(["credential-store", "browser", "own-route"]);
+export const GENERATED_TABS: readonly SettingTab[] = ["advanced", "network", "instructions", "git"];
 
 /**
- * The value kinds the control table has a control for. `number` and `text` are
- * absent because no generated tab has one that a component does not own: the
- * memory budget is a component (P4), and the instruction boxes arrive with
- * slice 3.
+ * The stores `saveSetting` can write. The three payload stores share
+ * `PUT /api/settings` and differ only in the field the declaration's `wire`
+ * names, which is why the writer dispatches on the payload/non-payload split
+ * rather than on each kind.
  */
-const GENERATED_KINDS: ReadonlySet<SettingValueKind> = new Set<SettingValueKind>(["bool", "enum"]);
+const WRITABLE_STORES: ReadonlySet<string> = new Set([
+  "credential-store", "system-prompt-file", "git-config", "browser", "own-route",
+]);
+
+/**
+ * The value kinds the control table has a control for, except `text`, whose
+ * control is chosen by the store rather than by the kind — see {@link hasControl}.
+ * `number` is absent because the one generated tab that has one gives it a
+ * component (P4).
+ */
+const GENERATED_KINDS: ReadonlySet<SettingValueKind> = new Set<SettingValueKind>([
+  "bool", "enum", "gitIdentity",
+]);
+
+/**
+ * Whether the renderer has a control for this declaration.
+ *
+ * **The textarea rule is a gate, not just a branch** (plan.md → The renderer).
+ * `text`'s control is a textarea, and the `system-prompt-file` store is what
+ * says a value is prose rather than a line — which is why the design rejected a
+ * `presentation: "multiline"` field. The consequence is that a `text` row over
+ * any other store has no control yet, so it is not a generated row at all; a
+ * one-line input arrives with the first setting that needs one, rather than as
+ * a branch nothing runs.
+ */
+function hasControl(declaration: AnySettingDeclaration): boolean {
+  if (declaration.component !== undefined) return true;
+  if (declaration.type.kind === "text") return declaration.store.kind === "system-prompt-file";
+  return GENERATED_KINDS.has(declaration.type.kind);
+}
 
 /**
  * How a value kind is written to and read back from `localStorage`.
@@ -72,7 +98,7 @@ const BROWSER_CODECS: Partial<Record<SettingValueKind, BrowserCodec>> = {
 export function isGeneratedRow(declaration: AnySettingDeclaration): boolean {
   return !declaration.address
     && GENERATED_TABS.includes(declaration.tab)
-    && (declaration.component !== undefined || GENERATED_KINDS.has(declaration.type.kind))
+    && hasControl(declaration)
     && WRITABLE_STORES.has(declaration.store.kind)
     && storable(declaration);
 }
@@ -99,14 +125,28 @@ export const GENERATED_SETTINGS: readonly AnySettingDeclaration[] =
  * A setting outside it is read through its named store field, and that field is
  * what its own hydration still writes — so recording a value for it on a save
  * would leave the record holding a value the next hydration never corrects, and
- * the reader preferring it (P1, P18). `integrations.autoCreatePr` and
- * `instructions.agentInstructionsEnabled` are the two that reach this writer
- * today; their tabs convert in slices 5 and 3.
+ * the reader preferring it (P1, P18). `integrations.autoCreatePr` is the one
+ * that reaches this writer today; its tab converts in slice 5.
  */
 const RECORD_KEYS: ReadonlySet<string> = new Set(GENERATED_SETTINGS.map((d) => d.key));
 
 export function recordHolds(key: string): boolean {
   return RECORD_KEYS.has(key);
+}
+
+/**
+ * Two values are the same value.
+ *
+ * `===` is enough for every scalar a row holds; a composite — the git identity's
+ * name and email — is compared by its rendered form, because an edited one is a
+ * fresh object on every keystroke and would otherwise always look changed. Both
+ * sides are built by this client or read from the settings payload, so their
+ * fields are written in one order.
+ */
+export function sameSettingValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** Where a generated own-route row is written, and read back from (P2). */

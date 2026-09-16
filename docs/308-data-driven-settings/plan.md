@@ -69,6 +69,51 @@ everything else on change. That is not a universal rule about settings — an SS
 port saves with its form, a failover cutoff commits on blur — and those live in
 panels, which are unaffected.
 
+**An explicit commit is a tab's, not a control's** (slice 3). The catalogue's own
+`instructions.commit` exclusion says one Save stores both instruction boxes in a
+single write, so the button cannot belong to either declaration — and requirement
+3 forbids a custom control from changing where a value goes, which a per-row Save
+would have done. So the edit lives in a **draft record** beside the value record
+(`useSettingDraft`), and `<DeclaredCommit tab="…"/>` in the tab's footer commits
+every edited row on that tab through `commitSettings`, which sends one
+`PUT /api/settings` carrying each declaration's `wire`. The button names a tab
+and never a setting, so a third box added to the Instructions tab is committed by
+it with no edit anywhere. `git.identity` is the same button on another tab.
+
+Three consequences the design had not stated. **The record moves only after the
+server answers, and it takes the value the server ECHOED** — the writers trim, so
+what was sent is not always what is stored. **A refused write keeps the draft**,
+because that is the user's unsaved typing and the toast is the only thing they
+have left. And **what may be committed comes from the value type's `validate()`**
+(P8), so the 50,000-character bound the tab used to carry in JSX is gone and the
+keyboard path cannot enforce a different limit from the button.
+
+**A draft is never dropped for looking unchanged, and that is what makes it safe.**
+The first cut treated a draft equal to what it started from as no draft at all,
+so that typing back to the original re-adopted an outside change. Two ways to
+lose a keystroke followed, both found by review and both reproduced: a dropped
+draft left its **seed** behind, so the next edit after an outside change was
+compared against a value nobody was looking at and vanished; and an edit made
+*during* a save that happened to equal the pre-save value was dropped in favour
+of the value the save stored. So a draft now lives from the first keystroke until
+the write that carries it lands, or until the dialog closes — a box that was
+typed in always shows what was typed. Settling is one store action: a draft still
+holding what was sent is done and goes, one typed in since stays with its **seed
+advanced to what is now stored**, because that write was the user's own and not
+the outside change the seed exists to detect.
+
+**Two commits of one setting must not overlap**, and the button is what stops
+them: it is disabled while its write is in flight. `commitSettings` has no
+sequencing of its own — out-of-order responses would leave the record on the
+older value with the server holding the newer, after the `settings_changed`
+refresh that would have corrected it had already run — and it needs none while it
+has one caller that cannot produce them.
+
+**A tab that has an explicit-commit row must place a `DeclaredCommit`**, and
+nothing checks that it does: moving a `system-prompt-file` row to a tab without
+one would render a textarea nobody can save. Both tabs that have one place it
+today; a later slice that moves such a row owes the check.
+
 **A generated row's writer awaits the response and does nothing else** (P3).
 A setting whose write has a client-side effect is not a generated row: hands-free
 must arm audio inside the click gesture, and the TTS provider repairs the voice
@@ -130,7 +175,7 @@ forces a migration.
 | `bool` | toggle |
 | `enumOf` | select, or a segmented picker for a short static set — slice 2 built the picker, which is what its one enum wanted; the select arrives with slice 4's voice enums, whose option sets are long or produced by the install |
 | `numeric` | number input, with the declared unit |
-| `text` | input; textarea when the store is `system-prompt-file` |
+| `text` | textarea when the store is `system-prompt-file`; a `text` row over any other store has no control yet, so it is **not generated at all** (slice 3) |
 | `gitIdentity` | the name-and-email pair |
 | `modelSelection` | the model picker |
 | `text` whose dialog value is write-only | credential row: configured or not, replace, remove |
@@ -225,6 +270,38 @@ existing one or renders a row that cannot save.
    selection has not moved since it asked, because both orderings happen.
 3. **Instructions and Git.** The textarea rule and the instruction conflict state
    (P14), and the git identity control.
+
+   **P14 is decided, and it is neither of the two shapes the design offered.**
+   The conflict notice is not a declared capability and does not need a component:
+   it falls out of **being an explicit-commit row**. Such a row has a draft and a
+   seed, and comparing the two against the stored value answers both halves — an
+   untouched box adopts a value that moved underneath it, an edited one keeps the
+   draft and says so. A declaration field would have had exactly one user, which
+   requirement 5 refuses; a component would have been custom presentation for
+   something that is not presentation at all.
+
+   **And the instruction boxes are NOT the first shared component** — the dedup
+   slice 2 deleted stays deleted, and the webhook pair in slice 4 still decides
+   it. They are two ordinary `text` rows; what makes their Save one write is that
+   the Save belongs to the tab. That also gave the control table its `text` entry,
+   which a shared component would have left with no user at all.
+
+   Knowingly given up, all of it on the Instructions tab: **Save no longer closes
+   the dialog** (it says "Saved", as the git identity and the memory budget
+   already did; Cancel and the close button still close it), the two boxes **lost
+   their placeholders** (per-setting copy a generated control cannot hold — the
+   declared description carries the same guidance), and **switching to the tab no
+   longer focuses the first box** (it was a `ref` the dialog passed into the
+   hand-written textarea). The built-in-instructions toggle moved to the bottom of
+   the tab, because the disclosure that belongs under it is chrome and a `note`
+   renders above a section (req 11).
+
+   One more thing the slice found: **the git identity had two write paths**, the
+   declared `PUT /api/settings` and `POST /api/settings/git-identity`. The dialog
+   now uses the declared one, and the route keeps its other callers.
+
+   Gained rather than given up: an unsaved git edit now survives a tab switch,
+   because the draft outlives the control that holds it.
 4. **Voice.** The remaining browser values, the TTS component (P3, P7), the
    hands-free component (P3), the provider-key list (P11), the webhook pair (P9),
    and the webhook becoming always visible (P13).
@@ -255,15 +332,17 @@ on the same reader while their tabs wait for slices 5 and 3.
 |---|---|
 | `src/server/shared/settings-catalogue/types.ts` | the declaration; gains `section`, `component`, and the `own-route` address |
 | `src/client/components/Settings/declared-setting.ts` | today's boolean reader and writer — generalised into `useSetting` / `saveSetting` |
-| `src/client/components/Settings/declared.tsx` | today's declared controls — becomes the control table |
-| `src/client/components/Settings/DeclaredSettings.tsx` | the renderer: the control table, the section grouping, `notes` |
+| `src/client/components/Settings/declared.tsx` | the low-level controls a generated one is built from |
+| `src/client/components/Settings/declared-controls.tsx` | the control table: what each value kind gets |
+| `src/client/components/Settings/DeclaredSettings.tsx` | the renderer: the section grouping, `notes`, the component lookup |
+| `src/client/components/Settings/DeclaredCommit.tsx` | a tab's Save: every edited row on it, in one write |
 | `src/client/stores/setting-values.ts` | which settings the record holds, the browser codec (P17), the named fields each one mirrors (P1), where an own-route row is written and read (P2) |
 | `src/client/stores/setting-hydration.ts` | the payload read and the own-route read, both walking the declarations |
 | `src/client/components/Settings/components/registry.ts` | the components a declaration may name |
 | `src/client/components/Settings/tabs/UpdatePanel.tsx` | the Software Updates chrome, placed as that section's note (P12) |
 | `src/client/components/Settings/setting-binding.ts` | `data-setting`; deleted in slice 8 |
 | `src/client/components/Settings/settings-coverage.test.tsx` | the walk; deleted in slice 8 (P15) |
-| `src/client/stores/settings-store.ts` | gains the value record; the named fields become views over it |
+| `src/client/stores/settings-store.ts` | gains the value record and the draft record; the named fields become views over the first |
 | `src/client/utils/local-storage.ts` | loses its 13 accessor pairs for settings; keeps the legacy keybinding fallback (P17) |
 
 ## What stays exactly as it is

@@ -11,7 +11,6 @@ import { render, screen, cleanup } from "@testing-library/react";
 import { SettingsTabPane } from "./SettingsTabPane.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
-import { createRef } from "react";
 
 afterEach(cleanup);
 
@@ -50,27 +49,14 @@ describe("SettingsTabPane", () => {
 
 describe("tab Save buttons stay pinned", () => {
   it("Git identity Save is outside the scroll area", () => {
-    const { container } = render(
-      <GitTab gitIdentity={{ name: "A", email: "a@example.com" }} onGitIdentitySave={() => {}} />,
-    );
+    const { container } = render(<GitTab />);
     const pane = container.firstElementChild as HTMLElement;
-    expect(scrollBodyOf(pane)).not.toContainElement(screen.getByTestId("settings-git-save"));
+    expect(scrollBodyOf(pane)).not.toContainElement(screen.getByRole("button", { name: "Save" }));
   });
 
   it("Instructions Save is outside the scroll area", () => {
-    const { container } = render(
-      <InstructionsTab
-        content=""
-        onContentChange={() => {}}
-        opsContent=""
-        onOpsContentChange={() => {}}
-        textareaRef={createRef<HTMLTextAreaElement>()}
-        onSave={() => {}}
-        onClose={() => {}}
-        agentSystemInstructions=""
-      />,
-    );
+    const { container } = render(<InstructionsTab onClose={() => {}} />);
     const pane = container.firstElementChild as HTMLElement;
-    expect(scrollBodyOf(pane)).not.toContainElement(screen.getByTestId("settings-save"));
+    expect(scrollBodyOf(pane)).not.toContainElement(screen.getByRole("button", { name: "Save" }));
   });
 });

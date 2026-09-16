@@ -1,4 +1,5 @@
-import { useState, useRef } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: the dialog's own teardown, dropping uncommitted drafts
+import { useEffect } from "react";
 import type { AgentOption } from "../../agent-types.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs.js";
@@ -6,10 +7,11 @@ import { SettingsIntegrations } from "../SettingsIntegrations.js";
 import { SettingsEgress } from "../SettingsEgress.js";
 import { SkillsTab } from "../SkillsTab.js";
 import { KeybindingSettings } from "../KeybindingSettings.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
 import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
-import { InstructionsTab, MAX_LENGTH } from "./tabs/InstructionsTab.js";
+import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
@@ -30,89 +32,40 @@ export const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instr
 type Tab = (typeof SETTINGS_TABS)[number];
 
 export interface SettingsProps {
-  initialContent: string;
-  initialOpsContent: string;
-  onSaveInstructions: (content: string, opsContent: string) => void;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   onGitHubTokenSubmit: (token: string) => Promise<void> | void;
   onGitHubLogout: () => void;
   agentList?: AgentOption[];
   onFullReset?: () => void;
-  gitIdentity: { name: string; email: string };
-  onGitIdentitySave: (name: string, email: string) => void;
-  agentSystemInstructions: string;
   hasActiveSession: boolean;
   onClose: () => void;
 }
 
 export function Settings({
-  initialContent,
-  initialOpsContent,
-  onSaveInstructions,
   githubStatus,
   onGitHubTokenSubmit,
   onGitHubLogout,
   agentList = [],
   onFullReset,
-  gitIdentity,
-  onGitIdentitySave,
-  agentSystemInstructions,
   hasActiveSession,
   onClose,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "services";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
-  const [content, setContent] = useState(initialContent);
-  const [opsContent, setOpsContent] = useState(initialOpsContent);
-  const savedRef = useRef(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
   /*
-    What the drafts were seeded from. A settings write elsewhere — another tab,
-    or an agent's applied proposal — refetches the stored value into the store
-    and so into these props, while the drafts stay where the user left them
-    (docs/299-agent-settings-access → Apply goes through a shared layer).
-
-    An UNTOUCHED box adopts the new value: it would otherwise keep showing what
-    was stored when the dialog opened and write it back on Save, silently
-    reverting a change the user never saw. A box being edited keeps its draft and
-    says the stored value moved, because adopting there would throw away typing.
+    An edit nobody saved is discarded when the dialog goes, which is what the
+    drafts did when they lived in this component's own state. They live in the
+    store now because the Save that commits them is a tab's rather than a
+    control's (docs/308-data-driven-settings, `DeclaredCommit.tsx`).
   */
-  const seededRef = useRef({ content: initialContent, ops: initialOpsContent });
-  if (initialContent !== seededRef.current.content && content === seededRef.current.content) {
-    seededRef.current = { ...seededRef.current, content: initialContent };
-    setContent(initialContent);
-  }
-  if (initialOpsContent !== seededRef.current.ops && opsContent === seededRef.current.ops) {
-    seededRef.current = { ...seededRef.current, ops: initialOpsContent };
-    setOpsContent(initialOpsContent);
-  }
-  const changedElsewhere =
-    initialContent !== seededRef.current.content || initialOpsContent !== seededRef.current.ops;
-
-  // A rejected save closes the modal and drops the draft, so the keyboard path
-  // enforces the same limit the Save button disables itself on.
-  const saveBlocked = content.length > MAX_LENGTH || opsContent.length > MAX_LENGTH;
-
-  const handleSave = () => {
-    if (saveBlocked) return;
-    savedRef.current = true;
-    onSaveInstructions(content, opsContent);
-  };
-
-  const handleClose = () => {
-    if (!savedRef.current) {
-      onClose();
-    }
-  };
+  // eslint-disable-next-line no-restricted-syntax -- cleanup: drafts outlive this component, so closing has to drop them
+  useEffect(() => () => { useSettingsStore.getState().clearSettingDrafts(); }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       e.preventDefault();
       onClose();
-    }
-    if (activeTab === "instructions" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      handleSave();
     }
   };
 
@@ -121,7 +74,7 @@ export function Settings({
     : "rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full";
 
   return (
-    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent
         className={dialogClass}
         data-testid="settings-backdrop"
@@ -133,13 +86,7 @@ export function Settings({
         </div>
 
         {/* Body: sidebar tabs + content (vertical sidebar on desktop, horizontal scroll strip on mobile) */}
-        <Tabs value={activeTab} onValueChange={(v) => {
-          const tab = v as Tab;
-          setActiveTab(tab);
-          if (tab === "instructions") {
-            requestAnimationFrame(() => textareaRef.current?.focus());
-          }
-        }} className="flex max-md:flex-col flex-1 min-h-0" orientation="vertical">
+        <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v as Tab); }} className="flex max-md:flex-col flex-1 min-h-0" orientation="vertical">
           {/* Tab list — vertical sidebar on desktop, horizontal scroll on mobile */}
           <TabsList className="md:w-40 md:shrink-0 md:min-h-0 md:overflow-y-auto md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
             {SETTINGS_TABS.map((tab) => (
@@ -151,17 +98,7 @@ export function Settings({
 
           {/* Right content area */}
           <TabsContent value="instructions">
-            <InstructionsTab
-              content={content}
-              onContentChange={setContent}
-              opsContent={opsContent}
-              onOpsContentChange={setOpsContent}
-              textareaRef={textareaRef}
-              onSave={handleSave}
-              onClose={onClose}
-              agentSystemInstructions={agentSystemInstructions}
-              changedElsewhere={changedElsewhere}
-            />
+            <InstructionsTab onClose={onClose} />
           </TabsContent>
 
           <TabsContent value="skills">
@@ -214,7 +151,7 @@ export function Settings({
           </TabsContent>
 
           <TabsContent value="git">
-            <GitTab gitIdentity={gitIdentity} onGitIdentitySave={onGitIdentitySave} />
+            <GitTab />
           </TabsContent>
 
           <TabsContent value="network">

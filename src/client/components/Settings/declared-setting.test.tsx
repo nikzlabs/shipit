@@ -33,7 +33,12 @@ import {
  * `DeclaredBooleanKey`, which the type system computes from the same two facts.
  */
 const DERIVED = (Object.values(GLOBAL_SETTINGS) as AnyPayloadDeclaration[]).filter(
-  (d) => d.store.kind === "credential-store" && d.type.kind === "bool",
+  // The third clause is the type's `WireOf<K> extends keyof Settings`: a boolean
+  // whose named field the store no longer holds is read from the record alone,
+  // which is what happens to a setting once its tab's last reader of that field
+  // is gone.
+  (d) => d.store.kind === "credential-store" && d.type.kind === "bool"
+    && d.wire in useSettingsStore.getState(),
 );
 
 function storeValue(wire: string): boolean {
@@ -178,10 +183,9 @@ describe("a setting the record does not hold", () => {
   );
 
   it("covers the settings still reading through their named field", () => {
-    expect(OUTSIDE.map((d) => d.key).sort()).toEqual([
-      "instructions.agentInstructionsEnabled",
-      "integrations.autoCreatePr",
-    ]);
+    // One left: the Instructions tab joined the record in slice 3, and the
+    // Integrations tab follows in slice 5.
+    expect(OUTSIDE.map((d) => d.key).sort()).toEqual(["integrations.autoCreatePr"]);
   });
 
   for (const declaration of OUTSIDE) {

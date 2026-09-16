@@ -8,13 +8,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { DeclaredSettings } from "./DeclaredSettings.js";
+import { DeclaredSettings, controlFor } from "./DeclaredSettings.js";
 import { resetDeclaredSaves } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
-import { GENERATED_SETTINGS } from "../../stores/setting-values.js";
-import { findSetting } from "../../../server/shared/settings-catalogue/index.js";
+import { GENERATED_SETTINGS, initialSettingValues } from "../../stores/setting-values.js";
+import { findSetting, type SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 
 const ROWS = GENERATED_SETTINGS.filter((d) => d.tab === "advanced");
 /** The rows a value kind's own control renders — everything but the components. */
@@ -32,6 +32,9 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   localStorage.clear();
+  // The record and the drafts outlive a render, so a test that moves one would
+  // otherwise seed the next.
+  useSettingsStore.setState({ settingValues: initialSettingValues(), settingDrafts: {} });
 });
 
 function settingValue(key: string): unknown {
@@ -151,6 +154,122 @@ describe("a generated row writes where its declaration says", () => {
       expect(control).toHaveAttribute("aria-checked", String(next));
     });
   }
+});
+
+/**
+ * Two lists have to agree: `setting-values.ts` decides which declarations become
+ * rows, and the control table decides what a row looks like. A declaration the
+ * first admits and the second has no control for renders nothing at all — the
+ * row is simply missing, which is what P18 forbids and what no other test here
+ * can fail on, because each of those names the rows it expects.
+ *
+ * It asks the renderer directly rather than looking at rendered DOM: requirement
+ * 12 gives up the walk rather than narrowing it, and what is in question is
+ * which control a declaration gets, not what that control puts on screen.
+ */
+describe("every generated row has a control", () => {
+  it("finds one for each declaration the reader admits", () => {
+    for (const declaration of GENERATED_SETTINGS) {
+      expect(
+        controlFor(declaration),
+        `${declaration.key} is a generated row with no control to edit it`,
+      ).toBeTruthy();
+    }
+  });
+});
+
+/**
+ * The Instructions tab: prose over the one store whose values are prose.
+ *
+ * **The store is what makes it a textarea** — the design rejected a
+ * `presentation: "multiline"` field because `system-prompt-file` already says
+ * it, and this is that rule at the control.
+ */
+describe("the instruction boxes", () => {
+  const BOXES = ["instructions.userInstructions", "instructions.opsInstructions"] as const;
+
+  it("renders a textarea for each prompt-file row, named by its declaration", () => {
+    render(<DeclaredSettings tab="instructions" />);
+
+    for (const key of BOXES) {
+      const declaration = findSetting(key)!;
+      const box = screen.getByRole("textbox", { name: declaration.label });
+      expect(box.tagName).toBe("TEXTAREA");
+      expect(box).toHaveAttribute("data-setting", key);
+    }
+  });
+
+  it("counts what is typed against the declared maximum", async () => {
+    render(<DeclaredSettings tab="instructions" />);
+
+    await userEvent.type(screen.getByRole("textbox", { name: "Your Instructions" }), "abc");
+
+    expect(screen.getAllByText("3 / 50,000")).toHaveLength(1);
+  });
+
+  // P8 — the refusal is the value type's own, which is the text the agent is
+  // shown for the same write.
+  it("shows the value type's own refusal when the draft is too long", () => {
+    render(<DeclaredSettings tab="instructions" />);
+    const box = screen.getByRole("textbox", { name: "Your Instructions" });
+
+    fireEvent.change(box, { target: { value: "x".repeat(50_001) } });
+
+    expect(screen.getByText("System prompt is too long (max 50,000 characters)")).toBeInTheDocument();
+  });
+
+  // The toggle beside them is an ordinary declared boolean, so it needs nothing
+  // of its own — but the tab has to actually render it.
+  it("renders the built-in instructions toggle as a plain declared switch", () => {
+    render(<DeclaredSettings tab="instructions" />);
+
+    const declaration = findSetting("instructions.agentInstructionsEnabled")!;
+    expect(screen.getByRole("switch", { name: declaration.label }))
+      .toHaveAttribute("data-setting", declaration.key);
+  });
+});
+
+/**
+ * The Git tab: a name and an email are ONE setting, because they are written
+ * together (inventory.md P9). The value kind carries the control, so this is a
+ * table entry rather than a component.
+ */
+describe("the git identity", () => {
+  const KEY = "git.identity" as SettingKey;
+
+  function seed(identity: { name: string; email: string }) {
+    useSettingsStore.getState().setSettingValue(KEY, identity);
+  }
+
+  it("shows the stored name and email in two boxes over one declaration", () => {
+    seed({ name: "Ada", email: "ada@example.com" });
+    const { container } = render(<DeclaredSettings tab="git" />);
+
+    expect(screen.getByLabelText("Name")).toHaveValue("Ada");
+    expect(screen.getByLabelText("Email")).toHaveValue("ada@example.com");
+    expect(container.querySelectorAll('[data-setting="git.identity"]')).toHaveLength(2);
+  });
+
+  it("edits one half without discarding the other", () => {
+    seed({ name: "Ada", email: "ada@example.com" });
+    render(<DeclaredSettings tab="git" />);
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Grace" } });
+
+    expect(useSettingsStore.getState().settingDrafts[KEY]?.value)
+      .toEqual({ name: "Grace", email: "ada@example.com" });
+    // Nothing is stored until the tab's Save commits it.
+    expect(settingValue(KEY)).toEqual({ name: "Ada", email: "ada@example.com" });
+  });
+
+  it("shows the value type's own refusal for a half-filled identity", () => {
+    seed({ name: "Ada", email: "ada@example.com" });
+    render(<DeclaredSettings tab="git" />);
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "" } });
+
+    expect(screen.getByText("Git email cannot be empty")).toBeInTheDocument();
+  });
 });
 
 /**
