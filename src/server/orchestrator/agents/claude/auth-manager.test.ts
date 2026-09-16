@@ -509,10 +509,205 @@ describe("AuthManager / auth diagnostics", () => {
 
     expect(pending).toHaveLength(1);
     expect(progress.map((p) => p.phase)).toContain("waiting_for_code");
-    const cliLog = logs.find((l) => l.source === "cli_stdout");
-    expect(cliLog?.message).toContain("https://claude.ai/oauth/authorize?[redacted]");
-    expect(cliLog?.message).not.toContain("super-secret-state");
+    // Relayed a line at a time, so the link is its own entry.
+    const cli = logs.filter((l) => l.source === "cli_stdout").map((l) => l.message);
+    expect(cli.join("")).toContain("https://claude.ai/oauth/authorize?[redacted]");
+    expect(cli.join("")).not.toContain("super-secret-state");
     expect(new Set(progress.map((p) => p.attemptId)).size).toBe(1);
+    mgr.kill();
+  });
+
+  /**
+   * A pty echoes what is written to it, so the pasted code comes back on the
+   * CLI's own output — which the diagnostics panel shows. The sanitizer's
+   * long-secret rule catches a long code and nothing guarantees the code is one.
+   */
+  it("keeps the pasted code out of the CLI output the pty echoes back", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("short-code-1234#state");
+    ptyHoisted.dataHandlers[0]("short-code-1234#state\nExchanging the code…\n");
+
+    const panel = logs.map((l) => l.message).join("\n");
+    expect(panel, "leaked the authorization code").not.toContain("short-code-1234");
+    expect(panel).toContain("Exchanging the code…");
+    mgr.kill();
+  });
+
+  /**
+   * A chunk boundary lands wherever the pty buffer says, and every rule that
+   * protects this panel is a whole-string rule. Relaying a line at a time is
+   * what makes any of them apply — the code redaction is only one of them.
+   */
+  it.each([
+    {
+      name: "a link's query string",
+      chunks: ["Open https://claude.ai/oauth/authorize?code=true&sta", "te=private-state-value&hint=x\n"],
+      secret: "private-state-value",
+    },
+    {
+      // The first chunk is redacted on its own, which is what makes the second
+      // look like ordinary text: the tail is the half that gets published.
+      name: "the tail of a bearer token",
+      chunks: ["Authorization: Bearer abcdefgh", "ijklmnopqrstuvwx\n"],
+      secret: "ijklmnopqrstuvwx",
+    },
+  ])("redacts $name the pty split across two chunks", ({ chunks, secret }) => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    for (const chunk of chunks) ptyHoisted.dataHandlers[0](chunk);
+
+    expect(logs.map((l) => l.message).join("")).not.toContain(secret);
+    mgr.kill();
+  });
+
+  /**
+   * A pty colours its echo, so an escape sequence can land inside the code, and
+   * split across two chunks neither half is recognisable — which is why chunks
+   * are buffered raw and the escapes are stripped off the assembled line.
+   */
+  it("keeps the code out when an escape sequence splits its echo", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("short-code-1234#state");
+    ptyHoisted.dataHandlers[0]("echo: short-code-\x1b[9");
+    ptyHoisted.dataHandlers[0]("0m1234#state\n");
+
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel, "leaked the authorization code").not.toContain("short-code-");
+    mgr.kill();
+  });
+
+  /**
+   * The Claude CLI is a TUI, so a code can arrive as two frames. Neither half
+   * matches what was submitted; only the assembled line does.
+   */
+  it("keeps the pasted code out when the echo is split across two chunks", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("short-code-1234#state");
+    ptyHoisted.dataHandlers[0]("echo: short-code-");
+    ptyHoisted.dataHandlers[0]("1234#state\nExchanging the code…\n");
+
+    // Joined without a separator: two adjacent lines each holding half of the
+    // code put the whole code on the screen just as plainly as one line would.
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel, "leaked the authorization code").not.toContain("short-code-1234");
+    expect(panel).toContain("Exchanging the code…");
+    mgr.kill();
+  });
+
+  /**
+   * Only the latest code used to be remembered, so a second submission stripped
+   * the first one's protection off output still sitting in the line buffer.
+   */
+  it("keeps redacting a code the user has already replaced", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("first-code-secret");
+    ptyHoisted.dataHandlers[0]("echo: first-code-secret");
+    mgr.sendCode("second-code-secret");
+    ptyHoisted.dataHandlers[0]("\n");
+
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel, "leaked the first code once a second was submitted").not.toContain("first-code-secret");
+    mgr.kill();
+  });
+
+  /**
+   * A torn-down login keeps draining. The exit callback already checked the
+   * flow generation; the data callback did not, so the old run's output landed
+   * on the new attempt and its expired link became that attempt's challenge.
+   */
+  it("ignores a superseded login process's output", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    const pending: string[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+    mgr.on("pending", () => pending.push("pending"));
+
+    mgr.startOAuthFlow();
+    const stale = ptyHoisted.dataHandlers[0];
+    mgr.startOAuthFlow();
+    logs.length = 0;
+    pending.length = 0;
+    stale("Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >");
+
+    expect(logs).toEqual([]);
+    expect(pending, "replayed the superseded run's link").toEqual([]);
+    mgr.kill();
+  });
+
+  /**
+   * Cancelling is not restarting: nothing supersedes the flow, so the guard has
+   * to move when the process is killed as well. A cancelled pty keeps draining.
+   */
+  it("ignores a cancelled login process's output", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    const pending: string[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+    mgr.on("pending", () => pending.push("pending"));
+
+    mgr.startOAuthFlow();
+    const drained = ptyHoisted.dataHandlers[0];
+    mgr.cancel();
+    logs.length = 0;
+    pending.length = 0;
+    drained("Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >");
+
+    expect(logs).toEqual([]);
+    expect(pending, "replayed the cancelled run's link").toEqual([]);
+  });
+
+  /**
+   * The panel's redaction has to cover the orchestrator's log too: the same
+   * chunk was being printed raw next to the sanitized line it produced.
+   */
+  it("logs the sanitized line rather than the raw chunk", () => {
+    const mgr = new AuthManager();
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map((a) => String(a)).join(" "));
+    });
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=super-secret-state\n",
+    );
+
+    // Every line this manager prints, not only the relayed one: the URL
+    // detection printed its own unsanitized copy beside the clean one.
+    expect(logged.join("\n"), "printed the link's query string to the server log")
+      .not.toContain("super-secret-state");
+    spy.mockRestore();
     mgr.kill();
   });
 

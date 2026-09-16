@@ -350,7 +350,7 @@ describe("the authorization-code challenge", () => {
    * the sign-in runs on for seconds. With nothing left behind, a user who had
    * submitted could not tell that from a click that missed.
    */
-  it("says the code went through, and keeps the button usable for a retry", async () => {
+  it("says the code went through, and spends the button on that code", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
     renderChallenge("antigravity", "google-antigravity-oauth");
@@ -360,9 +360,32 @@ describe("the authorization-code challenge", () => {
 
     await waitFor(() => expect(screen.getByTestId("provider-account-code-submitted-acct-agy"))
       .toBeInTheDocument());
-    // A resolving event that never arrives — an SSE drop — must not leave the
-    // panel inert: the dialog offers "Try again" only once no challenge pends.
+    // Reported from the dogfood: a button that stays up answers the click with
+    // nothing, and invites a second one for a code already delivered.
+    expect(screen.getByRole("button", { name: "Submit code" })).toBeDisabled();
+  });
+
+  /**
+   * The other half of the same rule. A resolving event that never arrives — an
+   * SSE drop — must not leave the panel inert, and the dialog offers "Try again"
+   * only once no challenge pends. So it is the CODE that is spent, not the
+   * challenge: the box hands the button back.
+   */
+  it("hands the button back as soon as the code is edited", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    const box = screen.getByPlaceholderText("Paste authorization code");
+    await user.type(box, "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Submit code" })).toBeDisabled());
+
+    await user.type(box, "-two");
+
     expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled();
+    // The confirmation belongs to the challenge, not to what the box holds now.
+    expect(screen.getByTestId("provider-account-code-submitted-acct-agy")).toBeInTheDocument();
   });
 
   /**

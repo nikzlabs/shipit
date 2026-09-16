@@ -309,6 +309,24 @@ workspace default is **Settings → Network**. Both are covered in
 [sessions.md](sessions.md), and the agent-side view is
 `/shipit-docs/environment.md`.
 
+**A blocked host usually arrives as a DNS failure, not as a refused
+connection**, and the message names the wrong resolver. A contained session's
+DNS is redirected to ShipIt's own resolver inside the session's network
+namespace, which forwards only allowlisted domains and answers everything else
+REFUSED — so a Go program prints `lookup api.example.com on 127.0.0.11:53:
+server misbehaving`, Python raises `Temporary failure in name resolution`, and
+curl prints `Could not resolve host`. **The `127.0.0.11` is the address the
+program sent to, not the resolver that answered**: `resolv.conf` still names
+Docker's embedded DNS and the packets are redirected out from under it, so that
+address appears whether the session is contained or not. Read the signature as
+"this host is not on the allowlist", and never conclude a session is uncontained
+because the error names Docker's address.
+
+The one-line check, in the session's terminal: resolve the failing host **and a
+host you know is allowlisted**. If the allowlisted one resolves and the other
+does not, that is the allowlist — Docker's DNS forwards everything, so it cannot
+produce that split. If both fail, it is a real DNS problem.
+
 One warning worth knowing, because it means two opposite things: **Contained —
 NOT enforced on this deployment**, in Settings → Network. The containment policy
 is on and the install cannot apply it — and which way that falls depends on how

@@ -420,7 +420,43 @@ one non-npm branch, gated on `contains antigravity $selected`:
   link itself). And the data callback carries `this.proc !== proc`, like the exit
   callback: a cancelled run keeps draining, and by then the manager may be
   running the next account's flow, so unguarded output lands on that account's
-  panel and its expired link is replayed as that account's challenge.
+  panel and its expired link is replayed as that account's challenge. A third
+  property followed once the shape was copied into the Codex and Grok managers:
+  **the two redactions compose in one order only — strip terminal escapes, take
+  out the known code, then run the generic rules — and the marker that replaces
+  the code carries no whitespace.** A pty colours its echo, so an escape inside
+  the code defeats an exact match until it is stripped; and a generic rule run
+  first rewrites the long middle of a code, after which no exact match can
+  recognise what is left and the tail is published as ordinary text. The marker
+  has no space because a URL match ends at the first one, so a spaced marker
+  substituted inside a link truncates the redaction and publishes every
+  parameter after it. The Claude manager, which had no code redaction at all,
+  now shares both rules — a code under 32 characters was reaching its panel
+  verbatim, and its chunk-at-a-time relay published a split link's query string,
+  a split token's tail and a split code's halves. Holding back only what could
+  still become the *code* was tried first and rejected: the code is one of
+  several whole-string rules, so the relay has to assemble the whole line.
+  **All four managers now share one line relay** — `createCliLineRelay` in
+  `agents/auth-diagnostics.ts`, added when the Codex and Grok sign-ins were
+  wired up — rather than a hand-rolled buffer each: per-source tails, ANSI
+  stripped off the assembled line, a flush at every path that ends the run, and
+  a 64 KiB cap that acts as a synthetic break rather than a drop, sized so far
+  above a login's whole output that the break cannot fall inside a URL, token or
+  code. Claude holds its relay **per flow**, so a killed run's unterminated tail
+  cannot be flushed onto the next attempt's panel. Its panel logging also goes
+  through the redaction — a credential kept off the screen and written to the
+  orchestrator's log is still a credential in a log — and its data callback
+  checks the flow generation, which `kill()` now advances so a *cancelled* run
+  is covered and not only a superseded one. One more rule is easy to get
+  backwards: **every** code submitted during an attempt stays redacted, because
+  a second submission would otherwise strip the first one's protection off
+  output still sitting in the buffer. A consequence of the shared relay worth
+  knowing when reading the tests: because it hands over an already-stripped
+  line, each manager's own `stripAnsi` is unreachable from the relay path, so
+  the guards pin that ordering through the relay and the call in the emitter is
+  defence for callers that skip it. What this shape does **not** solve is a
+  secret the CLI itself wrapped across physical lines: planning#586 carries
+  that, with the refusal-text and quoted-JSON gaps it shares a cause with.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it
@@ -449,7 +485,14 @@ one non-npm branch, gated on `contains antigravity $selected`:
   then ends `Error: Eligibility check failed: … lookup www.googleapis.com …
   server misbehaving`; the refusal outranks the token, correctly, so the account
   never connects and the user sees a sign-in that failed with a good credential
-  on disk (observed in the dogfood, 2026-09-16).
+  on disk (observed in the dogfood, 2026-09-16). Allowing that host moved the
+  same check one step further and it failed again — `failed to get profile
+  picture: … lookup lh3.googleusercontent.com …`, this time on every **turn**,
+  not only at sign-in. So `.googleusercontent.com` is allowed as a domain rather
+  than a host: Google picks the shard (`lh3`…`lh6`) per account, and pinning the
+  one this account got would break for the next. **Four hosts, three found by
+  running it** — each after the previous one was allowed, which is the argument
+  against reading an allowlist off a candidate list and calling it complete.
 
 ## Adapter (`session/agents/antigravity/`, Claude-shaped)
 

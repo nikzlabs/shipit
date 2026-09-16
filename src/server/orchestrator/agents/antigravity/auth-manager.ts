@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
+import { stripAnsi } from "../../../shared/strip-ansi.js";
 import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { stripAnsi } from "../../../shared/strip-ansi.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import {
   ANTIGRAVITY_SPAWN_ENV,
@@ -13,6 +13,7 @@ import {
 import { antigravityStderrErrorText } from "../../../shared/antigravity-stream.js";
 import { ensureConfigDir } from "../agent-auth-base.js";
 import {
+  createCliLineRelay,
   sanitizeAuthDiagnostic,
   type AgentAuthLogLevel,
   type AgentAuthLogPayload,
@@ -231,7 +232,7 @@ export class AntigravityAuthManager
   private activeFlowAccountId: string | null = null;
   private activeAttemptId: string | null = null;
   private activeAttemptStartedAt = 0;
-  private submittedCode: string | null = null;
+  private submittedCodes: string[] = [];
   private terminalEmitted = false;
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
@@ -290,7 +291,17 @@ export class AntigravityAuthManager
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    const sanitized = sanitizeAuthDiagnostic(message);
+    // **Escapes first, then the known code, then the generic rules.** A pty
+    // colours its echo, so an escape inside the code defeats an exact match
+    // until it is stripped; and once a generic rule has rewritten part of the
+    // code, no later exact match can recognise the rest — the two together
+    // published a code's tail as ordinary text.
+    //
+    // The strip is unreachable from the RELAY, which hands over an already
+    // stripped line, so the guard tests pin it there rather than here. It stays
+    // for a caller that skips the relay: the ordering only holds if whatever
+    // reaches `withoutSubmittedCode` is escape-free.
+    const sanitized = sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(message)));
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -316,7 +327,7 @@ export class AntigravityAuthManager
     this.outputBuffer = "";
     this.lastPendingDetails = null;
     this.terminalEmitted = false;
-    this.submittedCode = null;
+    this.submittedCodes = [];
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
     this.activeAttemptId = randomUUID();
@@ -357,20 +368,11 @@ export class AntigravityAuthManager
     this.emitProgress("waiting_for_url", "Waiting for the Antigravity CLI to print a sign-in link.");
     // A pty merges the two streams, so this buffer is also what req 4's error
     // sentence is read from.
-    /**
-     * **Diagnostics are relayed a LINE at a time, never a chunk at a time.** A
-     * pty chunk boundary lands wherever the buffer says, and both redactions
-     * that protect this panel are whole-string rules: a sign-in URL split at
-     * `&sta` / `te=…` leaves the second half looking like ordinary text, and an
-     * echoed authorization code split anywhere stops matching what was
-     * submitted. The same boundary already cost the link itself once
-     * ({@link handleOutput}).
-     */
-    let lineBuffer = "";
-    const relay = (text: string): void => {
-      const line = this.withoutSubmittedCode(text.trim());
-      if (line) this.emitDiagnosticLog("info", "cli_stdout", line);
-    };
+    // Whole lines, from the shared relay: the reason is in `createCliLineRelay`,
+    // and the same boundary already cost the link itself once (`handleOutput`).
+    const relay = createCliLineRelay((source, line) => {
+      if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
+    });
 
     proc.onData((chunk) => {
       // A cancelled run keeps draining, and by then `this.proc` may be the NEXT
@@ -378,9 +380,7 @@ export class AntigravityAuthManager
       // account's scope, or replays an expired link as that account's challenge.
       if (this.proc !== proc) return;
       this.stderrBuffer += chunk;
-      const lines = (lineBuffer + stripAnsi(chunk)).split(/\r?\n/);
-      lineBuffer = lines.pop() ?? "";
-      for (const line of lines) relay(line);
+      relay.push("cli_stdout", chunk);
       this.handleOutput(chunk);
     });
 
@@ -388,8 +388,7 @@ export class AntigravityAuthManager
       if (this.proc !== proc) return;
       this.proc = null;
       // The CLI's last line carries no newline when it is a prompt.
-      relay(lineBuffer);
-      lineBuffer = "";
+      relay.flush();
       const hadPending = this.lastPendingDetails !== null;
       this.lastPendingDetails = null;
       this.clearTimeout();
@@ -471,10 +470,17 @@ export class AntigravityAuthManager
    * the CLI's own output — which is relayed to the panel. The sanitizer's
    * long-secret rule would probably catch it; "probably" is not good enough for
    * a credential, so the exact string we submitted is taken out first.
+   *
+   * **The marker carries no whitespace.** A URL match ends at the first space,
+   * so a spaced marker substituted inside a link truncates what the sanitizer
+   * then sees and publishes every parameter after it.
    */
   private withoutSubmittedCode(text: string): string {
-    const code = this.submittedCode;
-    return code && text.includes(code) ? text.split(code).join("[code redacted]") : text;
+    let out = text;
+    for (const code of this.submittedCodes) {
+      if (out.includes(code)) out = out.split(code).join("[code-redacted]");
+    }
+    return out;
   }
 
   /** `hadPending` is passed in: the exit handler clears the field before it asks. */
@@ -500,8 +506,12 @@ export class AntigravityAuthManager
     try {
       // What a terminal sends when the user presses Enter; the line discipline
       // maps it to a newline, so the CLI reads one submitted line.
-      this.submittedCode = code.trim();
-      this.proc.write(`${this.submittedCode}\r`);
+      // Every code submitted in this attempt, not just the latest: a second
+      // submission would otherwise strip the first one's protection off output
+      // still sitting in the line buffer.
+      const submitted = code.trim();
+      this.submittedCodes.push(submitted);
+      this.proc.write(`${submitted}\r`);
       // Never the code itself: it is a credential, and the panel is copyable.
       this.emitDiagnosticLog("info", "shipit", "Authorization code delivered to the CLI.");
       this.emitProgress("checking_credentials", "Code submitted — completing sign-in…");

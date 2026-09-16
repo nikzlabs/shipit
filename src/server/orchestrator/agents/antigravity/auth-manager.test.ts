@@ -382,9 +382,75 @@ describe("AntigravityAuthManager", () => {
       proc.emitData("4/0AY-sec");
       proc.emitData("ret-code\r\n");
 
-      const panel = logs.map((l) => l.message).join("\n");
+      // Joined without a separator: two adjacent entries each holding half of a
+      // secret put the whole of it on the screen just as plainly as one would.
+      const panel = logs.map((l) => l.message).join("");
       expect(panel, "leaked the link's query string").not.toContain("private-state-value");
+      expect(panel, "leaked the authorization code").not.toContain("4/0AY-sec");
+    });
+
+    /**
+     * A pty colours its echo, so an escape sequence can land inside the code —
+     * and split across two chunks neither half is recognisable, so the code no
+     * longer matches what was submitted. The sanitizer strips the reassembled
+     * escape, which puts the code back together in plain sight.
+     */
+    it("keeps the code out when an escape sequence splits its echo", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode("4/0AY-secret-code");
+      proc.emitData("4/0AY-\x1b[9");
+      proc.emitData("0msecret-code\r\n");
+
+      expect(logs.map((l) => l.message).join("")).not.toContain("4/0AY-");
+    });
+
+    /**
+     * The two redactions have to compose in one order only. Strip the escapes,
+     * take out the known code, THEN run the generic rules: run a generic rule
+     * first and it rewrites the long middle of the code, after which no exact
+     * match can recognise what is left, and the tail is published.
+     */
+    it("keeps a code's tail out when a generic rule would rewrite its middle", () => {
+      const code = `4/0AY-${"A".repeat(40)}.private-tail`;
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode(code);
+      proc.emitData(`4/0AY-${"A".repeat(20)}\x1b[90m${"A".repeat(20)}.private-tail\r\n`);
+
+      expect(logs.map((l) => l.message).join("\n")).not.toContain(".private-tail");
+    });
+
+    /**
+     * The code is taken out before the sanitizer runs, so the marker that
+     * replaces it is inside whatever the CLI printed. A URL match ends at the
+     * first space: a spaced marker cuts the link in half and everything after
+     * it is published as ordinary text.
+     */
+    it("redacts a whole link even when the code was echoed inside it", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode("4/0AY-secret-code");
+      proc.emitData("Redirecting to https://accounts.google.com/x?code=4/0AY-secret-code&hint=alice-hint\n");
+
+      const panel = logs.map((l) => l.message).join("\n");
       expect(panel, "leaked the authorization code").not.toContain("4/0AY-secret-code");
+      expect(panel, "leaked the rest of the link's query string").not.toContain("alice-hint");
+    });
+
+    /**
+     * Only the latest code used to be remembered, so a second submission
+     * stripped the first one's protection off output still in the line buffer.
+     */
+    it("keeps redacting a code the user has already replaced", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode("first-code-secret");
+      proc.emitData("echo: first-code-secret");
+      manager.submitCode("second-code-secret");
+      proc.emitData("\r\n");
+
+      expect(logs.map((l) => l.message).join("")).not.toContain("first-code-secret");
     });
 
     /**

@@ -483,11 +483,18 @@ export function AccountChallenge({
    * is a line of its own, the button stays usable for a retry, and holding the
    * challenge it belongs to retires it the moment a new link replaces this one.
    */
-  const [submittedFor, setSubmittedFor] = useState<string | null>(null);
+  const [submittedFor, setSubmittedFor] = useState<{ uri: string; code: string } | null>(null);
   const loginId = loginForProvider(provider);
   const pendingAuth = loginId ? auths[providerAccountAuthKey(loginId, account.id)] ?? null : null;
   if (!pendingAuth) return null;
-  const submitted = submittedFor === pendingAuth.verificationUri;
+  const submitted = submittedFor?.uri === pendingAuth.verificationUri;
+  /**
+   * **The button answers the click; the line answers the challenge.** Disabling
+   * on `submitted` alone would strand anyone whose resolving event never
+   * arrives, so it is THIS code that is spent, not the challenge: editing the
+   * box hands the button straight back, and a new link retires both.
+   */
+  const alreadySent = submitted && submittedFor?.code === code.trim();
 
   const submit = async () => {
     const trimmed = code.trim();
@@ -498,7 +505,7 @@ export function AccountChallenge({
         method: "POST",
         body: JSON.stringify({ code: trimmed }),
       });
-      setSubmittedFor(pendingAuth.verificationUri);
+      setSubmittedFor({ uri: pendingAuth.verificationUri, code: trimmed });
     } catch (err) {
       onError(messageOf(err, "Failed to submit authorization code"));
     } finally {
@@ -545,7 +552,7 @@ export function AccountChallenge({
             <Button
               variant="primary"
               size="md"
-              disabled={busy || !code.trim()}
+              disabled={busy || !code.trim() || alreadySent}
               onClick={() => void submit()}
               {...bindSetting("services.providerAccounts[].connection")}
             >

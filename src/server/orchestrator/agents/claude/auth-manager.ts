@@ -6,7 +6,9 @@ import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import {
+  createCliLineRelay,
   sanitizeAuthDiagnostic,
+  type CliLineRelay,
   type AgentAuthLogPayload,
   type AgentAuthLogLevel,
   type AgentAuthLogSource,
@@ -145,6 +147,10 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   private _authenticated = false;
   private credentialsPollInterval: ReturnType<typeof setInterval> | null = null;
   private outputBuffer = "";
+  // Per FLOW, not per manager: a killed run's unterminated tail must not be
+  // flushed onto the next attempt's panel.
+  private relay: CliLineRelay = this.newRelay();
+  private submittedCodes: string[] = [];
   private authUrlEmitted = false;
   private wizardTimer: ReturnType<typeof setTimeout> | null = null;
   private wizardEnterCount = 0;
@@ -234,13 +240,69 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     this.emit("progress", payload);
   }
 
+  /**
+   * A pty echoes what is written to it, so the pasted authorization code comes
+   * back on the CLI's own output — which this panel shows. The sanitizer's
+   * long-secret rule would probably catch it; "probably" is not good enough for
+   * a credential, so the exact string we submitted is taken out first.
+   *
+   * **The marker carries no whitespace.** A URL match ends at the first space,
+   * so a spaced marker substituted inside a link truncates what the sanitizer
+   * then sees and publishes every parameter after it.
+   */
+  private withoutSubmittedCode(text: string): string {
+    let out = text;
+    for (const code of this.submittedCodes) {
+      if (out.includes(code)) out = out.split(code).join("[code-redacted]");
+    }
+    return out;
+  }
+
+  /**
+   * Whole lines, from the shared relay every harness uses — the reasoning is in
+   * `createCliLineRelay`. Claude needs it most: its CLI is an Ink TUI, so a
+   * frame boundary lands wherever the redraw says, and a link, a token, an
+   * echoed code or an escape sequence split across two of them walks straight
+   * through a chunk-at-a-time sanitize.
+   */
+  private newRelay(): CliLineRelay {
+    return createCliLineRelay((source, line) => {
+      if (!line.trim()) return;
+      // Logged from what the panel got: the same redaction has to cover both.
+      const shown = this.emitDiagnosticLog("info", source, line.trim());
+      if (shown) console.log("[auth output]", shown);
+    });
+  }
+
+  /**
+   * **Escapes first, then the known code, then the generic rules.** A pty
+   * colours its echo, so an escape inside the code defeats an exact match until
+   * it is stripped; and once a generic rule has rewritten part of the code, no
+   * later exact match can recognise the rest — the two together published a
+   * code's tail as ordinary text.
+   *
+   * Everything this manager prints about the CLI goes through here, not only
+   * what the panel shows: a credential kept off the screen and written to the
+   * orchestrator's log is still a credential in a log.
+   *
+   * The strip is unreachable from the RELAY, which hands over an already
+   * stripped line, so the guard tests pin it there rather than here. It stays
+   * for the callers that skip the relay — the wizard dump reads `outputBuffer`,
+   * which is stripped a chunk at a time and so can still hold a reassembled
+   * escape.
+   */
+  private redacted(text: string): string {
+    return sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(text)));
+  }
+
+  /** Returns what the panel was given, so a caller can log the same text. */
   private emitDiagnosticLog(
     level: AgentAuthLogLevel,
     source: AgentAuthLogSource,
     message: string,
-  ): void {
-    const sanitized = sanitizeAuthDiagnostic(message);
-    if (!sanitized) return;
+  ): string | null {
+    const sanitized = this.redacted(message);
+    if (!sanitized) return null;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
       timestamp: new Date().toISOString(),
@@ -249,6 +311,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
       message: sanitized,
     };
     this.emit("log", payload);
+    return sanitized;
   }
 
   async getAccessToken(credentialDir?: string): Promise<
@@ -337,6 +400,8 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     const generation = ++this.flowGeneration;
     this.terminalEmitted = false;
     this.outputBuffer = "";
+    this.submittedCodes = [];
+    this.relay = this.newRelay();
     this.authUrlEmitted = false;
     this.wizardEnterCount = 0;
     this.lastPendingDetails = null;
@@ -387,12 +452,14 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     this.proc.onExit(() => clearTimeout(watchdog));
 
     this.proc.onData((data: string) => {
+      // The exit callback checks this and the data callback did not: a torn-down
+      // login keeps draining, so its output was relayed under the new attempt's
+      // scope and its expired link could be replayed as that attempt's challenge.
+      if (generation !== this.flowGeneration) return;
       const cleaned = stripAnsi(data);
       this.outputBuffer += cleaned;
-      if (cleaned.trim()) {
-        console.log("[auth output]", cleaned.trim());
-        this.emitDiagnosticLog("info", "cli_stdout", cleaned.trim());
-      } else if (data.length > 0) {
+      this.relay.push("cli_stdout", data);
+      if (!cleaned.trim() && data.length > 0) {
         console.log("[auth] Received %d bytes of terminal control data", data.length);
         this.emitDiagnosticLog("debug", "cli_control", `Received ${data.length} bytes of terminal control data.`);
       }
@@ -402,7 +469,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
         if (triggerPos !== -1) {
           const url = extractUrlFromBuffer(this.outputBuffer.substring(0, triggerPos));
           if (url) {
-            console.log("[auth] Detected code-paste auth URL:", url);
+            console.log("[auth] Detected code-paste auth URL:", this.redacted(url));
             this.authUrlEmitted = true;
             this.emitDiagnosticLog("info", "shipit", "Detected Claude authentication URL.");
             this.emitProgress("waiting_for_code", "Authentication link detected. Waiting for authorization code.");
@@ -411,7 +478,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
         } else {
           const url = extractAuthUrl(this.outputBuffer);
           if (url) {
-            console.log("[auth] Detected auth URL (fallback):", url);
+            console.log("[auth] Detected auth URL (fallback):", this.redacted(url));
             this.authUrlEmitted = true;
             this.emitDiagnosticLog("info", "shipit", "Detected Claude authentication URL with fallback parser.");
             this.emitProgress("waiting_for_code", "Authentication link detected. Waiting for authorization code.");
@@ -429,6 +496,8 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
         console.log("[auth] Ignoring exit of a superseded login process");
         return;
       }
+      // The CLI's last line carries no newline when it is a prompt.
+      this.relay.flush();
       this.emitDiagnosticLog(exitCode === 0 ? "info" : "warn", "shipit", `Claude login process exited with code ${exitCode}.`);
       this.proc = null;
 
@@ -481,8 +550,9 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     if (this.authUrlEmitted || this.wizardEnterCount >= 10 || this.findTriggerPos() !== -1) {
       if (this.wizardEnterCount >= 10 && !this.authUrlEmitted) {
         console.log("[auth] Exhausted Enter attempts. Buffer (%d chars):", this.outputBuffer.length);
-        const redacted = this.outputBuffer.substring(0, 500).replace(/https?:\/\/\S+/g, "[URL REDACTED]");
-        console.log("[auth] Buffer contents (URLs redacted):", redacted);
+        // Sanitize the WHOLE buffer, then truncate: truncating first can cut a
+        // secret below a rule's threshold, or cut an exact code match in half.
+        console.log("[auth] Buffer contents (redacted):", this.redacted(this.outputBuffer).substring(0, 500));
         this.emitDiagnosticLog("warn", "shipit", `Exhausted wizard Enter attempts. Buffered output length: ${this.outputBuffer.length} characters.`);
       }
       return;
@@ -507,6 +577,10 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   sendCode(code: string): void {
     if (this.proc) {
       const trimmed = code.trim();
+      // Every code submitted in this attempt, not just the latest: a second
+      // submission would otherwise strip the first one's protection off output
+      // still sitting in the relay buffer.
+      this.submittedCodes.push(trimmed);
       console.log("[auth] Sending auth code to PTY (%d chars)", trimmed.length);
       this.emitProgress("checking_credentials", "Authorization code submitted. Checking for credentials.");
       this.emitDiagnosticLog("info", "shipit", `Authorization code submitted (${trimmed.length} characters redacted).`);
@@ -592,6 +666,10 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   // Claim before teardown so its asynchronous exit cannot emit another outcome.
   kill(): void {
     this.claimTerminalOutcome();
+    // A killed pty keeps draining, and the generation is what both callbacks
+    // test: without this, a cancelled run's output still reached the panel and
+    // its expired link could be replayed as the next attempt's challenge.
+    this.flowGeneration++;
     if (this.wizardTimer) {
       clearTimeout(this.wizardTimer);
       this.wizardTimer = null;
