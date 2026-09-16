@@ -11,9 +11,23 @@ import { useBugReportStore } from "../../../stores/bug-report-store.js";
 import { usePermissionStore } from "../../../stores/permission-store.js";
 import { useEgressPromptStore } from "../../../stores/egress-prompt-store.js";
 
+/**
+ * The control this row draws, on the rewind strip that CLOSES a collapsed turn
+ * (req 14). The row is the next user message's — the turn it toggles is the one
+ * above it, so every field here describes that turn, not this row.
+ */
+export interface ClosingControl {
+  run: CompactRun;
+  open: boolean;
+  search: boolean;
+  controls?: string;
+  /** What the fold is holding, for the tooltip: "2 tool calls · 1 card". */
+  holds?: string;
+}
+
 type CompactRowView =
-  | { hidden: boolean; collapseTools: boolean; empty?: undefined; run?: undefined; first?: undefined; open?: undefined; search?: undefined; controls?: undefined; holds?: undefined }
-  | { hidden: boolean; collapseTools: boolean; empty: boolean; run: CompactRun; first: boolean; open: boolean; search: boolean; controls?: string; holds?: string };
+  | { hidden: boolean; collapseTools: boolean; closes?: ClosingControl; empty?: undefined; run?: undefined; first?: undefined; open?: undefined; search?: undefined }
+  | { hidden: boolean; collapseTools: boolean; closes?: ClosingControl; empty: boolean; run: CompactRun; first: boolean; open: boolean; search: boolean };
 
 /**
  * docs/299 req 12 — a card is kept while the product is waiting on a person,
@@ -176,22 +190,34 @@ export function useCompactConversation(
       const run = byIndex.get(index);
       if (run && protectableIndices.has(index)) protectedRuns.add(run);
     }
+    const isOpen = (run: CompactRun): boolean =>
+      expanded.has(run.identity) || searchRuns.has(run) || protectedRuns.has(run);
+    // req 14 — the control rides the strip that closes the turn, which belongs
+    // to the row AFTER the run: the user message that ended it.
+    const closingIndex = new Map<number, CompactRun>();
+    for (const run of runs) if (withDetails.has(run)) closingIndex.set(run.end, run);
+
     const seen = new Set<CompactRun>();
     return elements.map((el) => {
+      const closesRun = el.kind === "message" ? closingIndex.get(el.index) : undefined;
+      const closes: ClosingControl | undefined = closesRun && {
+        run: closesRun,
+        open: isOpen(closesRun),
+        search: searchRuns.has(closesRun),
+        controls: controls.get(closesRun)?.join(" "),
+        holds: describeHidden(held.get(closesRun) ?? { tools: 0, messages: 0, cards: 0 }),
+      };
       const run = byIndex.get(elementMessageIndex(el));
-      if (!run || !withDetails.has(run)) return { hidden: false, collapseTools: false };
+      if (!run || !withDetails.has(run)) return { hidden: false, collapseTools: false, closes };
       const search = searchRuns.has(run);
-      const protectedRun = protectedRuns.has(run);
-      const open = expanded.has(run.identity) || search || protectedRun;
+      const open = isOpen(run);
       const first = !seen.has(run);
       seen.add(run);
       return {
         hidden: !open && detail.has(el),
         collapseTools: !open && collapsedTools.has(el),
         empty: !showsSomething.has(run),
-        run, first, open, search,
-        controls: first ? controls.get(run)?.join(" ") : undefined,
-        holds: first ? describeHidden(held.get(run) ?? { tools: 0, messages: 0, cards: 0 }) : undefined,
+        run, first, open, search, closes,
       };
     });
   }, [runs, messages, elements, enabled, matches, expanded, protectedIndices, needsUser]);

@@ -270,8 +270,8 @@ that does not exist.
 
 ## The expand control (req 8)
 
-One button per collapsed turn, **on the rewind anchor's own strip** (req 14): a
-`Button` with `variant="ghost"`, holding a caret at `ICON_SIZE.XS` in
+One button per collapsed turn, **on the rewind strip that closes it** (req 14):
+a `Button` with `variant="ghost"`, holding a caret at `ICON_SIZE.XS` in
 `--color-accent`, at the left of an 8px row whose remaining width is the anchor.
 The caret is 12px in that 8px row and overflows it by 2px each side, into the
 gap the rows already leave — so the control adds **no height at all**, which is
@@ -304,16 +304,19 @@ for a turn whose only content was an error row, where it was redundant anyway.
 Both are decided by the same classification that hides the rows, so the note
 cannot disagree with what is on screen.
 
-The rewind anchor for the gap the turn opens on is **hoisted to the run's first
-row** and shares that row with the control (req 14): the anchor closes the
-user's message at the right, the caret opens the reply at the left. Hoisting
-rather than reordering one row is what makes the two meet when the run does not
-begin with a bubble — the anchor belongs to the run's first *message*, while the
-control sits on its first *element*, which can be a tool group. The row that
-owns the gap then suppresses its own copy, in both the collapsed path
-(`renderRewindPoint` beside the row) and the expanded one (`TranscriptRow`'s
-`showGapBefore`), so hoisting never leaves a second anchor behind. A run with no
-rewind controls keeps the strip and draws the caret alone on it.
+**Which strip is the closing one, and who draws it.** A run's closing gap sits
+before `run.end` — the user message that ended the turn — so the row that draws
+it is *outside* the run, and the hook says so: `closingIndex` maps `run.end` to
+its run, and that row's view carries a `ClosingControl` describing the turn
+*above* it (its open state, its `aria-controls` ids, what the fold holds). The
+row then draws caret and anchor together and passes `showGapBefore={false}` to
+`TranscriptRow`, so the strip is never drawn twice. A run whose closing row has
+no anchor — no rewind controls, or a notice in the way — still gets the strip,
+with the caret alone on it.
+
+Putting the control there is also what let the earlier hoisting go: nothing at
+the head of the run needs reordering any more, so the opening gap is drawn by
+whichever row owns it, as it was before.
 
 Follow the `design-language` skill: semantic color tokens only, no hardcoded
 palette values, `@phosphor-icons/react` for the icon.

@@ -361,14 +361,11 @@ export function MessageList({
     // docs/299 — the rollback pill explains the response it sits above, so it
     // lives between the rows rather than inside one a collapsed turn can hide.
     const rollbackHash = isBubble && anchorMsg?.rolledBack ? anchorMsg.codeRollbackHash : undefined;
-    // docs/299-collapsed-turns — the rewind anchor closes the user's message and
-    // the expand control opens the reply, so the anchor is hoisted to the head of
-    // the run: it must sit ABOVE the control even when the row carrying the
-    // control is not the row the gap belongs to.
-    const runGap = view.run && shouldShowGapBefore(view.run.start) ? view.run.start : undefined;
-    const gapAtHeader = view.first ? runGap : undefined;
-    const ownGap = isBubble && shouldShowGapBefore(el.index) && el.index !== runGap;
-    const showsSomething = !view.hidden || !!view.first || !!rollbackHash || ownGap;
+    const gapBefore = isBubble && shouldShowGapBefore(el.index);
+    // docs/299-collapsed-turns req 14 — this row's strip closes the turn above
+    // it, so the strip carries that turn's caret and this row draws both.
+    const closes = view.closes;
+    const showsSomething = !view.hidden || !!view.first || !!rollbackHash || gapBefore || !!closes;
     return {
       key,
       // planning#491 — a row that can MOVE within the list must not be allowed
@@ -377,34 +374,31 @@ export function MessageList({
       visible: showsSomething,
       node: (
         <div key={key} hidden={!showsSomething}>
-          {/* req 8 — the caret rides the rewind anchor's own strip, at the left
-              end, so the control costs no height of its own. What the fold
-              holds is named in the tooltip rather than drawn beside it: a label
-              on this row would put the height back. */}
-          {view.first && view.run ? (
+          {/* req 8 — the caret rides the rewind strip that closes the turn, at
+              its left end, so the control costs no height of its own. What the
+              fold holds is named in the tooltip rather than drawn beside it: a
+              label on this row would put the height back. */}
+          {closes ? (
             <div className="flex items-center gap-1 h-2">
               <Button variant="ghost" size="icon"
                 className="-my-1 p-0 rounded-sm text-(--color-accent) hover:text-(--color-accent-hover)"
-                aria-expanded={view.open}
-                aria-controls={view.controls}
-                aria-label={`${view.open ? "Show compact turn" : "Show full turn"}: ${view.run.identity.text.slice(0, 80) || "Agent response"}`}
-                aria-disabled={view.search || undefined}
-                title={view.search ? "Revealed by the active search"
-                  : `${view.open ? "Show compact turn" : "Show full turn"}${view.holds ? ` — ${view.holds}` : ""}`}
-                onClick={() => { if (!view.search) compact.toggle(view.run, view.open); }}>
-                {view.open
+                aria-expanded={closes.open}
+                aria-controls={closes.controls}
+                aria-label={`${closes.open ? "Show compact turn" : "Show full turn"}: ${closes.run.identity.text.slice(0, 80) || "Agent response"}`}
+                aria-disabled={closes.search || undefined}
+                title={closes.search ? "Revealed by the active search"
+                  : `${closes.open ? "Show compact turn" : "Show full turn"}${closes.holds ? ` — ${closes.holds}` : ""}`}
+                onClick={() => { if (!closes.search) compact.toggle(closes.run, closes.open); }}>
+                {closes.open
                   ? <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
                   : <CaretDownIcon size={ICON_SIZE.XS} weight="bold" />}
               </Button>
-              <div className="flex-1 min-w-0">
-                {gapAtHeader !== undefined && renderRewindPoint(gapAtHeader)}
-              </div>
+              <div className="flex-1 min-w-0">{gapBefore && renderRewindPoint(el.index)}</div>
             </div>
-          ) : gapAtHeader !== undefined && renderRewindPoint(gapAtHeader)}
+          ) : view.hidden && gapBefore && renderRewindPoint(el.index)}
           {view.first && view.run && !view.open && view.empty && (
             <div className="text-xs text-(--color-text-secondary)">Turn ended without an agent reply.</div>
           )}
-          {view.hidden && ownGap && renderRewindPoint(el.index)}
           {rollbackHash && <CodeRollbackNotice hash={rollbackHash} />}
           <div id={`compact-row-${rowIndex}`} data-compact-content data-compact-index={anchorIndex} hidden={view.hidden}>
         <TranscriptRow
@@ -420,7 +414,7 @@ export function MessageList({
           hasRewindControls={hasRewindControls}
           forkDefaultName={forkDefaultName}
           rewindPreviews={rewindPreviews}
-          showGapBefore={!view.hidden && ownGap}
+          showGapBefore={!view.hidden && gapBefore && !closes}
           gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
           collapseTools={view.collapseTools}
         />

@@ -60,16 +60,22 @@ need their own messages and the significant events.
     visible whether or not it was sent.
 13. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 1.
 
-14. The expand control belongs to the agent's reply, not to the user's message.
-    It shares the strip the rewind anchor sits on, at the left of it: the anchor
-    closes the user's message at the user's side, the caret opens the reply at
-    the reply's side.
+14. The expand control sits on the rewind strip **below** the turn — the one
+    that closes it — at the left of that strip. It is not above the turn and not
+    between the user's message and the reply.
 
 ## Open questions
 
 None.
 
 ## Resolved questions
+
+2026-09-16 — Requirement 14 named which strip, from *"it is not on the left of
+the rewind strip, it is higher. I meant the strip below the turn, not above"*.
+The first reading put the caret on the strip that OPENS the turn; the user meant
+the one that CLOSES it. The control moved to the row after the run — the user
+message that ended the turn owns that strip — which also retired the hoisting
+that the earlier "anchor above the control" wording needed.
 
 2026-09-16 — Requirements 8 and 14 put the caret on the rewind strip, from
 *"let's try the single chevron on the left of this rewind anchor, so it doesn't

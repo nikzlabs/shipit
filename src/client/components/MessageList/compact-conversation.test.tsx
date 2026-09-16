@@ -353,22 +353,22 @@ describe("collapsed turns", () => {
       .toHaveAttribute("title", "Show full turn — 2 tool calls · 2 messages · 1 card");
   });
 
-  it("puts the control on the user's rewind strip, in both states (req 14)", () => {
+  it("puts the control on the strip that closes the turn, below the reply (req 14)", () => {
     compactOn();
     const { container } = render(<MessageList messages={transcript()} isLoading={false} onRewindAtGap={vi.fn()} />);
-    // Right-aligned anchors close a user message: this turn's and the newest one's.
-    const anchors = () => [...container.querySelectorAll('[data-testid="rewind-point"][data-align="right"]')];
-    // The strip is one row: the caret at the reply's side, the anchor at the
-    // user's. The count pins that hoisting leaves no second copy below it.
-    const onTheStrip = () => {
-      const button = screen.getByRole("button", { name: /Show (full|compact) turn/ });
-      return anchors().filter((a) => button.parentElement?.contains(a)).length;
-    };
-    expect(anchors()).toHaveLength(2);
-    expect(onTheStrip()).toBe(1);
-    fireEvent.click(screen.getByRole("button", { name: /Show full turn/ }));
-    expect(anchors()).toHaveLength(2);
-    expect(onTheStrip()).toBe(1);
+    const control = () => screen.getByRole("button", { name: /Show (full|compact) turn/ });
+    const strip = () => [...control().parentElement!.querySelectorAll('[data-testid="rewind-point"]')];
+    // The closing strip's anchor is the one under an agent reply, so left-aligned.
+    expect(strip()).toHaveLength(1);
+    expect(strip()[0]).toHaveAttribute("data-align", "left");
+    // Below the reply it folds, and the turn's opening anchor is not disturbed.
+    expect(screen.getByText("Search is ready").compareDocumentPosition(control()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('[data-testid="rewind-point"][data-align="right"]')).toHaveLength(2);
+
+    fireEvent.click(control());
+    expect(strip()).toHaveLength(1);
+    expect(screen.getByText("Checking files")).toBeVisible();
+    expect(container.querySelectorAll('[data-testid="rewind-point"][data-align="right"]')).toHaveLength(2);
   });
 
   it("keeps later row DOM parents fixed when an early run is expanded", () => {
