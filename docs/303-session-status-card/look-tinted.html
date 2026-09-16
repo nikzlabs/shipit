@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Session status card — the look (docs/303)</title>
+<title>Session status card — tinted, capped, split in three (docs/303, round 3)</title>
 <style>
   :root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
   body { margin: 0; padding: 24px; background: #e5e7eb; color: #111827; }
@@ -69,11 +69,6 @@
   .s-plain .cap { background: var(--color-accent); color: var(--color-accent-text); }
   .s-plain .body { background: var(--color-bg-secondary); }
   .s-plain { border-color: var(--color-accent); }
-  /* Neutral — the ordinary card surface, no accent at all: the Last turn card. */
-  .s-neutral .cap { background: var(--color-bg-tertiary); color: var(--color-text-secondary);
-                    border-bottom: 1px solid var(--color-border-secondary); }
-  .s-neutral .body { background: var(--color-bg-secondary); }
-  .s-neutral { border-color: var(--color-border-secondary); }
   /* Skin 3 — tinted cap with accent text, tinted body: the quietest of the three. */
   .s-soft .cap { background: var(--color-accent-subtle); color: var(--color-accent);
                  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent); }
@@ -114,20 +109,24 @@
 </style>
 </head>
 <body>
-<h1>Session status card — the look</h1>
+<h1>Session status card — tinted, capped, split in three</h1>
 <p class="lead">
-  The card as it ships (req 33): three capped cards rather than one, stacked <b>Status</b> · <b>Last turn</b> ·
-  <b>Next steps</b>, in three tones. <b>Next steps</b> <em>asks</em> something and takes the filled cap, last and nearest the
-  composer because it carries the Submit; <b>Status</b> is <em>read</em> and takes a soft cap, an accent tint with accent
-  text; <b>Last turn</b> is the aside and leaves the accent altogether for the ordinary card surface. Drawn in
-  the card's real place — agent prose and tool rows above, the composer below — in four themes. The stack is the one
-  coloured object in a conversation, which is what makes it findable at a glance without the session needing attention
-  (req 9).
+  <b>The ruling:</b> keep the tinted surface, give each piece a cap from the Capped option, and split the one card into
+  <b>Status first, steps and follow-ups in the middle, Last turn last</b>. Drawn here in the card's real place — agent prose
+  and tool rows above, composer below — starting with <b>claude-light</b>, the theme you use. Three questions are open in
+  the drawing, so each is shown rather than assumed: how much colour the caps and bodies carry, whether the middle is one
+  card or two, and where the “Stale” mark goes now that the card is a stack.
 </p>
+<ul class="legend">
+  <li><b>1 · Filled caps, tinted bodies</b> — the literal reading of your two picks. <b>← recommended</b></li>
+  <li><b>2 · Filled caps, plain bodies</b> — the colour is spent entirely on the three caps; the bodies stay the ordinary card surface. Quieter, and the checkbox rows read as they do everywhere else.</li>
+  <li><b>3 · Soft caps, tinted bodies</b> — the cap is an accent tint with accent text rather than a filled bar. The quietest of the three, and the only one where the accent colour never carries white text.</li>
+  <li><b>4 · Four cards</b> — skin 1, but the middle splits: “Manual steps” and “Follow-ups” get a cap each. Shown once, to judge whether one Submit under two capped cards still reads as one Submit.</li>
+</ul>
 <p class="legend">
-  <b>Where “Stale” goes.</b> It describes the whole stack, not one card, so it sits at the right-hand end of the
-  <em>Status</em> cap — the first thing read. On a stale stack the Last turn card is absent entirely (req 31 hides that
-  line when the card may be behind).
+  <b>Where “Stale” goes.</b> It describes the whole stack, not one card, so it is drawn at the right-hand end of the
+  <em>Status</em> cap — the first thing read. On a stale stack the Last turn card is absent entirely (req 31 hides that line
+  when the card may be behind), which is itself a clearer signal than the old grey label was.
 </p>
 
 <div id="out"></div>
@@ -192,27 +191,28 @@ function kard(skin, capIcon, capTitle, body, stale) {
   </div>`;
 }
 
-/**
- * The shipped arrangement: the two cards that are READ take the soft cap, and
- * the one that ASKS something — "Next steps", which carries the Submit — takes
- * the filled cap and goes last, nearest the composer.
- */
-function stack(_skin, { stale = false } = {}) {
-  const nextSteps = kard("s-filled", I.checks, "Next steps", `
+function stack(skin, { split = false, stale = false } = {}) {
+  const middle = split
+    ? kard(skin, I.clip, "Manual steps", STEPS_ROWS) +
+      kard(skin, I.checks, "Follow-ups", FOLLOWUP_ROWS + FOOT)
+    : kard(skin, I.checks, "Next steps", `
         <div class="inner"><div class="sub">${icon(I.clip)}<b>Manual steps</b></div>${STEPS_ROWS}</div>
         <div class="inner"><div class="sub">${icon(I.checks)}<b>Follow-ups</b></div>${FOLLOWUP_ROWS}</div>
         ${FOOT}`);
   return `<div class="stack">
-    ${kard("s-soft", I.gauge, "Status", STATUS_BODY, stale)}
-    ${stale ? "" : kard("s-neutral", I.clock, "Last turn", LAST_TURN_BODY)}
-    ${nextSteps}
+    ${kard(skin, I.gauge, "Status", STATUS_BODY, stale)}
+    ${middle}
+    ${stale ? "" : kard(skin, I.clock, "Last turn", LAST_TURN_BODY)}
   </div>`;
 }
 
 const OPTIONS = [
-  ["s-filled", "The card", "filled cap on Next steps (last), soft on Status, neutral on Last turn", {}],
+  ["s-filled", "1 · Filled caps, tinted bodies", "the literal reading of your two picks — recommended", {}],
+  ["s-plain", "2 · Filled caps, plain bodies", "colour on the caps only", {}],
+  ["s-soft", "3 · Soft caps, tinted bodies", "accent tint and accent text, never white on accent", {}],
+  ["s-filled", "4 · Four cards", "skin 1 with the middle split in two", { split: true }],
 ];
-const THEMES = [["claude-light", "claude-light"], ["dark", "dark"], ["light", "light"], ["claude", "claude"]];
+const THEMES = [["claude-light", "claude-light — yours"], ["dark", "dark"], ["light", "light"], ["claude", "claude"]];
 
 const out = document.getElementById("out");
 for (const [skin, title, note, opts] of OPTIONS) {
@@ -237,10 +237,11 @@ h.innerHTML = `Stale, on every skin <span>— the Last turn card is gone and the
 out.appendChild(h);
 const staleBoards = document.createElement("div");
 staleBoards.className = "boards";
-for (const [tk, tn] of [["claude-light", "claude-light"], ["dark", "dark"]]) {
+for (const [tk, tn] of [["claude-light", "claude-light — yours"], ["dark", "dark"]]) {
   const sec = document.createElement("section");
   sec.className = `theme ${tk}`;
-  sec.innerHTML = `<h2>${tn}</h2>${stack("s-filled", { stale: true })}`;
+  sec.innerHTML = `<h2>${tn}</h2>` + ["s-filled", "s-plain", "s-soft"].map((skin, i) =>
+    `<div style="font-size:11px;color:var(--color-text-tertiary);margin:${i ? 14 : 0}px 0 6px">${OPTIONS[i][1]}</div>${stack(skin, { stale: true })}`).join("");
   staleBoards.appendChild(sec);
 }
 out.appendChild(staleBoards);

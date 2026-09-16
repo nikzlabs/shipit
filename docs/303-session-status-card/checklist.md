@@ -23,3 +23,8 @@ docs-only PR and their review history is on planning#550.
 - [x] Req 32: `pending-answer.ts`; every answer card in a container keyed by its tool, the pending one last in the flow under the status card; the chunk piece counter that replaces `openedByCard`, with the chunk tracked rather than recomputed.
 - [x] Verify both by hand in the dogfood instance at 390x780: a turn ending with a question, with a card and offers present, and a card whose last-turn line changes.
 - [x] Verify in the dogfood instance: flag on — switch away and back, reload, a turn that skips the tool, a resident agent across a toggle; flag off — an action card as today.
+- [x] Req 33: three capped, accent-tinted cards — Status, Next steps, Last turn — with the Stale mark in the status cap; the unticked checkbox given a surface of its own so it survives the tint; `mockup.html` redrawn as the shipped look, with every drawn round kept beside it; reqs 14, 28 and 31 amended.
+- [x] Verify req 33 by hand in the dogfood instance, wide and at 390x780, fresh and stale, in a light and a dark theme.
+- [x] Req 33, second pass: two tones — soft caps on Status and Last turn, the filled cap on Next steps, which moves last; the Stale mark redrawn in the accent for the now-soft status cap.
+- [x] Verify the two tones by hand in the dogfood instance, including the empty case: with no manual step and no offer the whole "Next steps" card is absent, leaving the two soft cards.
+- [x] Req 33, third pass: a third tone — Last turn leaves the accent for the ordinary card surface, after an inventory showed `--color-info` equals `--color-accent` in three themes and `--color-pr` means "pull request"; `look-lastturn.html` keeps the four candidates.

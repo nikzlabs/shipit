@@ -325,67 +325,95 @@ the conversation (req 6); the question card, a transcript row, sits above
 it (req 8); and `useMessageScroll`'s observer on that element already keeps
 the view pinned to the bottom when the card appears or grows. It is not a
 transcript row: it reads `currentSession.sessionStatus` from the session
-store and renders nothing without one. `text-xs`, semantic tokens only, no
-header row; section subtitles rather than field labels:
+store and renders nothing without one. `text-xs`, semantic tokens only. It is
+**three capped cards in a stack** (req 33), not one card with rules in it:
 
 ```
-🕘 Last turn
-Wired the webhook route and its signature check; the suite is green.
-
-────────────────────────────────────────────────────────────
-⏱ Status
-Billing service. Markdown, so a list reads as a list:
-  - routes and tests done; PR #212 ready to merge
-  - webhook not started
-
-────────────────────────────────────────────────────────────
-✋ Manual steps
-☐ Add the Stripe test key in Settings → Secrets.      ("I've done this")
-☐ Review and merge PR #212.
-
-────────────────────────────────────────────────────────────
-☑ Follow-ups
-☑ Wire the Stripe webhook            RECOMMENDED
-  Adds /webhooks/stripe and its signature check.
-☐ Add retry on 5xx from Stripe
-  Three attempts, with backoff.
-☐ Add a README section on billing   SENT   (sent, greyed, tickable again)
-  What the service does and how to run it locally.
-[ Submit ]  Add comment…                                 Stale
+┌─ ⏱ Status ──────────────────────────────────────── Stale ─┐  ← soft cap: accent on tint
+│ Billing service. Markdown, so a list reads as a list:     │  ← lighter tinted body
+│   - routes and tests done; PR #212 ready to merge         │
+│   - webhook not started                                   │
+└───────────────────────────────────────────────────────────┘
+┌─ 🕘 Last turn ────────────────────────────────────────────┐  ← neutral: no accent
+│ Wired the webhook route and its signature check; green.   │     at all, the ordinary
+└───────────────────────────────────────────────────────────┘     card surface
+┏━ 🪜 Next steps ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓  ← filled cap, last
+┃ ✋ Manual steps                                            ┃
+┃ ☐ Add the Stripe test key in Settings → Secrets.          ┃  ("I've done this")
+┃ ────────────────────────────────────────────────────────  ┃
+┃ ☑ Follow-ups                                              ┃
+┃ ☑ Wire the Stripe webhook               RECOMMENDED       ┃
+┃   Adds /webhooks/stripe and its signature check.          ┃
+┃ ☐ Add a README section on billing       SENT              ┃  (greyed, tickable again)
+┃   What the service does and how to run it locally.        ┃
+┃ [ Submit ]  Add comment…                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-`mockup.html` drew the offers as one wrapping row. That was the prototype,
-not the product: the rows, the badge and the submit button are the existing
-follow-up action card's, so a checkable item reads the same wherever the user
-meets one, and every offer shows its description (req 26).
+`mockup.html` is the drawing of the look as it ships, in four themes, fresh and
+stale. The rounds that led to it are kept beside it, because the look is still
+being iterated on and a round is worth more than a summary of it:
 
-- **The last-turn line (req 31).** Rendered first, through `MarkdownContent` at
-  the card's own size, and only while `fresh`. It appears under the subtitle
-  **"Last turn"** (`ClockCounterClockwise`), and then the status takes a rule
-  and the subtitle **"Status"** (`Gauge`) — the labels arrive together or not at
-  all, because one block of prose needs no label and two in a row cannot be told
-  apart without one (req 28). With no line stored, or on a stale card, the card
-  is byte-for-byte the one that shipped.
-- **Sections, not a labelled column (req 28).** The status opens the card
-  unlabelled and renders through `MarkdownContent`, at the card's own text
-  size; what only the user can do follows under the subtitle **"Manual steps"**
-  (`needsYou` keeps its field name), omitted when the list is empty, one line
-  for a single entry and a bulleted list for several (req 27); the offers
-  follow under the subtitle **"Follow-ups"**. A rule opens each of those two
-  sections, above its subtitle. A manual step is a checklist row of its own,
-  whose toggle means "I've done this" (req 29): the same rows as the offers,
-  with that hint as the row's title and in each checkbox's accessible name. A subtitle is the transcript action card's
-  header row — an accent icon beside a 13px semibold primary label — because a
-  heading in text colour alone, tertiary or primary, blends into the markdown
-  above it. `ClipboardText` marks the manual steps, `ListChecks` the follow-ups:
-  two silhouettes that do not read as the same glyph twice. The card's surface
-  is translucent (`bg-(--color-bg-secondary)/50`, border `/60`), so the rules
-  and subtitles carry its structure rather than a filled panel.
-- **Freshness.** A current card is a regular card. A stale card carries the
-  word **"Stale"** (`text-[11px] font-semibold text-(--color-accent)`) in its
-  bottom-right corner; the last row keeps right padding so text never runs
-  under it. No tooltip: its wording would be wrong after a toggle or a
-  rewind, and the label is real text for assistive technology.
+| File | Round |
+|---|---|
+| `mockup.html` | The shipped look: three capped, accent-tinted cards. |
+| `look.html` | Round 1 — surfaces only: solid, an accent spine, an elevated panel, a recessed tray, against the translucent baseline. Rejected: still reads as another transcript card. |
+| `look-loud.html` | Round 2 — louder: accent tint, an accent header cap, a full-bleed band, a bigger card, all three at once. Drawn in the card's real neighbourhood (agent prose above, composer below), which is what the first cut of this round got wrong. **Tinted** chosen. |
+| `look-tinted.html` | Round 3 — the three capped cards, with the three sub-questions still open: how much colour, one middle card or two, where "Stale" goes. All three ruled; `mockup.html` is the chosen combination. |
+| `mockup-freshness.html` | The original prototype, from before the card had sections: how freshness is shown (the "Stale" label in the accent colour). Its card shape is superseded. |
+
+The rows, the
+badge and the submit button are the existing follow-up action card's, so a
+checkable item reads the same wherever the user meets one, and every offer
+shows its description (req 26).
+
+- **Three cards, and why (req 33).** The card shipped as one translucent
+  surface and read as "one more transcript card" — the complaint that opened
+  this round was that it blends into the conversation text. Each card is now a
+  cap (icon + 13px semibold label) over a tinted body, bordered in the accent.
+  Nothing else in a conversation is coloured in the accent, so the stack is the
+  one coloured object on the screen — which is *findability*, not attention:
+  req 9 is about the sidebar indicator and is untouched. `Gauge` caps the
+  status, `ClockCounterClockwise` the last turn, `Steps` the next steps.
+- **Three tones, and the order (req 33).** `TONES` in the component holds them.
+  **loud** — `bg-(--color-accent)` cap with `text-(--color-accent-text)`, body
+  `bg-(--color-accent-subtle)`, full accent border — is for the card that
+  *asks*: Next steps, which carries the single Submit and therefore goes
+  **last**, nearest the composer. **soft** — `bg-(--color-accent-subtle)` cap
+  with `text-(--color-accent)` and a `/30` divider, body `bg-(--color-accent)/5`,
+  border `/45` — is for the one that is *read*: Status, first. **neutral** —
+  `bg-(--color-bg-tertiary)` cap with `text-(--color-text-secondary)`, body
+  `bg-(--color-bg-secondary)`, `--color-border-secondary` border — is the
+  ordinary card surface, for the aside: Last turn. Loudness tracks what a card
+  wants from the user, so the eye lands on the only one with a control in it,
+  and the accent comes to mean "the session, and what to do about it".
+
+  **`--color-info` is not available for the neutral card**, though it is the
+  better name for it: it is the *same value* as `--color-accent` in
+  `light.css`, `cool-light.css` and `antigravity.css`, so it would
+  differentiate nothing in three of the 20 themes. `--color-pr` is the only
+  coloured token distinct from the accent everywhere, and it means "pull
+  request" throughout the rest of ShipIt. Hence the ordinary surface.
+- **The Next steps card (reqs 28, 29).** One card named **"Next steps"** holds both
+  lists under the one Submit they share: **"Manual steps"** (`ClipboardText`,
+  `needsYou` keeps its field name) and **"Follow-ups"** (`ListChecks`), as
+  subtitles inside it with a rule between them, each omitted when empty and the
+  whole card omitted when both are. A subtitle is an accent icon beside a 13px
+  semibold primary label. A manual step is a checklist row whose toggle means
+  "I've done this" (req 29): the same rows as the offers, with that hint as the
+  row's title and in each checkbox's accessible name.
+- **The unticked checkbox carries its own surface.** `ActionChecklist` draws an
+  empty box as `bg-(--color-bg-primary)` inside `border-(--color-border-secondary)`.
+  The old borderline-only box all but vanished on the tinted body — worst in
+  dark themes, where `--color-border-primary` is a hair off the tint. The change
+  is in the shared component, so the transcript action card gets it too.
+- **Freshness.** A current card carries no mark. A stale one carries the word
+  **"Stale"** (`text-[11px] font-semibold text-(--color-accent)`, the soft cap's
+  own colour, never faded) at the right-hand end of the **Status cap** — the
+  stack has no single bottom-right corner any more, and the first cap is read
+  first (req 14). No tooltip: its
+  wording would be wrong after a toggle or a rewind, and the label is real text
+  for assistive technology.
 - **Actions.** The presentational checklist of `ActionChecklistCard` — items,
   selection, the Send button — is extracted into a shared piece; the
   existing transcript-row wrapper keeps its formatting, repeat-submission,

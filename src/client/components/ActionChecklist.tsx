@@ -125,7 +125,9 @@ export function ActionChecklist({ items, selected, onToggle, ariaLabel, toggleHi
               className={`shrink-0 mt-px inline-flex items-center justify-center w-4 h-4 rounded border transition-colors ${
                 checked
                   ? "bg-(--color-accent) border-(--color-accent) text-(--color-accent-text)"
-                  : "border-(--color-border-primary) text-transparent"
+                  // An empty box needs a surface of its own: on the status card's
+                  // accent-tinted body, a borderline alone all but disappears.
+                  : "bg-(--color-bg-primary) border-(--color-border-secondary) text-transparent"
               }`}
             >
               <CheckIcon size={ICON_SIZE.XS} weight="bold" />

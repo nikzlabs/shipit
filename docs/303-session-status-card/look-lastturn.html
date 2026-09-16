@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Session status card — the look (docs/303)</title>
+<title>Session status card — a colour for Last turn (docs/303, round 5)</title>
 <style>
   :root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
   body { margin: 0; padding: 24px; background: #e5e7eb; color: #111827; }
@@ -18,7 +18,18 @@
   .theme { border-radius: 12px; padding: 14px 14px 16px; background: var(--color-bg-primary); color: var(--color-text-primary); }
   .theme h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; margin: 0 0 10px; color: var(--color-text-tertiary); }
 
+  .solarized-light {
+    --color-bg-primary:#fdf6e3; --color-bg-secondary:#eee8d5; --color-bg-tertiary:#e4ddc8;
+    --color-bg-elevated:#fdf6e3; --color-bg-hover:rgba(0,0,0,.04);
+    --color-text-primary:#073642; --color-text-secondary:#586e75; --color-text-tertiary:#93a1a1;
+    --color-text-link:#268bd2; --color-border-primary:#ded8c5; --color-border-secondary:#d3cbb7;
+    --color-accent:#b58900; --color-accent-text:#ffffff; --color-accent-subtle:rgba(181,137,0,.12);
+    --color-pr:#6c71c4; --color-pr-subtle:rgba(108,113,196,.1); --color-pr-border:rgba(108,113,196,.3);
+    --color-info:#268bd2; --color-info-subtle:rgba(38,139,210,.12);
+  }
   .claude-light {
+    --color-pr:#8050a0; --color-pr-subtle:rgba(128,80,160,.1); --color-pr-border:rgba(128,80,160,.3);
+    --color-info:#c06040; --color-info-subtle:rgba(192,96,64,.12);
     --color-bg-primary:#faf5ef; --color-bg-secondary:#f0e8de; --color-bg-tertiary:#e6dcd0;
     --color-bg-elevated:#faf5ef; --color-bg-hover:rgba(180,100,60,.06);
     --color-text-primary:#2a2018; --color-text-secondary:#5c5040; --color-text-tertiary:#9a8c78;
@@ -26,6 +37,8 @@
     --color-accent:#d97757; --color-accent-text:#ffffff; --color-accent-subtle:rgba(217,119,87,.12);
   }
   .dark {
+    --color-pr:#a78bfa; --color-pr-subtle:rgba(167,139,250,.15); --color-pr-border:rgba(167,139,250,.3);
+    --color-info:#60a5fa; --color-info-subtle:rgba(96,165,250,.15);
     --color-bg-primary:#030712; --color-bg-secondary:#111827; --color-bg-tertiary:#1f2937;
     --color-bg-elevated:#1f2937; --color-bg-hover:rgba(255,255,255,.05);
     --color-text-primary:#f3f4f6; --color-text-secondary:#9ca3af; --color-text-tertiary:#6b7280;
@@ -33,6 +46,8 @@
     --color-accent:#3b82f6; --color-accent-text:#ffffff; --color-accent-subtle:rgba(59,130,246,.15);
   }
   .light {
+    --color-pr:#7c3aed; --color-pr-subtle:rgba(124,58,237,.1); --color-pr-border:rgba(124,58,237,.3);
+    --color-info:#2563eb; --color-info-subtle:rgba(37,99,235,.1);
     --color-bg-primary:#ffffff; --color-bg-secondary:#f9fafb; --color-bg-tertiary:#f3f4f6;
     --color-bg-elevated:#ffffff; --color-bg-hover:rgba(0,0,0,.04);
     --color-text-primary:#111827; --color-text-secondary:#4b5563; --color-text-tertiary:#9ca3af;
@@ -69,11 +84,6 @@
   .s-plain .cap { background: var(--color-accent); color: var(--color-accent-text); }
   .s-plain .body { background: var(--color-bg-secondary); }
   .s-plain { border-color: var(--color-accent); }
-  /* Neutral — the ordinary card surface, no accent at all: the Last turn card. */
-  .s-neutral .cap { background: var(--color-bg-tertiary); color: var(--color-text-secondary);
-                    border-bottom: 1px solid var(--color-border-secondary); }
-  .s-neutral .body { background: var(--color-bg-secondary); }
-  .s-neutral { border-color: var(--color-border-secondary); }
   /* Skin 3 — tinted cap with accent text, tinted body: the quietest of the three. */
   .s-soft .cap { background: var(--color-accent-subtle); color: var(--color-accent);
                  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent); }
@@ -111,24 +121,45 @@
   .stale-tag { margin-left: auto; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
   .s-filled .stale-tag, .s-plain .stale-tag { color: var(--color-accent-text); opacity: .85; }
   .s-soft .stale-tag { color: var(--color-accent); }
+
+  /* ---- round 5: candidates for the Last turn card ---- */
+  .lt-accent .cap { background: var(--color-accent-subtle); color: var(--color-accent);
+                    border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent); }
+  .lt-accent .body { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+  .lt-accent { border-color: color-mix(in srgb, var(--color-accent) 45%, transparent); }
+
+  .lt-neutral .cap { background: var(--color-bg-tertiary); color: var(--color-text-secondary);
+                     border-bottom: 1px solid var(--color-border-secondary); }
+  .lt-neutral .body { background: var(--color-bg-secondary); }
+  .lt-neutral { border-color: var(--color-border-secondary); }
+
+  .lt-pr .cap { background: var(--color-pr-subtle); color: var(--color-pr);
+                border-bottom: 1px solid var(--color-pr-border); }
+  .lt-pr .body { background: color-mix(in srgb, var(--color-pr) 6%, transparent); }
+  .lt-pr { border-color: var(--color-pr-border); }
+
+  .lt-info .cap { background: var(--color-info-subtle); color: var(--color-info);
+                  border-bottom: 1px solid color-mix(in srgb, var(--color-info) 30%, transparent); }
+  .lt-info .body { background: color-mix(in srgb, var(--color-info) 6%, transparent); }
+  .lt-info { border-color: color-mix(in srgb, var(--color-info) 45%, transparent); }
 </style>
 </head>
 <body>
-<h1>Session status card — the look</h1>
+<h1>Session status card — a colour for Last turn</h1>
 <p class="lead">
-  The card as it ships (req 33): three capped cards rather than one, stacked <b>Status</b> · <b>Last turn</b> ·
-  <b>Next steps</b>, in three tones. <b>Next steps</b> <em>asks</em> something and takes the filled cap, last and nearest the
-  composer because it carries the Submit; <b>Status</b> is <em>read</em> and takes a soft cap, an accent tint with accent
-  text; <b>Last turn</b> is the aside and leaves the accent altogether for the ordinary card surface. Drawn in
-  the card's real place — agent prose and tool rows above, the composer below — in four themes. The stack is the one
-  coloured object in a conversation, which is what makes it findable at a glance without the session needing attention
-  (req 9).
+  <b>The question:</b> can the <b>Last turn</b> card take a colour of its own? Only five tokens exist in all 20 themes with a
+  tint to build a cap and a body from — <code>accent</code>, <code>info</code>, <code>pr</code>, <code>success</code>,
+  <code>warning</code> — and two are spoken for: <code>success</code> means passed/deployed and <code>warning</code> means
+  caution, so a green or amber "Last turn" would claim something about the turn that may be false. That leaves the four
+  below. The <b>light</b> board is here on purpose: <code>--color-info</code> and <code>--color-accent</code> are the same
+  value there, as they are in <code>cool-light</code> and <code>antigravity</code>.
 </p>
-<p class="legend">
-  <b>Where “Stale” goes.</b> It describes the whole stack, not one card, so it sits at the right-hand end of the
-  <em>Status</em> cap — the first thing read. On a stale stack the Last turn card is absent entirely (req 31 hides that
-  line when the card may be behind).
-</p>
+<ul class="legend">
+  <li><b>A · Accent</b> — what ships today: Last turn wears the same soft accent as Status, so the two read as one pair.</li>
+  <li><b>B · Neutral</b> — steps out of the coloured system: a <code>bg-tertiary</code> cap on a <code>bg-secondary</code> body, the ordinary card surface. Differentiates without borrowing another token's meaning, and leaves the coloured stack meaning "the session, and what to do about it", with the turn summary as an aside. <b>← recommended</b></li>
+  <li><b>C · <code>--color-pr</code></b> — the only coloured token distinct from the accent in every theme, and the only other one carrying a <code>-border</code>. The cost is semantic: that token is the PR indicator everywhere else in ShipIt.</li>
+  <li><b>D · <code>--color-info</code></b> — the right meaning, but on the light board it IS the accent, so three themes get no differentiation at all.</li>
+</ul>
 
 <div id="out"></div>
 
@@ -197,6 +228,7 @@ function kard(skin, capIcon, capTitle, body, stale) {
  * the one that ASKS something — "Next steps", which carries the Submit — takes
  * the filled cap and goes last, nearest the composer.
  */
+let LAST_TURN_SKIN = "s-soft";
 function stack(_skin, { stale = false } = {}) {
   const nextSteps = kard("s-filled", I.checks, "Next steps", `
         <div class="inner"><div class="sub">${icon(I.clip)}<b>Manual steps</b></div>${STEPS_ROWS}</div>
@@ -204,46 +236,41 @@ function stack(_skin, { stale = false } = {}) {
         ${FOOT}`);
   return `<div class="stack">
     ${kard("s-soft", I.gauge, "Status", STATUS_BODY, stale)}
-    ${stale ? "" : kard("s-neutral", I.clock, "Last turn", LAST_TURN_BODY)}
+    ${stale ? "" : kard(LAST_TURN_SKIN, I.clock, "Last turn", LAST_TURN_BODY)}
     ${nextSteps}
   </div>`;
 }
 
-const OPTIONS = [
-  ["s-filled", "The card", "filled cap on Next steps (last), soft on Status, neutral on Last turn", {}],
+const CANDIDATES = [
+  ["lt-accent", "A \u00b7 Accent (today)", "the same accent as the other two \u2014 no differentiation"],
+  ["lt-neutral", "B \u00b7 Neutral", "out of the coloured system \u2014 recommended"],
+  ["lt-pr", "C \u00b7 --color-pr", "distinct in all 20 themes, but the token means \u201cpull request\u201d"],
+  ["lt-info", "D \u00b7 --color-info", "the semantic fit, but identical to accent in three themes"],
 ];
-const THEMES = [["claude-light", "claude-light"], ["dark", "dark"], ["light", "light"], ["claude", "claude"]];
+const THEMES = [
+  ["claude-light", "claude-light"],
+  ["light", "light \u2014 info === accent here"],
+  ["dark", "dark"],
+  ["solarized-light", "solarized-light"],
+];
 
 const out = document.getElementById("out");
-for (const [skin, title, note, opts] of OPTIONS) {
-  const h = document.createElement("div");
-  h.className = "optname";
-  h.innerHTML = `${title} <span>— ${note}</span>`;
-  out.appendChild(h);
+for (const [skin, title, note] of CANDIDATES) {
+  LAST_TURN_SKIN = skin;
+  const heading = document.createElement("div");
+  heading.className = "optname";
+  heading.innerHTML = `${title} <span>\u2014 ${note}</span>`;
+  out.appendChild(heading);
   const boards = document.createElement("div");
   boards.className = "boards";
   for (const [tk, tn] of THEMES) {
     const sec = document.createElement("section");
     sec.className = `theme ${tk}`;
-    sec.innerHTML = `<h2>${tn}</h2><div class="tail">${TAIL}</div>${stack(skin, opts)}<div class="composer">Message the agent…</div>`;
+    sec.innerHTML = `<h2>${tn}</h2><div class="tail">${TAIL}</div>${stack(null)}<div class="composer">Message the agent\u2026</div>`;
     boards.appendChild(sec);
   }
   out.appendChild(boards);
 }
-
-const h = document.createElement("div");
-h.className = "optname";
-h.innerHTML = `Stale, on every skin <span>— the Last turn card is gone and the Status cap carries the mark</span>`;
-out.appendChild(h);
-const staleBoards = document.createElement("div");
-staleBoards.className = "boards";
-for (const [tk, tn] of [["claude-light", "claude-light"], ["dark", "dark"]]) {
-  const sec = document.createElement("section");
-  sec.className = `theme ${tk}`;
-  sec.innerHTML = `<h2>${tn}</h2>${stack("s-filled", { stale: true })}`;
-  staleBoards.appendChild(sec);
-}
-out.appendChild(staleBoards);
 </script>
 </body>
 </html>
