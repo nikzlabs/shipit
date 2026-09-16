@@ -52,3 +52,5 @@ export function splitIntoTopLevelBlocks(content: string): MarkdownBlock[] {
   }
   return blocks;
 }
+
+// cache probe

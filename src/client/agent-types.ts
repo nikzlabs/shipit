@@ -51,3 +51,5 @@ export function isSelectionEligibleForAgent(
       && m.modelId === selection.modelId,
   );
 }
+
+// cache probe

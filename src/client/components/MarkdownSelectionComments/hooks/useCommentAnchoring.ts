@@ -83,3 +83,5 @@ export function useCommentAnchoring(
 
   return { commentsByBlock, orphaned, pendingBlockIndex, registerLocalAnchor };
 }
+
+// cache probe

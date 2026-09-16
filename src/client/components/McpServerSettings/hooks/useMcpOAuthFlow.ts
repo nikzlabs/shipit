@@ -55,3 +55,5 @@ export function useMcpOAuthFlow() {
 
   return { oauthInFlight, connectProvider, disconnectProvider };
 }
+
+// cache probe
