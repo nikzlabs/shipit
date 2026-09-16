@@ -6,6 +6,7 @@ import {
   ClockCounterClockwiseIcon,
   GaugeIcon,
   ListChecksIcon,
+  StepsIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
 import type { SessionStatus } from "../../server/shared/types.js";
@@ -34,19 +35,53 @@ const NOTICE_MS = 5000;
  */
 const COMPACT_MARKDOWN = "[&_.prose]:text-xs [&_.prose]:leading-snug";
 
-/** A rule opens each section, above its subtitle. */
-const SECTION = "mt-2.5 pt-2.5 border-t border-(--color-border-secondary)";
+/** A rule opens each section inside a card, above its subtitle. */
+const SECTION = "mt-2.5 pt-2.5 border-t border-(--color-accent)/25";
 
 /**
- * The card's section headings. They are the transcript action card's header
- * row — an accent icon beside a medium primary label — because a heading in
- * text colour alone, however bold, blends into the markdown above it.
+ * A section heading *inside* a card: an accent icon beside a semibold primary
+ * label, because a heading in text colour alone, however bold, blends into the
+ * markdown above it. Only "Next steps" has these; the three cards' own names
+ * are their caps.
  */
 function Subtitle({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
     <div className="flex items-center gap-1.5 mb-1">
       <span className="shrink-0 text-(--color-accent)">{icon}</span>
       <span className="text-[13px] font-semibold text-(--color-text-primary)">{children}</span>
+    </div>
+  );
+}
+
+/**
+ * One of the three cards. The accent-filled cap names it and the accent-tinted
+ * body carries it: nothing else in a conversation is coloured, so the stack is
+ * found at a glance instead of reading as one more transcript card (req 33).
+ */
+function Capped({
+  icon,
+  title,
+  trailing,
+  testId,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  trailing?: ReactNode;
+  testId?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      {...(testId ? { "data-testid": testId } : {})}
+      className="overflow-hidden rounded-lg border border-(--color-accent)"
+    >
+      <div className="flex items-center gap-1.5 bg-(--color-accent) px-3 py-1 text-(--color-accent-text)">
+        <span className="shrink-0">{icon}</span>
+        <span className="text-[13px] font-semibold">{title}</span>
+        {trailing}
+      </div>
+      <div className="bg-(--color-accent-subtle) px-3 py-2">{children}</div>
     </div>
   );
 }
@@ -147,95 +182,101 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
    * turn line one turn behind is simply wrong.
    */
   const lastTurn = stale ? undefined : status.lastTurn;
-  // The "Stale" label is drawn over the card's bottom-right corner.
-  const clearOfStale = stale ? "pr-11" : "";
   const hasOffers = status.actions.length > 0;
   const needsYou = status.needsYou ?? [];
+  const hasNextSteps = hasOffers || needsYou.length > 0;
 
   return (
-    <div
-      data-testid="session-status-card"
-      className="relative rounded-lg border border-(--color-border-secondary)/60 bg-(--color-bg-secondary)/50 px-3 py-2 text-xs"
-    >
-      {/* req 31 — what the last turn did, above the session's own state. The
-          two prose blocks take labels together: one needs none, and two in a
-          row cannot be told apart without them (req 28). */}
-      {lastTurn && (
-        <div data-testid="session-status-last-turn">
-          <Subtitle icon={<ClockCounterClockwiseIcon size={ICON_SIZE.SM} />}>Last turn</Subtitle>
-          <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
-            <MarkdownContent text={lastTurn} />
-          </div>
-        </div>
-      )}
-
-      {/* req 27 — the status is markdown, so a list in it reads as a list. */}
-      <div className={lastTurn ? SECTION : ""}>
-        {lastTurn && <Subtitle icon={<GaugeIcon size={ICON_SIZE.SM} />}>Status</Subtitle>}
-        <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN} ${hasOffers || needsYou.length > 0 ? "" : clearOfStale}`}>
+    <div data-testid="session-status-card" className="flex flex-col gap-2 text-xs">
+      {/* req 33 — the session's own state comes first: it is what the user
+          opens the session to read. req 27 — markdown, so a list reads as one. */}
+      <Capped
+        icon={<GaugeIcon size={ICON_SIZE.SM} />}
+        title="Status"
+        {...(stale
+          ? {
+              // req 14 — one mark for the whole stack, on the first cap, since
+              // the stack has no single bottom-right corner any more.
+              trailing: (
+                <span className="ml-auto text-[11px] font-semibold text-(--color-accent-text)/85">
+                  Stale
+                </span>
+              ),
+            }
+          : {})}
+      >
+        <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
           <MarkdownContent text={status.status} />
         </div>
-      </div>
+      </Capped>
 
-      {needsYou.length > 0 && (
-        <div className={SECTION}>
-          <Subtitle icon={<ClipboardTextIcon size={ICON_SIZE.SM} />}>Manual steps</Subtitle>
-          {/* req 29 — each step carries its own "I've done this" toggle. */}
-          <div>
-            <ActionChecklist
-              items={stepItems}
-              selected={steps.selected}
-              onToggle={steps.toggle}
-              ariaLabel="Manual steps"
-              toggleHint="I've done this"
-            />
-          </div>
-        </div>
-      )}
-
-      {/* req 26 — the offers are the transcript action card's, extended rather
-          than reduced: same rows, badge, buttons and delivery notice. */}
-      {hasOffers && (
-        <div className={SECTION}>
-          <Subtitle icon={<ListChecksIcon size={ICON_SIZE.SM} />}>Follow-ups</Subtitle>
-          <ActionChecklist
-            items={items}
-            selected={selected}
-            onToggle={toggle}
-            ariaLabel="Follow-ups"
-          />
-        </div>
-      )}
-
-      {/* One submit for the whole card: the approved offers and the steps the
-          user reports doing travel in one message (req 29). */}
-      {(hasOffers || needsYou.length > 0) && (
-        <div className="mt-2 flex flex-col gap-2">
-          {sendFailed && (
-            <div className="flex items-center gap-1.5 text-(--color-warning)" role="status">
-              <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
-              <span>Couldn&apos;t send — not connected. Your selection is kept; press Submit to retry.</span>
+      {/* req 33 — what can happen next, in the middle: the steps only the user
+          can do and the offers the agent makes, under one Submit (req 29). */}
+      {hasNextSteps && (
+        <Capped icon={<StepsIcon size={ICON_SIZE.SM} />} title="Next steps">
+          {needsYou.length > 0 && (
+            <div>
+              <Subtitle icon={<ClipboardTextIcon size={ICON_SIZE.SM} />}>Manual steps</Subtitle>
+              {/* req 29 — each step carries its own "I've done this" toggle. */}
+              <ActionChecklist
+                items={stepItems}
+                selected={steps.selected}
+                onToggle={steps.toggle}
+                ariaLabel="Manual steps"
+                toggleHint="I've done this"
+              />
             </div>
           )}
 
-          <div className={`flex items-center gap-2 ${clearOfStale}`}>
-            <ChecklistSubmitButton
-              label="Submit"
-              disabled={nothingTicked}
-              onClick={handleSubmit}
-            />
-            <Button variant="ghost" size="md" onClick={handleAddComment}>
-              <ChatCircleDotsIcon size={ICON_SIZE.SM} />
-              Add comment…
-            </Button>
+          {/* req 26 — the offers are the transcript action card's, extended
+              rather than reduced: same rows, badge, buttons and notice. */}
+          {hasOffers && (
+            <div className={needsYou.length > 0 ? SECTION : ""}>
+              <Subtitle icon={<ListChecksIcon size={ICON_SIZE.SM} />}>Follow-ups</Subtitle>
+              <ActionChecklist
+                items={items}
+                selected={selected}
+                onToggle={toggle}
+                ariaLabel="Follow-ups"
+              />
+            </div>
+          )}
+
+          <div className="mt-2 flex flex-col gap-2">
+            {sendFailed && (
+              <div className="flex items-center gap-1.5 text-(--color-warning)" role="status">
+                <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
+                <span>Couldn&apos;t send — not connected. Your selection is kept; press Submit to retry.</span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <ChecklistSubmitButton
+                label="Submit"
+                disabled={nothingTicked}
+                onClick={handleSubmit}
+              />
+              <Button variant="ghost" size="md" onClick={handleAddComment}>
+                <ChatCircleDotsIcon size={ICON_SIZE.SM} />
+                Add comment…
+              </Button>
+            </div>
           </div>
-        </div>
+        </Capped>
       )}
 
-      {stale && (
-        <span className="absolute right-2.5 bottom-1.5 text-[11px] font-semibold text-(--color-accent)">
-          Stale
-        </span>
+      {/* req 33 — the turn the user has just read about goes last: it is the
+          one part of the stack they may already know. */}
+      {lastTurn && (
+        <Capped
+          icon={<ClockCounterClockwiseIcon size={ICON_SIZE.SM} />}
+          title="Last turn"
+          testId="session-status-last-turn"
+        >
+          <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
+            <MarkdownContent text={lastTurn} />
+          </div>
+        </Capped>
       )}
     </div>
   );

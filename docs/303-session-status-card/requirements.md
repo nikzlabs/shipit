@@ -81,9 +81,9 @@ taken inside one session, without building an agent that talks to many.
     nor confirmed it, whatever the reason, the card is visibly marked as
     possibly stale, in one visual language for every cause, so it is always
     clear to the user. Freshness is judged when a turn ends. No title text
-    is spent on it: a current card looks like a regular card; a stale card
-    carries a small "Stale" label in its bottom-right corner, in the
-    theme's accent color.
+    is spent on it: a current card carries no mark at all; a stale one
+    carries a small "Stale" label at the right-hand end of the Status cap
+    (req 33), which covers the whole stack and is read first.
 15. ShipIt nudges once per missing update. If the agent ignores the nudge,
     ShipIt does not nudge again for that turn; the card is marked stale
     (req 14) and the next ordinary turn is checked afresh.
@@ -134,16 +134,12 @@ taken inside one session, without building an agent that talks to many.
     sentence; the card renders it as markdown. "Needs you" is a list: one entry
     per thing only the user can do, carried as a repeated field in the API, and
     shown as a list when there is more than one.
-28. The card is laid out as sections, not as a labelled column: the status
-    opens the card with no label of its own — unless the card carries a
-    last-turn line (req 31), in which case that line opens the card under the
-    subtitle "Last turn" and the status follows under the subtitle "Status",
-    because two unlabelled blocks of prose in a row cannot be told apart — the
-    things only the user can do
-    follow under the subtitle "Manual steps", and the offered actions follow
-    under the subtitle "Follow-ups". A rule opens each of those two sections,
-    above its subtitle. A taken action says "sent" on the row, so its grey is
-    never a mystery.
+28. The card is laid out as named sections, not as a labelled column: the
+    status, the things only the user can do under the name "Manual steps", and
+    the offered actions under the name "Follow-ups". Since req 33 the three
+    top-level names are the caps of the three cards, and "Manual steps" and
+    "Follow-ups" are subtitles inside the middle one, with a rule between them.
+    A taken action says "sent" on the row, so its grey is never a mystery.
 29. Each manual step carries a toggle — "I've done this" — so the user can
     report by hand what they have done. What they ticked is sent to the agent
     together with the approved actions, in the same message; a step can be
@@ -160,12 +156,12 @@ taken inside one session, without building an agent that talks to many.
     again, and that return never moves what a user who has scrolled up is
     reading.
 
-31. The card opens with one or two sentences saying what the agent did in the
+31. The card carries one or two sentences saying what the agent did in the
     last turn, or the direct answer when the user asked something. It is a
-    field of its own, written by the agent, and a section of its own above the
-    status — never a convention inside the status text, which goes on
-    describing the session. When there is nothing worth saying about the turn,
-    the section is absent. It is shown only while the card is current: on a
+    field of its own, written by the agent, and a section of its own — since
+    req 33 the last of the three cards — never a convention inside the status
+    text, which goes on describing the session. When there is nothing worth
+    saying about the turn, the section is absent. It is shown only while the card is current: on a
     stale card the line is hidden, because a turn line that is one turn behind
     misleads more than a stale session status does. And it is never carried
     forward — every card write either rewrites the line or drops it, since a
@@ -179,12 +175,45 @@ taken inside one session, without building an agent that talks to many.
     status card also offers actions: the question is what holds the session
     up, and an offer can be taken at any later time.
 
+33. The card is found at a glance. It does not blend into the conversation
+    text, and it does not read as one more transcript card: it is three cards
+    in a stack, each with a coloured cap naming it — **Status** first,
+    **Next steps** in the middle, **Last turn** last — and each drawn in the
+    theme's accent colour, a filled cap with a tinted body. Nothing else in a
+    conversation is coloured that way, so the stack is the one coloured object
+    on the screen. "Next steps" holds the manual steps and the follow-ups
+    together, under the one Submit they share (req 29). This does not make the
+    session need attention (req 9): it makes the card easy to find once the
+    user is in the session.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
 
+- 2026-09-16 — Nik, on the shipped card: "so the card is very bleak, blends
+  with the conversation text. Let's iterate on the UI a bit." Three rounds were
+  drawn. Round 1 kept the card's shape and changed its surface (solid, an accent
+  spine, an elevated panel, a recessed tray): "in all cases the view is very
+  similar to other cards in the transcript. It needs to attract attention."
+  Round 2 went louder (accent-tinted surface, an accent header cap, a
+  full-bleed band, a larger card, and all three at once) — and was drawn under
+  a PR lifecycle card, which he corrected: "this card is at the top, very far
+  away from the status card, at least on desktop", so the round was redrawn
+  with the card's real neighbours, agent prose and the composer. He chose
+  **Tinted**, and added the shape: "let's separate the card into three:
+  'Last Turn' (should be shown last), 'status' (first), and 'steps/follow-ups'
+  middle. Each card would have a cap from the 'Capped' option." Round 3 drew
+  that with three sub-questions, each ruled: **filled caps with tinted bodies**
+  (over caps-only colour and a softer tinted cap); **one middle card** named
+  "Next steps" holding both lists under one Submit (over a card each); and the
+  "Stale" mark **in the cap of the status card, to the right**. → req 33; reqs
+  14, 28 and 31 amended. Req 14's "a current card looks like a regular card"
+  went with it: the whole stack is now unlike a regular card, so what carries
+  freshness is the presence of the mark, not the card's ordinary appearance.
+  Decided here and not by him: the cap names, and that the "Next steps" card is
+  absent when there is neither a manual step nor an offer.
 - 2026-09-16 — Nik, from a phone, with a screenshot: "if the agent asks a
   question, it should be the last card. As you can see, the voice note and the
   status card are below the question, making me scroll." The view pins to the
@@ -264,8 +293,8 @@ taken inside one session, without building an agent that talks to many.
 - 2026-09-15 — Nik, on the first drawn card: "mockup was inspiration, whereas
   the actual UI needs to be consistent with the current cards. In particular,
   every checkable item needs to have also description so the user can
-  understand what this item is about." The compact wrapping row of
-  `mockup.html` is therefore not the appearance; the offers use the rows of the
+  understand what this item is about." The compact wrapping row of the
+  prototype as it then stood is therefore not the appearance; the offers use the rows of the
   existing follow-up action card, and a description is part of every offer, not
   an optional extra. → req 26.
 - 2026-09-15 — Second review of this document by Nik. The card must scroll

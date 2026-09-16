@@ -325,67 +325,68 @@ the conversation (req 6); the question card, a transcript row, sits above
 it (req 8); and `useMessageScroll`'s observer on that element already keeps
 the view pinned to the bottom when the card appears or grows. It is not a
 transcript row: it reads `currentSession.sessionStatus` from the session
-store and renders nothing without one. `text-xs`, semantic tokens only, no
-header row; section subtitles rather than field labels:
+store and renders nothing without one. `text-xs`, semantic tokens only. It is
+**three capped cards in a stack** (req 33), not one card with rules in it:
 
 ```
-🕘 Last turn
-Wired the webhook route and its signature check; the suite is green.
-
-────────────────────────────────────────────────────────────
-⏱ Status
-Billing service. Markdown, so a list reads as a list:
-  - routes and tests done; PR #212 ready to merge
-  - webhook not started
-
-────────────────────────────────────────────────────────────
-✋ Manual steps
-☐ Add the Stripe test key in Settings → Secrets.      ("I've done this")
-☐ Review and merge PR #212.
-
-────────────────────────────────────────────────────────────
-☑ Follow-ups
-☑ Wire the Stripe webhook            RECOMMENDED
-  Adds /webhooks/stripe and its signature check.
-☐ Add retry on 5xx from Stripe
-  Three attempts, with backoff.
-☐ Add a README section on billing   SENT   (sent, greyed, tickable again)
-  What the service does and how to run it locally.
-[ Submit ]  Add comment…                                 Stale
+┏━ ⏱ Status ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Stale ━┓  ← accent-filled cap
+┃ Billing service. Markdown, so a list reads as a list:     ┃  ← accent-tinted body
+┃   - routes and tests done; PR #212 ready to merge         ┃
+┃   - webhook not started                                   ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━ 🪜 Next steps ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ✋ Manual steps                                            ┃
+┃ ☐ Add the Stripe test key in Settings → Secrets.          ┃  ("I've done this")
+┃ ────────────────────────────────────────────────────────  ┃
+┃ ☑ Follow-ups                                              ┃
+┃ ☑ Wire the Stripe webhook               RECOMMENDED       ┃
+┃   Adds /webhooks/stripe and its signature check.          ┃
+┃ ☐ Add a README section on billing       SENT              ┃  (greyed, tickable again)
+┃   What the service does and how to run it locally.        ┃
+┃ [ Submit ]  Add comment…                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━ 🕘 Last turn ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Wired the webhook route and its signature check; green.   ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-`mockup.html` drew the offers as one wrapping row. That was the prototype,
-not the product: the rows, the badge and the submit button are the existing
-follow-up action card's, so a checkable item reads the same wherever the user
-meets one, and every offer shows its description (req 26).
+`mockup.html` is the drawing, in four themes, fresh and stale. The rows, the
+badge and the submit button are the existing follow-up action card's, so a
+checkable item reads the same wherever the user meets one, and every offer
+shows its description (req 26).
 
-- **The last-turn line (req 31).** Rendered first, through `MarkdownContent` at
-  the card's own size, and only while `fresh`. It appears under the subtitle
-  **"Last turn"** (`ClockCounterClockwise`), and then the status takes a rule
-  and the subtitle **"Status"** (`Gauge`) — the labels arrive together or not at
-  all, because one block of prose needs no label and two in a row cannot be told
-  apart without one (req 28). With no line stored, or on a stale card, the card
-  is byte-for-byte the one that shipped.
-- **Sections, not a labelled column (req 28).** The status opens the card
-  unlabelled and renders through `MarkdownContent`, at the card's own text
-  size; what only the user can do follows under the subtitle **"Manual steps"**
-  (`needsYou` keeps its field name), omitted when the list is empty, one line
-  for a single entry and a bulleted list for several (req 27); the offers
-  follow under the subtitle **"Follow-ups"**. A rule opens each of those two
-  sections, above its subtitle. A manual step is a checklist row of its own,
-  whose toggle means "I've done this" (req 29): the same rows as the offers,
-  with that hint as the row's title and in each checkbox's accessible name. A subtitle is the transcript action card's
-  header row — an accent icon beside a 13px semibold primary label — because a
-  heading in text colour alone, tertiary or primary, blends into the markdown
-  above it. `ClipboardText` marks the manual steps, `ListChecks` the follow-ups:
-  two silhouettes that do not read as the same glyph twice. The card's surface
-  is translucent (`bg-(--color-bg-secondary)/50`, border `/60`), so the rules
-  and subtitles carry its structure rather than a filled panel.
-- **Freshness.** A current card is a regular card. A stale card carries the
-  word **"Stale"** (`text-[11px] font-semibold text-(--color-accent)`) in its
-  bottom-right corner; the last row keeps right padding so text never runs
-  under it. No tooltip: its wording would be wrong after a toggle or a
-  rewind, and the label is real text for assistive technology.
+- **Three cards, and why (req 33).** The card shipped as one translucent
+  surface and read as "one more transcript card" — the complaint that opened
+  this round was that it blends into the conversation text. Each card is now
+  `border-(--color-accent)` around an **accent-filled cap** (icon + 13px
+  semibold, `text-(--color-accent-text)`) over an **accent-tinted body**
+  (`bg-(--color-accent-subtle)`). Nothing else in a conversation is coloured in
+  the accent, so the stack is the one coloured object on the screen — which is
+  *findability*, not attention: req 9 is about the sidebar indicator and is
+  untouched. `Gauge` caps the status, `Steps` the middle, `ClockCounterClockwise`
+  the last turn.
+- **Order (req 33).** Status first — it is what the user opened the session to
+  read. Next steps in the middle. The last turn last, because it is the part
+  the user may already have read on screen above.
+- **The middle card (reqs 28, 29).** One card named **"Next steps"** holds both
+  lists under the one Submit they share: **"Manual steps"** (`ClipboardText`,
+  `needsYou` keeps its field name) and **"Follow-ups"** (`ListChecks`), as
+  subtitles inside it with a rule between them, each omitted when empty and the
+  whole card omitted when both are. A subtitle is an accent icon beside a 13px
+  semibold primary label. A manual step is a checklist row whose toggle means
+  "I've done this" (req 29): the same rows as the offers, with that hint as the
+  row's title and in each checkbox's accessible name.
+- **The unticked checkbox carries its own surface.** `ActionChecklist` draws an
+  empty box as `bg-(--color-bg-primary)` inside `border-(--color-border-secondary)`.
+  The old borderline-only box all but vanished on the tinted body — worst in
+  dark themes, where `--color-border-primary` is a hair off the tint. The change
+  is in the shared component, so the transcript action card gets it too.
+- **Freshness.** A current card carries no mark. A stale one carries the word
+  **"Stale"** (`text-[11px] font-semibold text-(--color-accent-text)/85`) at the
+  right-hand end of the **Status cap** — the stack has no single bottom-right
+  corner any more, and the first cap is read first (req 14). No tooltip: its
+  wording would be wrong after a toggle or a rewind, and the label is real text
+  for assistive technology.
 - **Actions.** The presentational checklist of `ActionChecklistCard` — items,
   selection, the Send button — is extracted into a shared piece; the
   existing transcript-row wrapper keeps its formatting, repeat-submission,

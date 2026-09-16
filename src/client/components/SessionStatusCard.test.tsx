@@ -27,29 +27,39 @@ function card(over: Partial<SessionStatus> = {}): SessionStatus {
 }
 
 describe("SessionStatusCard", () => {
-  it("leads with the status and puts the manual steps under their own subtitle", () => {
+  it("opens with the status and puts the manual steps under their own subtitle", () => {
     render(<SessionStatusCard status={card({ needsYou: ["Add the Stripe test key."] })} />);
-    // The status carries no label of its own; it is what the card opens with.
-    expect(screen.queryByText("Status")).not.toBeInTheDocument();
+    expect(screen.getByText("Status")).toBeInTheDocument();
     expect(screen.getByText(/routes and tests done/)).toBeInTheDocument();
     expect(screen.getByText("Manual steps")).toBeInTheDocument();
     expect(screen.getByText("Add the Stripe test key.")).toBeInTheDocument();
   });
 
-  it("opens with the last turn, above the status, and labels both (req 31)", () => {
-    render(<SessionStatusCard status={card({ lastTurn: "Wired the webhook route." })} />);
+  it("stacks status, next steps and last turn in that order (req 33)", () => {
+    render(
+      <SessionStatusCard
+        status={card({
+          lastTurn: "Wired the webhook route.",
+          needsYou: ["Add the Stripe test key."],
+          actions: [offer({ offerId: "o1" })],
+        })}
+      />,
+    );
 
-    expect(screen.getByText("Last turn")).toBeInTheDocument();
-    expect(screen.getByText("Wired the webhook route.")).toBeInTheDocument();
-    // Two blocks of prose in a row need labels; one does not (req 28).
-    expect(screen.getByText("Status")).toBeInTheDocument();
-
-    const card_ = screen.getByTestId("session-status-card");
-    const text = card_.textContent ?? "";
-    expect(text.indexOf("Wired the webhook route.")).toBeLessThan(text.indexOf("Billing service"));
+    const text = screen.getByTestId("session-status-card").textContent ?? "";
+    expect(text.indexOf("Billing service")).toBeLessThan(text.indexOf("Next steps"));
+    expect(text.indexOf("Next steps")).toBeLessThan(text.indexOf("Wired the webhook route."));
   });
 
-  it("hides the last-turn line on a stale card, where it would be a turn behind (req 31)", () => {
+  it("gives each of the three a cap of its own (req 33)", () => {
+    render(<SessionStatusCard status={card({ lastTurn: "Wired the webhook route." })} />);
+    for (const cap of ["Status", "Last turn"]) {
+      // A cap is accent-filled with inverse text; a subtitle inside a card is not.
+      expect(screen.getByText(cap).parentElement?.className).toContain("bg-(--color-accent)");
+    }
+  });
+
+  it("hides the last-turn card on a stale card, where it would be a turn behind (req 31)", () => {
     render(
       <SessionStatusCard status={card({ lastTurn: "Wired the webhook route.", fresh: false })} />,
     );
@@ -59,13 +69,36 @@ describe("SessionStatusCard", () => {
     // The status still describes the session, so it stays — with the Stale mark.
     expect(screen.getByText(/routes and tests done/)).toBeInTheDocument();
     expect(screen.getByText("Stale")).toBeInTheDocument();
-    // And with no last-turn line on screen, the status needs no label of its own.
-    expect(screen.queryByText("Status")).not.toBeInTheDocument();
+  });
+
+  it("carries the Stale mark in the status cap, where it covers the whole stack (req 14)", () => {
+    render(
+      <SessionStatusCard status={card({ fresh: false, actions: [offer({ offerId: "o1" })] })} />,
+    );
+    const mark = screen.getByText("Stale");
+    expect(mark.parentElement).toBe(screen.getByText("Status").parentElement);
+    expect(mark.className).toContain("--color-accent-text");
   });
 
   it("puts the offers under a Follow-ups subtitle", () => {
     render(<SessionStatusCard status={card({ actions: [offer({ offerId: "o1" })] })} />);
     expect(screen.getByText("Follow-ups")).toBeInTheDocument();
+  });
+
+  it("puts the steps and the offers in one Next steps card, under one Submit (req 33)", () => {
+    render(
+      <SessionStatusCard
+        status={card({ needsYou: ["Add the key."], actions: [offer({ offerId: "o1" })] })}
+      />,
+    );
+    expect(screen.getAllByText("Next steps")).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^submit$/i })).toHaveLength(1);
+  });
+
+  it("omits the Next steps card when there is nothing to do", () => {
+    render(<SessionStatusCard status={card()} />);
+    expect(screen.queryByText("Next steps")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /submit/i })).not.toBeInTheDocument();
   });
 
   it("draws both subtitles in the primary text colour, not as grey metadata", () => {
@@ -149,7 +182,7 @@ describe("SessionStatusCard", () => {
     expect(screen.queryByText("Stale")).not.toBeInTheDocument();
 
     rerender(<SessionStatusCard status={card({ fresh: false })} />);
-    expect(screen.getByText("Stale").className).toContain("--color-accent");
+    expect(screen.getByText("Stale")).toBeInTheDocument();
   });
 
   it("renders a taken offer greyed and unticked, and still selectable", () => {
