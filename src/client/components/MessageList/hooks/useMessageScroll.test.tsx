@@ -553,3 +553,64 @@ describe("useMessageScroll — search jump settles (planning#491)", () => {
     expect(calls.length).toBe(afterJump);
   });
 });
+
+// docs/303-session-status-card req 30 — the card returning to the end changes no
+// height, so nothing re-pins the view; whether the reader's row has to be kept
+// still is decided here.
+describe("useMessageScroll — the status card's move", () => {
+  interface Guards { preserve: () => boolean; restore: () => boolean }
+
+  function CardHarness({ messages, report }: { messages: ChatMessage[]; report: (g: Guards) => void }) {
+    const { containerRef, contentRef, canPreserveAcrossCardMove, canRestoreReadingAnchor } =
+      useMessageScroll(messages, false, undefined);
+    report({ preserve: canPreserveAcrossCardMove, restore: canRestoreReadingAnchor });
+    return (
+      <div ref={containerRef} data-testid="scroller">
+        <div ref={contentRef} data-testid="content" />
+      </div>
+    );
+  }
+
+  function setup(scrollTop: number): Guards {
+    let guards: Guards = { preserve: () => false, restore: () => false };
+    const report = (g: Guards) => { guards = g; };
+    const view = render(<CardHarness messages={[]} report={report} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => 10000 });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", { configurable: true, get: () => scrollTop, set: () => {} });
+    // A dispatched turn — a status-card nudge — appends a user row the reader
+    // never sent, and the layout effect arms auto-follow off the back of it.
+    act(() => { view.rerender(<CardHarness messages={[user("[ShipIt] \u2026")]} report={report} />); });
+    return guards;
+  }
+
+  it("asks the container, not the auto-follow flag a dispatched turn's user row sets", () => {
+    const { preserve, restore } = setup(2000);
+    expect(preserve()).toBe(true);
+    expect(restore()).toBe(false);
+  });
+
+  it("leaves a reader at the bottom alone, since the move changes no height", () => {
+    expect(setup(9500).preserve()).toBe(false);
+  });
+
+  it("still keeps the row still while the reader has text selected under the card", () => {
+    const { preserve } = setup(2000);
+    const container = document.querySelector('[data-testid="scroller"]')!;
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      anchorNode: container.firstChild,
+    } as unknown as Selection);
+    expect(preserve()).toBe(true);
+  });
+
+  it("stands down while the reader has hold of the scroll", () => {
+    const { preserve } = setup(2000);
+    act(() => {
+      document.querySelector('[data-testid="scroller"]')!
+        .dispatchEvent(new Event("touchmove", { bubbles: true }));
+    });
+    expect(preserve()).toBe(false);
+  });
+});

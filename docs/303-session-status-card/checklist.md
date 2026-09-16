@@ -17,4 +17,6 @@ docs-only PR and their review history is on planning#550.
 - [x] `SessionStatusCard` as the last child of the message list's content element, scrolling with the conversation: two fields, offers with one Submit, taken offers greyed, tagged SENT and still tickable, "Stale" label bottom-right.
 - [x] Prompt: two variants at module load; the flag-on section, in the injected system prompt, replaces the follow-up-actions section, keeps its §5 boundary and says to call the tool bare when nothing changed; composition tests per variant.
 - [x] Tests listed in plan.md, including the flag-off byte-for-byte checks per harness.
+- [x] Req 30: the card keeps its turn-start place while a turn runs and returns to the end when it stops — frozen anchor, one keyed list so the move is not a remount, a group keyed by the chunk it belongs to, and the reading anchor restored under the card's own scroll guard.
+- [x] Verify req 30 by hand in the dogfood instance on a narrow viewport: a seeded card, a real turn, the card scrolling away and coming back.
 - [x] Verify in the dogfood instance: flag on — switch away and back, reload, a turn that skips the tool, a resident agent across a toggle; flag off — an action card as today.
