@@ -835,6 +835,20 @@ describe("SessionManager", () => {
       expect(mgr.listAll().map((s) => s.id).sort()).toEqual(["active", "hidden"]);
       expect(mgr.list().map((s) => s.id)).toEqual(["active"]);
     });
+
+    // The boot sweep passes this set: an archived session in it is a container spared and
+    // re-adopted at every deploy, since nothing else ever reclaims one.
+    it("unarchivedIds() drops archived sessions that allIds() still reports", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("active", "Active");
+      mgr.track("hidden", "Hidden");
+      mgr.archive("hidden");
+
+      expect(mgr.allIds().sort()).toEqual(["active", "hidden"]);
+      expect(mgr.unarchivedIds()).toEqual(["active"]);
+      mgr.unarchive("hidden");
+      expect(mgr.unarchivedIds().sort()).toEqual(["active", "hidden"]);
+    });
   });
 
   describe("docs/161: terminal PR resolution predicate", () => {

@@ -318,6 +318,10 @@ export async function cleanupOrphanContainers(
         } catch {
           // Container may already be gone
         }
+        // Reap what the container held open, as `destroyContainer` does: a per-session
+        // network created before the stack label existed is invisible to the stack-scoped
+        // janitor, so the container leak would keep a network leak alive behind it.
+        await cleanupSessionDockerResources(deps.docker, sessionId);
       }
     }
   } catch {

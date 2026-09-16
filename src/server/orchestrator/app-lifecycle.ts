@@ -181,7 +181,10 @@ export async function setupContainerManager(
           console.log(`[server] Worker image runs Node ${nodeVersion}`);
         }
       }
-      const activeIds = new Set(sessionManager.allIds());
+      // Not allIds(): an archived session's container was destroyed at archive time, so a
+      // survivor is a leak. Including it here both spared it the orphan sweep and re-adopted
+      // it, which made a container that nothing else reclaims outlive every deploy.
+      const activeIds = new Set(sessionManager.unarchivedIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
       const composeOrphans = await cleanupOrphanComposeResources(

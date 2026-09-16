@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   adoptRunningContainer,
   cleanupOrphanComposeResources,
+  cleanupOrphanContainers,
   isTrackedContainerRunning,
   rediscoverContainers,
   reapStandbyContainers,
@@ -62,13 +63,30 @@ function labelsOf(s: FakeContainerSpec): Record<string, string> {
   };
 }
 
-function makeFakeDocker(specs: FakeContainerSpec[]) {
+interface FakeNetworkSpec {
+  id: string;
+  labels: Record<string, string>;
+}
+
+function makeFakeDocker(specs: FakeContainerSpec[], networks: FakeNetworkSpec[] = []) {
   return {
     listContainers: async ({ filters }: { filters?: { label?: string[] } } = {}) => {
       return specs
         .filter((s) => matchesLabelFilters(labelsOf(s), filters?.label))
         .map((s) => ({ Id: s.id, State: s.state, Labels: labelsOf(s) }));
     },
+
+    listNetworks: async ({ filters }: { filters?: { label?: string[] } } = {}) =>
+      networks.filter((n) => matchesLabelFilters(n.labels, filters?.label)).map((n) => ({ Id: n.id })),
+
+    getNetwork: (id: string) => ({
+      remove: async () => {
+        const at = networks.findIndex((n) => n.id === id);
+        if (at >= 0) networks.splice(at, 1);
+      },
+    }),
+
+    listVolumes: async () => ({ Volumes: [] }),
     getContainer: (id: string) => ({
       update: async (opts: Record<string, unknown>) => {
         const spec = specs.find((s) => s.id === id);
@@ -106,7 +124,11 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
   } as unknown as DiscoveryDeps["docker"];
 }
 
-function makeDeps(specs: FakeContainerSpec[], labelFilters: string[] = []): {
+function makeDeps(
+  specs: FakeContainerSpec[],
+  labelFilters: string[] = [],
+  networks: FakeNetworkSpec[] = [],
+): {
   deps: DiscoveryDeps;
   containers: Map<string, SessionContainer>;
   standby: Set<string>;
@@ -117,7 +139,7 @@ function makeDeps(specs: FakeContainerSpec[], labelFilters: string[] = []): {
     containers,
     standby,
     deps: {
-      docker: makeFakeDocker(specs),
+      docker: makeFakeDocker(specs, networks),
       containers,
       standbySessionIds: standby,
       networkName: NETWORK,
@@ -453,6 +475,66 @@ describe("rediscoverContainers", () => {
       { depDir: "dist", volumeName: dist },
       { depDir: "node_modules", volumeName: nm },
     ]);
+  });
+});
+
+describe("cleanupOrphanContainers", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it("reaps the container of a session the active set leaves out, and spares the rest", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c-live", sessionId: "sess-live", state: "running", ip: "172.18.0.4" },
+      { id: "c-archived", sessionId: "sess-archived", state: "running", ip: "172.18.0.5" },
+    ];
+    const { deps } = makeDeps(specs);
+
+    expect(await cleanupOrphanContainers(deps, new Set(["sess-live"]))).toBe(1);
+    expect(specs.map((s) => s.id)).toEqual(["c-live"]);
+  });
+
+  it("spares ShipIt's own container, which the session store holds no row for", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c-cleanup", sessionId: CLEANUP_CONTAINER_SESSION_ID, state: "running", ip: "172.18.0.4" },
+    ];
+    const { deps } = makeDeps(specs);
+
+    expect(await cleanupOrphanContainers(deps, new Set())).toBe(0);
+    expect(specs.map((s) => s.id)).toEqual(["c-cleanup"]);
+  });
+
+  // The two leaks compound: a network created before the stack label existed is invisible to
+  // the stack-scoped janitor, so a stranded container pins it open for the life of the host.
+  it("removes the per-session network the reaped container held open, stack label or not", async () => {
+    const networks: FakeNetworkSpec[] = [
+      { id: "net-legacy", labels: { "shipit-parent-session": "sess-archived" } },
+      { id: "net-other", labels: { "shipit-parent-session": "sess-live" } },
+    ];
+    const { deps } = makeDeps(
+      [{ id: "c-archived", sessionId: "sess-archived", state: "running", ip: "172.18.0.5", stack: "shipit-a" }],
+      stackFilters("shipit-a"),
+      networks,
+    );
+
+    expect(await cleanupOrphanContainers(deps, new Set(["sess-live"]))).toBe(1);
+    expect(networks.map((n) => n.id)).toEqual(["net-other"]);
+  });
+
+  it("resolves rather than throwing when Docker is unavailable", async () => {
+    const { deps } = makeDeps([]);
+    const broken = {
+      ...deps,
+      docker: {
+        listContainers: async () => { throw new Error("daemon down"); },
+      } as unknown as DiscoveryDeps["docker"],
+    };
+    expect(await cleanupOrphanContainers(broken, new Set())).toBe(0);
   });
 });
 

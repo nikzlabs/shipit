@@ -330,6 +330,15 @@ export class SessionManager {
     return rows.map((r) => r.id);
   }
 
+  // The sessions that may legitimately own Docker resources: archiving destroys the
+  // container, so one still running for an archived session is a leak to reclaim.
+  unarchivedIds(): string[] {
+    const rows = this.db
+      .prepare("SELECT id FROM sessions WHERE user_archived = 0")
+      .all() as { id: string }[];
+    return rows.map((r) => r.id);
+  }
+
   findUngraduatedWarm(repoUrl: string, excludeId?: string): SessionInfo | undefined {
     const row = this.db.prepare(
       "SELECT * FROM sessions WHERE warm = 1 AND remote_url = ? AND id != ?",
