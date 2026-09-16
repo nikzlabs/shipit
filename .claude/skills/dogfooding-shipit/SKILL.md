@@ -90,7 +90,7 @@ Already-present means *left completely alone*: a credential or role you edited i
 
 ### The sample transcript — a conversation to look at, without talking to an agent
 
-Any change to how a conversation renders needs a conversation with the awkward shapes in it. This one is a committed list of turns, each labelled with the shape it covers: a turn that ends in an agent reply, a turn with **no agent response text at all**, a failed tool call inside a turn that still answers, an error row, a notice, a card that still needs the user, the same card after the user acted, a reply that is a file rather than prose, a long reply, and an ordinary newest turn as the control.
+Any change to how a conversation renders needs a conversation with the awkward shapes in it. This one is a committed list of turns, each labelled with the shape it covers: a turn that ends in an agent reply, a turn with **no agent response text at all**, a failed tool call inside a turn that still answers, an error row, a notice, a card that still needs the user, the same card after the user acted, a turn that has both hidden work and an action card, a reply that is a file rather than prose, a long reply, and an ordinary newest turn as the control.
 
 ```bash
 npx tsx scripts/seed-inner-transcript.ts --list     # what each turn covers
