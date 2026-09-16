@@ -23,5 +23,3 @@ export interface SelectionSnapshot {
   range: Range;
   blockIndex: number;
 }
-
-// cache probe

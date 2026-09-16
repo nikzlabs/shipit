@@ -85,8 +85,17 @@ jobs:
             echo 'See docs/141-cli-version-strategy/plan.md, Axis 2.'
             exit "$status"
           }
+      # Must restore after `npm ci`, which deletes node_modules. The node_modules cache above
+      # saves only on a miss, so its copy of this would freeze at the last lockfile change; a
+      # per-commit key with a prefix fallback re-saves every run instead.
+      - uses: actions/cache@v5
+        with:
+          path: node_modules/.cache/eslint
+          key: eslint-ubuntu24-${{ github.sha }}
+          restore-keys: eslint-ubuntu24-
       # The runner has far more RAM than a session container, so the full lint gets the heap it
-      # needs; 3072 GC-thrashed for 140 s and then exhausted the heap. See docs in CLAUDE.md.
+      # needs; 3072 GC-thrashed for 140 s and then exhausted the heap. Still sized for a cold
+      # run — the cache above misses on a new key or after eviction. See docs in CLAUDE.md.
       - run: npm run lint
         env:
           LINT_HEAP_MB: 6144

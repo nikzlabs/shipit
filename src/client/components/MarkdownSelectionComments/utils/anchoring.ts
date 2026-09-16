@@ -58,5 +58,3 @@ export function offsetWithin(root: Node, node: Node, offsetInNode: number): numb
   }
   return -1;
 }
-
-// cache probe
