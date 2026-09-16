@@ -317,6 +317,21 @@ construction. The **stored-shape** maps — `MCP_SERVER_FIELD_SETTINGS` keyed by
 unaffected and stay: they catch a stored field nobody declared, which is the
 opposite direction, and they are compile errors rather than tests.
 
+**P16 — One collection's items are fixed, and it is still a component.**
+`keyboard.keybindings` is the only collection whose items the user does not
+create: they are 13 command definitions in `src/client/keybindings/registry.ts`,
+four of them not editable, and the stored value is a sparse override map over
+their defaults. Its declaration says so already —
+`collection({ operations: ["set", "reset"] })`. It is the closest thing in the
+dialog to a list the renderer could generate, and it does not, for four reasons:
+each row's label, group and default live in that second registry rather than in
+the catalogue; the control is a key-chord capture, not a value kind; validation
+differs per row (some commands require a second modifier); and conflict detection
+compares every editable binding against every other, which a row rendered alone
+cannot do. What changes is the write — `setKeybinding` and `resetKeybinding` name
+`shipit-keybindings` themselves today and will resolve it from the declaration
+(req 3).
+
 ## What we take from VS Code, and what we leave
 
 Read from `code.visualstudio.com/api/references/contribution-points` and

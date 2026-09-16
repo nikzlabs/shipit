@@ -106,7 +106,9 @@ A registry maps the name to a React component, which receives the declaration an
 the current value. Custom is presentation; the declaration and the destination
 are the same ones every row uses (req 3).
 
-Nine panels own the 34 addressed fields between them (P11). Four small components
+Nine panels own the 34 addressed fields between them (P11) — one of which,
+`keyboard.keybindings`, has a fixed item set rather than a user-created one and
+is still a component, for the four reasons P16 gives. Four small components
 cover six declarations: the memory budget (P4), the webhook pair (P9), the TTS
 choices (P7), and the repository colour picker. Two addressed declarations render
 normally because Project Settings is already open for exactly one repository —
