@@ -85,7 +85,11 @@ jobs:
             echo 'See docs/141-cli-version-strategy/plan.md, Axis 2.'
             exit "$status"
           }
+      # The runner has far more RAM than a session container, so the full lint gets the heap it
+      # needs; 3072 GC-thrashed for 140 s and then exhausted the heap. See docs in CLAUDE.md.
       - run: npm run lint
+        env:
+          LINT_HEAP_MB: 6144
       - run: npm run typecheck
       - run: npm run check-deps
       - run: npm run check-audit
