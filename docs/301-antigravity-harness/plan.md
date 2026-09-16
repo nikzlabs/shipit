@@ -422,17 +422,34 @@ one non-npm branch, gated on `contains antigravity $selected`:
   running the next account's flow, so unguarded output lands on that account's
   panel and its expired link is replayed as that account's challenge. A third
   property followed once the shape was copied into the Codex and Grok managers:
-  **the submitted code is redacted on both sides of the sanitizer, with a marker
-  carrying no whitespace.** Before, so a sanitizer rule that rewrites part of the
-  code cannot leave a fragment; after, because a terminal escape inside the echo
-  defeats an exact match until the sanitizer has stripped it; and without a space
-  because a URL match ends at the first one, so a spaced marker substituted
-  inside a link truncates the redaction and publishes the parameters after it.
-  Chunks are assembled raw for the same reason lines are relayed whole — an
-  escape split at `\x1b[9`/`0m…` is unrecognisable in either half, so a
-  chunk-at-a-time strip leaves it glued to the text. The Claude manager, which
-  had no code redaction at all, now shares the rule: a code under 32 characters
-  was reaching its panel verbatim.
+  **the two redactions compose in one order only — strip terminal escapes, take
+  out the known code, then run the generic rules — and the marker that replaces
+  the code carries no whitespace.** A pty colours its echo, so an escape inside
+  the code defeats an exact match until it is stripped; and a generic rule run
+  first rewrites the long middle of a code, after which no exact match can
+  recognise what is left and the tail is published as ordinary text. The marker
+  has no space because a URL match ends at the first one, so a spaced marker
+  substituted inside a link truncates the redaction and publishes every
+  parameter after it. The Claude manager, which had no code redaction at all,
+  now shares both rules — a code under 32 characters was reaching its panel
+  verbatim, and its chunk-at-a-time relay published a split link's query string,
+  a split token's tail and a split code's halves. Holding back only what could
+  still become the *code* was tried first and rejected: the code is one of
+  several whole-string rules, so the relay has to assemble the whole line, and
+  Claude now does, with a cap for a CLI that emits no newline and a flush of the
+  trailing fragment when the process exits. Its panel logging also goes through
+  the redaction — a credential kept off the screen and written to the
+  orchestrator's log is still a credential in a log — and its data callback
+  checks the flow generation, which `kill()` now advances so a *cancelled* run
+  is covered and not only a superseded one. Two rules follow from the same
+  reasoning and are easy to get backwards: a fragment that is **not** a whole
+  line is withheld rather than published — at the length cap and on a kill —
+  because publishing it puts the boundary straight back, and **every** code
+  submitted during an attempt stays redacted, because a second submission would
+  otherwise strip the first one's protection off output still in the buffer.
+  What this shape does **not** solve is a secret the CLI itself wrapped across
+  physical lines: planning#586 carries that, with the refusal-text and
+  quoted-JSON gaps it shares a cause with.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it

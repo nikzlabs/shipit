@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { stripAnsi } from "../../../shared/strip-ansi.js";
 import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -230,7 +231,7 @@ export class AntigravityAuthManager
   private activeFlowAccountId: string | null = null;
   private activeAttemptId: string | null = null;
   private activeAttemptStartedAt = 0;
-  private submittedCode: string | null = null;
+  private submittedCodes: string[] = [];
   private terminalEmitted = false;
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
@@ -289,15 +290,12 @@ export class AntigravityAuthManager
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    // The submitted code is taken out on BOTH sides of the sanitizer. Before,
-    // because a sanitizer rule that rewrites part of the code would otherwise
-    // leave a fragment no later pass can match. After, because a terminal
-    // escape sequence inside the echoed code defeats the exact match until the
-    // sanitizer has stripped it — and what the sanitizer returns is what the
-    // panel shows.
-    const sanitized = this.withoutSubmittedCode(
-      sanitizeAuthDiagnostic(this.withoutSubmittedCode(message)),
-    );
+    // **Escapes first, then the known code, then the generic rules.** A pty
+    // colours its echo, so an escape inside the code defeats an exact match
+    // until it is stripped; and once a generic rule has rewritten part of the
+    // code, no later exact match can recognise the rest — the two together
+    // published a code's tail as ordinary text.
+    const sanitized = sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(message)));
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -323,7 +321,7 @@ export class AntigravityAuthManager
     this.outputBuffer = "";
     this.lastPendingDetails = null;
     this.terminalEmitted = false;
-    this.submittedCode = null;
+    this.submittedCodes = [];
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
     this.activeAttemptId = randomUUID();
@@ -385,11 +383,8 @@ export class AntigravityAuthManager
       // account's scope, or replays an expired link as that account's challenge.
       if (this.proc !== proc) return;
       this.stderrBuffer += chunk;
-      // Chunks are assembled RAW. Stripping a chunk at a time is the same
-      // mistake as redacting one: an escape sequence split at `\x1b[9` / `0m…`
-      // is unrecognisable in either half, so the strip leaves it glued to the
-      // text it was meant to leave alone. The sanitizer strips the assembled
-      // line, once.
+      // Chunks are assembled raw: escapes are stripped once, on the whole line,
+      // where the redaction that depends on them happens.
       const lines = (lineBuffer + chunk).split(/\r?\n/);
       lineBuffer = lines.pop() ?? "";
       for (const line of lines) relay(line);
@@ -482,15 +477,18 @@ export class AntigravityAuthManager
    * A pty echoes what is written to it, so the authorization code comes back on
    * the CLI's own output — which is relayed to the panel. The sanitizer's
    * long-secret rule would probably catch it; "probably" is not good enough for
-   * a credential, so the exact string we submitted is taken out as well.
+   * a credential, so the exact string we submitted is taken out first.
    *
    * **The marker carries no whitespace.** A URL match ends at the first space,
    * so a spaced marker substituted inside a link truncates what the sanitizer
    * then sees and publishes every parameter after it.
    */
   private withoutSubmittedCode(text: string): string {
-    const code = this.submittedCode;
-    return code && text.includes(code) ? text.split(code).join("[code-redacted]") : text;
+    let out = text;
+    for (const code of this.submittedCodes) {
+      if (out.includes(code)) out = out.split(code).join("[code-redacted]");
+    }
+    return out;
   }
 
   /** `hadPending` is passed in: the exit handler clears the field before it asks. */
@@ -516,8 +514,12 @@ export class AntigravityAuthManager
     try {
       // What a terminal sends when the user presses Enter; the line discipline
       // maps it to a newline, so the CLI reads one submitted line.
-      this.submittedCode = code.trim();
-      this.proc.write(`${this.submittedCode}\r`);
+      // Every code submitted in this attempt, not just the latest: a second
+      // submission would otherwise strip the first one's protection off output
+      // still sitting in the line buffer.
+      const submitted = code.trim();
+      this.submittedCodes.push(submitted);
+      this.proc.write(`${submitted}\r`);
       // Never the code itself: it is a credential, and the panel is copyable.
       this.emitDiagnosticLog("info", "shipit", "Authorization code delivered to the CLI.");
       this.emitProgress("checking_credentials", "Code submitted — completing sign-in…");
