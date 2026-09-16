@@ -68,6 +68,8 @@
       counts in its tooltip, so the control costs no height (req 8, req 14).
 - [x] Put it on the strip that CLOSES the turn rather than the one that opens
       it, and retire the hoisting that the earlier arrangement needed (req 14).
+- [x] Give it a 44px touch target on coarse pointers, as a pseudo-element that
+      adds no layout, and verify the geometry and a tap in a browser (req 8).
 - [x] Add a fixture turn whose hidden rows include a card, so the third count
       can be seen in the dogfood instance.
 

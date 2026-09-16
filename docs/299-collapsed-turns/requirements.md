@@ -46,7 +46,8 @@ need their own messages and the significant events.
    apart from the content of the turn. It is a single caret in the accent
    colour, and it costs the turn no vertical space of its own. What the fold is
    holding — how many tool calls, how many messages, how many cards — is named
-   where it needs no room: in the control's tooltip.
+   where it needs no room: in the control's tooltip. On a touch screen it can be
+   hit with a finger, and being hittable must not make it take more room.
 9. The feature stays off by default. The user turns it on in Settings.
 10. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 4.
     In-app search keeps its current behavior here: it matches message text,
@@ -69,6 +70,12 @@ need their own messages and the significant events.
 None.
 
 ## Resolved questions
+
+2026-09-16 — Requirement 8 gained the touch clause, from *"it needs to have
+mobile-friendly touch area"*. The two halves are both requirements and they pull
+against each other — a finger needs about 44px, and the whole point of this form
+is that it takes none. `plan.md` resolves it with a hit area that is not part of
+the layout.
 
 2026-09-16 — Requirement 14 named which strip, from *"it is not on the left of
 the rewind strip, it is higher. I meant the strip below the turn, not above"*.

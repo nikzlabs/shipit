@@ -353,6 +353,18 @@ describe("collapsed turns", () => {
       .toHaveAttribute("title", "Show full turn — 2 tool calls · 2 messages · 1 card");
   });
 
+  it("gives the control a finger-sized touch target on a coarse pointer (req 8)", () => {
+    compactOn();
+    render(<MessageList messages={transcript()} isLoading={false} />);
+    // jsdom has no layout, so the classes are the contract here; the geometry
+    // (44x44 over an 8px row, and a tap below the caret toggling the turn) was
+    // verified in a coarse-pointer browser.
+    const cls = screen.getByRole("button", { name: /Show full turn/ }).className;
+    expect(cls).toContain("relative");
+    expect(cls).toContain("pointer-coarse:before:h-11");
+    expect(cls).toContain("pointer-coarse:before:w-11");
+  });
+
   it("puts the control on the strip that closes the turn, below the reply (req 14)", () => {
     compactOn();
     const { container } = render(<MessageList messages={transcript()} isLoading={false} onRewindAtGap={vi.fn()} />);

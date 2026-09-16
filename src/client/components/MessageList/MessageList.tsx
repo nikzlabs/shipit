@@ -380,8 +380,14 @@ export function MessageList({
               label on this row would put the height back. */}
           {closes ? (
             <div className="flex items-center gap-1 h-2">
+              {/* The touch target is a pseudo-element, so a 44px tap area costs
+                  no layout: it reaches down the left gutter beside the next
+                  user bubble, which is right-aligned, and the bubble is
+                  positioned and later in the DOM, so it wins where they meet. */}
               <Button variant="ghost" size="icon"
-                className="-my-1 p-0 rounded-sm text-(--color-accent) hover:text-(--color-accent-hover)"
+                className="relative -my-1 px-1 py-0 rounded-sm text-(--color-accent) hover:text-(--color-accent-hover)
+                  pointer-coarse:before:absolute pointer-coarse:before:content-[''] pointer-coarse:before:-top-2
+                  pointer-coarse:before:-left-2 pointer-coarse:before:h-11 pointer-coarse:before:w-11"
                 aria-expanded={closes.open}
                 aria-controls={closes.controls}
                 aria-label={`${closes.open ? "Show compact turn" : "Show full turn"}: ${closes.run.identity.text.slice(0, 80) || "Agent response"}`}

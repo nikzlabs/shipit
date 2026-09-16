@@ -280,6 +280,17 @@ at that size. It keeps `aria-expanded`, `aria-controls` and the accessible name
 ("Show full turn: <the user's message>"). No failure status beside it —
 requirement 11 already keeps the error row on screen.
 
+**The touch target is a pseudo-element, so it is not part of the layout.** Under
+`pointer-coarse:` the caret's `::before` is 44×44 offset `-8px, -8px`, measured
+in an emulated phone: the button box stays 20×12 and the row stays 8px, and a
+tap 18px *below* the caret — outside the button, inside that area — toggles the
+turn. Growing the button itself, or the row, would give the height straight
+back. The area reaches down the left gutter, which is free precisely because the
+row below is the next user's message and user bubbles are right-aligned; where a
+long bubble does reach that far, the bubble wins the tap, since it is positioned
+and later in the DOM. jsdom has no layout, so the component test asserts the
+classes and the geometry is verified in a browser.
+
 **The tooltip counts what the fold holds**: `"Show full turn — 3 tool calls ·
 1 message · 2 cards"`, each part dropped when it is zero. `countHidden` tallies
 it in the same pass that decides what is hidden (`useCompactConversation`),
