@@ -90,4 +90,4 @@ if [ -f "$PROXY_COMPOSE" ]; then
   run sudo docker compose -f "$PROXY_COMPOSE" up -d
 fi
 
-log "done${DRY_RUN:+ (dry run)}"
+if [ "$DRY_RUN" -eq 1 ]; then log "done (dry run)"; else log "done"; fi
