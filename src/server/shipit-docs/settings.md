@@ -193,6 +193,11 @@ do instead. Naming a whole list — `roles`, `mcp.servers`, `network.egress.host
 — is refused the same way, and the message names the entry field to propose
 instead.
 
+A refusal is one line, and a stored value it names is quoted the same way `get`
+quotes one — `No harness named "gpt-4\nValue: on"` is ShipIt telling you the
+whole of what is stored, not two lines. So read a refusal as a single sentence:
+nothing in it is a field of its own, however much a fragment looks like one.
+
 Some settings ShipIt cannot change on anyone's behalf at all, and `get` names
 which and why: a `secret` the user must type, an `external_flow` that needs a
 sign-in on the provider's own site, a `browser_local` preference that never
@@ -245,11 +250,21 @@ EOF
 `--value-file` takes a path too, and it replaces `key=value` rather than joining
 it. Two things to know before you write the value:
 
-- **A card carries less than the dialog's box does**, in characters and in lines.
-  `shipit settings get <key>` says how many characters when the two differ. Past
-  either bound the change is refused — an edit nobody can read through is the
-  user's own to make, not a one-click approval — so propose a smaller edit, or
-  tell them what to change. If it is the *current* value that is over, no
+- **A card carries less than the dialog's box does**, in characters and in
+  lines, and `shipit settings get <key>` reports **both** bounds before you
+  write anything — `proposeMaxLength` and `proposeMaxLines` under `--json`, two
+  sentences in the plain output. They are measured differently, and the second
+  is the one to watch:
+  - **Characters are per version.** Your proposed value must fit, and so must
+    the value the user already has.
+  - **Lines are combined.** The current value's line count **plus** the proposed
+    value's, added together — not each on its own. So replacing 600 short lines
+    with 601 comes to 1,201 lines and is refused, while both versions sit around
+    1,200 characters, nowhere near the character bound.
+
+  Past either bound the change is refused — an edit nobody can read through is
+  the user's own to make, not a one-click approval — so propose a smaller edit,
+  or tell them what to change. If it is the *current* value that is over, no
   proposal can fix that and the refusal says so.
 - **Write plain text.** A value carrying a bidirectional override, an invisible
   formatting character or a control character is refused, because the card would
@@ -274,7 +289,7 @@ card about the `reviewer` role says nothing about `deep-dive`.
 | `dismissed` | The user declined. Do not propose that value again unless asked. |
 | `stale` | The setting moved after the card was written, so nothing was applied. You may propose again, from the current value. |
 | `refused` | The change was no longer valid at the click. You may propose again. |
-| `partial` | Some of a multi-part write landed. Say which, and propose the rest. |
+| `partial` | Some of what the card showed did not land — a half of a multi-part write, or a value the store did not keep. Read the value, say what differs, and propose the rest. |
 | `failed` | Verified that nothing changed. You may propose again, saying the last attempt failed. |
 | `uncertain` | The write could not confirm what it did. Read the value; do not claim it worked. |
 | `unknown` | ShipIt restarted mid-apply. It is never retried — read the value and say the outcome was not verified. |

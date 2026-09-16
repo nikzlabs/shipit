@@ -59,6 +59,21 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, planning#130)", () => 
     });
   });
 
+  it("offers session_status instead of propose_actions while the card setting is on (docs/303 req 21)", () => {
+    const result = adapter.writeMcpConfig({
+      servers: [],
+      shipitBridge,
+      sessionStatusCard: true,
+      onServerFailed,
+    });
+    writtenPaths.push(result.mcpConfigPath!);
+    const config = JSON.parse(fs.readFileSync(result.mcpConfigPath!, "utf-8")) as {
+      mcpServers: Record<string, { env: Record<string, string> }>;
+    };
+    expect(config.mcpServers.shipit.env.SHIPIT_MCP_TOOLS)
+      .toBe("present,voice,bug,permission,session_status,propose_repo_session");
+  });
+
   it("omits the shipit server when no bridge is available", () => {
     const { config } = write([], null);
     const servers = config.mcpServers as Record<string, unknown>;

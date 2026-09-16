@@ -19,7 +19,7 @@ import {
   setAgentEnv,
   setApiKey,
   clearApiKey,
-  buildAgentListPayload,
+  seedAndBuildAgentListPayload,
   fullReset,
   listProviderAccounts,
   createProviderAccount,
@@ -40,6 +40,7 @@ import {
   refreshAgentEnvForAllSessions,
   selectAgentEnvForPush,
 } from "./session-agent-env.js";
+import { releaseResidentsOnStatusCardToggle } from "./resident-spawn-guard.js";
 import { markAllSessionStatusesStale } from "./services/session-status.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -50,7 +51,7 @@ export async function registerBootstrapRoutes(
   const propagateCredentialChange = (): void => {
     // Auth status is cached; refresh every harness before building the broadcast.
     for (const agent of deps.agentRegistry.list()) deps.agentRegistry.refreshAuth(agent.id);
-    deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
+    deps.sseBroadcast("agent_list", seedAndBuildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
 
     refreshAgentEnvForAllSessions(deps.serviceManagers ?? new Map<string, ServiceManager>());
     for (const sessionId of deps.runnerRegistry.ids()) {
@@ -163,6 +164,9 @@ export async function registerBootstrapRoutes(
               sseBroadcast: deps.sseBroadcast,
             });
           },
+          onSessionStatusCardToggled: (enabled) => {
+            releaseResidentsOnStatusCardToggle(deps.runnerRegistry, enabled);
+          },
           ...pickDeclaredSettings(request.body),
           ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),
           ...(request.body.accountSelectionMode !== undefined ? { accountSelectionMode: request.body.accountSelectionMode } : {}),
@@ -260,8 +264,8 @@ export async function registerBootstrapRoutes(
     voice key is never sent back to it.
 
     `propagateCredentialChange` is what seeds background work onto the new
-    credential — through `buildAgentListPayload`, which writes only when nothing
-    is set. Nothing here chooses a model for the user.
+    credential — through `seedAndBuildAgentListPayload`, which writes only when
+    nothing is set. Nothing here chooses a model for the user.
   */
   app.post<{ Body: { provider?: string } }>(
     "/api/credential-routes/adopt-voice-key",
@@ -450,7 +454,7 @@ export async function registerBootstrapRoutes(
         if (disconnectedLogin) deps.agentRegistry.refreshAuthForLogin(disconnectedLogin);
         else deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
-        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
+        deps.sseBroadcast("agent_list", seedAndBuildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -499,7 +503,7 @@ export async function registerBootstrapRoutes(
         );
         if (cancelledLogin) deps.agentRegistry.refreshAuthForLogin(cancelledLogin);
         else deps.agentRegistry.refreshAuth(request.params.provider);
-        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
+        deps.sseBroadcast("agent_list", seedAndBuildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
         return { success: true, account: result.account };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -568,7 +572,7 @@ export async function registerBootstrapRoutes(
         clearApiKey(deps.credentialStore);
         propagateCredentialChange();
         deps.agentRegistry.refreshAuthForLogin("anthropic-oauth");
-        const payload = buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager);
+        const payload = seedAndBuildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager);
         deps.sseBroadcast("agent_list", payload);
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });
@@ -597,7 +601,7 @@ export async function registerBootstrapRoutes(
         // Cancel the legacy flow only after sign-out passes its active-turn guard.
         deps.codexAuthManager.cancel();
         deps.agentRegistry.refreshAuthForLogin("openai-chatgpt");
-        const payload = buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager);
+        const payload = seedAndBuildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager);
         deps.sseBroadcast("agent_list", payload);
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });

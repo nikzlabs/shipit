@@ -1,15 +1,32 @@
 import { getMode, selectionExists } from "../catalogue/index.js";
 import type { ModelSelection } from "../catalogue/index.js";
 import type { GitIdentity, SettingValueType, ValidationResult } from "./types.js";
+import { renderLine, renderOwn, renderValue, type Rendered } from "./rendered.js";
 
 // A declaration's `type` carries the value's default, its validation and the
 // shape the detail view renders, so none of the three is authored twice.
+//
+// One contract binds the three together: **`validate` returns the value the
+// store will hold**, so `read(serialize(v))` is `v` for anything it accepts
+// (`store-round-trip.test.ts`). A type that normalises — `text`'s trim, a
+// numeric's "below this is unset" — normalises HERE, because every caller reads
+// the validated value back as the change it is about to make: a proposal card
+// names it before the click (docs/299-agent-settings-access req 4) and the
+// dialog echoes it after.
 
 function ok<T>(value: T): ValidationResult<T> {
   return { ok: true, value };
 }
 
-function fail<T>(message: string): ValidationResult<T> {
+/**
+ * A refusal, on one line.
+ *
+ * Rendering inside this helper would keep every message to one line too. What it
+ * could not do is pick the MINT: the one message here that names text the caller
+ * supplied — a model selection's three ids — wants them quoted, and a blanket
+ * `renderOwn` would flatten them into the sentence instead (planning#537).
+ */
+function fail<T>(message: Rendered): ValidationResult<T> {
   return { ok: false, message };
 }
 
@@ -22,7 +39,7 @@ export function bool(opts: { default: boolean }): SettingValueType<boolean> {
       return typeof raw === "boolean" ? raw : opts.default;
     },
     validate(raw, noun) {
-      return typeof raw === "boolean" ? ok(raw) : fail(`${noun} must be true or false`);
+      return typeof raw === "boolean" ? ok(raw) : fail(renderOwn(`${noun} must be true or false`));
     },
     serialize(value) {
       return value;
@@ -55,7 +72,7 @@ export function enumOf<const O extends readonly EnumOption<string>[]>(opts: {
     validate(raw, noun) {
       return isMember(raw)
         ? ok(raw)
-        : fail(`${noun} must be one of: ${values.join(", ")}`);
+        : fail(renderOwn(`${noun} must be one of: ${values.join(", ")}`));
     },
     serialize(value) {
       return value;
@@ -72,7 +89,9 @@ interface NumberOpts {
   /**
    * A stored value below this reads as "not set", and writing one removes the
    * field — so a budget of zero falls back to the default rather than capping
-   * the install at nothing.
+   * the install at nothing. `validate` therefore answers `null` for such a
+   * value, because what it returns is what the store will hold
+   * (docs/299-agent-settings-access req 4).
    */
   unsetBelow?: number;
 }
@@ -113,7 +132,7 @@ export function numeric(
     validate(raw, noun) {
       if (raw === null && nullable) return ok(null);
       if (typeof raw !== "number" || !Number.isFinite(raw)) {
-        return fail(`${noun} must be a number${nullable ? " or null" : ""}`);
+        return fail(renderOwn(`${noun} must be a number${nullable ? " or null" : ""}`));
       }
       const value = integer ? Math.floor(raw) : raw;
       if (!inRange(value)) {
@@ -121,7 +140,15 @@ export function numeric(
           min === undefined ? null : `at least ${min}`,
           max === undefined ? null : `at most ${max}`,
         ].filter(Boolean).join(" and ");
-        return fail(`${noun} must be ${bounds}${unit ? ` ${unit}` : ""}`);
+        return fail(renderOwn(`${noun} must be ${bounds}${unit ? ` ${unit}` : ""}`));
+      }
+      if (!isSet(value)) {
+        // Serialising this removes the field, so returning the number would hand
+        // a caller a value the store never holds — a proposal card showing
+        // "4096 → 0" over a write that stores nothing.
+        return nullable
+          ? ok(null)
+          : fail(renderOwn(`${noun} must be at least ${unsetBelow}${unit ? ` ${unit}` : ""}`));
       }
       return ok(value);
     },
@@ -132,7 +159,7 @@ export function numeric(
   };
 }
 
-export function text(opts: {
+interface TextOpts {
   maxLength: number;
   default?: string;
   /** Names the value in validation messages when the dialog label does not read well. */
@@ -145,32 +172,62 @@ export function text(opts: {
    * (docs/299-agent-settings-access req 9).
    */
   trim?: boolean;
-}): SettingValueType<string> {
-  const defaultValue = opts.default ?? "";
+  /**
+   * The writer stores NOTHING for an empty value, so empty and "not set" are
+   * one value rather than two — `pinned()` drops a role's reasoning level that
+   * way. `validate` therefore answers `null`, because what it returns is what
+   * the store will hold: otherwise a card clearing the field shows `"high" →
+   * ""` over a write that stores no level at all.
+   *
+   * It is deliberately NOT the default. An instructions box stores the empty
+   * string it was cleared to, and reporting that as "not set" would be the same
+   * lie the other way round.
+   */
+  emptyIsUnset?: boolean;
+}
+
+/** A lone half of a surrogate pair: text the file writers turn into U+FFFD. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+export function text(opts: TextOpts & { emptyIsUnset: true }): SettingValueType<string | null>;
+export function text(opts: TextOpts & { emptyIsUnset?: false }): SettingValueType<string>;
+export function text(opts: TextOpts): SettingValueType<string | null> {
+  const { emptyIsUnset } = opts;
+  const fallback = opts.default ?? "";
+  const unset = (value: string): boolean => !!emptyIsUnset && value.length === 0;
   return {
     kind: "text",
-    defaultValue,
+    defaultValue: emptyIsUnset ? null : fallback,
     shape: {
       maxLength: opts.maxLength,
       ...(opts.required ? { required: true } : {}),
+      ...(emptyIsUnset ? { nullable: true } : {}),
     },
     read(raw) {
-      return typeof raw === "string" ? raw : defaultValue;
+      if (typeof raw !== "string") return emptyIsUnset ? null : fallback;
+      return unset(raw) ? null : raw;
     },
     validate(raw, noun) {
       const name = opts.noun ?? noun;
       // Anything that is not text reads as the default, which is how sending
       // null has always cleared an instructions box.
-      const supplied = typeof raw === "string" ? raw : defaultValue;
+      const supplied = typeof raw === "string" ? raw : fallback;
       const value = opts.trim ? supplied.trim() : supplied;
-      if (opts.required && !value) return fail(`${name} cannot be empty`);
+      if (opts.required && !value) return fail(renderOwn(`${name} cannot be empty`));
       if (value.length > opts.maxLength) {
-        return fail(`${name} is too long (max ${opts.maxLength.toLocaleString("en-US")} characters)`);
+        return fail(renderOwn(`${name} is too long (max ${opts.maxLength.toLocaleString("en-US")} characters)`));
       }
-      return ok(value);
+      if (LONE_SURROGATE.test(value)) {
+        // The file-backed writers encode UTF-8, which replaces a lone surrogate
+        // with U+FFFD — so accepting this would store text the user never
+        // approved, and no card could have shown the substitution.
+        return fail(renderOwn(`${name} contains an unpaired surrogate, which cannot be stored as written`));
+      }
+      return ok(unset(value) ? null : value);
     },
     serialize(value) {
-      return value;
+      if (value === null) return undefined;
+      return unset(value) ? undefined : value;
     },
   };
 }
@@ -197,7 +254,7 @@ export function gitIdentity(): SettingValueType<GitIdentity> {
       };
     },
     validate(raw, noun) {
-      if (!raw || typeof raw !== "object") return fail(`${noun} must have a name and an email`);
+      if (!raw || typeof raw !== "object") return fail(renderOwn(`${noun} must have a name and an email`));
       const row = raw as Partial<GitIdentity>;
       const checkedName = name.validate(row.name ?? "", "Git user name");
       if (!checkedName.ok) return fail(checkedName.message);
@@ -239,12 +296,16 @@ export function modelSelection(): SettingValueType<ModelSelection | null> {
       if (raw === null) return ok(null);
       const selection = parse(raw);
       if (!selection) {
-        return fail(`${noun} must name a serviceId, a billingMode and a modelId`);
+        return fail(renderOwn(`${noun} must name a serviceId, a billingMode and a modelId`));
       }
       if (!selectionExists(selection)) {
-        return fail(
-          `No catalogue entry for ${selection.serviceId}/${selection.billingMode}/${selection.modelId}`,
-        );
+        // The three ids are the CALLER's text, not the catalogue's — nothing
+        // matched them — so each is quoted rather than dropped into the
+        // sentence bare (planning#537).
+        return fail(renderLine(
+          `No catalogue entry for ${renderValue(selection.serviceId)}/`
+            + `${renderValue(selection.billingMode)}/${renderValue(selection.modelId)}`,
+        ));
       }
       return ok(selection);
     },
@@ -275,10 +336,10 @@ export function secretBag(opts: {
       return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     },
     validate(_raw, noun) {
-      return fail(
+      return fail(renderOwn(
         `${opts.noun || noun} can hold credential material, so it is edited in the panel that `
           + "owns it and never through a proposal",
-      );
+      ));
     },
     serialize(value) {
       return value;
@@ -304,10 +365,10 @@ export function collection<T>(opts: {
       return Array.isArray(raw) ? (raw as T[]) : [];
     },
     validate(_raw, noun) {
-      return fail(
+      return fail(renderOwn(
         `${noun} is a collection: change one item at a time with `
           + `${opts.operations.join(", ")}, never by replacing the list`,
-      );
+      ));
     },
     serialize(value) {
       return value;

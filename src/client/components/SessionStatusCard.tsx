@@ -59,9 +59,9 @@ export interface SessionStatusCardProps {
  */
 export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) {
   /**
-   * req 17 — an offer stops being selectable the moment its message is sent.
-   * The server's `takenAt` is a round trip behind, and a second submit in that
-   * window would send the same work twice.
+   * req 17 — an offer reads as sent the moment its message goes, without waiting
+   * for the server's `takenAt`, which is a round trip behind. It stays tickable:
+   * the grey and the "SENT" tag are presentation, not a lock.
    */
   const [sent, setSent] = useState<ReadonlySet<string>>(() => new Set());
   /** req 29 — manual steps the user has ticked and already told the agent about. */

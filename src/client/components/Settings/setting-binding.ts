@@ -30,6 +30,27 @@ export function bindSetting(key: SettingKey): SettingBinding {
   return { "data-setting": key };
 }
 
+/** The attribute one option of a segmented choice carries, naming what it sets. */
+export const SETTING_OPTION_ATTR = "data-setting-option";
+
+export interface SettingOptionBinding extends SettingBinding {
+  readonly "data-setting-option": string;
+}
+
+/**
+ * Mark a control as **one option** of a segmented choice: several buttons, one
+ * stored field, one of them selected.
+ *
+ * The coverage walk holds a declaration to one control that edits its value,
+ * because a second one means one of the two saves something else. A segmented
+ * picker is the honest exception, and this is how it says so — naming the value
+ * it sets, rather than being inferred from looking like a group. A row of plain
+ * {@link bindSetting} buttons on one declaration stays a failure.
+ */
+export function bindSettingOption(key: SettingKey, value: string): SettingOptionBinding {
+  return { "data-setting": key, "data-setting-option": value };
+}
+
 /** The declaration behind a key. Present by construction — `SettingKey` is its key set. */
 export function settingOf(key: SettingKey): AnySettingDeclaration {
   const declaration = findSetting(key);

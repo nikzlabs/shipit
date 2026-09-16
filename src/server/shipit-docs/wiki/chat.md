@@ -311,6 +311,14 @@ later — which is why each action carries a standalone instruction rather than
 relying on what was on screen at the time. Ticking declares intent; the work is
 still yours to do.
 
+**Which offer tool you have depends on a setting.** The user can turn on
+"Session status card" (Settings → Advanced). While it is on, you have
+`session_status` and not `propose_actions`: the offers are part of the status
+card the user reads just above the input field, rather than a card in the
+transcript. Your own tool list is the answer to which one applies — do not
+assume, and read the setting with `shipit settings get advanced.sessionStatusCard`
+if you need to say what it is set to.
+
 ## Quoting and re-using what is on screen
 
 Selecting text anywhere in the conversation raises a floating **Reply** button,

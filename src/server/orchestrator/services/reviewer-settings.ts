@@ -13,6 +13,7 @@ import {
   type ReviewerModelDeps,
   type ReviewerSlotResolution,
 } from "../reviewer-model.js";
+import { renderLine, renderValue } from "../../shared/settings-catalogue/rendered.js";
 import { ServiceError } from "./types.js";
 import type { ReviewerPinPatch, ReviewerSlotView } from "./types.js";
 
@@ -34,17 +35,21 @@ export function buildReviewerSettings(deps: ReviewerSettingsDeps): ReviewerSlotV
   return resolveReviewerSlots(modelDeps).map((resolution) => toSlotView(resolution, modelDeps));
 }
 
+function selectionText(patch: ReviewerPinPatch): string {
+  return `${renderValue(patch.serviceId)}/${renderValue(patch.billingMode)}/${renderValue(patch.modelId)}`;
+}
+
 // Settings resolve independently of the implementer; each review derives its own harness.
 export function resolveReviewerPinPatch(
   patch: ReviewerPinPatch,
   credentialStore: ServiceRoutingCredentialSource,
   env?: NodeJS.ProcessEnv,
 ): ReviewerPin {
+  // Quoted where the ids ENTER the message: they are the stored pin's, and a
+  // caller that only flattens the finished sentence cannot tell which part of it
+  // was a value (planning#537).
   if (!getModel(patch)) {
-    throw new ServiceError(
-      400,
-      `No catalogue entry for ${patch.serviceId}/${patch.billingMode}/${patch.modelId}`,
-    );
+    throw new ServiceError(400, renderLine(`No catalogue entry for ${selectionText(patch)}`));
   }
   const [runnable] = harnessesForSelection(
     patch,
@@ -53,7 +58,7 @@ export function resolveReviewerPinPatch(
   if (!runnable) {
     throw new ServiceError(
       400,
-      `No installed harness can run ${patch.serviceId}/${patch.billingMode}/${patch.modelId} with the credentials configured`,
+      renderLine(`No installed harness can run ${selectionText(patch)} with the credentials configured`),
     );
   }
   // Reasoning support depends on the selection, including its billing mode.

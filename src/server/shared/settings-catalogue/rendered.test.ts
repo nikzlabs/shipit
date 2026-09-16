@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { joinRendered, renderAddress, renderOwn, renderValue } from "./rendered.js";
+import { joinRendered, renderAddress, renderJson, renderLine, renderOwn, renderValue } from "./rendered.js";
 
 /**
  * planning#577: `shipit settings list` and `get` are a line-oriented format an
@@ -61,6 +61,39 @@ describe("renderValue", () => {
   });
 });
 
+describe("renderJson", () => {
+  it("escapes what JSON.stringify leaves as itself, and nothing else changes", () => {
+    const value = `Be helpful.\u2028${FORGED_FIELD}`;
+    const json = renderJson({ value });
+
+    expect(json).not.toMatch(NO_BREAKS);
+    // The escape is the JSON spelling of the same character, so a reader parses
+    // the value that was stored — which is the whole promise of doing this to a
+    // document rather than to the text inside it.
+    expect((JSON.parse(json) as { value: string }).value).toBe(value);
+  });
+
+  /*
+    The deny-set is matched with the `u` flag, so a match can be one code point
+    of TWO UTF-16 units: the tag block and U+1BCA0 are format characters.
+    Escaping the lead surrogate alone left the trail one behind as a lone
+    surrogate, which silently changed the value a `--json` reader parses.
+  */
+  for (const supplementary of ["\u{E0067}", "\u{1BCA0}"]) {
+    it(`keeps ${JSON.stringify(supplementary)} intact through both of its code units`, () => {
+      const json = renderJson({ value: `tag${supplementary}end` });
+      expect(json).not.toMatch(NO_BREAKS);
+      expect((JSON.parse(json) as { value: string }).value).toBe(`tag${supplementary}end`);
+    });
+  }
+
+  it("says so rather than throwing on a document JSON cannot represent", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(renderJson(circular)).toBe("(not representable)");
+  });
+});
+
 describe("renderOwn", () => {
   it("flattens ShipIt's own words rather than trusting them to be one line", () => {
     expect(renderOwn("two\nlines")).toBe("two lines");
@@ -97,5 +130,35 @@ describe("renderAddress", () => {
 describe("joinRendered", () => {
   it("joins pieces that are already rendered", () => {
     expect(joinRendered([renderValue("a"), renderValue("b")])).toBe('"a", "b"');
+  });
+});
+
+describe("renderLine", () => {
+  /**
+   * The whole deny-set, not the newline the fixtures happen to use: an
+   * implementation that replaced `\n` alone would pass every other test in this
+   * file's adversarial cases and leave NEL, the Unicode separators and every
+   * format character as themselves (planning#537).
+   */
+  it("removes every character the deny-set covers, not just the newline", () => {
+    for (let code = 0; code <= 0x10ffff; code++) {
+      // Lone surrogates are not code points a string can carry on their own.
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      const ch = String.fromCodePoint(code);
+      if (!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(ch)) continue;
+      expect(renderLine(`a${ch}b`)).toBe("a b");
+    }
+  });
+
+  it("keeps indentation and repeated spaces, which is what it is for", () => {
+    // `renderOwn` collapses both; composing an output line with it would eat the
+    // indentation the settings output uses, and the spacing inside a quoted value.
+    expect(renderLine('      x = "Team  Account"')).toBe('      x = "Team  Account"');
+    expect(renderOwn('      x = "Team  Account"')).toBe('x = "Team Account"');
+  });
+
+  it("is a no-op on text the orchestrator already rendered", () => {
+    const already = renderValue(`a role\n${FORGED_FIELD}`);
+    expect(renderLine(already)).toBe(already);
   });
 });

@@ -30,6 +30,7 @@ import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js"
 import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
+import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { announceResetStateOnMerge } from "./services/pre-turn-reset.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
@@ -64,7 +65,7 @@ import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/t
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
-import { buildAgentListPayload } from "./services/settings.js";
+import { seedAndBuildAgentListPayload } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 import { setEgressDecisionTokenRecovery } from "./egress-decision-auth.js";
 import { dockerEgressDecisionTokenRecovery } from "./egress-proxy-install.js";
@@ -740,6 +741,8 @@ export interface PrPollerDeps {
   credentialStore?: CredentialStore;
   drainQueueForSession?: (sessionId: string) => Promise<void> | void;
   agentFactory?: (agentId: AgentId) => AgentProcess;
+  /** The process-lived scheduler, so the poller can heal a branch left ahead. */
+  autoPushScheduler?: AutoPushScheduler;
 }
 
 export function createPrStatusPoller(
@@ -750,7 +753,7 @@ export function createPrStatusPoller(
     runnerRegistry, defaultAgentId, createRepoGit, getBareCacheDir, pruneSessionVolumes,
     onRepoMainAdvanced, containerManager, mergeWatchManager,
     createGitManager, chatHistoryManager, usageManager, credentialStore,
-    drainQueueForSession, agentFactory,
+    drainQueueForSession, agentFactory, autoPushScheduler,
   } = pollerDeps;
 
   // The constructor needs a callback that later reads the constructed poller.
@@ -807,6 +810,13 @@ export function createPrStatusPoller(
     createGitManager,
     isAutoResolveEnabled: credentialStore ? (() => credentialStore.getAutoResolveConflicts()) : (() => false),
     isAutoFixEnabled: credentialStore ? (() => credentialStore.getAutoFixCi()) : (() => false),
+    ...(autoPushScheduler
+      ? {
+          scheduleAutoPush: (git: GitManager, sessionId: string) =>
+            autoPushScheduler.schedule(git, sessionId),
+          autoPushArmed: (sessionId: string) => autoPushScheduler.pending(sessionId),
+        }
+      : {}),
     ensureRunner: async (sessionId) => {
       const session = sessionManager.get(sessionId);
       if (!session?.workspaceDir) return undefined;
@@ -850,6 +860,7 @@ export function createPrStatusPoller(
         resetMergedBranch: undefined,
         compactContext: undefined,
         silent: undefined,
+        statusNudge: undefined,
       })).settled;
       const detail = outcome.detail ? ` (${outcome.detail})` : "";
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);
@@ -1005,7 +1016,7 @@ export function markProviderAccountUnauthenticated(opts: {
   }
   refreshAuthForAccountHarness(agentRegistry, agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+  sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
 
 export function markProviderAccountReauthenticated(opts: {
@@ -1027,7 +1038,7 @@ export function markProviderAccountReauthenticated(opts: {
   }
   refreshAuthForAccountHarness(agentRegistry, agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+  sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
 
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
@@ -1092,7 +1103,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
             reason: "duplicate",
             message: refusal,
           });
-          sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+          sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
           sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
           return;
         }
@@ -1111,7 +1122,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       agentRegistry.refreshAuthForLogin(loginId);
       if (credentialHarness && accountId) repushTokenToPinnedSessions(credentialHarness, accountId);
       sseBroadcast("agent_auth_complete", { loginId, ...(accountId ? { accountId } : {}) });
-      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+      sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
@@ -1133,7 +1144,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         ...(payload?.message ? { message: payload.message } : {}),
       });
       agentRegistry.refreshAuthForLogin(loginId);
-      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+      sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
     });
   }
 

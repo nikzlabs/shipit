@@ -624,3 +624,261 @@ finding re-verified at the code first.
 - [x] req 5 gained a clause and the decision a dated receipt, both in
       `requirements.md`: a setting's per-session availability may be narrower
       than the dialog's where ShipIt already gates the resource per session
+
+### The card's value, and the store's — a fourth req 4 slice
+
+A fourth conformance review found req 4 partly met: two proposals displayed one
+value and stored another. Both re-verified at the code.
+
+- [x] req 4 — a declared type's `validate` now answers with the value the store
+      will hold, so `read(serialize(v))` is `v` for anything it accepts. A
+      budget of `0` validates to `null`, so the card says "4096 → not set"
+      instead of "4096 → 0" over a write that removes the field. `text`'s `trim`
+      already worked this way; `unsetBelow` was the one option that did not
+- [x] req 7 — the contract is held over the WHOLE registry, not the two types
+      that carry it today: `store-round-trip.test.ts` walks every declaration
+      with boundary candidates built from its own `shape`, so a normalising
+      declaration added tomorrow is covered without a second step. It holds the
+      class where SERIALISING drops the value, and not a writer that normalises
+      on its own — the codec cannot see one, which is what the next item is for
+- [x] req 4 — a declared type says what the WRITER stores too, which the codec
+      round trip cannot reach: `serialize` never runs for a bespoke store, so
+      nothing there sees `pinned()` drop a role's empty reasoning level.
+      `text`'s `emptyIsUnset` declares it and `validate` answers null, so
+      clearing a level shows "not set" rather than the `""` it was asked for.
+      Opt-in on purpose: an instructions box stores the empty string it was
+      cleared to
+- [x] The first draft put that in the PROJECTION instead, and it was wrong
+      twice: a stored level no harness offers read as "not set" while still
+      stored and unclearable ("already not set"), and a real `alsoChanges`
+      deletion collapsed to "not set → not set" and vanished from the card.
+      Guarded now — a stale level is still named back
+- [x] req 4 — `text` refuses an unpaired surrogate, which the file writers turn
+      into U+FFFD: the store would hold text nobody approved, and no card could
+      have shown the substitution
+- [x] req 4 — the backstop verifies EVERYTHING the card displayed: each
+      `alsoChanges` entry carries its declaration key and is read back at the
+      same address, since a write that lands its own field while keeping a
+      neighbour is what a check of the named field alone cannot see
+- [x] req 4 — clearing `services.nonTurnModel` is refused while a model is
+      eligible, rather than shown as "not set". `seedNonTurnModel` runs from the
+      save hook AND from every build of the settings payload, so unset is not a
+      state that setting can be left in — `alsoChanges` was considered and
+      rejected, because naming the same setting twice with two destinations is
+      not a change anyone can approve by looking. The seeded model is not named
+      back either: what the seed picks at apply time is not what it picks now
+- [x] req 4 — the refusal and the seeding read ONE function
+      (`nonTurnModelSeedCandidate`), so they cannot come to different answers
+- [x] req 4 — the store has the last word: after an `applied` write the apply
+      reads the setting back through the agent's own read surface — the read
+      that already answers `effect`, so no second round trip — and resolves a
+      disagreement with the card as `partial` naming both values
+- [x] req 4 — the read-back is scoped so that it cannot invent a defect, and
+      NOT SEEING a value is never treated as one: a `set` only, since a
+      membership card shows ShipIt's wording rather than a value and those
+      writers already answer from the resulting membership; a prose card
+      compared against the approved TEXT rather than against ShipIt's summary of
+      its size, which any rewrite of the same length would pass; and silence
+      about an instance the read no longer lists, since an address leaves the
+      read for reasons that are nothing to do with the write — a rename retires
+      the name the card used, and a service/mode setting stops being listed the
+      moment its last credential goes (`settings-store-readers.ts` → `modePairs`)
+- [x] The release-channel fixture stubbed a reader that could not see its own
+      mocked write, so the apply's read-back was right to call it `partial`. The
+      fixture now moves with the write, as the real file-backed pair does
+
+### The output boundary holds on its own, on every free-text field
+
+- [x] req 2 — an item's `notes` went through no mint: `routeStatusNote`
+      interpolated a credential route's stored `status`, `settings-read.ts`
+      copied it and the shim printed it, so a persisted status carrying a newline
+      emitted lines that read as ShipIt's own fields. The prerequisite is
+      malformed persisted data (a restore, a migration — `credential-store.ts`
+      casts what it parses without validating the field), and the boundary has to
+      hold without depending on the writer upstream being well behaved
+- [x] Branded rather than patched: `notes`, `label`, `summary`, `description`,
+      an address's `noun`, a refusal's `explanation` and an effect's `detail` are
+      all `Rendered`, minted where the entry is built. The store readers mint at
+      their own constructor, so a reader added later cannot supply a raw reason
+- [x] A compile-time guard makes it self-enforcing — `PlainStringFields` in
+      `settings-read.test.ts` fails `npm run typecheck` on a new string-typed
+      field until it is minted or named in the allow-list. Proved by reverting
+      `SettingEffect.detail` to `string`: typecheck goes red at the guard
+- [x] The same class on the surface beside it: `services/roles.ts` joined every
+      stored role name verbatim into the unknown-role error on the
+      `shipit agent run` path, and `services/session-role.ts` did the same for
+      `shipit session create --role`. `namesForMessage` moved out of
+      `settings-operations.ts` into `settings-catalogue/projection.ts` and all
+      three surfaces call it; the name each message ECHOES back is flattened,
+      since that one is the caller's own argument
+- [x] Guards red alone: a route status carrying a forged row and a forged field,
+      asserted through `list`, `get` and `--json`
+      (`integration_tests/settings-line-forgery.test.ts`); a URL-shaped role name
+      against both role surfaces (`roles.test.ts`, `session-role.test.ts`)
+
+### req 9 discloses both bounds, not one
+
+- [x] `settings-propose.ts` refuses on characters PER SIDE and on lines
+      COMBINED, and the read advertised only the characters — so a change inside
+      the advertised bound was refused by an undisclosed one (600 lines replaced
+      by 601: ~1,200 characters a side, 1,201 lines)
+- [x] `proposeMaxLines` joins `proposeMaxLength` in `get`, disclosed where the
+      declaration allows enough characters to reach it, and the CLI prints both
+      with the combined arithmetic spelled out. `shipit-docs/settings.md` says
+      the same in the agent's own reference
+- [x] Guard red alone: the read discloses the bound, then the same change is
+      refused by it (`settings-propose.test.ts`), and the CLI prints both
+      sentences (`shipit-settings.test.ts`)
+- [x] Three gaps the independent review found in the first pass of this work,
+      each confirmed at the code before fixing: the compile-time guard tested
+      only DIRECT properties, so `notes: string[]` — the regression it exists to
+      prevent — passed it; `--json` serialized with `JSON.stringify`, which
+      leaves U+0085/U+2028/U+2029 as themselves, so a value's line separator
+      reached stdout raw beside a correctly escaped `display`; and a proposal
+      summary's `cardId`, `createdAt`, `resolvedAt` and `sessionId` went from
+      SQLite onto the `Last proposal:` line unrendered, with
+      `proposalPhaseHeadline` echoing an unknown phase raw
+- [x] The guard now looks through arrays and nested objects, proved by reverting
+      three shapes one at a time: `notes` to `string[]`, a nested
+      `{ text: string }`, and a raw string two levels down inside `lastProposal`
+- [x] `renderJson` is the fourth mint — the one for text a caller SERIALIZES —
+      and the escape is the JSON spelling of the same character, so what a
+      reader parses is unchanged. Guard: a stored U+2028 through the real read
+      and the real shim, asserting both that stdout carries none and that the
+      parsed value is still the stored one
+- [x] A second review round, on the changed diff, found four more: the escape
+      emitted only the first UTF-16 unit of a match, so a supplementary format
+      character (the tag block, U+1BCA0) came back from `--json` as a lone
+      surrogate — the round-trip the mint promises, broken by the mint; the
+      guard admitted every mixed union (`string | null`, `string | number`, a
+      union of objects, a `Record` of a union); the next-turn notice still
+      interpolated the stored setting key and the card's recorded effect state;
+      and both role errors appended `checked.message`, which names the role's
+      stored harness, service, billing mode, model and level
+- [x] Two of this round's own tests were blind by construction before they were
+      fixed: the unknown-phase one filtered case-sensitively while the fallback
+      UPPER-CASES what it echoes, and the notice one asserted that no line
+      EQUALS the forged text while a forged line arrives carrying whatever
+      followed it in the template. Both now assert on what opens a line
+- [x] A third review round: a role run with a model override throws inside
+      `applyOverrides`, a step BEFORE the validator whose message this work had
+      flattened, and interpolates the role's stored service and billing mode. So
+      both role modules gained a `refuse()` — one entry point for raising an
+      agent-facing error — and every throw in them goes through it. The
+      per-name flattening beside it was REMOVED rather than tested twice: a
+      second partial defence is what invites the next message to be written
+      without one
+- [x] The guard's third pass: `{}` and `{}[]` accept any string and have no key
+      for the walk to find it in, so a type a plain string is assignable to is
+      flagged before the walk. Its remaining edge — a template-literal type — is
+      recorded in the comment rather than claimed away
+- [x] Doc claims corrected against the code: the mints are four not three, the
+      ids and timestamps are `Rendered` now, the allow-list is four names and
+      not one, `renderJson`'s `(not representable)` refusal is deliberately not
+      JSON, and `\s` excludes U+0085 rather than all three separators
+
+### The same class, a third time — fixed structurally (planning#537)
+
+- [x] `services/settings-operations.ts` (`rolePreflight`, `reviewerLevelRefusal`,
+      and the `ServiceError` the patch builder raises) returned a service-built
+      message straight out, reaching the propose response and the CLI unrendered.
+      A stored harness or reviewer model carrying a newline forged a line through
+      any of them, and error handling runs BEFORE the `--json` branch, so that
+      flag covered none of them
+- [x] Not fixed by minting those three. The two fixes before it each guarded the
+      path they had found and left the next one open, so the property
+      established is **anything the settings shim prints is `Rendered`**, in two
+      halves: the TYPES demand a mint at each hand-off
+      (`SettingsOperation.preflight`, `RoleParamsCheck.message`,
+      `ValidationResult.message` — a service that builds a plain string cannot
+      return it as a refusal), and the PRINTER takes `Rendered` while
+      `shipit-settings.ts` is handed no `ShimIO` at all
+- [x] `renderLine` is the mint for the far side of the HTTP hop, where the brand
+      is gone and re-quoting would double-quote — it keeps already-rendered text
+      byte-for-byte. The dispatcher's own echo of an unknown subcommand runs
+      before the printer exists, so it mints there
+- [x] Said plainly rather than implied: the types do NOT close the class.
+      Splitting an ingested message on its own newlines and minting the pieces
+      satisfies every assertion and forges lines all the same, so "never derive
+      output structure from text this process did not compose" stays an
+      authoring rule, with `serverErrorLines` as the helper that keeps a relay
+      error away from it
+- [x] Review caught a regression the first pass introduced: wrapping every
+      refusal in `renderOwn` collapsed runs of space INSIDE an already-quoted
+      value, so a refusal reported `"Team Account"` for a label stored as
+      `"Team  Account"`. A sentence embedding a rendered value composes with
+      `renderLine`; guard in `settings-propose.test.ts`
+- [x] Guards, each proved red on its own: the reported defect end-to-end
+      (`settings-propose.test.ts`, an ordinary description change against a role
+      whose stored harness id carries a newline), the shim boundary for a
+      refusal from ANY service, via the CLI and `--json`
+      (`shipit-settings.test.ts`), and the structural claim as two
+      `@ts-expect-error` assertions `npm run typecheck` fails on if either half
+      is widened (`settings-out.test.ts`)
+- [x] `echoSupplied` stopped flattening with `\s+`, which leaves U+0085 and every
+      format character as themselves, and goes through `renderOwn`
+- [x] Second review round, on the changed diff. Three more, each verified at the
+      code and guarded: `shipit settings __proto__` resolved an INHERITED
+      property from the handler table, so the dispatcher called
+      `Object.prototype` and the TypeError went to the process's last-resort
+      sink — every dispatcher now looks up with `Object.hasOwn`, and that sink
+      renders. `reviewer-settings.ts` built its two refusals from the pin's ids
+      unquoted; they are quoted where they enter now. And `itemsDisplay`
+      (pre-existing) wrapped already-rendered ADDRESSES in `renderOwn`, printing
+      `Team Account` for a role stored as `Team  Account` — an address that
+      addresses nothing
+- [x] One reachability claim NOT taken at face value: the review's end-to-end
+      reproduction of the reviewer-pin case wrote a pin straight into the store,
+      and `getReviewerPin` drops a selection the catalogue does not carry unless
+      it is retired — so the mint was wrong but that exploit is not reachable
+      through the read. The guard is a unit test of `resolveReviewerPinPatch`,
+      which is what the fix is actually about
+- [x] `renderLine` has a test over the whole deny-set, not the `\n` its
+      adversarial fixtures happen to use: an implementation replacing only the
+      newline passed every other case in the file
+
+## A fifth conformance review — two writes that reported the opposite of what happened
+
+Both findings re-verified at the code before being acted on.
+
+- [x] req 4 — a global allowlist removal is **one transaction**
+      (`EgressAllowlistStore.removeGlobalHost`). Deleting the explicit rows and
+      suppressing a matching shipped default were two ungrouped writes, so a
+      suppression that threw left the row gone and the catch reported `failed` —
+      the one status that claims ShipIt verified nothing changed, and the
+      strongest claim the vocabulary has
+- [x] req 4 — and a removal that *wrote* something while the host stayed listed
+      now reports `partial`. Taking off a host a configured MCP server also
+      supplies deletes the user's own row; taking off a shipped default an
+      operator also supplies stores the suppression. `failed` is left for the
+      removal that changed nothing, which a repeat removal still is — the store's
+      own `removed || suppressed` answer is what separates the two
+- [x] req 7 — a save hook runs only for a value the store kept. A failed
+      credential-store write rolls back, so `advanced.sessionStatusCard`
+      correctly reported `failed` while its hooks still retired idle resident
+      agents and scheduled the persisted cards to go stale. Each of the four
+      hooks was read against a rolled-back write rather than gated blanket: three
+      act on the stored value, and the background-model reseed reads the store,
+      so it is a no-op there and takes the same rule rather than being the one
+      exception to re-derive
+- [x] Both guards proven red alone, with the defect restored: the suppression
+      failing after a successful delete (the row survives, so `failed` is true),
+      the MCP- and operator-supplied removals reporting `failed` over a store
+      they had changed, and the status-card hooks firing on a write the same
+      save reports as failed
+
+### The independent review of those fixes
+
+Two findings, both the same class one layer down, both reproduced at the code.
+
+- [x] `removeHost` is itself a multi-write: rows that normalize alike are one
+      host, and it deleted them one by one. A delete that threw after an earlier
+      one committed left the host half off the list and reported `failed` over
+      it — at SESSION scope too, where no suppression follows. The loop is now
+      one transaction, which `removeGlobalHost` nests inside as a savepoint
+- [x] The same helper is what `unsuppressDefault` runs, so a global ADD of a
+      suppressed default had the identical half-landing shape: one suppression
+      row deleted, the default effective again, and the add reported `failed`.
+      Fixing the helper fixes both callers rather than either call site
+- [x] Proven red alone with a `BEFORE DELETE` trigger that refuses the second
+      row: without the transaction the first row stays deleted

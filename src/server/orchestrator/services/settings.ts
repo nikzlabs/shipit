@@ -54,6 +54,48 @@ export function resolveHarnessOnboarding(
   return stamped ? { canRunTurns, harnessOnboardingCompletedAt: stamped } : { canRunTurns };
 }
 
+/**
+ * The model an unpinned install would be seeded with, or nothing.
+ *
+ * Read by the seeding below AND by the proposal that would clear the pin
+ * (`settings-operations.ts`): where this answers a selection, "not set" is not
+ * a state the setting can be left in, and a card promising it would be
+ * contradicted by its own write (docs/299-agent-settings-access req 4). One
+ * function so the refusal and the seed cannot come to different answers.
+ */
+export function nonTurnModelSeedCandidate(
+  credentialStore: CredentialStore | undefined,
+  agentRegistry: AgentRegistry,
+  env: NodeJS.ProcessEnv = process.env,
+): NonTurnModelSelection | undefined {
+  if (!credentialStore) return undefined;
+  // A permanent seed needs a confirmed installation and completed account login.
+  const installed = new Set(agentRegistry.list().filter((a) => a.installed).map((a) => a.id));
+  return firstEligibleNonTurnSelection(
+    listConfiguredCredentials(credentialStore, env, { requireReadyAccounts: true }),
+    { isInstalled: (harnessId) => installed.has(harnessId) },
+  )?.selection;
+}
+
+/**
+ * Write the background-work pin when the install has none, so no install runs
+ * with a service configured and this setting empty (docs/252-custom-models
+ * req 9).
+ *
+ * **It runs where eligibility CHANGES, never where the payload is read**
+ * (planning#578): `app-di.ts` at boot, and `seedAndBuildAgentListPayload` below.
+ * docs/252's plan chose the read path and was reversed there — read that
+ * paragraph before moving this call, because the objection it raises is real and
+ * is answered rather than dropped.
+ *
+ * Idempotent by construction, and that lives here rather than at a call site:
+ * the emptiness check is inside `stampNonTurnModel` too, so a second call — or
+ * a new one — cannot write over a value.
+ *
+ * Best-effort, and the retry window is now wider than it was: `stampNonTurnModel`
+ * rolls a failed disk write back, and the next attempt is the next eligibility
+ * change or the next boot rather than the next read of the settings payload.
+ */
 export function seedNonTurnModel(
   credentialStore: CredentialStore | undefined,
   agentRegistry: AgentRegistry,
@@ -61,14 +103,9 @@ export function seedNonTurnModel(
 ): void {
   if (!credentialStore) return;
   if (credentialStore.getNonTurnModel()) return;
-  // A permanent seed needs a confirmed installation and completed account login.
-  const installed = new Set(agentRegistry.list().filter((a) => a.installed).map((a) => a.id));
-  const first = firstEligibleNonTurnSelection(
-    listConfiguredCredentials(credentialStore, env, { requireReadyAccounts: true }),
-    { isInstalled: (harnessId) => installed.has(harnessId) },
-  );
+  const first = nonTurnModelSeedCandidate(credentialStore, agentRegistry, env);
   if (!first) return;
-  credentialStore.stampNonTurnModel(first.selection);
+  credentialStore.stampNonTurnModel(first);
 }
 
 export function buildNonTurnModelSettings(
@@ -80,7 +117,6 @@ export function buildNonTurnModelSettings(
   nonTurnModelResolved?: NonTurnModelResolved;
   backgroundWorkModels: EligibleModel[];
 } {
-  seedNonTurnModel(credentialStore, agentRegistry);
   const nonTurnModel = credentialStore?.getNonTurnModel();
   const resolution = credentialStore
     ? resolveNonTurnModel({
@@ -119,6 +155,26 @@ function backgroundWorkModelOptions(
   return backgroundWorkOptions(listConfiguredCredentials(credentialStore), {
     isInstalled: (harnessId) => installed.has(harnessId),
   });
+}
+
+/**
+ * The `agent_list` payload for an eligibility CHANGE: seed first, then build.
+ *
+ * Every credential and account mutation announces through here, which is what
+ * makes "the first service configured fills the setting in" (docs/252 req 9)
+ * hold from an already-open Settings tab. `buildAgentListPayload` is the same
+ * payload for a caller that is only reading — the event stream's opening
+ * snapshot — and it writes no pin (planning#578). Not the same as writing
+ * nothing: `resolveHarnessOnboarding` still stamps on read, deliberately and for
+ * its own reasons.
+ */
+export function seedAndBuildAgentListPayload(
+  agentRegistry: AgentRegistry,
+  credentialStore: CredentialStore | undefined,
+  providerAccountManager: ProviderAccountManager | undefined,
+): ReturnType<typeof buildAgentListPayload> {
+  seedNonTurnModel(credentialStore, agentRegistry);
+  return buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager);
 }
 
 /** Shared agent_list payload so credential changes refresh all derived settings. */
@@ -179,7 +235,11 @@ export async function getGlobalSettings(
   credentialStore?: CredentialStore,
   providerAccountManager?: ProviderAccountManager,
 ): Promise<GlobalSettings> {
-  // Seeds the pin before the stored half is read, so a first read returns it.
+  // No pin is written from here: seeding on the way past made opening the
+  // Settings dialog — or saving any unrelated setting, since this is what a save
+  // returns — choose a background model nobody named (planning#578).
+  // `resolveHarnessOnboarding` below still stamps on read; that one is on
+  // purpose and says so.
   const { nonTurnModelResolved, backgroundWorkModels } =
     buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   // The dialog needs a complete payload, so a setting ShipIt could not read
@@ -228,6 +288,8 @@ interface SaveHookContext {
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
   onSessionStatusCardEnabled?: () => void;
+  /** docs/303 req 21 — fires in both directions: the tool list is fixed at spawn. */
+  onSessionStatusCardToggled?: (enabled: boolean) => void;
 }
 
 /**
@@ -238,27 +300,45 @@ interface SaveHookContext {
 interface SaveHook {
   /** Refuse a value for a reason the declared type cannot express. */
   check?: (value: unknown, ctx: SaveHookContext) => void;
-  /** Runs after the value is stored; `previous` is the value it replaced. */
+  /**
+   * Runs after the value is stored, and only when the store kept it; `previous`
+   * is the value it replaced.
+   *
+   * A `failed` write VERIFIES the old value is still there, so a hook running
+   * past one changes runtime and persisted state for a change that did not
+   * happen (planning#537); the note beside each hook says why its work needs the
+   * durable value. `uncertain` and `partial` still run it — the value may be
+   * stored, and a hook skipped for a stored value leaves the feature asleep,
+   * which is the defect `onAutoFixCiEnabled` exists to prevent. Work that must
+   * run whatever the write did belongs beside the write, not here.
+   */
   after?: (value: unknown, previous: unknown, ctx: SaveHookContext) => void;
 }
 
 const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
-  // Enabling remediation refreshes existing snapshots without waiting for a PR change.
+  // Enabling remediation refreshes existing snapshots without waiting for a PR
+  // change. Needs the stored value: it is how the STORED permission takes effect
+  // at once, and a rolled-back write leaves remediation off.
   "advanced.autoResolveConflicts": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onAutoResolveConflictsEnabled?.();
     },
   },
+  // Same shape, same reason: unattended CI fixing must not start from a write
+  // the store rolled back.
   "advanced.autoFixCi": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onAutoFixCiEnabled?.();
     },
   },
   // docs/303 req 23 — the earlier card reappears at once, marked stale, and the
-  // next turn refreshes it.
+  // next turn refreshes it. Both halves need the stored value: the stale mark is
+  // persisted, and retiring idle residents is only right because their tool list
+  // was fixed at spawn against a setting that has now moved.
   "advanced.sessionStatusCard": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onSessionStatusCardEnabled?.();
+      if (value !== previous) ctx.onSessionStatusCardToggled?.(value === true);
     },
   },
   "services.nonTurnModel": {
@@ -281,6 +361,9 @@ const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
     },
     after: (value, _previous, ctx) => {
       // Older clients send null; reseed once when a runnable selection exists.
+      // A rolled-back clear leaves the old pin, and `seedNonTurnModel` reads the
+      // store, so running it would do nothing — it is skipped on the same rule
+      // as the rest rather than left as the one exception to re-derive.
       if (value === null) seedNonTurnModel(ctx.credentialStore, ctx.agentRegistry);
     },
   },
@@ -311,6 +394,7 @@ export interface SaveGlobalSettingsOptions extends GlobalSettingsPatch {
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
   onSessionStatusCardEnabled?: () => void;
+  onSessionStatusCardToggled?: (enabled: boolean) => void;
   // Addressed per service or per item; not derived from the catalogue yet.
   failoverCutoffs?: Record<string, Partial<FailoverCutoffs>>;
   accountSelectionMode?: Record<string, AccountSelectionMode>;
@@ -408,6 +492,8 @@ export async function saveGlobalSettings(
     ...(opts.onAutoFixCiEnabled ? { onAutoFixCiEnabled: opts.onAutoFixCiEnabled } : {}),
     ...(opts.onSessionStatusCardEnabled
       ? { onSessionStatusCardEnabled: opts.onSessionStatusCardEnabled } : {}),
+    ...(opts.onSessionStatusCardToggled
+      ? { onSessionStatusCardToggled: opts.onSessionStatusCardToggled } : {}),
   };
 
   // Everything is validated before anything is written. A save that ends in a
@@ -433,8 +519,13 @@ export async function saveGlobalSettings(
     const previous = hook?.after
       ? currentDeclaredValue(write.declaration, credentialStore)
       : undefined;
-    outcomes.push(await writeDeclaredSetting(write, derivationCtx));
-    hook?.after?.(write.value, previous, hookCtx);
+    const outcome = await writeDeclaredSetting(write, derivationCtx);
+    outcomes.push(outcome);
+    // The store kept the value, or could not say it did not. A `failed` write
+    // is verified to hold the OLD value, and every hook acts on the new one —
+    // so running one there changes runtime and persisted state for a save the
+    // same response reports as refused (planning#537).
+    if (outcome.status !== "failed") hook?.after?.(write.value, previous, hookCtx);
   }
   // Folded in only when there IS bespoke work: an empty group reports `applied`,
   // and an `applied` standing for no write would make a lone failed scalar read

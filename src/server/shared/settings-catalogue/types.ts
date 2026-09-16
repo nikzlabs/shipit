@@ -7,6 +7,8 @@
  * on a control that is neither bound to one nor named in `exclusions.ts`.
  */
 
+import type { Rendered } from "./rendered.js";
+
 export type SettingScope = "global" | "project" | "browser";
 
 /** The dialog tab a setting appears on (plan.md → Scope inventory). */
@@ -95,7 +97,8 @@ export type SettingValueKind =
 
 export type ValidationResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly message: string };
+  /** {@link Rendered} because a refusal is a line the agent reads, and the text it names is the write's own. */
+  | { readonly ok: false; readonly message: Rendered };
 
 export interface SettingValueType<T> {
   readonly kind: SettingValueKind;

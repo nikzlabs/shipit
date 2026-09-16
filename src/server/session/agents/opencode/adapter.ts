@@ -28,6 +28,7 @@ import { normalizeOpencodeToolCall, normalizeOpencodeToolResult } from "./openco
 import { compactOpencodeSession } from "./compaction.js";
 
 import { ensureManagedOpenCodeData, readOpenCodeAccount, removeOpenCodeAccount } from "../../../shared/opencode-account.js";
+import { shipitToolSpec } from "../../mcp-tool-spec.js";
 
 const OPENCODE_REASONING = HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning;
 
@@ -644,7 +645,7 @@ export class OpencodeAdapter
         type: "local",
         command: [ctx.shipitBridge.tsxBin, ctx.shipitBridge.bridgePath],
         enabled: true,
-        environment: { SHIPIT_MCP_TOOLS: "present,voice,bug,ask,propose_actions,propose_repo_session" },
+        environment: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session", ctx) },
       };
     }
 

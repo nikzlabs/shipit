@@ -168,6 +168,38 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
+  it("docs/303 req 21, 25 — the status card section replaces the action card section, per variant", () => {
+    const read = (name: string) =>
+      fs.readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8").trim();
+    const proposeActions = read("propose-actions.md");
+    const sessionStatus = read("session-status.md");
+
+    for (const opts of [
+      {},
+      { agentId: "claude" as const },
+      { agentId: "codex" as const },
+      { isOps: true },
+      { isSandbox: true },
+    ]) {
+      const off = buildAgentSystemInstructions(opts);
+      expect(off).toContain(proposeActions);
+      expect(off).not.toContain(sessionStatus);
+
+      const on = buildAgentSystemInstructions({ ...opts, sessionStatusCard: true });
+      expect(on).toContain(sessionStatus);
+      expect(on).not.toContain(proposeActions);
+    }
+  });
+
+  it("makes the flag-off variant the default, and keeps each variant distinct", () => {
+    expect(buildAgentSystemInstructions({ sessionStatusCard: false })).toBe(
+      buildAgentSystemInstructions(),
+    );
+    const on = buildAgentSystemInstructions({ agentId: "claude", sessionStatusCard: true });
+    expect(buildAgentSystemInstructions({ agentId: "claude", sessionStatusCard: true })).toBe(on);
+    expect(on).not.toBe(buildAgentSystemInstructions({ agentId: "claude" }));
+  });
+
   it("composes each overlay with the per-agent axis into a distinct variant", () => {
     const opsClaude = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
     const sandboxClaude = buildAgentSystemInstructions({ agentId: "claude", isSandbox: true });

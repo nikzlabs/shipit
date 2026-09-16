@@ -43,6 +43,14 @@ export interface ProposalFixture {
   deps: SettingsProposeDeps & SettingsDecisionDeps;
   /** Drop the runner, as a container reclaimed hours after the turn would. */
   loseRunner(): void;
+  /**
+   * Move the channel the release-channel reader answers with. A test that mocks
+   * `writeReleaseChannel` calls this from the mock, so the read reflects the
+   * write the way the real file-backed pair does — otherwise the fixture models
+   * a write that never lands, and an apply reading the setting back is right to
+   * say so.
+   */
+  setReleaseChannel(channel: string): void;
   close(): void;
 }
 
@@ -120,8 +128,9 @@ export function proposalFixture(opts: FixtureOptions = {}): ProposalFixture {
   if (!deps) throw new Error("the fixture supplies a proposal store, so this cannot be null");
   // The release channel is the host checkout's on a real install; a test must
   // not read it, and a baseline that says "unreadable" refuses every proposal.
-  deps.baseline.readReleaseChannel = async () => "stable";
-  deps.read.readReleaseChannel = async () => "stable";
+  let releaseChannel = "stable";
+  deps.baseline.readReleaseChannel = async () => releaseChannel;
+  deps.read.readReleaseChannel = async () => releaseChannel;
 
   return {
     sessionId: FIXTURE_SESSION,
@@ -139,6 +148,9 @@ export function proposalFixture(opts: FixtureOptions = {}): ProposalFixture {
     deps,
     loseRunner: () => {
       attached = undefined;
+    },
+    setReleaseChannel: (channel: string) => {
+      releaseChannel = channel;
     },
     close: () => {
       dbManager.close();

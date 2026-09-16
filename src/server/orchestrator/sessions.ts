@@ -459,9 +459,19 @@ export class SessionManager {
     return notice;
   }
 
-  clearAgentSessionId(id: string): void {
+  /**
+   * docs/303 — returns whether the stored status card changed, so callers broadcast only
+   * then. The card is marked stale rather than cleared: after a rewind it may describe work
+   * that is gone, and "Stale" is how it says so. The mark lives here, with the goal's clear,
+   * because every conversation reset and rewind reaches this one method.
+   */
+  clearAgentSessionId(id: string): boolean {
     // The goal belonged to the old conversation's thread.
     this.db.prepare("UPDATE sessions SET agent_session_id = NULL, agent_goal = NULL WHERE id = ?").run(id);
+    const card = this.get(id)?.sessionStatus;
+    if (!card?.fresh) return false;
+    this.setSessionStatus(id, { ...card, fresh: false });
+    return true;
   }
 
   // This URL is later written into agent-readable clone configs.

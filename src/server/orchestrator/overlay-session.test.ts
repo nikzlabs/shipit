@@ -6,7 +6,10 @@ import simpleGit from "simple-git";
 
 import {
   buildOverlaySpecs,
+  classifyDepDirsForOverlay,
   depDirsForSession,
+  missingDepDirParents,
+  parseUnignoredByNegation,
   supersededSessionOverlayLayers,
   isPnpmRepo,
   preStampInstallMarker,
@@ -513,9 +516,76 @@ describe("validDepDirsForOverlay", () => {
     expect(await validDepDirsForOverlay(["src"], dir)).toEqual([]);
   });
 
-  it("drops a dep dir whose parent directory does not exist", async () => {
+  it("drops a dep dir whose missing parent is tracked source the clone should have had", async () => {
     const dir = await repo({ gitignore: "node_modules\n" });
     expect(await validDepDirsForOverlay(["packages/app/node_modules"], dir)).toEqual([]);
+  });
+
+  // The incident: `.tools/` is ignored, so no clone ever has it; requiring the parent dropped
+  // the dep dir on every session and nothing else created it.
+  it("keeps a dep dir whose missing parent is itself git-ignored", async () => {
+    const dir = await repo({ gitignore: ".tools/\n" });
+    expect(await validDepDirsForOverlay([".tools/blender"], dir)).toEqual([".tools/blender"]);
+  });
+
+  it("keeps a dep dir under two missing ignored levels", async () => {
+    const dir = await repo({ gitignore: ".cache\n" });
+    expect(await validDepDirsForOverlay([".cache/a/b"], dir)).toEqual([".cache/a/b"]);
+  });
+
+  it("drops a dep dir with a tracked missing level between existing and ignored ones", async () => {
+    const dir = await repo({ gitignore: "node_modules\n", dirs: ["packages"] });
+    expect(await validDepDirsForOverlay(["packages/app/node_modules"], dir)).toEqual([]);
+  });
+
+  // `git check-ignore` answers the slash form from the containing rule: under `*` + `!foo` it
+  // reports `foo/` ignored while `foo` is not. Treating that as an ignored parent would accept
+  // an absent TRACKED directory — exactly what the old parent test rejected.
+  it("drops a dep dir whose missing parent is explicitly un-ignored by a negation rule", async () => {
+    const dir = await repo({ gitignore: "*\n!foo\n" });
+    const got = await classifyDepDirsForOverlay(["foo/node_modules"], dir);
+    expect(got.valid).toEqual([]);
+    expect(got.dropped).toEqual([{ depDir: "foo/node_modules", reason: "missing-tracked-parent" }]);
+  });
+
+  it("drops a dep dir that a negation rule re-includes as tracked source", async () => {
+    const dir = await repo({ gitignore: "*\n!vendor\n", dirs: ["vendor"] });
+    const got = await classifyDepDirsForOverlay(["vendor"], dir);
+    expect(got.valid).toEqual([]);
+    expect(got.dropped).toEqual([{ depDir: "vendor", reason: "not-git-ignored" }]);
+  });
+
+  // A negation elsewhere in the file must not disqualify an unrelated ignored ancestor.
+  it("keeps an ignored dep dir when the negation applies to a SIBLING path", async () => {
+    const dir = await repo({ gitignore: "*\n!src\n.tools/\n", dirs: ["src"] });
+    expect(await validDepDirsForOverlay([".tools/blender"], dir)).toEqual([".tools/blender"]);
+  });
+
+  it("reports the reason each dropped dep dir was dropped", async () => {
+    const dir = await repo({ gitignore: ".tools/\n", dirs: ["src"] });
+    const got = await classifyDepDirsForOverlay([".tools/blender", "src", "vendor"], dir);
+    expect(got.valid).toEqual([".tools/blender"]);
+    expect(got.dropped).toEqual([
+      { depDir: "src", reason: "not-git-ignored" },
+      { depDir: "vendor", reason: "not-git-ignored" },
+    ]);
+  });
+
+  it("reports missing-tracked-parent for an ignored dir under an absent source path", async () => {
+    const dir = await repo({ gitignore: "node_modules\n" });
+    const got = await classifyDepDirsForOverlay(["packages/app/node_modules"], dir);
+    expect(got.valid).toEqual([]);
+    expect(got.dropped).toEqual([
+      { depDir: "packages/app/node_modules", reason: "missing-tracked-parent" },
+    ]);
+  });
+
+  it("reports git-unavailable for every entry when git cannot answer", async () => {
+    const nonGit = fs.mkdtempSync(path.join(os.tmpdir(), "overlay-nongit-reason-"));
+    tmpDirs.push(nonGit);
+    const got = await classifyDepDirsForOverlay(["node_modules"], nonGit);
+    expect(got.valid).toEqual([]);
+    expect(got.dropped).toEqual([{ depDir: "node_modules", reason: "git-unavailable" }]);
   });
 
   it("keeps a nested dep dir when its parent exists and it is ignored", async () => {
@@ -541,6 +611,40 @@ describe("validDepDirsForOverlay", () => {
     tmpDirs.push(nonGit);
     fs.mkdirSync(path.join(nonGit, "node_modules"));
     expect(await validDepDirsForOverlay(["node_modules"], nonGit)).toEqual([]);
+  });
+});
+
+describe("parseUnignoredByNegation", () => {
+  it("collects only the paths whose matching rule is a negation", () => {
+    const out = [
+      ".gitignore:2:!foo\tfoo",
+      ".gitignore:1:*\tfoo/",
+      ".gitignore:1:*\tbar",
+      "::\tsrc",
+    ].join("\n");
+    expect(parseUnignoredByNegation(out)).toEqual(new Set(["foo"]));
+  });
+
+  it("tolerates a colon in the ignore file's own path and an empty output", () => {
+    expect(parseUnignoredByNegation("a:b/.gitignore:3:!keep\tkeep")).toEqual(new Set(["keep"]));
+    expect(parseUnignoredByNegation("")).toEqual(new Set());
+  });
+});
+
+describe("missingDepDirParents", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it("lists every absent ancestor, shallowest first, and none that exist", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "overlay-parents-"));
+    tmpDirs.push(dir);
+    fs.mkdirSync(path.join(dir, "packages"));
+    expect(missingDepDirParents("node_modules", dir)).toEqual([]);
+    expect(missingDepDirParents("packages/app/node_modules", dir)).toEqual(["packages/app"]);
+    expect(missingDepDirParents(".tools/blender", dir)).toEqual([".tools"]);
+    expect(missingDepDirParents("a/b/c", dir)).toEqual(["a", "a/b"]);
   });
 });
 
@@ -699,6 +803,40 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     });
     expect(ok).toBe(false);
     expect(fs.readFileSync(markerPathFor(dir), "utf8")).toBe("EXISTING");
+  });
+
+  // The incident: two of three declared dirs were mounted, the base hit stamped on that partial
+  // quorum, and the install step that fills the third never ran while ShipIt reported success.
+  it("refuses to stamp when a declared dep dir is not among the mounted specs", async () => {
+    const { dir, head } = await gitWorkspace();
+    fs.writeFileSync(
+      path.join(dir, "shipit.yaml"),
+      "agent:\n  install:\n    - npm install\n  dep-dirs:\n    - node_modules\n    - .tools/blender\n",
+    );
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+    });
+    expect(ok).toBe(false);
+    expect(fs.existsSync(markerPathFor(dir))).toBe(false);
+  });
+
+  it("stamps when every declared dep dir has a spec", async () => {
+    const { dir, head } = await gitWorkspace();
+    fs.writeFileSync(
+      path.join(dir, "shipit.yaml"),
+      "agent:\n  install:\n    - npm install\n  dep-dirs:\n    - node_modules\n    - .tools/blender\n",
+    );
+    const blender = { ...spec("h2", 3), depDir: ".tools/blender", mountPath: "/workspace/.tools/blender" };
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3), blender],
+      readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+    });
+    expect(ok).toBe(true);
   });
 
   it("stamps on a commit MISMATCH when the pointer's depsHash matches this workspace (docs/198)", async () => {

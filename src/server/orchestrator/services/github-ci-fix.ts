@@ -254,6 +254,7 @@ export async function triggerCIFix(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
+    statusNudge: undefined,
   }));
   return { status: queued ? "queued" : "sent", attemptNumber: 1 };
 }

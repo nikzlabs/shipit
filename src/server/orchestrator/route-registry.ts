@@ -127,6 +127,9 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     const repos = repoStore.list();
     client.write(`event: repo_list\ndata: ${JSON.stringify({ repos })}\n\n`);
 
+    // The read-only builder: a viewer connecting changes no eligibility, and
+    // seeding here would make the stored pin depend on someone opening a tab
+    // (planning#578). A mutation uses `seedAndBuildAgentListPayload`.
     client.write(`event: agent_list\ndata: ${JSON.stringify(buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager))}\n\n`);
     client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
 

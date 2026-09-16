@@ -12,6 +12,7 @@ import { bugTool } from "./mcp-tools/bug.js";
 import { permissionTool } from "./mcp-tools/permission.js";
 import { askTool } from "./mcp-tools/ask.js";
 import { proposeActionsTool } from "./mcp-tools/propose-actions.js";
+import { sessionStatusTool } from "./mcp-tools/session-status.js";
 import { proposeRepoSessionTool } from "./mcp-tools/propose-repo-session.js";
 import type { ToolDeps, ToolDescriptor } from "./mcp-tools/types.js";
 
@@ -22,6 +23,7 @@ export const TOOL_REGISTRY: Record<string, ToolDescriptor> = {
   [permissionTool.id]: permissionTool,
   [askTool.id]: askTool,
   [proposeActionsTool.id]: proposeActionsTool,
+  [sessionStatusTool.id]: sessionStatusTool,
   [proposeRepoSessionTool.id]: proposeRepoSessionTool,
 };
 

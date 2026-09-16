@@ -23,6 +23,8 @@ import {
   selectionExists,
 } from "../../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
+import { namesForMessage } from "../../shared/settings-catalogue/projection.js";
+import { renderLine, renderOwn, renderValue, type Rendered } from "../../shared/settings-catalogue/rendered.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderRoute } from "../provider-account-manager.js";
 import {
@@ -77,7 +79,7 @@ export type RoleParamsPurpose = "run" | "save";
 
 export type RoleParamsCheck =
   | { ok: true; params: RolePinnedParams }
-  | { ok: false; kind: RoleCheckFailureKind; field: RoleInvalidField; message: string };
+  | { ok: false; kind: RoleCheckFailureKind; field: RoleInvalidField; message: Rendered };
 
 export function checkRolePinnedParams(
   params: RolePinnedParams,
@@ -96,7 +98,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "harnessId",
-      message: `No harness named "${harnessId}".`,
+      message: renderLine(`No harness named ${renderValue(harnessId)}.`),
     };
   }
   const installed = deps.isInstalled ?? isHarnessInstalled;
@@ -105,7 +107,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "harnessId",
-      message: `${harness.name} is not installed on this deployment.`,
+      message: renderOwn(`${harness.name} is not installed on this deployment.`),
     };
   }
   const service = getService(params.serviceId);
@@ -114,7 +116,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "service",
-      message: `No service named "${params.serviceId}".`,
+      message: renderLine(`No service named ${renderValue(params.serviceId)}.`),
     };
   }
   if (!service.modes.some((mode) => mode.kind === params.billingMode)) {
@@ -122,7 +124,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "billingMode",
-      message: `${service.name} has no "${params.billingMode}" billing mode.`,
+      message: renderLine(`${service.name} has no ${renderValue(params.billingMode)} billing mode.`),
     };
   }
   // A pinned role never follows a retired model's successor.
@@ -131,9 +133,10 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "model",
-      message:
-        `No model "${params.modelId}" is offered by ${params.serviceId} on the `
-        + `"${params.billingMode}" billing mode.`,
+      message: renderLine(
+        `No model ${renderValue(params.modelId)} is offered by ${renderValue(params.serviceId)} `
+        + `on the ${renderValue(params.billingMode)} billing mode.`,
+      ),
     };
   }
   const model = getModel(selection)!;
@@ -143,7 +146,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "harnessId",
-      message: `${harness.name} cannot speak to ${label} — they share no API style.`,
+      message: renderOwn(`${harness.name} cannot speak to ${label} — they share no API style.`),
     };
   }
   if (params.reasoningEffort !== undefined) {
@@ -154,9 +157,10 @@ export function checkRolePinnedParams(
         ok: false,
         kind: "catalogue",
         field: "reasoningEffort",
-        message:
+        message: renderOwn(
           `${harness.name} offers no reasoning levels on ${label}, so a role on it cannot name one. `
           + "Use the Default level.",
+        ),
       };
     }
     if (!options.some((option) => option.value === params.reasoningEffort)) {
@@ -164,9 +168,10 @@ export function checkRolePinnedParams(
         ok: false,
         kind: "catalogue",
         field: "reasoningEffort",
-        message:
-          `"${params.reasoningEffort}" is not a reasoning level ${harness.name} offers on ${label}. `
-          + `Valid levels: ${options.map((o) => o.value).join(", ")}, or Default.`,
+        message: renderLine(
+          `${renderValue(params.reasoningEffort)} is not a reasoning level ${harness.name} offers `
+          + `on ${label}. Valid levels: ${options.map((o) => o.value).join(", ")}, or Default.`,
+        ),
       };
     }
   }
@@ -178,9 +183,10 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "credential",
       field: "service",
-      message:
+      message: renderLine(
         `${service.name} has no credential ${harness.name} can use for `
-        + `${params.serviceId}/${params.billingMode}.`,
+        + `${renderValue(params.serviceId)}/${renderValue(params.billingMode)}.`,
+      ),
     };
   }
   return { ok: true, params: normalize(params) };
@@ -197,6 +203,31 @@ function normalize(params: RolePinnedParams): RolePinnedParams {
   };
 }
 
+/**
+ * Every refusal this module raises, on ONE line
+ * (docs/299-agent-settings-access req 2, planning#577).
+ *
+ * `shipit agent run --role` reaches these from inside a session, and each
+ * message names stored text — a role's harness, service, billing mode, model
+ * and level, or the name itself — none of which is gated to one line by the
+ * write. Rendering at the raise rather than at each message is the point: the
+ * first pass rendered the two messages it had found, and an override that
+ * failed a step earlier walked straight past them.
+ *
+ * {@link renderLine} and not {@link renderOwn}: these lines embed a value
+ * another mint already quoted, and collapsing runs of space reaches inside those
+ * quotes — reporting a model id the role is not pinned to (planning#537).
+ *
+ * It covers this module's own EXITS and says nothing about what the module
+ * RETURNS. {@link checkRolePinnedParams} hands its message back to a caller
+ * that raises elsewhere — the settings preflight — and that caller printed it
+ * unrendered for as long as this docstring read as though the whole file were
+ * covered (planning#537). Hence the message's own {@link Rendered} type.
+ */
+function refuse(message: string): never {
+  throw new ServiceError(400, renderLine(message));
+}
+
 export function validateRolePinnedParams(
   params: RolePinnedParams,
   deps: RoleValidatorDeps,
@@ -204,7 +235,10 @@ export function validateRolePinnedParams(
   purpose: RoleParamsPurpose = "run",
 ): RolePinnedParams {
   const checked = checkRolePinnedParams(params, deps, purpose);
-  if (!checked.ok) throw new ServiceError(400, `${what} cannot run: ${checked.message}`);
+  // Flattened whole: the message names the STORED harness, service, billing
+  // mode, model and reasoning level of the role, none of which is gated to one
+  // line, and this error is a line the agent reads (req 2).
+  if (!checked.ok) refuse(`${what} cannot run: ${checked.message}`);
   return checked.params;
 }
 
@@ -217,12 +251,19 @@ export function resolveRoleByName(
   const role = deps.credentialStore.getRole(name);
   if (!role) throw unknownRole(name, deps);
   const overridden = hasOverride(overrides);
+  // The name the CALLER supplied, echoed back so a refusal says which role it
+  // means — echoed rather than projected, being the argument the caller already
+  // holds, which is the treatment `settings-read.ts` gives a key it does not
+  // know. It needs no flattening of its own: {@link refuse} renders the whole
+  // line, and a second partial defence beside it is what invites the next
+  // message to be written without one.
+  const shown = name;
 
   if (role.params.kind === "pinned") {
     const params = validateRolePinnedParams(
       applyOverrides(role.params, overrides, deps, "role"),
       deps,
-      overridden ? `The role "${name}" with those overrides` : `The role "${name}"`,
+      overridden ? `The role "${shown}" with those overrides` : `The role "${shown}"`,
     );
     return freezeTarget(role, params, overridden, undefined);
   }
@@ -233,16 +274,15 @@ export function resolveRoleByName(
     const params = validateRolePinnedParams(
       complete,
       deps,
-      `The role "${name}" with those overrides`,
+      `The role "${shown}" with those overrides`,
     );
     return freezeTarget(role, params, true, undefined);
   }
 
   const chosen = selectReviewer(implementer, deps);
   if (!chosen.ok) {
-    throw new ServiceError(
-      400,
-      `The role "${name}" cannot run: neither configured reviewer has a credential that can run `
+    refuse(
+      `The role "${shown}" cannot run: neither configured reviewer has a credential that can run `
         + "right now. Connect a provider in Settings, or wait for the quota to reset.",
     );
   }
@@ -261,17 +301,22 @@ export function resolveRoleByName(
   const params = validateRolePinnedParams(
     applyOverrides(base, overrides, deps, "ranked"),
     deps,
-    `The role "${name}" with those overrides`,
+    `The role "${shown}" with those overrides`,
   );
   return freezeTarget(role, params, true, chosen);
 }
 
+/**
+ * Which roles exist, named through the projection door rather than joined raw
+ * (docs/299-agent-settings-access req 2). A role name is arbitrary user text, so
+ * this message is one of the agent-facing surfaces that enumerates stored
+ * strings — and `shipit agent run --role` reaches it from inside a session.
+ * `namesForMessage` is the same treatment the settings surface gives the same
+ * store, and it reports what it will not name as a count.
+ */
 function unknownRole(name: string, deps: RoleDeps): ServiceError {
-  const known = deps.credentialStore
-    .getRoles()
-    .map((role) => role.name)
-    .join(", ");
-  return new ServiceError(400, `Unknown role "${name}". Roles on this install: ${known}.`);
+  const known = namesForMessage(deps.credentialStore.getRoles().map((role) => role.name));
+  return new ServiceError(400, renderOwn(`Unknown role "${name}". Roles on this install: ${known}.`));
 }
 
 function hasOverride(overrides: RoleOverrides): boolean {
@@ -306,8 +351,7 @@ function applyOverrides(
   if (baseKind === "ranked" && overrides.modelId !== undefined) {
     const located = locateModel(overrides.modelId, overrides, harnessId, deps);
     if (!located) {
-      throw new ServiceError(
-        400,
+      refuse(
         `No model "${overrides.modelId}" is offered by any service`
           + `${overrides.serviceId ? ` on ${overrides.serviceId}` : ""}.`,
       );
@@ -358,8 +402,7 @@ function refuseModelAwayFromRolesService(
   if (!remedy) return;
   const service = getService(params.serviceId);
   const offered = [...new Set(elsewhere.map((c) => `${c.serviceId}/${c.billingMode}`))].join(", ");
-  throw new ServiceError(
-    400,
+  refuse(
     `${service?.name ?? params.serviceId} does not offer "${params.modelId}" on the `
       + `"${params.billingMode}" billing mode. Overriding the model does not move a service or `
       + `billing mode you did not name — that came from the role. Name `
@@ -445,8 +488,7 @@ export function joinRolePrompt(
     ? `## Standing instructions for the "${target.roleName}" role\n\n${standing}\n\n## Your task\n\n${task}`
     : task;
   if (joined.length > limit) {
-    throw new ServiceError(
-      400,
+    refuse(
       standing
         ? `The "${target.roleName}" role's standing instructions plus this task exceed `
           + `${limit.toLocaleString()} characters (${joined.length.toLocaleString()}). `

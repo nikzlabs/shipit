@@ -1,5 +1,5 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
-import { maxOutputTokens, postJson, requireCompleteText, uncachedInput } from "./http.js";
+import { MAX_OUTPUT_TOKENS, postJson, requireCompleteText, uncachedInput } from "./http.js";
 import type { DirectCall, DirectCallUsage } from "./types.js";
 
 const LABEL = "OpenAI Chat Completions";
@@ -27,7 +27,7 @@ export function createOpenAiChatCompletionsCall(fetchImpl: typeof fetch = fetch)
       { Authorization: `Bearer ${req.apiKey}`, ...req.headers },
       {
         model: req.apiModelId,
-        max_tokens: maxOutputTokens(req.maxOutputChars),
+        max_tokens: MAX_OUTPUT_TOKENS,
         messages: [{ role: "user", content: req.prompt }],
       },
       req.signal,

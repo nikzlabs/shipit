@@ -117,7 +117,9 @@ such flag — so background work refuses that harness rather than running it wit
 Measuring it properly is [planning#546](https://github.com/nikzlabs/shipit-planning/issues/546).
 
 - [x] Orchestrator-side deadline returning the raw transcript, not waiting on teardown.
-- [x] Split the cleanup budget into a direct value and a harness value.
+- [x] ~~Split the cleanup budget into a direct value and a harness value.~~ Reverted: one
+  `CLEANUP_TIMEOUT_MS`, and no per-call output budget at all. See plan.md, "The output budget, and
+  why it is not re-derived".
 - [x] Remove `pickCleanupProvider`; keep `isSane`.
 - [x] Move `emitNonTurnFailure` out of the shared path so cleanup writes nothing to chat (req 6).
 

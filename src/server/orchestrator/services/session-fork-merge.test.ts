@@ -8,6 +8,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { forkSession, mergeSession } from "./session-fork-merge.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { SessionManager } from "../sessions.js";
+import type { SessionStatus } from "../../shared/types.js";
 import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 
 vi.mock("../session-worker-uid.js", async (importOriginal) => {
@@ -183,7 +184,10 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     return { bareDir, parentDir };
   }
 
-  interface StubRow { id: string; title: string; workspaceDir?: string; branch?: string; remoteUrl?: string }
+  interface StubRow {
+    id: string; title: string; workspaceDir?: string; branch?: string; remoteUrl?: string;
+    sessionStatus?: SessionStatus;
+  }
 
   function makeForkSessionManager(parent: StubRow) {
     const rows = new Map<string, StubRow>([[parent.id, { ...parent }]]);
@@ -201,6 +205,8 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
         setWarm: () => {},
         rename: (id: string, title: string) => upsert(id, { title }),
         setBranchRenamed: () => {},
+        setSessionStatus: (id: string, sessionStatus: SessionStatus | null) =>
+          upsert(id, { ...(sessionStatus ? { sessionStatus } : {}) }),
       } as unknown as SessionManager,
     };
   }
@@ -245,6 +251,37 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     const forkGit = new GitManager(forkDir);
     expect(await forkGit.getDefaultBranch()).toBe("main");
     expect(await forkGit.getCurrentBranch()).toBe("shipit/forkslug");
+  });
+
+  // docs/303 — the fork's starting point is the parent's card, and only the fork's own
+  // next turn can confirm it.
+  it("copies the parent's status card, marked stale", async () => {
+    const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
+    const card: SessionStatus = {
+      status: "Routes done.",
+      needsYou: ["Add the Stripe key."],
+      actions: [{ id: "webhook", label: "Wire it", payload: "Add the route.", offerId: "o-1", offeredAt: "2026-09-15T00:00:00.000Z" }],
+      fresh: true,
+      writeSeq: 3,
+    };
+    const { result, rows } = await fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir, sessionStatus: card,
+    }, bareDir);
+
+    expect(rows.get(result.session.id)?.sessionStatus).toEqual({ ...card, fresh: false });
+    // The parent's own card is untouched.
+    expect(rows.get("parent-id")?.sessionStatus).toEqual(card);
+  });
+
+  it("leaves a fork of a card-less parent with no card at all (req 22)", async () => {
+    const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
+    const { result, rows } = await fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir,
+    }, bareDir);
+
+    expect(rows.get(result.session.id)?.sessionStatus).toBeUndefined();
   });
 
   it("reads the bare cache's HEAD in preference to the parent's, healing a fork of a fork", async () => {

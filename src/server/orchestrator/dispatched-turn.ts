@@ -1,6 +1,6 @@
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
-import { releaseResidentOnSpawnChange } from "./resident-spawn-guard.js";
+import { releaseResidentOnSpawnChange, releaseResidentOnStatusCardChange } from "./resident-spawn-guard.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext, imageAttachmentRefusal } from "./validation.js";
@@ -118,6 +118,7 @@ async function runDispatchedTurnInner(
       resetMergedBranch: undefined,
       compactContext: undefined,
       silent: true,
+      statusNudge: undefined,
     }), createAgent);
     return;
   }
@@ -306,6 +307,11 @@ async function runDispatchedTurnInner(
         runner,
         desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
       );
+      // docs/303 req 21, the same comparison the interactive path makes. Skipped when the
+      // dep is unwired, where the setting cannot be read at all.
+      if (deps.statusCardEnabled) {
+        releaseResidentOnStatusCardChange(runner, deps.statusCardEnabled());
+      }
     }
     // Reuse follows the resident process, even if live steering was since disabled.
     const resident =
@@ -339,6 +345,8 @@ async function runDispatchedTurnInner(
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
+      ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+      ...(opts.statusNudge !== undefined ? { statusNudge: opts.statusNudge } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
       emitUserEcho: attempt === 0 && !opts.silent,

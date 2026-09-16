@@ -92,6 +92,19 @@ describe("Integration: propose-actions route", () => {
     expect(error).toContain(String(MAX_PAYLOAD_LEN));
   });
 
+  it("refuses with 409 while the session status card is on, naming session_status", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+    credentialStore.setSessionStatusCard(true);
+
+    const res = await post({
+      actions: [{ id: "a1", label: "Open a PR", payload: "Open a PR for this change." }],
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect((res.json() as { error: string }).error).toContain("session_status");
+  });
+
   it("rejects duplicate ids and an empty actions array at the route", async () => {
     const dup = await post({
       actions: [

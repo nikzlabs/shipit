@@ -122,9 +122,17 @@ has nothing to bind to.
 ### The residual guard
 
 Derivation cannot stop someone hand-writing a control that was never declared, so
-one backstop test renders each tab, enumerates its interactive elements
-(`input`, `select`, `button`, `[role=switch]`, `textarea`) and fails on any that
-is neither a declaration nor a reasoned `not-a-setting` exclusion.
+one backstop test renders each tab, enumerates its interactive elements and fails
+on any that is neither a declaration nor a reasoned `not-a-setting` exclusion.
+
+**The element list is widened past the handful the dialogs use today.** It was
+`input`, `select`, `button`, `textarea`, `[role=switch]` and the two menu-item
+roles that carry a value — so a `contenteditable` box or a hand-rolled
+`[role=checkbox]` was a control no rule could fail on, whatever it bound. Every
+value-carrying ARIA role is now named beside the tags, and `contenteditable`
+counts on any value but an explicit `false`. It remains an **enumeration**, so a
+gap in it is still a silent pass rather than a visible one; that is the reason to
+keep it ahead of the shapes in use rather than level with them.
 
 Match on the declaration binding, falling back to accessible name — **not** on
 `data-testid`, which identifies a control without proving it shares the
@@ -140,6 +148,25 @@ values (address, user, port) that no declaration described. The walk now presses
 every trigger in scope and walks whatever appears in the document as a result,
 inside the pane or in a portal beside it; what one press discloses is itself in
 scope, so a form inside a form is reached with nothing naming either.
+
+**A toggle is a trigger too.** Switches and checkboxes were left out of the
+crawl's triggers on the reasoning that the walk already accounts for the toggle —
+true of the toggle, and not of the field it GATES. Voice delivery renders its
+webhook boxes only once delivery is external, and the fixture had to seed that
+state by hand for them to be on screen at all; a gate nobody thought to seed was
+a form the crawl could not open. Flipping one is as safe as pressing *Reset
+Everything* already is: a write either leaves through `fetch`, which the fixture
+rejects, or lands in the test's own `localStorage`. Neither outlives the test.
+
+One gate this does not reach, stated rather than implied. A **declared** global
+toggle saves optimistically and **rolls back** when the write fails
+(`saveDeclaredBoolean`), and the fixture makes every write fail — so a field
+gated behind one can be gone again before the crawl looks, since the walk runs
+after `userEvent.click()` resolves. No gate in either dialog is of that shape
+today: the ones that exist are browser-store values, which never call `fetch` and
+so never roll back. Closing it means a fixture that answers settings writes
+`{ ok: true }`, which is a change to what every press in both dialogs does — not
+one to make for a shape no panel has.
 
 Three bounds are stated in the test rather than hidden. Scope is the pane and
 what the pane disclosed, never the whole document, so pressing the dialog's own
@@ -210,9 +237,51 @@ entries are aggregates rather than fields, and `fieldsDeclaredIn` names the one
 nested map as a literal for the same reason — pointing at nothing must not
 account for a field.
 
-What stays undecidable, and is stated rather than implied: a role-editor box
-bound to a *different role field's* declaration. The DOM cannot see which
-property the handler saves, and the stored map cannot see the DOM.
+**One declaration is held by one control** — the arithmetic of that same rule,
+where the DOM can see it. One declaration describes one field, so a second box
+holding a setting's value means one of the two saves something else, and the
+agent has no declaration for whatever that is. This is what catches the shape a
+same-tab check cannot: a new browser preference writing a `localStorage` key of
+its own while binding a boolean already declared on that tab. The setting it
+borrowed still renders a control of its own, so the pair is visible.
+
+What is counted is a **value**, not a control. Three exemptions, each stated
+where the rule is. An **item** declaration is one field per row, so a list of
+them is many controls binding one declaration honestly. A **composite** value —
+the git identity, a secret bag, a model tuple — is several boxes by construction.
+And a **segmented choice** counts once: `bindSettingOption(key, value)` writes
+`data-setting-option`, and the **container** — `role="group"` or
+`role="radiogroup"`, which a picker ought to carry anyway — is the choice.
+
+**That last one is counted, not granted, and the difference is the whole rule.**
+Written first as an exemption — any control carrying the attribute dropped out of
+the count — it let a new box join an existing declaration by writing one word,
+which is the loophole it was added to close. Three further checks make the
+attribute a claim the walk tests rather than a password. An option must be
+**selectable**: a box is typed into, so it is a field of its own however it is
+labelled, and appending one to a real picker's container is the nearest thing to
+a plausible mistake here. The options of one choice must be **distinct**, asked
+per group rather than per declaration, because two rows of a collection each
+render a picker over the same values honestly. And where the declaration offers a
+set they must be **from it**.
+
+The container carries the grouping because the immediate parent cannot: options
+wrapped one to a `span` would read as one choice each — a false failure — and two
+pickers rendered through fragments into one parent would merge. An option outside
+any container falls through to being its own value, which fails the count rather
+than passing it. Native ARIA radios take the same rule, and it is what tells two
+of them apart: `RepoColorPicker` renders a `role="radiogroup"` of unnamed
+`role="radio"` buttons, so grouping on a `name` that is not there collapsed every
+such picker on a tab into one.
+
+What stays undecidable, and is stated rather than implied. A role-editor box
+bound to a *different role field's* declaration: the DOM cannot see which
+property the handler saves, and the stored map cannot see the DOM — the same gap
+for any collection item, since two rows are not distinguishable in rendered DOM.
+A control claiming a declaration whose own control cannot be on screen at the
+same time — the MCP form renders a command or a URL and never both, so there is
+nothing to count twice. And a control that saves the declared field to the wrong
+store, which belongs to the store and not to a walk over the dialog.
 
 `setup` is what the map found — a pre-start command for non-npm stdio servers,
 designed in `docs/088-mcp-integration/plan.md:405`, whose type and validator
@@ -327,23 +396,153 @@ repository file or a web page (planning#577).
 
 `shared/settings-catalogue/rendered.ts` is the one door, and the rule it carries
 is **no emitted text contains a character that can begin a line**: not `\n` and
-`\r`, and not U+0085, U+2028 or U+2029 either — `\s` matches none of those three,
+`\r`, and not U+0085, U+2028 or U+2029 either — `\s` does not match U+0085,
 which is how a local `replace(/\s+/g, " ")` looks like the rule and is not it.
-Three mints, all returning a branded `Rendered` the type system will not accept a
+Four mints, all returning a branded `Rendered` the type system will not accept a
 plain string in place of. `renderValue` quotes and escapes a stored value;
+`renderJson` escapes a whole serialized document — and answers
+`(not representable)`, which is deliberately not JSON, for a value
+`JSON.stringify` refuses;
 `renderOwn` flattens ShipIt's own words; `renderAddress` refuses an address
 outright, because `--item` takes an address back and it cannot be quoted out of
 harm's way — that instance is named by nothing, exactly as a URL-shaped name is,
 and the read counts it. Choosing the wrong mint costs legibility and never the
 guarantee, since all three flatten.
 
-**What the brand governs is the fields that carry a VALUE**: `formatSetting`'s
-result, an entry's and an item's `display`, an item's `address`, a
-`lastProposal`'s two halves, and both sides of a proposed change. So shortening
-a projected value afterwards, or formatting a stored one some other way, is a
-compile error rather than the one line nobody re-checks. It does not govern the
-fields carrying ShipIt's own prose — a note, an effect's detail, a refusal
-sentence — which are literals in this repository and stay plain strings.
+**The brand governs every free-text field of the read, not only the
+value-bearing ones.** It began narrower — `formatSetting`'s result, an entry's
+and an item's `display`, an item's `address`, a `lastProposal`'s two halves,
+both sides of a proposed change — on the reasoning that ShipIt's own prose is
+made of literals in this repository. One such field was not: an item's `notes`
+interpolated a credential route's stored `status` (`routeStatusNote`), so the
+same forgery walked through the door beside the value's. A fact about a value is
+not a literal because the sentence around it is, and a rule applied field by
+field recreates the omission it was written for — `CLAUDE.md` → centralise the
+act, not the read.
+
+So `notes`, `label`, `summary`, `description`, an address's `noun`, a refusal's
+`explanation`, an effect's `detail` and a `lastProposal`'s `cardId`,
+`proposedAt`, `resolvedAt` and `sessionId` are `Rendered` too, minted where the
+entry is built. The last four look like ShipIt's own — it writes an id and an
+ISO timestamp — but they come back from SQLite with a cast, so the line's
+guarantee is the read's rather than the writer's.
+
+What stays plain: the union-typed fields (`phase`, `operation`, `state`,
+`unreadableReason`), because the agent switches on them and each renderer
+flattens where it turns one into text; `key`, a catalogue constant and the
+address a caller passes back; and `value`, `shape` and `live`, the
+machine-readable half — `value` is never printed, `display` being the line that
+carries it, and the other two are serialized through `renderJson`.
+
+**The escape covers a character of two code units.** The deny-set is matched
+with the `u` flag, so one match can be one code point of two UTF-16 units — the
+tag block and U+1BCA0 are format characters — and escaping the lead surrogate
+alone left the trail one behind as a lone surrogate. On the text path that is a
+garbled character; on `--json` it silently changed the value a reader parses,
+which is the one thing that escape promises not to do.
+
+**The rule reaches the surfaces beside the read.** The next-turn notice composes
+one bullet from three persisted pieces — the setting key, the card's recorded
+effect state, and a phase this build may not know — and it is rendered whole
+rather than piece by piece, which is the shape of the `notes` defect one surface
+over. The two role errors flatten `checked.message` for the same reason: it
+names the role's stored harness, service, billing mode, model and level.
+
+**The rule is a type assertion rather than a habit.**
+`settings-read.test.ts` holds a compile-time guard (`PlainStringFields`) over
+each view: a new string-typed field fails `npm run typecheck` until it is
+minted. The allow-list grants four names — `key`, `value`, `shape`, `live` —
+and each is a decision argued at the renderer rather than a claim about what
+TypeScript prevents, since nothing stops `String(x)` printing an `unknown`. The
+store readers mint at their own constructor (`unreadable()`), so a reader added
+later cannot supply a raw reason.
+
+The guard **looks through arrays, nested objects and union members**, and took
+three passes to get there. The first tested each direct property, so
+`notes: string[]` — the very regression it exists to prevent — passed it; the
+second tested a union whole, so `string | null` passed; the third walked `{}`
+for a dangerous key and found none, though `{}` accepts any string there is. A
+guard that cannot fail on the defect it was written for is worse than none,
+because it is read as coverage. Its remaining edge is a template-literal type,
+which no mint produces and nothing here declares — recorded rather than claimed
+away.
+
+**`--json` is part of the boundary, not an escape from it.** `JSON.stringify`
+escapes the C0 controls and stops, so a stored value carrying U+2028 put a real
+line break in the agent's stdout while `display`, beside it in the same
+document, was correctly escaped. The three `--json` paths serialize through
+`renderJson`, which escapes the three survivors in the JSON spelling of the same
+character — so what a reader parses is unchanged and only the bytes on the line
+differ.
+
+**A proposal's own metadata is stored text too.** `summarize` copied `cardId`,
+`createdAt`, `resolvedAt` and `sessionId` from SQLite into the `Last proposal:`
+line unrendered, and `proposalPhaseHeadline` echoed an unrecognised phase raw —
+so a malformed row forged a SECOND `Last proposal:` line, which is the field an
+agent reads to decide whether the user has already dealt with a change. All four
+are `Rendered` now and the headline flattens its fallback. `phase` and
+`operation` stay their unions, because the agent switches on them; each renderer
+flattens where it turns one into text.
+
+**The shim re-mints everything and re-QUOTES nothing.** The wire is `Rendered`,
+so quoting a value again there would quote what is already quoted — but the
+brand does not survive the hop, so every line is minted with `renderLine`, which
+keeps such text byte-for-byte. What the shim composes itself is the `--item`
+echo — flattened with `renderOwn`, that address being the argument THIS call
+supplied rather than anything the read rendered — and the two JSON blobs in
+`get`, which go through `renderJson`: `JSON.stringify` escapes the C0 controls
+and leaves U+2028, U+2029 and U+0085 as themselves.
+
+**"Trust what the read sent" was the hole, and the boundary is now structural.**
+Three fixes for this one class each guarded the path in front of them and left
+the next one open: stored VALUES (planning#577), then item NOTES, then the
+MESSAGES a service composes — a refusal, a `ServiceError`, validator output —
+which `checkRolePinnedParams` built from a role's stored harness id and the
+settings preflight handed out unchanged (planning#537). Each fix was a mint at a
+known path; the next path was not known yet. So the property established instead
+is **anything the settings shim prints is `Rendered`**, carried by two things
+that need nobody's memory:
+
+- **The types demand a mint at each hand-off.** `SettingsOperation.preflight`,
+  `RoleParamsCheck.message` and `ValidationResult.message` are `Rendered`, so a
+  service that builds a plain string cannot return it as a refusal. A
+  `ServiceError` caught and turned INTO a refusal is minted where that happens,
+  which is the one place such a message becomes output.
+- **The printer takes `Rendered`, and there is no second way out.** A brand does
+  not survive HTTP — the shim receives plain JSON — so `settings-out.ts`
+  re-mints, with `renderLine`, which keeps already-rendered text byte-for-byte.
+  What makes it complete is that `shipit-settings.ts` is handed a `SettingsDeps`
+  with **no `ShimIO` on it at all**: no `stdout`, no `fail`, no `success` in
+  scope. Two `@ts-expect-error` assertions in `settings-out.test.ts` fail the
+  build if either half is widened.
+
+**What that does not close, stated rather than implied.** The types stop a
+message nobody minted from being printed. They do not stop a caller deciding, at
+the point of composition, that an ingested message's own newlines are the
+output's line structure: `out.lines(message.split("\n").map(renderLine))`
+compiles and every element of it is honestly `Rendered`. One rule therefore
+remains the author's — **never derive output structure from text this process
+did not compose** — and `serverErrorLines` exists so that nobody has to make
+that call for a relay error: it renders the server's message whole and adds only
+ShipIt's own status note as a second line.
+
+**The mints are not interchangeable, and that is not only about legibility.**
+`renderOwn` collapses runs of space, which is right for ShipIt's own prose and
+wrong the moment a sentence embeds an already-rendered value: it reaches inside
+the quotes, so a refusal about a label stored as `"Team  Account"` reported
+`"Team Account"` — a value the user never set. `renderLine` is the mint for
+composing around one, `renderValue` for putting one into a sentence, and
+`renderOwn` only for text that is ShipIt's own the whole way through.
+
+**The same enumeration exists outside the settings surface.** A role name is
+arbitrary user text, and three agent-facing messages list stored names: a
+settings operation's refusal, `shipit agent run --role` on an unknown name
+(`services/roles.ts`), and `shipit session create --role`
+(`services/session-role.ts`). The first had the projection and the other two
+joined every stored name verbatim, so `namesForMessage` moved into
+`settings-catalogue/projection.ts` beside the projection it is made of, and all
+three call it. It projects each name, emits it through `renderAddress` and
+reports the rest as a count.
 
 **Every string is quoted, with no exception.** A predicate for "plain enough to
 leave bare" is one more thing to get wrong and getting it wrong is a hole rather
@@ -942,10 +1141,18 @@ have them (`roles[].model`, `roles[].harness`, `reviewers[].model`) write a
 harness id and a reasoning level. Long text arriving there is a declaration that
 has outgrown the card, not something to render.
 
-**The agent is told where the line is before it writes a value.** `get` on a
-proposable text setting whose declared `maxLength` is wider than the card reports
-`proposeMaxLength`, and both renderers print it — so the agent composes to the
-limit instead of discovering it in a refusal, which is the second half of req 9.
+**The agent is told where the line is before it writes a value — BOTH lines.**
+`get` on a proposable text setting reports `proposeMaxLength` where the declared
+`maxLength` is wider than the card, and `proposeMaxLines` where the declaration
+allows enough characters to reach the line bound (a side of N characters is at
+most N + 1 lines, so the two sides can only pass 1,000 once 2N + 2 does). Both
+renderers print both, and the line one says out loud that it is COMBINED —
+current plus proposed, added together — because that is the half an agent gets
+wrong: 600 one-character lines replaced by 601 is 1,201 lines and ~1,200
+characters a side, refused by a bound the read used to enforce without
+disclosing. A bound enforced and not disclosed is req 9 half met, and it leaves
+the agent to find the line by being refused, which is the dead end req 9 exists
+to remove.
 
 **And the value reaches the command through a file, not through argv.**
 `shipit settings propose <key> --value-file -` takes the prose on stdin, the same
@@ -1271,6 +1478,28 @@ multi-write operation landed; **uncertain** means the writer cannot say. This is
 the first item of the apply extraction — every other guarantee is worthless if
 "applied" can be false.
 
+Two consequences for a **multi-write** operation, both found by a later
+conformance review of this same rule (planning#537). A pair of writes that can
+half-land has no honest outcome to report, so a global allowlist removal — the
+explicit rows, plus the suppression of a matching shipped default — is one SQLite
+transaction (`EgressAllowlistStore.removeGlobalHost`); ungrouped, a suppression
+that threw left the row deleted and reported `failed`, which says ShipIt verified
+nothing changed. `removeHost` is grouped for the same reason one layer down:
+rows that normalize alike are one host, and deleting them one by one could leave
+the host half off the list. And an operation whose writes landed while its
+*intent* did not is `partial`, never `failed`: removing a host a configured MCP
+server also supplies deletes the user's own row and leaves the host listed, and
+only a removal that wrote nothing at all may claim the list never moved.
+
+The same rule reaches past the outcome to what a write *does*. A save hook
+(`SAVE_HOOKS`) runs only for a value the store kept: a `failed` write is verified
+to hold the old value, and the hooks act on the new one — retiring idle resident
+agents, marking stored status cards stale, refreshing PR snapshots. Running them
+past a rolled-back write changed runtime and persisted state for a save the same
+response reported as refused. `uncertain` and `partial` still run them, because
+the value may be stored and a hook skipped for a stored value leaves the feature
+asleep.
+
 A write followed by a **read** needs the same separation, and a throw is what
 collapses it. `applyReleaseChannel` writes the channel and then checks for
 updates; re-raising the check's own 503 made the card report a change that was
@@ -1278,6 +1507,84 @@ stored as `refused`, and told the agent the same thing on its next turn. The
 check's error is therefore **returned** beside an `applied` outcome that says
 what could not be confirmed, and the route that answers with an update status is
 what raises it.
+
+### And "applied" has to mean what the card showed
+
+A writer reporting `applied` says the write landed, not that it landed as the
+card displayed it. Those came apart three times: `advanced.memoryBudgetMb`
+showed `4096 → 0` over a write that *removes* the field, clearing
+`services.nonTurnModel` showed "not set" over a save hook that seeds a
+replacement selection in the same call, and clearing a role's reasoning level
+showed `""` over params that store no level at all. Requirement 4 is about what
+the user can check before clicking, so a card the store then contradicts is the
+requirement failing.
+
+Three defences, prospective first, because a card corrected after the click is
+already a card someone approved wrongly. **A declaration is where each of the
+first two lives**, which is the point: the normalisation is stated once, beside
+the setting, rather than patched into whichever path noticed it.
+
+1. **A declared type answers with the value the store will hold**
+   (`value-types.ts`): `read(serialize(v))` is `v` for anything `validate`
+   accepts. `text`'s `trim` already worked this way; `unsetBelow` now does, so a
+   budget of `0` validates to `null` and the card says "not set".
+   `store-round-trip.test.ts` holds it over the whole registry — which catches
+   the class where **serialising drops the value**, and not a writer that
+   normalises on its own, since the codec cannot see one.
+2. **A declared type also says what the WRITER stores**, which is the half the
+   codec contract above cannot reach: `serialize` never runs for a bespoke
+   store, so nothing in the round trip can see `pinned()` dropping a role's
+   empty reasoning level. `text`'s `emptyIsUnset` is where that is declared, and
+   `validate` answers `null` — so a card clearing the level says "not set"
+   rather than `""`. Deliberately opt-in: an instructions box stores the empty
+   string it was cleared to, and reporting *that* as "not set" is the same lie
+   reversed. The first draft of this put the normalisation in the declaration's
+   PROJECTION instead, which was wrong twice over — it made a stored level
+   nothing offers read as "not set" while it was still stored and unclearable,
+   and it collapsed a genuine `alsoChanges` deletion into "not set → not set",
+   hiding a write the card was meant to show.
+3. **A change that cannot be shown truthfully is refused**, which is the rule
+   `hostPreflight` and `requireEmittable` already apply. Clearing the
+   background-model pin joins them: `seedNonTurnModel` runs from the save hook
+   AND from every build of the settings payload, so "not set" is not a state
+   that setting can be left in while a model is eligible. The seeded model is
+   not named back either — what the seed picks at apply time is not what it
+   picks now.
+
+Then the backstop. **The store has the last word**: after an `applied` write the
+apply reads the setting back through the agent's own read surface — the same
+read that already answers `effect`, so no second round trip — and compares it
+with what the card promised. A disagreement resolves the card `partial` naming
+both values, rather than `applied`. This is what covers a save hook, whose side
+effects nothing before the write can see.
+
+It verifies **everything the card displayed**, not only the field the card is
+named for: each `alsoChanges` entry carries its declaration key and is read back
+at the same address, because a write that lands its own field while keeping a
+neighbour is exactly the shape a check of the named field alone cannot see.
+
+What it compares is chosen so that it cannot invent a defect, and **failing to
+observe a value is never treated as one** — every branch that cannot compare
+answers "no mismatch":
+
+- Only a `set`. A membership card displays ShipIt's own wording rather than a
+  value, and those writers already answer from the resulting membership.
+- A **prose** card is compared against the approved TEXT, not against the card's
+  `to` — which is ShipIt's summary of the prose, so comparing displays would
+  pass any rewrite of the same length.
+- An **item the read no longer lists** says nothing. An instance leaves the read
+  for reasons that have nothing to do with the write: a rename retires the name
+  the card was addressed by, and a service/mode setting stops being listed the
+  moment its last credential goes (`settings-store-readers.ts` → `modePairs`).
+  Both are writes that landed.
+
+**Known gap, wider than this feature.** `saveGlobalSettings` ends by building
+the settings payload, and that build seeds the background-model pin — so
+applying *any* global setting can pin one that no card named. The click is not
+what causes it (every read of the payload does, including opening the dialog),
+and closing it means deciding when a pin is seeded at all, which is
+background-work behaviour rather than proposal behaviour. Tracked as
+planning#578 rather than fixed alongside the three above.
 
 ## How the agent learns the outcome
 
@@ -1303,7 +1610,7 @@ differently.
 | `dismissed` | does not re-propose *that value* unless asked |
 | `applied` | does nothing; `value` reflects it |
 | `stale` / `refused` | may propose again, from the current value |
-| `partial` | says which half landed and proposes the rest |
+| `partial` | says what did not land — a half of a multi-part write, or a value the store did not keep — and proposes the rest |
 | `failed` | may propose again, saying the last attempt failed |
 | `uncertain` / `unknown` | reads the value and says the outcome was not verified |
 
@@ -1357,31 +1664,117 @@ shipped shapes rule that out, both found in review:
   settlement is lost for good and the notice repeats on every turn forever.
 
 So `delivered()` is called from **one place**: the `agent_result` handler, after
-the `exhausted` check and the failover decision, and under four conditions —
+the `exhausted` check and the failover decision, and under three conditions —
 the result is not a refusal, it `resultIsTheAgentsOwn` (neither `event.error` nor
 `status === "error"` — a conservative filter, since an error result can follow
-partial work, not proof the prompt never ran), **`promptSubmitted`**, and
-**not `wasSuperseded`**.
+partial work, not proof the prompt never ran), and it **answers this prompt**.
 
-The last of those is the retired-process shape: a superseded turn settles
-`interrupted` with its work discarded, but its listeners are still attached, so
-the old process emitting a result for its own prompt would spend the receipt on a
-turn nobody reads — and the successor, which carries the same notice, would have
-none left to settle. Failover and the quota retry deliberately do **not** set the
-flag: those re-dispatch the same prompt, and their own attempt acknowledges.
+`wasSuperseded` is a fourth, and the one exception to that framing: a superseded
+turn settles `interrupted` with its work discarded, but its listeners are still
+attached, so the old process emitting a result for a prompt that genuinely IS its
+own would spend the receipt on a turn nobody reads — and the successor, which
+carries the same notice, would have none left to settle. Failover and the quota
+retry deliberately do **not** set the flag: those re-dispatch the same prompt on a
+new executor, which records its own submission and acknowledges that.
 
-`promptSubmitted` is the nearest thing to prompt ownership available here, and it
-took two review rounds to get right. The executor's listeners go live before its
-`await prepareAgentEnv`, so on a **resident** process a CLI-started turn of the
-agent's own can land a result in that gap and preparation can then fail with the
-prompt never sent. Returning from the submission is not enough either:
-`ProxyAgentProcess.run` / `.sendUserMessage` post to the session worker and
-return before the answer (`proxy-agent-process.ts`), so a result in *that* window
-would be written off against a prompt the worker went on to reject. So the proxy
-exposes `submissionSettled()` and the executor waits for it; a synchronous
-submission has none and is landed when the call returns. What this still does not
-give is identity between a result and a prompt — a result that beats the
-confirmation leaves the notice for the next turn, which is the safe direction.
+### Which turn a result answers
+
+**Recorded as each turn begins, not inferred from the result.** `agent_result`
+carries no identity — no prompt id, no turn id, nothing that survives the round
+trip — and on a resident process the CLI starts turns ShipIt composed no prompt
+for. So the executor (`turn-executor.ts`) keeps a lifecycle for its own prompt:
+
+**`ownTurn`** — `"unsubmitted"` → `"queued"` or `"running"` → `"ended"`. This
+executor's prompt has exactly one turn, which is why this is a lifecycle and not
+a set of flags. Only `"running"` — this prompt IS the turn the CLI is in —
+answers a result.
+
+**`"queued"` is the honest answer to a question the harness does not make
+answerable**, and it is the whole of the design's humility. A prompt submitted
+behind a turn the CLI had already started cannot be told apart from that turn
+afterwards: the turn's end, the prompt's own output, a background task
+notifying, a further turn the CLI begins — every one of them looks the same from
+here. So a queued prompt **never acknowledges**. The receipt stays live and the
+notice rides the next dispatched turn, whose executor starts clear. Only the CLI
+replaying the prompt back moves it out of `"queued"`.
+
+Three rounds of independent review each named the ordering the previous guess
+traded against — a later wake spending a receipt two turns behind it, a queued
+prompt's own output being counted against it, an adopted turn's result answering
+a prompt it never read. That is the evidence that this is **undecidable rather
+than unhandled**, and guessing either way had a shipped failure: read the signals
+as the CLI's and a prompt the agent read perfectly well could never acknowledge,
+so the notice repeated on every turn; read them as the prompt's and a turn that
+never saw it spent the receipt.
+
+**Three signals move the prompt, ordered by how much they prove.** The CLI
+replaying the prompt (below) is the strongest and always acts. A result is next.
+The worker's answer to the submission is the weakest — it says only that the
+prompt was accepted — so it acts **only** from `"unsubmitted"`, and even then
+puts the prompt in `"queued"` rather than `"running"` if a turn of the CLI's was
+already in flight **or** a result passed while the answer itself was in flight.
+The worker's HTTP reply and the CLI's events travel separately, so a confirmation
+can land after the result it confirms; letting it claim the running turn there
+would hand the receipt to whatever the CLI does next.
+
+Which turn a result ends is also taken **before** the handler yields to an
+in-flight re-arm. The CLI keeps emitting across that yield, and a replay landing
+inside it would otherwise hand an earlier result the turn that replay started.
+
+A turn the CLI began is the two events `beginRearm` already answers to —
+`agent_self_wake` and a top-level `agent_assistant` on a harness that
+`startsOwnTurns`. `noteCliStartedTurn` records either, and it matters only until
+the prompt is submitted, which is the only moment the record is read. It is not
+read at all on a process this prompt spawned: that process exists for this prompt
+alone, so no other turn can be running on it, and its first output can beat the
+proxied submission's confirmation.
+
+**This replaces two state flags that the same defect defeated in opposite
+directions, which is why it is a record of turns rather than a third flag.**
+`promptSubmitted` said the prompt had been sent, and `servingCliStartedTurn()`
+said the executor was serving an adopted turn right now:
+
+- A wake **after** a failed dispatched turn re-arms the executor
+  (`rearmForCliStartedTurn`), which keeps `input.noticeDeliveries` — the receipts
+  of the prompt it was built for. The adopted turn's successful result met every
+  condition. The adoption flag closed it; the failed turn's own result ending
+  `ownTurn` closes it now, and the flag is no longer read here.
+- A wake landing **inside** a reusing dispatch's `await prepareAgentEnv` finds
+  `streamingPostTurnFired` false, so `beginRearm` returns without setting that
+  flag — correctly, since this executor has produced no result to re-arm past. By
+  the time the woken turn's result arrives the prompt has been submitted and
+  nothing is being adopted, so both flags read exactly as they do for a turn that
+  ran the prompt. No flag describing "what is happening now" can see this one.
+
+**Where an identity does survive the round trip, it is used.**
+`agent_user_replay` is the CLI echoing back a user message it has read
+(`isReplay` on Claude, synthesized by Codex — docs/140). A replay of this
+prompt's **exact text** means the CLI read it inside the turn now running, so the
+prompt becomes `"running"` whatever it was before; the text match is what stops a
+live steer the user typed from standing in for it. That is what keeps the common
+case whole: a prompt steered into a turn the CLI had already woken for is
+absorbed by it, and the single result that ends that turn acknowledges the notice
+instead of withholding one the agent read.
+
+It is a weaker signal than `requeueUndeliveredSteers` looks like it makes it, and
+the difference was found in review. That mechanism covers messages registered
+through `recordSteeredMessage` — a user's steer — and the executor's own prompt
+is submitted directly, so it is not one of them; the requeue also requires that
+no assistant group appeared after the steer. So the replay is read here as
+positive evidence when it arrives, and its absence is read as *nothing*, which is
+why the fallback is the `"queued"` rule above rather than a claim about delivery.
+
+
+`submissionSettled()` is what makes leaving `"unsubmitted"` mean the prompt was
+*accepted*, and it took two review rounds to get right. The executor's listeners
+go live before its `await prepareAgentEnv`, so on a resident process a result can
+land in that gap and preparation can then fail with the prompt never sent.
+Returning from the submission is not enough either: `ProxyAgentProcess.run` /
+`.sendUserMessage` post to the session worker and return before the answer
+(`proxy-agent-process.ts`), so a result in *that* window would be written off
+against a prompt the worker went on to reject. So the proxy exposes
+`submissionSettled()` and the executor waits for it; a synchronous submission has
+none and is landed when the call returns.
 
 Sequencing after the failover decision is what puts the acknowledgement past
 ShipIt's credential-failure classification (`quotaRetryInProgress`): a retry
@@ -1435,21 +1828,94 @@ Three turn kinds are left out, and none is a judgement about settings:
   model call with nothing to order against.
 
 In all three, the outcome is left pending and rides the next turn — the same
-at-least-once carry that covers a turn which never ran. For the woken turn that
-holds because the receipt binds to the **dispatched** turn: `noticeDeliveries`
-is the executor's own input, the wake path prepares none, and the re-arm reuses
-the finished turn's (already acknowledged) one. So a wake cannot spend a receipt,
-and the outcome is delayed by one turn rather than dropped.
+at-least-once carry that covers a turn which never ran.
 
-**There is no guard test for the woken turn, deliberately.** There is no fix for
-one to fail against, and a guard written for it — pinning that the wake leaves the
-outcome pending — stayed green against a deliberately broken implementation,
-because the re-arm completes after the assertion with no observable to
-synchronise on. A guard that cannot be made to fail is worse than a recorded gap:
-it reads as coverage.
+**For the woken turn that took two fixes, because the earlier reasoning was
+wrong twice.** It first ran: the wake path prepares no notice of its own, the
+re-arm reuses the finished turn's receipt, and *that receipt has already been
+acknowledged*, so a wake cannot spend one. The middle step holds only when the
+dispatched turn succeeded — a turn that failed with a non-auth, non-quota error
+result is acknowledged by none of the conditions above and leaves its receipt
+live. The second reasoning was that excluding an adopted turn closed it. It
+closed one ordering: the other puts the wake *before* the prompt is submitted, so
+nothing is being adopted when the woken turn's result arrives. Both are closed
+now by attributing a result to the turn it ends rather than by describing the
+executor's current state — *Which turn a result answers*, above — and the
+limitation is what the code does.
+
+**And it has guards, one per ordering.** An early attempt at one stayed green
+against a broken implementation and was dropped as worse than a recorded gap — it
+asserted straight after emitting the wake, and the re-arm completes later with
+nothing to synchronise on. What that needed was an observable, not an exception.
+In `integration_tests/settings-outcome-notice.test.ts`: the wake-after-failure
+ordering waits for the adopted turn's own post-turn commit (a second `autoCommit`
+call) before asking whether the outcome is still pending; the
+wake-inside-preparation ordering parks the dispatch in `prepareAgentEnv`, wakes
+the CLI there, releases the prompt and proves no result of that process settles
+the receipt; a third does the same through the assistant signal rather than the
+wake; a fourth holds it through a queued prompt's own turn, background task and
+all. Four hold the terminal and ordering rules review found missing — a later
+wake cannot settle a prompt absorbed into a failed turn, a submission
+confirmation landing after a result can neither claim the running turn nor unseat
+a prompt the CLI has taken, a replay after the turn ended cannot re-open it, and
+a turn beginning inside the re-arm yield cannot answer an earlier result. Three
+hold the other direction: a replayed prompt IS acknowledged by the turn that
+absorbed it, a prompt the CLI takes is still acknowledged when its confirmation
+arrives late, and a freshly spawned process whose output beats its submission
+confirmation still acknowledges. One more holds the replay's text match, so
+another message's echo cannot stand in for this prompt's.
+
+Every condition in the model was reverted singly and fails at least one of these;
+two lines that survived that sweep were deleted as dead rather than left
+unguarded. The sweep is also how the blind assertions were found: `waitForTurn`
+with a predicate that is already true returns before `flushTurn` runs even once,
+so several negative assertions were reading state the result handler had not
+reached. They flush explicitly now (`settleHandlers`), or wait on the adopted
+turn's own post-turn commit where one follows.
+
+**What the three review rounds actually established is where the line of
+decidability is**, and each round moved a guess across it rather than adding a
+rule. `ownTurn` left standing past the turn it described; a confirmation
+reviving a finished prompt; attribution read after a yield the CLI kept emitting
+across; a queued prompt's own output counted against it. The first three are
+genuine ordering bugs and are fixed. The fourth is not a bug with a right
+answer — it is the undecidable case, and the design now says so instead of
+picking a side. The synchronisation matters as much: an acknowledgement decided
+behind an awaited re-arm is not visible to an assertion that flushes one tick,
+and two of these guards passed against a broken implementation until they waited
+on the woken turn's own post-turn commit instead.
 
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
+
+**A notice is delayed by a turn wherever ShipIt sees the turn boundary, and one
+transport race is left where it does not.** Three shapes, named rather than
+claimed away.
+
+**The `"queued"` case is a repeat, not a loss.** A prompt submitted while the CLI
+had a turn of its own in flight acknowledges nothing unless the CLI replays it,
+so the outcome waits for the next dispatched turn, whose executor starts clear.
+Reaching it needs a wake or top-level output inside that dispatch's
+`prepareAgentEnv` window. A prompt whose own result beats its proxied submission
+confirmation lands in the same state by the other clause, which is rarer still —
+the worker answers `/agent/start` before the CLI has produced anything, so a
+whole turn would have to complete inside that window.
+
+**The confirmation race is a loss, and it is the one the model cannot see.** The
+worker's HTTP reply and the CLI's SSE events travel separately. If a wake is in
+transit when the submission is confirmed, the prompt becomes `"running"` — the
+wake that would have queued it arrives afterwards, and by then nothing may read
+it, because after submission a wake is indistinguishable from a background task
+notifying inside the prompt's own turn. The woken turn's result then answers the
+prompt, and if the prompt's own turn later fails the notice is gone. Demoting on
+a late wake would close it and cost far more: background tasks notify mid-turn
+routinely, so every such turn would stop acknowledging and the notice would
+repeat on each one. The race needs the SSE frame to lose to a request made after
+it, and the dispatched turn to fail afterwards.
+
+All of it is strictly better than what it replaced, which **lost** the notice on a
+far commoner shape — any dispatched turn that failed after a wake — and none of
+it is closable without an identity on `agent_result`, which no harness supplies.
 
 Duplicates remain possible by design: a turn that ran and was interrupted, and a
 turn queued behind one that has not yet acknowledged, both carry the notice

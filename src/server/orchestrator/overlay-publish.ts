@@ -11,7 +11,8 @@ import {
   isPnpmRepo,
   resolveOverlayScope,
   depDirsForSession,
-  validDepDirsForOverlay,
+  classifyDepDirsForOverlay,
+  type DepDirDropReason,
 } from "./overlay-session.js";
 import { publishBase, type PublishOutcome } from "./overlay-base.js";
 import {
@@ -45,11 +46,13 @@ export interface OverlayPublishArgs {
 
 export interface DepDirPublishOutcome {
   depDir: string;
-  outcome: PublishOutcome | "error" | "skipped-empty";
+  outcome: PublishOutcome | "error" | "skipped-empty" | "dropped";
   error?: string;
   depth?: number;
   generation?: number;
   attempts?: number;
+  // Set only on "dropped": the declared dir got no overlay at all, so nothing restores it.
+  dropReason?: DepDirDropReason;
 }
 
 // A dev server's one-time cache write can invalidate tar's first snapshot; retry the whole read.
@@ -98,11 +101,19 @@ export async function publishDepDirOverlayBases(
 
   if (isPnpmRepo(workspaceDir)) return [];
 
-  const valid = await validDepDirsForOverlay(depDirsForSession(args.session), workspaceDir);
-  if (valid.length === 0) return [];
+  const eligibility = await classifyDepDirsForOverlay(depDirsForSession(args.session), workspaceDir);
+  const valid = eligibility.valid;
+  // Report drops rather than omitting them: a silently missing dir was only visible by diffing
+  // two sessions' measurement lines (docs/183 FINDINGS, 2026-09-15).
+  const dropped: DepDirPublishOutcome[] = eligibility.dropped.map((d) => ({
+    depDir: d.depDir,
+    outcome: "dropped" as const,
+    dropReason: d.reason,
+  }));
+  if (valid.length === 0) return dropped;
 
   if (!args.installOk) {
-    return valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const }));
+    return [...valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const })), ...dropped];
   }
 
   const fetchHeadInfo = deps.fetchHeadInfo ?? fetchWorkspaceHeadInfo;
@@ -111,7 +122,7 @@ export async function publishDepDirOverlayBases(
 
   const headInfo = await fetchHeadInfo(args.workerUrl, args.signal);
   if (!headInfo) {
-    return valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const }));
+    return [...valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const })), ...dropped];
   }
   const commit = headInfo.commit;
   let markerStamp: { runtimeKey: string; installCommands: string[]; depsHash: string | null } | undefined;
@@ -196,7 +207,7 @@ export async function publishDepDirOverlayBases(
       if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }
-  return outcomes;
+  return [...outcomes, ...dropped];
 }
 
 export function formatOverlayMeasurement(args: {
@@ -210,7 +221,8 @@ export function formatOverlayMeasurement(args: {
     .map((o) => {
       const depth = o.depth !== undefined ? `:d${o.depth}g${o.generation ?? "?"}` : "";
       const attempts = o.attempts !== undefined && o.attempts > 1 ? `:a${o.attempts}` : "";
-      return `${o.depDir}:${o.outcome}${depth}${attempts}`;
+      const drop = o.dropReason !== undefined ? `:${o.dropReason}` : "";
+      return `${o.depDir}:${o.outcome}${drop}${depth}${attempts}`;
     })
     .join(",");
   return (

@@ -1,4 +1,10 @@
-import { joinRendered, renderOwn, renderValue, type Rendered } from "./rendered.js";
+import {
+  joinRendered,
+  renderAddress,
+  renderOwn,
+  renderValue,
+  type Rendered,
+} from "./rendered.js";
 import type {
   AnySettingDeclaration,
   Projection,
@@ -88,9 +94,16 @@ export function projectSetting(
  * rule past this file (planning#577): the fields that carry a VALUE into the
  * agent's line-oriented output are declared as that type, so shortening one
  * afterwards, or formatting a stored value some other way, is a type error
- * rather than the one line nobody re-checks. It does not govern the fields that
- * carry ShipIt's own prose — a note, an effect's detail, a refusal sentence —
- * which are literals in this repository and stay plain strings.
+ * rather than the one line nobody re-checks.
+ *
+ * **Every free-text field of the read is that type, not only the value-bearing
+ * ones.** The first version of this rule governed values and left ShipIt's own
+ * prose — a note, an effect's detail — as plain strings, on the grounds that
+ * those are literals in this repository. One of them was not: a credential
+ * route's stored `status` was interpolated into a note, which is the same
+ * forgery through the door beside this one. A fact about a value is not a
+ * literal just because the sentence around it is, so the type carries the whole
+ * line (`settings-read.ts` → the view types).
  */
 export function formatSetting(
   declaration: AnySettingDeclaration,
@@ -161,6 +174,42 @@ export function userNameProjection(raw: unknown): string | null {
   // The regex admits a trailing space; `--item` is trimmed, so it could not come back.
   if (raw !== raw.trim()) return null;
   return USER_NAME.test(raw) ? raw : null;
+}
+
+/**
+ * Stored names a message may repeat back, and how many it may not: no message
+ * interpolates a stored value that did not come through the projection door
+ * (docs/299-agent-settings-access req 2, plan.md → `emits` is an allowlist of
+ * derived values). A role name is arbitrary user text — `role-settings.ts`
+ * takes any non-blank string within a length limit — so one shaped like
+ * `https://user:TOKEN@host` is storable, and the read emits no item for it.
+ *
+ * It lives here, beside the projection it is made of, because more than one
+ * agent-facing surface enumerates the same stored names: a settings operation's
+ * refusal, `shipit agent run --role` on an unknown name, and `shipit session
+ * create --role`. The first of those had this protection and the other two
+ * listed every stored name verbatim, which is one door closed and two open.
+ *
+ * Each surviving name also goes through {@link renderAddress}, so the result is
+ * {@link Rendered} and the whole message it lands in can be too. A name is the
+ * ADDRESS the reader passes back, so it is emitted verbatim rather than
+ * flattened: one that could start a line of its own is counted with the
+ * withheld instead.
+ */
+export function namesForMessage(names: readonly string[]): Rendered {
+  const shown: Rendered[] = [];
+  for (const raw of names) {
+    const projected = userNameProjection(raw);
+    const address = projected === null ? null : renderAddress(projected);
+    if (address !== null) shown.push(address);
+  }
+  const withheld = names.length - shown.length;
+  if (shown.length === 0 && withheld === 0) return renderOwn("none");
+  if (withheld === 0) return joinRendered(shown);
+  const rest = renderOwn(
+    `${shown.length > 0 ? "and " : ""}${withheld} ShipIt does not name back`,
+  );
+  return joinRendered([...shown, rest]);
 }
 
 /**
