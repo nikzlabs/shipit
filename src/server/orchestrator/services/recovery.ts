@@ -6,10 +6,15 @@ import type { ServiceManager } from "../service-manager.js";
 import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import type { SessionLoopDetector } from "../loop-detector.js";
 import { ServiceError } from "./types.js";
-import { scheduleInterruptCommit, type PostInterruptCommitDeps } from "./post-interrupt-commit.js";
+import {
+  runPostInterruptCommit,
+  scheduleInterruptCommit,
+  type PostInterruptCommitDeps,
+} from "./post-interrupt-commit.js";
 
 const RECOVERY_WORKER_TIMEOUT_MS = 3000;
 const RESTART_READY_TIMEOUT_MS = 8000;
+const RESTART_FLUSH_TIMEOUT_MS = 10000;
 
 // Zero entries use the readiness wait instead of a phase timeout.
 const PHASE_TIMEOUT_MS: Record<Exclude<RescuePhase, "ready" | "failed">, number> = {
@@ -283,6 +288,31 @@ export async function restartAgent(
         queueLength: runner.queueLength,
         lastInterruptError: `Could not kill the wedged agent before restarting: ${msg}`,
       });
+    }
+  }
+
+  // Flush before the dispose, not after: `runPostInterruptCommit` opens with
+  // `if (runner.disposed) return`, so a restart had no commit-or-push flush at
+  // all and left the killed turn's edits sitting in the working tree until a
+  // later turn's `git add -A` swept them up under the wrong summary.
+  //
+  // Skipped when the ordinary terminal sequence is already running: that flow is
+  // memoized and arms its own push, and a second one would order its arm against
+  // itself only — arming while the PR flow is mid-push is the non-fast-forward
+  // rejection CLAUDE.md's post-turn section describes.
+  //
+  // Bounded, because the restart button must not hang on a slow GitHub round
+  // trip. A flush that overruns keeps running; `runPostInterruptCommit` re-reads
+  // `disposed` inside the workspace lock, so a late one cannot commit across the
+  // replacement's edits, and the push is session-keyed so it survives disposal.
+  if (runner && !runner.postTurnWorkInFlight && deps.postInterruptCommitDeps) {
+    try {
+      await withTimeout(
+        runPostInterruptCommit({ deps: deps.postInterruptCommitDeps, runner }),
+        RESTART_FLUSH_TIMEOUT_MS,
+      );
+    } catch (err) {
+      console.warn(`[restart-agent] pre-restart commit did not finish for ${sessionId}:`, err);
     }
   }
 

@@ -12,6 +12,7 @@ import {
   formatUncommittedTurnNotice,
 } from "../services/unreadable-workspace-notice.js";
 import { sessionAutoCommitAllowed } from "../services/auto-commit-gate.js";
+import { readBranchSync } from "../services/branch-sync.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
 type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager" | "sessionManager"> & {
@@ -31,6 +32,13 @@ export async function postTurnCommit(
     runner?: SessionRunnerInterface | null;
     /** Defer arming until after PR pushes, but decide before that flow clears mergedAt. */
     deferPushArm?: (arm: () => void) => void;
+    /**
+     * Re-checked once the workspace lock is held. A caller that waited on the
+     * lock can be obsolete by the time it wins it — a restart's flush whose
+     * runner has since been replaced would otherwise sweep the replacement's
+     * edits into a commit carrying the dead turn's summary.
+     */
+    abortIfStale?: () => boolean;
   },
 ): Promise<string | null> {
   if (!sessionAutoCommitAllowed(ctx.sessionManager, opts.sessionId)) {
@@ -38,6 +46,13 @@ export async function postTurnCommit(
   }
   // Share the install lock: path-scoped staging must not race git add -A.
   return withWorkspaceLock(opts.sessionDir, async () => {
+    if (opts.abortIfStale?.()) {
+      console.warn(
+        `[git] abandoning a post-turn commit for ${opts.sessionId ?? "(no session)"}:`
+        + " the runner it belonged to was replaced while it waited for the workspace lock.",
+      );
+      return null;
+    }
     // Repair before git drops to the tree owner; post-commit repair would be too late.
     chownWorkspaceGitToSessionWorker(opts.sessionDir);
     try {
@@ -80,6 +95,20 @@ export async function postTurnCommit(
       );
     } catch (err) {
       console.error(`[merged-push-guard] notice failed for ${sessionId}:`, err);
+    }
+  }
+
+  // Local refs only: this must not add a network fetch to every clean turn.
+  async function branchAheadOfRemote(
+    git: ReturnType<AppCtx["createGitManager"]>,
+  ): Promise<boolean> {
+    try {
+      const branch = await git.currentBranchOrNull();
+      if (!branch) return false;
+      return (await readBranchSync(git, branch))?.state === "ahead";
+    } catch (err) {
+      console.warn(`[git] could not compare ${opts.sessionId ?? "(no session)"} with its remote:`, err);
+      return false;
     }
   }
 
@@ -133,6 +162,11 @@ export async function postTurnCommit(
 
   async function commitInLock(): Promise<string | null> {
     const git = ctx.createGitManager(opts.sessionDir);
+    // Read before the clear below: a turn that tidied the working tree retires
+    // the block, and the ahead-branch repair must not be the thing that then
+    // publishes the commit the scan had just refused.
+    const secretBlockedAtEntry = opts.sessionId !== undefined
+      && ctx.sessionManager.getSecretBlock(opts.sessionId) !== undefined;
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
     const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
@@ -223,6 +257,17 @@ export async function postTurnCommit(
           }
         }
         await pushUnlessMerged(git, currentHeadHash);
+        return null;
+      }
+      // Nothing moved this turn — but the branch can still carry commits that
+      // never reached the remote, from a push that was never armed or failed
+      // once. Arming was a side effect of *this* turn moving HEAD, so without
+      // this the state is permanent: every later turn lands here and does
+      // nothing, and the pull request stays unmergeable. Only `ahead` is safe
+      // to heal; a diverged branch stays held and is reported when a push it
+      // did arm is rejected.
+      if (!secretBlockedAtEntry && await branchAheadOfRemote(git)) {
+        await pushUnlessMerged(git, null);
       }
       return null;
     }

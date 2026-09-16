@@ -27,6 +27,38 @@ export interface PostInterruptCommitDeps {
 // Allow pending writes time to finish before committing partial work.
 export const INTERRUPT_COMMIT_FALLBACK_DELAY_MS = 2000;
 
+/**
+ * Build the whole dependency set in one place.
+ *
+ * Every call site had assembled it by hand and every one of them had left
+ * `scheduleAutoPush` out, so an interrupted turn committed and then never
+ * pushed — one of the ways a branch ends up permanently ahead of its remote.
+ * Spread the result: it is empty when the poller is absent, which is what
+ * makes the commit optional without making the push forgettable.
+ */
+export function postInterruptCommitDepsFrom(
+  deps: Partial<PostInterruptCommitDeps> & { prStatusPoller?: PrStatusPoller },
+): { postInterruptCommitDeps: PostInterruptCommitDeps } | Record<string, never> {
+  const {
+    prStatusPoller, sessionManager, chatHistoryManager, githubAuthManager,
+    credentialStore, generateText, createGitManager, scheduleAutoPush, sseBroadcast,
+  } = deps;
+  if (
+    !prStatusPoller || !sessionManager || !chatHistoryManager || !githubAuthManager
+    || !credentialStore || !generateText || !createGitManager
+  ) {
+    return {};
+  }
+  return {
+    postInterruptCommitDeps: {
+      sessionManager, chatHistoryManager, prStatusPoller, githubAuthManager,
+      credentialStore, generateText, createGitManager,
+      ...(scheduleAutoPush ? { scheduleAutoPush } : {}),
+      ...(sseBroadcast ? { sseBroadcast } : {}),
+    },
+  };
+}
+
 export async function runPostInterruptCommit(args: {
   deps: PostInterruptCommitDeps;
   runner: SessionRunnerInterface;
@@ -54,6 +86,8 @@ export async function runPostInterruptCommit(args: {
         emit: (msg) => runner.emitMessage(msg),
         turnSummary: runner.turnSummary || "Interrupted turn",
         deferPushArm: (arm) => { pending.arm = arm; },
+        // The entry check above can be stale by the time the lock is won.
+        abortIfStale: () => runner.disposed,
       },
     );
     if (!commitHash || runner.disposed) return;

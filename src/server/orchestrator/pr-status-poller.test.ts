@@ -3465,3 +3465,117 @@ describe("PrStatusPoller — GitHub rate-limit handling", () => {
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalled();
   });
 });
+
+/**
+ * The poll tick is the only thing that reconsiders a branch nobody will take
+ * another turn on. A test that calls `healBranchAhead` directly would stay green
+ * if the call inside `pollRepo` were deleted, so these drive the real loop.
+ */
+describe("PrStatusPoller — a branch left ahead of its remote", () => {
+  const aheadGit = (ahead: number): ((dir: string) => GitManager) => () => ({
+    diffStatVsBranch: vi.fn().mockResolvedValue({ insertions: 1, deletions: 0 }),
+    currentBranchOrNull: vi.fn().mockResolvedValue("shipit/abc-feature"),
+    aheadBehind: vi.fn().mockResolvedValue({ ahead, behind: 0 }),
+    fetchBranch: vi.fn().mockResolvedValue(undefined),
+    getHeadHash: vi.fn().mockResolvedValue("head1"),
+    isAncestor: vi.fn().mockResolvedValue(true),
+  }) as unknown as GitManager;
+
+  async function pollOnce(opts: {
+    ahead: number;
+    busy?: boolean;
+    armed?: boolean;
+    session?: { kind?: string; mergedAt?: string; mergedHeadSha?: string };
+  }) {
+    vi.useFakeTimers();
+    const scheduleAutoPush = vi.fn();
+    const sessionManager = makeSessionManager([
+      {
+        id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo",
+        workspaceDir: "/sessions/s1/workspace", ...opts.session,
+      },
+    ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("s1", 1);
+    registry.setBusy("s1", opts.busy ?? false);
+    const poller = new PrStatusPoller({
+      githubAuth: makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      }),
+      sessionManager,
+      sseBroadcast: vi.fn(),
+      runnerRegistry: registry,
+      createGitManager: aheadGit(opts.ahead),
+      scheduleAutoPush,
+      autoPushArmed: () => opts.armed === true,
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    poller.destroy();
+    vi.useRealTimers();
+    return scheduleAutoPush;
+  }
+
+  it("schedules a push from the poll tick itself", async () => {
+    expect(await pollOnce({ ahead: 2 })).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not schedule when the branch matches its remote", async () => {
+    expect(await pollOnce({ ahead: 0 })).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule while the agent is working", async () => {
+    expect(await pollOnce({ ahead: 2, busy: true })).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule while the turn path already has a push armed", async () => {
+    expect(await pollOnce({ ahead: 2, armed: true })).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule for a branch whose pull request already merged", async () => {
+    const scheduled = await pollOnce({
+      ahead: 2,
+      session: { mergedAt: new Date().toISOString(), mergedHeadSha: "merged1" },
+    });
+    expect(scheduled).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule for a kind that ShipIt never auto-commits", async () => {
+    expect(await pollOnce({ ahead: 2, session: { kind: "ops" } })).not.toHaveBeenCalled();
+  });
+
+  it("back-off keeps a stuck branch to one push per tick burst", async () => {
+    // A second tick against the same unchanged tip must not push again.
+    vi.useFakeTimers();
+    const scheduleAutoPush = vi.fn();
+    const sessionManager = makeSessionManager([
+      {
+        id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo",
+        workspaceDir: "/sessions/s1/workspace",
+      },
+    ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("s1", 1);
+    registry.setBusy("s1", false);
+    const poller = new PrStatusPoller({
+      githubAuth: makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      }),
+      sessionManager,
+      sseBroadcast: vi.fn(),
+      runnerRegistry: registry,
+      createGitManager: aheadGit(2),
+      scheduleAutoPush,
+      autoPushArmed: () => false,
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+    poller.destroy();
+    vi.useRealTimers();
+  });
+});

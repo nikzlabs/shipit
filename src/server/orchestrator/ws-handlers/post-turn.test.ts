@@ -706,3 +706,97 @@ describe("postTurnCommit — .git is reconciled before the commit, not only afte
     expect(chown).not.toHaveBeenCalled();
   });
 });
+
+describe("postTurnCommit — a branch already ahead of its remote", () => {
+  function makeIdleTurnCtx(opts: {
+    ahead: number;
+    behind?: number;
+    branch?: string | null;
+    session?: Partial<SessionInfo>;
+    secretBlocked?: boolean;
+  }) {
+    const autoCommit = vi.fn(async () => ({
+      commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+    }));
+    // HEAD never moves: the shape of every recovery turn on a clean tree.
+    const getHeadHash = vi.fn(async () => "head1");
+    const currentBranchOrNull = vi.fn(async () => opts.branch === undefined ? "shipit/abc" : opts.branch);
+    const aheadBehind = vi.fn(async () => ({ ahead: opts.ahead, behind: opts.behind ?? 0 }));
+    const isAncestor = vi.fn(async () => true);
+    const scheduleAutoPush = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({ autoCommit, getHeadHash, currentBranchOrNull, aheadBehind, isAncestor })),
+      chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => (opts.session ? ({ id: "s1", ...opts.session } as SessionInfo) : undefined)),
+        getPrStatus: vi.fn(() => null),
+        setWorkspaceBlock: vi.fn(() => false),
+        getSecretBlock: vi.fn(() => (opts.secretBlocked ? { findings: [], at: "", notifyCount: 0 } : undefined)),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush,
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, scheduleAutoPush, aheadBehind };
+  }
+
+  const runTurn = (ctx: Parameters<typeof postTurnCommit>[0]) =>
+    postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a recovery turn",
+      turnStartHeadHash: "head1",
+    });
+
+  it("arms no push when nothing moved and the branch matches its remote", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 0 });
+    expect(await runTurn(ctx)).toBeNull();
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("arms the push when the branch is ahead, though this turn moved nothing", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 2 });
+    expect(await runTurn(ctx)).toBeNull();
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+    expect(scheduleAutoPush).toHaveBeenCalledWith(expect.anything(), "s1");
+  });
+
+  it("leaves a diverged branch alone — a plain push is rejected and a force push discards the remote", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 2, behind: 3 });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("leaves a branch that is only behind alone", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 0, behind: 4 });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("still refuses an ahead branch stacked on a merged pull request", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({
+      ahead: 2,
+      session: { mergedAt: new Date().toISOString(), mergedHeadSha: "merged1" },
+    });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("reads local refs only — the clean turn must not grow a network fetch", async () => {
+    const { ctx, aheadBehind } = makeIdleTurnCtx({ ahead: 1 });
+    await runTurn(ctx);
+    expect(aheadBehind).toHaveBeenCalledWith("refs/remotes/origin/shipit/abc");
+  });
+
+  // The block is cleared earlier in this same call once the working tree is
+  // clean, so the reading has to be taken before that — otherwise the repair
+  // becomes the thing that publishes the commit the scan just refused.
+  it("does not repair a session that was secret-blocked when the turn ended", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 2, secretBlocked: true });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet on a detached HEAD, where there is no branch to push", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 2, branch: null });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+});
