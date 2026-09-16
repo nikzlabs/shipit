@@ -485,7 +485,14 @@ one non-npm branch, gated on `contains antigravity $selected`:
   then ends `Error: Eligibility check failed: … lookup www.googleapis.com …
   server misbehaving`; the refusal outranks the token, correctly, so the account
   never connects and the user sees a sign-in that failed with a good credential
-  on disk (observed in the dogfood, 2026-09-16).
+  on disk (observed in the dogfood, 2026-09-16). Allowing that host moved the
+  same check one step further and it failed again — `failed to get profile
+  picture: … lookup lh3.googleusercontent.com …`, this time on every **turn**,
+  not only at sign-in. So `.googleusercontent.com` is allowed as a domain rather
+  than a host: Google picks the shard (`lh3`…`lh6`) per account, and pinning the
+  one this account got would break for the next. **Four hosts, three found by
+  running it** — each after the previous one was allowed, which is the argument
+  against reading an allowlist off a candidate list and calling it complete.
 
 ## Adapter (`session/agents/antigravity/`, Claude-shaped)
 

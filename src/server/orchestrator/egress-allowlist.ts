@@ -30,6 +30,13 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   // server misbehaving` — a refusal outranks the token, correctly, so the
   // account never connected (observed in the dogfood, 2026-09-16).
   "www.googleapis.com",
+  // The same eligibility check then fetches the account's profile PICTURE, and
+  // Google serves it from a numbered shard (`lh3`…`lh6`) chosen per account, so
+  // this is the domain and not one host. Missing, a signed-in account failed
+  // every TURN with `Eligibility check failed: failed to get profile picture:
+  // … lookup lh3.googleusercontent.com … server misbehaving` (observed in the
+  // dogfood, 2026-09-16, after www.googleapis.com was allowed).
+  ".googleusercontent.com",
   "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
   ".github.com",
@@ -79,6 +86,13 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   // server misbehaving` — a refusal outranks the token, correctly, so the
   // account never connected (observed in the dogfood, 2026-09-16).
   "www.googleapis.com",
+  // The same eligibility check then fetches the account's profile PICTURE, and
+  // Google serves it from a numbered shard (`lh3`…`lh6`) chosen per account, so
+  // this is the domain and not one host. Missing, a signed-in account failed
+  // every TURN with `Eligibility check failed: failed to get profile picture:
+  // … lookup lh3.googleusercontent.com … server misbehaving` (observed in the
+  // dogfood, 2026-09-16, after www.googleapis.com was allowed).
+  ".googleusercontent.com",
   "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
 ];

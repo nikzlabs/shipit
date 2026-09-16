@@ -93,6 +93,22 @@ describe("the hosts an agent CLI must reach to run at all", () => {
       expect(makeAllowlist(list).isAllowed("www.googleapis.com")).toBe(true);
     }
   });
+
+  /**
+   * That check then fetches the account's profile picture, and a signed-in
+   * account failed every TURN without it: `Eligibility check failed: failed to
+   * get profile picture: … lookup lh3.googleusercontent.com … server
+   * misbehaving` (dogfood, 2026-09-16). The shard is chosen per account, so
+   * every one of them has to resolve, not the one this account happened to get.
+   */
+  it.each(["lh3.googleusercontent.com", "lh5.googleusercontent.com"])(
+    "allows the profile picture the eligibility check fetches (%s)",
+    (host) => {
+      for (const list of [EGRESS_DEFAULT_ALLOWLIST, EGRESS_LIFELINE_ALLOWLIST]) {
+        expect(makeAllowlist(list).isAllowed(host)).toBe(true);
+      }
+    },
+  );
 });
 
 describe("parseAllowlistEnv", () => {
