@@ -43,9 +43,9 @@ need their own messages and the significant events.
 6. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 2.
 7. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 3.
 8. The control that expands a turn is easy to see, and the user can tell it
-   apart from the content of the turn. It is a chevron on a ghost button, with
-   no visible text; the words it used to show are carried for assistive
-   technology and in the tooltip.
+   apart from the content of the turn. It is a caret and a hairline rule that
+   spans the column — the fold — and it says what the fold is holding: how many
+   tool calls, how many messages and how many cards.
 9. The feature stays off by default. The user turns it on in Settings.
 10. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 4.
     In-app search keeps its current behavior here: it matches message text,
@@ -68,13 +68,17 @@ None.
 
 ## Resolved questions
 
-2026-09-16 — Requirement 8 became a chevron alone, from *"let's try just showing
-a chevron with a ghost style button, no text"*. It replaces the bordered
-secondary button with a text label that the first reading of requirement 8
-produced, and which the user found too heavy beside a turn's own text. Named as
-a trial. Nothing about the control's behaviour changed: it keeps its accessible
-name, `aria-expanded` and `aria-controls`, and the label it no longer shows is
-now its tooltip.
+2026-09-16 — Requirement 8 became the fold rule, from *"let's try fold rule, but
+show not only tool calls, but also counts for cards, messages"*, chosen from
+five prototypes. It is the third form of this control and the second the user
+rejected: the bordered button with a text label was too heavy, and the chevron
+that replaced it (*"let's try just showing a chevron with a ghost style button,
+no text"*) was *"too big, blends with everything else, takes a lot of vertical
+space"*. The rule answers all three — it is what tells the control apart from
+the prose, at one 14px line — and the counts are the user's addition: the label
+says what the fold holds, not what the control does. Nothing about the
+behaviour changed at any step: the accessible name, `aria-expanded` and
+`aria-controls` are the same as the first form's.
 
 2026-09-16 — Requirement 12 carved out action cards, from *"action cards
 shouldn't be hidden in the compact mode"*, said while looking at the seeded

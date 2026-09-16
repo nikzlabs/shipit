@@ -270,18 +270,28 @@ that does not exist.
 
 ## The expand control (req 8)
 
-One button per collapsed turn, above the turn's content: a `Button` with
-`variant="ghost"`, `size="icon"` and a caret at `ICON_SIZE.SM`, and **no visible
-text**. It keeps `aria-expanded`, `aria-controls` and the accessible name that
-used to be the label ("Show full turn: <the user's message>"), which is also the
-tooltip — so the words are still there for a screen reader and on hover. No
-hidden-row count, and no failure status beside it — requirement 11 already keeps
-the error row on screen.
+One button per collapsed turn, above the turn's content, drawn as the **fold**:
+a `Button` with `variant="ghost"`, full width and 14px high, holding a caret at
+`ICON_SIZE.XS`, the label, and a hairline that fills the rest of the column. The
+rule is what tells it apart from the prose, so the ink can stay small. It keeps
+`aria-expanded`, `aria-controls`, the accessible name ("Show full turn: <the
+user's message>") and that name as its tooltip. No failure status beside it —
+requirement 11 already keeps the error row on screen.
 
-The first form was a bordered `variant="secondary"` button carrying that text,
-which is what the shipped ghost *text* control (docs/296) was replaced with. It
-read as too heavy next to a turn's own prose; the chevron keeps the hit target
-and the semantics and drops the weight.
+**The label counts what the fold holds**: `"3 tool calls · 1 message · 2 cards"`,
+each part dropped when it is zero. `countHidden` tallies it in the same pass
+that decides what is hidden (`useCompactConversation`), never in a second walk
+that could disagree with what is on screen, and `describeHidden` renders the
+tally. A to-do panel counts as a card — it is a panel rather than prose, and a
+fourth noun would make the label a list. The counts stay on screen when the turn
+is open, so the control does not change width as it is toggled.
+
+Two earlier forms were rejected, and the reasons are what the rule answers. A
+bordered `variant="secondary"` button carrying "Show full turn" read as too
+heavy beside a turn's own prose. A chevron alone, ghost and iconic, was "too
+big, blends with everything else, takes a lot of vertical space" — with no rule
+to mark it as structure, a caret in the prose ink is just another glyph in the
+column.
 
 docs/296's "Turn ended without an agent reply." note survives, on a narrower
 condition: a turn that keeps **nothing**, so its collapsed form is the button

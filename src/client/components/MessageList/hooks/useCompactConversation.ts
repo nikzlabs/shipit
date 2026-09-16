@@ -1,8 +1,8 @@
 // eslint-disable-next-line no-restricted-imports -- effect subscribes to browser selection and focus
 import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import {
-  compactRuns, elementMessageIndex, isCompactDetail, shouldCollapseRowTools,
-  type CompactRun, type NeedsUser,
+  compactRuns, countHidden, describeHidden, elementMessageIndex, isCompactDetail,
+  shouldCollapseRowTools, type CompactRun, type HiddenCounts, type NeedsUser,
 } from "../compact-turns.js";
 import type { ChatMessage } from "../types.js";
 import type { VisualElement } from "../../visual-elements.js";
@@ -12,8 +12,8 @@ import { usePermissionStore } from "../../../stores/permission-store.js";
 import { useEgressPromptStore } from "../../../stores/egress-prompt-store.js";
 
 type CompactRowView =
-  | { hidden: boolean; collapseTools: boolean; empty?: undefined; run?: undefined; first?: undefined; open?: undefined; search?: undefined; controls?: undefined }
-  | { hidden: boolean; collapseTools: boolean; empty: boolean; run: CompactRun; first: boolean; open: boolean; search: boolean; controls?: string };
+  | { hidden: boolean; collapseTools: boolean; empty?: undefined; run?: undefined; first?: undefined; open?: undefined; search?: undefined; controls?: undefined; holds?: undefined }
+  | { hidden: boolean; collapseTools: boolean; empty: boolean; run: CompactRun; first: boolean; open: boolean; search: boolean; controls?: string; holds?: string };
 
 /**
  * docs/299 req 12 — a card is kept while the product is waiting on a person,
@@ -130,6 +130,14 @@ export function useCompactConversation(
     // which is the only case worth labelling. An error row or a pending card is
     // its own explanation and needs no note beside it.
     const showsSomething = new Set<CompactRun>();
+    // What the fold rule says it is holding (req 8), tallied where the same pass
+    // decides what goes: a count taken anywhere else could disagree with it.
+    const held = new Map<CompactRun, HiddenCounts>();
+    const tally = (run: CompactRun): HiddenCounts => {
+      const counts = held.get(run) ?? { tools: 0, messages: 0, cards: 0 };
+      held.set(run, counts);
+      return counts;
+    };
     for (const el of elements) {
       const index = elementMessageIndex(el);
       const run = byIndex.get(index);
@@ -138,11 +146,13 @@ export function useCompactConversation(
         withDetails.add(run);
         detail.add(el);
         protectableIndices.add(index);
+        countHidden(el, messages[index], tally(run));
       } else if (shouldCollapseRowTools(el, messages[index])) {
         showsSomething.add(run);
         withDetails.add(run);
         collapsedTools.add(el);
         protectableIndices.add(index);
+        tally(run).tools += messages[index]?.toolUse?.length ?? 0;
       } else {
         showsSomething.add(run);
       }
@@ -181,6 +191,7 @@ export function useCompactConversation(
         empty: !showsSomething.has(run),
         run, first, open, search,
         controls: first ? controls.get(run)?.join(" ") : undefined,
+        holds: first ? describeHidden(held.get(run) ?? { tools: 0, messages: 0, cards: 0 }) : undefined,
       };
     });
   }, [runs, messages, elements, enabled, matches, expanded, protectedIndices, needsUser]);

@@ -104,7 +104,12 @@ export const CARD_MESSAGE_FIELDS = [
  * Adding a new flag of this kind? Add it here — one place, both merge branches.
  */
 export function isTerminalTranscriptEntry(msg: ChatMessage): boolean {
-  return CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined) || msg.notice === true;
+  return hasCardContent(msg) || msg.notice === true;
+}
+
+/** Whether the message's content IS a card, rather than prose carrying one. */
+export function hasCardContent(msg: ChatMessage): boolean {
+  return CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined);
 }
 
 export type VisualElement =
@@ -196,7 +201,7 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
 
     // card never renders (the recurring "card vanishes" bug, docs/188). Driven
 
-    const hasCardContent = CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined);
+    const carriesCard = hasCardContent(msg);
 
     if (canGroupTools) {
 
@@ -223,7 +228,7 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
           elements.push({ kind: "standalone-tool", tool, result, streaming: !!msg.streaming, messageIndex: i });
         }
       }
-    } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user" || hasCardContent) {
+    } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user" || carriesCard) {
       flushTools();
       const hasVisibleContent = !!msg.text.trim() || !!msg.images?.length || !!msg.files?.length;
 

@@ -1,4 +1,4 @@
-import { isTerminalTranscriptEntry, type VisualElement } from "../visual-elements.js";
+import { hasCardContent, isTerminalTranscriptEntry, type VisualElement } from "../visual-elements.js";
 import type { ChatMessage } from "./types.js";
 
 export function elementMessageIndex(el: VisualElement): number {
@@ -99,6 +99,36 @@ export function isCompactDetail(
   if (m.actionChecklist) return false;
   if (needsUser(m)) return false;
   return el.index !== run.lastReply;
+}
+
+/** What a collapsed turn is holding back, for the fold rule's label (req 8). */
+export interface HiddenCounts { tools: number; messages: number; cards: number }
+
+/**
+ * Adds one hidden element to a run's tally. A to-do panel counts as a card: it
+ * is a panel rather than prose, and a fourth noun would turn the label into a
+ * list. A message carrying tools counts in both columns, because both go.
+ */
+export function countHidden(el: VisualElement, m: ChatMessage | undefined, into: HiddenCounts): void {
+  if (el.kind === "tool-group") { into.tools += el.items.length; return; }
+  if (el.kind === "subagent" || el.kind === "standalone-tool") { into.tools += 1; return; }
+  if (el.kind === "task-panel") { into.cards += 1; return; }
+  if (!m) return;
+  if (!el.hideTools) into.tools += m.toolUse?.length ?? 0;
+  if (hasCardContent(m)) into.cards += 1;
+  else if (m.text.trim() || m.images?.length || m.files?.length) into.messages += 1;
+}
+
+/** "3 tool calls · 1 message · 2 cards", or nothing to count. */
+export function describeHidden(counts: HiddenCounts): string | undefined {
+  const parts: string[] = [];
+  const add = (n: number, one: string, many: string): void => {
+    if (n > 0) parts.push(`${n} ${n === 1 ? one : many}`);
+  };
+  add(counts.tools, "tool call", "tool calls");
+  add(counts.messages, "message", "messages");
+  add(counts.cards, "card", "cards");
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 /**

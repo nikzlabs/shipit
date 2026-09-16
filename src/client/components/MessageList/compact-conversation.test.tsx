@@ -333,6 +333,24 @@ describe("collapsed turns", () => {
     expect(container.querySelectorAll("[data-compact-content]").length).toBeGreaterThan(0);
   });
 
+  it("says what the fold is holding — tool calls, messages and cards (req 8)", () => {
+    compactOn();
+    const { rerender } = render(<MessageList messages={transcript()} isLoading={false} />);
+    expect(screen.getByRole("button", { name: /Show full turn/ })).toHaveTextContent("1 tool call · 1 message · 1 card");
+
+    const plural = [user("Task"), bot("Step one"), bot("Step two"), {
+      ...bot(""),
+      toolUse: [
+        { type: "tool_use" as const, id: "a", name: "Read", input: {} },
+        { type: "tool_use" as const, id: "b", name: "Edit", input: {} },
+      ],
+      toolResults: [{ toolUseId: "a", content: "ok" }, { toolUseId: "b", content: "ok" }],
+    }, { ...bot(""), compaction: { trigger: "auto" } }, bot("Done"),
+      user("Next"), bot("Working now")] as ChatMessage[];
+    rerender(<MessageList messages={plural} isLoading={false} />);
+    expect(screen.getByRole("button", { name: /Show full turn/ })).toHaveTextContent("2 tool calls · 2 messages · 1 card");
+  });
+
   it("draws the user's rewind anchor above the expand control, in both states", () => {
     compactOn();
     const { container } = render(<MessageList messages={transcript()} isLoading={false} onRewindAtGap={vi.fn()} />);

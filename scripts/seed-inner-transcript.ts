@@ -229,6 +229,27 @@ export const SAMPLE_TURNS: readonly SampleTurn[] = [
     ],
   },
   {
+    covers: "a hidden card — one the user cannot act on, folded away and counted",
+    user: "Keep going, you are running out of room.",
+    assistant: [
+      say("Compacting first, then carrying on."),
+      {
+        role: "assistant",
+        text: "",
+        compaction: {
+          id: "seed-compaction",
+          trigger: "auto",
+          preTokens: 174000,
+          postTokens: 21400,
+          durationMs: 8200,
+          createdAt: "2026-09-14T10:52:00.000Z",
+        },
+      },
+      tool("Bash", { command: "npm run typecheck" }, "tsc --noEmit — no errors"),
+      say("Carried on from the summary; the typecheck is still clean."),
+    ],
+  },
+  {
     covers: "a long reply — the button sits between two big blocks",
     user: "Summarise where we got to.",
     assistant: [

@@ -62,6 +62,10 @@
       and a kept card can be looked at together.
 - [x] Make the control a chevron on a ghost button with no visible text, keeping
       its accessible name and adding it as the tooltip (req 8).
+- [x] Replace it with the fold rule: a caret, a count of what the fold holds
+      (tool calls, messages, cards) and a hairline across the column (req 8).
+- [x] Add a fixture turn whose hidden rows include a card, so the third count
+      can be seen in the dogfood instance.
 
 ## Tests
 

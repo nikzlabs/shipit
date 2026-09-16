@@ -379,11 +379,12 @@ export function MessageList({
         <div key={key} hidden={!showsSomething}>
           {gapAtHeader !== undefined && renderRewindPoint(gapAtHeader)}
           {view.first && view.run && (
-            <div className="text-xs text-(--color-text-secondary) flex items-center gap-2 py-0.5">
-              {/* req 8 — a chevron alone. The words live on `aria-label` and the
-                  tooltip, so the control marks the fold without competing with
-                  the turn's own text. */}
-              <Button variant="ghost" size="icon"
+            <div className="text-xs text-(--color-text-secondary)">
+              {/* req 8 — the fold rule: a caret and what the fold holds, on a
+                  hairline that spans the column. The rule is what tells it
+                  apart from the turn's own text, at one line of 14px. */}
+              <Button variant="ghost" size="sm"
+                className="group/fold w-full justify-start px-1 h-3.5 gap-1.5"
                 aria-expanded={view.open}
                 aria-controls={view.controls}
                 aria-label={`${view.open ? "Show compact turn" : "Show full turn"}: ${view.run.identity.text.slice(0, 80) || "Agent response"}`}
@@ -391,10 +392,12 @@ export function MessageList({
                 title={view.search ? "Revealed by the active search" : view.open ? "Show compact turn" : "Show full turn"}
                 onClick={() => { if (!view.search) compact.toggle(view.run, view.open); }}>
                 {view.open
-                  ? <CaretUpIcon size={ICON_SIZE.SM} weight="bold" />
-                  : <CaretDownIcon size={ICON_SIZE.SM} weight="bold" />}
+                  ? <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
+                  : <CaretDownIcon size={ICON_SIZE.XS} weight="bold" />}
+                {view.holds && <span>{view.holds}</span>}
+                <span aria-hidden className="h-px flex-1 bg-(--color-border-primary) group-hover/fold:bg-(--color-border-secondary)" />
               </Button>
-              {!view.open && view.empty && <span>Turn ended without an agent reply.</span>}
+              {!view.open && view.empty && <span className="px-1">Turn ended without an agent reply.</span>}
             </div>
           )}
           {view.hidden && ownGap && renderRewindPoint(el.index)}
