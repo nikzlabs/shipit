@@ -464,7 +464,7 @@ describe("what the Codex sign-in reports to the panel", () => {
     emitStdout(proc.stdout, "-8MIGC\n");
     await settle();
 
-    expect(panel()).toContain("[code redacted]");
+    expect(panel()).toContain("[code-redacted]");
     // Not just "the whole code is absent": a chunk relay would emit the two
     // halves as separate entries, and joining them would hide that.
     expect(logs.some((l) => /K8RE|8MIGC/.test(l.message)), "leaked half the code").toBe(false);
@@ -484,9 +484,10 @@ describe("what the Codex sign-in reports to the panel", () => {
   });
 
   /**
-   * Removing the code BEFORE the sanitizer truncated the link it then saw:
-   * `[code redacted]` carries a space and a URL matches up to the first
-   * whitespace, so everything after the code's own parameter stayed in the clear.
+   * The marker is substituted into the line the URL rule then has to match, so
+   * it must contain no whitespace: a URL ends at the first space, and a spaced
+   * marker inside a link truncates what the sanitizer sees, publishing every
+   * query parameter after the code in the clear.
    */
   it("does not let the code's removal expose the query parameters after it", async () => {
     const { proc, panel } = startWithDiagnostics();
@@ -495,6 +496,32 @@ describe("what the Codex sign-in reports to the panel", () => {
 
     expect(panel(), "leaked a parameter after the redacted code").not.toContain("private-grant");
     expect(panel()).not.toContain("K8RE-8MIGC");
+  });
+
+  /**
+   * The order is the guarantee, not the three steps. An escape sequence sitting
+   * INSIDE the code hides its shape from the pattern, so the strip has to come
+   * first — and the code has to go before the generic rules, which may rewrite
+   * the text it sits in.
+   *
+   * Driven through the spawn failure rather than the CLI's output on purpose:
+   * that is the one path to the emitter that does NOT pass the relay, so it is
+   * where the emitter's own strip is the only thing standing between an escape
+   * and the panel. Everything the CLI prints arrives already stripped.
+   */
+  it("removes a code an escape sequence is sitting in the middle of", () => {
+    const failingSpawn: SpawnFn = () => {
+      throw new Error("spawn failed near K8RE\x1b[0m-8MIGC");
+    };
+    const mgr = new CodexAuthManager({ spawn: failingSpawn, checkAuthFile: () => false });
+    const logs: AgentAuthLogPayload[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("failed", () => { /* the spawn's own failure */ });
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+
+    const panel = logs.map((l) => l.message).join("\n");
+    expect(panel, "an escape inside the code hid it from the pattern").not.toContain("8MIGC");
+    expect(panel).toContain("[code-redacted]");
   });
 
   /**
@@ -515,7 +542,7 @@ describe("what the Codex sign-in reports to the panel", () => {
     await settle();
 
     expect(panel(), "an ANSI split exposed the code").not.toContain("K8RE-8MIGC");
-    expect(panel()).toContain("[code redacted]");
+    expect(panel()).toContain("[code-redacted]");
   });
 
   /**

@@ -64,6 +64,11 @@ export const USER_CODE_PATTERN = /\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/;
  */
 const USER_CODE_EVERY_OCCURRENCE = new RegExp(USER_CODE_PATTERN.source, "g");
 
+/** No whitespace, ever: a URL matches up to the first space, so a spaced marker
+ * substituted inside a link truncates what the sanitizer then sees and publishes
+ * every query parameter after it. */
+const CODE_MARKER = "[code-redacted]";
+
 function authFileExistsAt(authFile: string): boolean {
   try {
     if (!existsSync(authFile)) return false;
@@ -235,21 +240,24 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
    * What the panel in Settings shows, and the only record a failed sign-in
    * leaves the user: the CLI's own words.
    *
-   * **The code is removed AFTER the sanitizer, not before.** `[code redacted]`
-   * contains a space, and a URL matches up to the first whitespace — so
-   * substituting it inside `?user_code=…&device_code=…` truncates the link the
-   * sanitizer then sees, and every later query parameter survives in the clear.
-   * Run second, it has nothing left to break: a code inside a URL left with the
-   * stripped query string, and one printed on its own line is short enough that
-   * no other rule touches it.
+   * **The three steps are a composition ORDER, not three passes.** Terminal
+   * escapes come off first, so an escape sitting inside the code cannot hide its
+   * shape; the known secret is removed next, while it is still intact; the
+   * generic rules run last, over text that no longer contains it. Every other
+   * order has a hole — redacting before the strip loses the `\b` the pattern
+   * needs, and redacting after the generic rules asks an exact match to
+   * recognise a string those rules may already have rewritten (measured on the
+   * Antigravity manager, whose long submitted code came out as
+   * `4/[redacted].private-tail`).
    */
   private emitDiagnosticLog(
     level: AgentAuthLogLevel,
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    const sanitized = sanitizeAuthDiagnostic(message)
-      .replace(USER_CODE_EVERY_OCCURRENCE, "[code redacted]");
+    const sanitized = sanitizeAuthDiagnostic(
+      stripAnsi(message).replace(USER_CODE_EVERY_OCCURRENCE, CODE_MARKER),
+    );
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),

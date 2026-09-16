@@ -379,7 +379,7 @@ describe("what the Grok sign-in reports to the panel", () => {
     await settle();
 
     expect(panel(), "leaked the device code").not.toContain("NSJF-75ZB");
-    expect(panel()).toContain("[code redacted]");
+    expect(panel()).toContain("[code-redacted]");
     // The link is all query string; the usable one is the challenge's button.
     expect(panel()).toContain("Only continue with a code you requested");
   });
@@ -395,7 +395,7 @@ describe("what the Grok sign-in reports to the panel", () => {
     emit(proc.stderr, "-75ZB\n");
     await settle();
 
-    expect(panel()).toContain("[code redacted]");
+    expect(panel()).toContain("[code-redacted]");
     // Not just "the whole code is absent": a chunk relay would emit the two
     // halves as separate entries, and joining them would hide that.
     expect(logs.some((l) => /NSJF|75ZB/.test(l.message)), "leaked half the code").toBe(false);
@@ -415,9 +415,10 @@ describe("what the Grok sign-in reports to the panel", () => {
   });
 
   /**
-   * Removing the code BEFORE the sanitizer truncated the link it then saw:
-   * `[code redacted]` carries a space and a URL matches up to the first
-   * whitespace, so everything after the code's own parameter stayed in the clear.
+   * The marker is substituted into the line the URL rule then has to match, so
+   * it must contain no whitespace: a URL ends at the first space, and a spaced
+   * marker inside a link truncates what the sanitizer sees, publishing every
+   * query parameter after the code in the clear.
    */
   it("does not let the code's removal expose the query parameters after it", async () => {
     const { proc, panel } = startWithDiagnostics();
