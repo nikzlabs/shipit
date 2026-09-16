@@ -179,10 +179,11 @@ shipit_build_and_up() {
   docker compose "${compose_files[@]}" up -d --no-build shipit
 }
 
+# Stack-scoped: every container and session network ShipIt creates carries the stack
+# label, so nothing here touches another ShipIt instance on the same daemon (planning#584).
 shipit_cleanup_sessions() {
   # shellcheck disable=SC2046  # intentional word-splitting over the id list
-  docker rm -f $(docker ps -aq --filter "label=shipit-parent-session") 2>/dev/null || true
-  # shellcheck disable=SC2046
   docker rm -f $(docker ps -aq --filter "label=shipit-stack=$COMPOSE_STACK") 2>/dev/null || true
-  docker network prune -f >/dev/null 2>&1 || true
+  # shellcheck disable=SC2046
+  docker network rm $(docker network ls -q --filter "label=shipit-stack=$COMPOSE_STACK") >/dev/null 2>&1 || true
 }

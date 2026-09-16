@@ -155,6 +155,7 @@ function fakeDocker(opts: {
   const removedContainers: string[] = [];
   const volumes = new Set<string>(["shipit-ws"]);
   const volumeOpts = new Map<string, Record<string, string> | null>();
+  const volumeLabels = new Map<string, Record<string, string>>();
   const networks: string[] = [];
   const connected: unknown[] = [];
   const notFound = (): never => {
@@ -176,9 +177,10 @@ function fakeDocker(opts: {
       connect: async (spec: unknown) => { connected.push(spec); },
     }),
     createNetwork: async (spec: { Name: string }) => { networks.push(spec.Name); },
-    createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
+    createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string>; Labels?: Record<string, string> }) => {
       volumes.add(spec.Name);
       volumeOpts.set(spec.Name, spec.DriverOpts ?? {});
+      volumeLabels.set(spec.Name, spec.Labels ?? {});
     },
     getVolume: (name: string) => ({
       inspect: async () => {
@@ -222,7 +224,7 @@ function fakeDocker(opts: {
   };
   return {
     docker: docker as unknown as Docker,
-    containers, networks, volumes, connected, started, removedContainers,
+    containers, networks, volumes, volumeLabels, connected, started, removedContainers,
   };
 }
 
@@ -294,6 +296,21 @@ describe("runPluginCommand — the container it builds", () => {
     expect(host.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
     expect(host.CapDrop).toEqual(["ALL"]);
     expect((created.Labels as Record<string, string>)[PLUGIN_CLI_LABEL]).toBe("s1");
+  });
+
+  // planning#584: the boot sweep of a second ShipIt instance on the same daemon selects by this label.
+  it("stamps the stack on the workload, the netns holder and the generation volume", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ stdout: "ok\n" });
+
+    await runPluginCommand(deps(fake.docker, { stackName: "shipit-a", egress: () => CONTAINED_EGRESS }), call);
+
+    const [holder, workload] = fake.containers;
+    expect((holder.opts.Labels as Record<string, string>)["shipit-stack"]).toBe("shipit-a");
+    expect((workload.opts.Labels as Record<string, string>)["shipit-stack"]).toBe("shipit-a");
+    const overlay = [...fake.volumeLabels.entries()].find(([name]) => name !== "shipit-ws");
+    expect(overlay?.[1]).toMatchObject({ "shipit-stack": "shipit-a" });
   });
 
   it("refuses to start when Docker implicitly created a plain overlay volume mid-window", async () => {

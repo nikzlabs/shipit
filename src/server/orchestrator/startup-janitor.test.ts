@@ -14,6 +14,18 @@ import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 import { CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 
+/** Applies the `--filter label=key[=value]` pairs of a `docker … ls` argv the way the CLI would. */
+function matchesLabelFilterArgs(labels: Record<string, string>, args: string[]): boolean {
+  for (let i = 0; i < args.length - 1; i += 1) {
+    if (args[i] !== "--filter" || !args[i + 1].startsWith("label=")) continue;
+    const eq = args[i + 1].indexOf("=", "label=".length);
+    const key = args[i + 1].slice("label=".length, eq < 0 ? undefined : eq);
+    const value = eq < 0 ? undefined : args[i + 1].slice(eq + 1);
+    if (value === undefined ? !(key in labels) : labels[key] !== value) return false;
+  }
+  return true;
+}
+
 describe("runDiskJanitor", () => {
   let tmpDir: string;
   let dbPath: string;
@@ -143,6 +155,36 @@ describe("runDiskJanitor", () => {
 
     expect(rmRequests).toEqual([]);
     expect(result.orphanVolumesRemoved).toBe(0);
+  });
+
+  // planning#584: another instance's stopped database is a dangling volume this store never heard of.
+  it("volume sweep takes only this stack's orphans and leaves the other instance's", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const volumes: { name: string; labels: Record<string, string> }[] = [
+      { name: "shipit-aaaa11112222_pgdata", labels: { "shipit-stack": "shipit-a" } },
+      { name: "shipit-bbbb33334444_pgdata", labels: { "shipit-stack": "shipit-b" } },
+      { name: "shipit-cccc55556666_pgdata", labels: {} },
+    ];
+    const rmRequests: string[] = [];
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "volume" && args[1] === "ls") {
+        return Promise.resolve(
+          volumes.filter((v) => matchesLabelFilterArgs(v.labels, args)).map((v) => v.name).join("\n"),
+        );
+      }
+      if (args[0] === "volume" && args[1] === "rm") rmRequests.push(args[2]);
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir, runDocker, stackName: "shipit-a",
+    });
+
+    expect(rmRequests).toEqual(["shipit-aaaa11112222_pgdata"]);
+    expect(result.orphanVolumesRemoved).toBe(1);
   });
 
   it("orphan volume sweep ignores rm failures (volume reattached / already gone)", async () => {
@@ -326,6 +368,35 @@ describe("runDiskJanitor", () => {
 
     expect(rmRequests).toEqual([]);
     expect(result.orphanNetworksRemoved).toBe(0);
+  });
+
+  it("network sweep takes only this stack's orphans and leaves the other instance's", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const networks: { name: string; labels: Record<string, string> }[] = [
+      { name: "shipit-session-aaaa11112222", labels: { "shipit-stack": "shipit-a" } },
+      { name: "shipit-session-bbbb33334444", labels: { "shipit-stack": "shipit-b" } },
+      { name: "shipit-egress-cccc55556666", labels: {} },
+    ];
+    const rmRequests: string[] = [];
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "network" && args[1] === "ls") {
+        return Promise.resolve(
+          networks.filter((n) => matchesLabelFilterArgs(n.labels, args)).map((n) => n.name).join("\n"),
+        );
+      }
+      if (args[0] === "network" && args[1] === "rm") rmRequests.push(args[2]);
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir, runDocker, stackName: "shipit-a",
+    });
+
+    expect(rmRequests).toEqual(["shipit-session-aaaa11112222"]);
+    expect(result.orphanNetworksRemoved).toBe(1);
   });
 
   it("orphan network sweep ignores rm failures (network reattached / already gone)", async () => {

@@ -10,6 +10,7 @@ import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 import { PLUGIN_CONTRACT_ENV_NAMES } from "../shared/plugin-contract.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
+import { stackLabel } from "./stack-label.js";
 
 export interface ComposeServiceOrigin {
   kind: "plugin";
@@ -1014,9 +1015,7 @@ export function generateComposeOverride(
       // Always write false too, or a repository-supplied true can survive merging.
       "shipit-trusted-ops-proxy": svc.trustedOpsProxy ? "true" : "false",
     };
-    if (opts.stackName) {
-      labels["shipit-stack"] = opts.stackName;
-    }
+    Object.assign(labels, stackLabel(opts.stackName));
     if (svc.settingsFingerprint) {
       labels["shipit-plugin-settings"] = svc.settingsFingerprint;
     }
@@ -1131,6 +1130,8 @@ export function generateComposeOverride(
       "shipit-session": {
         name: `shipit-session-${opts.sessionId}`,
         ...(opts.containEgress ? { internal: true } : {}),
+        // The boot sweeps select by the stack label (planning#584); Compose adds none of its own.
+        ...(opts.stackName ? { labels: stackLabel(opts.stackName) } : {}),
       },
     },
   };
@@ -1158,6 +1159,7 @@ export function generateComposeOverride(
         labels: {
           "shipit-managed": "true",
           "shipit-session": opts.sessionId,
+          ...stackLabel(opts.stackName),
         },
       };
     }

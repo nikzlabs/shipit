@@ -110,9 +110,10 @@ function contained(over: Partial<PluginEgressPolicy> = {}): PluginEgressPolicy {
   };
 }
 
-function prepare(docker: Docker, policy: PluginEgressPolicy) {
+function prepare(docker: Docker, policy: PluginEgressPolicy, labels?: Record<string, string>) {
   return preparePluginNetns({
     docker, sessionId: SESSION, network: NETWORK, holderImage: "worker:test", policy,
+    ...(labels ? { labels } : {}),
   });
 }
 
@@ -186,6 +187,22 @@ describe("preparePluginNetns — a contained session", () => {
       const labels = (call[1] as unknown as { labels: Record<string, string> }).labels;
       expect(labels).not.toHaveProperty("shipit-parent-session");
       expect(labels[PLUGIN_NETNS_PARENT_LABEL]).toBe(fake.created[0].id);
+    }
+  });
+
+  // planning#584: the holder and its sidecars carry the caller's ownership labels (the stack),
+  // and the plugin label still wins over anything the caller passed under the same key.
+  it("carries the caller's ownership labels on the holder and every sidecar", async () => {
+    const fake = fakeDocker();
+
+    await prepare(fake.docker, contained(), { "shipit-stack": "shipit-a", [PLUGIN_NETNS_LABEL]: "spoof" });
+
+    const holder = fake.created[0].opts.Labels as Record<string, string>;
+    expect(holder["shipit-stack"]).toBe("shipit-a");
+    expect(holder[PLUGIN_NETNS_LABEL]).toBe(SESSION);
+    for (const call of [installFirewall.mock.calls[0], launchResolver.mock.calls[0], launchProxy.mock.calls[0]]) {
+      const labels = (call[1] as unknown as { labels: Record<string, string> }).labels;
+      expect(labels["shipit-stack"]).toBe("shipit-a");
     }
   });
 

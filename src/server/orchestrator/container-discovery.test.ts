@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   adoptRunningContainer,
+  cleanupOrphanComposeResources,
   isTrackedContainerRunning,
   rediscoverContainers,
   reapStandbyContainers,
@@ -8,7 +9,10 @@ import {
 } from "./container-discovery.js";
 import { overlayVolumeName } from "./overlay-volume.js";
 import {
+  CONTAINER_LABEL_KEY,
+  CONTAINER_LABEL_VALUE,
   CONTAINER_SESSION_ID_LABEL,
+  CONTAINER_STACK_LABEL,
   CONTAINER_STANDBY_LABEL,
   type SessionContainer,
 } from "./session-container.js";
@@ -24,6 +28,8 @@ interface FakeContainerSpec {
   state: "running" | "exited";
   ip?: string;
   standby?: boolean;
+  /** The `shipit-stack` label; absent models a container from an instance with no DOCKER_STACK. */
+  stack?: string;
   buildId?: string;
   inspectThrows?: boolean;
   inspectStatus?: number;
@@ -38,26 +44,30 @@ interface FakeContainerSpec {
   updates?: Record<string, unknown>[];
 }
 
-function makeFakeDocker(specs: FakeContainerSpec[]) {
-  const matchesFilter = (s: FakeContainerSpec, wanted: string | undefined): boolean => {
-    if (!wanted) return true;
-    if (wanted === `${CONTAINER_STANDBY_LABEL}=true`) return s.standby === true;
-    return wanted === `${CONTAINER_SESSION_ID_LABEL}=${s.sessionId}`;
+/** Docker ANDs label filters; a bare `key` tests presence and `key=value` tests equality. */
+function matchesLabelFilters(labels: Record<string, string>, wanted: string[] | undefined): boolean {
+  return (wanted ?? []).every((filter) => {
+    const eq = filter.indexOf("=");
+    return eq < 0 ? filter in labels : labels[filter.slice(0, eq)] === filter.slice(eq + 1);
+  });
+}
+
+function labelsOf(s: FakeContainerSpec): Record<string, string> {
+  return {
+    [CONTAINER_LABEL_KEY]: CONTAINER_LABEL_VALUE,
+    [CONTAINER_SESSION_ID_LABEL]: s.sessionId,
+    ...(s.stack ? { [CONTAINER_STACK_LABEL]: s.stack } : {}),
+    ...(s.standby ? { [CONTAINER_STANDBY_LABEL]: "true" } : {}),
+    ...(s.buildId ? { "shipit-build-id": s.buildId } : {}),
   };
+}
+
+function makeFakeDocker(specs: FakeContainerSpec[]) {
   return {
     listContainers: async ({ filters }: { filters?: { label?: string[] } } = {}) => {
-      const wanted = filters?.label?.[0];
       return specs
-        .filter((s) => matchesFilter(s, wanted))
-        .map((s) => ({
-          Id: s.id,
-          State: s.state,
-          Labels: {
-            [CONTAINER_SESSION_ID_LABEL]: s.sessionId,
-            ...(s.standby ? { [CONTAINER_STANDBY_LABEL]: "true" } : {}),
-            ...(s.buildId ? { "shipit-build-id": s.buildId } : {}),
-          },
-        }));
+        .filter((s) => matchesLabelFilters(labelsOf(s), filters?.label))
+        .map((s) => ({ Id: s.id, State: s.state, Labels: labelsOf(s) }));
     },
     getContainer: (id: string) => ({
       update: async (opts: Record<string, unknown>) => {
@@ -96,7 +106,7 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
   } as unknown as DiscoveryDeps["docker"];
 }
 
-function makeDeps(specs: FakeContainerSpec[]): {
+function makeDeps(specs: FakeContainerSpec[], labelFilters: string[] = []): {
   deps: DiscoveryDeps;
   containers: Map<string, SessionContainer>;
   standby: Set<string>;
@@ -112,9 +122,14 @@ function makeDeps(specs: FakeContainerSpec[]): {
       standbySessionIds: standby,
       networkName: NETWORK,
       workerPort: WORKER_PORT,
-      labelFilters: () => [],
+      labelFilters: () => labelFilters,
     },
   };
+}
+
+/** What `SessionContainerManager.labelFilters()` returns for a manager booted with this DOCKER_STACK. */
+function stackFilters(stack: string): string[] {
+  return [`${CONTAINER_LABEL_KEY}=${CONTAINER_LABEL_VALUE}`, `${CONTAINER_STACK_LABEL}=${stack}`];
 }
 
 const resolver = (sid: string) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false });
@@ -488,6 +503,30 @@ describe("reapStandbyContainers", () => {
     expect(await reapStandbyContainers(deps, new Set(["sess-1"]))).toBe(0);
   });
 
+  // planning#584: the other instance's warm pool is absent from this store, so it read as unclaimed.
+  it("leaves another stack's standby containers, and unlabelled ones, alone", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c-ours", sessionId: "warm-a", state: "running", standby: true, stack: "shipit-a" },
+      { id: "c-theirs", sessionId: "warm-b", state: "running", standby: true, stack: "shipit-b" },
+      { id: "c-unlabelled", sessionId: "warm-old", state: "running", standby: true },
+    ];
+    const { deps } = makeDeps(specs, stackFilters("shipit-a"));
+
+    expect(await reapStandbyContainers(deps, new Set())).toBe(1);
+    expect(specs.map((s) => s.id).sort()).toEqual(["c-theirs", "c-unlabelled"]);
+  });
+
+  it("with no stack configured, reaps every unclaimed standby on the daemon as before", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c-a", sessionId: "warm-a", state: "running", standby: true, stack: "shipit-a" },
+      { id: "c-b", sessionId: "warm-b", state: "running", standby: true, stack: "shipit-b" },
+    ];
+    const { deps } = makeDeps(specs, [`${CONTAINER_LABEL_KEY}=${CONTAINER_LABEL_VALUE}`]);
+
+    expect(await reapStandbyContainers(deps, new Set())).toBe(2);
+    expect(specs).toEqual([]);
+  });
+
   it("resolves rather than throwing when Docker is unavailable", async () => {
     const { deps } = makeDeps([]);
     const broken = {
@@ -497,6 +536,102 @@ describe("reapStandbyContainers", () => {
       } as unknown as DiscoveryDeps["docker"],
     };
     expect(await reapStandbyContainers(broken, new Set())).toBe(0);
+  });
+});
+
+// planning#584: a session the other orchestrator owns is not in this store either.
+describe("cleanupOrphanComposeResources across stacks", () => {
+  interface FakeComposeContainer { id: string; parent: string; stack?: string }
+
+  function fakeDocker(specs: FakeComposeContainer[]): {
+    docker: Parameters<typeof cleanupOrphanComposeResources>[0];
+    removed: string[];
+  } {
+    const removed: string[] = [];
+    const labels = (s: FakeComposeContainer): Record<string, string> => ({
+      "shipit-parent-session": s.parent,
+      ...(s.stack ? { [CONTAINER_STACK_LABEL]: s.stack } : {}),
+    });
+    const docker = {
+      listContainers: async ({ filters }: { filters?: { label?: string[] } } = {}) => specs
+        .filter((s) => matchesLabelFilters(labels(s), filters?.label))
+        .map((s) => ({ Id: s.id, State: "running", Labels: labels(s) })),
+      listNetworks: async () => [],
+      listVolumes: async () => ({ Volumes: [] }),
+      getContainer: (id: string) => ({
+        stop: async () => {},
+        remove: async () => {
+          removed.push(id);
+          const at = specs.findIndex((s) => s.id === id);
+          if (at >= 0) specs.splice(at, 1);
+        },
+      }),
+    };
+    return { docker: docker as unknown as Parameters<typeof cleanupOrphanComposeResources>[0], removed };
+  }
+
+  const twoStacks = (): FakeComposeContainer[] => [
+    { id: "db-a-gone", parent: "sess-a-gone", stack: "shipit-a" },
+    { id: "web-a-live", parent: "sess-a-live", stack: "shipit-a" },
+    { id: "db-b", parent: "sess-b", stack: "shipit-b" },
+    { id: "db-unlabelled", parent: "sess-old" },
+  ];
+
+  it("takes only this stack's orphans; the other instance's sessions are not orphans here", async () => {
+    const specs = twoStacks();
+    const { docker, removed } = fakeDocker(specs);
+
+    const count = await cleanupOrphanComposeResources(
+      docker, new Set(["sess-a-live"]), { stackName: "shipit-a" },
+    );
+
+    expect(removed).toEqual(["db-a-gone"]);
+    expect(count).toBe(1);
+    expect(specs.map((s) => s.id).sort()).toEqual(["db-b", "db-unlabelled", "web-a-live"]);
+  });
+
+  it("with no stack configured, sweeps every orphan on the daemon as before", async () => {
+    const specs = twoStacks();
+    const { docker, removed } = fakeDocker(specs);
+
+    const count = await cleanupOrphanComposeResources(docker, new Set(["sess-a-live"]));
+
+    expect(removed.sort()).toEqual(["db-a-gone", "db-b", "db-unlabelled"]);
+    expect(count).toBe(3);
+  });
+
+  // A restored backup gives two instances the same session ids, so the per-session teardown
+  // the sweep triggers has to stay inside the stack too, for networks and volumes as well.
+  it("keeps the stack filter through the per-session teardown when both stacks share a session id", async () => {
+    const removed: string[] = [];
+    interface Res { id: string; labels: Record<string, string> }
+    const byStack = (stack: string | undefined): Record<string, string> => ({
+      "shipit-parent-session": "sess-shared",
+      ...(stack ? { [CONTAINER_STACK_LABEL]: stack } : {}),
+    });
+    const containers: Res[] = [
+      { id: "c-a", labels: byStack("shipit-a") }, { id: "c-b", labels: byStack("shipit-b") }, { id: "c-old", labels: byStack(undefined) },
+    ];
+    const networks: Res[] = [{ id: "n-a", labels: byStack("shipit-a") }, { id: "n-b", labels: byStack("shipit-b") }];
+    const volumes: Res[] = [{ id: "v-a", labels: byStack("shipit-a") }, { id: "v-b", labels: byStack("shipit-b") }];
+    const select = (pool: Res[], filters: { label?: string[] } | undefined): Res[] =>
+      pool.filter((r) => matchesLabelFilters(r.labels, filters?.label));
+    const docker = {
+      listContainers: async ({ filters }: { filters?: { label?: string[] } } = {}) =>
+        select(containers, filters).map((r) => ({ Id: r.id, State: "running", Labels: r.labels })),
+      listNetworks: async ({ filters }: { filters?: { label?: string[] } } = {}) =>
+        select(networks, filters).map((r) => ({ Id: r.id })),
+      listVolumes: async ({ filters }: { filters?: { label?: string[] } } = {}) =>
+        ({ Volumes: select(volumes, filters).map((r) => ({ Name: r.id })) }),
+      getContainer: (id: string) => ({ stop: async () => {}, remove: async () => { removed.push(id); } }),
+      getNetwork: (id: string) => ({ remove: async () => { removed.push(id); } }),
+      getVolume: (id: string) => ({ remove: async () => { removed.push(id); } }),
+    } as unknown as Parameters<typeof cleanupOrphanComposeResources>[0];
+
+    const count = await cleanupOrphanComposeResources(docker, new Set(), { stackName: "shipit-a" });
+
+    expect(count).toBe(1);
+    expect(removed.sort()).toEqual(["c-a", "n-a", "v-a"]);
   });
 });
 

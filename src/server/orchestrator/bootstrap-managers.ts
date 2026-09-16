@@ -364,6 +364,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       sessionId,
       stateDir: sessionStateDir,
       depStoreDir: stateDir,
+      stackName: process.env.DOCKER_STACK,
       egress: () => containerManager.pluginEgressPolicy(sessionId),
       ...(containerManager.workspaceVolumeName
         ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
@@ -426,6 +427,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
         : {}),
       containEgress: containerManager?.isEgressContained(sessionId) ?? false,
+      stackName: process.env.DOCKER_STACK,
     });
 
   const refreshPluginReposForSession = async (
@@ -487,6 +489,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
             return !live || live.userArchived === true;
           },
           depStoreDir: stateDir,
+          stackName: process.env.DOCKER_STACK,
           egress: () => containerManager.pluginEgressPolicy(sessionId),
           overlayDepDirs: async () => {
             const live = sessionManager.get(sessionId);

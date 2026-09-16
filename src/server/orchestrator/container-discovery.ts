@@ -5,6 +5,7 @@ import {
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
+import { stackLabelFilters } from "./stack-label.js";
 import { cleanupSessionDockerResources } from "./container-lifecycle.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { overlayDepDirsFromMounts } from "./overlay-session.js";
@@ -245,7 +246,10 @@ export async function isTrackedContainerRunning(
   }
 }
 
-/** Run at boot after retiring warm rows. Active rows protect claimed containers whose standby label remains. */
+/**
+ * Run at boot after retiring warm rows. Active rows protect claimed containers whose standby label remains.
+ * Stack-scoped via `labelFilters()`: another instance's warm pool is not in this store (planning#584).
+ */
 export async function reapStandbyContainers(
   deps: DiscoveryDeps,
   activeSessionIds: Set<string>,
@@ -254,7 +258,7 @@ export async function reapStandbyContainers(
   try {
     const containers = await deps.docker.listContainers({
       all: true,
-      filters: { label: [`${CONTAINER_STANDBY_LABEL}=true`] },
+      filters: { label: [`${CONTAINER_STANDBY_LABEL}=true`, ...deps.labelFilters()] },
     });
     for (const ci of containers) {
       if (ci.Labels?.[CONTAINER_STANDBY_LABEL] !== "true") continue;
@@ -324,15 +328,18 @@ export async function cleanupOrphanContainers(
 
 const PARENT_SESSION_LABEL = "shipit-parent-session";
 
+/** Stack-scoped for the reason on `stackLabelFilters`; `cleanupOrphanContainers` always was. */
 export async function cleanupOrphanComposeResources(
   docker: Docker,
   activeSessionIds: Set<string>,
+  opts: { stackName?: string } = {},
 ): Promise<number> {
   let removed = 0;
+  const stackFilters = stackLabelFilters(opts.stackName);
   try {
     const containers = await docker.listContainers({
       all: true,
-      filters: { label: [PARENT_SESSION_LABEL] },
+      filters: { label: [PARENT_SESSION_LABEL, ...stackFilters] },
     });
 
     const orphanedSessionIds = new Set<string>();
@@ -348,7 +355,7 @@ export async function cleanupOrphanComposeResources(
     }
 
     for (const sessionId of orphanedSessionIds) {
-      await cleanupSessionDockerResources(docker, sessionId);
+      await cleanupSessionDockerResources(docker, sessionId, { labelFilters: stackFilters });
     }
   } catch {
     // Docker may not be available

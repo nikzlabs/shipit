@@ -18,6 +18,7 @@ import {
   WORK_SUBDIR,
 } from "./plugin-generations.js";
 import { pluginBasePinDir } from "./plugin-dep-store.js";
+import { stackLabel } from "./stack-label.js";
 
 export const PLUGIN_OVERLAY_LABEL = "shipit-plugin-generation";
 
@@ -96,8 +97,12 @@ export async function resolvePluginOverlayRoots(
 }
 
 // The caller must create upperdir and an empty workdir before the daemon mounts.
-export async function createPluginOverlay(docker: Docker, spec: PluginOverlaySpec): Promise<void> {
-  await createOverlayVolume(docker, spec, { [PLUGIN_OVERLAY_LABEL]: spec.volumeName });
+export async function createPluginOverlay(
+  docker: Docker,
+  spec: PluginOverlaySpec,
+  labels: Record<string, string> = {},
+): Promise<void> {
+  await createOverlayVolume(docker, spec, { ...labels, [PLUGIN_OVERLAY_LABEL]: spec.volumeName });
 }
 
 export interface PluginRuntimeOverlayArgs {
@@ -109,6 +114,8 @@ export interface PluginRuntimeOverlayArgs {
   depStoreDir?: string;
   volumeMountpoint?: string;
   stateRoot?: string;
+  /** DOCKER_STACK (planning#584). */
+  stackName?: string;
 }
 
 export function pluginRuntimeOverlaySpec(args: PluginRuntimeOverlayArgs): PluginOverlaySpec {
@@ -133,7 +140,7 @@ export async function ensurePluginRuntimeOverlay(
       chownToSessionWorker(dir);
     }
     chownToSessionWorker(path.dirname(spec.orchDirs.upperdir));
-    await createPluginOverlay(docker, spec);
+    await createPluginOverlay(docker, spec, stackLabel(args.stackName));
   });
   // A failed call must not reject subsequent calls in the queue.
   const tail = work.catch(() => undefined);

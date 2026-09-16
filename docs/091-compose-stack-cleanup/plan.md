@@ -71,6 +71,21 @@ For `deploy.sh` (Hetzner), the stack label is `shipit` (no suffix).
 
 `docker compose down` requires the original compose files and project name. After a crash, the workspace directory may not be intact. Label-based cleanup is more robust — it works purely through the Docker API with no filesystem state.
 
+### Every sweep is stack-scoped (planning#584)
+
+Two ShipIt instances on one Docker daemon each hold a session store that knows nothing of the other's sessions, so an unscoped "not in my store ⇒ orphan" sweep destroys the other instance's compose services, session networks, volumes, warm pool and in-flight plugin installs at every boot. Every boot sweep that judges liveness from the session store therefore adds the `shipit-stack=<DOCKER_STACK>` filter that `cleanupOrphanContainers` always had (`stack-label.ts` holds the label and the filter), and keeps it through the teardown it triggers, because a restored backup gives two instances the same session ids:
+
+- `reapStandbyContainers` and `cleanupOrphanComposeResources` (`container-discovery.ts`); the latter passes the filter into `cleanupSessionDockerResources`.
+- `reapSurvivingComposeStacks` (`compose-stack-reaper.ts`), discovery and `downComposeStackByProject` both.
+- The startup janitor's volume and network sweeps (`startup-janitor.ts`, `--filter label=shipit-stack=…` on `docker volume ls` / `docker network ls`) and its plugin sweep (`reapOrphanPluginInstalls` in `plugin-install.ts`).
+- The stop and launch scripts (`deployment/vps/stop.sh`, `deployment/local/lib.sh`, `docker/local/{dev,prod}.sh`): one `docker rm -f` over the stack label, and `docker network rm` over the stack's labelled networks instead of a host-wide `docker network prune`.
+
+The egress-sidecar reaper (`egress-orphan-reaper.ts`) stays host-wide on purpose: it judges from the sidecar's actual parent container, not from the session store, so it cannot mistake another instance's live session for an orphan.
+
+The filter is positive: a resource with **no** stack label is treated as foreign, not as ours. Ownership fails closed — a dangling volume may be another instance's stopped database — and an instance that runs with no `DOCKER_STACK` applies no filter, so it keeps the host-wide sweeps it always had.
+
+For a scoped sweep to see its own resources, everything ShipIt creates has to carry the label. Session workers, standbys, egress sidecars, session networks and dep-dir overlays always did (`baseLabels()`); the compose service containers have since this feature landed. planning#584 added it to the rest: the Compose-created session network and user-named volumes (`compose-generator.ts`), plugin install/CLI/netns containers with their sidecars and plugin overlay volumes (`plugin-install.ts`, `plugin-cli-run.ts`, `plugin-egress.ts`, `plugin-overlay.ts`), and everything a session creates through the Docker proxy (`ownershipLabels()` in `docker-proxy-helpers.ts`). **Consequence:** a Compose network, user-named volume, plugin resource or proxy-created resource that already existed when planning#584 shipped has no label, so the boot sweeps and stop scripts leave it alone from then on — including this instance's own already-orphaned ones. That is deliberate: the alternative is guessing ownership. The per-session paths are unaffected, since they select by session id or Compose project rather than by stack: `destroy` and archive (`cleanupSessionDockerResources`, `pruneSessionVolumes`) and generation deletion for plugin overlays (`plugin-leases.ts`).
+
 ### Edge case: active sessions with stale compose stacks
 
 Sessions that still exist in the DB but whose compose stacks are orphaned (orchestrator restarted mid-session) are handled by the existing `ServiceManager.killStaleContainers()`, which runs at the start of `ServiceManager.start()` when the session is re-activated. No change needed.

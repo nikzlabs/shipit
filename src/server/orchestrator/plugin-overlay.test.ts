@@ -165,6 +165,18 @@ describe("ensurePluginRuntimeOverlay", () => {
     checkoutDir: path.join(stateDir, "plugins", "tools", "generations", base.generationId),
   });
 
+  // planning#584: the boot sweep selects plugin volumes by the stack label.
+  it("stamps the stack on the volume it creates", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
+    try {
+      const { docker, opts } = fakeDocker();
+      const name = await ensurePluginRuntimeOverlay(docker, { ...args(stateDir), stackName: "shipit-a" });
+      expect(opts.get(name)?.Labels).toMatchObject({ "shipit-stack": "shipit-a" });
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("creates the volume exactly once for concurrent first consumers", async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
     try {

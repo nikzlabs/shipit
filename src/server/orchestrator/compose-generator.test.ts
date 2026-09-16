@@ -1300,6 +1300,28 @@ describe("generateComposeOverride", () => {
     expect(override).toContain("NET_RAW");
   });
 
+  // planning#584: the boot sweeps select by the stack label, and Compose adds none of its own.
+  it("labels the session network and user-named volumes with the stack, like the services", () => {
+    const override = generateComposeOverride(
+      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
+      { ...baseOpts, stackName: "shipit-a", userNamedVolumes: [{ name: "pgdata" }] },
+    );
+    const doc = parseYaml(override) as {
+      services: Record<string, { labels: Record<string, string> }>;
+      networks: Record<string, { labels?: Record<string, string> }>;
+      volumes: Record<string, { labels?: Record<string, string> }>;
+    };
+    expect(doc.services.db.labels["shipit-stack"]).toBe("shipit-a");
+    expect(doc.networks["shipit-session"].labels).toEqual({ "shipit-stack": "shipit-a" });
+    expect(doc.volumes.pgdata.labels).toMatchObject({ "shipit-stack": "shipit-a" });
+
+    const unscoped = parseYaml(generateComposeOverride(
+      [{ name: "db" }], { ...baseOpts, userNamedVolumes: [{ name: "pgdata" }] },
+    )) as { networks: Record<string, { labels?: unknown }>; volumes: Record<string, { labels: Record<string, string> }> };
+    expect(unscoped.networks["shipit-session"].labels).toBeUndefined();
+    expect(unscoped.volumes.pgdata.labels).not.toHaveProperty("shipit-stack");
+  });
+
   it("makes the service network internal while egress containment is active", () => {
     const override = generateComposeOverride(
       [{ name: "web", ports: ["5173:5173"], user: "1001:1001" }],

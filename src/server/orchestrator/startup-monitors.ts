@@ -162,6 +162,7 @@ export async function startStartupMonitors(
       createGitManager,
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
+      stackName: process.env.DOCKER_STACK,
       ...(containerManager ? { docker: containerManager.dockerClient } : {}),
     });
   }
@@ -312,6 +313,7 @@ export async function startStartupMonitors(
           unprobed: unprobedAfterRestart,
           liveWork: liveWorkAfterRestart,
           paceMs: 500,
+          stackName: process.env.DOCKER_STACK,
         });
         if (reaped > 0) {
           console.log(`[compose-reap] Took down ${reaped} compose stack(s) left by a previous orchestrator`);
