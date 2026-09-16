@@ -115,6 +115,16 @@ agent is shown, so a control stops carrying its own bounds and placeholders (P8)
 tab file is still a React component; it puts `<DeclaredSettings/>` and the update
 panel or the enforcement warning where it wants them.
 
+Slice 1 found one shape that needs more than "around the block": prose that
+belongs to a **section** rather than to any one declaration — Advanced's *"Saved
+for this browser…"* under Conversation, and the sentence explaining what a
+notification is for. The renderer therefore takes a `notes` map keyed by section
+name, and the tab supplies it. That stays P12 rather than a declaration field:
+the words are in the tab file, and the first of them says in the code today that
+it is deliberately **not** part of the setting's description, because it is about
+the browser rather than about what the setting does and the agent has no use for
+it.
+
 ## 5. Components
 
 ```ts
@@ -165,7 +175,13 @@ existing one or renders a row that cannot save.
 
 Until a slice moves a value's hydration, the old setter keeps writing into the
 value record, because `src/client/hooks/message-handlers/global-settings.ts`
-still writes the named fields (P18).
+still writes the named fields (P18). Slice 1 made that rule explicit rather than
+a convention: `GENERATED_TABS` in `src/client/stores/setting-values.ts` names the
+tabs whose rows are generated, and so exactly which settings the record holds. A
+tab joins that list in the slice that moves its hydration, and a setting the
+record does not hold is still read through its named field — which is what keeps
+`integrations.autoCreatePr` and `instructions.agentInstructionsEnabled` working
+on the same reader while their tabs wait for slices 5 and 3.
 
 ## Key files
 
@@ -174,6 +190,8 @@ still writes the named fields (P18).
 | `src/server/shared/settings-catalogue/types.ts` | the declaration; gains `section`, `component`, and the `own-route` address |
 | `src/client/components/Settings/declared-setting.ts` | today's boolean reader and writer — generalised into `useSetting` / `saveSetting` |
 | `src/client/components/Settings/declared.tsx` | today's declared controls — becomes the control table |
+| `src/client/components/Settings/DeclaredSettings.tsx` | the renderer: the control table, the section grouping, `notes` |
+| `src/client/stores/setting-values.ts` | which settings the record holds, the browser codec (P17), the named fields each one mirrors (P1) |
 | `src/client/components/Settings/setting-binding.ts` | `data-setting`; deleted in slice 8 |
 | `src/client/components/Settings/settings-coverage.test.tsx` | the walk; deleted in slice 8 (P15) |
 | `src/client/stores/settings-store.ts` | gains the value record; the named fields become views over it |

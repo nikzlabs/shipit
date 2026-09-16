@@ -194,6 +194,12 @@ export type AnyPayloadStore =
 interface SettingDeclarationBase<T> {
   readonly key: string;
   readonly tab: SettingTab;
+  /**
+   * The headed group this row joins on its tab, omitted where the tab has none.
+   * A group's place is where its first declaration is, so order and grouping
+   * both come from the catalogue (docs/308-data-driven-settings req 11).
+   */
+  readonly section?: string;
   readonly scope: SettingScope;
   /** The dialog renders these two, and the agent reads the same words (req 7). */
   readonly label: string;

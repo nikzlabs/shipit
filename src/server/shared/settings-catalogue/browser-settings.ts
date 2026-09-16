@@ -200,6 +200,7 @@ export const BROWSER_SETTINGS = {
   "advanced.compactConversation": defineSetting({
     key: "advanced.compactConversation",
     tab: "advanced",
+    section: "Conversation",
     scope: "browser",
     label: "Compact completed turns",
     description:
@@ -215,6 +216,7 @@ export const BROWSER_SETTINGS = {
   "advanced.notifyOnFinish": defineSetting({
     key: "advanced.notifyOnFinish",
     tab: "advanced",
+    section: "Notifications",
     scope: "browser",
     label: "Browser notification",
     description: "Show a desktop notification when the tab is in the background.",
@@ -227,6 +229,7 @@ export const BROWSER_SETTINGS = {
   "advanced.soundOnFinish": defineSetting({
     key: "advanced.soundOnFinish",
     tab: "advanced",
+    section: "Notifications",
     scope: "browser",
     label: "Sound",
     description: "Play a chime when a session needs attention.",

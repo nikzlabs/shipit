@@ -4,18 +4,18 @@
  *
  * The cases are enumerated FROM the catalogue rather than listed here, which is
  * what makes this req 7 executable on the client side: a boolean declared
- * tomorrow is covered the day it is declared, and one whose browser-store field
- * or setter is missing fails here as well as at compile time — `writeStore`
- * silently finds nothing to call, so the optimistic value never lands.
+ * tomorrow is covered the day it is declared, and one the writer cannot reach
+ * fails here as well as at compile time.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, act } from "@testing-library/react";
+import { render, renderHook, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DeclaredToggle } from "./declared.js";
 import {
   resetDeclaredSaves,
-  saveDeclaredBoolean,
+  saveSetting,
+  useDeclaredBoolean,
   type DeclaredBooleanKey,
 } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -65,7 +65,7 @@ describe("a declared boolean saves itself", () => {
 
     it(`writes ${key} to the browser store and to its declared payload field`, async () => {
       const next = !storeValue(wire);
-      await act(async () => { await saveDeclaredBoolean(key, next); });
+      await act(async () => { await saveSetting(key, next); });
 
       expect(storeValue(wire)).toBe(next);
       const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
@@ -81,7 +81,7 @@ describe("a declared boolean saves itself", () => {
       vi.spyOn(console, "error").mockImplementation(() => {});
       const before = storeValue(wire);
 
-      await act(async () => { await saveDeclaredBoolean(key, !before); });
+      await act(async () => { await saveSetting(key, !before); });
 
       expect(storeValue(wire)).toBe(before);
       // The declaration's own label, so the toast names the control the user
@@ -120,8 +120,8 @@ describe("two saves of one setting that overlap", () => {
 
   it("shows the server's value when both fail, not the reverse of the later one", async () => {
     const settlers = deferredFetch();
-    const off = saveDeclaredBoolean(KEY, false);
-    const on = saveDeclaredBoolean(KEY, true);
+    const off = saveSetting(KEY, false);
+    const on = saveSetting(KEY, true);
     expect(settlers).toHaveLength(2);
 
     await act(async () => { settlers[0](false); await off; });
@@ -134,9 +134,9 @@ describe("two saves of one setting that overlap", () => {
 
   it("does not let an older request's failure flip the switch under a newer one", async () => {
     const settlers = deferredFetch();
-    const first = saveDeclaredBoolean(KEY, false);
-    const second = saveDeclaredBoolean(KEY, true);
-    const third = saveDeclaredBoolean(KEY, false);
+    const first = saveSetting(KEY, false);
+    const second = saveSetting(KEY, true);
+    const third = saveSetting(KEY, false);
 
     await act(async () => { settlers[1](true); await second; });
     // The first request fails while the user's most recent click is still in
@@ -150,7 +150,7 @@ describe("two saves of one setting that overlap", () => {
 
   it("rolls back to a value that moved underneath it, not to the one it remembered", async () => {
     fetchMock.mockResolvedValue({ ok: true });
-    await act(async () => { await saveDeclaredBoolean(KEY, true); });
+    await act(async () => { await saveSetting(KEY, true); });
 
     // A `settings_changed` refetch, or another viewer's save: nothing is in
     // flight, so the displayed value is the server's and the remembered one is
@@ -158,10 +158,49 @@ describe("two saves of one setting that overlap", () => {
     act(() => { useSettingsStore.getState().setEnableSubAgents(false); });
 
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
-    await act(async () => { await saveDeclaredBoolean(KEY, true); });
+    await act(async () => { await saveSetting(KEY, true); });
 
     expect(storeValue(WIRE)).toBe(false);
   });
+});
+
+/**
+ * A tab this slice did not convert still holds its value in its named store
+ * field, and its own hydration still writes only that field (P1, P18). So a save
+ * must not leave a value in the record for it: the reader prefers the record,
+ * and nothing would ever correct it again.
+ */
+describe("a setting the record does not hold", () => {
+  const OUTSIDE = (Object.values(GLOBAL_SETTINGS) as AnyPayloadDeclaration[]).filter(
+    (d) => d.store.kind === "credential-store" && d.type.kind === "bool" && d.tab !== "advanced",
+  );
+
+  it("covers the settings still reading through their named field", () => {
+    expect(OUTSIDE.map((d) => d.key).sort()).toEqual([
+      "instructions.agentInstructionsEnabled",
+      "integrations.autoCreatePr",
+    ]);
+  });
+
+  for (const declaration of OUTSIDE) {
+    const key = declaration.key as DeclaredBooleanKey;
+
+    it(`shows ${key} as its hydration last left it, not as an earlier save did`, async () => {
+      await act(async () => { await saveSetting(key, true); });
+      expect(storeValue(declaration.wire)).toBe(true);
+
+      // What a `settings_changed` refetch does: the authoritative value arrives
+      // through this setting's own setter, which writes the named field.
+      act(() => {
+        (useSettingsStore.getState() as unknown as Record<string, (v: boolean) => void>)[
+          `set${declaration.wire.charAt(0).toUpperCase()}${declaration.wire.slice(1)}`
+        ](false);
+      });
+
+      const { result } = renderHook(() => useDeclaredBoolean(key));
+      expect(result.current.value).toBe(false);
+    });
+  }
 });
 
 describe("a toggle given no wiring is still a working control", () => {

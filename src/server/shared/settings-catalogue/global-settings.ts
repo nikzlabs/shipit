@@ -23,6 +23,7 @@ export const GLOBAL_SETTINGS = {
   "advanced.enableSubAgents": defineSetting({
     key: "advanced.enableSubAgents",
     tab: "advanced",
+    section: "Agent",
     scope: "global",
     label: "Allow spawning another agent for a sub-task",
     description:
@@ -40,6 +41,7 @@ export const GLOBAL_SETTINGS = {
   "advanced.liveSteering": defineSetting({
     key: "advanced.liveSteering",
     tab: "advanced",
+    section: "Agent",
     scope: "global",
     label: "Inject messages mid-turn",
     description:
@@ -57,6 +59,7 @@ export const GLOBAL_SETTINGS = {
   "advanced.autoFixCi": defineSetting({
     key: "advanced.autoFixCi",
     tab: "advanced",
+    section: "Automation",
     scope: "global",
     label: "Auto-fix CI when checks fail",
     description:
@@ -72,6 +75,7 @@ export const GLOBAL_SETTINGS = {
   "advanced.sessionStatusCard": defineSetting({
     key: "advanced.sessionStatusCard",
     tab: "advanced",
+    section: "Agent",
     scope: "global",
     label: "Session status card",
     description:
@@ -88,6 +92,7 @@ export const GLOBAL_SETTINGS = {
   "advanced.autoResolveConflicts": defineSetting({
     key: "advanced.autoResolveConflicts",
     tab: "advanced",
+    section: "Automation",
     scope: "global",
     label: "Auto-resolve conflicts when the base branch moves",
     description:
@@ -103,6 +108,7 @@ export const GLOBAL_SETTINGS = {
   "advanced.autoResetMergedBranch": defineSetting({
     key: "advanced.autoResetMergedBranch",
     tab: "advanced",
+    section: "Automation",
     scope: "global",
     label: "Start from the latest base after a merge",
     description:

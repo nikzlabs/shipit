@@ -1,7 +1,9 @@
 # Data-driven settings UI — checklist
 
-This branch's deliverable is the design set. The implementation order lives in
-[plan.md](plan.md) → *Slices*, and the work is tracked on planning#580.
+The implementation order lives in [plan.md](plan.md) → *Slices*, one pull request
+each, and the work is tracked on planning#580.
+
+## Design
 
 - [x] Requirements written, from what the user asked for
 - [x] Per-setting inventory: all 77 declarations, with their store, agent policy and target control
@@ -9,3 +11,14 @@ This branch's deliverable is the design set. The implementation order lives in
 - [x] Subtraction review, and the design cut down to what it found
 - [x] Pull-request review, and its corrections folded in — P17 to P19
 - [x] Requirement 12 settled on the corrected facts: the walk goes, and the bounded loss is recorded
+
+## Slices
+
+- [x] 1 — The spine, on Advanced's nine toggles
+- [ ] 2 — Routes and the rest of Advanced
+- [ ] 3 — Instructions and Git
+- [ ] 4 — Voice
+- [ ] 5 — Integrations
+- [ ] 6 — Panels
+- [ ] 7 — Project Settings
+- [ ] 8 — Cleanup: the coverage walk and `data-setting` go

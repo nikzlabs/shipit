@@ -20,7 +20,7 @@ import { inputClass } from "./shared.js";
 import { bindSetting, bindSettingOption, settingCopy, settingOptions, type DeclaredOption } from "./setting-binding.js";
 import { useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
 
-export { saveDeclaredBoolean, useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
+export { saveSetting, useSetting, useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
 
 export {
   SETTING_ATTR,

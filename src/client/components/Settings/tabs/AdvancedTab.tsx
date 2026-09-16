@@ -4,13 +4,12 @@ import { ICON_SIZE } from "../../../design-tokens.js";
 import { Button } from "../../ui/button.js";
 import { Alert } from "../../ui/banner.js";
 import { useUiStore } from "../../../stores/ui-store.js";
-import { useSettingsStore } from "../../../stores/settings-store.js";
 import {
   DeclaredEnumCards,
-  DeclaredToggle,
   SettingCopy,
   bindSetting,
 } from "../declared.js";
+import { DeclaredSettings } from "../DeclaredSettings.js";
 
 interface UpdateStatusResult {
   available: boolean;
@@ -33,113 +32,25 @@ interface UpdateStatusResult {
   };
 }
 
-export function ConversationSettings() {
-  const enabled = useSettingsStore((s) => s.compactConversation);
-  const setEnabled = useSettingsStore((s) => s.setCompactConversation);
-  return (
-    <section className="space-y-3" aria-label="Conversation">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Conversation</h3>
-      <DeclaredToggle
-        settingKey="advanced.compactConversation"
-        enabled={enabled}
-        onToggle={setEnabled}
-        testId="settings-compact-conversation"
-      />
-      {/* Not part of the setting's description: it is about the browser, not
-          about what compacting does, and the agent has no use for it. */}
-      <p className="text-xs text-(--color-text-secondary)">Saved for this browser. Browser Find searches displayed content. In-app search can still find hidden message text.</p>
-    </section>
-  );
-}
-
-function NotificationSettings() {
-  const notifyOnFinish = useSettingsStore((s) => s.notifyOnFinish);
-  const soundOnFinish = useSettingsStore((s) => s.soundOnFinish);
-  const setNotifyOnFinish = useSettingsStore((s) => s.setNotifyOnFinish);
-  const setSoundOnFinish = useSettingsStore((s) => s.setSoundOnFinish);
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Notifications</h3>
-      <p className="text-sm text-(--color-text-secondary)">
-        Get notified when a session needs your attention &mdash; the agent stops and is waiting on you,
-        CI fails, or a PR has merge conflicts. The same conditions that highlight a session in the sidebar.
-      </p>
-      <div className="space-y-2">
-        <DeclaredToggle
-          settingKey="advanced.notifyOnFinish"
-          enabled={notifyOnFinish}
-          onToggle={setNotifyOnFinish}
-          testId="settings-notify-on-finish"
-        />
-        <DeclaredToggle
-          settingKey="advanced.soundOnFinish"
-          enabled={soundOnFinish}
-          onToggle={setSoundOnFinish}
-          testId="settings-sound-on-finish"
-        />
-      </div>
-    </div>
-  );
-}
-
-/*
-  Every toggle below reads and writes itself from its declaration
-  (`declared-setting.ts`, req 7). Each one used to select its own store field,
-  build its own PUT body, roll back by hand and write its own toast — and a new
-  setting needed one more copy of that block, which is the second registration
-  req 7 says must not exist.
-*/
-function LiveSteeringSettings() {
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Live Steering</h3>
-      <div className="space-y-2">
-        <DeclaredToggle settingKey="advanced.liveSteering" testId="settings-live-steering" />
-      </div>
-    </div>
-  );
-}
-
-function PrAutomationsSettings() {
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">PR automations</h3>
-      <div className="space-y-2">
-        <DeclaredToggle settingKey="advanced.autoFixCi" testId="settings-auto-fix-ci" />
-        <DeclaredToggle
-          settingKey="advanced.autoResolveConflicts"
-          testId="settings-auto-resolve-conflicts"
-        />
-        <DeclaredToggle
-          settingKey="advanced.autoResetMergedBranch"
-          testId="settings-auto-reset-merged-branch"
-        />
-      </div>
-    </div>
-  );
-}
-
-function SessionStatusCardSettings() {
-  return (
-    <div className="space-y-3">
-      <DeclaredToggle
-        settingKey="advanced.sessionStatusCard"
-        testId="settings-session-status-card"
-        heading
-      />
-    </div>
-  );
-}
-
-function MultiAgentSettings() {
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Multi-agent sessions</h3>
-      <DeclaredToggle settingKey="advanced.enableSubAgents" testId="settings-enable-sub-agents" />
-    </div>
-  );
-}
+/**
+ * Prose that belongs to a section rather than to any one declaration, so it stays
+ * out of the descriptions the agent reads (inventory.md P12).
+ */
+const ADVANCED_NOTES = {
+  Conversation: (
+    <p className="text-xs text-(--color-text-secondary)">
+      Saved for this browser. Browser Find searches displayed content. In-app search can still
+      find hidden message text.
+    </p>
+  ),
+  Notifications: (
+    <p className="text-sm text-(--color-text-secondary)">
+      Get notified when a session needs your attention &mdash; the agent stops and is waiting on
+      you, CI fails, or a PR has merge conflicts. The same conditions that highlight a session in
+      the sidebar.
+    </p>
+  ),
+};
 
 export function AdvancedTab({
   onFullReset,
@@ -425,27 +336,7 @@ export function AdvancedTab({
 
       <div className="border-t border-(--color-border-secondary)" />
 
-      <LiveSteeringSettings />
-
-      <div className="border-t border-(--color-border-secondary)" />
-
-      <PrAutomationsSettings />
-
-      <div className="border-t border-(--color-border-secondary)" />
-
-      <MultiAgentSettings />
-
-      <div className="border-t border-(--color-border-secondary)" />
-
-      <SessionStatusCardSettings />
-
-      <div className="border-t border-(--color-border-secondary)" />
-
-      <ConversationSettings />
-
-      <div className="border-t border-(--color-border-secondary)" />
-
-      <NotificationSettings />
+      <DeclaredSettings tab="advanced" notes={ADVANCED_NOTES} />
 
       <div className="border-t border-(--color-border-secondary)" />
 
