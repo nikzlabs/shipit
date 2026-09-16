@@ -28,6 +28,11 @@ services:
       - ./proxy.mjs:/app/proxy.mjs:ro
       - ./demo-proxy-entrypoint.sh:/app/demo-proxy-entrypoint.sh:ro
       - ./cassettes:/cassettes
+    # The driver's replay-mode check (`HEAD /api/hello`) runs from the driver
+    # host, not from the instance's network, so the port is also published on
+    # the tailnet address — the demo box contains nothing (plan §2).
+    ports:
+      - "${DEMO_PROXY_PUBLISH:-100.81.125.94}:8787:8787"
     networks:
       - shipit-prod
     restart: unless-stopped

@@ -2,6 +2,8 @@
 
 - [x] Resolve the open question in `requirements.md` (demo-instance host) — req 14, 2026-09-16; instance deployed on `services` (plan §9)
 - [ ] Create the `shipit-demo-app` repo on the demo GitHub account: Vite + React scaffold, `docker-compose.yml` with the `x-shipit-preview: auto` dev service, `shipit.yaml` with `agent.install: npm ci`, `.claude/settings.json` (`ANTHROPIC_BASE_URL` → `http://demo-proxy:8787`, dummy `ANTHROPIC_API_KEY`), no `.github/workflows`, no branch protection; record the snapshot SHA
+  - [x] Repo created public through the instance's `POST /api/repos` (template `react-vite-ts`): `main` `c837844d…` has the lockfile, the `dev` compose service (5173, `auto` by default), `shipit.yaml`; preview verified rendering on the instance (plan §1)
+  - [ ] The demo-specific files through one agent turn (redirect, explicit `x-shipit-preview: auto`, `agent.install: npm ci`), merged from the PR card; then re-pin `website-hero/storyboard.json` `repo.commit` — waits on a model provider on the demo instance (plan §9)
 - [x] Add `playwright` as an exact-pinned `devDependency` (≥ 7 days old, `npm run check-deps` green) — with user sign-off if a younger release is needed (1.62.1, published 2026-07-30)
 - [x] The demo instance itself — `scripts/demo-video/compose.yml` was not written; the local install recipe (`deployment/local/setup.sh` + `tailscale.sh`, `SESSION_EGRESS_ENFORCE=0` via `.shipit.env`) deployed it on `services` at `http://100-81-125-94.sslip.io:4123` (plan §9). State is the `shipit-prod_workspace` volume, not a bind-mounted `SHIPIT_STATE_DIR`; no env-adopted `ANTHROPIC_API_KEY` / `GITHUB_TOKEN` — both entered once by Nik
 - [x] `demo-proxy` as a Compose sibling on the instance's `shipit-prod` network (plan §2, §9) — its own project `shipit-demo` joining the network as `external` (`scripts/demo-video/host/`), since `lib.sh` discovers no overlays beyond the fixed tailnet file; up on `services`, `HEAD http://demo-proxy:8787/api/hello` → 200 from a container on the network; key placeholder in `/root/shipit-demo-proxy.env`
@@ -16,7 +18,7 @@
   - [ ] Phase 2: fresh state dir + `compose up`, run at `localhost`, `preview_text` / `pr_card` / `merge_button` exercised for real
 - [x] `make-demo-repo.sh` + `scenarios/dogfood-smoke/storyboard.json` — the phase-1 demo repo (local bare, `file://localhost/…`) and scenario
 - [x] `cut.sh` — keep `[actionAt, +lead]` and `[readyAt, +hold]` per beat, concatenate, export `hero.mp4` (h264, yuv420p, faststart, no audio) and `hero.webm` (VP9, no audio); the beats are anchored on the black splash (`ffmpeg blackdetect` ↔ `run.json` `anchor.wallAt`), a take with an anchor the file does not show fails unless `CUT_UNANCHORED=1`; verified on run 9 (70.92 s → 21.000 s, exactly Σ(lead + hold))
-- [ ] `scenarios/website-hero/storyboard.json` — the four beats from plan §6, repo pin, viewport, pace
+- [x] `scenarios/website-hero/storyboard.json` — the four beats from plan §6 (plus beat 3 waiting on `merge_button: visible`, since `clickMerge` acts rather than waits), repo pin (provisional until the demo files merge), viewport, pace, `settings.autoCreatePr`
 - [ ] Record the `website-hero` cassette through the settings-file redirect; replay it once and confirm the fingerprint log shows no drift; commit `cassette/`
 - [ ] Run the full pipeline twice from a fresh state dir and confirm the two cuts have the same length and beat boundaries (req 3)
 - [x] `scripts/demo-video/README.md` — one page: prerequisites on the demo host, `record` / `run` / `cut` invocations, how to add a scenario
