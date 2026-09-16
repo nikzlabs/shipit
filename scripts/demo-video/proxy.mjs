@@ -10,6 +10,9 @@
 //                             recording whose fingerprint matches it, pacing
 //                             text deltas so the transcript types at a human
 //                             rate
+//   --scrub <cassette-dir>    rewrite every recording with only the allowlisted
+//                             response headers (bodies untouched), for a
+//                             cassette recorded before the allowlist existed
 //
 // A lane is the auth header kind: `x-api-key` (the instance's own key, which
 // ShipIt delivers into the session as ANTHROPIC_API_KEY; forwarded as is, or
@@ -22,9 +25,13 @@
 // Usage:
 //   node proxy.mjs --record DIR [--upstream URL] [--port N] [--host H]
 //   node proxy.mjs --replay DIR [--pace-chars-per-second N] [--port N] [--host H]
+//   node proxy.mjs --scrub DIR
 //
 // Prints the bound port on stdout once listening; everything else goes to
-// stderr, one line per request: mode, lane, n, path, status, ms.
+// stderr, one line per request: mode, lane, n, path, status, ms. `/api/hello`
+// (HEAD or GET) answers 200 with `x-demo-proxy-mode` and `x-demo-proxy-cassette`
+// so the driver can tell which proxy it is talking to; `GET /api/demo/stats`
+// is the run's counters as JSON, which the driver checks at the end of a replay.
 
 import http from "node:http";
 import https from "node:https";
@@ -41,7 +48,7 @@ const TOOL_INPUT_SPEED_FACTOR = 4;
 const FINGERPRINTS_FILE = "fingerprints.jsonl";
 const LANE_API_KEY = "x-api-key";
 const LANE_BEARER = "bearer";
-/** Hop-by-hop and framing headers that must not be forwarded or replayed. */
+/** Hop-by-hop and framing headers that must not be forwarded live. */
 const DROPPED_RESPONSE_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -49,6 +56,13 @@ const DROPPED_RESPONSE_HEADERS = new Set([
   "content-length",
   "content-encoding",
 ]);
+/**
+ * The only response headers a cassette keeps or a replay sends. Everything
+ * else the upstream adds names the account (organization and workspace ids,
+ * subscription utilization and reset times, request and trace ids) and a
+ * cassette is committed to a public repo.
+ */
+const KEPT_RESPONSE_HEADERS = new Set(["content-type"]);
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -77,6 +91,10 @@ export function parseArgs(argv) {
         opts.mode = "replay";
         opts.cassetteDir = path.resolve(next());
         break;
+      case "--scrub":
+        opts.mode = "scrub";
+        opts.cassetteDir = path.resolve(next());
+        break;
       case "--upstream":
         opts.upstream = next();
         break;
@@ -93,7 +111,7 @@ export function parseArgs(argv) {
         throw new Error(`unknown argument: ${arg}`);
     }
   }
-  if (!opts.mode) throw new Error("one of --record <dir> or --replay <dir> is required");
+  if (!opts.mode) throw new Error("one of --record <dir>, --replay <dir> or --scrub <dir> is required");
   if (!Number.isFinite(opts.port) || opts.port < 0) throw new Error("--port must be a non-negative number");
   if (!Number.isFinite(opts.charsPerSecond) || opts.charsPerSecond <= 0) {
     throw new Error("--pace-chars-per-second must be a positive number");
@@ -113,6 +131,17 @@ function json(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
   res.end(body);
+}
+
+/**
+ * What a cassette is called on the wire: its directory's basename, except that
+ * the in-repo layout `scenarios/<name>/cassette` is named by the scenario, so
+ * both it and the host's `cassettes/<name>` answer `<name>` — what the driver
+ * compares its scenario directory against.
+ */
+export function cassetteName(dir) {
+  const base = path.basename(dir);
+  return base === "cassette" ? path.basename(path.dirname(dir)) : base;
 }
 
 /** The lane is the auth header kind — a fact of the request, not configuration. */
@@ -150,21 +179,33 @@ function isMessagesRequest(req) {
   return req.method === "POST" && req.url.split("?")[0].startsWith("/v1/messages");
 }
 
+function routeOf(req) {
+  const p = req.url.split("?")[0];
+  if ((req.method === "HEAD" || req.method === "GET") && p === "/api/hello") return "hello";
+  if (req.method === "GET" && p === "/api/demo/stats") return "stats";
+  if (isMessagesRequest(req)) return "messages";
+  return null;
+}
+
 // ── Cassette file format ─────────────────────────────────────────────────────
 //
 // One file per response, shaped like a captured HTTP message so it can be read
-// with `less` and diffed: a status line, the response headers, a blank line,
-// then the body bytes verbatim (the SSE stream as the upstream sent it).
+// with `less` and diffed: a status line, the allowlisted response headers, a
+// blank line, then the body bytes verbatim (the SSE stream as the upstream
+// sent it). The allowlist applies on both sides — a file never holds more than
+// KEPT_RESPONSE_HEADERS, and a replay never sends more even from a file that
+// predates the allowlist.
 
 export function serializeResponse(status, headers, body) {
   const lines = [`HTTP/1.1 ${status}`];
   for (const [name, value] of Object.entries(headers)) {
-    if (DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue;
-    for (const v of Array.isArray(value) ? value : [value]) lines.push(`${name}: ${v}`);
+    if (!KEPT_RESPONSE_HEADERS.has(name.toLowerCase())) continue;
+    for (const v of Array.isArray(value) ? value : [value]) lines.push(`${name.toLowerCase()}: ${v}`);
   }
   return Buffer.concat([Buffer.from(lines.join("\r\n") + "\r\n\r\n", "utf8"), body]);
 }
 
+/** Every header name in the file, kept or not, so a scrub can say what it removed. */
 export function parseResponseFile(buf) {
   const sep = buf.indexOf("\r\n\r\n");
   if (sep < 0) throw new Error("cassette file has no header/body separator");
@@ -172,15 +213,42 @@ export function parseResponseFile(buf) {
   const status = Number(head[0].split(" ")[1]);
   /** @type {Record<string, string | string[]>} */
   const headers = {};
+  const headerNames = [];
   for (const line of head.slice(1)) {
     const colon = line.indexOf(":");
     if (colon < 0) continue;
     const name = line.slice(0, colon).trim().toLowerCase();
     const value = line.slice(colon + 1).trim();
-    if (DROPPED_RESPONSE_HEADERS.has(name)) continue;
+    headerNames.push(name);
+    if (!KEPT_RESPONSE_HEADERS.has(name)) continue;
     headers[name] = name in headers ? [].concat(headers[name], value) : value;
   }
-  return { status, headers, body: buf.subarray(sep + 4) };
+  return { status, headers, headerNames, body: buf.subarray(sep + 4) };
+}
+
+/**
+ * Rewrite each `<lane>/NNN.sse` under `dir` through the allowlist. Returns the
+ * files touched and the header names removed; bodies are copied, never parsed.
+ */
+export function scrubCassette(dir) {
+  if (!fs.existsSync(dir)) throw new Error(`cassette dir not found: ${dir}`);
+  const removed = new Set();
+  const rewritten = [];
+  for (const lane of [LANE_API_KEY, LANE_BEARER]) {
+    const laneDir = path.join(dir, lane);
+    if (!fs.existsSync(laneDir)) continue;
+    for (const f of fs.readdirSync(laneDir).filter((f) => /^\d{3}\.sse$/.test(f)).sort()) {
+      const file = path.join(laneDir, f);
+      const before = fs.readFileSync(file);
+      const { status, headers, headerNames, body } = parseResponseFile(before);
+      const after = serializeResponse(status, headers, body);
+      for (const name of headerNames) if (!KEPT_RESPONSE_HEADERS.has(name)) removed.add(name);
+      if (after.equals(before)) continue;
+      fs.writeFileSync(file, after);
+      rewritten.push(path.join(lane, f));
+    }
+  }
+  return { rewritten, removed: [...removed].sort() };
 }
 
 // ── SSE pacing ───────────────────────────────────────────────────────────────
@@ -284,7 +352,7 @@ function isEventStream(headers) {
 
 // ── Modes ────────────────────────────────────────────────────────────────────
 
-function createRecorder(opts) {
+function createRecorder(opts, stats) {
   const keyOverride = process.env.DEMO_PROXY_ANTHROPIC_API_KEY || null;
   fs.mkdirSync(opts.cassetteDir, { recursive: true });
   for (const lane of [LANE_API_KEY, LANE_BEARER]) {
@@ -345,6 +413,7 @@ function createRecorder(opts) {
             const laneDir = path.join(opts.cassetteDir, lane);
             fs.mkdirSync(laneDir, { recursive: true });
             fs.writeFileSync(path.join(laneDir, `${pad3(n)}.sse`), serializeResponse(status, upRes.headers, body));
+            stats.served++;
             if (!res.destroyed) res.end();
             log(`record lane=${lane} n=${n} ${req.method} ${req.url} ${status} ${Date.now() - startedAt}ms`);
             resolve();
@@ -384,13 +453,17 @@ function loadFingerprints(cassetteDir) {
   return byKey;
 }
 
-/** Fields whose drift means the take is not the one the cassette was cut from. */
-const DRIFT_FIELDS = ["model", "messages", "tools", "stream"];
-/** Fields a recording must equal to count as a match; `messages` only ranks matches. */
-const MATCH_FIELDS = ["model", "tools", "stream"];
+/**
+ * The fingerprint keys a recording must equal to be served as a match, and
+ * whose difference is reported as drift when one is served anyway. `messages`
+ * is a hard key: within a turn every request has a distinct message count, and
+ * ranking by distance let two recordings alike on the other keys resolve by
+ * number, so reversed arrivals swapped answers with nothing in the log.
+ */
+const MATCH_FIELDS = ["model", "messages", "tools", "stream"];
 
 export function describeDrift(recorded, actual) {
-  const drift = DRIFT_FIELDS.filter((f) => recorded[f] !== actual[f]).map(
+  const drift = MATCH_FIELDS.filter((f) => recorded[f] !== actual[f]).map(
     (f) => `${f}: recorded=${JSON.stringify(recorded[f])} got=${JSON.stringify(actual[f])}`,
   );
   return drift.length ? drift.join(", ") : null;
@@ -409,29 +482,27 @@ function loadLane(cassetteDir, lane, fingerprints) {
 }
 
 /**
- * Pick the recording for a request from the lane's unused ones: the first whose
- * fingerprint matches on MATCH_FIELDS, ranked by `messages` distance (exact
- * first), then by number. Nothing matches → the lowest-numbered unused one,
- * which `describeDrift` then reports. Within a turn the CLI's side call and the
- * turn itself race on one lane and finish in either order, which is why arrival
+ * Pick the recording for a request from the lane's unused ones: the
+ * lowest-numbered whose fingerprint equals the request's on every MATCH_FIELD.
+ * Nothing matches → `fallback`, the lowest-numbered unused one, which
+ * `describeDrift` then reports. Within a turn the CLI's side call and the turn
+ * itself race on one lane and finish in either order, which is why arrival
  * order alone cannot pick (docs/296 plan §2).
  */
 export function chooseRecording(recordings, actual) {
   const unused = recordings.filter((r) => !r.used);
   if (unused.length === 0) return null;
-  const matching = unused.filter((r) => r.fingerprint && MATCH_FIELDS.every((f) => r.fingerprint[f] === actual[f]));
-  if (matching.length === 0) return unused[0];
-  const distance = (r) => Math.abs(r.fingerprint.messages - actual.messages);
-  matching.sort((a, b) => distance(a) - distance(b) || a.n - b.n);
-  return matching[0];
+  const match = unused.find((r) => r.fingerprint && MATCH_FIELDS.every((f) => r.fingerprint[f] === actual[f]));
+  return match ? { recording: match, fallback: false } : { recording: unused[0], fallback: true };
 }
 
-function createReplayer(opts) {
+function createReplayer(opts, stats) {
   if (!fs.existsSync(opts.cassetteDir)) throw new Error(`cassette dir not found: ${opts.cassetteDir}`);
   const fingerprints = loadFingerprints(opts.cassetteDir);
   const lanes = {};
   for (const lane of [LANE_API_KEY, LANE_BEARER]) lanes[lane] = loadLane(opts.cassetteDir, lane, fingerprints);
   const counters = { [LANE_API_KEY]: 0, [LANE_BEARER]: 0 };
+  stats.unused = () => Object.values(lanes).flatMap((l) => l ?? []).filter((r) => !r.used).length;
 
   return async function replay(req, res, raw) {
     const lane = laneOf(req.headers);
@@ -439,14 +510,15 @@ function createReplayer(opts) {
     const startedAt = Date.now();
     const actual = fingerprintOf(raw);
     // Chosen and marked used before the first await, so two in-flight requests cannot share a take.
-    const recording = chooseRecording(lanes[lane] ?? [], actual);
+    const choice = chooseRecording(lanes[lane] ?? [], actual);
+    const recording = choice?.recording ?? null;
     if (recording) recording.used = true;
     const take = recording ? pad3(recording.n) : "-";
     const finish = (status, suffix = "") =>
       log(`replay lane=${lane} n=${n} take=${take} ${req.method} ${req.url} ${status} ${Date.now() - startedAt}ms${suffix}`);
 
     if (!recording) {
-      if (lane !== LANE_API_KEY && lanes[lane] === null) {
+      if (!lanes[lane]?.length) {
         // Plan §2: a lane the cassette never recorded is refused, not exhausted.
         json(res, 401, { error: { type: "authentication_error", message: `demo-proxy: no ${lane} lane in this cassette` } });
         finish(401);
@@ -467,8 +539,11 @@ function createReplayer(opts) {
       return;
     }
 
+    stats.served++;
+    if (choice.fallback) stats.fallback++;
     const drift = recording.fingerprint ? describeDrift(recording.fingerprint, actual) : "no recorded fingerprint";
     if (drift) {
+      stats.drift++;
       const recordedBytes = recording.fingerprint?.bodyBytes ?? null;
       log(`cassette drift lane=${lane} n=${n} take=${take}: ${drift} (bodyBytes recorded=${recordedBytes} got=${actual.bodyBytes})`);
     }
@@ -488,20 +563,32 @@ function createReplayer(opts) {
 // ── Server ───────────────────────────────────────────────────────────────────
 
 export function createServer(opts) {
-  const handleMessages = opts.mode === "record" ? createRecorder(opts) : createReplayer(opts);
+  const cassette = cassetteName(opts.cassetteDir);
+  // `served` is every recording answered (record: every response saved); `drift`
+  // those served with a fingerprint differing from the request's; `fallback`
+  // those served because nothing matched. The two coincide while every match
+  // key is a drift key; both are exposed so a reader need not know that.
+  const stats = { served: 0, drift: 0, fallback: 0, unused: () => 0 };
+  const handleMessages = opts.mode === "record" ? createRecorder(opts, stats) : createReplayer(opts, stats);
 
   const server = http.createServer((req, res) => {
     res.on("error", () => {
       // The client went away mid-write; the close handler has already stopped the stream.
     });
     const startedAt = Date.now();
-    if (req.method === "HEAD" && req.url.split("?")[0] === "/api/hello") {
-      res.writeHead(200);
+    const route = routeOf(req);
+    if (route === "hello") {
+      res.writeHead(200, { "x-demo-proxy-mode": opts.mode, "x-demo-proxy-cassette": cassette, "content-length": 0 });
       res.end();
-      log(`${opts.mode} lane=- n=- HEAD ${req.url} 200 ${Date.now() - startedAt}ms`);
+      log(`${opts.mode} lane=- n=- ${req.method} ${req.url} 200 ${Date.now() - startedAt}ms`);
       return;
     }
-    if (!isMessagesRequest(req)) {
+    if (route === "stats") {
+      json(res, 200, { mode: opts.mode, cassette, served: stats.served, drift: stats.drift, fallback: stats.fallback, unused: stats.unused() });
+      log(`${opts.mode} lane=- n=- GET ${req.url} 200 ${Date.now() - startedAt}ms`);
+      return;
+    }
+    if (route !== "messages") {
       readBody(req)
         .catch(() => Buffer.alloc(0))
         .then(() => {
@@ -527,8 +614,18 @@ function main() {
     opts = parseArgs(process.argv.slice(2));
   } catch (err) {
     log(`error: ${err.message}`);
-    log("usage: proxy.mjs (--record DIR [--upstream URL] | --replay DIR [--pace-chars-per-second N]) [--port N] [--host H]");
+    log("usage: proxy.mjs (--record DIR [--upstream URL] | --replay DIR [--pace-chars-per-second N]) [--port N] [--host H] | --scrub DIR");
     process.exit(2);
+  }
+  if (opts.mode === "scrub") {
+    try {
+      const { rewritten, removed } = scrubCassette(opts.cassetteDir);
+      log(`scrub ${opts.cassetteDir}: rewrote ${rewritten.length} file(s), removed headers: ${removed.join(", ") || "none"}`);
+    } catch (err) {
+      log(`error: ${err.message}`);
+      process.exit(2);
+    }
+    return;
   }
   let server;
   try {
