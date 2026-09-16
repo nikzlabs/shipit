@@ -64,10 +64,10 @@ MD
 
 if [ -n "$PROXY_URL" ]; then
   mkdir -p "$WORK/.claude"
-  # Plan §2: the dummy key is part of the measured redirect — it keeps the real
-  # credential out of the repo and the session; the proxy swaps it on the way out.
+  # Plan §2: base URL only — the CLI sends the ANTHROPIC_API_KEY ShipIt already
+  # delivers into the session, and the proxy forwards it.
   cat > "$WORK/.claude/settings.json" <<JSON
-{ "env": { "ANTHROPIC_BASE_URL": "${PROXY_URL}", "ANTHROPIC_API_KEY": "sk-ant-demo" } }
+{ "env": { "ANTHROPIC_BASE_URL": "${PROXY_URL}" } }
 JSON
 fi
 

@@ -5,8 +5,10 @@
 #
 # Host layout (services:~/shipit-demo/): this file, proxy.mjs,
 # demo-proxy-entrypoint.sh, cassettes/, and a `.env` holding the DEMO_PROXY_*
-# knobs below. The key lives in /root/shipit-demo-proxy.env (root, 0600), so
-# every compose invocation runs under sudo:
+# knobs below. Record mode forwards the session's own x-api-key, so no key is
+# needed here; /root/shipit-demo-proxy.env (root, 0600) is an optional
+# DEMO_PROXY_ANTHROPIC_API_KEY override, normally absent. Every compose
+# invocation runs under sudo so that file is readable when it does exist:
 #   sudo docker compose -f ~/shipit-demo/demo-proxy.compose.yml up -d --force-recreate demo-proxy
 name: shipit-demo
 
@@ -23,7 +25,8 @@ services:
       DEMO_PROXY_UPSTREAM: ${DEMO_PROXY_UPSTREAM:-https://api.anthropic.com}
       DEMO_PROXY_PACE: ${DEMO_PROXY_PACE:-120}
     env_file:
-      - /root/shipit-demo-proxy.env
+      - path: /root/shipit-demo-proxy.env
+        required: false
     volumes:
       - ./proxy.mjs:/app/proxy.mjs:ro
       - ./demo-proxy-entrypoint.sh:/app/demo-proxy-entrypoint.sh:ro

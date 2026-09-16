@@ -82,8 +82,19 @@ const messagesRequest = (p: RunningProxy, headers: Record<string, string>, body:
     body: JSON.stringify(body),
   });
 
-const DUMMY = { "x-api-key": "sk-ant-demo" };
+/** The instance's own key, delivered into the session as ANTHROPIC_API_KEY and sent by the CLI as x-api-key. */
+const CALLER_KEY = "sk-ant-instance";
+const OVERRIDE_KEY = "sk-ant-override";
+const API_KEY = { "x-api-key": CALLER_KEY };
 const BEARER = { authorization: "Bearer oauth-token" };
+
+/** Every byte the recorder wrote under `dir`, so a leaked secret is found wherever it landed. */
+function cassetteBytes(dir: string): string {
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => readFileSync(join(e.parentPath, e.name), "utf8"))
+    .join("\n");
+}
 
 describe("pure helpers", () => {
   it("splits SSE frames so that rejoining them reproduces the bytes", () => {
@@ -130,7 +141,7 @@ describe("replay mode", () => {
 
   it("answers lane request n with <lane>/NNN.sse, counting each lane separately, then 400 when exhausted", async () => {
     const p = fast!;
-    const first = await messagesRequest(p, DUMMY, { model: "claude-fixture", messages: [1], tools: [1, 2], stream: true });
+    const first = await messagesRequest(p, API_KEY, { model: "claude-fixture", messages: [1], tools: [1, 2], stream: true });
     expect(first.status).toBe(200);
     expect(first.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
     expect(first.headers.get("request-id")).toBe("req_fixture");
@@ -142,11 +153,11 @@ describe("replay mode", () => {
     expect(Buffer.from(await bearer.arrayBuffer()).equals(fixtureBody("bearer", "001"))).toBe(true);
 
     // The cassette recorded request 2 with three messages; this take sends two. Drift, but still answered.
-    const second = await messagesRequest(p, DUMMY, { model: "claude-fixture", messages: [1, 2], tools: [1, 2], stream: true });
+    const second = await messagesRequest(p, API_KEY, { model: "claude-fixture", messages: [1, 2], tools: [1, 2], stream: true });
     expect(second.status).toBe(200);
     expect(Buffer.from(await second.arrayBuffer()).equals(fixtureBody("x-api-key", "002"))).toBe(true);
 
-    const third = await messagesRequest(p, DUMMY);
+    const third = await messagesRequest(p, API_KEY);
     expect(third.status).toBe(400);
     expect(await third.json()).toMatchObject({ error: { message: expect.stringContaining("exhausted") as string } });
 
@@ -192,7 +203,7 @@ describe("replay mode", () => {
     const p = await startProxy(["--replay", FIXTURE_CASSETTE]);
     try {
       const started = Date.now();
-      const res = await messagesRequest(p, DUMMY);
+      const res = await messagesRequest(p, API_KEY);
       const body = Buffer.from(await res.arrayBuffer());
       const elapsed = Date.now() - started;
       expect(body.equals(fixtureBody("x-api-key", "001"))).toBe(true);
@@ -208,7 +219,7 @@ describe("replay mode", () => {
       const controller = new AbortController();
       const pending = fetch(p.url("/v1/messages"), {
         method: "POST",
-        headers: { "content-type": "application/json", ...DUMMY },
+        headers: { "content-type": "application/json", ...API_KEY },
         body: "{}",
         signal: controller.signal,
       });
@@ -219,7 +230,7 @@ describe("replay mode", () => {
       await expect(res.arrayBuffer()).rejects.toThrow();
 
       // The proxy is still up and the lane counter advanced past the abandoned take.
-      const next = await messagesRequest(p, DUMMY);
+      const next = await messagesRequest(p, API_KEY);
       expect(next.status).toBe(200);
       expect(Buffer.from(await next.arrayBuffer()).equals(fixtureBody("x-api-key", "002"))).toBe(true);
       expect(p.child.exitCode).toBeNull();
@@ -263,9 +274,9 @@ describe("record mode", () => {
       req.on("end", () => {
         const body = Buffer.concat(chunks).toString("utf8");
         seen.push({ headers: req.headers, body, url: req.url ?? "" });
-        if (req.headers["x-api-key"] === "sk-ant-demo") {
+        if (!req.headers["x-api-key"] && !req.headers.authorization) {
           res.writeHead(401, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: { type: "authentication_error", message: "dummy key reached upstream" } }));
+          res.end(JSON.stringify({ error: { type: "authentication_error", message: "no credential reached upstream" } }));
           return;
         }
         let parsed: { model?: string } = {};
@@ -283,28 +294,39 @@ describe("record mode", () => {
   });
   afterAll(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
 
-  it("refuses to start without DEMO_PROXY_ANTHROPIC_API_KEY", async () => {
+  it("forwards the caller's x-api-key untouched when no override is set, and saves no request header", async () => {
     const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-rec-"));
+    let p: RunningProxy | undefined;
     try {
-      const { code, stderr } = await runUntilExit(["--record", dir, "--upstream", upstreamUrl]);
-      expect(code).not.toBe(0);
-      expect(stderr).toContain("DEMO_PROXY_ANTHROPIC_API_KEY");
+      p = await startProxy(["--record", dir, "--upstream", upstreamUrl]);
+      seen.length = 0;
+      const res = await messagesRequest(p, { ...API_KEY, "anthropic-version": "2023-06-01" }, { model: "claude-opus-5", messages: [{}], stream: true });
+      expect(res.status).toBe(200);
+      await res.arrayBuffer();
+      expect(seen).toHaveLength(1);
+      expect(seen[0].headers["x-api-key"]).toBe(CALLER_KEY);
+      expect(seen[0].headers["anthropic-version"]).toBe("2023-06-01");
+      expect(p.stderr()).toContain("x-api-key=caller's");
+
+      expect(existsSync(join(dir, "x-api-key", "001.sse"))).toBe(true);
+      expect(cassetteBytes(dir)).not.toContain(CALLER_KEY);
     } finally {
+      await stopProxy(p);
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("swaps the dummy key, forwards everything else verbatim, and saves the take per lane", async () => {
+  it("swaps x-api-key for the override when set, forwards everything else verbatim, and saves the take per lane", async () => {
     const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-rec-"));
     let p: RunningProxy | undefined;
     try {
-      p = await startProxy(["--record", dir, "--upstream", upstreamUrl], { DEMO_PROXY_ANTHROPIC_API_KEY: "sk-ant-real" });
+      p = await startProxy(["--record", dir, "--upstream", upstreamUrl], { DEMO_PROXY_ANTHROPIC_API_KEY: OVERRIDE_KEY });
       seen.length = 0;
 
       const body = { model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], tools: [{}, {}], stream: true };
       const res = await messagesRequest(
         p,
-        { ...DUMMY, "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219", "user-agent": "claude-cli/2.1.252", "accept-encoding": "gzip, deflate, br, zstd" },
+        { ...API_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219", "user-agent": "claude-cli/2.1.252", "accept-encoding": "gzip, deflate, br, zstd" },
         body,
       );
       expect(res.status).toBe(200);
@@ -312,11 +334,11 @@ describe("record mode", () => {
       expect(got.toString()).toBe(sseBody("claude-opus-5"));
       expect(res.headers.get("request-id")).toBe("req_upstream_1");
 
-      // What the upstream saw: our key, their headers, their body and path.
+      // What the upstream saw: the override key, their headers, their body and path.
       expect(seen).toHaveLength(1);
       const [up] = seen;
       expect(up.url).toBe("/v1/messages?beta=true");
-      expect(up.headers["x-api-key"]).toBe("sk-ant-real");
+      expect(up.headers["x-api-key"]).toBe(OVERRIDE_KEY);
       expect(up.headers["anthropic-version"]).toBe("2023-06-01");
       expect(up.headers["anthropic-beta"]).toBe("claude-code-20250219");
       expect(up.headers["user-agent"]).toBe("claude-cli/2.1.252");
@@ -347,11 +369,18 @@ describe("record mode", () => {
         { lane: "bearer", n: 1, model: "claude-opus-5", messages: 1, tools: 0, bodyBytes: expect.any(Number) as number, stream: true },
       ]);
       expect(p.stderr()).toMatch(/record lane=x-api-key n=1 POST \/v1\/messages\?beta=true 200 \d+ms/);
+      expect(p.stderr()).toContain("x-api-key=override");
+
+      // Neither the key the CLI sent nor the one that went upstream is in anything the cassette holds.
+      const everything = cassetteBytes(dir);
+      expect(everything).not.toContain(CALLER_KEY);
+      expect(everything).not.toContain(OVERRIDE_KEY);
+      expect(everything).not.toContain("oauth-token");
 
       // A recorded cassette replays: the same request gets the same bytes back with no drift.
       await stopProxy(p);
       p = await startProxy(["--replay", dir]);
-      const replayed = await messagesRequest(p, DUMMY, body);
+      const replayed = await messagesRequest(p, API_KEY, body);
       expect(replayed.status).toBe(200);
       expect(Buffer.from(await replayed.arrayBuffer()).equals(got)).toBe(true);
       expect(p.stderr()).not.toContain("drift");
@@ -365,13 +394,13 @@ describe("record mode", () => {
     const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-rec-"));
     let p: RunningProxy | undefined;
     try {
-      p = await startProxy(["--record", dir, "--upstream", upstreamUrl], { DEMO_PROXY_ANTHROPIC_API_KEY: "sk-ant-real" });
+      p = await startProxy(["--record", dir, "--upstream", upstreamUrl], { DEMO_PROXY_ANTHROPIC_API_KEY: OVERRIDE_KEY });
       seen.length = 0;
       const body = JSON.stringify({ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], stream: true });
       // node:http with no content-length and a streamed body sends Transfer-Encoding: chunked.
       const status = await new Promise<number>((resolve, reject) => {
         const req = http.request(
-          { host: "127.0.0.1", port: p!.port, method: "POST", path: "/v1/messages", headers: { "content-type": "application/json", ...DUMMY } },
+          { host: "127.0.0.1", port: p!.port, method: "POST", path: "/v1/messages", headers: { "content-type": "application/json", ...API_KEY } },
           (res) => {
             res.resume();
             res.on("end", () => resolve(res.statusCode ?? 0));
@@ -395,7 +424,7 @@ describe("record mode", () => {
 
   it("refuses to record over an existing take", async () => {
     const { code, stderr } = await runUntilExit(["--record", FIXTURE_CASSETTE, "--upstream", upstreamUrl], {
-      DEMO_PROXY_ANTHROPIC_API_KEY: "sk-ant-real",
+      DEMO_PROXY_ANTHROPIC_API_KEY: OVERRIDE_KEY,
     });
     expect(code).not.toBe(0);
     expect(stderr).toContain("already holds");

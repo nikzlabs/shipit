@@ -10,10 +10,11 @@
 //                             pacing text deltas so the transcript types at a
 //                             human rate
 //
-// A lane is the auth header kind: `x-api-key` (the settings file's dummy key,
-// swapped for DEMO_PROXY_ANTHROPIC_API_KEY on the way out) or `bearer`
-// (anything else, forwarded untouched). Requests race across lanes, so "the
-// nth request" is counted per lane.
+// A lane is the auth header kind: `x-api-key` (the instance's own key, which
+// ShipIt delivers into the session as ANTHROPIC_API_KEY; forwarded as is, or
+// swapped for DEMO_PROXY_ANTHROPIC_API_KEY when that override is set) or
+// `bearer` (anything else, forwarded untouched). Requests race across lanes,
+// so "the nth request" is counted per lane. No request header is saved.
 //
 // No dependencies: this runs on the demo host with nothing but node.
 //
@@ -283,13 +284,7 @@ function isEventStream(headers) {
 // ── Modes ────────────────────────────────────────────────────────────────────
 
 function createRecorder(opts) {
-  const key = process.env.DEMO_PROXY_ANTHROPIC_API_KEY;
-  if (!key) {
-    throw new Error(
-      "record mode needs DEMO_PROXY_ANTHROPIC_API_KEY: the CLI's x-api-key is the dummy from " +
-        "the demo repo's .claude/settings.json and must be swapped for a real one on the way out",
-    );
-  }
+  const keyOverride = process.env.DEMO_PROXY_ANTHROPIC_API_KEY || null;
   fs.mkdirSync(opts.cassetteDir, { recursive: true });
   for (const lane of [LANE_API_KEY, LANE_BEARER]) {
     if (fs.existsSync(path.join(opts.cassetteDir, lane, "001.sse"))) {
@@ -307,8 +302,8 @@ function createRecorder(opts) {
     const fp = fingerprintOf(raw);
     fs.appendFileSync(path.join(opts.cassetteDir, FINGERPRINTS_FILE), JSON.stringify({ lane, n, ...fp }) + "\n");
 
-    // Headers verbatim except: the dummy key becomes the proxy's own; hop-by-hop
-    // and host are the transport's; accept-encoding is forced to identity so the
+    // Headers verbatim except: x-api-key becomes the override when one is set;
+    // hop-by-hop and host are the transport's; accept-encoding is forced to identity so the
     // saved stream is plain SSE the replay can pace (a gzipped body has no frames).
     // The body was read whole, so it goes out with a content-length — and a
     // chunked request's transfer-encoding must go, or the upstream sees both
@@ -320,7 +315,7 @@ function createRecorder(opts) {
     delete headers["transfer-encoding"];
     headers["accept-encoding"] = "identity";
     headers["content-length"] = String(raw.length);
-    if (lane === LANE_API_KEY) headers["x-api-key"] = key;
+    if (lane === LANE_API_KEY && keyOverride) headers["x-api-key"] = keyOverride;
 
     await new Promise((resolve) => {
       const up = transport.request(
@@ -505,7 +500,9 @@ function main() {
     const { port } = server.address();
     log(
       `${opts.mode} listening on http://${opts.host}:${port} cassette=${opts.cassetteDir}` +
-        (opts.mode === "record" ? ` upstream=${opts.upstream}` : ` pace=${opts.charsPerSecond}cps`),
+        (opts.mode === "record"
+          ? ` upstream=${opts.upstream} x-api-key=${process.env.DEMO_PROXY_ANTHROPIC_API_KEY ? "override" : "caller's"}`
+          : ` pace=${opts.charsPerSecond}cps`),
     );
     process.stdout.write(`${port}\n`);
   });
