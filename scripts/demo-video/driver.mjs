@@ -57,13 +57,16 @@ const DEFAULT_TYPING_CPS = 30;
 /** Steps for a pointer glide; more steps = smoother, slower. */
 const GLIDE_STEPS = 24;
 /**
- * How long the black splash is on screen before the driver navigates to the
- * instance. The cut step finds the splash with blackdetect (`d=0.08`), so it
- * needs to be at least a few frames long at 25 fps; a quarter second is
- * comfortably that and costs nothing, since nothing before the first beat's
- * action is kept.
+ * How long the black splash is on screen before the driver flips it white.
+ * The cut step finds the splash with blackdetect (`d=0.08`), so it needs to be
+ * at least a few frames long at 25 fps; half a second is comfortably that and
+ * costs nothing, since nothing before the first beat's action is kept.
  */
 const SPLASH_MS = 500;
+/** How long the white splash stays before the navigation, so the flip is a clean edge in the footage. */
+const ANCHOR_HOLD_MS = 300;
+/** Storyboard pane names; `transcript` and `pr-card` are the chat pane, the rest are right-pane tabs. */
+const PANES = new Set(["transcript", "pr-card", ...Object.keys(S.paneTabLabels)]);
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -142,23 +145,28 @@ export function readStoryboard(scenarioDir) {
     for (const k of ["lead", "hold"]) {
       if (typeof b[k] !== "number" || !(b[k] >= 0)) throw new Error(`${file}: beat ${b.id}: ${k} must be a non-negative number of seconds`);
     }
+    for (const k of ["pane", "holdPane"]) {
+      if (b[k] !== undefined && !PANES.has(b[k])) throw new Error(`${file}: beat ${b.id}: ${k} must be one of ${[...PANES].join(", ")}, got ${JSON.stringify(b[k])}`);
+    }
+    if (b.holdPane !== undefined && b.holdPane === b.pane) throw new Error(`${file}: beat ${b.id}: holdPane equals pane; drop it`);
   }
   return sb;
 }
 
 /**
- * The driver-clock moment the footage of the beat just completed ends: the
- * later of its lead (`actionAt + lead`; for a beat with no action, from where
- * the previous hold ended) and its hold (`readyAt + hold`). The driver keeps
- * recording until then before it acts again or closes the context, so both
- * slices the cut keeps (plan §5) exist as footage — the hold is the result
- * held still, not the next beat's typing. The same slice math as the cut
- * (`beatSlices`), so the two cannot disagree about where a slice ends.
+ * The driver-clock moment the footage of the beat just completed ends: its
+ * hold's end, where the hold starts at the later of `readyAt` and the lead's
+ * end (`actionAt + lead`; `sentAt` for a type beat; for a beat with no action,
+ * `lead` after the previous hold ended). The driver keeps recording until then
+ * before it acts again or closes the context, so both slices the cut keeps
+ * (plan §5) exist as footage — the hold is the result held still, not the next
+ * beat's typing. The same slice math as the cut (`beatSlices`), so the two
+ * cannot disagree about where a slice ends.
  *
- * Consequence: whenever a turn outlasts its `lead` (`readyAt ≥ actionAt +
- * lead`), the lead and hold slices are disjoint, and since the next action
- * starts at or after this moment no slice of one beat overlaps another — so
- * the cut keeps exactly Σ(lead + hold) seconds.
+ * Consequence: the lead and hold slices of a beat never overlap, and since the
+ * next action starts at or after this moment no slice of one beat overlaps
+ * another — the cut keeps exactly Σ(lead + hold) seconds however fast a turn
+ * came back.
  */
 export function beatFootageEnd(beatLog, storyboardBeats) {
   if (!Array.isArray(beatLog) || beatLog.length === 0) throw new Error("beat log is empty");
@@ -727,14 +735,19 @@ class Driver {
         default: throw new Error(`beat ${beat.id}: unknown click target ${beat.click}`);
       }
     } else if (beat.type !== undefined) {
-      // The action starts at the first keystroke, so the prompt being typed is
-      // on camera (req 8a) and `lead` has to cover it; `sentAt` marks the send.
+      // The lead the cut keeps is the last `lead` seconds before the send
+      // (`beatSlices`), so the prompt being typed is on camera (req 8a)
+      // whatever the typing took; `actionAt` is the first keystroke.
       actionAt = this.t();
-      await this.typeAndSend(beat.type);
-      sentAt = this.t();
+      sentAt = await this.typeAndSend(beat.type, actionAt + beat.lead);
     }
     if (pending) await pending;
     await this.waitAll(beat);
+    // A beat whose hold is on another pane switches before `readyAt`, so the
+    // hold starts on that pane and the switch is off camera whenever the wait
+    // outlasted the lead. The waits read hidden panes fine: the preview iframe
+    // stays mounted (invisible) behind the Files tab.
+    await this.switchPane(beat.holdPane);
     const readyAt = this.t();
     this.beats.push({ id: beat.id, actionAt, ...(sentAt !== undefined ? { sentAt } : {}), readyAt });
     log(`beat ${beat.id}: ready at ${readyAt.toFixed(2)}s`);
