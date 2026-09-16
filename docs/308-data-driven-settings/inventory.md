@@ -240,8 +240,9 @@ after-effects of its own, or the same effect exists in two places.
 `advanced.memoryBudgetMb` stores MB and the dialog shows GB, with an explicit
 Save and a "saved" state. VS Code does not convert units; it shows the stored
 number. Either the declaration carries a display unit (one field used by one
-setting), or the row shows MB and the description stops promising GB. **This is a
-visible change to the user and should be decided, not defaulted.**
+setting), or the row shows MB and the description stops promising GB. `plan.md`
+takes the display unit: showing MB would be a visible change to the user that
+this feature has no reason to make.
 
 **P5 — Commit mode is derivable except for that one setting.** Toggles, choices
 and the speed picker save on click. The two instruction boxes save on a button.

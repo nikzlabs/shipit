@@ -59,15 +59,16 @@ they stand are not a requirement; they are how the code grew.
    makes — descriptions, refusals, proposal cards — still holds.
 9. A value the user has already saved is still read after the change, from the
    same place it is stored in now.
+10. Both dialogs are covered — Settings and Project Settings. Neither keeps a
+    second way of building a control.
+11. Where a row appears comes from its declaration. Where that changes the order
+    a tab has today, the new order is what ships.
+12. No test walks the rendered dialog to prove that its controls are declared.
+    Once the rows are generated, that walk is deleted rather than narrowed.
 
 ## Open questions
 
-- Does this cover **both** dialogs — Settings and Project Settings — or only the
-  main one?
-- Once rows are generated, does `settings-coverage.test.tsx` (1617 lines) get
-  deleted, or kept?
-- May the visible **order and grouping** of rows change as a result, or must each
-  tab look the same afterwards as it does now?
+None. All three were answered on 2026-09-16; the receipts are below.
 
 ## Resolved questions
 
@@ -81,6 +82,20 @@ they stand are not a requirement; they are how the code grew.
 - 2026-09-16 — *How much should be taken from VS Code?* The user: copy any design
   decision that makes sense, *"because these folks probably thought about it for
   multiple years and settled on the current design."* → requirement 6.
+- 2026-09-16 — *Does this cover both dialogs, or only the main one?* Both. The
+  user chose it over leaving Project Settings hand-written, which would have kept
+  a second way of building controls — the thing this feature removes. Project
+  Settings adds 5 declarations over 3 tabs, 2 of which become ordinary rows
+  because that dialog is already open for one repository. → requirement 10.
+- 2026-09-16 — *Once rows are generated, is `settings-coverage.test.tsx` (1617
+  lines) deleted, narrowed to the panels, or kept?* Deleted. A generated row
+  cannot exist without a declaration, so the class the walk detects becomes
+  impossible. The compile-time stored-shape maps stay: they run in the opposite
+  direction and cost nothing. → requirement 12, and `inventory.md` P15.
+- 2026-09-16 — *May the visible order and grouping of rows change?* Yes. Order
+  comes from each declaration, and rows will move. The alternative — choosing
+  order numbers that reproduce today's layout exactly — would have encoded how
+  the tabs grew rather than how they should read. → requirement 11.
 - 2026-09-16 — *Does this belong in docs/299?* No. The user agreed it is a
   separate thing, and related: docs/299 built the declarations, and this makes
   the dialog use them. → this folder, with requirement 8 holding the relationship.
