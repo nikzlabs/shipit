@@ -85,8 +85,21 @@ export function serviceNameForProvider(provider: AgentId): string {
  * ONLY to decide whether to reserve the output disclosure's place before the
  * first line arrives ({@link AuthCliOutput}) — never to decide whether output is
  * shown, which is decided by whether there is any.
+ *
+ * **Spawning a CLI and being a device-code flow are independent.** Codex and
+ * Grok are both: ShipIt runs `codex login --device-auth` / `grok login
+ * --device-auth` and reads the challenge off the CLI's own output, so they fill
+ * this panel like any other. OpenCode is the one harness absent by right — it
+ * has no auth manager and no login integration at all (its Zen service takes a
+ * pasted key, and its subscription path carries the Codex account), so nothing
+ * will ever report under it.
  */
-const CLI_DRIVEN_SIGN_INS: ReadonlySet<AgentId> = new Set<AgentId>(["claude", "antigravity"]);
+const CLI_DRIVEN_SIGN_INS: ReadonlySet<AgentId> = new Set<AgentId>([
+  "claude",
+  "antigravity",
+  "codex",
+  "grok",
+]);
 
 const harnessNames: Record<AgentId, string> = {
   claude: "Claude",
@@ -379,7 +392,7 @@ export function AuthCliOutput({
    * An empty disclosure is held open only for a sign-in that will fill it. Once
    * a line has landed the panel renders for ANY harness — that is the whole
    * point — but reserving the slot before the first line is a claim that one is
-   * coming, and for a device-code flow, which runs no CLI, it never is.
+   * coming, and for a sign-in that spawns no CLI it never is.
    */
   if (entries.length === 0 && !(evenWhenEmpty && CLI_DRIVEN_SIGN_INS.has(provider))) return null;
 

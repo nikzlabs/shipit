@@ -3,7 +3,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { AccountChallenge, ProviderAccountRows } from "./ProviderAccountRows.js";
+import { AccountChallenge, AuthCliOutput, ProviderAccountRows } from "./ProviderAccountRows.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { AgentOption } from "../../agent-types.js";
@@ -458,5 +458,52 @@ describe("the authorization-code challenge", () => {
     renderChallenge("claude", "anthropic-oauth");
     expect(screen.getByTestId("provider-account-challenge-acct-agy"))
       .not.toHaveTextContent("60 seconds");
+  });
+});
+
+/**
+ * Reserving the empty disclosure is a claim that a line is coming, so the set
+ * has to name every harness whose sign-in spawns a CLI — and only those.
+ * Spawning a CLI and being a device-code flow are independent: Codex and Grok
+ * are both, because ShipIt reads their challenge off the CLI's own output.
+ */
+describe("which harnesses hold the output panel open before the first line", () => {
+  afterEach(cleanup);
+
+  function renderEmpty(provider: "claude" | "codex" | "opencode" | "grok" | "antigravity") {
+    return render(<AuthCliOutput provider={provider} accountId="acct-x" evenWhenEmpty />);
+  }
+
+  it.each(["claude", "antigravity", "codex", "grok"] as const)(
+    "reserves the panel's place for %s, whose sign-in runs its CLI",
+    (provider) => {
+      renderEmpty(provider);
+      expect(screen.getByTestId("provider-account-diagnostics-acct-x")).toBeInTheDocument();
+    },
+  );
+
+  /**
+   * The one harness absent by right: OpenCode has no auth manager and no login
+   * integration at all — its Zen service takes a pasted key, and its
+   * subscription path carries the Codex account — so nothing ever reports here.
+   */
+  it("reserves nothing for OpenCode, which has no sign-in of its own", () => {
+    renderEmpty("opencode");
+    expect(screen.queryByTestId("provider-account-diagnostics-acct-x")).not.toBeInTheDocument();
+  });
+
+  it("still renders for any harness once a line has actually landed", () => {
+    act(() => {
+      useSettingsStore.getState().appendAuthLog("acct-x", {
+        attemptId: "attempt-1",
+        timestamp: "2026-09-16T00:00:00.000Z",
+        level: "info",
+        source: "cli_stderr",
+        message: "a line from somewhere",
+      });
+    });
+    render(<AuthCliOutput provider="opencode" accountId="acct-x" />);
+    expect(screen.getByTestId("provider-account-diagnostics-acct-x"))
+      .toHaveTextContent("a line from somewhere");
   });
 });
