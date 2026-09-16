@@ -13,6 +13,7 @@ import {
 import { antigravityStderrErrorText } from "../../../shared/antigravity-stream.js";
 import { ensureConfigDir } from "../agent-auth-base.js";
 import {
+  createCliLineRelay,
   sanitizeAuthDiagnostic,
   type AgentAuthLogLevel,
   type AgentAuthLogPayload,
@@ -362,20 +363,11 @@ export class AntigravityAuthManager
     this.emitProgress("waiting_for_url", "Waiting for the Antigravity CLI to print a sign-in link.");
     // A pty merges the two streams, so this buffer is also what req 4's error
     // sentence is read from.
-    /**
-     * **Diagnostics are relayed a LINE at a time, never a chunk at a time.** A
-     * pty chunk boundary lands wherever the buffer says, and both redactions
-     * that protect this panel are whole-string rules: a sign-in URL split at
-     * `&sta` / `te=…` leaves the second half looking like ordinary text, and an
-     * echoed authorization code split anywhere stops matching what was
-     * submitted. The same boundary already cost the link itself once
-     * ({@link handleOutput}).
-     */
-    let lineBuffer = "";
-    const relay = (text: string): void => {
-      const line = text.trim();
-      if (line) this.emitDiagnosticLog("info", "cli_stdout", line);
-    };
+    // Whole lines, from the shared relay: the reason is in `createCliLineRelay`,
+    // and the same boundary already cost the link itself once (`handleOutput`).
+    const relay = createCliLineRelay((source, line) => {
+      if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
+    });
 
     proc.onData((chunk) => {
       // A cancelled run keeps draining, and by then `this.proc` may be the NEXT
@@ -383,11 +375,7 @@ export class AntigravityAuthManager
       // account's scope, or replays an expired link as that account's challenge.
       if (this.proc !== proc) return;
       this.stderrBuffer += chunk;
-      // Chunks are assembled raw: escapes are stripped once, on the whole line,
-      // where the redaction that depends on them happens.
-      const lines = (lineBuffer + chunk).split(/\r?\n/);
-      lineBuffer = lines.pop() ?? "";
-      for (const line of lines) relay(line);
+      relay.push("cli_stdout", chunk);
       this.handleOutput(chunk);
     });
 
@@ -395,8 +383,7 @@ export class AntigravityAuthManager
       if (this.proc !== proc) return;
       this.proc = null;
       // The CLI's last line carries no newline when it is a prompt.
-      relay(lineBuffer);
-      lineBuffer = "";
+      relay.flush();
       const hadPending = this.lastPendingDetails !== null;
       this.lastPendingDetails = null;
       this.clearTimeout();

@@ -619,30 +619,6 @@ describe("AuthManager / auth diagnostics", () => {
   });
 
   /**
-   * The cap exists so a CLI that emits no newline cannot buffer without bound.
-   * Publishing the overflow instead would put the boundary straight back: the
-   * cap would land mid-secret exactly as a chunk boundary did.
-   */
-  it("withholds an over-long fragment rather than publishing it as a line", () => {
-    const mgr = new AuthManager();
-    const logs: { source: string; message: string }[] = [];
-    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
-
-    mgr.startOAuthFlow();
-    ptyHoisted.dataHandlers[0](
-      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
-    );
-    mgr.sendCode("short-code-1234#state");
-    ptyHoisted.dataHandlers[0](`${" ".repeat(4090)}short-code-`);
-    ptyHoisted.dataHandlers[0]("1234#state\n");
-
-    const panel = logs.map((l) => l.message).join("");
-    expect(panel, "leaked the authorization code").not.toContain("short-code-");
-    expect(panel, "said nothing about the withheld output").toContain("Withheld");
-    mgr.kill();
-  });
-
-  /**
    * Only the latest code used to be remembered, so a second submission stripped
    * the first one's protection off output still sitting in the line buffer.
    */

@@ -6,7 +6,9 @@ import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import {
+  createCliLineRelay,
   sanitizeAuthDiagnostic,
+  type CliLineRelay,
   type AgentAuthLogPayload,
   type AgentAuthLogLevel,
   type AgentAuthLogSource,
@@ -121,9 +123,6 @@ const CLAUDE_CREDENTIAL_FILES = [".credentials.json", "credentials.json", "auth.
 // Flattened Ink output can omit spaces at any boundary.
 const CODE_PASTE_TRIGGER = /paste\s*code\s*here(?:\s*if\s*prompted)?/i;
 
-/** A line this long is a CLI that does not emit newlines, not a line. */
-const RELAY_LINE_CAP = 4096;
-
 function ensureOnboardingComplete(userConfig: string, configDir: string): void {
   try {
     mkdirSync(resolveSymlinkTarget(configDir), { recursive: true });
@@ -148,8 +147,10 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   private _authenticated = false;
   private credentialsPollInterval: ReturnType<typeof setInterval> | null = null;
   private outputBuffer = "";
+  // Per FLOW, not per manager: a killed run's unterminated tail must not be
+  // flushed onto the next attempt's panel.
+  private relay: CliLineRelay = this.newRelay();
   private submittedCodes: string[] = [];
-  private relayBuffer = "";
   private authUrlEmitted = false;
   private wizardTimer: ReturnType<typeof setTimeout> | null = null;
   private wizardEnterCount = 0;
@@ -258,42 +259,19 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   }
 
   /**
-   * **A LINE at a time, never a chunk at a time, and buffered RAW.** Every rule
-   * that protects this panel is a whole-string rule, and a pty chunk boundary
-   * lands wherever the buffer says: a link split at `&sta`/`te=…`, a token split
-   * mid-value, an echoed code split anywhere, and an escape sequence split at
-   * `\x1b[9`/`0m…` each walk straight through a chunk-at-a-time sanitize.
-   * Assembling raw is part of it — stripping escapes per chunk cannot recognise
-   * the split ones, which is why {@link emitDiagnosticLog} strips instead.
-   *
-   * The trailing fragment is held until a newline completes it, and flushed when
-   * the process exits. Past {@link RELAY_LINE_CAP} it is **withheld, not
-   * published**: a CLI emitting no newline must not buffer without bound, and
-   * emitting the fragment instead would put the boundary back — the cap would
-   * land mid-secret exactly as a chunk boundary did. Killing the run drops it
-   * for the same reason: half of a secret is still half of a secret.
+   * Whole lines, from the shared relay every harness uses — the reasoning is in
+   * `createCliLineRelay`. Claude needs it most: its CLI is an Ink TUI, so a
+   * frame boundary lands wherever the redraw says, and a link, a token, an
+   * echoed code or an escape sequence split across two of them walks straight
+   * through a chunk-at-a-time sanitize.
    */
-  private relayLines(chunk: string): void {
-    this.relayBuffer += chunk;
-    const lines = this.relayBuffer.split(/\r?\n/);
-    this.relayBuffer = lines.pop() ?? "";
-    if (this.relayBuffer.length > RELAY_LINE_CAP) {
-      const withheld = this.relayBuffer.length;
-      this.relayBuffer = "";
-      this.emitDiagnosticLog(
-        "warn",
-        "shipit",
-        `Withheld ${withheld} characters of CLI output that arrived without a line break.`,
-      );
-    }
-    for (const line of lines) this.relayLine(line);
-  }
-
-  /** Logged from what the panel got: the same redaction has to cover both. */
-  private relayLine(line: string): void {
-    if (!line.trim()) return;
-    const shown = this.emitDiagnosticLog("info", "cli_stdout", line.trim());
-    if (shown) console.log("[auth output]", shown);
+  private newRelay(): CliLineRelay {
+    return createCliLineRelay((source, line) => {
+      if (!line.trim()) return;
+      // Logged from what the panel got: the same redaction has to cover both.
+      const shown = this.emitDiagnosticLog("info", source, line.trim());
+      if (shown) console.log("[auth output]", shown);
+    });
   }
 
   /**
@@ -417,7 +395,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     this.terminalEmitted = false;
     this.outputBuffer = "";
     this.submittedCodes = [];
-    this.relayBuffer = "";
+    this.relay = this.newRelay();
     this.authUrlEmitted = false;
     this.wizardEnterCount = 0;
     this.lastPendingDetails = null;
@@ -474,7 +452,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
       if (generation !== this.flowGeneration) return;
       const cleaned = stripAnsi(data);
       this.outputBuffer += cleaned;
-      this.relayLines(data);
+      this.relay.push("cli_stdout", data);
       if (!cleaned.trim() && data.length > 0) {
         console.log("[auth] Received %d bytes of terminal control data", data.length);
         this.emitDiagnosticLog("debug", "cli_control", `Received ${data.length} bytes of terminal control data.`);
@@ -513,9 +491,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
         return;
       }
       // The CLI's last line carries no newline when it is a prompt.
-      const tail = this.relayBuffer;
-      this.relayBuffer = "";
-      this.relayLine(tail);
+      this.relay.flush();
       this.emitDiagnosticLog(exitCode === 0 ? "info" : "warn", "shipit", `Claude login process exited with code ${exitCode}.`);
       this.proc = null;
 
@@ -688,7 +664,6 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     // test: without this, a cancelled run's output still reached the panel and
     // its expired link could be replayed as the next attempt's challenge.
     this.flowGeneration++;
-    this.relayBuffer = "";
     if (this.wizardTimer) {
       clearTimeout(this.wizardTimer);
       this.wizardTimer = null;
