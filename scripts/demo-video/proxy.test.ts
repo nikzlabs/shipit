@@ -2,16 +2,19 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { spawn, type ChildProcess } from "node:child_process";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import * as fsSync from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import os from "node:os";
 import {
+  cassetteName,
   chooseRecording,
   describeDrift,
   fingerprintOf,
   frameDelayMs,
   parseResponseFile,
+  scrubCassette,
   serializeResponse,
   splitSseFrames,
 } from "./proxy.mjs";
@@ -116,13 +119,29 @@ describe("pure helpers", () => {
     expect(frameDelayMs(Buffer.from("data: not json\n\n"), 120)).toBe(0);
   });
 
-  it("round-trips a response through the cassette file format, dropping framing headers", () => {
+  it("round-trips a response through the cassette file format, keeping only content-type", () => {
     const body = Buffer.from("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-    const file = serializeResponse(200, { "Content-Type": "text/event-stream", "transfer-encoding": "chunked", "x-multi": ["a", "b"] }, body);
+    const file = serializeResponse(
+      200,
+      { "Content-Type": "text/event-stream", "transfer-encoding": "chunked", "anthropic-organization-id": "org_1", "request-id": "req_1" },
+      body,
+    );
+    expect(file.subarray(0, file.indexOf("\r\n\r\n")).toString()).toBe("HTTP/1.1 200\r\ncontent-type: text/event-stream");
     const parsed = parseResponseFile(file);
     expect(parsed.status).toBe(200);
-    expect(parsed.headers).toEqual({ "content-type": "text/event-stream", "x-multi": ["a", "b"] });
+    expect(parsed.headers).toEqual({ "content-type": "text/event-stream" });
     expect(parsed.body.equals(body)).toBe(true);
+
+    // A file written before the allowlist: the reader still drops what it must not replay, and names it.
+    const legacy = Buffer.concat([Buffer.from("HTTP/1.1 200\r\ncontent-type: text/event-stream\r\nanthropic-workspace-id: w\r\ncf-ray: r\r\n\r\n"), body]);
+    const parsedLegacy = parseResponseFile(legacy);
+    expect(parsedLegacy.headers).toEqual({ "content-type": "text/event-stream" });
+    expect(parsedLegacy.headerNames).toEqual(["content-type", "anthropic-workspace-id", "cf-ray"]);
+  });
+
+  it("names a cassette by its directory, or by the scenario when the directory is called cassette", () => {
+    expect(cassetteName("/srv/shipit-demo/cassettes/website-hero")).toBe("website-hero");
+    expect(cassetteName("/repo/scripts/demo-video/scenarios/website-hero/cassette")).toBe("website-hero");
   });
 
   it("fingerprints the fields the probe logged and names what drifted", () => {
@@ -132,21 +151,47 @@ describe("pure helpers", () => {
     expect(describeDrift(fp, { ...fp, messages: 3, bodyBytes: 999 })).toBe('messages: recorded=2 got=3');
   });
 
-  it("chooses among unused recordings by model/tools/stream, ranking by messages distance then number", () => {
+  it("chooses the lowest unused recording equal on model, messages, tools and stream, else falls back to the lowest unused", () => {
     const fp = (messages: number, tools = 2) => ({ model: "m", messages, tools, bodyBytes: 0, stream: true });
     const rec = (n: number, fingerprint: ReturnType<typeof fp> | null) => ({ n, file: `${n}.sse`, fingerprint, used: false });
-    const lane = [rec(1, fp(1)), rec(2, fp(5)), rec(3, fp(3)), rec(4, fp(1, 0)), rec(5, null)];
-    expect(chooseRecording(lane, fp(3))?.n).toBe(3);
-    // Distance 1 both ways: the lower number wins.
-    expect(chooseRecording(lane, fp(4))?.n).toBe(2);
-    expect(chooseRecording(lane, fp(9))?.n).toBe(2);
-    // The tool count is a must-match, not a ranking.
-    expect(chooseRecording(lane, fp(9, 0))?.n).toBe(4);
+    const lane = [rec(1, fp(1)), rec(2, fp(5)), rec(3, fp(3)), rec(4, fp(1, 0)), rec(5, null), rec(6, fp(3))];
+    expect(chooseRecording(lane, fp(3))).toEqual({ recording: lane[2], fallback: false });
+    expect(chooseRecording(lane, fp(1, 0))).toEqual({ recording: lane[3], fallback: false });
+    // The message count is a key, not a ranking: off by one is no match, so the lowest unused answers as a fallback.
+    expect(chooseRecording(lane, fp(4))).toEqual({ recording: lane[0], fallback: true });
+    expect(chooseRecording(lane, fp(9, 0))).toEqual({ recording: lane[0], fallback: true });
     // Nothing matches (unfingerprinted 005 never does): lowest unused number.
     lane[0].used = true;
-    expect(chooseRecording(lane, fp(1, 7))?.n).toBe(2);
+    expect(chooseRecording(lane, fp(1, 7))).toEqual({ recording: lane[1], fallback: true });
+    // Two identical fingerprints resolve by number, in order.
+    lane[2].used = true;
+    expect(chooseRecording(lane, fp(3))).toEqual({ recording: lane[5], fallback: false });
     for (const r of lane) r.used = true;
     expect(chooseRecording(lane, fp(3))).toBeNull();
+  });
+
+  it("scrubs a cassette down to the allowlisted headers with every body byte unchanged", () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-scrub-"));
+    try {
+      const { cpSync } = fsSync;
+      cpSync(FIXTURE_CASSETTE, dir, { recursive: true });
+      const files = ["x-api-key/001.sse", "x-api-key/002.sse", "bearer/001.sse"];
+      const bodiesBefore = files.map((f) => parseResponseFile(readFileSync(join(dir, f))).body);
+      for (const f of files) expect(readFileSync(join(dir, f), "utf8")).toContain("request-id: req_fixture");
+
+      const result = scrubCassette(dir);
+      expect(result).toEqual({ rewritten: files, removed: ["cache-control", "request-id"] });
+      files.forEach((f, i) => {
+        const raw = readFileSync(join(dir, f));
+        expect(raw.subarray(0, raw.indexOf("\r\n\r\n")).toString()).toBe("HTTP/1.1 200\r\ncontent-type: text/event-stream; charset=utf-8");
+        expect(parseResponseFile(raw).body.equals(bodiesBefore[i])).toBe(true);
+      });
+      // Idempotent: a second pass touches nothing.
+      expect(scrubCassette(dir)).toEqual({ rewritten: [], removed: [] });
+      expect(readFileSync(join(dir, "fingerprints.jsonl"), "utf8")).toBe(readFileSync(join(FIXTURE_CASSETTE, "fingerprints.jsonl"), "utf8"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -162,7 +207,9 @@ describe("replay mode", () => {
     const first = await messagesRequest(p, API_KEY, { model: "claude-fixture", messages: [1], tools: [1, 2], stream: true });
     expect(first.status).toBe(200);
     expect(first.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
-    expect(first.headers.get("request-id")).toBe("req_fixture");
+    // The fixture predates the header allowlist and still carries one; the replay does not send it.
+    expect(first.headers.get("request-id")).toBeNull();
+    expect(first.headers.get("cache-control")).toBeNull();
     expect(Buffer.from(await first.arrayBuffer()).equals(fixtureBody("x-api-key", "001"))).toBe(true);
 
     // The bearer lane has its own counter: its first request is bearer/001, not x-api-key/002.
@@ -189,10 +236,15 @@ describe("replay mode", () => {
     expect(p.stderr()).toMatch(/replay lane=bearer n=1 take=001 POST \/v1\/messages\?beta=true 200 \d+ms/);
   });
 
-  it("answers HEAD /api/hello with 200 and anything else with 404 JSON", async () => {
+  it("answers /api/hello (HEAD and GET) with 200 naming its mode and cassette, and anything else with 404 JSON", async () => {
     const p = fast!;
-    const hello = await fetch(p.url("/api/hello"), { method: "HEAD" });
-    expect(hello.status).toBe(200);
+    for (const method of ["HEAD", "GET"]) {
+      const hello = await fetch(p.url("/api/hello"), { method });
+      expect(hello.status).toBe(200);
+      expect(hello.headers.get("x-demo-proxy-mode")).toBe("replay");
+      // The fixture lives at __fixtures__/cassette, so it is named by its parent.
+      expect(hello.headers.get("x-demo-proxy-cassette")).toBe("__fixtures__");
+    }
     const other = await fetch(p.url("/v1/models"));
     expect(other.status).toBe(404);
     expect(other.headers.get("content-type")).toBe("application/json");
@@ -201,19 +253,25 @@ describe("replay mode", () => {
     expect(postElsewhere.status).toBe(404);
   });
 
-  it("refuses a lane the cassette never recorded with 401", async () => {
-    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-lane-"));
-    let p: RunningProxy | undefined;
-    try {
-      // Only the x-api-key lane exists in this cassette.
-      const { cpSync } = await import("node:fs");
-      cpSync(join(FIXTURE_CASSETTE, "x-api-key"), join(dir, "x-api-key"), { recursive: true });
-      p = await startProxy(["--replay", dir]);
-      const res = await messagesRequest(p, BEARER);
-      expect(res.status).toBe(401);
-    } finally {
-      await stopProxy(p);
-      rmSync(dir, { recursive: true, force: true });
+  it("refuses a lane with no recordings at all with 401, whichever lane it is", async () => {
+    for (const [present, absent, absentHeaders] of [
+      ["x-api-key", "bearer", BEARER],
+      ["bearer", "x-api-key", API_KEY],
+    ] as const) {
+      const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-lane-"));
+      let p: RunningProxy | undefined;
+      try {
+        fsSync.cpSync(join(FIXTURE_CASSETTE, present), join(dir, present), { recursive: true });
+        // An empty lane directory is "no recordings" too, not an exhausted lane.
+        if (absent === "x-api-key") mkdirSync(join(dir, absent));
+        p = await startProxy(["--replay", dir]);
+        const res = await messagesRequest(p, absentHeaders);
+        expect(res.status).toBe(401);
+        expect(await res.json()).toMatchObject({ error: { type: "authentication_error", message: `demo-proxy: no ${absent} lane in this cassette` } });
+      } finally {
+        await stopProxy(p);
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 
@@ -337,6 +395,69 @@ describe("replay matching", () => {
     expect(await again.json()).toMatchObject({ error: { type: "invalid_request_error", message: expect.stringContaining("exhausted") as string } });
     expect(await logged(/n=3/)).toMatch(/replay lane=bearer n=3 take=- POST \/v1\/messages\?beta=true 400/);
   });
+
+  it("counts served, drift, fallback and unused at GET /api/demo/stats", async () => {
+    const stats = async () => (await fetch(p!.url("/api/demo/stats"))).json() as Promise<Record<string, unknown>>;
+    expect(await stats()).toEqual({ mode: "replay", cassette: expect.stringMatching(/^demo-proxy-match-/) as string, served: 0, drift: 0, fallback: 0, unused: 2 });
+
+    expect((await messagesRequest(p!, BEARER, TURN)).status).toBe(200);
+    expect(await stats()).toMatchObject({ served: 1, drift: 0, fallback: 0, unused: 1 });
+
+    // One message too many for the side call: no match, so the last unused take answers and both counters move.
+    expect((await messagesRequest(p!, BEARER, { ...SIDE_CALL, messages: [{}, {}, {}] })).status).toBe(200);
+    expect(await stats()).toMatchObject({ served: 2, drift: 1, fallback: 1, unused: 0 });
+
+    // Exhaustion serves nothing and counts nothing.
+    expect((await messagesRequest(p!, BEARER, SIDE_CALL)).status).toBe(400);
+    expect(await stats()).toMatchObject({ served: 2, drift: 1, fallback: 1, unused: 0 });
+  });
+});
+
+describe("replay matching on message count", () => {
+  /**
+   * Two recordings alike on model, tools and stream — the shape of two
+   * consecutive turn requests — differ only in message count. Each must get
+   * its own take whichever arrives first, and neither may be served as the
+   * other's near miss.
+   */
+  const request = (messages: number) => ({ model: "claude-opus-5", messages: Array.from({ length: messages }, () => ({})), tools: [{}, {}], stream: true });
+  const takeBody = (n: number) => Buffer.from(`event: message_stop\ndata: {"take":"bearer/${n}"}\n\n`);
+  const bodyOf = async (res: Response) => Buffer.from(await res.arrayBuffer()).toString();
+
+  let dir: string;
+  let p: RunningProxy | undefined;
+  beforeEach(async () => {
+    dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-msgs-"));
+    mkdirSync(join(dir, "bearer"));
+    const lines = [1, 2].map((n) => ({ lane: "bearer", n, ...fingerprintOf(Buffer.from(JSON.stringify(request(n)))) }));
+    for (const { n } of lines) {
+      writeFileSync(join(dir, "bearer", `00${n}.sse`), serializeResponse(200, { "content-type": "text/event-stream" }, takeBody(n)));
+    }
+    writeFileSync(join(dir, "fingerprints.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    p = await startProxy(["--replay", dir]);
+  });
+  afterEach(async () => {
+    await stopProxy(p);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("serves each of two recordings differing only in message count to its own request, arriving in reverse", async () => {
+    const second = await messagesRequest(p!, BEARER, request(2));
+    expect(await bodyOf(second)).toBe(takeBody(2).toString());
+    const first = await messagesRequest(p!, BEARER, request(1));
+    expect(await bodyOf(first)).toBe(takeBody(1).toString());
+    const stats = (await (await fetch(p!.url("/api/demo/stats"))).json()) as Record<string, unknown>;
+    expect(stats).toMatchObject({ served: 2, drift: 0, fallback: 0, unused: 0 });
+    expect(p!.stderr()).not.toContain("drift");
+  });
+
+  it("treats a message count off by one as no match: a fallback, counted and logged", async () => {
+    const res = await messagesRequest(p!, BEARER, request(3));
+    expect(await bodyOf(res)).toBe(takeBody(1).toString());
+    const stats = (await (await fetch(p!.url("/api/demo/stats"))).json()) as Record<string, unknown>;
+    expect(stats).toMatchObject({ served: 1, drift: 1, fallback: 1, unused: 1 });
+    expect(p!.stderr()).toContain("cassette drift lane=bearer n=1 take=001: messages: recorded=1 got=3");
+  });
 });
 
 describe("record mode", () => {
@@ -452,11 +573,13 @@ describe("record mode", () => {
       // Saved layout: <lane>/NNN.sse (status, headers, body verbatim) + fingerprints.jsonl.
       expect(readdirSync(join(dir, "x-api-key"))).toEqual(["001.sse"]);
       expect(readdirSync(join(dir, "bearer"))).toEqual(["001.sse"]);
-      const saved = parseResponseFile(readFileSync(join(dir, "x-api-key", "001.sse")));
+      // Only content-type is written: the upstream's request id and cache-control never enter the file.
+      const savedRaw = readFileSync(join(dir, "x-api-key", "001.sse"));
+      const saved = parseResponseFile(savedRaw);
       expect(saved.status).toBe(200);
-      expect(saved.headers["content-type"]).toBe("text/event-stream");
-      expect(saved.headers["request-id"]).toBe("req_upstream_1");
-      expect(saved.headers.connection).toBeUndefined();
+      expect(saved.headerNames).toEqual(["content-type"]);
+      expect(saved.headers).toEqual({ "content-type": "text/event-stream" });
+      expect(savedRaw.toString()).not.toContain("req_upstream_1");
       expect(saved.body.equals(got)).toBe(true);
       const fingerprints = readFileSync(join(dir, "fingerprints.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
       expect(fingerprints).toEqual([
@@ -465,6 +588,10 @@ describe("record mode", () => {
       ]);
       expect(p.stderr()).toMatch(/record lane=x-api-key n=1 POST \/v1\/messages\?beta=true 200 \d+ms/);
       expect(p.stderr()).toContain("x-api-key=override");
+      const hello = await fetch(p.url("/api/hello"), { method: "HEAD" });
+      expect(hello.headers.get("x-demo-proxy-mode")).toBe("record");
+      expect(hello.headers.get("x-demo-proxy-cassette")).toBe(basename(dir));
+      expect(await (await fetch(p.url("/api/demo/stats"))).json()).toEqual({ mode: "record", cassette: basename(dir), served: 2, drift: 0, fallback: 0, unused: 0 });
 
       // Neither the key the CLI sent nor the one that went upstream is in anything the cassette holds.
       const everything = cassetteBytes(dir);

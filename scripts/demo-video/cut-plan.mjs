@@ -2,17 +2,23 @@
 // Slice math for the cut step — docs/296 plan §5. Pure, so it is unit-testable;
 // `cut.sh` is the thin ffmpeg wrapper around it.
 //
-// From the driver's beat log (`beats.json`: [{ id, actionAt, readyAt }], seconds
-// from recording start; `actionAt` is null for a beat with no action) and the
-// storyboard (`beats: [{ id, lead, hold }]`) it keeps, per beat,
+// From the driver's beat log (`beats.json`: [{ id, actionAt, sentAt?, readyAt }],
+// seconds from recording start; `actionAt` is null for a beat with no action,
+// `sentAt` is the send click of a `type` beat) and the storyboard
+// (`beats: [{ id, type?, lead, hold }]`) it keeps, per beat,
 //
-//   [actionAt, actionAt + lead]   the action and the work in progress
-//   [readyAt,  readyAt  + hold]   the result, held still
+//   lead  [actionAt, actionAt + lead]        the action and the work in progress
+//         [sentAt − lead, sentAt]            for a `type` beat: the last `lead`
+//                                            seconds of typing, ending at the send
+//   hold  [max(readyAt, lead end), + hold]   the result, held still
 //
-// merged when they overlap; a beat with no action starts where the previous
+// so every beat contributes exactly lead + hold whatever the turn took: a
+// result ready inside the lead is held from the lead's end, not from the
+// moment it appeared. A beat with no action starts its lead where the previous
 // hold ends; everything before the first action is dropped. `lead: 0` is the
 // instant case (req 12): the frame after the click is the frame where the
-// result is ready.
+// result is ready. A log missing a storyboard beat is an aborted take and is
+// refused unless `allowPartial` / `--allow-partial` says otherwise.
 //
 // The stamps are on the driver's clock; `--anchor-wall <s> --anchor-video <s>`
 // (one moment seen on both clocks, see `anchorOffset`) moves the slices onto
@@ -24,6 +30,7 @@
 //   node cut-plan.mjs <beats.json> <storyboard.json> --print filter
 //   node cut-plan.mjs <beats.json> <storyboard.json> --print kept
 //   … [--anchor-wall <s> --anchor-video <s>] [--wall-duration <s>] [--video-duration <s>]
+//   … [--allow-partial]
 
 import fs from "node:fs";
 import path from "node:path";
@@ -39,8 +46,8 @@ function assertNumber(value, what) {
 }
 
 /**
- * Raw per-beat slices in beat order, before merging. Exposed for the tests;
- * `planSlices` is what the wrapper uses.
+ * Raw per-beat slices in beat order, before merging. Exposed for the tests and
+ * the driver (`beatFootageEnd`); `planSlices` is what the wrapper uses.
  */
 export function beatSlices(beatLog, storyboardBeats) {
   if (!Array.isArray(beatLog) || beatLog.length === 0) throw new Error("beat log is empty");
@@ -55,23 +62,42 @@ export function beatSlices(beatLog, storyboardBeats) {
     assertNumber(story.hold, `storyboard beat ${beat.id} hold`);
     assertNumber(beat.readyAt, `beat ${beat.id} readyAt`);
 
-    let actionAt;
+    let leadStart;
+    let leadEnd;
     if (beat.actionAt === null || beat.actionAt === undefined) {
       if (i === 0) throw new Error(`the first beat (${beat.id}) has no action; there is nothing to start the cut from`);
-      actionAt = previousHoldEnd;
+      leadStart = previousHoldEnd;
+      leadEnd = leadStart + story.lead;
     } else {
       assertNumber(beat.actionAt, `beat ${beat.id} actionAt`);
       if (beat.readyAt < beat.actionAt) {
         throw new Error(`beat ${beat.id} is ready (${beat.readyAt}s) before its action (${beat.actionAt}s)`);
       }
-      actionAt = beat.actionAt;
+      if (story.type !== undefined) {
+        assertNumber(beat.sentAt, `beat ${beat.id} sentAt (a type beat's log must carry its send)`);
+        if (beat.sentAt < beat.actionAt || beat.readyAt < beat.sentAt) {
+          throw new Error(`beat ${beat.id}: sentAt (${beat.sentAt}s) must lie between actionAt (${beat.actionAt}s) and readyAt (${beat.readyAt}s)`);
+        }
+        leadEnd = beat.sentAt;
+        leadStart = leadEnd - story.lead;
+      } else {
+        leadStart = beat.actionAt;
+        leadEnd = leadStart + story.lead;
+      }
     }
 
-    slices.push({ beat: beat.id, part: "lead", start: actionAt, end: actionAt + story.lead });
-    slices.push({ beat: beat.id, part: "hold", start: beat.readyAt, end: beat.readyAt + story.hold });
-    previousHoldEnd = beat.readyAt + story.hold;
+    const holdStart = Math.max(beat.readyAt, leadEnd);
+    slices.push({ beat: beat.id, part: "lead", start: leadStart, end: leadEnd });
+    slices.push({ beat: beat.id, part: "hold", start: holdStart, end: holdStart + story.hold });
+    previousHoldEnd = holdStart + story.hold;
   });
   return slices;
+}
+
+/** The storyboard beats a log does not reach — non-empty for an aborted take. */
+export function missingBeats(beatLog, storyboardBeats) {
+  const logged = new Set((beatLog ?? []).map((b) => b.id));
+  return (storyboardBeats ?? []).filter((b) => !logged.has(b.id)).map((b) => b.id);
 }
 
 /** Union of the raw slices as sorted, non-overlapping, non-empty intervals. */
@@ -89,7 +115,11 @@ export function mergeSlices(slices) {
   return merged;
 }
 
-export function planSlices(beatLog, storyboard) {
+export function planSlices(beatLog, storyboard, { allowPartial = false } = {}) {
+  const missing = missingBeats(beatLog, storyboard.beats);
+  if (missing.length > 0 && !allowPartial) {
+    throw new Error(`the beat log stops before ${missing.map((id) => JSON.stringify(id)).join(", ")}: an aborted take. --allow-partial cuts what was recorded`);
+  }
   const merged = mergeSlices(beatSlices(beatLog, storyboard.beats));
   if (merged.length === 0) throw new Error("the plan keeps nothing: every lead and hold is zero");
   return merged;
@@ -148,18 +178,20 @@ export function anchorSlices(slices, offset, videoDuration) {
     .filter((s) => s.end - s.start > EPSILON);
 }
 
-export function buildPlan(beatLog, storyboard, anchor = {}) {
+export function buildPlan(beatLog, storyboard, anchor = {}, options = {}) {
   const { offset, method } = anchorOffset(anchor);
-  const slices = anchorSlices(planSlices(beatLog, storyboard), offset, anchor.videoDuration);
+  const slices = anchorSlices(planSlices(beatLog, storyboard, options), offset, anchor.videoDuration);
   if (slices.length === 0) throw new Error("the plan keeps nothing inside the video");
   return { anchor: { method, offset: Number(offset.toFixed(3)) }, slices, keptSeconds: keptSeconds(slices), filter: buildFilter(slices) };
 }
 
 const USAGE =
   "usage: cut-plan.mjs <beats.json> <storyboard.json> [--print filter|kept]\n" +
-  "       [--anchor-wall <s> --anchor-video <s>] [--wall-duration <s>] [--video-duration <s>]\n";
+  "       [--anchor-wall <s> --anchor-video <s>] [--wall-duration <s>] [--video-duration <s>] [--allow-partial]\n";
 
 function main(argv) {
+  const allowPartial = argv.includes("--allow-partial");
+  argv = argv.filter((a) => a !== "--allow-partial");
   const flag = (name) => {
     const i = argv.indexOf(name);
     return i >= 0 ? argv[i + 1] : undefined;
@@ -196,6 +228,7 @@ function main(argv) {
     JSON.parse(fs.readFileSync(beatsFile, "utf8")),
     JSON.parse(fs.readFileSync(storyboardFile, "utf8")),
     anchor,
+    { allowPartial },
   );
   if (print === "filter") process.stdout.write(plan.filter + "\n");
   else if (print === "kept") process.stdout.write(String(plan.keptSeconds) + "\n");

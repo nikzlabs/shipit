@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Cut a demo recording down to the storyboard's slices — docs/296 plan §5.
 #
-#   cut.sh <recording.webm> <beats.json> <storyboard.json> <out-base>
+#   cut.sh <recording.webm> <beats.json> <storyboard.json> <out-base> [--allow-partial]
 #
 # Writes <out-base>.webm (VP9) and, when the ffmpeg has libx264, <out-base>.mp4
 # (h264, yuv420p, even dimensions, faststart). Both muted (req 9), both at the
 # recorded viewport. The slice math lives in cut-plan.mjs; this is the wrapper.
+#
+# An aborted take — run.json says `completed: false`, or beats.json stops before
+# the storyboard's last beat — is refused: its cut would look finished and be
+# missing an ending. --allow-partial cuts what was recorded.
 #
 # FFMPEG=<path> overrides the binary (default: `ffmpeg` on PATH). Needs a full
 # build: the `trim`, `setpts`, `concat` and `blackdetect` filters plus the
@@ -16,15 +20,24 @@
 # be found in the file be cut anyway (see "Anchor" below).
 set -euo pipefail
 
-if [ $# -ne 4 ]; then
-  echo "usage: cut.sh <recording.webm> <beats.json> <storyboard.json> <out-base>" >&2
+ALLOW_PARTIAL=0
+positional=()
+for arg in "$@"; do
+  case "$arg" in
+    --allow-partial) ALLOW_PARTIAL=1 ;;
+    --*) echo "cut: unknown flag: $arg" >&2; exit 2 ;;
+    *) positional+=("$arg") ;;
+  esac
+done
+if [ ${#positional[@]} -ne 4 ]; then
+  echo "usage: cut.sh <recording.webm> <beats.json> <storyboard.json> <out-base> [--allow-partial]" >&2
   exit 2
 fi
 
-RECORDING=$1
-BEATS=$2
-STORYBOARD=$3
-OUT=$4
+RECORDING=${positional[0]}
+BEATS=${positional[1]}
+STORYBOARD=${positional[2]}
+OUT=${positional[3]}
 FFMPEG=${FFMPEG:-ffmpeg}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -56,14 +69,16 @@ fi
 
 # ── Anchor ───────────────────────────────────────────────────────────────────
 # The driver's stamps are on its own clock, which starts before Playwright's
-# first frame. run.json's `anchor.wallAt` is the moment the driver left its
-# black splash for the instance; the first non-black frame of the recording
-# (ffmpeg blackdetect) is that moment on the video's clock, and cut-plan.mjs
-# shifts the slices by the difference. A run.json with an anchor but no way
-# to find it in the file is a hard failure — CUT_UNANCHORED=1 overrides, and
-# then the wall − video fallback (cut-plan `anchorOffset`) is used if it can
-# be, else the raw stamps. A run.json without an anchor (a take from before
-# the splash) goes straight to that fallback, with the same warning.
+# first frame. run.json's `anchor.wallAt` is the moment the driver flipped its
+# splash from black to white — its own paint, before it navigates anywhere, so
+# no page's load time sits between the stamp and the frame; the first
+# `black_end` of the recording (ffmpeg blackdetect) is that moment on the
+# video's clock, and cut-plan.mjs shifts the slices by the difference. A
+# run.json with an anchor but no way to find it in the file is a hard failure
+# — CUT_UNANCHORED=1 overrides, and then the wall − video fallback (cut-plan
+# `anchorOffset`) is used if it can be, else the raw stamps. A run.json without
+# an anchor (a take from before the splash) goes straight to that fallback,
+# with the same warning.
 ANCHOR=()
 RUN_JSON=$(dirname "$BEATS")/run.json
 FFPROBE=${FFPROBE:-}
@@ -77,6 +92,10 @@ read_run_field() {
 }
 
 if [ -f "$RUN_JSON" ]; then
+  if [ "$ALLOW_PARTIAL" -ne 1 ] && node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(r.completed===false?0:1)' "$RUN_JSON"; then
+    echo "cut: $RUN_JSON says the take did not complete (completed: false); refusing to cut an aborted take. --allow-partial cuts what was recorded." >&2
+    exit 1
+  fi
   ANCHOR_WALL=$(read_run_field anchor.wallAt)
   WALL=$(read_run_field wallDuration)
   VIDEO=""
@@ -92,7 +111,7 @@ if [ -f "$RUN_JSON" ]; then
 
   if [ -n "$ANCHOR_WALL" ] && [ -n "$ANCHOR_VIDEO" ] && [ -n "$VIDEO" ]; then
     ANCHOR=(--anchor-wall "$ANCHOR_WALL" --anchor-video "$ANCHOR_VIDEO" --video-duration "$VIDEO")
-    echo "cut: anchor: driver left the splash at ${ANCHOR_WALL}s, video shows it at ${ANCHOR_VIDEO}s (file ${VIDEO}s)" >&2
+    echo "cut: anchor: driver's splash went white at ${ANCHOR_WALL}s, video shows it at ${ANCHOR_VIDEO}s (file ${VIDEO}s)" >&2
   elif [ -n "$ANCHOR_WALL" ] && [ "${CUT_UNANCHORED:-0}" != "1" ]; then
     if [ -z "$VIDEO" ]; then
       echo "cut: run.json has an anchor but ffprobe could not read the duration of $RECORDING ($FFPROBE; set FFPROBE=<path>)." >&2
@@ -114,8 +133,10 @@ else
 fi
 
 # ── Plan ─────────────────────────────────────────────────────────────────────
-FILTER=$(node "$HERE/cut-plan.mjs" "$BEATS" "$STORYBOARD" --print filter "${ANCHOR[@]}")
-KEPT=$(node "$HERE/cut-plan.mjs" "$BEATS" "$STORYBOARD" --print kept "${ANCHOR[@]}")
+PARTIAL=()
+[ "$ALLOW_PARTIAL" -eq 1 ] && PARTIAL=(--allow-partial)
+FILTER=$(node "$HERE/cut-plan.mjs" "$BEATS" "$STORYBOARD" --print filter "${ANCHOR[@]}" "${PARTIAL[@]}")
+KEPT=$(node "$HERE/cut-plan.mjs" "$BEATS" "$STORYBOARD" --print kept "${ANCHOR[@]}" "${PARTIAL[@]}")
 echo "cut: keeping ${KEPT}s of $RECORDING" >&2
 
 # ── Exports ──────────────────────────────────────────────────────────────────

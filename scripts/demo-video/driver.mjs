@@ -281,25 +281,71 @@ export function verifyRepoPin(repo) {
   return head;
 }
 
-/** Replay needs the proxy answering before anything is recorded (plan §2: `HEAD /api/hello` → 200). */
-async function verifyProxy(sb) {
-  if (!sb.proxyUrl) throw new Error("--mode replay needs proxyUrl in the storyboard: the address the session's Claude CLI reaches the proxy at");
+/**
+ * The proxy must be the one the take assumes before anything is recorded (plan
+ * §2): `HEAD /api/hello` → 200 declaring the take's `--mode` in
+ * `x-demo-proxy-mode` and, for a replay, this scenario in `x-demo-proxy-cassette`.
+ * A record proxy under `--mode replay` is a live take that run.json calls a
+ * replay; a replay proxy under `--mode record` answers from a cassette while
+ * run.json says record; another scenario's cassette answers the wrong prompts.
+ * Record mode without a proxyUrl is a take with no proxy in the loop (plan §8).
+ */
+export async function verifyProxy(sb, opts) {
+  if (!sb.proxyUrl) {
+    if (opts.mode === "replay") throw new Error("--mode replay needs proxyUrl in the storyboard: the address the session's Claude CLI reaches the proxy at");
+    return;
+  }
   const url = `${sb.proxyUrl.replace(/\/+$/, "")}/api/hello`;
   let res;
   try {
     res = await fetch(url, { method: "HEAD" });
   } catch (err) {
-    throw new Error(`replay proxy not reachable: HEAD ${url}: ${err.cause?.message ?? err.message}`);
+    throw new Error(`${opts.mode} proxy not reachable: HEAD ${url}: ${err.cause?.message ?? err.message}`);
   }
-  if (res.status !== 200) throw new Error(`replay proxy at ${url} answered ${res.status}, expected 200`);
-  log(`replay proxy answering at ${sb.proxyUrl}`);
+  if (res.status !== 200) throw new Error(`${opts.mode} proxy at ${url} answered ${res.status}, expected 200`);
+  const mode = res.headers.get("x-demo-proxy-mode");
+  const cassette = res.headers.get("x-demo-proxy-cassette");
+  const seen = `x-demo-proxy-mode=${mode ?? "(absent)"} x-demo-proxy-cassette=${cassette ?? "(absent)"}`;
+  if (mode !== opts.mode) throw new Error(`proxy at ${url} is not in ${opts.mode} mode: it answered ${seen}`);
+  const scenario = path.basename(opts.scenario);
+  if (opts.mode === "replay" && cassette !== scenario) {
+    throw new Error(`replay proxy at ${url} is not replaying the ${scenario} cassette: it answered ${seen}`);
+  }
+  log(`${opts.mode} proxy answering at ${sb.proxyUrl} (${seen})`);
+}
+
+/**
+ * Why a finished replay was not the cassette as recorded, from `GET
+ * /api/demo/stats`; null when it was. Any drift, fallback or unused recording
+ * means the take did not play what was committed, whatever the video shows.
+ */
+export function replayStatsProblem(stats) {
+  if (!stats || typeof stats !== "object") return "replay proxy stats could not be read (GET /api/demo/stats)";
+  const off = ["drift", "fallback", "unused"].filter((k) => stats[k] !== 0);
+  if (off.length === 0) return null;
+  return `replay proxy stats: ${off.map((k) => `${k}=${stats[k]}`).join(" ")} (served=${stats.served}) — the take did not play the cassette as recorded`;
+}
+
+async function fetchProxyStats(proxyUrl) {
+  const url = `${proxyUrl.replace(/\/+$/, "")}/api/demo/stats`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      log(`GET ${url} answered ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    log(`GET ${url} failed: ${err.cause?.message ?? err.message}`);
+    return null;
+  }
 }
 
 async function setup(opts, sb) {
   const base = opts.instance;
   const ceilingMs = opts.waitCeilingS * 1000;
   log(`demo repo pinned at ${verifyRepoPin(sb.repo)}`);
-  if (opts.mode === "replay") await verifyProxy(sb);
+  await verifyProxy(sb, opts);
   log(`waiting for ${base}/api/bootstrap`);
   await until(async () => (await api(base, "GET", "/api/bootstrap")).ok, { ceilingMs, what: "GET /api/bootstrap" });
 
@@ -763,6 +809,9 @@ export async function run(opts) {
   // metadata sits beside it so the contract stays exactly [{ id, actionAt, readyAt }].
   const beatsFile = path.join(opts.out, "beats.json");
   fs.writeFileSync(beatsFile, JSON.stringify(driver.beats, null, 2) + "\n");
+  // A replay is judged by the proxy's counters, not only by the beats: a
+  // drifted or fallen-back recording still plays a video.
+  const proxyStats = opts.mode === "replay" ? await fetchProxyStats(sb.proxyUrl) : undefined;
   fs.writeFileSync(path.join(opts.out, "run.json"), JSON.stringify({
     scenario: path.basename(opts.scenario),
     mode: opts.mode,
@@ -771,7 +820,11 @@ export async function run(opts) {
     ...(anchorWallAt === null ? {} : { anchor: { wallAt: Number(anchorWallAt.toFixed(3)) } }),
     wallDuration: Number(wallDuration.toFixed(3)),
     completed: driver.beats.length === sb.beats.length,
+    ...(proxyStats === undefined ? {} : { proxyStats }),
   }, null, 2) + "\n");
+  const statsProblem = opts.mode === "replay" ? replayStatsProblem(proxyStats) : null;
+  if (statsProblem) log(`REPLAY CHECK FAILED: ${statsProblem}`);
+  else if (proxyStats) log(`replay proxy stats: served=${proxyStats.served} drift=0 fallback=0 unused=0`);
 
   const recorded = video ? await video.path().catch(() => null) : null;
   const target = path.join(opts.out, "recording.webm");
@@ -783,6 +836,7 @@ export async function run(opts) {
   }
   log(`beats: ${beatsFile}`);
   if (failure) throw failure;
+  if (statsProblem) throw new TakeAbortError(statsProblem);
   return { video: target, beats: beatsFile };
 }
 
