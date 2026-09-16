@@ -435,21 +435,28 @@ one non-npm branch, gated on `contains antigravity $selected`:
   verbatim, and its chunk-at-a-time relay published a split link's query string,
   a split token's tail and a split code's halves. Holding back only what could
   still become the *code* was tried first and rejected: the code is one of
-  several whole-string rules, so the relay has to assemble the whole line, and
-  Claude now does, with a cap for a CLI that emits no newline and a flush of the
-  trailing fragment when the process exits. Its panel logging also goes through
-  the redaction — a credential kept off the screen and written to the
+  several whole-string rules, so the relay has to assemble the whole line.
+  **All four managers now share one line relay** — `createCliLineRelay` in
+  `agents/auth-diagnostics.ts`, added when the Codex and Grok sign-ins were
+  wired up — rather than a hand-rolled buffer each: per-source tails, ANSI
+  stripped off the assembled line, a flush at every path that ends the run, and
+  a 64 KiB cap that acts as a synthetic break rather than a drop, sized so far
+  above a login's whole output that the break cannot fall inside a URL, token or
+  code. Claude holds its relay **per flow**, so a killed run's unterminated tail
+  cannot be flushed onto the next attempt's panel. Its panel logging also goes
+  through the redaction — a credential kept off the screen and written to the
   orchestrator's log is still a credential in a log — and its data callback
   checks the flow generation, which `kill()` now advances so a *cancelled* run
-  is covered and not only a superseded one. Two rules follow from the same
-  reasoning and are easy to get backwards: a fragment that is **not** a whole
-  line is withheld rather than published — at the length cap and on a kill —
-  because publishing it puts the boundary straight back, and **every** code
-  submitted during an attempt stays redacted, because a second submission would
-  otherwise strip the first one's protection off output still in the buffer.
-  What this shape does **not** solve is a secret the CLI itself wrapped across
-  physical lines: planning#586 carries that, with the refusal-text and
-  quoted-JSON gaps it shares a cause with.
+  is covered and not only a superseded one. One more rule is easy to get
+  backwards: **every** code submitted during an attempt stays redacted, because
+  a second submission would otherwise strip the first one's protection off
+  output still sitting in the buffer. A consequence of the shared relay worth
+  knowing when reading the tests: because it hands over an already-stripped
+  line, each manager's own `stripAnsi` is unreachable from the relay path, so
+  the guards pin that ordering through the relay and the call in the emitter is
+  defence for callers that skip it. What this shape does **not** solve is a
+  secret the CLI itself wrapped across physical lines: planning#586 carries
+  that, with the refusal-text and quoted-JSON gaps it shares a cause with.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it

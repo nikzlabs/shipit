@@ -296,6 +296,11 @@ export class AntigravityAuthManager
     // until it is stripped; and once a generic rule has rewritten part of the
     // code, no later exact match can recognise the rest — the two together
     // published a code's tail as ordinary text.
+    //
+    // The strip is unreachable from the RELAY, which hands over an already
+    // stripped line, so the guard tests pin it there rather than here. It stays
+    // for a caller that skips the relay: the ordering only holds if whatever
+    // reaches `withoutSubmittedCode` is escape-free.
     const sanitized = sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(message)));
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {

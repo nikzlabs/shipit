@@ -284,6 +284,12 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
    * Everything this manager prints about the CLI goes through here, not only
    * what the panel shows: a credential kept off the screen and written to the
    * orchestrator's log is still a credential in a log.
+   *
+   * The strip is unreachable from the RELAY, which hands over an already
+   * stripped line, so the guard tests pin it there rather than here. It stays
+   * for the callers that skip the relay — the wizard dump reads `outputBuffer`,
+   * which is stripped a chunk at a time and so can still hold a reassembled
+   * escape.
    */
   private redacted(text: string): string {
     return sanitizeAuthDiagnostic(this.withoutSubmittedCode(stripAnsi(text)));
