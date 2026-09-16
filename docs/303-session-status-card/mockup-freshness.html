@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Session status card — freshness (docs/303)</title>
+<style>
+  :root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; padding: 24px; background: #e5e7eb; color: #111; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.lead { font-size: 13px; color: #374151; margin: 0 0 20px; max-width: 900px; }
+  .boards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .theme { border-radius: 12px; padding: 16px; }
+  .theme h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 12px; color: var(--color-text-tertiary); }
+  .theme.warm-light {
+    --color-bg-primary: #fdf8f0; --color-bg-secondary: #f5ede0;
+    --color-text-primary: #2c2416; --color-text-secondary: #5c5040; --color-text-tertiary: #a89878;
+    --color-border-secondary: #d0c0a4; --color-accent: #c07828;
+    background: var(--color-bg-primary); color: var(--color-text-primary);
+  }
+  .theme.dark {
+    --color-bg-primary: #030712; --color-bg-secondary: #111827;
+    --color-text-primary: #f3f4f6; --color-text-secondary: #9ca3af; --color-text-tertiary: #6b7280;
+    --color-border-secondary: #374151; --color-accent: #3b82f6;
+    background: var(--color-bg-primary); color: var(--color-text-primary);
+  }
+  .case { margin-bottom: 22px; }
+  .case h3 { font-size: 12px; font-weight: 600; margin: 0 0 8px; color: var(--color-text-secondary); }
+  .case h3 span { font-weight: 400; color: var(--color-text-tertiary); }
+
+  /* The card as it sits above the composer: mx-4, rounded-lg, border, bg-secondary, text-xs. No header row. */
+  .card {
+    margin: 0 0 10px; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid var(--color-border-secondary); background: var(--color-bg-secondary);
+    font-size: 12px; line-height: 1.45;
+  }
+  .card { position: relative; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--color-border-secondary); }
+  .actions label { display: inline-flex; align-items: center; gap: 6px; color: var(--color-text-primary); cursor: default; }
+  .actions label.taken { color: var(--color-text-tertiary); }
+  .actions input { margin: 0; width: 12px; height: 12px; accent-color: var(--color-accent); }
+  .actions .send { margin-left: auto; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--color-border-secondary); background: var(--color-bg-primary); color: var(--color-text-primary); }
+  .card.stale .actions { padding-right: 44px; }
+  .card.stale .row:last-of-type .v { padding-right: 44px; }
+  .stale-tag { position: absolute; right: 10px; bottom: 9px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+  .card.stale .stale-tag { color: var(--color-accent); }
+  .row { display: grid; grid-template-columns: 76px 1fr; gap: 10px; }
+  .row .k { color: var(--color-text-tertiary); }
+  .row .v { color: var(--color-text-primary); }
+  .composer { height: 40px; border-radius: 8px; border: 1px solid var(--color-border-secondary); background: var(--color-bg-primary); color: var(--color-text-tertiary); font-size: 12px; display: flex; align-items: center; padding: 0 12px; }
+
+  /* A short transcript tail above the card, so the card is judged in place. */
+  .tail { font-size: 12px; color: var(--color-text-secondary); margin: 0 0 10px; padding: 0 4px; }
+  .tail .q { margin-top: 8px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border-secondary); color: var(--color-text-primary); }
+  .tail .q b { display: block; font-size: 11px; color: var(--color-text-tertiary); font-weight: 600; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<h1>Session status card — freshness</h1>
+<p class="lead">
+  docs/303 req 14: the state is carried by appearance only, never by title text. A current card is a regular card.
+  A card that may be behind — after a question turn that skipped the update, or after an ignored nudge —
+  carries a small "Stale" label in its bottom-right corner, in the theme accent (<code>--color-accent</code>).
+  Below the two fields sit the agent's offered follow-up actions (req 16–18): every relevant one, persisting across turns,
+  ticked and sent once; a taken one stays greyed out, unchecked and disabled until the agent removes it (req 17). In place as the last element of the conversation, scrolling with it, just above the composer, on a light and a dark theme.
+</p>
+
+<div class="boards" id="boards"></div>
+
+<template id="card-tpl">
+  <div class="card">
+    <div class="row"><span class="k">Status</span><span class="v">Billing service: routes and tests done; PR #212 ready to merge. Webhook not started.</span></div>
+    <div class="row"><span class="k">Needs you</span><span class="v">Add the Stripe test key in Settings → Secrets.</span></div>
+    <div class="actions">
+      <label><input type="checkbox" checked> Wire the Stripe webhook</label>
+      <label><input type="checkbox"> Add retry on 5xx from Stripe</label>
+      <label><input type="checkbox" checked> Update the API docs for /billing</label>
+      <label class="taken"><input type="checkbox" disabled> Add a README section on billing</label>
+      <button class="send" type="button">Send</button>
+    </div>
+  </div>
+</template>
+
+<script>
+  const cases = [
+    { key: "fresh", title: "Current", note: "the last turn updated it — a regular card",
+      tail: `<p>Routes and tests are in. PR #212 is ready to merge.</p>` },
+    { key: "stale accent", title: "Stale", note: "the last turn ended with a question and did not update it — label in the accent color",
+      tail: `<p>Two ways to store the webhook secret; I need your call.</p>
+             <div class="q"><b>Question</b>Keep the Stripe secret in ShipIt secrets, or in the repo's .env.example with a placeholder?</div>` },
+  ];
+  const themes = [
+    { key: "warm-light", title: "warm-light" },
+    { key: "dark", title: "dark" },
+  ];
+  const tpl = document.getElementById("card-tpl");
+  const boards = document.getElementById("boards");
+  for (const theme of themes) {
+    const t = document.createElement("section");
+    t.className = `theme ${theme.key}`;
+    t.innerHTML = `<h2>${theme.title}</h2>`;
+    for (const c of cases) {
+      const wrap = document.createElement("div");
+      wrap.className = "case";
+      wrap.innerHTML = `<h3>${c.title} <span>— ${c.note}</span></h3><div class="tail">${c.tail}</div>`;
+      const node = tpl.content.firstElementChild.cloneNode(true);
+      for (const cls of c.key.split(" ")) node.classList.add(cls);
+      if (c.key.startsWith("stale")) {
+        const tag = document.createElement("span");
+        tag.className = "stale-tag";
+        tag.textContent = "Stale";
+        node.appendChild(tag);
+      }
+      wrap.appendChild(node);
+      const composer = document.createElement("div");
+      composer.className = "composer";
+      composer.textContent = "Message the agent…";
+      wrap.appendChild(composer);
+      t.appendChild(wrap);
+    }
+    boards.appendChild(t);
+  }
+</script>
+</body>
+</html>

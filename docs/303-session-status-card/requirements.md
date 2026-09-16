@@ -294,7 +294,8 @@ taken inside one session, without building an agent that talks to many.
   the actual UI needs to be consistent with the current cards. In particular,
   every checkable item needs to have also description so the user can
   understand what this item is about." The compact wrapping row of the
-  prototype as it then stood is therefore not the appearance; the offers use the rows of the
+  prototype as it then stood (`mockup-freshness.html`) is therefore not the
+  appearance; the offers use the rows of the
   existing follow-up action card, and a description is part of every offer, not
   an optional extra. → req 26.
 - 2026-09-15 — Second review of this document by Nik. The card must scroll

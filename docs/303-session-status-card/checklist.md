@@ -23,5 +23,5 @@ docs-only PR and their review history is on planning#550.
 - [x] Req 32: `pending-answer.ts`; every answer card in a container keyed by its tool, the pending one last in the flow under the status card; the chunk piece counter that replaces `openedByCard`, with the chunk tracked rather than recomputed.
 - [x] Verify both by hand in the dogfood instance at 390x780: a turn ending with a question, with a card and offers present, and a card whose last-turn line changes.
 - [x] Verify in the dogfood instance: flag on — switch away and back, reload, a turn that skips the tool, a resident agent across a toggle; flag off — an action card as today.
-- [x] Req 33: three capped, accent-tinted cards — Status, Next steps, Last turn — with the Stale mark in the status cap; the unticked checkbox given a surface of its own so it survives the tint; `mockup.html` redrawn as the shipped look; reqs 14, 28 and 31 amended.
+- [x] Req 33: three capped, accent-tinted cards — Status, Next steps, Last turn — with the Stale mark in the status cap; the unticked checkbox given a surface of its own so it survives the tint; `mockup.html` redrawn as the shipped look, with every drawn round kept beside it; reqs 14, 28 and 31 amended.
 - [x] Verify req 33 by hand in the dogfood instance, wide and at 390x780, fresh and stale, in a light and a dark theme.

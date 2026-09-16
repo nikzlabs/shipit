@@ -350,7 +350,19 @@ store and renders nothing without one. `text-xs`, semantic tokens only. It is
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-`mockup.html` is the drawing, in four themes, fresh and stale. The rows, the
+`mockup.html` is the drawing of the look as it ships, in four themes, fresh and
+stale. The rounds that led to it are kept beside it, because the look is still
+being iterated on and a round is worth more than a summary of it:
+
+| File | Round |
+|---|---|
+| `mockup.html` | The shipped look: three capped, accent-tinted cards. |
+| `look.html` | Round 1 — surfaces only: solid, an accent spine, an elevated panel, a recessed tray, against the translucent baseline. Rejected: still reads as another transcript card. |
+| `look-loud.html` | Round 2 — louder: accent tint, an accent header cap, a full-bleed band, a bigger card, all three at once. Drawn in the card's real neighbourhood (agent prose above, composer below), which is what the first cut of this round got wrong. **Tinted** chosen. |
+| `look-tinted.html` | Round 3 — the three capped cards, with the three sub-questions still open: how much colour, one middle card or two, where "Stale" goes. All three ruled; `mockup.html` is the chosen combination. |
+| `mockup-freshness.html` | The original prototype, from before the card had sections: how freshness is shown (the "Stale" label in the accent colour). Its card shape is superseded. |
+
+The rows, the
 badge and the submit button are the existing follow-up action card's, so a
 checkable item reads the same wherever the user meets one, and every offer
 shows its description (req 26).
