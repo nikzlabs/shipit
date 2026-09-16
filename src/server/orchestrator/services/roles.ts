@@ -24,7 +24,7 @@ import {
 } from "../../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { namesForMessage } from "../../shared/settings-catalogue/projection.js";
-import { renderOwn } from "../../shared/settings-catalogue/rendered.js";
+import { renderLine, renderOwn, renderValue, type Rendered } from "../../shared/settings-catalogue/rendered.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderRoute } from "../provider-account-manager.js";
 import {
@@ -79,7 +79,7 @@ export type RoleParamsPurpose = "run" | "save";
 
 export type RoleParamsCheck =
   | { ok: true; params: RolePinnedParams }
-  | { ok: false; kind: RoleCheckFailureKind; field: RoleInvalidField; message: string };
+  | { ok: false; kind: RoleCheckFailureKind; field: RoleInvalidField; message: Rendered };
 
 export function checkRolePinnedParams(
   params: RolePinnedParams,
@@ -98,7 +98,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "harnessId",
-      message: `No harness named "${harnessId}".`,
+      message: renderLine(`No harness named ${renderValue(harnessId)}.`),
     };
   }
   const installed = deps.isInstalled ?? isHarnessInstalled;
@@ -107,7 +107,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "harnessId",
-      message: `${harness.name} is not installed on this deployment.`,
+      message: renderOwn(`${harness.name} is not installed on this deployment.`),
     };
   }
   const service = getService(params.serviceId);
@@ -116,7 +116,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "service",
-      message: `No service named "${params.serviceId}".`,
+      message: renderLine(`No service named ${renderValue(params.serviceId)}.`),
     };
   }
   if (!service.modes.some((mode) => mode.kind === params.billingMode)) {
@@ -124,7 +124,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "billingMode",
-      message: `${service.name} has no "${params.billingMode}" billing mode.`,
+      message: renderLine(`${service.name} has no ${renderValue(params.billingMode)} billing mode.`),
     };
   }
   // A pinned role never follows a retired model's successor.
@@ -133,9 +133,10 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "model",
-      message:
-        `No model "${params.modelId}" is offered by ${params.serviceId} on the `
-        + `"${params.billingMode}" billing mode.`,
+      message: renderLine(
+        `No model ${renderValue(params.modelId)} is offered by ${renderValue(params.serviceId)} `
+        + `on the ${renderValue(params.billingMode)} billing mode.`,
+      ),
     };
   }
   const model = getModel(selection)!;
@@ -145,7 +146,7 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "catalogue",
       field: "harnessId",
-      message: `${harness.name} cannot speak to ${label} — they share no API style.`,
+      message: renderOwn(`${harness.name} cannot speak to ${label} — they share no API style.`),
     };
   }
   if (params.reasoningEffort !== undefined) {
@@ -156,9 +157,10 @@ export function checkRolePinnedParams(
         ok: false,
         kind: "catalogue",
         field: "reasoningEffort",
-        message:
+        message: renderOwn(
           `${harness.name} offers no reasoning levels on ${label}, so a role on it cannot name one. `
           + "Use the Default level.",
+        ),
       };
     }
     if (!options.some((option) => option.value === params.reasoningEffort)) {
@@ -166,9 +168,10 @@ export function checkRolePinnedParams(
         ok: false,
         kind: "catalogue",
         field: "reasoningEffort",
-        message:
-          `"${params.reasoningEffort}" is not a reasoning level ${harness.name} offers on ${label}. `
-          + `Valid levels: ${options.map((o) => o.value).join(", ")}, or Default.`,
+        message: renderLine(
+          `${renderValue(params.reasoningEffort)} is not a reasoning level ${harness.name} offers `
+          + `on ${label}. Valid levels: ${options.map((o) => o.value).join(", ")}, or Default.`,
+        ),
       };
     }
   }
@@ -180,9 +183,10 @@ export function checkRolePinnedParams(
       ok: false,
       kind: "credential",
       field: "service",
-      message:
+      message: renderLine(
         `${service.name} has no credential ${harness.name} can use for `
-        + `${params.serviceId}/${params.billingMode}.`,
+        + `${renderValue(params.serviceId)}/${renderValue(params.billingMode)}.`,
+      ),
     };
   }
   return { ok: true, params: normalize(params) };
@@ -209,9 +213,19 @@ function normalize(params: RolePinnedParams): RolePinnedParams {
  * write. Rendering at the raise rather than at each message is the point: the
  * first pass rendered the two messages it had found, and an override that
  * failed a step earlier walked straight past them.
+ *
+ * {@link renderLine} and not {@link renderOwn}: these lines embed a value
+ * another mint already quoted, and collapsing runs of space reaches inside those
+ * quotes — reporting a model id the role is not pinned to (planning#537).
+ *
+ * It covers this module's own EXITS and says nothing about what the module
+ * RETURNS. {@link checkRolePinnedParams} hands its message back to a caller
+ * that raises elsewhere — the settings preflight — and that caller printed it
+ * unrendered for as long as this docstring read as though the whole file were
+ * covered (planning#537). Hence the message's own {@link Rendered} type.
  */
 function refuse(message: string): never {
-  throw new ServiceError(400, renderOwn(message));
+  throw new ServiceError(400, renderLine(message));
 }
 
 export function validateRolePinnedParams(

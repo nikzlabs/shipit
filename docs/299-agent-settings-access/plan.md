@@ -484,11 +484,55 @@ are `Rendered` now and the headline flattens its fallback. `phase` and
 `operation` stay their unions, because the agent switches on them; each renderer
 flattens where it turns one into text.
 
-**The shim renders what it composes itself and trusts what the read sent.** The
-wire is `Rendered`, so re-rendering a value there would quote what is already
-quoted; what the shim composes itself is the `--item` echo and the two JSON
-blobs in `get`, and those go through `renderJson` — `JSON.stringify` escapes
-the C0 controls and leaves U+2028, U+2029 and U+0085 as themselves.
+**The shim re-mints everything and re-QUOTES nothing.** The wire is `Rendered`,
+so quoting a value again there would quote what is already quoted — but the
+brand does not survive the hop, so every line is minted with `renderLine`, which
+keeps such text byte-for-byte. What the shim composes itself is the `--item`
+echo — flattened with `renderOwn`, that address being the argument THIS call
+supplied rather than anything the read rendered — and the two JSON blobs in
+`get`, which go through `renderJson`: `JSON.stringify` escapes the C0 controls
+and leaves U+2028, U+2029 and U+0085 as themselves.
+
+**"Trust what the read sent" was the hole, and the boundary is now structural.**
+Three fixes for this one class each guarded the path in front of them and left
+the next one open: stored VALUES (planning#577), then item NOTES, then the
+MESSAGES a service composes — a refusal, a `ServiceError`, validator output —
+which `checkRolePinnedParams` built from a role's stored harness id and the
+settings preflight handed out unchanged (planning#537). Each fix was a mint at a
+known path; the next path was not known yet. So the property established instead
+is **anything the settings shim prints is `Rendered`**, carried by two things
+that need nobody's memory:
+
+- **The types demand a mint at each hand-off.** `SettingsOperation.preflight`,
+  `RoleParamsCheck.message` and `ValidationResult.message` are `Rendered`, so a
+  service that builds a plain string cannot return it as a refusal. A
+  `ServiceError` caught and turned INTO a refusal is minted where that happens,
+  which is the one place such a message becomes output.
+- **The printer takes `Rendered`, and there is no second way out.** A brand does
+  not survive HTTP — the shim receives plain JSON — so `settings-out.ts`
+  re-mints, with `renderLine`, which keeps already-rendered text byte-for-byte.
+  What makes it complete is that `shipit-settings.ts` is handed a `SettingsDeps`
+  with **no `ShimIO` on it at all**: no `stdout`, no `fail`, no `success` in
+  scope. Two `@ts-expect-error` assertions in `settings-out.test.ts` fail the
+  build if either half is widened.
+
+**What that does not close, stated rather than implied.** The types stop a
+message nobody minted from being printed. They do not stop a caller deciding, at
+the point of composition, that an ingested message's own newlines are the
+output's line structure: `out.lines(message.split("\n").map(renderLine))`
+compiles and every element of it is honestly `Rendered`. One rule therefore
+remains the author's — **never derive output structure from text this process
+did not compose** — and `serverErrorLines` exists so that nobody has to make
+that call for a relay error: it renders the server's message whole and adds only
+ShipIt's own status note as a second line.
+
+**The mints are not interchangeable, and that is not only about legibility.**
+`renderOwn` collapses runs of space, which is right for ShipIt's own prose and
+wrong the moment a sentence embeds an already-rendered value: it reaches inside
+the quotes, so a refusal about a label stored as `"Team  Account"` reported
+`"Team Account"` — a value the user never set. `renderLine` is the mint for
+composing around one, `renderValue` for putting one into a sentence, and
+`renderOwn` only for text that is ShipIt's own the whole way through.
 
 **The same enumeration exists outside the settings surface.** A role name is
 arbitrary user text, and three agent-facing messages list stored names: a
