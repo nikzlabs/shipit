@@ -1,5 +1,5 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
-import { maxOutputTokens, postJson, requireCompleteText } from "./http.js";
+import { MAX_OUTPUT_TOKENS, postJson, requireCompleteText } from "./http.js";
 import type { DirectCall, DirectCallUsage } from "./types.js";
 
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -34,7 +34,7 @@ export function createAnthropicMessagesCall(fetchImpl: typeof fetch = fetch): Di
       },
       {
         model: req.apiModelId,
-        max_tokens: maxOutputTokens(req.maxOutputChars),
+        max_tokens: MAX_OUTPUT_TOKENS,
         messages: [{ role: "user", content: req.prompt }],
       },
       req.signal,

@@ -34,7 +34,6 @@ describe("the client registry", () => {
         apiModelId: "m",
         apiKey: "k",
         prompt: "p",
-        maxOutputChars: 100,
         signal: new AbortController().signal,
       });
 

@@ -93,7 +93,7 @@ the first two. **Parameterising them is not enough**, in three ways:
 ```ts
 type DirectCall = (req: {
   baseUrl: string; apiModelId: string; apiKey: string; headers?: Record<string, string>;
-  prompt: string; maxOutputChars: number; signal: AbortSignal;
+  prompt: string; signal: AbortSignal;
 }) => Promise<{
   text: string;
   inputTokens?: number; outputTokens?: number;
@@ -227,8 +227,65 @@ addressed by spawn id; the existing `/agent/kill` targets the primary agent and 
 the container to enforce one dictation's deadline is not available, because it would interrupt
 every other request in flight (req 9).
 
-`CLEANUP_TIMEOUT_MS` splits into a direct budget near today's 3000 ms and a harness budget of
-roughly 15 seconds, but those numbers are tuning; the enforced deadline is the requirement.
+There is **one** `CLEANUP_TIMEOUT_MS`, 15 seconds, for both executions. It was briefly split into a
+direct budget of 3000 ms and a harness budget of 15 s, on the reasoning that a measured 400-800 ms
+HTTP request should not be given a harness's headroom. That is backwards: how long a user will
+watch the mic button's "cleaning" state is a property of their patience, not of the transport, and
+a transport fast enough to always beat the deadline is not a reason to give the slow case less
+time. The harness run's own `timeoutMs` is now deliberately the *same* constant rather than a
+lower one — it exists to stop the run inside the shared container, which the orchestrator giving up
+does not do by itself, not to fire first.
+
+### The output budget, and why it is not re-derived
+
+Cleanup used to size a per-call output budget from the transcript: `acceptableCleanupLength()`
+(`max(40, raw.length * 2)`) went to the runner as `acceptableChars`, and the direct path tripled it
+into `max_tokens`. The reasoning read soundly — a cap below what `isSane` accepts could cut an
+answer off *inside* the acceptable range, where a shortened transcript is indistinguishable from a
+good one.
+
+It made cleanup fail **100% of the time** on an install pinned to a reasoning model reached over an
+`/anthropic` compatibility shim. A one-sentence dictation produced `max_tokens` between 64 and 150.
+The request never asks for extended thinking, which is correct against Anthropic's own API where
+thinking is off by default — but the shim's model thinks regardless and bills it against that same
+cap, so the budget was gone before any answer was written. Short dictations failed fast on
+`max_tokens`; longer ones got a bigger cap, thought for longer, and crossed the deadline instead.
+The proof that the tokens went to reasoning rather than to text: `max_tokens` was
+`acceptableChars + 1` while `isSane` already rejects anything longer than `acceptableChars`
+**characters**, so text alone could only exhaust it at under one character per token.
+
+So the derivation is **gone, not corrected**. A cap sized from the answer cannot be made safe,
+because the caller cannot know what a vendor bills against it — the same shape reaches OpenRouter
+and Vercel, and it hit session naming and pull-request descriptions too. Voice cleanup asks for no
+budget on either execution. `DirectCallRequest` no longer carries `maxOutputChars` at all, so the
+direct path has no character cap of any kind and the three adapters send a flat `MAX_OUTPUT_TOKENS`
+of 32 000 — required by the API, a stop for an unattended runaway, and nothing else. The harness
+path keeps a character cap, but only the shared `BACKGROUND_HARNESS_MAX_OUTPUT_CHARS` default of
+8 000; that one slices captured text and bills no reasoning against itself, so it is not the same
+hazard.
+
+Two consequences are accepted rather than fixed:
+
+- **A harness cleanup whose answer exceeds 8 000 characters now falls back to raw text**, where the
+  old transcript-proportional override would have accepted it. `runAgentToCompletion` slices at the
+  cap and sets `truncated` (`shared/sub-agent-run.ts`), which cleanup rejects on purpose. That needs
+  a dictation of roughly 4 000 characters or more; the user still gets their raw transcript and the
+  mic button's warning, so this is lost cleanup, not lost text.
+- **A flat 32 000 has not been verified against every directly-callable row.** Anthropic's own
+  limits and the OpenRouter and Vercel model metadata all sit above it; OpenCode Zen's model
+  endpoints answer 403 to an unauthenticated read, so its routes are unconfirmed. A provider that
+  rejects a `max_tokens` above its model's output limit would 400. If one does, the fix is a
+  per-model output limit authored into the catalogue — which is a fact about the model, not about
+  the caller's answer, and so is not the mechanism removed here.
+
+**Do not reintroduce a transcript-proportional cap as a safety measure.** The protection against a
+silently shortened transcript was never the cap; it is the detection, and all three parts of it
+still run with a cap that no longer bites: `requireCompleteText`'s stop-reason check
+(`direct-provider/http.ts`), `isSane`'s too-long check (`voice/cleanup.ts`), and the harness
+`truncated` flag (`shared/sub-agent-run.ts`). A provider's own limit can be lower than ours
+regardless of what we ask for, and only the provider says which limit stopped it — which is why
+detection is the only thing that could ever have worked. The accepted cost is that a hung cleanup
+now takes up to 15 s to fall back to raw text rather than 3 s.
 
 ## Voice cleanup, and the key that does not carry over
 

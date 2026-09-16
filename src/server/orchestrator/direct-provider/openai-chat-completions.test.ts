@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { directCallSelections } from "../../shared/catalogue/index.js";
 import { createOpenAiChatCompletionsCall } from "./openai-chat-completions.js";
+import { MAX_OUTPUT_TOKENS } from "./http.js";
 import { DirectCallError } from "./types.js";
 
 // Real shipped rows: OpenCode Go is reached through this style, and Go is the
@@ -32,7 +33,6 @@ function callWith(fetchImpl: ReturnType<typeof vi.fn>, entry: (typeof ROWS)[numb
     apiKey: "test-key",
     ...(entry.target.headers ? { headers: entry.target.headers } : {}),
     prompt: "clean this",
-    maxOutputChars: 1200,
     signal: new AbortController().signal,
   });
 }
@@ -55,7 +55,7 @@ describe("createOpenAiChatCompletionsCall against shipped catalogue rows", () =>
     for (const [name, value] of Object.entries(entry.target.headers ?? {})) {
       expect(init.headers[name]).toBe(value);
     }
-    expect(sent.max_tokens).toBeGreaterThanOrEqual(1200 / 4);
+    expect(sent.max_tokens).toBe(MAX_OUTPUT_TOKENS);
   });
 });
 
@@ -94,7 +94,6 @@ describe("createOpenAiChatCompletionsCall", () => {
       apiModelId: base.target.apiModelId,
       apiKey: "k",
       prompt: "p",
-      maxOutputChars: 100,
       signal: controller.signal,
     });
 

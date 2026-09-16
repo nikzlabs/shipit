@@ -1,16 +1,16 @@
 import { DirectCallError, type DirectCallUsage } from "./types.js";
 
 /**
- * Deliberately generous on the text itself: at roughly four characters per
- * token, a third of the character budget leaves headroom for a tokenizer that
- * splits the caller's language harder than English.
- *
- * `reasoningAllowance` is for a style that bills reasoning against this same
- * cap, where a text-sized budget can be spent before any answer is written.
+ * NOT a budget, and deliberately not derived from anything a caller asked for.
+ * The parameter is required on these APIs so a number must be sent; this one is
+ * a stop for an unattended runaway and nothing else. Some vendors bill
+ * reasoning against this same cap even when the request never asked for
+ * thinking, so a cap sized to the answer failed the whole call instead of
+ * shortening it — what bounds an answer is each caller's own check on the text
+ * that comes back. Why it is not re-derived:
+ * docs/299-direct-provider-calls plan.md, "The output budget".
  */
-export function maxOutputTokens(maxOutputChars: number, reasoningAllowance = 0): number {
-  return Math.max(64, Math.ceil(maxOutputChars / 3)) + reasoningAllowance;
-}
+export const MAX_OUTPUT_TOKENS = 32_000;
 
 /** Never negative, and never overlapping: see DirectCallResult. */
 export function uncachedInput(

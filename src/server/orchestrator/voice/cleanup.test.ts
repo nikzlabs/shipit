@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cleanTranscript, type CleanupRunner } from "./cleanup.js";
+import { acceptableCleanupLength, cleanTranscript, type CleanupRunner } from "./cleanup.js";
 import { CLEANUP_INSTRUCTIONS } from "./cleanup-prompt.js";
 
 function fakeRunner(impl: (prompt: string) => Promise<string> | string): CleanupRunner {
@@ -41,23 +41,16 @@ describe("cleanTranscript", () => {
     expect(r.cleanupErrorCode).toBe("too-long");
   });
 
-  // A runner budgets its output from this, so it has to be the exact length the
-  // check above accepts: budget below it and a long dictation comes back cut
-  // short, which is indistinguishable from a good answer.
-  it("tells the runner the exact length an answer may reach", async () => {
+  // The sole bound on an answer's length now that no runner is given an output
+  // budget: a cleaned transcript is the same message tidied, so its ceiling
+  // follows the transcript rather than a token cap nobody can size correctly.
+  it("accepts an answer at the acceptable length and rejects the next character", async () => {
     const raw = "x".repeat(1234);
-    let seen = 0;
-    await cleanTranscript(raw, {
-      deadlineMs: 1000,
-      run: async (req) => {
-        seen = req.acceptableChars;
-        return "tidied";
-      },
-    });
+    const limit = acceptableCleanupLength(raw);
 
-    expect((await cleanTranscript(raw, fakeRunner(() => "y".repeat(seen)))).cleanupErrorCode)
+    expect((await cleanTranscript(raw, fakeRunner(() => "y".repeat(limit)))).cleanupErrorCode)
       .toBeUndefined();
-    expect((await cleanTranscript(raw, fakeRunner(() => "y".repeat(seen + 1)))).cleanupErrorCode)
+    expect((await cleanTranscript(raw, fakeRunner(() => "y".repeat(limit + 1)))).cleanupErrorCode)
       .toBe("too-long");
   });
 

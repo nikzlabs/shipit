@@ -11,7 +11,6 @@ export interface DirectCallRequest {
   /** Declared per credential, and override the client's own headers. */
   headers?: Record<string, string>;
   prompt: string;
-  maxOutputChars: number;
   signal: AbortSignal;
 }
 

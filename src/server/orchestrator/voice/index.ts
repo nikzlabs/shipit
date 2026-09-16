@@ -7,8 +7,7 @@ export { getVoiceAdapters } from "./registry.js";
 export { CLEANUP_INSTRUCTIONS, buildCleanupPrompt } from "./cleanup-prompt.js";
 export {
   cleanTranscript,
-  CLEANUP_DIRECT_TIMEOUT_MS,
-  CLEANUP_HARNESS_TIMEOUT_MS,
+  CLEANUP_TIMEOUT_MS,
   type CleanupResult,
   type CleanupErrorCode,
   type CleanupRunner,

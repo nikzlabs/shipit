@@ -1,13 +1,12 @@
 import { buildCleanupPrompt } from "./cleanup-prompt.js";
 
 /**
- * A direct call is one HTTP request, measured at 400-800 ms; a harness one-shot
- * on a cleanup-shaped prompt was measured at 3.0-4.5 s in a warm container
- * (docs/299-direct-provider-calls plan.md). Both are tuning — the requirement
- * is that *some* deadline is enforced here, end to end (req 9).
+ * How long a user will watch the mic button's "cleaning" state before raw text
+ * is the better answer — a property of their patience, not of whatever runs the
+ * work, which is why both executions share it (docs/299-direct-provider-calls
+ * req 9).
  */
-export const CLEANUP_DIRECT_TIMEOUT_MS = 3000;
-export const CLEANUP_HARNESS_TIMEOUT_MS = 15_000;
+export const CLEANUP_TIMEOUT_MS = 15_000;
 
 const MAX_LENGTH_RATIO = 2;
 const PREAMBLE_PATTERNS = [
@@ -32,13 +31,6 @@ export interface CleanupResult {
 
 export interface CleanupRequest {
   prompt: string;
-  /**
-   * The longest answer `isSane` accepts. A runner must size its output budget
-   * ABOVE this, never below: an answer cut off inside the acceptable range
-   * reads exactly like a complete one, so the tail of a long dictation would be
-   * dropped with nothing to show for it.
-   */
-  acceptableChars: number;
   signal: AbortSignal;
 }
 
@@ -49,7 +41,6 @@ export interface CleanupRequest {
  * spawn home and keep spending.
  */
 export interface CleanupRunner {
-  /** Set by whoever built the runner, because a harness needs far longer than an API call. */
   deadlineMs: number;
   run(req: CleanupRequest): Promise<string>;
 }
@@ -99,7 +90,6 @@ export async function cleanTranscript(
       // eslint-disable-next-line no-restricted-syntax -- the two-arg form is the point: await would abandon a rejection arriving after the deadline
       runner.run({
         prompt: buildCleanupPrompt(raw),
-        acceptableChars: acceptableCleanupLength(raw),
         signal: controller.signal,
       }).then(
         (text) => ({ kind: "text" as const, text }),

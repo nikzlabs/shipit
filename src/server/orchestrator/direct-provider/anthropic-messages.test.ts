@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { directCallSelections } from "../../shared/catalogue/index.js";
 import { createAnthropicMessagesCall } from "./anthropic-messages.js";
+import { MAX_OUTPUT_TOKENS } from "./http.js";
 import { DirectCallError } from "./types.js";
 
 // Real shipped rows, not a hand-written fixture: a request shape assertion
@@ -36,7 +37,6 @@ function callWith(fetchImpl: ReturnType<typeof vi.fn>, entry: (typeof ROWS)[numb
     apiKey: "test-key",
     ...(entry.target.headers ? { headers: entry.target.headers } : {}),
     prompt: "clean this",
-    maxOutputChars: 1200,
     signal: new AbortController().signal,
   });
 }
@@ -60,7 +60,9 @@ describe("createAnthropicMessagesCall against shipped catalogue rows", () => {
     for (const [name, value] of Object.entries(entry.target.headers ?? {})) {
       expect(init.headers[name]).toBe(value);
     }
-    expect(sent.max_tokens).toBeGreaterThanOrEqual(1200 / 4);
+    // Required by the API, so a number must be sent; it is a runaway stop and
+    // not a budget, which is why it is flat rather than sized from the prompt.
+    expect(sent.max_tokens).toBe(MAX_OUTPUT_TOKENS);
   });
 });
 
@@ -88,7 +90,6 @@ describe("createAnthropicMessagesCall", () => {
       apiModelId: base.target.apiModelId,
       apiKey: "k",
       prompt: "p",
-      maxOutputChars: 100,
       signal: controller.signal,
     });
 
@@ -103,6 +104,27 @@ describe("createAnthropicMessagesCall", () => {
     await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
       name: "DirectCallError",
       message: expect.stringContaining("max_tokens"),
+    });
+  });
+
+  // A provider whose own limit is below the flat cap still answers 200 with
+  // real text that stops part-way, which reads exactly like a complete answer.
+  // The cap was never the protection against that; this check is.
+  it("still fails on a 200 whose text stopped on the provider's own output limit", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "Rename the file and then" }],
+          stop_reason: "max_tokens",
+          usage: { input_tokens: 20, output_tokens: 15 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      name: "DirectCallError",
+      message: expect.stringContaining("output budget"),
     });
   });
 
@@ -169,7 +191,6 @@ describe("createAnthropicMessagesCall", () => {
       apiKey: "k",
       headers: { "anthropic-version": "9999-01-01" },
       prompt: "p",
-      maxOutputChars: 100,
       signal: new AbortController().signal,
     });
 

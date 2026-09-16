@@ -382,7 +382,6 @@ export async function runNonTurnDirect(
     target: NonTurnDirectTarget;
     prompt: string;
     signal?: AbortSignal | undefined;
-    maxOutputChars?: number | undefined;
   },
 ): Promise<NonTurnOutcome> {
   const { target, purpose, sessionId } = args;
@@ -428,7 +427,6 @@ export async function runNonTurnDirect(
       apiKey: target.apiKey,
       ...(target.call.headers ? { headers: target.call.headers } : {}),
       prompt: args.prompt,
-      maxOutputChars: args.maxOutputChars ?? NON_TURN_MAX_OUTPUT_CHARS,
       signal: args.signal ?? AbortSignal.timeout(NON_TURN_DIRECT_TIMEOUT_MS),
     });
     record(result);
