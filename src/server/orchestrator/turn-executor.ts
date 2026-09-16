@@ -753,6 +753,17 @@ export async function executeAgentTurn(
   let nudgeDecided = false;
   let nudgePending = false;
   let nudgeDispatched = false;
+  /**
+   * A successor that would make the nudge ask about a session it is already changing.
+   * The steer is the third kind and the one the report named (planning#589): the user
+   * spoke into the turn that is ending, and a steer is neither running nor queued —
+   * `requeueUndeliveredSteers` has already moved the un-acked ones into the queue, so
+   * what is left is a message the CLI took. Whether it ANSWERED it is not knowable here
+   * (docs/303 plan.md → Turn settlement), so the whole steered turn defers: the card is
+   * still marked stale, and the next turn is checked afresh (req 34).
+   */
+  const successorPending = (r: SessionRunnerInterface): boolean =>
+    r.running || r.queueLength > 0 || r.steeredMessages.length > 0;
   // Decided on the snapshot alone, after idle; dispatched separately, because a system
   // turn still holds systemTurnInProgress here and would only queue the nudge behind it.
   const decideStatusNudge = (): void => {
@@ -762,7 +773,7 @@ export async function executeAgentTurn(
     nudgePending = shouldNudgeForStatusCard(
       settleTurnFacts(),
       storedStatus(),
-      runner.running || runner.queueLength > 0,
+      successorPending(runner),
     );
   };
 
@@ -774,7 +785,9 @@ export async function executeAgentTurn(
     // Re-checked here, not only at the decision: the deferral is about the session's
     // state when the nudge would start, and that turn is checked afresh when it ends.
     if (runner.running || runner.systemTurnInProgress || runner.mergeHold) return;
-    if (runner.queueLength > 0) {
+    // A deferral, not a skipped attempt: the successor's own end is checked afresh, and
+    // req 15's one attempt is spent by a nudge that goes out, never by one held back.
+    if (successorPending(runner)) {
       nudgePending = false;
       return;
     }

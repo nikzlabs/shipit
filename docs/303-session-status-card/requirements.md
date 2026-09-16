@@ -196,11 +196,33 @@ taken inside one session, without building an agent that talks to many.
     one Submit they share (req 29). The accent therefore means "the session,
     and what to do about it".
 
+34. A turn the user steered into is complete without a card update. When the
+    user sends a message into a turn that is already running, that message is
+    what ShipIt owes the user next: it never sends the nudge instead. The card
+    then shows that it may be behind (req 14), and the next turn is checked
+    afresh, as after any nudge ShipIt did not send (req 15).
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-16 — Nik, on the shipped card: "Some weird behavior when steering the
+  agent that is waiting for background tasks. ShipIt immediately nudges about
+  the card update when I send a message." (planning#589). Reproduced: the user
+  steers a running turn, the CLI acknowledges the message, the turn ends, and
+  the nudge goes out — a system turn, so it retires the resident process that
+  holds what he just sent. A first fix tried to nudge only when the steer was
+  still *unanswered*, and an independent review showed the orchestrator cannot
+  tell: the transcript-group count it inferred that from both misses a pending
+  steer (the turn's own last text arrives before the acknowledgement) and hides
+  an answered one (an answer appends to the existing group). → req 34 added:
+  the whole steered turn is complete without an update, which is the plain
+  reading of his report and needs no such inference. Cost, accepted: a turn the
+  user steered and the agent then answered without touching the card is not
+  nudged either; the card is marked stale and the next turn is checked afresh,
+  exactly as for a nudge ShipIt was unable to send.
 
 - 2026-09-16 — Nik, fifth round: "Can we use some other color for 'Last turn'?
   What tokens do we have available?" Only five tokens exist in all 20 themes
