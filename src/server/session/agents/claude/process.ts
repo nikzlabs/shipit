@@ -121,6 +121,15 @@ export function frameUserMessage(text: string): string {
 // Routed providers can report per-call token usage only in message_delta.
 const PARTIAL_MESSAGE_ARGS = ["--include-partial-messages"] as const;
 
+// Exact ShipIt names, shared by both process classes so a tool cannot land in
+// one path only. permission_prompt is the sole deliberate omission: the CLI
+// invokes that gate itself. Every OTHER tool the shipit bridge exposes belongs
+// here — one missing is routed to the gate, so the user hand-approves an
+// internal ShipIt tool before its card appears (`shipit-tool-allowlist.test.ts`).
+// ExitPlanMode needs headless approval; explicit skills can write even in plan mode.
+const AUTO_TOOL_SPEC = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions,mcp__shipit__propose_repo_session";
+const PLAN_TOOL_SPEC = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions,mcp__shipit__propose_repo_session";
+
 export class ClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
   private buffer = "";
@@ -145,10 +154,8 @@ export class ClaudeProcess extends EventEmitter {
     const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sessionStatusCard, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting, homeDir } = opts;
     this.authRaisedThisTurn = false;
 
-    // Exact ShipIt names exclude permission_prompt. ExitPlanMode needs headless approval.
-    // Explicit skills can write even in plan mode.
-    const AUTO_TOOLS = shipitToolSpec("Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions", { sessionStatusCard });
-    const PLAN_TOOLS = shipitToolSpec("Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions", { sessionStatusCard });
+    const AUTO_TOOLS = shipitToolSpec(AUTO_TOOL_SPEC, { sessionStatusCard });
+    const PLAN_TOOLS = shipitToolSpec(PLAN_TOOL_SPEC, { sessionStatusCard });
 
     // Third-party MCP tools cannot be assumed read-only in plan mode.
     const userMcpGlobs = (mcpServerNames ?? [])
@@ -440,8 +447,8 @@ export class StreamingClaudeProcess extends EventEmitter {
   run(opts: ClaudeRunOptions): void {
     const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sessionStatusCard, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting, homeDir } = opts;
 
-    const AUTO_TOOLS = shipitToolSpec("Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions", { sessionStatusCard });
-    const PLAN_TOOLS = shipitToolSpec("Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions", { sessionStatusCard });
+    const AUTO_TOOLS = shipitToolSpec(AUTO_TOOL_SPEC, { sessionStatusCard });
+    const PLAN_TOOLS = shipitToolSpec(PLAN_TOOL_SPEC, { sessionStatusCard });
 
     const userMcpGlobs = (mcpServerNames ?? []).map((name) => `mcp__${name}__*`).join(",");
     const withUserMcp = (base: string): string => userMcpGlobs ? `${base},${userMcpGlobs}` : base;
