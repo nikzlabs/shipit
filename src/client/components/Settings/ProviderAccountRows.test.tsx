@@ -3,11 +3,12 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ProviderAccountRows } from "./ProviderAccountRows.js";
+import { AccountChallenge, ProviderAccountRows } from "./ProviderAccountRows.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { CredentialRoute } from "../../../server/shared/types.js";
+import type { LoginIntegrationId } from "../../../server/shared/catalogue/types.js";
 
 const agent: AgentOption = {
   id: "claude",
@@ -312,5 +313,76 @@ describe("a subscription with no quota reader (docs/274 req 16)", () => {
 
     const row = screen.getByTestId("provider-account-row-a");
     expect(row.querySelector("[data-meter-pct]")).not.toBeNull();
+  });
+});
+
+describe("the authorization-code challenge", () => {
+  const antigravityAccount: CredentialRoute = {
+    id: "acct-agy",
+    serviceId: "antigravity",
+    billingMode: "sub",
+    via: "account",
+    label: "Antigravity account 1",
+    isPrimary: true,
+    status: "authenticating",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+
+  function renderChallenge(provider: "antigravity" | "claude", loginId: LoginIntegrationId) {
+    useSettingsStore.getState().setProviderAccountAuth(loginId, antigravityAccount.id, {
+      loginId,
+      accountId: antigravityAccount.id,
+      verificationUri: "https://accounts.google.com/o/oauth2/auth?client_id=1234",
+    });
+    return render(
+      <AccountChallenge
+        provider={provider}
+        account={{ ...antigravityAccount, serviceId: provider === "claude" ? "anthropic" : "antigravity" }}
+        serviceName="Antigravity"
+        onError={vi.fn()}
+      />,
+    );
+  }
+
+  /**
+   * The POST only hands the code to the CLI, so it returns in milliseconds while
+   * the sign-in runs on for seconds. Clearing `busy` in a `finally` put the
+   * button back exactly as it was, and a user who had submitted could not tell
+   * that from a click that missed.
+   */
+  it("stays submitted after the code is accepted, rather than resetting", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Signing in…" })).toBeDisabled());
+  });
+
+  it("returns the button on a refusal, so the code can be pasted again", async () => {
+    const user = userEvent.setup();
+    installFailingFetch("Authorization code cannot be empty");
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled());
+  });
+
+  // The CLI gives up 60 s after printing the link, which covers the whole Google
+  // consent round trip — a user who learns that from the failure has lost the try.
+  it("states Antigravity's window before the attempt, and invents none for Claude", () => {
+    renderChallenge("antigravity", "google-antigravity-oauth");
+    expect(screen.getByTestId("provider-account-challenge-acct-agy"))
+      .toHaveTextContent("expires about 60 seconds");
+    cleanup();
+
+    renderChallenge("claude", "anthropic-oauth");
+    expect(screen.getByTestId("provider-account-challenge-acct-agy"))
+      .not.toHaveTextContent("60 seconds");
   });
 });

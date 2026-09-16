@@ -39,13 +39,34 @@ export const GOOGLE_AUTH_URL_PATTERN = /https:\/\/(?:accounts\.google\.com|antig
 const TERMINATED_AUTH_URL_PATTERN =
   /(https:\/\/(?:accounts\.google\.com|antigravity\.google)\/[^\s"']+)[\s"']/;
 
-function tokenExistsAt(home: string): boolean {
+interface TokenStamp {
+  mtimeMs: number;
+  size: number;
+}
+
+function tokenStamp(home: string): TokenStamp | null {
   try {
     const st = statSync(antigravityTokenPath(home));
-    return st.isFile() && st.size > 0;
+    return st.isFile() && st.size > 0 ? { mtimeMs: st.mtimeMs, size: st.size } : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function tokenExistsAt(home: string): boolean {
+  return tokenStamp(home) !== null;
+}
+
+/**
+ * **`signal` is a number on every exit, and `0` means "not signalled".** node-pty
+ * reports a normal exit as `{exitCode, signal: 0}` — never `undefined` — and a
+ * SIGTERM as `{exitCode: 0, signal: 15}` (both measured, 2026-09-16,
+ * probes/signin-exit-shape.md). Testing `signal === undefined` therefore made
+ * the success branch unreachable in production while every injected fake, which
+ * omitted the field, kept it green.
+ */
+function wasSignalled(signal?: number): boolean {
+  return typeof signal === "number" && signal !== 0;
 }
 
 function readTokenFile(home: string): Record<string, unknown> | null {
@@ -227,6 +248,8 @@ export class AntigravityAuthManager
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
     const home = this.homeFor();
+    // Read BEFORE the run: what makes a sign-in a sign-in is a token this flow wrote.
+    const baseline = tokenStamp(home);
 
     ensureConfigDir(antigravityCliDir(home), "[antigravity-auth]");
     // Account mode must not select the key provider.
@@ -265,13 +288,25 @@ export class AntigravityAuthManager
     proc.onExit(({ exitCode, signal }) => {
       if (this.proc !== proc) return;
       this.proc = null;
+      const hadPending = this.lastPendingDetails !== null;
       this.lastPendingDetails = null;
       this.clearTimeout();
-      // A killed run is never a success. node-pty reports SIGTERM as
-      // `exitCode: 0`, so cancelling a flow that found an OLD token on disk
-      // would otherwise announce a sign-in that never happened — the child
-      // process path this replaced reported a null code and could not.
-      if (exitCode === 0 && signal === undefined && tokenExistsAt(home)) {
+      const now = tokenStamp(home);
+      const wrote = now !== null && (now.mtimeMs !== baseline?.mtimeMs || now.size !== baseline?.size);
+      console.log(
+        `[antigravity-auth] sign-in ended exit=${String(exitCode)} signal=${String(signal)}`
+        + ` link=${String(hadPending)} token=${now === null ? "absent" : wrote ? "written" : "unchanged"}`,
+      );
+      /**
+       * **The token decides, not the exit code.** The sign-in rides a print run,
+       * so a non-zero exit can mean the *prompt* failed after the credential
+       * landed. A freshly written token is the sign-in; an unchanged one plus a
+       * clean exit is a run that was already signed in. A killed run is never
+       * either — node-pty reports SIGTERM as `exitCode: 0`, so cancelling a flow
+       * on a home holding an OLD token would otherwise announce a sign-in that
+       * never happened.
+       */
+      if (!wasSignalled(signal) && (wrote || (exitCode === 0 && now !== null))) {
         if (!this.claimTerminal()) return;
         this.emit("complete");
         this.clearActiveScope();
@@ -279,7 +314,8 @@ export class AntigravityAuthManager
       }
       // req 4 — Google's own sentence, not ShipIt's generic copy. The
       // eligibility refusal is the case this exists for.
-      const message = antigravityStderrErrorText(this.stderrBuffer) ?? this.exitMessage(exitCode, signal);
+      const message = antigravityStderrErrorText(this.stderrBuffer)
+        ?? this.exitMessage(exitCode, signal, hadPending);
       this.fail("error", message);
     });
 
@@ -307,9 +343,10 @@ export class AntigravityAuthManager
     this.emit("pending", details);
   }
 
-  private exitMessage(exitCode: number, signal?: number): string {
-    if (signal !== undefined) return `The Antigravity sign-in was stopped (signal ${String(signal)}).`;
-    if (this.lastPendingDetails) {
+  /** `hadPending` is passed in: the exit handler clears the field before it asks. */
+  private exitMessage(exitCode: number, signal: number | undefined, hadPending: boolean): string {
+    if (wasSignalled(signal)) return `The Antigravity sign-in was stopped (signal ${String(signal)}).`;
+    if (hadPending) {
       return "Sign-in did not complete. The CLI reads the authorization code within 60 seconds of"
         + " printing the link — start again and paste it promptly.";
     }

@@ -11,7 +11,14 @@ import { antigravityTokenPath } from "../../../shared/antigravity-home.js";
 import type { AgentAuthFailedPayload } from "../../agent-auth-manager.js";
 import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
-/** Shaped like node-pty: one merged output stream, and `write` submits. */
+/**
+ * Shaped like node-pty: one merged output stream, and `write` submits.
+ *
+ * **`signal` defaults to 0, because node-pty never omits it.** The fake used to
+ * leave it `undefined` on a clean exit, so a manager testing `signal ===
+ * undefined` for success passed every case here and could not succeed once —
+ * measured 2026-09-16, probes/signin-exit-shape.md.
+ */
 class FakePty {
   readonly written: string[] = [];
   private data: ((d: string) => void) | null = null;
@@ -22,8 +29,8 @@ class FakePty {
   write(d: string): void { this.written.push(d); }
   kill(): void { this.killed = true; }
   emitData(d: string): void { this.data?.(d); }
-  emitExit(exitCode: number, signal?: number): void {
-    this.exit?.(signal === undefined ? { exitCode } : { exitCode, signal });
+  emitExit(exitCode: number, signal = 0): void {
+    this.exit?.({ exitCode, signal });
   }
 }
 
@@ -140,7 +147,7 @@ describe("AntigravityAuthManager", () => {
     }
   });
 
-  it("completes only when the run exited zero AND a token was written", () => {
+  it("completes when the run wrote a token", () => {
     start();
     writeToken({ access_token: "a", expiry: "2030-01-01T00:00:00Z" });
     proc.emitExit(0);
@@ -148,11 +155,56 @@ describe("AntigravityAuthManager", () => {
     expect(failed).toEqual([]);
   });
 
+  /**
+   * The sign-in rides a PRINT run, so the exit code reports the prompt, not the
+   * credential: an eligibility refusal or a quota error after the exchange exits
+   * non-zero with the token already on disk. Announcing that as a failure sends
+   * the user back through a sign-in they have already completed.
+   */
+  it("completes on a non-zero exit when the token was still written", () => {
+    start();
+    writeToken({ access_token: "a", expiry: "2030-01-01T00:00:00Z" });
+    proc.emitExit(1);
+    expect(completed).toBe(1);
+  });
+
+  // A run on an already-signed-in home never touches the token and still succeeds.
+  it("completes on a clean exit when a token was already there", () => {
+    writeToken({ access_token: "old", expiry: "2030-01-01T00:00:00Z" });
+    start();
+    proc.emitExit(0);
+    expect(completed).toBe(1);
+  });
+
   it("does not complete on exit zero with no token", () => {
     start();
     proc.emitExit(0);
     expect(completed).toBe(0);
     expect(failed.length).toBe(1);
+  });
+
+  // The stale token is not this flow's, and the CLI said why it failed.
+  it("fails a timed-out sign-in even with an older token on disk", () => {
+    writeToken({ access_token: "old", expiry: "2030-01-01T00:00:00Z" });
+    start();
+    proc.emitData(`Sign in here: ${SIGN_IN_URL}\n`);
+    proc.emitData("Error: authentication timed out.\n");
+    proc.emitExit(1);
+    expect(completed).toBe(0);
+    expect(failed[0]?.message).toContain("authentication timed out");
+  });
+
+  /**
+   * The exit handler clears `lastPendingDetails` before it composes the message,
+   * so reading the field there always said "without starting a sign-in" — the
+   * one sentence that is wrong once a link has been shown, and the sentence a
+   * user who pasted their code too late was given.
+   */
+  it("names the 60-second window when a link was shown but nothing was written", () => {
+    start();
+    proc.emitData(`Sign in here: ${SIGN_IN_URL}\n`);
+    proc.emitExit(0);
+    expect(failed[0]?.message).toContain("60 seconds");
   });
 
   /**

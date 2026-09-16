@@ -391,6 +391,17 @@ export function ClaudeAuthOutput({
 }
 
 /**
+ * A challenge the provider closes on its own clock, said before the user starts
+ * it. Antigravity's CLI prints `Waiting for authentication (timeout 60s)` and
+ * gives up there (measured, docs/301-antigravity-harness/probes/signin-exit-shape.md) —
+ * a whole Google consent round trip inside a minute, so an unhurried user loses
+ * the attempt and only learns the rule from the failure.
+ */
+const CHALLENGE_DEADLINE: Partial<Record<AgentId, string>> = {
+  antigravity: "The code expires about 60 seconds after this link appears. If it lapses, start again.",
+};
+
+/**
  * The provider's login challenge — **one implementation, and now one host.**
  *
  * It renders inside `AddServiceDialog` and nowhere else: docs/252 req 19 moved
@@ -423,6 +434,14 @@ export function AccountChallenge({
   const pendingAuth = loginId ? auths[providerAccountAuthKey(loginId, account.id)] ?? null : null;
   if (!pendingAuth) return null;
 
+  /**
+   * **Busy is cleared only on failure.** The POST just hands the code to the
+   * CLI, so it returns in milliseconds while the sign-in itself takes seconds
+   * more — clearing it in a `finally` put the button back exactly as it was and
+   * the user could not tell a submitted code from a click that missed. There is
+   * no leak: `complete` and `failed` both clear the pending auth, which unmounts
+   * this panel.
+   */
   const submit = async () => {
     const trimmed = code.trim();
     if (!trimmed) return;
@@ -434,7 +453,6 @@ export function AccountChallenge({
       });
     } catch (err) {
       onError(messageOf(err, "Failed to submit authorization code"));
-    } finally {
       setBusy(false);
     }
   };
@@ -481,10 +499,14 @@ export function AccountChallenge({
             onClick={() => void submit()}
             {...bindSetting("services.providerAccounts[].connection")}
           >
-            Submit code
+            {busy ? "Signing in…" : "Submit code"}
           </Button>
         </div>
       )}
+
+      {CHALLENGE_DEADLINE[provider] ? (
+        <p className="text-xs text-(--color-text-secondary)">{CHALLENGE_DEADLINE[provider]}</p>
+      ) : null}
 
       {/* Claude's CLI-driven sign-in is the one that strands users, so its
         record stays reachable — docs/150 — and it belongs to the attempt that
