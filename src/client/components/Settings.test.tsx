@@ -713,6 +713,20 @@ describe("Settings - Advanced tab", () => {
     expect(screen.getByText(/Delete all sessions/)).toBeInTheDocument();
   });
 
+  // The generated block places these by section name, so a renamed section
+  // would drop the prose silently rather than fail to compile (docs/308 P12).
+  it("keeps each section's own prose beside its generated rows", async () => {
+    await renderOnAdvancedTab();
+    expect(
+      within(screen.getByRole("region", { name: "Conversation" }))
+        .getByText(/Saved for this browser/),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Notifications" }))
+        .getByText(/Get notified when a session needs your attention/),
+    ).toBeInTheDocument();
+  });
+
   it("renders Reset Everything button", async () => {
     await renderOnAdvancedTab();
     expect(screen.getByTestId("settings-reset")).toHaveTextContent("Reset Everything");

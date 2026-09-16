@@ -4,9 +4,6 @@ import type { CredentialRoute, PermissionMode, FileContextRef } from "../../serv
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { EligibleModelOption } from "../agent-types.js";
 import {
-  getSavedCompactConversation, saveCompactConversation,
-  getSavedNotifyOnFinish, saveNotifyOnFinish,
-  getSavedSoundOnFinish, saveSoundOnFinish,
   getSavedVoiceInputEnabled, saveVoiceInputEnabled,
   getSavedSttProvider, saveSttProvider,
   getSavedCleanupEnabled, saveCleanupEnabled,
@@ -20,6 +17,8 @@ import {
   getSavedPermissionModeBySession, savePermissionModeBySession,
 } from "../utils/local-storage.js";
 import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
+import { initialSettingValues, mirrorFieldOf, recordHolds, writeBrowserValue } from "./setting-values.js";
+import { findSetting, type SettingKey } from "../../server/shared/settings-catalogue/index.js";
 import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js";
 import type { AgentAuthPhase } from "../../server/shared/types/ws-server-messages/auth.js";
 
@@ -99,6 +98,16 @@ export interface ProviderAccountNotice {
 
 interface SettingsState {
   /**
+   * docs/308-data-driven-settings — every generated row's value, keyed by
+   * `SettingKey`, hydrated from the settings payload by `wire` and from
+   * `localStorage` by `localStorageKey`.
+   *
+   * The named fields below are a view over it: {@link SettingsState.setSettingValue}
+   * writes both, and every setter for a generated setting goes through it, so
+   * the two cannot disagree (inventory.md P1, P18).
+   */
+  settingValues: Record<string, unknown>;
+  /**
    * docs/257 req 8 — whether this install can actually run a turn, as computed
    * by the server (`computeCanRunTurns`). Never re-derived here from
    * `agentList`: the composer, the starter-prompts gate and (from phase 2) the
@@ -165,7 +174,6 @@ interface SettingsState {
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
   compactConversation: boolean;
-  setCompactConversation: (enabled: boolean) => void;
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
 
@@ -305,8 +313,8 @@ interface SettingsState {
   setMemoryBudgetMb: (mb: number | null) => void;
   setAgentSystemInstructionsEnabled: (enabled: boolean) => void;
   setAgentSystemInstructions: (text: string) => void;
-  setNotifyOnFinish: (enabled: boolean) => void;
-  setSoundOnFinish: (enabled: boolean) => void;
+  /** Update one generated setting's value in the browser, record and mirror alike. */
+  setSettingValue: (key: SettingKey, value: unknown) => void;
 
   getKeybinding: (id: KeybindingId) => string;
 
@@ -401,7 +409,15 @@ interface SettingsState {
   gitHubLogout: () => Promise<void>;
 }
 
+const INITIAL_SETTING_VALUES = initialSettingValues();
+
+/** A generated boolean's value, for the named field that mirrors it. */
+function initial(key: SettingKey): boolean {
+  return INITIAL_SETTING_VALUES[key] === true;
+}
+
 export const useSettingsStore = create<SettingsState>((set, get) => ({
+  settingValues: INITIAL_SETTING_VALUES,
   canRunTurns: false,
   harnessOnboardingCompletedAt: null,
   providerAccountNotices: {},
@@ -416,13 +432,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   memoryBudgetMb: null,
   agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "",
-  compactConversation: getSavedCompactConversation(),
-  setCompactConversation: (enabled) => {
-    saveCompactConversation(enabled);
-    set({ compactConversation: enabled });
-  },
-  notifyOnFinish: getSavedNotifyOnFinish(),
-  soundOnFinish: getSavedSoundOnFinish(),
+  compactConversation: initial("advanced.compactConversation"),
+  notifyOnFinish: initial("advanced.notifyOnFinish"),
+  soundOnFinish: initial("advanced.soundOnFinish"),
   keybindings: getSavedKeybindings(),
   voiceInputEnabled: getSavedVoiceInputEnabled(),
   sttProvider: getSavedSttProvider(),
@@ -436,12 +448,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   voiceWebhookConfigured: false,
   voiceHandsFree: getSavedVoiceHandsFree(),
   autoCreatePr: false,
-  liveSteering: true,
-  autoResolveConflicts: false,
-  autoFixCi: false,
-  sessionStatusCard: false,
-  autoResetMergedBranch: true,
-  enableSubAgents: true,
+  liveSteering: initial("advanced.liveSteering"),
+  autoResolveConflicts: initial("advanced.autoResolveConflicts"),
+  autoFixCi: initial("advanced.autoFixCi"),
+  sessionStatusCard: initial("advanced.sessionStatusCard"),
+  autoResetMergedBranch: initial("advanced.autoResetMergedBranch"),
+  enableSubAgents: initial("advanced.enableSubAgents"),
   failoverCutoffs: {},
   accountSelectionMode: {},
   claudeAuthDiagnostics: {},
@@ -481,14 +493,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setAgentSystemInstructions: (text) => set({ agentSystemInstructions: text }),
 
-  setNotifyOnFinish: (enabled) => {
-    saveNotifyOnFinish(enabled);
-    set({ notifyOnFinish: enabled });
-  },
-
-  setSoundOnFinish: (enabled) => {
-    saveSoundOnFinish(enabled);
-    set({ soundOnFinish: enabled });
+  setSettingValue: (key, value) => {
+    const declaration = findSetting(key);
+    if (!declaration) return;
+    // A browser setting's store IS `localStorage`, so the record and the disk
+    // move together and there is no second call anyone can forget to make.
+    if (declaration.store.kind === "browser") writeBrowserValue(declaration, value);
+    const field = mirrorFieldOf(declaration);
+    set((state) => ({
+      ...(recordHolds(key) ? { settingValues: { ...state.settingValues, [key]: value } } : {}),
+      // Only a field the store already holds: `wire` also names payload fields
+      // that other stores own, and writing one here would invent it.
+      ...(field && field in state ? { [field]: value } : {}),
+    }));
   },
 
   getKeybinding: (id) => get().keybindings[id] ?? getKeybindingDef(id).defaultBinding,
@@ -572,18 +589,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
 
-  setLiveSteering: (enabled) => set({ liveSteering: enabled }),
+  // Hydration from the settings payload still arrives through these six, so
+  // each one writes the record as well as the field it is named for (P18).
+  setLiveSteering: (enabled) => get().setSettingValue("advanced.liveSteering", enabled),
 
-  setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
+  setAutoResolveConflicts: (enabled) =>
+    get().setSettingValue("advanced.autoResolveConflicts", enabled),
 
-  setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
-  setSessionStatusCard: (enabled) => set({ sessionStatusCard: enabled }),
+  setAutoFixCi: (enabled) => get().setSettingValue("advanced.autoFixCi", enabled),
+  setSessionStatusCard: (enabled) => get().setSettingValue("advanced.sessionStatusCard", enabled),
   setFailoverCutoffs: (modeKey, cutoffs) =>
     set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [modeKey]: cutoffs } })),
   setAccountSelectionMode: (modeKey, mode) =>
     set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [modeKey]: mode } })),
-  setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
-  setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
+  setAutoResetMergedBranch: (enabled) =>
+    get().setSettingValue("advanced.autoResetMergedBranch", enabled),
+  setEnableSubAgents: (enabled) => get().setSettingValue("advanced.enableSubAgents", enabled),
 
   setClaudeAuthProgress: (accountId, progress) =>
     set((state) => {

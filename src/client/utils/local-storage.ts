@@ -39,9 +39,6 @@ const AGENT_PREFERENCE_KEY = "vibe-agent-id";
 const MODEL_PREFERENCE_KEY = "vibe-model-id";
 const PARKED_HARNESS_KEY = "shipit-parked-harness";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
-const COMPACT_CONVERSATION_KEY = "shipit-compact-conversation";
-const NOTIFY_ON_FINISH_KEY = "shipit-notify-on-finish";
-const SOUND_ON_FINISH_KEY = "shipit-sound-on-finish";
 const QUICK_CAPTURE_HOTKEY_KEY = "shipit-quick-capture-hotkey";
 
 export function getSavedSidebarCollapsed(): boolean {
@@ -351,50 +348,6 @@ export function saveActiveRepo(url: string | undefined): void {
     } else {
       localStorage.removeItem(ACTIVE_REPO_KEY);
     }
-  } catch {
-    // localStorage may be unavailable
-  }
-}
-
-export function getSavedCompactConversation(): boolean {
-  try { return localStorage.getItem(COMPACT_CONVERSATION_KEY) === "true"; }
-  catch { return false; }
-}
-
-export function saveCompactConversation(enabled: boolean): void {
-  try { localStorage.setItem(COMPACT_CONVERSATION_KEY, String(enabled)); }
-  catch { /* Display preferences still work when storage is unavailable. */ }
-}
-
-export function getSavedNotifyOnFinish(): boolean {
-  try {
-    const saved = localStorage.getItem(NOTIFY_ON_FINISH_KEY);
-    return saved === null ? true : saved === "true";
-  } catch {
-    return true;
-  }
-}
-
-export function saveNotifyOnFinish(enabled: boolean): void {
-  try {
-    localStorage.setItem(NOTIFY_ON_FINISH_KEY, String(enabled));
-  } catch {
-    // localStorage may be unavailable
-  }
-}
-
-export function getSavedSoundOnFinish(): boolean {
-  try {
-    const saved = localStorage.getItem(SOUND_ON_FINISH_KEY);
-    return saved === null ? true : saved === "true";
-  } catch {
-    return true;
-  }
-}
-
-export function saveSoundOnFinish(enabled: boolean): void {
-  try {
-    localStorage.setItem(SOUND_ON_FINISH_KEY, String(enabled));
   } catch {
     // localStorage may be unavailable
   }
@@ -985,5 +938,5 @@ export function saveIncludeDone(includeDone: boolean): void {
   }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, SIDEBAR_VIEW_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, LAST_QUICK_SESSION_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };
+export { SIDEBAR_COLLAPSED_KEY, SIDEBAR_VIEW_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, LAST_QUICK_SESSION_REPO_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };
 

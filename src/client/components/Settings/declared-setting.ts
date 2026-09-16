@@ -1,30 +1,29 @@
 /**
- * The save wiring a declared global scalar generates, rather than repeats
- * (docs/299-agent-settings-access req 7, plan.md → Settings are declared once).
+ * The read and the write a declaration generates, rather than repeats
+ * (docs/299-agent-settings-access req 7, docs/308-data-driven-settings
+ * plan.md → One writer, for the scalars).
  *
- * The server half of a declaration derived — the stored `GlobalSettings` field,
- * the `PUT /api/settings` body, its validation, the `CredentialStore` accessor.
- * The client half did not: every toggle in the dialog selected its own store
- * field, wrote its own `fetch` with its own payload literal, rolled back by hand
- * and wrote its own toast. Seven copies of one block, and a new setting needed an
- * eighth — which is the second registration req 7 says must not exist.
+ * The server half of a declaration already derived — the stored `GlobalSettings`
+ * field, the `PUT /api/settings` body, its validation, the `CredentialStore`
+ * accessor. The client half did not: every control in the dialog selected its own
+ * store field, wrote its own `fetch` with its own payload literal, rolled back by
+ * hand and wrote its own toast.
  *
- * What derives here: the payload field is the declaration's `wire`, the store
- * field and its setter are named for it, and the toast names the declaration's
- * own label. What does NOT derive is the store field itself — the browser store
- * is hand-written and read all over the app — so a declaration whose field or
- * setter is missing simply drops out of {@link DeclaredBooleanKey}, and binding a
- * control to it without supplying the two props is a compile error naming the
- * setting. That half is detected, not derived, and `plan.md` says so.
+ * {@link saveSetting} takes a `SettingKey` and a value and nothing else: where
+ * the value goes comes from `store.kind`, the payload field is the declaration's
+ * `wire`, the storage key is its `localStorageKey`, and the toast names the
+ * declaration's own label.
  */
 
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import {
-  GLOBAL_SETTINGS,
-  type GlobalSettingKey,
-  type GlobalSettingsCatalogue,
-  type SettingValue,
+import { mirrorFieldOf } from "../../stores/setting-values.js";
+import { settingOf } from "./setting-binding.js";
+import type {
+  GlobalSettingKey,
+  GlobalSettingsCatalogue,
+  SettingKey,
+  SettingValue,
 } from "../../../server/shared/settings-catalogue/index.js";
 
 type Settings = ReturnType<typeof useSettingsStore.getState>;
@@ -35,8 +34,8 @@ type WireOf<K extends GlobalSettingKey> =
 
 /**
  * A declared boolean the browser store already holds under its wire name, with
- * the setter beside it. Every clause has to hold, because the derived save
- * writes exactly those three things and nothing checks them at run time.
+ * the setter beside it. Every clause has to hold, because the value is read back
+ * through that field wherever the record does not yet carry the setting.
  */
 type DerivableBoolean<K extends GlobalSettingKey> =
   GlobalSettingsCatalogue[K]["store"] extends { readonly kind: "credential-store" }
@@ -56,22 +55,20 @@ export type DeclaredBooleanKey = {
   [K in GlobalSettingKey]: DerivableBoolean<K>;
 }[GlobalSettingKey];
 
-function wireOf(key: DeclaredBooleanKey): string {
-  // Narrowed by DeclaredBooleanKey to a payload declaration; the index loses it.
-  return (GLOBAL_SETTINGS[key] as { wire: string }).wire;
-}
-
-function setterName(wire: string): string {
-  return `set${wire.charAt(0).toUpperCase()}${wire.slice(1)}`;
-}
-
-function readStore(wire: string): boolean {
-  return (useSettingsStore.getState() as unknown as Record<string, boolean>)[wire] ?? false;
-}
-
-function writeStore(wire: string, value: boolean): void {
-  const state = useSettingsStore.getState() as unknown as Record<string, (v: boolean) => void>;
-  state[setterName(wire)]?.(value);
+/**
+ * A setting's current value.
+ *
+ * The record is the source where it carries the setting; where it does not yet,
+ * the named store field the declaration's `wire` names still is — which is how a
+ * tab whose hydration has not moved keeps working (inventory.md P1, P18).
+ */
+function currentValue(state: Settings, key: SettingKey): unknown {
+  const values = state.settingValues;
+  if (key in values) return values[key];
+  const declaration = settingOf(key);
+  const field = mirrorFieldOf(declaration);
+  if (field && field in state) return (state as unknown as Record<string, unknown>)[field];
+  return declaration.type.defaultValue;
 }
 
 /**
@@ -81,42 +78,63 @@ function writeStore(wire: string, value: boolean): void {
  * their mind — and reverting a failed save to the opposite of *its own*
  * requested value is wrong as soon as it is not the only save. Off-then-on with
  * both requests failing leaves the server on and the browser off, because the
- * second rollback reverses a value the first one had already put back. Reverting
- * to the last value the SERVER accepted, and only from the newest request, is
- * right for every interleaving.
+ * second rollback reverses a value the first one had already put back. So the
+ * rollback target is the last value the SERVER accepted, and only the newest
+ * request may correct the display.
+ *
+ * That is not a complete answer, and does not have to be: an older request
+ * succeeding *after* a newer one failed leaves the display behind the server,
+ * and the write's own `settings_changed` broadcast is what corrects it
+ * (`useServerEvents.ts` → `refreshGlobalSettings`).
  */
 interface SaveState {
-  /** Requests still in flight for this field. */
+  /** Requests still in flight for this setting. */
   pending: number;
-  /** Monotonic per field; only the highest may correct the display. */
+  /** Monotonic per setting; only the highest may correct the display. */
   seq: number;
   /** The last value the server acknowledged — the honest rollback target. */
-  confirmed: boolean;
+  confirmed: unknown;
 }
 
 const SAVES = new Map<string, SaveState>();
 
 /**
- * Write optimistically, then durably — and put the server's own value back when
- * the save does not land, so the switch never shows a state the server refused.
+ * Put a value where its declaration says it lives.
+ *
+ * A browser value is already there once the record has it, so there is nothing
+ * to await and no refusal to roll back from. A payload value is written
+ * optimistically and then durably, and the server's own value goes back when the
+ * save does not land, so a control never shows a state the server refused.
  */
-export async function saveDeclaredBoolean(
-  key: DeclaredBooleanKey,
-  value: boolean,
-): Promise<void> {
-  const wire = wireOf(key);
-  const existing = SAVES.get(wire);
+export async function saveSetting(key: SettingKey, value: unknown): Promise<void> {
+  const declaration = settingOf(key);
+  const apply = (next: unknown) => { useSettingsStore.getState().setSettingValue(key, next); };
+
+  if (declaration.store.kind === "browser") {
+    apply(value);
+    return;
+  }
+  if (declaration.store.kind !== "credential-store" || !declaration.wire) {
+    throw new Error(`Cannot save "${key}": nothing writes a ${declaration.store.kind} store yet`);
+  }
+  const wire = declaration.wire;
+
+  const existing = SAVES.get(key);
   // With nothing in flight the displayed value IS the server's, so re-seed from
   // it: a `settings_changed` refetch since the last save would otherwise leave
   // `confirmed` describing a value nobody holds any more.
   const state: SaveState = existing && existing.pending > 0
     ? existing
-    : { pending: 0, seq: existing?.seq ?? 0, confirmed: readStore(wire) };
-  SAVES.set(wire, state);
+    : {
+        pending: 0,
+        seq: existing?.seq ?? 0,
+        confirmed: currentValue(useSettingsStore.getState(), key),
+      };
+  SAVES.set(key, state);
 
   const mine = ++state.seq;
   state.pending += 1;
-  writeStore(wire, value);
+  apply(value);
   try {
     const res = await fetch("/api/settings", {
       method: "PUT",
@@ -126,28 +144,32 @@ export async function saveDeclaredBoolean(
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.confirmed = value;
   } catch (err) {
-    if (state.seq === mine) writeStore(wire, state.confirmed);
+    if (state.seq === mine) apply(state.confirmed);
     // The declaration's own label, so the toast names the control the user just
     // used rather than a second phrasing of it written beside the fetch.
-    useUiStore.getState().setToast({
-      message: `Failed to update ${GLOBAL_SETTINGS[key].label}`,
-    });
+    useUiStore.getState().setToast({ message: `Failed to update ${declaration.label}` });
     console.error(`[settings] saving ${key} failed:`, err);
   } finally {
     state.pending -= 1;
   }
 }
 
-/** A declared boolean's current value and the only write it needs. */
+/** A declared setting's current value and the only write it needs. */
+export function useSetting(key: SettingKey): {
+  value: unknown;
+  set: (next: unknown) => void;
+} {
+  const value = useSettingsStore((state) => currentValue(state, key));
+  return { value, set: (next) => { void saveSetting(key, next); } };
+}
+
+/** {@link useSetting} for a control that is a switch, so the value is a boolean. */
 export function useDeclaredBoolean(key: DeclaredBooleanKey): {
   value: boolean;
   set: (next: boolean) => void;
 } {
-  const wire = wireOf(key);
-  const value = useSettingsStore(
-    (state) => (state as unknown as Record<string, boolean>)[wire] ?? false,
-  );
-  return { value, set: (next) => { void saveDeclaredBoolean(key, next); } };
+  const { value, set } = useSetting(key);
+  return { value: value === true, set };
 }
 
 /** Test seam: the in-flight bookkeeping is process-wide and outlives a render. */
