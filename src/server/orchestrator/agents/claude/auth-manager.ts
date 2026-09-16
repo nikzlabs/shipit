@@ -7,6 +7,7 @@ import type { IPty } from "node-pty";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import {
   createCliLineRelay,
+  credentialParseFailure,
   sanitizeAuthDiagnostic,
   type CliLineRelay,
   type AgentAuthLogPayload,
@@ -122,6 +123,15 @@ const CLAUDE_CREDENTIAL_FILES = [".credentials.json", "credentials.json", "auth.
 
 // Flattened Ink output can omit spaces at any boundary.
 const CODE_PASTE_TRIGGER = /paste\s*code\s*here(?:\s*if\s*prompted)?/i;
+
+/**
+ * The pty width the login runs at. **The relay unwraps at the same number**, so
+ * the two must stay one constant: Ink wraps its own output to this width, and
+ * the OAuth link is longer than any width worth spawning — a capture of a real
+ * login at 80 columns breaks it across three lines — so a secret split at the
+ * wrap is only half-redacted unless the relay puts the line back together.
+ */
+const LOGIN_COLS = 200;
 
 function ensureOnboardingComplete(userConfig: string, configDir: string): void {
   try {
@@ -266,12 +276,15 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
    * through a chunk-at-a-time sanitize.
    */
   private newRelay(): CliLineRelay {
-    return createCliLineRelay((source, line) => {
-      if (!line.trim()) return;
-      // Logged from what the panel got: the same redaction has to cover both.
-      const shown = this.emitDiagnosticLog("info", source, line.trim());
-      if (shown) console.log("[auth output]", shown);
-    });
+    return createCliLineRelay(
+      (source, line) => {
+        if (!line.trim()) return;
+        // Logged from what the panel got: the same redaction has to cover both.
+        const shown = this.emitDiagnosticLog("info", source, line.trim());
+        if (shown) console.log("[auth output]", shown);
+      },
+      { wrapWidth: LOGIN_COLS },
+    );
   }
 
   /**
@@ -343,7 +356,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
           };
         }
       } catch (err) {
-        console.warn(`[auth] Failed to parse ${fullPath}:`, err instanceof Error ? err.message : err);
+        console.warn(`[auth] Failed to parse ${fullPath}:`, credentialParseFailure(err));
       }
     }
 
@@ -432,7 +445,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
 
     this.proc = pty.spawn("claude", ["/login"], {
       name: "xterm-256color",
-      cols: 200,
+      cols: LOGIN_COLS,
       rows: 24,
       env: loginEnv,
     });

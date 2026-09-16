@@ -13,14 +13,14 @@ import {
 } from "./auth-manager.js";
 
 const ptyHoisted = vi.hoisted(() => ({
-  calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string> } }[],
+  calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string>; cols?: number } }[],
   exitHandlers: [] as ((e: { exitCode: number }) => void)[],
   dataHandlers: [] as ((data: string) => void)[],
   writes: [] as string[],
   killed: 0,
 }));
 vi.mock("node-pty", () => ({
-  spawn: (cmd: string, args: readonly string[], opts: { env?: Record<string, string> }) => {
+  spawn: (cmd: string, args: readonly string[], opts: { env?: Record<string, string>; cols?: number }) => {
     ptyHoisted.calls.push({ cmd, args, opts });
     return {
       pid: 4242,
@@ -567,6 +567,34 @@ describe("AuthManager / auth diagnostics", () => {
     for (const chunk of chunks) ptyHoisted.dataHandlers[0](chunk);
 
     expect(logs.map((l) => l.message).join("")).not.toContain(secret);
+    mgr.kill();
+  });
+
+  /**
+   * A chunk boundary is not the only break in the stream: the CLI wraps its own
+   * output at the width ShipIt spawned it with, newline included — a capture of
+   * this login at 80 columns breaks the link across three lines — so a whole
+   * line is still half a secret. Taking the width back from the spawn call is
+   * the property under test: a relay unwrapping at a different number is the
+   * same defect.
+   */
+  it("redacts a link the CLI wrapped at the width it was spawned with", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    const cols = ptyHoisted.calls[0].opts.cols ?? 0;
+    // The break falls inside `state`, which is where the leak lives: split
+    // anywhere else and the assignment rule still recognises the key on the
+    // second line, so the test would pass with no unwrapping at all.
+    const base = "https://claude.ai/oauth/authorize?hint=";
+    const url = `${base}${"x".repeat(cols - base.length - 3)}state=private-state-value`;
+    expect(url.slice(0, cols)).toMatch(/sta$/);
+
+    ptyHoisted.dataHandlers[0](`${url.slice(0, cols)}\n${url.slice(cols)}\n`);
+
+    expect(logs.map((l) => l.message).join("")).not.toContain("private-state-value");
     mgr.kill();
   });
 

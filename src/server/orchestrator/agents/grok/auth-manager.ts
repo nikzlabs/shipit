@@ -10,6 +10,7 @@ import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { ensureConfigDir, firstEpochMs, probeNestedString } from "../agent-auth-base.js";
 import {
   createCliLineRelay,
+  credentialParseFailure,
   sanitizeAuthDiagnostic,
   type AgentAuthLogLevel,
   type AgentAuthLogPayload,
@@ -161,7 +162,7 @@ export function readXaiAuthFile(authFile: string): Record<string, unknown> | nul
     const parsed = JSON.parse(readFileSync(authFile, "utf-8")) as unknown;
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch (err) {
-    console.warn("[xai-auth] Failed to parse auth.json:", err instanceof Error ? err.message : err);
+    console.warn("[xai-auth] Failed to parse auth.json:", credentialParseFailure(err));
     return null;
   }
 }

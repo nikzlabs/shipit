@@ -454,9 +454,34 @@ one non-npm branch, gated on `contains antigravity $selected`:
   knowing when reading the tests: because it hands over an already-stripped
   line, each manager's own `stripAnsi` is unreachable from the relay path, so
   the guards pin that ordering through the relay and the call in the emitter is
-  defence for callers that skip it. What this shape does **not** solve is a
-  secret the CLI itself wrapped across physical lines: planning#586 carries
-  that, with the refusal-text and quoted-JSON gaps it shares a cause with.
+  defence for callers that skip it. A whole line was still not a whole string,
+  which planning#586 carried and the relay now handles: **a CLI on a pty wraps
+  its own output at the width ShipIt spawned it with**, newline included — a
+  capture of the Claude login at 80 columns breaks its link across three lines
+  — so a link split at `&sta`/`te=…` loses its query string on the first line
+  and publishes it on the second, where no whole-string rule recognises a key
+  cut in half. **Widening the spawn is not the fix**: anything longer than the
+  width still wraps, and the OAuth links are longer than any width worth
+  spawning, so it only moves the boundary. The relay takes a `wrapWidth`
+  instead, holds a line that fills it, and joins the continuation before the
+  redaction runs — the width is not a heuristic but the number the spawn
+  passed, which is why each manager keeps the two in one constant
+  (`SIGN_IN_COLS`, `LOGIN_COLS`) and the guard tests read it back from the
+  spawn call rather than restating it. A line that merely happens to fill the
+  width — a full-width TUI frame — is joined to its successor for nothing,
+  which costs one long panel line; the cap ends the join, so a TUI drawing
+  frames forever cannot grow the buffer. Codex and Grok read pipes, where
+  nothing wraps, and pass no width. The two gaps that shared planning#586's
+  cause closed with it: the sanitizer now reads a token assignment written as
+  quoted JSON (`{"access_token":"short.secret/value"}` matched no rule at all,
+  being below the long-secret threshold), and the refusal text — which req 4
+  keeps out of the generic rules — has the submitted code taken out by name
+  before it reaches `failed.message`. One more line was the same defect in all
+  four managers: a credential file that will not parse was logged with the
+  parse error whole, and Node quotes the bytes it tripped over, so a
+  half-written token file put part of the token in the orchestrator's log
+  (`Unexpected token 'y', ..."ss_token":ya29.secre"...`). `credentialParseFailure`
+  drops the quoted context and keeps the reason.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it

@@ -191,6 +191,45 @@ describe("AntigravityAuthManager", () => {
   });
 
   /**
+   * req 4 keeps Google's sentence out of the generic rules, which is why the
+   * code has to be taken out of it by name: the panel's copy of that line is
+   * redacted, and the failure payload was publishing the same line whole.
+   */
+  it("keeps the submitted code out of a refusal that quotes it back", () => {
+    start();
+    proc.emitData(`Sign in here: ${SIGN_IN_URL}\n`);
+    manager.submitCode("4/0AY-code");
+    proc.emitData("Error: Eligibility check failed: the code 4/0AY-code was rejected.\n");
+    proc.emitExit(1);
+
+    expect(failed[0]?.message).toBe(
+      "Eligibility check failed: the code [code-redacted] was rejected.",
+    );
+  });
+
+  /**
+   * The CLI wraps its own output at the width ShipIt spawned it with, so a
+   * whole physical line is still half a link — and the half carrying the query
+   * string looks like ordinary text to every whole-string rule. Reading the
+   * width back from the spawn is the point: a relay unwrapping at a different
+   * number is the same defect.
+   */
+  it("redacts a link the CLI wrapped at the width it was spawned with", () => {
+    start();
+    const cols = spawnOpts?.cols ?? 0;
+    // The break falls inside `state`, which is where the leak lives: split
+    // anywhere else and the assignment rule still recognises the key on the
+    // second line, so the test would pass with no unwrapping at all.
+    const base = "https://accounts.google.com/o/oauth2/v2/auth?hint=";
+    const url = `${base}${"x".repeat(cols - base.length - 3)}state=private-state-value`;
+    expect(url.slice(0, cols)).toMatch(/sta$/);
+
+    proc.emitData(`${url.slice(0, cols)}\n${url.slice(cols)}\n`);
+
+    expect(logs.map((l) => l.message).join("")).not.toContain("private-state-value");
+  });
+
+  /**
    * A save that died part-way moves the file's mtime like any other write. The
    * completion claim is "a run signed in", so it is read as a credential, not
    * as bytes — `isConfigured` keeps the looser test, which reports what the

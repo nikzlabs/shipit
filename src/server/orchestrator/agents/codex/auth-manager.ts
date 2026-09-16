@@ -14,6 +14,7 @@ import {
 } from "../agent-auth-base.js";
 import {
   createCliLineRelay,
+  credentialParseFailure,
   sanitizeAuthDiagnostic,
   type AgentAuthLogLevel,
   type AgentAuthLogPayload,
@@ -327,10 +328,7 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
           };
         }
       } catch (err) {
-        console.warn(
-          "[codex-auth] Failed to parse auth.json:",
-          err instanceof Error ? err.message : err,
-        );
+        console.warn("[codex-auth] Failed to parse auth.json:", credentialParseFailure(err));
       }
     }
 

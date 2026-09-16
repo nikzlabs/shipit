@@ -157,6 +157,11 @@ Antigravity-specific is in [plan.md](./plan.md).
       login could report nothing; the types are harness-neutral now
       (`agents/auth-diagnostics.ts`), the manager emits `progress` and `log`, and
       the panel renders for any harness that reports anything
+- [x] The redaction gaps a whole-line relay could not close (planning#586): the
+      relay unwraps at the width the spawn passed, the sanitizer reads a token
+      assignment written as quoted JSON, the refusal text loses the submitted
+      code without losing Google's sentence, and a credential file's parse error
+      no longer carries the bytes it tripped over into the log
 - [x] Account identity is honestly ABSENT: a `consumer` sign-in's token has no
       `id_token` at all — only an opaque `access_token`, a `refresh_token`,
       `token_type` and `expiry` — so no email or external id can be shown. The
