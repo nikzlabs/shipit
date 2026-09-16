@@ -66,7 +66,9 @@ session's own working tree.** So:
   Your dependency directories (`agent.dep-dirs`, `node_modules` by default) are
   the plugin's dependency directories: the same content the agent container
   sees, at `/plugin` and `/project` alike, since under `repo: self` they are one
-  tree. And a self-declared plugin's **services wait for `agent.install`** the
+  tree. The `/project` half is not a `repo: self` difference — a consuming
+  project's dep dirs reach a command there too (see below); `/plugin` is.
+  And a self-declared plugin's **services wait for `agent.install`** the
   way your own do — they read what it writes, so starting first would start them
   against a half-written tree.
 - The repository's issues are already this session's, so `self` registers no
@@ -86,6 +88,21 @@ for its author and fails on the first project that declares it.
 | a watcher on the source | sensible; you are editing it | pointless — the tree is one commit and cannot change |
 
 Everything below follows from those three rows.
+
+### The project's dependencies reach your command, not your service
+
+Your **command** runs against the consuming project's working tree at `/project`,
+including every directory that project declares in `agent.dep-dirs` — the same
+content its agent sees in its own shell. ShipIt keeps those directories outside
+the project's clone, so each one arrives as a mount ShipIt adds rather than as a
+directory that is simply there; without it you would find the path present and
+empty. A program that imports from the project's `node_modules`, or reads a
+pinned toolchain out of a declared directory, therefore behaves in your run the
+way it does in the project's own terminal.
+
+Your **service** does not get them. A service starts without waiting for the
+project's `agent.install`, so what it would read is a tree mid-write. Work that
+needs the project's installed dependencies belongs in a command.
 
 ### Your service does not choose its port
 

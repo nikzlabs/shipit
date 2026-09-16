@@ -149,6 +149,13 @@ The practical consequence for you: `/plugins/<name>` shows plugin **source**.
 It does not show a plugin's installed dependencies, because those live in a
 layer that belongs to the plugin's own execution environment, not to yours.
 
+The traffic runs the other way too. A plugin's **command** sees your working
+tree at `/project`, including the directories you declare in `agent.dep-dirs` —
+so a plugin program that imports one of your dependencies, or runs a tool you
+pinned into a declared directory, reads what your own shell reads. A plugin's
+**service** does not: it starts without waiting for `agent.install`, so it is
+given your tree without those directories.
+
 ## What containment does not cover
 
 **The project's own files are not a containment boundary.** `/project` is this
