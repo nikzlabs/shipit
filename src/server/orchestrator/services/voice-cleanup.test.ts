@@ -23,7 +23,6 @@ function keyRoute(serviceId: string, billingMode: "key" | "sub" = "key"): Creden
 function cleanupRequest(over: Partial<CleanupRequest> = {}): CleanupRequest {
   return {
     prompt: "clean this",
-    acceptableChars: 200,
     signal: AbortSignal.timeout(5000),
     ...over,
   };
@@ -154,15 +153,24 @@ describe("planCleanup (docs/299-direct-provider-calls req 5)", () => {
     expect(h.requests).toHaveLength(0);
   });
 
-  it("gives the harness a longer deadline than a direct call", async () => {
+  // How long the user waits is a property of their patience, not of the
+  // transport, so the two executions are held to the same deadline.
+  it("gives both executions the one cleanup deadline", async () => {
     const { planCleanup } = await import("./voice-cleanup.js");
-    const { deps } = buildDeps({});
+    const { CLEANUP_TIMEOUT_MS } = await import("../voice/cleanup.js");
+    const { deps, h } = buildDeps({});
     const { deps: directDeps } = buildDeps({
       routes: [keyRoute("anthropic")],
       pinned: { serviceId: "anthropic", billingMode: "key", modelId: "haiku" },
     });
 
-    expect(planCleanup(deps)!.deadlineMs).toBeGreaterThan(planCleanup(directDeps)!.deadlineMs);
+    const harnessPlan = planCleanup(deps)!;
+    expect(harnessPlan.deadlineMs).toBe(CLEANUP_TIMEOUT_MS);
+    expect(planCleanup(directDeps)!.deadlineMs).toBe(CLEANUP_TIMEOUT_MS);
+    // The container-side bound is the same constant, so a run this process gave
+    // up on still stops there rather than being left to the spawn's own default.
+    await harnessPlan.run(cleanupRequest());
+    expect(h.runs[0].timeoutMs).toBe(CLEANUP_TIMEOUT_MS);
   });
 
   it("passes the abort signal down so the deadline cancels the run", async () => {
@@ -175,18 +183,25 @@ describe("planCleanup (docs/299-direct-provider-calls req 5)", () => {
     expect(h.runs[0].signal).toBe(controller.signal);
   });
 
-  /**
-   * A cleaned transcript missing its ending reads exactly like a complete one,
-   * so an output budget below what cleanup accepts loses the tail of a long
-   * dictation with nothing on screen to say so.
-   */
-  it("never budgets a harness answer below the length cleanup would accept", async () => {
+  // Cleanup sizing its own budget from the transcript is what broke it: vendors
+  // bill reasoning against the cap that produced. It now asks for nothing.
+  it("asks for no output budget of its own, on either execution", async () => {
     const { planCleanup } = await import("./voice-cleanup.js");
+    const { BACKGROUND_HARNESS_MAX_OUTPUT_CHARS } = await import("../background-harness-run.js");
     const { deps, h } = buildDeps({});
+    const { deps: directDeps, h: directH } = buildDeps({
+      routes: [keyRoute("anthropic")],
+      pinned: { serviceId: "anthropic", billingMode: "key", modelId: "haiku" },
+    });
 
-    await planCleanup(deps)!.run(cleanupRequest({ acceptableChars: 6000 }));
+    await planCleanup(deps)!.run(cleanupRequest());
+    await planCleanup(directDeps)!.run(cleanupRequest());
 
-    expect(h.runs[0].maxOutputChars!).toBeGreaterThan(6000);
+    expect(h.runs[0].maxOutputChars).toBeUndefined();
+    expect(h.runs[0].maxOutputChars ?? BACKGROUND_HARNESS_MAX_OUTPUT_CHARS).toBe(8_000);
+    // Far above any answer `isSane` would accept, so the cap cannot be what
+    // stops a cleanup — the returned text's length is.
+    expect(directH.requests[0].body.max_tokens as number).toBeGreaterThan(20_000);
   });
 
   it("refuses a harness answer the harness itself cut short", async () => {
@@ -198,8 +213,8 @@ describe("planCleanup (docs/299-direct-provider-calls req 5)", () => {
     await expect(planCleanup(deps)!.run(cleanupRequest())).rejects.toThrow(/cut off/);
   });
 
-  // The provider's own limit can be lower than the one asked for, so a wide
-  // budget is not what makes this safe: only the provider says it stopped.
+  // The provider's own limit can be lower than the flat cap we send, so a wide
+  // cap is not what makes this safe: only the provider says it stopped.
   it("refuses a direct answer the provider cut off on its output limit", async () => {
     const { planCleanup } = await import("./voice-cleanup.js");
     const { deps } = buildDeps({
@@ -216,20 +231,6 @@ describe("planCleanup (docs/299-direct-provider-calls req 5)", () => {
     });
 
     await expect(planCleanup(deps)!.run(cleanupRequest())).rejects.toThrow(/output budget/);
-  });
-
-  // maxOutputChars reaches the API as max_tokens = chars / 3, and one character
-  // per token is a real tokenizer, so the budget has to clear three times over.
-  it("leaves a direct call enough tokens to exceed that length in any language", async () => {
-    const { planCleanup } = await import("./voice-cleanup.js");
-    const { deps, h } = buildDeps({
-      routes: [keyRoute("anthropic")],
-      pinned: { serviceId: "anthropic", billingMode: "key", modelId: "haiku" },
-    });
-
-    await planCleanup(deps)!.run(cleanupRequest({ acceptableChars: 6000 }));
-
-    expect(h.requests[0].body.max_tokens as number).toBeGreaterThan(6000);
   });
 
   it("reports nothing to run when the choice needs a harness and none can run without a session", async () => {

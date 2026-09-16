@@ -11,24 +11,10 @@ import {
 } from "../non-turn-model.js";
 import { recordNonTurnUsage, runNonTurnDirect } from "./non-turn-work.js";
 import {
-  CLEANUP_DIRECT_TIMEOUT_MS,
-  CLEANUP_HARNESS_TIMEOUT_MS,
+  CLEANUP_TIMEOUT_MS,
   type CleanupRequest,
   type CleanupRunner,
 } from "../voice/cleanup.js";
-
-/**
- * A direct call turns `maxOutputChars` into `max_tokens` by dividing by three,
- * and a tokenizer can emit as little as one character per token, so ask for
- * three times the longest answer cleanup would accept — plus enough to round
- * up past it. A cap that bit sooner could cut an answer off *inside* the
- * acceptable range, where a shortened transcript is indistinguishable from a
- * good one; past it, cleanup's length check rejects it and the raw transcript
- * is inserted with the mic button's warning.
- */
-function directOutputBudget(acceptableChars: number): number {
-  return acceptableChars * 3 + 3;
-}
 
 export interface VoiceCleanupDeps {
   credentialStore: CredentialStore;
@@ -79,7 +65,7 @@ export function planCleanup(deps: VoiceCleanupDeps): CleanupPlan | null {
     return {
       ...common,
       execution: "direct",
-      deadlineMs: CLEANUP_DIRECT_TIMEOUT_MS,
+      deadlineMs: CLEANUP_TIMEOUT_MS,
       run: async (req) => {
         const outcome = await runNonTurnDirect(deps, {
           sessionId: null,
@@ -87,7 +73,6 @@ export function planCleanup(deps: VoiceCleanupDeps): CleanupPlan | null {
           target,
           prompt: req.prompt,
           signal: req.signal,
-          maxOutputChars: directOutputBudget(req.acceptableChars),
         });
         if (!outcome.ok) throw new Error(outcome.detail);
         return outcome.text;
@@ -101,7 +86,7 @@ export function planCleanup(deps: VoiceCleanupDeps): CleanupPlan | null {
     ...common,
     execution: "harness",
     harnessId: target.harnessId,
-    deadlineMs: CLEANUP_HARNESS_TIMEOUT_MS,
+    deadlineMs: CLEANUP_TIMEOUT_MS,
     run: (req) => runCleanupOnHarness(deps, harnessRunner, target, req),
   };
 }
@@ -125,12 +110,10 @@ async function runCleanupOnHarness(
     ...(target.credentialSecret ? { credentialSecret: target.credentialSecret } : {}),
     ...(target.route?.kind === "account" ? { accountId: target.route.id } : {}),
     signal: req.signal,
-    // A second bound below the orchestrator's deadline, so a run this process
-    // has already given up on still stops inside the shared container.
-    timeoutMs: CLEANUP_HARNESS_TIMEOUT_MS,
-    // One character past what cleanup would accept: this cap slices the text,
-    // so anything lower would hand back a silently shortened transcript.
-    maxOutputChars: req.acceptableChars + 1,
+    // Deliberately the same deadline, not an earlier one: this bound exists to
+    // stop the run inside the shared container, which the orchestrator giving
+    // up does not do by itself.
+    timeoutMs: CLEANUP_TIMEOUT_MS,
   });
   recordNonTurnUsage(deps, {
     sessionId: null,
@@ -150,8 +133,9 @@ async function runCleanupOnHarness(
   if (result.status !== "success") {
     throw new Error(result.error ?? `The cleanup run ended ${result.status}.`);
   }
-  // A harness can also cut a run short for reasons of its own, below the cap
-  // above. The raw transcript beats a cleaned one missing its ending.
+  // Either the shared capture limit or the harness stopping on its own. The raw
+  // transcript beats a cleaned one missing its ending, so a cut-off run is a
+  // failure rather than a short success.
   if (result.truncated) throw new Error("The cleanup run was cut off before it finished.");
   return result.text;
 }

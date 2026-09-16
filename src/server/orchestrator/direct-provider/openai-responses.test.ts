@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { directCallSelections } from "../../shared/catalogue/index.js";
 import { createOpenAiResponsesCall } from "./openai-responses.js";
+import { MAX_OUTPUT_TOKENS } from "./http.js";
 import { DirectCallError } from "./types.js";
 
 const ROWS = directCallSelections()
@@ -34,7 +35,6 @@ function callWith(fetchImpl: ReturnType<typeof vi.fn>, entry: (typeof ROWS)[numb
     apiKey: "test-key",
     ...(entry.target.headers ? { headers: entry.target.headers } : {}),
     prompt: "clean this",
-    maxOutputChars: 1200,
     signal: new AbortController().signal,
   });
 }
@@ -57,9 +57,9 @@ describe("createOpenAiResponsesCall against shipped catalogue rows", () => {
     for (const [name, value] of Object.entries(entry.target.headers ?? {})) {
       expect(init.headers[name]).toBe(value);
     }
-    // Reasoning is billed against this same cap, so the budget must exceed the
-    // text allowance rather than equal it.
-    expect(sent.max_output_tokens).toBeGreaterThan(1200);
+    // Reasoning is billed against this same cap, which is why it is flat and
+    // generous rather than sized from the answer a caller would accept.
+    expect(sent.max_output_tokens).toBe(MAX_OUTPUT_TOKENS);
   });
 });
 
@@ -87,7 +87,6 @@ describe("createOpenAiResponsesCall", () => {
       apiModelId: base.target.apiModelId,
       apiKey: "k",
       prompt: "p",
-      maxOutputChars: 100,
       signal: controller.signal,
     });
 

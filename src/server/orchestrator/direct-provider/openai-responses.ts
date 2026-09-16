@@ -1,16 +1,8 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
-import { maxOutputTokens, postJson, requireCompleteText, uncachedInput } from "./http.js";
+import { MAX_OUTPUT_TOKENS, postJson, requireCompleteText, uncachedInput } from "./http.js";
 import { DirectCallError, type DirectCall, type DirectCallUsage } from "./types.js";
 
 const LABEL = "OpenAI Responses";
-
-/**
- * Headroom, not a measurement. This style bills reasoning against the same cap
- * as the answer, so a text-sized budget can be spent before a word is written.
- * Correctness does not rest on the number: a cap that still runs out now ends
- * as an error rather than as an empty success.
- */
-const REASONING_ALLOWANCE_TOKENS = 4096;
 
 /** The API's own terminal failures; an unknown status is left to the gateway. */
 const FAILED_STATUSES = new Set(["incomplete", "failed"]);
@@ -38,7 +30,7 @@ export function createOpenAiResponsesCall(fetchImpl: typeof fetch = fetch): Dire
       { Authorization: `Bearer ${req.apiKey}`, ...req.headers },
       {
         model: req.apiModelId,
-        max_output_tokens: maxOutputTokens(req.maxOutputChars, REASONING_ALLOWANCE_TOKENS),
+        max_output_tokens: MAX_OUTPUT_TOKENS,
         input: req.prompt,
       },
       req.signal,

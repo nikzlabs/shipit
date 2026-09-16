@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { maxOutputTokens, postJson, requireCompleteText, uncachedInput } from "./http.js";
+import { MAX_OUTPUT_TOKENS, postJson, requireCompleteText, uncachedInput } from "./http.js";
+import { DEFAULT_SUB_AGENT_MAX_OUTPUT_CHARS } from "../../shared/sub-agent-run.js";
 import { DirectCallError } from "./types.js";
 
 function abortError(): Error {
@@ -18,25 +19,14 @@ async function expectPostJsonError(
   throw new Error("expected a failure");
 }
 
-describe("maxOutputTokens", () => {
-  it("leaves room for the whole character budget", () => {
-    // Four characters per token is the pessimistic end of the usual range, so a
-    // cap below chars/4 could truncate an answer the caller would have accepted.
-    for (const chars of [500, 1200, 4000, 120_000]) {
-      expect(maxOutputTokens(chars)).toBeGreaterThanOrEqual(chars / 4);
-    }
-  });
-
-  it("keeps a floor under a tiny budget", () => {
-    expect(maxOutputTokens(1)).toBeGreaterThanOrEqual(64);
-  });
-
-  it("adds the reasoning allowance on top of the text budget", () => {
-    expect(maxOutputTokens(1200, 4096)).toBe(maxOutputTokens(1200) + 4096);
-  });
-
-  it("is always a whole number of tokens", () => {
-    expect(Number.isInteger(maxOutputTokens(1001))).toBe(true);
+describe("MAX_OUTPUT_TOKENS", () => {
+  // At one character per token — a real tokenizer's worst case — the flat cap
+  // still covers the largest answer any caller collects, so it cannot be what
+  // stops a call. Sizing it from the caller instead is what broke voice
+  // cleanup: vendors bill reasoning against this same number.
+  it("clears the largest collected answer even at one character per token", () => {
+    expect(MAX_OUTPUT_TOKENS).toBeGreaterThanOrEqual(DEFAULT_SUB_AGENT_MAX_OUTPUT_CHARS);
+    expect(Number.isInteger(MAX_OUTPUT_TOKENS)).toBe(true);
   });
 });
 
