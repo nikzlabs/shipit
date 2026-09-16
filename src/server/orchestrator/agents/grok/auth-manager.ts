@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -7,6 +8,14 @@ import { stripAnsi } from "../../../shared/strip-ansi.js";
 import { killChild } from "../../../shared/kill-child.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { ensureConfigDir, firstEpochMs, probeNestedString } from "../agent-auth-base.js";
+import {
+  createCliLineRelay,
+  sanitizeAuthDiagnostic,
+  type AgentAuthLogLevel,
+  type AgentAuthLogPayload,
+  type AgentAuthLogSource,
+  type AgentAuthProgressPayload,
+} from "../auth-diagnostics.js";
 import type {
   AgentAuthManager,
   AgentAuthManagerEvents,
@@ -14,7 +23,10 @@ import type {
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
 import type { LoginIntegrationId } from "../../../shared/catalogue/types.js";
-import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
+import type {
+  AgentAuthPendingDetails,
+  AgentAuthPhase,
+} from "../../../shared/types/ws-server-messages.js";
 
 export type XaiAuthFailureReason = "timeout" | "denied" | "error";
 
@@ -42,6 +54,15 @@ export const DEVICE_AUTH_TIMEOUT_MS = 15 * 60 * 1000;
 export const VERIFICATION_URL_PATTERN = /https:\/\/accounts\.x\.ai\/oauth2\/device[^\s"']*/;
 
 export const USER_CODE_PATTERN = /\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/;
+
+/**
+ * The same shape, every occurrence, for taking the code back OUT of the CLI
+ * output the diagnostics panel shows. Matching the pattern rather than the one
+ * code this flow detected is deliberate: detection needs the URL *and* the code,
+ * so a CLI that prints them the other way round would relay the code's line
+ * before there was anything to compare it against.
+ */
+const USER_CODE_EVERY_OCCURRENCE = new RegExp(USER_CODE_PATTERN.source, "g");
 
 function authFileExistsAt(authFile: string): boolean {
   try {
@@ -171,6 +192,8 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
   private timeoutMs: number;
   private activeCredentialDir: string | null = null;
   private activeFlowAccountId: string | null = null;
+  private activeAttemptId: string | null = null;
+  private activeAttemptStartedAt = 0;
 
   constructor(opts: XaiAuthManagerOptions = {}) {
     super();
@@ -187,6 +210,49 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
 
   getActiveAccountId(): string | null {
     return this.activeFlowAccountId;
+  }
+
+  private authEventBase(): { loginId: LoginIntegrationId; accountId?: string; attemptId: string } {
+    return {
+      loginId: this.loginId,
+      ...(this.activeFlowAccountId ? { accountId: this.activeFlowAccountId } : {}),
+      attemptId: this.activeAttemptId ?? "unknown",
+    };
+  }
+
+  private emitProgress(phase: AgentAuthPhase, message: string): void {
+    const elapsedMs = this.activeAttemptStartedAt ? Date.now() - this.activeAttemptStartedAt : undefined;
+    const payload: AgentAuthProgressPayload = {
+      ...this.authEventBase(),
+      phase,
+      message: sanitizeAuthDiagnostic(message),
+      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+    };
+    this.emit("progress", payload);
+  }
+
+  /**
+   * What the panel in Settings shows, and the only record a failed sign-in
+   * leaves the user: the CLI's own words. Until this existed a `grok login`
+   * that failed reported `grok login exited with code 1`, while whatever the
+   * CLI had said about why went to the orchestrator log, truncated at 500
+   * characters, where no user can read it.
+   */
+  private emitDiagnosticLog(
+    level: AgentAuthLogLevel,
+    source: AgentAuthLogSource,
+    message: string,
+  ): void {
+    const sanitized = sanitizeAuthDiagnostic(message);
+    if (!sanitized) return;
+    const payload: AgentAuthLogPayload = {
+      ...this.authEventBase(),
+      timestamp: new Date().toISOString(),
+      level,
+      source,
+      message: sanitized,
+    };
+    this.emit("log", payload);
   }
 
   start(opts?: AgentAuthStartOptions): void {
@@ -232,6 +298,9 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
     this.lastPendingEvent = null;
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
+    this.activeAttemptId = randomUUID();
+    this.activeAttemptStartedAt = Date.now();
+    this.emitProgress("starting", "Starting the Grok CLI sign-in.");
     const home = this.activeCredentialDir ?? XAI_DEFAULT_HOME;
     const configDir = grokConfigDirFor(this.activeCredentialDir);
 
@@ -258,6 +327,7 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[xai-auth] Failed to spawn grok login:", msg);
+      this.emitDiagnosticLog("error", "shipit", `Could not spawn the Grok CLI: ${msg}`);
       this.emit("xai_auth_failed", { reason: "error", message: msg });
       this.emit("failed", { reason: "error", message: msg });
       this.clearActiveScope();
@@ -266,26 +336,61 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
 
     this.proc = proc;
     console.log("[xai-auth] Spawned grok login --device-auth (pid %d)", proc.pid);
+    this.emitProgress("waiting_for_url", "Waiting for the Grok CLI to print a device code.");
 
+    const relay = createCliLineRelay((source, line) => {
+      // The device code is a live grant for as long as the challenge stands, and
+      // the panel is copyable and outlives the challenge card that shows it.
+      const text = line.replace(USER_CODE_EVERY_OCCURRENCE, "[code redacted]").trim();
+      // Grok 1.0.1 prints the CHALLENGE on stderr, so stderr is an ordinary
+      // channel here: levelling it `error` would paint a healthy sign-in red.
+      // The source field is what says which stream a line came from.
+      if (text) this.emitDiagnosticLog("info", source, text);
+    });
+
+    /**
+     * One listener per stream, and the liveness guard is taken ONCE here rather
+     * than inside each consumer. A cancelled run keeps draining (`cancel()`
+     * detaches `close` and `error`, never `data`), and by then `this.proc` may
+     * be the NEXT account's process — unguarded, that run's output lands on the
+     * new account's panel and its expired challenge is replayed as the new
+     * account's code.
+     */
+    const consume = (source: AgentAuthLogSource, chunk: Buffer): void => {
+      if (this.proc !== proc) return;
+      const text = chunk.toString("utf-8");
+      // Detection first, so the challenge still reaches the user as early as it did.
+      this.handleOutput(text);
+      relay.push(source, text);
+    };
     // Grok 1.0.1 prints the challenge on stderr.
-    proc.stdout?.on("data", (chunk: Buffer) => this.handleOutput(chunk.toString("utf-8")));
-    proc.stderr?.on("data", (chunk: Buffer) => this.handleOutput(chunk.toString("utf-8")));
+    proc.stdout?.on("data", (chunk: Buffer) => consume("cli_stdout", chunk));
+    proc.stderr?.on("data", (chunk: Buffer) => consume("cli_stderr", chunk));
 
     proc.on("error", (err: Error) => {
+      if (this.proc !== proc) return;
       console.warn("[xai-auth] Process error:", err.message);
+      this.emitDiagnosticLog("error", "shipit", `The Grok CLI could not be run: ${err.message}`);
       this.failOnce("error", err.message);
     });
 
     proc.on("close", (code) => {
       console.log("[xai-auth] Process exited with code", code);
-      const wasRunning = this.proc === proc;
+      // Guard first: the old handler nulled `this.proc`, `lastPendingEvent` and
+      // the timeout before asking whether this process was still the live one,
+      // so a late close tore down whatever flow had replaced it.
+      if (this.proc !== proc) return;
       this.proc = null;
+      relay.flush();
       this.lastPendingEvent = null;
       this.clearTimeoutHandle();
 
-      if (!wasRunning) return;
+      const hasCredentials = this.checkCredentials();
+      const ending = `sign-in ended exit=${String(code)} credentials=${hasCredentials ? "written" : "absent"}`;
+      console.log(`[xai-auth] ${ending}`);
+      this.emitDiagnosticLog("info", "shipit", ending);
 
-      if (code === 0 && this.checkCredentials()) {
+      if (code === 0 && hasCredentials) {
         console.log("[xai-auth] Authentication successful");
         this.emit("xai_auth_complete");
         this.emit("complete");
@@ -306,8 +411,9 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
     });
 
     this.timeoutHandle = setTimeout(() => {
-      if (this.proc) {
+      if (this.proc === proc) {
         console.warn("[xai-auth] Device-auth flow timed out");
+        this.emitDiagnosticLog("warn", "shipit", "The device code expired before the sign-in finished.");
         this.failOnce("timeout", "Device code expired");
         this.killProc();
       }
@@ -366,6 +472,11 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
     this.pendingEmitted = true;
     const ev: XaiAuthPendingEvent = { verificationUri, userCode, expiresInSec };
     this.lastPendingEvent = ev;
+    // Neither the link nor the code: the sanitizer strips an OAuth URL down to
+    // its origin anyway, and both reach the user unredacted on the challenge
+    // card. This says only that they arrived.
+    this.emitDiagnosticLog("info", "shipit", "Device code received; waiting for you to approve it in the browser.");
+    this.emitProgress("waiting_for_code", "Waiting for the device code to be approved.");
     this.emit("xai_auth_pending", ev);
     this.emit("pending", { kind: "device-code", verificationUri, userCode, expiresInSec });
   }
@@ -392,6 +503,8 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
   private clearActiveScope(): void {
     this.activeCredentialDir = null;
     this.activeFlowAccountId = null;
+    this.activeAttemptId = null;
+    this.activeAttemptStartedAt = 0;
   }
 
   private clearTimeoutHandle(): void {

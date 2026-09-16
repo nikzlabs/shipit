@@ -38,6 +38,43 @@ export interface AgentAuthLogPayload {
   message: string;
 }
 
+/**
+ * Turns a CLI's stream chunks into whole LINES, one tail per source.
+ *
+ * **Every redaction protecting this panel is a whole-string rule**, so relaying
+ * a chunk at a time defeats all of them: a sign-in URL split at `&sta` / `te=…`
+ * leaves the second half looking like ordinary text, and a device code split
+ * anywhere stops matching the pattern that removes it. stdout and stderr break
+ * at independent points, so each carries its own tail — and {@link flush}
+ * drains them at exit, where a CLI's last line (a prompt, or the sentence that
+ * explains the failure) usually has no newline at all.
+ */
+export interface CliLineRelay {
+  push(source: AgentAuthLogSource, chunk: string): void;
+  /** Drain every source's unterminated tail. Call once, from the exit handler. */
+  flush(): void;
+}
+
+export function createCliLineRelay(
+  onLine: (source: AgentAuthLogSource, line: string) => void,
+): CliLineRelay {
+  const tails = new Map<AgentAuthLogSource, string>();
+  return {
+    push(source, chunk) {
+      const lines = ((tails.get(source) ?? "") + stripAnsi(chunk)).split(/\r?\n/);
+      tails.set(source, lines.pop() ?? "");
+      for (const line of lines) onLine(source, line);
+    },
+    flush() {
+      for (const [source, tail] of tails) {
+        // Cleared before the emit, so a re-entrant push cannot replay the tail.
+        tails.set(source, "");
+        if (tail) onLine(source, tail);
+      }
+    },
+  };
+}
+
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const TOKEN_ASSIGNMENT_PATTERN =
