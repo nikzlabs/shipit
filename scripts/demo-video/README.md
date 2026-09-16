@@ -107,18 +107,25 @@ count, body bytes, stream flag). Request headers and bodies are not saved, so no
 key enters the cassette. The cassette directory must not already hold a take.
 `--upstream <url>` points the recorder elsewhere (the tests use a local fake).
 
-Replay mode answers lane request *n* with `<lane>/NNN.sse`. `content_block_delta`
-text is paced at `--pace-chars-per-second` (the storyboard's
-`pace.textCharsPerSecond`), tool-input JSON deltas at four times that, every
-other event immediately. A request whose fingerprint differs from the recorded
-one is logged as `cassette drift` and answered anyway. Once a lane runs out the
-proxy answers 400 (a 5xx would be retried by the CLI); a lane with recordings
-replays, a lane the cassette never recorded gets 401. `HEAD /api/hello` is 200
-and any other path is 404 JSON.
+Replay mode answers a request with the recording in its lane whose fingerprint
+matches it, not with the nth file for the nth request: a turn can put two
+concurrent requests on one lane (a small side call and the turn itself) and
+they finish in either order. Among the lane's unused recordings, those that
+match on `model`, tool count and `stream` are candidates; an exact message
+count wins, then the nearest one, then the lowest number. When nothing
+matches, the lowest-numbered unused recording answers and the mismatch is
+logged as `cassette drift` (body bytes are logged, never matched on). Each
+recording is served once per proxy run. `content_block_delta` text is paced at
+`--pace-chars-per-second` (the storyboard's `pace.textCharsPerSecond`),
+tool-input JSON deltas at four times that, every other event immediately. Once
+a lane's recordings are all used the proxy answers 400 (a 5xx would be retried
+by the CLI); a lane with recordings replays, a lane the cassette never recorded
+gets 401. `HEAD /api/hello` is 200 and any other path is 404 JSON.
 
 Both modes take `--port` (default 8787) and `--host` (default 0.0.0.0), print
 the bound port on stdout, and log one line per request to stderr: mode, lane,
-n, path, status, milliseconds.
+n (arrival order in the lane), the take served in replay, path, status,
+milliseconds.
 
 ## Driver
 

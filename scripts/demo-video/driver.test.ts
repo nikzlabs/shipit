@@ -4,7 +4,15 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import os from "node:os";
-import { beatFootageEnd, parseArgs, readStoryboard, verifyRepoPin } from "./driver.mjs";
+import {
+  PermissionPromptError,
+  beatFootageEnd,
+  findPendingPermissionPrompt,
+  parseArgs,
+  readStoryboard,
+  until,
+  verifyRepoPin,
+} from "./driver.mjs";
 
 /**
  * The driver's pure parts (docs/296 plan §4): argument parsing, storyboard
@@ -55,6 +63,23 @@ describe("readStoryboard", () => {
     expect(sb.beats.map((b: { id: string }) => b.id)).toEqual(["new-session", "create", "edit"]);
     expect(sb.repo.url.startsWith("file://localhost/")).toBe(true);
     expect(sb.pace).toEqual({ textCharsPerSecond: 120, typingCharsPerSecond: 30 });
+  });
+
+  it("accepts the committed phase-2 scenario, which pins the never-prompting permission mode", () => {
+    const sb = readStoryboard(join(HERE, "scenarios", "website-hero"));
+    expect(sb.permissionMode).toBe("auto");
+    expect(sb.settings).toEqual({ autoCreatePr: true });
+  });
+
+  it("allows only the auto permission mode: guarded and plan prompt by design", () => {
+    for (const mode of ["guarded", "plan", "bypass"]) {
+      const dir = write({ ...valid, permissionMode: mode });
+      try {
+        expect(() => readStoryboard(dir)).toThrow(`permissionMode must be "auto"`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
   });
 
   it("requires a full-SHA pin, numeric lead/hold, and a positive typing pace", () => {
@@ -145,6 +170,72 @@ describe("beatFootageEnd", () => {
 
   it("refuses an empty log", () => {
     expect(() => beatFootageEnd([], story)).toThrow("beat log is empty");
+  });
+});
+
+describe("findPendingPermissionPrompt", () => {
+  // The shape of `GET /api/sessions/:id/history`: `messages[].permissionPrompt`
+  // is the persisted card (`PersistedPermissionRequest`, chat-history.ts).
+  const history = (prompts: Record<string, unknown>[]) => ({
+    agentRunning: true,
+    messages: [
+      { role: "user", text: "build it" },
+      { role: "assistant", text: "on it", toolUse: [{ id: "t1", name: "Write" }] },
+      ...prompts.map((permissionPrompt) => ({ role: "assistant", text: "", permissionPrompt })),
+    ],
+  });
+
+  it("names the tool and path of a pending prompt", () => {
+    const h = history([
+      { requestId: "perm_1", phase: "approved", toolName: "Bash", createdAt: "2026-09-16T00:00:00Z" },
+      { requestId: "perm_2", phase: "pending", toolName: "Write", path: ".claude/settings.json", summary: "Write .claude/settings.json", createdAt: "2026-09-16T00:00:01Z" },
+    ]);
+    expect(findPendingPermissionPrompt(h)).toEqual({
+      requestId: "perm_2",
+      toolName: "Write",
+      path: ".claude/settings.json",
+      summary: "Write .claude/settings.json",
+    });
+  });
+
+  it("is null for a resolved prompt, a transcript without one, and an empty history", () => {
+    expect(findPendingPermissionPrompt(history([
+      { requestId: "perm_1", phase: "approved", toolName: "Write", path: ".npmrc", createdAt: "x" },
+      { requestId: "perm_2", phase: "denied", toolName: "Bash", createdAt: "x" },
+    ]))).toBeNull();
+    expect(findPendingPermissionPrompt(history([]))).toBeNull();
+    expect(findPendingPermissionPrompt({ messages: [] })).toBeNull();
+    expect(findPendingPermissionPrompt(null)).toBeNull();
+  });
+
+  it("builds an abort message that names the tool and the path", () => {
+    const err = new PermissionPromptError({ requestId: "perm_9", toolName: "Write", path: ".claude/settings.json", summary: null });
+    expect(err.message).toContain("Write");
+    expect(err.message).toContain(".claude/settings.json");
+    expect(err.message).toContain("perm_9");
+    expect(new PermissionPromptError({ requestId: "perm_3", toolName: "Bash", path: null, summary: "Bash: rm -rf x" }).message).toContain("Bash: rm -rf x");
+  });
+});
+
+describe("until", () => {
+  it("retries a plain error until the ceiling but rethrows a take abort at once", async () => {
+    // A thrown error inside the poll is normally swallowed and retried: a
+    // locator that is not there yet is not a failure. A PermissionPromptError is
+    // the opposite — waiting cannot resolve it — so it must escape immediately
+    // rather than surface as "did not hold within N s" after the ceiling.
+    let plain = 0;
+    await expect(until(() => { plain++; throw new Error("not yet"); }, { ceilingMs: 600, what: "x" }))
+      .rejects.toThrow("x did not hold within 1s (last error: not yet)");
+    expect(plain).toBeGreaterThan(1);
+
+    let aborts = 0;
+    const started = Date.now();
+    await expect(until(() => {
+      aborts++;
+      throw new PermissionPromptError({ requestId: "perm_1", toolName: "Write", path: ".env", summary: null });
+    }, { ceilingMs: 60_000, what: "beat build" })).rejects.toBeInstanceOf(PermissionPromptError);
+    expect(aborts).toBe(1);
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 });
 

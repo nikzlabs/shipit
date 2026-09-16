@@ -24,6 +24,17 @@
 // accident. Which side of the proxy a take lands on is otherwise the proxy's
 // business (plan §2); `--mode` is written to run.json.
 //
+// A take must never wait on a human. ShipIt's permission mode is a per-send
+// field of the composer (`send_message.permissionMode`, omitted for Auto, the
+// client store's default in a fresh browser context) — there is no route, WS
+// message or workspace setting that pins it, so `permissionMode: "auto"` in the
+// storyboard is verified against the composer's own control after the claim.
+// Auto still cannot suppress the Claude CLI's sensitive-file gate (docs/193:
+// `.claude/`, `.env`, `.npmrc` prompt regardless of the allowlist), so every
+// wait also polls `GET /api/sessions/:id/history` and ABORTS the take on a
+// pending `permissionPrompt`, naming the tool and path, instead of waiting out
+// the ceiling.
+//
 // Environment:
 //   PLAYWRIGHT_BROWSERS_PATH  where `npx playwright install chromium` put the
 //                             browser. Inside a ShipIt session that is
@@ -105,6 +116,9 @@ export function readStoryboard(scenarioDir) {
   if (!Array.isArray(sb.beats) || sb.beats.length === 0) throw new Error(`${file}: beats[] is required`);
   const cps = sb.pace?.typingCharsPerSecond;
   if (cps !== undefined && (typeof cps !== "number" || !(cps > 0))) throw new Error(`${file}: pace.typingCharsPerSecond must be a positive number`);
+  if (sb.permissionMode !== undefined && sb.permissionMode !== "auto") {
+    throw new Error(`${file}: permissionMode must be "auto" — the one ShipIt mode whose allowlisted tools run without a prompt; Guarded (the CLI classifier) and Plan prompt by design`);
+  }
   const ids = new Set();
   for (const b of sb.beats) {
     if (!b.id) throw new Error(`${file}: every beat needs an id`);
