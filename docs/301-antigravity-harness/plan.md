@@ -442,7 +442,14 @@ one non-npm branch, gated on `contains antigravity $selected`:
   "GOOGLE_API_KEY"]`). Egress: sign-in and refresh need
   Google's OAuth hosts and account mode talks to a host candidates.md does
   not name — measure both with a signed-in token before the allowlist tests
-  are extended.
+  are extended. Three of the four were found that way rather than read off a
+  list: `daily-cloudcode-pa.googleapis.com` (the account-mode backend), and
+  `www.googleapis.com` — the **eligibility check, which runs after the token
+  exchange**. Blocked, the exchange succeeds, the token is written, and the run
+  then ends `Error: Eligibility check failed: … lookup www.googleapis.com …
+  server misbehaving`; the refusal outranks the token, correctly, so the account
+  never connects and the user sees a sign-in that failed with a good credential
+  on disk (observed in the dogfood, 2026-09-16).
 
 ## Adapter (`session/agents/antigravity/`, Claude-shaped)
 

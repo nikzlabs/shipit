@@ -519,35 +519,49 @@ export function AccountChallenge({
           </p>
         </div>
       ) : (
-        <div className="flex gap-2">
-          <input
-            value={code}
-            onChange={(event) => setCode(event.target.value)}
-            placeholder="Paste authorization code"
-            aria-label={`Authorization code for ${account.label}`}
-            className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-            {...bindSetting("services.providerAccounts[].connection")}
-          />
-          <Button
-            variant="primary"
-            size="md"
-            disabled={busy || !code.trim()}
-            onClick={() => void submit()}
-            {...bindSetting("services.providerAccounts[].connection")}
-          >
-            Submit code
-          </Button>
+        <div className="space-y-1">
+          <div className="flex gap-2">
+            <input
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              placeholder="Paste authorization code"
+              aria-label={`Authorization code for ${account.label}`}
+              className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+              {...bindSetting("services.providerAccounts[].connection")}
+            />
+            <Button
+              variant="primary"
+              size="md"
+              disabled={busy || !code.trim()}
+              onClick={() => void submit()}
+              {...bindSetting("services.providerAccounts[].connection")}
+            >
+              Submit code
+            </Button>
+          </div>
+          {/*
+            **The confirmation's line is reserved, not added.** It arrives on a
+            click, and a panel that grows under the pointer at that moment is the
+            thing `ChallengePlaceholder`'s `h-8` slot already exists to prevent
+            one step earlier: the rule for this box is that its contents change
+            and its size does not. `h-4` + `truncate` is one line at `text-xs`,
+            whatever the sentence and however narrow the dialog. The slot is
+            inside the paste branch because the device-code shape has nothing to
+            submit, so there it would reserve space for a line that can never
+            arrive.
+          */}
+          <div className="h-4">
+            {submitted ? (
+              <p
+                className="truncate text-xs leading-4 text-(--color-text-secondary)"
+                data-testid={`provider-account-code-submitted-${account.id}`}
+              >
+                Code submitted — completing sign-in…
+              </p>
+            ) : null}
+          </div>
         </div>
       )}
-
-      {submitted ? (
-        <p
-          className="text-xs text-(--color-text-secondary)"
-          data-testid={`provider-account-code-submitted-${account.id}`}
-        >
-          Code submitted — completing sign-in…
-        </p>
-      ) : null}
 
       {CHALLENGE_DEADLINE[provider] ? (
         <p className="text-xs text-(--color-text-secondary)">{CHALLENGE_DEADLINE[provider]}</p>

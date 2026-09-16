@@ -365,6 +365,31 @@ describe("the authorization-code challenge", () => {
     expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled();
   });
 
+  /**
+   * The confirmation arrives on a click, so a panel that grows at that moment
+   * moves everything under the pointer — the same jump `ChallengePlaceholder`'s
+   * `h-8` slot prevents one step earlier. The line is reserved, not added.
+   */
+  it("reserves the confirmation's line rather than growing the panel under the click", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    const panel = screen.getByTestId("provider-account-challenge-acct-agy");
+    const slot = panel.querySelector("div.h-4");
+    expect(slot, "nothing holds the confirmation's line before it arrives").not.toBeNull();
+    expect(slot?.textContent).toBe("");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(screen.getByTestId("provider-account-code-submitted-acct-agy"))
+      .toBeInTheDocument());
+
+    // The same element, filled — not a new one pushing the panel down.
+    expect(panel.querySelector("div.h-4")).toBe(slot);
+    expect(slot?.textContent).toContain("Code submitted");
+  });
+
   it("does not claim a refused code went through", async () => {
     const user = userEvent.setup();
     installFailingFetch("Authorization code cannot be empty");

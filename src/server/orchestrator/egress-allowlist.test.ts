@@ -80,6 +80,19 @@ describe("the hosts an agent CLI must reach to run at all", () => {
     const allow = makeAllowlist(EGRESS_DEFAULT_ALLOWLIST);
     expect(allow.isAllowed("daily-cloudcode-pa.googleapis.com")).toBe(true);
   });
+
+  /**
+   * The CLI checks eligibility AFTER exchanging the code, so a blocked
+   * `userinfo` call fails a sign-in that already wrote a good token — and the
+   * refusal outranks the token, correctly, so the account never connects.
+   * Observed in the dogfood on 2026-09-16: `Eligibility check failed: Get
+   * "https://www.googleapis.com/oauth2/v2/userinfo": … server misbehaving`.
+   */
+  it("allows the eligibility check Antigravity's sign-in makes after the exchange", () => {
+    for (const list of [EGRESS_DEFAULT_ALLOWLIST, EGRESS_LIFELINE_ALLOWLIST]) {
+      expect(makeAllowlist(list).isAllowed("www.googleapis.com")).toBe(true);
+    }
+  });
 });
 
 describe("parseAllowlistEnv", () => {
