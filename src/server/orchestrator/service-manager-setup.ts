@@ -324,6 +324,46 @@ export function createSecretsLoader(
 }
 
 /** Shared construction for activation and warm pre-start; callers attach listeners and start. */
+export interface SessionNetworkJoiner {
+  connectToNetwork(sessionId: string, networkName: string): Promise<void>;
+  getDockerClient(): {
+    getNetwork(name: string): { connect(options: { Container: string }): Promise<unknown> };
+  };
+}
+
+/**
+ * Attach both endpoints ShipIt owns on a session network. They are joined independently on
+ * purpose: a failed agent join must not cost the orchestrator its own, or the session runs
+ * healthy services behind a preview nothing can route to — and only the agent's attachment is
+ * repaired afterwards, by the poller's heal.
+ */
+export async function joinSessionNetworkEndpoints(
+  containerManager: SessionNetworkJoiner,
+  sessionId: string,
+  networkName: string,
+): Promise<void> {
+  const [agentJoin] = await Promise.allSettled([
+    containerManager.connectToNetwork(sessionId, networkName),
+    // The preview proxy needs the orchestrator on this network too.
+    (async () => {
+      try {
+        const orchestratorId = (await import("node:os")).hostname();
+        const docker = containerManager.getDockerClient();
+        await docker.getNetwork(networkName).connect({ Container: orchestratorId });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("already exists")) {
+          console.warn(`[compose] Failed to connect orchestrator to ${networkName}:`, msg);
+        }
+      }
+    })(),
+  ]);
+  if (agentJoin.status === "rejected") {
+    const reason: unknown = agentJoin.reason;
+    throw reason instanceof Error ? reason : new Error(String(reason));
+  }
+}
+
 export function buildServiceManager(args: {
   sessionId: string;
   workspaceDir: string;
@@ -357,21 +397,7 @@ export function buildServiceManager(args: {
     serviceEnvDir,
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
-      ? async (networkName: string) => {
-          await containerManager.connectToNetwork(sessionId, networkName);
-          // The preview proxy needs the orchestrator on this network too.
-          try {
-            const orchestratorId = (await import("node:os")).hostname();
-            const docker = containerManager.getDockerClient();
-            const network = docker.getNetwork(networkName);
-            await network.connect({ Container: orchestratorId });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (!msg.includes("already exists")) {
-              console.warn(`[compose] Failed to connect orchestrator to ${networkName}:`, msg);
-            }
-          }
-        }
+      ? (networkName: string) => joinSessionNetworkEndpoints(containerManager, sessionId, networkName)
       : undefined,
     networkHealFn: containerManager
       ? async (networkName: string) => {

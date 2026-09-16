@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
-import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager } from "./service-manager-setup.js";
+import { applyShipitConfigChange, emitPluginReposUpdated, joinSessionNetworkEndpoints, setupServiceManager } from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { installContentKeyDiagnostic } from "./install-content-key.js";
 import { isOpsSafeLine } from "./services/host-session-logs.js";
@@ -657,5 +657,58 @@ describe("trackComposeStop — onStopped", () => {
     expect(promises.has("sess-x")).toBe(true);
     await new Promise((r) => setTimeout(r, 0));
     expect(promises.has("sess-x")).toBe(false);
+  });
+});
+
+describe("joinSessionNetworkEndpoints", () => {
+  const NETWORK = "shipit-session-abc";
+
+  function makeJoiner(opts: { agentFails?: boolean; orchestratorFails?: boolean } = {}) {
+    const joined: string[] = [];
+    const joiner = {
+      connectToNetwork: async (_sessionId: string, name: string) => {
+        if (opts.agentFails) throw new Error("No container found for session abc");
+        joined.push(`agent:${name}`);
+      },
+      getDockerClient: () => ({
+        getNetwork: (name: string) => ({
+          connect: async () => {
+            if (opts.orchestratorFails) throw new Error("network not found");
+            joined.push(`orchestrator:${name}`);
+            return undefined;
+          },
+        }),
+      }),
+    };
+    return { joiner, joined };
+  }
+
+  it("attaches both endpoints ShipIt owns", async () => {
+    const { joiner, joined } = makeJoiner();
+
+    await joinSessionNetworkEndpoints(joiner, "abc", NETWORK);
+
+    expect(joined.sort()).toEqual([`agent:${NETWORK}`, `orchestrator:${NETWORK}`]);
+  });
+
+  it("still attaches the orchestrator when the agent join fails, and reports the failure", async () => {
+    const { joiner, joined } = makeJoiner({ agentFails: true });
+
+    await expect(joinSessionNetworkEndpoints(joiner, "abc", NETWORK)).rejects.toThrow(
+      "No container found",
+    );
+
+    // Nothing else ever re-attaches the orchestrator; the poller's heal repairs only the agent.
+    expect(joined).toEqual([`orchestrator:${NETWORK}`]);
+  });
+
+  it("keeps the agent join when the orchestrator's own attach fails", async () => {
+    const { joiner, joined } = makeJoiner({ orchestratorFails: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(joinSessionNetworkEndpoints(joiner, "abc", NETWORK)).resolves.toBeUndefined();
+
+    warn.mockRestore();
+    expect(joined).toEqual([`agent:${NETWORK}`]);
   });
 });
