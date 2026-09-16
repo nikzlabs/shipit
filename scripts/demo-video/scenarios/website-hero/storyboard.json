@@ -30,7 +30,7 @@
     {
       "id": "agent-works",
       "pane": "preview",
-      "wait": [{ "preview_text": "streak" }, { "pr_card": "open" }],
+      "wait": [{ "preview_text": "habit" }, { "pr_card": "open" }],
       "lead": 6,
       "hold": 6
     },
