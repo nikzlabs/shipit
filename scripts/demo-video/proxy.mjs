@@ -2,7 +2,7 @@
 // Record/replay proxy at the Anthropic API boundary — docs/296 plan §2.
 //
 // The Claude CLI inside the demo session reaches this server through the demo
-// repo's `.claude/settings.json` (ANTHROPIC_BASE_URL + a dummy key). Two modes:
+// repo's `.claude/settings.json` (ANTHROPIC_BASE_URL only). Two modes:
 //
 //   --record <cassette-dir>   forward POST /v1/messages* to the upstream and
 //                             save every response, byte for byte, per lane
