@@ -365,7 +365,11 @@ export function MessageList({
     // docs/299-collapsed-turns req 14 — this row's strip closes the turn above
     // it, so the strip carries that turn's caret and this row draws both.
     const closes = view.closes;
-    const showsSomething = !view.hidden || !!view.first || !!rollbackHash || gapBefore || !!closes;
+    // The note is the only thing the run's FIRST row draws now that the control
+    // has moved below the turn; without it a hidden first row is an empty box
+    // the group still spaces around.
+    const emptyTurnNote = !!(view.first && view.run && !view.open && view.empty);
+    const showsSomething = !view.hidden || emptyTurnNote || !!rollbackHash || gapBefore || !!closes;
     return {
       key,
       // planning#491 — a row that can MOVE within the list must not be allowed
@@ -383,11 +387,14 @@ export function MessageList({
               {/* The touch target is a pseudo-element, so a 44px tap area costs
                   no layout: it reaches down the left gutter beside the next
                   user bubble, which is right-aligned, and the bubble is
-                  positioned and later in the DOM, so it wins where they meet. */}
+                  positioned and later in the DOM, so it wins where they meet.
+                  The lift is `relative`, so it never changes the strip; the up
+                  caret takes 1px less of it to sit where the down one does. */}
               <Button variant="ghost" size="icon"
-                className="relative -top-0.5 -my-1 px-1 py-0 rounded-sm text-(--color-accent) hover:text-(--color-accent-hover)
+                className={`relative ${closes.open ? "-top-px" : "-top-0.5"} -my-1 px-1 py-0 rounded-sm
+                  text-(--color-accent) hover:text-(--color-accent-hover)
                   pointer-coarse:before:absolute pointer-coarse:before:content-[''] pointer-coarse:before:-top-2
-                  pointer-coarse:before:-left-2 pointer-coarse:before:h-11 pointer-coarse:before:w-11"
+                  pointer-coarse:before:-left-2 pointer-coarse:before:h-11 pointer-coarse:before:w-11`}
                 aria-expanded={closes.open}
                 aria-controls={closes.controls}
                 aria-label={`${closes.open ? "Show compact turn" : "Show full turn"}: ${closes.run.identity.text.slice(0, 80) || "Agent response"}`}
@@ -402,7 +409,7 @@ export function MessageList({
               <div className="flex-1 min-w-0">{gapBefore && renderRewindPoint(el.index)}</div>
             </div>
           ) : view.hidden && gapBefore && renderRewindPoint(el.index)}
-          {view.first && view.run && !view.open && view.empty && (
+          {emptyTurnNote && (
             <div className="text-xs text-(--color-text-secondary)">Turn ended without an agent reply.</div>
           )}
           {rollbackHash && <CodeRollbackNotice hash={rollbackHash} />}

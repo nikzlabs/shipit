@@ -70,6 +70,11 @@
       it, and retire the hoisting that the earlier arrangement needed (req 14).
 - [x] Give it a 44px touch target on coarse pointers, as a pseudo-element that
       adds no layout, and verify the geometry and a tap in a browser (req 8).
+- [x] Independent review of the iteration. Four findings, all fixed: the empty
+      row the moved control left behind, a tooltip that counted a split-out
+      subagent call twice, a touch-target test that missed the two classes that
+      matter, and docs — `plan.md` and the capability wiki — still describing a
+      submitted action card as hidden.
 - [x] Add a fixture turn whose hidden rows include a card, so the third count
       can be seen in the dogfood instance.
 

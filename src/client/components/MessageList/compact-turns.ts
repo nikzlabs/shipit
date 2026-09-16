@@ -1,4 +1,5 @@
-import { hasCardContent, isTerminalTranscriptEntry, type VisualElement } from "../visual-elements.js";
+import { hasCardContent, isTerminalTranscriptEntry, SUBAGENT_TOOLS, type VisualElement } from "../visual-elements.js";
+import { isTaskListTool } from "../../../server/shared/task-list-tools.js";
 import type { ChatMessage } from "./types.js";
 
 export function elementMessageIndex(el: VisualElement): number {
@@ -105,6 +106,16 @@ export function isCompactDetail(
 export interface HiddenCounts { tools: number; messages: number; cards: number }
 
 /**
+ * The tools a message row draws itself, which is NOT every tool it carries: a
+ * subagent call is always split into its own element, and a to-do write becomes
+ * the task panel. Counting `toolUse.length` here would count those twice.
+ */
+export function rowToolCount(el: VisualElement, m: ChatMessage | undefined): number {
+  if (el.kind !== "message" || el.hideTools || !m?.toolUse) return 0;
+  return m.toolUse.filter((t) => !SUBAGENT_TOOLS.has(t.name) && !isTaskListTool(t.name)).length;
+}
+
+/**
  * Adds one hidden element to a run's tally. A to-do panel counts as a card: it
  * is a panel rather than prose, and a fourth noun would turn the label into a
  * list. A message carrying tools counts in both columns, because both go.
@@ -114,7 +125,7 @@ export function countHidden(el: VisualElement, m: ChatMessage | undefined, into:
   if (el.kind === "subagent" || el.kind === "standalone-tool") { into.tools += 1; return; }
   if (el.kind === "task-panel") { into.cards += 1; return; }
   if (!m) return;
-  if (!el.hideTools) into.tools += m.toolUse?.length ?? 0;
+  into.tools += rowToolCount(el, m);
   if (hasCardContent(m)) into.cards += 1;
   else if (m.text.trim() || m.images?.length || m.files?.length) into.messages += 1;
 }

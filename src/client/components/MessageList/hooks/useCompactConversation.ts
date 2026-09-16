@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import {
   compactRuns, countHidden, describeHidden, elementMessageIndex, isCompactDetail,
-  shouldCollapseRowTools, type CompactRun, type HiddenCounts, type NeedsUser,
+  rowToolCount, shouldCollapseRowTools, type CompactRun, type HiddenCounts, type NeedsUser,
 } from "../compact-turns.js";
 import type { ChatMessage } from "../types.js";
 import type { VisualElement } from "../../visual-elements.js";
@@ -166,7 +166,7 @@ export function useCompactConversation(
         withDetails.add(run);
         collapsedTools.add(el);
         protectableIndices.add(index);
-        tally(run).tools += messages[index]?.toolUse?.length ?? 0;
+        tally(run).tools += rowToolCount(el, messages[index]);
       } else {
         showsSomething.add(run);
       }

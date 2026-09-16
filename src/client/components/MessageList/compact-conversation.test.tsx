@@ -361,8 +361,41 @@ describe("collapsed turns", () => {
     // verified in a coarse-pointer browser.
     const cls = screen.getByRole("button", { name: /Show full turn/ }).className;
     expect(cls).toContain("relative");
+    // Without the content and the positioning there is no box to hit at all.
+    expect(cls).toContain("pointer-coarse:before:content-['']");
+    expect(cls).toContain("pointer-coarse:before:absolute");
     expect(cls).toContain("pointer-coarse:before:h-11");
     expect(cls).toContain("pointer-coarse:before:w-11");
+  });
+
+  it("counts a split-out subagent call once, not twice (req 8)", () => {
+    compactOn();
+    // A subagent call always splits into its own element, while the standalone
+    // question stays attached to the prose row: the row must count only its own.
+    const data = [user("Task"), {
+      ...bot("Handing the search off."),
+      toolUse: [
+        { type: "tool_use" as const, id: "t", name: "Task", input: { description: "search" } },
+        { type: "tool_use" as const, id: "q", name: "AskUserQuestion", input: { questions: [] } },
+      ],
+      toolResults: [{ toolUseId: "t", content: "done" }, { toolUseId: "q", content: "answered" }],
+    }, bot("Done"), user("Next"), bot("Working now")] as ChatMessage[];
+    render(<MessageList messages={data} isLoading={false} />);
+    expect(screen.getByRole("button", { name: /Show full turn/ }))
+      .toHaveAttribute("title", "Show full turn — 2 tool calls · 1 message");
+  });
+
+  it("does not leave an empty row where the control used to sit", () => {
+    compactOn();
+    const { container } = render(<MessageList messages={transcript()} isLoading={false} />);
+    // `textContent` sees through `hidden`, so ask what the wrapper actually
+    // draws: a visible wrapper whose every child is hidden renders nothing and
+    // still takes the group's spacing.
+    const empties = [...container.querySelectorAll("[data-compact-content]")]
+      .map((row) => row.parentElement!)
+      .filter((wrapper) => !wrapper.hidden
+        && [...wrapper.children].every((child) => (child as HTMLElement).hidden));
+    expect(empties).toHaveLength(0);
   });
 
   it("puts the control on the strip that closes the turn, below the reply (req 14)", () => {

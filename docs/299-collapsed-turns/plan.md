@@ -212,8 +212,8 @@ its producing execution is still running is exactly the case that a
 database-only write loses, at the next persistence boundary or snapshot.
 
 **The card stays reusable.** `submittedAt` records that the user acted; it locks
-nothing, so the documented contract at `chat.ts:71` still holds. Expanding the
-turn brings the card back in full working order.
+nothing, so the documented contract at `chat.ts:71` still holds. The card is on
+screen in the collapsed turn, in full working order.
 
 **The flag no longer hides the card (req 12, 2026-09-16).** It was written to
 decide that, and the cost it carried — a user who ticks one action now and means
@@ -381,7 +381,8 @@ agent message and all cards", which this design contradicts
 - An appended error row does not displace the turn's ordinary reply.
 - A code rollback notice stays visible when its row is hidden.
 - Every card in the "still needs the user" table stays visible in its pending
-  state and hides once resolved, including after a reload.
+  state and hides once resolved, including after a reload — except an action
+  card, which stays either way (req 12).
 - A checklist submitted during a running turn still reads as submitted after the
   turn finishes and after a reload.
 - Pressing a control in a transcript that has a protected turn performs the
