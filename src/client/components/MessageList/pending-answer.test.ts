@@ -117,6 +117,50 @@ describe("pendingAnswerElementIndex", () => {
     expect(pendingAnswerElementIndex(elements, messages)).toBe(1);
   });
 
+  it("finds a question the agent asked while spawning a sub-agent", () => {
+    // A sub-agent chip is emitted after the element for the message it came
+    // from, so it lands below the question the same message asked.
+    const messages = [
+      { role: "user", text: "decide" } as ChatMessage,
+      ask({
+        toolUse: [
+          { type: "tool_use", id: "task-1", name: "Task", input: { prompt: "look into it" } },
+          { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT },
+        ],
+      }),
+      voiceCard(),
+    ];
+    const elements = buildVisualElements(messages);
+    expect(elements.map((el) => el.kind)).toContain("subagent");
+    expect(pendingAnswerElementIndex(elements, messages)).toBe(1);
+  });
+
+  it("is pending while ANY question on the row is unanswered", () => {
+    // One message, two questions, a result for the first only. Reading just the
+    // first would call the row answered and leave the second below the card.
+    const second = {
+      question: "And the queue?",
+      header: "Queue",
+      options: [{ label: "SQS", description: "Managed" }],
+      multiSelect: false,
+    };
+    const messages = [
+      { role: "user", text: "decide" } as ChatMessage,
+      ask({
+        text: "Two calls to make.",
+        toolUse: [
+          { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT },
+          { type: "tool_use", id: "ask-2", name: "AskUserQuestion", input: { questions: [second] } },
+        ],
+        toolResults: [{ toolUseId: "ask-1", content: "Redis" }],
+      }),
+    ];
+    const elements = buildVisualElements(messages);
+    expect(pendingAnswerElementIndex(elements, messages)).toBe(1);
+    // Its identity is the first tool, which does not move when a second arrives.
+    expect([...answerCardElements(elements, messages).values()]).toEqual(["ask-1"]);
+  });
+
   it("claims the question once when its message also carries prose and a grouped tool", () => {
     // The prose becomes a row of its own with `hideTools`, and the question a
     // standalone element. Both read the same message, so claiming both would

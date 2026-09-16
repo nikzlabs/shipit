@@ -2352,10 +2352,16 @@ describe("session status card slot", () => {
 
       const { rerender } = render(<MessageList messages={messages} isLoading={false} />);
       rerender(<MessageList messages={[...messages, msg("assistant", "one more")]} isLoading={false} />);
+      // And through the next turn, where the status card's anchor adds a second
+      // split to the same chunk — the sequence the answer itself starts.
+      const next = [...messages, msg("user", "Redis")];
+      rerender(<MessageList messages={next} isLoading={true} />);
+      rerender(<MessageList messages={[...next, msg("assistant", "on it")]} isLoading={true} />);
+      rerender(<MessageList messages={[...next, msg("assistant", "on it")]} isLoading={false} />);
 
       expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).not.toContain("same key");
       expect(screen.getByText("after the panel")).toBeInTheDocument();
-      expect(screen.getByText("one more")).toBeInTheDocument();
+      expect(screen.getByText("on it")).toBeInTheDocument();
       warn.mockRestore();
     });
 

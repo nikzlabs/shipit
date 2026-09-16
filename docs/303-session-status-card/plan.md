@@ -551,16 +551,19 @@ element that renders it, or `null`:
   a message element whose message has no text, no images, no files and no tools,
   and carries one of `CARD_MESSAGE_FIELDS`. A voice note is exactly that, which
   is why it stops being the thing the view lands on. It steps over a trailing
-  **task panel** for a different reason: the panel is folded out of the message
-  it came from and emitted after it, so an agent that updates its to-do list in
-  the same message as the question leaves one below the question; and the panel
-  moves down the transcript by design, so it is no more the end of the
-  conversation than a card row is.
-- The first element that is neither qualifies when it carries an **unanswered**
-  `AskUserQuestion` (well-formed: an array of `questions`) or
+  **task panel** and a trailing **sub-agent chip** for a different reason:
+  `buildVisualElements` folds both out of a message and emits them *after* the
+  element for that message, so an agent that updates its to-do list or spawns a
+  sub-agent in the same message as the question leaves one below the question.
+  Both move down the transcript by design, so neither is the end of the
+  conversation any more than a card row is.
+- The first element that is none of those qualifies when it carries an
+  **unanswered** `AskUserQuestion` (well-formed: an array of `questions`) or
   `ExitPlanMode` — a tool block with no `toolResults` entry of its own. Those are
   the two that end a turn waiting for the user; a permission or egress prompt
   blocks *inside* a turn, where req 30 already holds the status card above it.
+  A row carrying more than one is pending while **any** of them is unanswered,
+  and its identity is the first, which does not move when a second arrives.
 - A question the agent asked, that the user then replied past, is not lifted:
   the user's own row is not a card row, so the scan stops there.
 - A **`message` element with `hideTools`** never claims the card, even when its
@@ -601,12 +604,14 @@ reading the happy path:
   those rows is the transcript's own follow-up action card, which would lose the
   ticks the user had just made (req 19). Splitting unconditionally makes the
   boundary the same in both states.
-- **The chunk boundary is decided by comparing keys, not by testing
-  `anchorsSeen % ROWS_PER_GROUP`.** A split that lands exactly on a boundary has
-  already opened the next chunk's group; a movable row (a task panel) can then
-  sit in that group, and the next ordinary row would flush it and open a second
-  group under the same key. Comparing the open group's key with the one this row
-  would get is the same test everywhere and has no such gap.
+- **The chunk the open group belongs to is tracked, not recomputed from
+  `anchorsSeen`.** A split that lands exactly on a boundary opens the next
+  chunk's first piece; a movable row (a task panel) can then sit in it, and
+  `anchorsSeen % ROWS_PER_GROUP === 0` stops meaning "no group of this chunk has
+  been opened yet". Reading it that way emitted two groups under one key — twice,
+  in two different sequences. So `chunkIndex` and `chunkPiece` are carried: a
+  non-movable row whose chunk differs closes the group and resets the piece, and
+  a split only ever increments the piece.
 
 **Document order stops being row order**, and one place read the two as the same:
 `CompactLayout`'s anchor search walked `[data-compact-content]` in the DOM and
@@ -688,7 +693,9 @@ built file is named in brackets. Every one of them exists.
   [`integration_tests/session-status-route.test.ts`] — validate → persist → broadcast →
   `statusUpdated`; a bare call with a stored card → current, `writeSeq`
   moved, nothing else changed; a bare call with no stored card → 400
-  naming `status`; 409 without a runner; the reply lists offers.
+  naming `status`; 409 without a runner; the reply lists offers; the last-turn
+  line carried through and dropped by the next write, the bare one included
+  (req 31).
 - `api-routes-propose-actions.test.ts`
   [`integration_tests/propose-actions-route.test.ts`] — 409 under the flag;
   unchanged otherwise.
@@ -762,11 +769,12 @@ built file is named in brackets. Every one of them exists.
   asks the container, so a dispatched turn's user row arming auto-follow does
   not suppress it, and a reader at the bottom is left alone.
 - `MessageList/pending-answer.test.ts` — the question the conversation ends
-  with, found past a trailing voice note, past a trailing task panel, and inside
-  a message that also carries the agent's prose; claimed exactly once when that
-  message also carries a grouped tool; a plan waiting for approval; and `null`
-  for an answered question, one the user replied past, a malformed one, and an
-  ordinary conversation (req 32).
+  with, found past a trailing voice note, a trailing task panel and a trailing
+  sub-agent chip, and inside a message that also carries the agent's prose;
+  claimed exactly once when that message also carries a grouped tool; pending
+  while any of two questions on one row is unanswered; a plan waiting for
+  approval; and `null` for an answered question, one the user replied past, a
+  malformed one, and an ordinary conversation (req 32).
 - `SessionStatusCard.test.tsx` — the last-turn line above the status with both
   labelled, and hidden on a stale card (req 31); the markdown status; the two subtitles; the
   manual-step toggles and their "I've done this" names; "Stale" only when

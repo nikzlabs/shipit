@@ -19,7 +19,7 @@ docs-only PR and their review history is on planning#550.
 - [x] Tests listed in plan.md, including the flag-off byte-for-byte checks per harness.
 - [x] Req 30: the card keeps its turn-start place while a turn runs and returns to the end when it stops — frozen anchor, one keyed list so the move is not a remount, a group keyed by the chunk it belongs to, and the reading anchor restored under the card's own scroll guard.
 - [x] Verify req 30 by hand in the dogfood instance on a narrow viewport: a seeded card, a real turn, the card scrolling away and coming back.
-- [ ] Req 31: `lastTurn` through the domain type, the validator, the service merge as the one non-delta field, the row parsing, the tool schema, the route reply, the injected prompt and the nudge prompt; the card renders it first, labelled beside a labelled status, and hides it when stale.
-- [ ] Req 32: `pending-answer.ts`; every answer card in a container keyed by its tool, the pending one last in the flow under the status card; the chunk-split counter that replaces `openedByCard`.
-- [ ] Verify both by hand in the dogfood instance at 390x780: a turn ending with a question, with a card and offers present, and a card whose last-turn line changes.
+- [x] Req 31: `lastTurn` through the domain type, the validator, the service merge as the one non-delta field, the row parsing, the tool schema, the route reply, the injected prompt and the nudge prompt; the card renders it first, labelled beside a labelled status, and hides it when stale.
+- [x] Req 32: `pending-answer.ts`; every answer card in a container keyed by its tool, the pending one last in the flow under the status card; the chunk piece counter that replaces `openedByCard`, with the chunk tracked rather than recomputed.
+- [x] Verify both by hand in the dogfood instance at 390x780: a turn ending with a question, with a card and offers present, and a card whose last-turn line changes.
 - [x] Verify in the dogfood instance: flag on — switch away and back, reload, a turn that skips the tool, a resident agent across a toggle; flag off — an action card as today.

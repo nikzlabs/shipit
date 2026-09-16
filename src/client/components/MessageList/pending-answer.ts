@@ -15,10 +15,19 @@ function isAnswerTool(name: string, input: Record<string, unknown>): boolean {
   return name !== "AskUserQuestion" || Array.isArray(input.questions);
 }
 
-/** The id of the answer card this element renders, or `undefined`. */
-function answerToolId(el: VisualElement, messages: ChatMessage[]): string | undefined {
+/**
+ * The answer card this element renders: the `id` that names it, and whether any
+ * of the cards on it is still waiting. A row can carry more than one — a message
+ * with two questions renders both — and it is pending while ANY is unanswered,
+ * while its identity is the first, which does not move when a second arrives.
+ */
+function answerCard(
+  el: VisualElement,
+  messages: ChatMessage[],
+): { id: string; pending: boolean } | undefined {
   if (el.kind === "standalone-tool") {
-    return isAnswerTool(el.tool.name, el.tool.input) ? el.tool.id : undefined;
+    if (!isAnswerTool(el.tool.name, el.tool.input)) return undefined;
+    return { id: el.tool.id, pending: !el.result };
   }
   if (el.kind !== "message") return undefined;
   // A message that carries the agent's closing prose renders the card inline
@@ -27,13 +36,13 @@ function answerToolId(el: VisualElement, messages: ChatMessage[]): string | unde
   // prose row with `hideTools` and a standalone element for the question, and
   // claiming the prose row too would give two siblings the same key.
   if (el.hideTools) return undefined;
-  return messages[el.index]?.toolUse?.find((t) => isAnswerTool(t.name, t.input))?.id;
-}
-
-function isAnswered(el: VisualElement, messages: ChatMessage[], toolId: string): boolean {
-  if (el.kind === "standalone-tool") return !!el.result;
-  const msg = el.kind === "message" ? messages[el.index] : undefined;
-  return !!msg?.toolResults?.some((result) => result.toolUseId === toolId);
+  const msg = messages[el.index];
+  const tools = msg?.toolUse?.filter((t) => isAnswerTool(t.name, t.input)) ?? [];
+  if (tools.length === 0) return undefined;
+  return {
+    id: tools[0].id,
+    pending: tools.some((t) => !msg?.toolResults?.some((result) => result.toolUseId === t.id)),
+  };
 }
 
 /**
@@ -63,8 +72,8 @@ export function answerCardElements(
 ): Map<number, string> {
   const found = new Map<number, string>();
   elements.forEach((el, index) => {
-    const toolId = answerToolId(el, messages);
-    if (toolId !== undefined) found.set(index, toolId);
+    const card = answerCard(el, messages);
+    if (card) found.set(index, card.id);
   });
   return found;
 }
@@ -83,13 +92,14 @@ export function pendingAnswerElementIndex(
 ): number | null {
   for (let i = elements.length - 1; i >= 0; i--) {
     const el = elements[i];
-    const toolId = answerToolId(el, messages);
-    if (toolId !== undefined) return isAnswered(el, messages, toolId) ? null : i;
-    // A to-do panel is emitted after the message it was folded from, so the
-    // agent updating its task list in the same message as the question puts one
-    // below it. It moves down the transcript by design, so it is no more the
-    // end of the conversation than a card row is.
-    if (el.kind === "task-panel") continue;
+    const card = answerCard(el, messages);
+    if (card) return card.pending ? i : null;
+    // `buildVisualElements` emits a to-do panel and a sub-agent chip AFTER the
+    // element for the message they were folded out of, so the agent updating
+    // its task list or spawning a sub-agent in the same message as the question
+    // puts one below it. Neither is the end of the conversation any more than a
+    // card row is; a reply from the user still stops the scan.
+    if (el.kind === "task-panel" || el.kind === "subagent") continue;
     if (el.kind !== "message") return null;
     const msg = messages[el.index];
     if (!msg || !isCardRow(msg)) return null;

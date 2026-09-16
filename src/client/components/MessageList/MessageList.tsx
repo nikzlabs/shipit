@@ -461,11 +461,17 @@ export function MessageList({
 
   const flow: ReactNode[] = [];
   let anchorsSeen = 0;
-  // How many times this chunk of `ROWS_PER_GROUP` rows has been split — by the
-  // status card's anchor, or by an answer card taken out of the flow. The
-  // suffix names the piece, so removing a split re-parents only the rows in the
-  // pieces after it and leaves every later chunk alone.
-  let chunkSplits = 0;
+  // Which chunk of `ROWS_PER_GROUP` rows the open group belongs to, and which
+  // piece of it: the status card's anchor and an answer card both split a chunk,
+  // and a chunk can be split more than once. The chunk is tracked rather than
+  // recomputed at each flush because a split landing exactly on a boundary opens
+  // the next chunk's first piece, and a movable row can then sit in it — so
+  // `anchorsSeen % ROWS_PER_GROUP === 0` no longer means "no group of this chunk
+  // has been opened yet", and taking it to mean that emitted two groups under
+  // one key. The suffix names the piece, so removing a split re-parents only the
+  // rows in the pieces after it and leaves every later chunk alone.
+  let chunkIndex = -1;
+  let chunkPiece = 0;
   let current: { key: string; visible: number; children: ReactNode[] } | null = null;
   const flushGroup = () => {
     if (!current) return;
@@ -495,7 +501,7 @@ export function MessageList({
   };
   const splitChunk = () => {
     flushGroup();
-    chunkSplits = anchorsSeen % ROWS_PER_GROUP === 0 ? 0 : chunkSplits + 1;
+    chunkPiece += 1;
   };
   rows.forEach((row, index) => {
     if (statusCard && index === cardRowIndex) {
@@ -513,17 +519,22 @@ export function MessageList({
       if (index !== pendingAnswerIndex) flow.push(answerCardNode(index));
       return;
     }
-    const groupKey = () =>
-      `${Math.floor(anchorsSeen / ROWS_PER_GROUP)}${chunkSplits > 0 ? `b${chunkSplits}` : ""}`;
-    // Compared with the open group's key rather than tested on `anchorsSeen`
-    // alone: a split that lands exactly on a chunk boundary already opened the
-    // next chunk's group, and flushing it again here would emit a second group
-    // under the same key. A movable row is what can sit in that gap.
-    if (!row.movable && current !== null && current.key !== groupKey()) {
-      flushGroup();
-      chunkSplits = 0;
+    // A movable row never opens a chunk: it is placed in whatever group is open,
+    // so that it can move down the transcript without re-keying the rows around
+    // it (planning#491).
+    if (!row.movable) {
+      const chunk = Math.floor(anchorsSeen / ROWS_PER_GROUP);
+      if (chunk !== chunkIndex) {
+        flushGroup();
+        chunkIndex = chunk;
+        chunkPiece = 0;
+      }
     }
-    const group = (current ??= { key: groupKey(), visible: 0, children: [] });
+    const group = (current ??= {
+      key: `${chunkIndex}${chunkPiece > 0 ? `b${chunkPiece}` : ""}`,
+      visible: 0,
+      children: [],
+    });
     if (row.visible) group.visible++;
     if (!row.movable) anchorsSeen++;
     group.children.push(row.node);
