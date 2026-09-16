@@ -1,6 +1,7 @@
 import type { ToolDescriptor } from "./types.js";
 import { MAX_PAYLOAD_LEN, MAX_DESC_LEN, MAX_ID_LEN, MAX_LABEL_LEN } from "../../shared/propose-actions-validation.js";
 import {
+  MAX_LAST_TURN_LEN,
   MAX_NEEDS_YOU_ITEMS,
   MAX_NEEDS_YOU_LEN,
   MAX_STATUS_LEN,
@@ -11,8 +12,12 @@ import { requireOfferDescriptions } from "../../shared/session-status-offers.js"
 const TOOL_DESCRIPTION = [
   "Write the session status card the user reads just above the input field, and offer the",
   "follow-up actions they can approve with a click. Call it as the LAST act of every turn.",
-  "It describes THE SESSION, not this turn: what the session is about, how far it got,",
+  "`status` describes THE SESSION, not this turn: what the session is about, how far it got,",
   "whether it is done or ready to merge, and work you have identified but not started.",
+  "`lastTurn` is the one line that IS about this turn — one or two sentences on what you did,",
+  "or the direct answer when the user asked something. It is the ONLY field that is not a",
+  "delta: every call rewrites it, and a call that omits it clears the line, so pass it again",
+  "whenever the turn did something worth saying and leave it out when it did not.",
   `\`status\` is markdown and may carry a short list (up to ${MAX_STATUS_LEN} chars).`,
   "`needsYou` is a LIST, one entry per thing only the USER can do by hand, shown on the card",
   "under \"Manual steps\" with a toggle each; send [] to clear it. An action is YOUR work,",
@@ -31,6 +36,14 @@ const TOOL_DESCRIPTION = [
 const inputSchema = {
   type: "object" as const,
   properties: {
+    lastTurn: {
+      type: "string",
+      maxLength: MAX_LAST_TURN_LEN,
+      description:
+        "One or two sentences on what you did in THIS turn, or the direct answer when the user "
+        + `asked something (≤${MAX_LAST_TURN_LEN} chars). Not a delta: omit it and the line is `
+        + "cleared, which is what you want when the turn produced nothing worth saying.",
+    },
     status: {
       type: "string",
       maxLength: MAX_STATUS_LEN,
@@ -134,6 +147,7 @@ export const sessionStatusTool: ToolDescriptor = {
   inputSchema,
   async call(args, { workerUrl }) {
     const a = args as {
+      lastTurn?: unknown;
       status?: unknown;
       needsYou?: unknown;
       actions?: unknown;
@@ -163,6 +177,7 @@ export const sessionStatusTool: ToolDescriptor = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          lastTurn: a.lastTurn,
           status: a.status,
           needsYou: a.needsYou,
           actions: a.actions,

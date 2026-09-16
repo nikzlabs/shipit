@@ -2166,4 +2166,138 @@ describe("session status card slot", () => {
       expect(precedes(card, screen.getByText("the rest"))).toBe(true);
     });
   });
+
+  // docs/303 req 32 — a card that waits for the user's answer is the last
+  // element of the conversation, so the view lands on the control they need.
+  describe("a card waiting for an answer goes last", () => {
+    const ASK_INPUT = {
+      questions: [
+        {
+          question: "Which cache?",
+          header: "Cache",
+          options: [
+            { label: "Redis", description: "External" },
+            { label: "Memcached", description: "Simple" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    };
+
+    const question = (over: Partial<ChatMessage> = {}): ChatMessage => ({
+      role: "assistant",
+      text: "",
+      toolUse: [{ type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT }],
+      ...over,
+    }) as ChatMessage;
+
+    const voiceCard = (): ChatMessage => ({
+      role: "assistant",
+      text: "",
+      voiceNote: { id: "v1", headline: "Question on screen.", kind: "ask", createdAt: "t" },
+    }) as ChatMessage;
+
+    function precedes(first: Element, second: Element): boolean {
+      return (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    }
+
+    const asked = [msg("user", "decide"), question(), voiceCard()];
+
+    it("puts the status card and the voice note above the question, and the question last", () => {
+      seed(status);
+      const { container } = render(<MessageList messages={asked} isLoading={false} />);
+
+      const card = screen.getByTestId("session-status-card");
+      const ask = screen.getByTestId("option-Redis");
+      const voice = screen.getByText("Question on screen.");
+      expect(precedes(voice, card)).toBe(true);
+      expect(precedes(card, ask)).toBe(true);
+
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild!.contains(ask)).toBe(true);
+    });
+
+    it("holds even while the status card offers actions, which wait and the question does not", () => {
+      seed({
+        ...status,
+        actions: [{
+          offerId: "o1",
+          offeredAt: "2026-09-16T00:00:00Z",
+          id: "wire-webhook",
+          label: "Wire the Stripe webhook",
+          description: "Adds /webhooks/stripe.",
+          payload: "Wire the Stripe webhook.",
+        }],
+      });
+      render(<MessageList messages={asked} isLoading={false} />);
+
+      expect(precedes(
+        screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ }),
+        screen.getByTestId("option-Redis"),
+      )).toBe(true);
+    });
+
+    it("is not about the status card: the question is last with no card stored", () => {
+      seed(undefined);
+      const { container } = render(<MessageList messages={asked} isLoading={false} />);
+      expect(screen.queryByTestId("session-status-card")).toBeNull();
+      expect(precedes(
+        screen.getByText("Question on screen."),
+        screen.getByTestId("option-Redis"),
+      )).toBe(true);
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild!.contains(screen.getByTestId("option-Redis"))).toBe(true);
+    });
+
+    it("does not remount the question when the voice note lands after it", () => {
+      seed(status);
+      const { rerender } = render(
+        <MessageList messages={[msg("user", "decide"), question()]} isLoading={true} />,
+      );
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      const chosen = screen.getByTestId("option-Redis");
+      expect(chosen.className).toContain("accent-subtle");
+
+      rerender(<MessageList messages={asked} isLoading={true} />);
+      rerender(<MessageList messages={asked} isLoading={false} />);
+      // The same DOM node, so the selection the user made is still there:
+      // `AskUserQuestion` keeps it in component state, and an interrupted
+      // question never gets a tool result to rebuild it from.
+      expect(screen.getByTestId("option-Redis")).toBe(chosen);
+      expect(screen.getByTestId("option-Redis").className).toContain("accent-subtle");
+    });
+
+    it("keeps the answer the user typed when the conversation moves past the question", () => {
+      seed(status);
+      const { rerender } = render(<MessageList messages={asked} isLoading={false} />);
+      fireEvent.click(screen.getByTestId("option-other"));
+      const typed = screen.getByTestId("other-input");
+      fireEvent.change(typed, { target: { value: "Only the src folder" } });
+
+      // The answer starts a turn, so the question stops being what the
+      // conversation ends with and returns to its place in the transcript.
+      // Its container is keyed by its tool, so that return is a reorder.
+      rerender(
+        <MessageList messages={[...asked, msg("user", "Only the src folder")]} isLoading={true} />,
+      );
+      rerender(
+        <MessageList
+          messages={[...asked, msg("user", "Only the src folder"), msg("assistant", "on it")]}
+          isLoading={true}
+        />,
+      );
+      expect(screen.getByTestId("other-input")).toBe(typed);
+      expect((typed as HTMLTextAreaElement).value).toBe("Only the src folder");
+    });
+
+    it("leaves a question the user replied past where it is", () => {
+      seed(status);
+      const replied = [...asked, msg("user", "never mind"), msg("assistant", "doing that instead")];
+      const { container } = render(<MessageList messages={replied} isLoading={false} />);
+
+      expect(precedes(screen.getByTestId("option-Redis"), screen.getByText("never mind"))).toBe(true);
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild).toBe(screen.getByTestId("session-status-card"));
+    });
+  });
 });

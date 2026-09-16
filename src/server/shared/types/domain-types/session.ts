@@ -145,6 +145,13 @@ export interface OfferedAction extends ActionChecklistItem {
 }
 
 export interface SessionStatus {
+  /**
+   * docs/303 req 31 — one or two sentences on the turn that wrote this card, or
+   * the direct answer when the user asked something. Never carried forward: an
+   * accepted write that omits it clears it, because a line kept from an earlier
+   * write describes a turn that is over.
+   */
+  lastTurn?: string;
   /** Markdown: the agent may use a list, so it is rendered, not printed. */
   status: string;
   /** One entry per thing only the user can do; absent when there is none. */

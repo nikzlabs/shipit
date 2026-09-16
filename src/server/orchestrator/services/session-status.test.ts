@@ -71,6 +71,30 @@ describe("recordSessionStatus", () => {
     expect(d.sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [] });
   });
 
+  it("rewrites or drops the last-turn line on every write, never carrying it (req 31)", async () => {
+    const { d } = await seededCard();
+
+    const first = await recordSessionStatus(d, "s1", { lastTurn: "Wired the webhook route." });
+    expect(first).toMatchObject({ lastTurn: "Wired the webhook route." });
+
+    const second = await recordSessionStatus(d, "s1", { lastTurn: "Fixed the signature check." });
+    expect(second).toMatchObject({ lastTurn: "Fixed the signature check." });
+
+    // The bare confirming call says the SESSION still holds; it is not a claim
+    // about a turn, so the previous turn's line goes.
+    const confirmed = await recordSessionStatus(d, "s1", {});
+    expect(confirmed?.lastTurn).toBeUndefined();
+    expect(confirmed).toMatchObject({ status: "Routes done." });
+  });
+
+  it("broadcasts when only the last-turn line moved", async () => {
+    const { d } = await seededCard();
+    d.sseBroadcast.mockClear();
+
+    await recordSessionStatus(d, "s1", { status: "Routes done.", lastTurn: "Ran the suite." });
+    expect(d.sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [] });
+  });
+
   it("leaves an omitted field alone and clears needsYou on an empty list", async () => {
     const { d } = await seededCard();
 

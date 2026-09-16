@@ -1,6 +1,13 @@
 // eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChatCircleDotsIcon, ClipboardTextIcon, ListChecksIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import {
+  ChatCircleDotsIcon,
+  ClipboardTextIcon,
+  ClockCounterClockwiseIcon,
+  GaugeIcon,
+  ListChecksIcon,
+  WarningCircleIcon,
+} from "@phosphor-icons/react";
 import type { SessionStatus } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -134,6 +141,12 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
   const nothingTicked = selected.size === 0 && steps.selected.size === 0;
 
   const stale = !status.fresh;
+  /**
+   * req 31 — the line is about the turn that wrote the card, so a stale card
+   * hides it: the status ages into a rough description of the session, while a
+   * turn line one turn behind is simply wrong.
+   */
+  const lastTurn = stale ? undefined : status.lastTurn;
   // The "Stale" label is drawn over the card's bottom-right corner.
   const clearOfStale = stale ? "pr-11" : "";
   const hasOffers = status.actions.length > 0;
@@ -144,9 +157,24 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
       data-testid="session-status-card"
       className="relative rounded-lg border border-(--color-border-secondary)/60 bg-(--color-bg-secondary)/50 px-3 py-2 text-xs"
     >
+      {/* req 31 — what the last turn did, above the session's own state. The
+          two prose blocks take labels together: one needs none, and two in a
+          row cannot be told apart without them (req 28). */}
+      {lastTurn && (
+        <div data-testid="session-status-last-turn">
+          <Subtitle icon={<ClockCounterClockwiseIcon size={ICON_SIZE.SM} />}>Last turn</Subtitle>
+          <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
+            <MarkdownContent text={lastTurn} />
+          </div>
+        </div>
+      )}
+
       {/* req 27 — the status is markdown, so a list in it reads as a list. */}
-      <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN} ${hasOffers || needsYou.length > 0 ? "" : clearOfStale}`}>
-        <MarkdownContent text={status.status} />
+      <div className={lastTurn ? SECTION : ""}>
+        {lastTurn && <Subtitle icon={<GaugeIcon size={ICON_SIZE.SM} />}>Status</Subtitle>}
+        <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN} ${hasOffers || needsYou.length > 0 ? "" : clearOfStale}`}>
+          <MarkdownContent text={status.status} />
+        </div>
       </div>
 
       {needsYou.length > 0 && (

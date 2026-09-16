@@ -92,6 +92,7 @@ rehydration) is involved.
 
 | Field | Limit | Meaning |
 |---|---|---|
+| `lastTurn` | optional, plain prose, ≤ 400 chars; **not a delta** — an accepted call that omits it CLEARS the stored line (req 31) | One or two sentences on what the agent did in the turn that is ending, or the direct answer when the user asked something. |
 | `status` | optional, markdown, ≤ 1200 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
 | `needsYou` | optional repeated field: a list of strings, each ≤ 240 chars, at most 10; omitted: unchanged; `[]`: cleared (req 27) | One entry per decision or hand action only the user can take. Empty when nothing. |
 | `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the rule is `requireOfferDescriptions` (`shared/session-status-offers.ts`), applied by the tool and by the route on the validated items rather than by the shared item validator, which serves both tools | Agent work the user approves with a click. |
@@ -107,6 +108,19 @@ is a delta on the stored card — omitted means unchanged — so a partial call
 with no stored card is refused with a message asking for `status`. Every
 accepted call, bare or not, sets the turn's `statusUpdated` and bumps
 `writeSeq`.
+
+**`lastTurn` is the one field that is not a delta (req 31).** It names the turn
+that is ending, so carrying it into the next write would make it describe a turn
+that is over — the misleading state req 31 rules out. Every accepted call
+therefore rewrites it or clears it, the bare confirming call included: a
+confirmation says the *session* still holds, and it is not a claim about a turn.
+The rule lives in `recordSessionStatus`, which reads `write.lastTurn` instead of
+falling back to the stored one, and the prompt and the tool description both
+state it, because an agent that expects delta semantics everywhere would
+otherwise drop its own line by accident. The section is also hidden while the
+card is stale — a presentation rule in the card, not a write: a stale card's
+status is still roughly true of the session, while its turn line is by then one
+turn behind, which req 31 says is worse than none.
 
 **Offer identity and reconciliation (req 17).** Every stored offer carries a
 server-assigned `offerId`. On any write, an incoming item that equals a
@@ -137,7 +151,7 @@ while it is on, so neither card can be written from the other side of a toggle.
 ## Storage (req 10)
 
 - `sessions.session_status` column, JSON
-  `{ status, needsYou?: string[], actions: OfferedAction[], fresh, writeSeq }`;
+  `{ lastTurn?, status, needsYou?: string[], actions: OfferedAction[], fresh, writeSeq }`;
   `OfferedAction` is the item plus `offerId`, `offeredAt`, `branch?`,
   `headSha?`, `takenAt?`. Migration via `addSessionColumnIfMissing`
   (`database.ts`).
@@ -315,6 +329,11 @@ store and renders nothing without one. `text-xs`, semantic tokens only, no
 header row; section subtitles rather than field labels:
 
 ```
+🕘 Last turn
+Wired the webhook route and its signature check; the suite is green.
+
+────────────────────────────────────────────────────────────
+⏱ Status
 Billing service. Markdown, so a list reads as a list:
   - routes and tests done; PR #212 ready to merge
   - webhook not started
@@ -340,6 +359,13 @@ not the product: the rows, the badge and the submit button are the existing
 follow-up action card's, so a checkable item reads the same wherever the user
 meets one, and every offer shows its description (req 26).
 
+- **The last-turn line (req 31).** Rendered first, through `MarkdownContent` at
+  the card's own size, and only while `fresh`. It appears under the subtitle
+  **"Last turn"** (`ClockCounterClockwise`), and then the status takes a rule
+  and the subtitle **"Status"** (`Gauge`) — the labels arrive together or not at
+  all, because one block of prose needs no label and two in a row cannot be told
+  apart without one (req 28). With no line stored, or on a stale card, the card
+  is byte-for-byte the one that shipped.
 - **Sections, not a labelled column (req 28).** The status opens the card
   unlabelled and renders through `MarkdownContent`, at the card's own text
   size; what only the user can do follows under the subtitle **"Manual steps"**
@@ -513,6 +539,73 @@ performance-critical and covered by contracts of its own (planning#491,
 docs/299); it is not worth that for a row shape only a dispatched turn
 produces.
 
+### A card that waits for an answer goes last (req 32)
+
+The status card is not moved for this; the **answer card is lifted out of the
+transcript's chunking and appended at the end of the flow**, after the status
+card. `pendingAnswerElementIndex`
+(`src/client/components/MessageList/pending-answer.ts`) returns the index of the
+element that renders it, or `null`:
+
+- It scans `visualElements` from the end, stepping over trailing **card rows** —
+  a message element whose message has no text, no images, no files and no tools,
+  and carries one of `CARD_MESSAGE_FIELDS`. A voice note is exactly that, which
+  is why it stops being the thing the view lands on.
+- The first element that is not a card row qualifies when it carries an
+  **unanswered** `AskUserQuestion` (well-formed: an array of `questions`) or
+  `ExitPlanMode` — a tool block with no `toolResults` entry of its own. Those are
+  the two that end a turn waiting for the user; a permission or egress prompt
+  blocks *inside* a turn, where req 30 already holds the status card above it.
+- A question the agent asked, that the user then replied past, is not lifted:
+  the user's own row is not a card row, so the scan stops there.
+
+**Every answer card gets a container of its own, keyed by its tool** —
+`qa-<toolUseId>`, a sibling of the row groups rather than a row inside one —
+whether or not it is the pending one, and `answerCardElements` is what finds
+them all. That is the load-bearing decision, and it is not decoration. React can
+only move a node between parents by unmounting it, and `AskUserQuestion` keeps
+the user's selections and their typed "Other" answer in component *state*: an
+interrupted question never receives a tool result, so that state is the only
+record there is of the answer. Give the pending card a container that appears
+when it is pending and disappears when it is not, and answering the question
+destroys the answer — `compact-conversation.test.tsx`'s "does not discard an
+answer typed into a question when its turn collapses" is the standing contract
+for exactly that, and it is what caught the first attempt here. With the
+container keyed by the tool, the card's parent never changes: pending, it is the
+last entry of the flow; not pending, it is an entry at its own position; and the
+move between the two is a reorder among siblings of the scroll content.
+
+**The chunk split generalises.** A group is keyed by the chunk of `ROWS_PER_GROUP`
+rows it belongs to, and the status card's anchor could already split one chunk in
+two (req 30). An answer card splits a chunk the same way, and a chunk can now be
+split more than once, so the `openedByCard` flag becomes a `chunkSplits` counter
+and the suffix names the piece (`b1`, `b2`, …). It resets at every real chunk
+boundary, so removing a split still re-parents only the rows in the pieces after
+it, inside that one chunk, and leaves every later chunk alone.
+
+**Document order stops being row order**, and one place read the two as the same:
+`CompactLayout`'s anchor search walked `[data-compact-content]` in the DOM and
+indexed the visibility string by that position. With an answer card rendered at
+the end whatever its place in the transcript, the rows after it are off by one,
+so the search can skip the wrong row. It now reads the row off the node's
+`compact-row-N` id, which every row already carries for the re-parent lookup, and
+falls back to the position for a node without one.
+
+**The status card's own placement is untouched.** Idle, it is pushed at the end of
+the flow exactly as before (req 6), and the pending answer card follows it;
+during a turn it sits at the frozen anchor (req 30). The two rules compose
+without either knowing about the other: the card leaves the view as the turn
+writes, returns to the end when the turn stops, and the answer the user has to
+give is still the last thing below it. Its offers are unaffected — a turn can end
+with a question while the card offers actions, and both are reachable, the
+question last because it is what holds the session up (req 32).
+
+One consequence, accepted: the split an answer card makes appears and disappears
+with the card's pending state, so a card row sitting just after it — the voice
+note — re-parents when the conversation moves past the question. Those rows are
+card carriers with no local state, and the row that has state is precisely the
+one whose container never changes.
+
 ## Evolving the action card (req 19, 21)
 
 - With the flag on, `propose_actions` is absent from every tool list, so no
@@ -540,7 +633,9 @@ that **replaces** the "Proposing optional follow-up actions" section in the
 flag-on variant. It is part of the system prompt ShipIt injects, so the
 agent has it on every turn without loading anything (req 25); a skill with
 a longer treatment may come later and is not part of this design. It says:
-the two fields and the action list; the status describes the session, not
+the three fields and the action list; that `lastTurn` is the one line about the
+turn, and the one field that is not a delta, so a call that omits it clears it
+(req 31); the status describes the session, not
 the turn; call it as the last act of a turn, and call it bare when nothing
 changed (req 14); a turn ending in a question needs no call; "Needs you" is what only the user
 can do by hand, an action is agent work approved with a click; offers
@@ -558,14 +653,17 @@ and absent in the flag-off ones, never its wording.
 Names below are the design's; where the build put a test somewhere else, the
 built file is named in brackets. Every one of them exists.
 
-- `session-status-validation.test.ts` — limits; a bare call is valid;
+- `session-status-validation.test.ts` — `lastTurn` trimmed, an empty one read as
+  no line, its cap below the status's; limits; a bare call is valid;
   `needsYou: []` is a clear; empty list only with `replaceActions`; items
   through `validateActionItems`.
 - `services/session-status.test.ts` — reconciliation (unchanged item keeps
   `offerId` and `takenAt`; changed payload → new untaken offer; replace;
   clear); `takeOfferedActions` with an unknown id marks nothing; `writeSeq`
   moves only on agent writes; `markSessionStatusStale` with an old
-  `writeSeq` is a no-op; writes serialize per session; the nudge decision
+  `writeSeq` is a no-op; writes serialize per session; `lastTurn` rewritten by
+  each write and dropped by one that omits it, the bare confirmation included
+  (req 31); the nudge decision
   table on a snapshot (each "no" condition; plain turn → nudge).
 - `api-routes-session-status.test.ts`
   [`integration_tests/session-status-route.test.ts`] — validate → persist → broadcast →
@@ -626,14 +724,26 @@ built file is named in brackets. Every one of them exists.
   transcript a session switch leaves behind is not an anchor; a streaming reply
   renders below the card; a tool group straddling the boundary falls below it;
   and a group past the card's own keeps its DOM node when the anchor moves.
-- `MessageList/CompactLayout.test.tsx` — the reading anchor is restored when
+  Req 32: a turn ending with a question puts the voice note and the status card
+  above it and the question last; the same with offers on the card, and the same
+  with no card stored at all; the question is not remounted when the voice note
+  lands after it, nor when the conversation moves past it, so a typed answer
+  survives both; a question the user replied past is left where it is.
+- `MessageList/CompactLayout.test.tsx` — a row's visibility is read off its id
+  rather than its place in the DOM, which req 32 separates; the reading anchor is restored when
   the card's anchor moves with the visibility string unchanged, under the
   card's own guard rather than the auto-follow one; and the anchor row is
   re-found when the reflow remounted it.
 - `MessageList/hooks/useMessageScroll.test.tsx` — `canPreserveAcrossCardMove`
   asks the container, so a dispatched turn's user row arming auto-follow does
   not suppress it, and a reader at the bottom is left alone.
-- `SessionStatusCard.test.tsx` — the markdown status; the two subtitles; the
+- `MessageList/pending-answer.test.ts` — the question the conversation ends
+  with, found past a trailing voice note and inside a message that also carries
+  the agent's prose; a plan waiting for approval; and `null` for an answered
+  question, one the user replied past, a malformed one, and an ordinary
+  conversation (req 32).
+- `SessionStatusCard.test.tsx` — the last-turn line above the status with both
+  labelled, and hidden on a stale card (req 31); the markdown status; the two subtitles; the
   manual-step toggles and their "I've done this" names; "Stale" only when
   stale; selection keyed by `offerId` survives a replacement as a new
   unselected item; a sent row greyed, unticked, tagged SENT and still tickable;
@@ -673,6 +783,7 @@ card, submission, the toggle — and the call itself is the route's own tests.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts`, `src/server/shared/types/domain-types/session.ts` — column and type.
 - `src/server/orchestrator/prompts/skeleton.md` (the `{{FOLLOW_UP_ACTIONS}}` slot), `prompts/propose-actions.md`, `prompts/session-status.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
 - `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation.
+- `src/client/components/MessageList/pending-answer.ts` — which elements render a card the user answers, and which one the conversation ends with (req 32).
 
 ## Rejected alternatives
 
@@ -710,7 +821,14 @@ Each is reversible without touching a numbered requirement.
   comment shortcut" is withdrawn — Nik ruled the card extends the action card
   rather than reducing it, req 26.)
 - Every tool field is a delta on the stored card: omitted means unchanged,
-  `needsYou: []` clears; a bare call with no stored card is refused.
+  `needsYou: []` clears; a bare call with no stored card is refused. `lastTurn`
+  is the exception, for the reason req 31 gives.
+- The last-turn line is hidden on a stale card rather than cleared from the
+  record, so turning the card current again does not need a second write.
+- The rule that a card waiting for an answer goes last is stated for the two
+  cards that END a turn that way (question, plan approval), not for every
+  blocking prompt: a permission or egress prompt blocks inside a turn, where the
+  card is already held above it by req 30.
 - A `session_status` call whose awaits straddle a turn reset still writes the
   card but does not set `statusUpdated`: the write is right either way, and a
   successor inheriting the credit would escape the nudge it is owed. The

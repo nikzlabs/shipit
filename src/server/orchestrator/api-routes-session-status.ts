@@ -11,7 +11,13 @@ export async function registerSessionStatusRoutes(
 ): Promise<void> {
   app.post<{
     Params: { sessionId: string };
-    Body: { status?: unknown; needsYou?: unknown; actions?: unknown; replaceActions?: unknown };
+    Body: {
+      lastTurn?: unknown;
+      status?: unknown;
+      needsYou?: unknown;
+      actions?: unknown;
+      replaceActions?: unknown;
+    };
   }>(
     "/api/sessions/:sessionId/session-status",
     { config: { containerAccessible: true } },
@@ -91,6 +97,7 @@ export async function registerSessionStatusRoutes(
 
       return {
         ok: true,
+        ...(card.lastTurn ? { lastTurn: card.lastTurn } : {}),
         status: card.status,
         ...(card.needsYou?.length ? { needsYou: card.needsYou } : {}),
         actions: card.actions.map((offer) => ({
