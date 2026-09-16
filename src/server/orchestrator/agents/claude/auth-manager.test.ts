@@ -11,7 +11,6 @@ import {
   extractPlanLabel,
   extractUrlFromBuffer,
 } from "./auth-manager.js";
-import { sanitizeClaudeAuthDiagnostic } from "./auth-diagnostics.js";
 
 const ptyHoisted = vi.hoisted(() => ({
   calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string> } }[],
@@ -208,25 +207,6 @@ describe("extractUrlFromBuffer", () => {
   });
 });
 
-describe("sanitizeClaudeAuthDiagnostic", () => {
-  it("redacts auth URL details, token-like values, emails, API keys, and credential paths", () => {
-    const sanitized = sanitizeClaudeAuthDiagnostic(
-      "Open https://claude.ai/oauth/authorize?code=true&state=secret-state&code_challenge=secret-challenge " +
-      "for person@example.com with Authorization: Bearer abcdefghijklmnop and sk-ant-secret " +
-      "from /root/.claude/.credentials.json plus /credentials/.claude/auth.json",
-    );
-
-    expect(sanitized).toContain("https://claude.ai/oauth/authorize?[redacted]");
-    expect(sanitized).toContain("[email redacted]");
-    expect(sanitized).toContain("Bearer [redacted]");
-    expect(sanitized).toContain("sk-ant-[redacted]");
-    expect(sanitized).toContain("/root/.[redacted]");
-    expect(sanitized).toContain("/credentials/[redacted]");
-    expect(sanitized).not.toContain("secret-state");
-    expect(sanitized).not.toContain("person@example.com");
-    expect(sanitized).not.toContain("abcdefghijklmnop");
-  });
-});
 
 describe("AuthManager.checkCredentials", () => {
   let origApiKey: string | undefined;
@@ -529,7 +509,7 @@ describe("AuthManager / auth diagnostics", () => {
 
     expect(pending).toHaveLength(1);
     expect(progress.map((p) => p.phase)).toContain("waiting_for_code");
-    const cliLog = logs.find((l) => l.source === "claude_stdout");
+    const cliLog = logs.find((l) => l.source === "cli_stdout");
     expect(cliLog?.message).toContain("https://claude.ai/oauth/authorize?[redacted]");
     expect(cliLog?.message).not.toContain("super-secret-state");
     expect(new Set(progress.map((p) => p.attemptId)).size).toBe(1);

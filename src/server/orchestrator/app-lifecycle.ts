@@ -50,7 +50,7 @@ import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages
 import type {
   AgentAuthLogPayload,
   AgentAuthProgressPayload,
-} from "./agents/claude/auth-diagnostics.js";
+} from "./agents/auth-diagnostics.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import { accountServiceForHarness } from "./provider-account-manager.js";

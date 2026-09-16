@@ -93,7 +93,7 @@ import {
   AccountChallenge,
   ChallengePlaceholder,
   AuthPanel,
-  ClaudeAuthOutput,
+  AuthCliOutput,
   useAuthStatus,
   ProviderAccountRows,
   abandonAccount,
@@ -1743,8 +1743,8 @@ function AddServiceDialog({
                       {authError ?? "The sign-in stopped before the account connected."} Try again
                       below, or close this to add nothing.
                     </p>
-                    {signInProvider === "claude" && signInAccountId && (
-                      <ClaudeAuthOutput accountId={signInAccountId} />
+                    {signInProvider && signInAccountId && (
+                      <AuthCliOutput provider={signInProvider} accountId={signInAccountId} />
                     )}
                   </AuthPanel>
                 ) : signInAccount || startingSignIn ? (
@@ -1768,8 +1768,9 @@ function AddServiceDialog({
                             be a moment from now — so the panel is the whole of
                             the sign-in and the arrival of the field moves
                             nothing. */}
-                        {signInProvider === "claude" && (
-                          <ClaudeAuthOutput
+                        {signInProvider && (
+                          <AuthCliOutput
+                            provider={signInProvider}
 
                             // because appearing later is what grew the panel.
                             {...(signInAccountId ? { accountId: signInAccountId } : {})}

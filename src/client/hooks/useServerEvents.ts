@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: EventSource (SSE) connection lifecycle with cleanup (external system sync)
 import { useEffect, useRef, useState } from "react";
 import type { LoginIntegrationId } from "../../server/shared/catalogue/types.js";
+import type { WsAgentAuthLog } from "../../server/shared/types/ws-server-messages/auth.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -74,6 +75,18 @@ const AUTH_COPY: Partial<Record<LoginIntegrationId, {
       denied: "Sign-in was denied.",
     },
     failureDefault: "Sign-in failed. Try again.",
+  },
+
+  // The CLI reads the code within 60 seconds of printing the link and gives up
+  // there — measured, docs/301-antigravity-harness/probes/signin-exit-shape.md.
+  "google-antigravity-oauth": {
+    pendingDiagnostic:
+      "Sign-in link received. Paste the authorization code within 60 seconds.",
+    completed: "Antigravity sign-in completed.",
+    failure: {
+      timeout: "Sign-in timed out. Try again.",
+    },
+    failureDefault: "Antigravity sign-in failed. The CLI output below says what happened.",
   },
 };
 
@@ -316,9 +329,9 @@ export function useServerEvents(): void {
       // that reports no diagnostics never records one, so this is a no-op for it
 
       const currentAttemptId =
-        useSettingsStore.getState().claudeAuthDiagnostics[data.accountId]?.attemptId;
+        useSettingsStore.getState().authDiagnostics[data.accountId]?.attemptId;
       if (currentAttemptId) {
-        useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
+        useSettingsStore.getState().setAuthProgress(data.accountId, {
           attemptId: currentAttemptId,
           phase: "waiting_for_code",
           message: AUTH_COPY[data.loginId]?.pendingDiagnostic
@@ -336,7 +349,7 @@ export function useServerEvents(): void {
       useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, null);
       useSettingsStore.getState().setProviderAccountAuthError(data.loginId, data.accountId, null);
 
-      useSettingsStore.getState().finishClaudeAuthDiagnostics(
+      useSettingsStore.getState().finishAuthDiagnostics(
         data.accountId,
         "complete",
         AUTH_COPY[data.loginId]?.completed,
@@ -367,7 +380,7 @@ export function useServerEvents(): void {
 
         useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, null);
         useSettingsStore.getState().setProviderAccountAuthError(data.loginId, data.accountId, failure);
-        useSettingsStore.getState().finishClaudeAuthDiagnostics(data.accountId, "failed", failure);
+        useSettingsStore.getState().finishAuthDiagnostics(data.accountId, "failed", failure);
       }
       // The re-sign-in toast is per login flow, because only a flow that can
 
@@ -400,7 +413,7 @@ export function useServerEvents(): void {
       };
 
       if (!data.accountId) return;
-      useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
+      useSettingsStore.getState().setAuthProgress(data.accountId, {
         attemptId: data.attemptId,
         phase: data.phase,
         message: data.message,
@@ -414,13 +427,13 @@ export function useServerEvents(): void {
         accountId?: string;
         attemptId: string;
         timestamp: string;
-        level: "debug" | "info" | "warn" | "error";
-        source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+        level: WsAgentAuthLog["level"];
+        source: WsAgentAuthLog["source"];
         message: string;
       };
 
       if (!data.accountId) return;
-      useSettingsStore.getState().appendClaudeAuthLog(data.accountId, {
+      useSettingsStore.getState().appendAuthLog(data.accountId, {
         attemptId: data.attemptId,
         timestamp: data.timestamp,
         level: data.level,

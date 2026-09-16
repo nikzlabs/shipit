@@ -24,6 +24,12 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   // binary's compiled hosts and another account or version may reach it.
   "accounts.google.com",
   "oauth2.googleapis.com",
+  // The eligibility check the CLI runs AFTER the token exchange
+  // (`/oauth2/v2/userinfo`). Missing, every sign-in wrote a good token and then
+  // failed on `Eligibility check failed: … lookup www.googleapis.com …:
+  // server misbehaving` — a refusal outranks the token, correctly, so the
+  // account never connected (observed in the dogfood, 2026-09-16).
+  "www.googleapis.com",
   "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
   ".github.com",
@@ -67,6 +73,12 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   // binary's compiled hosts and another account or version may reach it.
   "accounts.google.com",
   "oauth2.googleapis.com",
+  // The eligibility check the CLI runs AFTER the token exchange
+  // (`/oauth2/v2/userinfo`). Missing, every sign-in wrote a good token and then
+  // failed on `Eligibility check failed: … lookup www.googleapis.com …:
+  // server misbehaving` — a refusal outranks the token, correctly, so the
+  // account never connected (observed in the dogfood, 2026-09-16).
+  "www.googleapis.com",
   "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
 ];

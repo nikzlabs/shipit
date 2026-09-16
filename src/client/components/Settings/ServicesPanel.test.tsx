@@ -64,8 +64,8 @@ beforeEach(() => {
     providerAccountNotices: {},
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
-    claudeAuthDiagnostics: {},
-    claudeAuthOutputOpen: {},
+    authDiagnostics: {},
+    authOutputOpen: {},
   });
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     fetchCalls.push({
@@ -463,15 +463,15 @@ describe("ServicesPanel", () => {
       const placeholder = await screen.findByTestId("add-service-signin-starting");
       expect(placeholder.textContent).toBe("Claude CLI output");
 
-      useSettingsStore.getState().setClaudeAuthProgress("acct-anthropic-1", {
+      useSettingsStore.getState().setAuthProgress("acct-anthropic-1", {
         attemptId: "attempt-1",
         phase: "waiting_for_url",
         message: "Waiting for Claude CLI to print an authentication link.",
       });
       for (const message of ["Launching the Claude CLI.", "Still waiting."]) {
-        useSettingsStore.getState().appendClaudeAuthLog("acct-anthropic-1", {
+        useSettingsStore.getState().appendAuthLog("acct-anthropic-1", {
           attemptId: "attempt-1", timestamp: "2026-08-11T00:00:00.000Z",
-          level: "info", source: "claude_stdout", message,
+          level: "info", source: "cli_stdout", message,
         });
       }
 
@@ -553,7 +553,7 @@ describe("ServicesPanel", () => {
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
       await userEvent.click(screen.getByTestId("add-service-sign-in"));
       await waitFor(() => expect(logins()).toBe(1));
-      useSettingsStore.getState().appendClaudeAuthLog("acct-anthropic-2", {
+      useSettingsStore.getState().appendAuthLog("acct-anthropic-2", {
         attemptId: "attempt-2", timestamp: "2026-08-12T00:00:00.000Z",
         level: "info", source: "shipit", message: "Spawned claude /login.",
       });

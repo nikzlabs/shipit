@@ -6,13 +6,12 @@ import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import {
-  sanitizeClaudeAuthDiagnostic,
+  sanitizeAuthDiagnostic,
   type AgentAuthLogPayload,
+  type AgentAuthLogLevel,
+  type AgentAuthLogSource,
   type AgentAuthProgressPayload,
-  type ClaudeAuthLogLevel,
-  type ClaudeAuthLogSource,
-  type ClaudeAuthPhase,
-} from "./auth-diagnostics.js";
+} from "../auth-diagnostics.js";
 import {
   firstEpochMs,
   pickString,
@@ -27,7 +26,7 @@ import type {
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
 import type { LoginIntegrationId } from "../../../shared/catalogue/types.js";
-import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
+import type { AgentAuthPendingDetails, AgentAuthPhase } from "../../../shared/types/ws-server-messages.js";
 
 export const AUTH_URL_PATTERNS = [
   /https:\/\/console\.anthropic\.com\S+/,
@@ -225,22 +224,22 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     return this.activeAttemptStartedAt ? Date.now() - this.activeAttemptStartedAt : undefined;
   }
 
-  private emitProgress(phase: ClaudeAuthPhase, message: string): void {
+  private emitProgress(phase: AgentAuthPhase, message: string): void {
     const payload: AgentAuthProgressPayload = {
       ...this.authEventBase(),
       phase,
-      message: sanitizeClaudeAuthDiagnostic(message),
+      message: sanitizeAuthDiagnostic(message),
       ...(this.elapsedMs() !== undefined ? { elapsedMs: this.elapsedMs() } : {}),
     };
     this.emit("progress", payload);
   }
 
   private emitDiagnosticLog(
-    level: ClaudeAuthLogLevel,
-    source: ClaudeAuthLogSource,
+    level: AgentAuthLogLevel,
+    source: AgentAuthLogSource,
     message: string,
   ): void {
-    const sanitized = sanitizeClaudeAuthDiagnostic(message);
+    const sanitized = sanitizeAuthDiagnostic(message);
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -392,10 +391,10 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
       this.outputBuffer += cleaned;
       if (cleaned.trim()) {
         console.log("[auth output]", cleaned.trim());
-        this.emitDiagnosticLog("info", "claude_stdout", cleaned.trim());
+        this.emitDiagnosticLog("info", "cli_stdout", cleaned.trim());
       } else if (data.length > 0) {
         console.log("[auth] Received %d bytes of terminal control data", data.length);
-        this.emitDiagnosticLog("debug", "claude_control", `Received ${data.length} bytes of terminal control data.`);
+        this.emitDiagnosticLog("debug", "cli_control", `Received ${data.length} bytes of terminal control data.`);
       }
 
       if (!this.authUrlEmitted) {

@@ -9,6 +9,7 @@ import {
 } from "./auth-manager.js";
 import { antigravityTokenPath } from "../../../shared/antigravity-home.js";
 import type { AgentAuthFailedPayload } from "../../agent-auth-manager.js";
+import type { AgentAuthLogPayload, AgentAuthProgressPayload } from "../auth-diagnostics.js";
 import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
 /**
@@ -45,6 +46,8 @@ describe("AntigravityAuthManager", () => {
   let pending: AgentAuthPendingDetails[];
   let failed: (AgentAuthFailedPayload | undefined)[];
   let completed: number;
+  let logs: AgentAuthLogPayload[];
+  let progress: AgentAuthProgressPayload[];
 
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), "antigravity-auth-"));
@@ -53,10 +56,14 @@ describe("AntigravityAuthManager", () => {
     pending = [];
     failed = [];
     completed = 0;
+    logs = [];
+    progress = [];
     manager = new AntigravityAuthManager({ spawn: (_c, _a, o) => { spawnOpts = o; return proc; } });
     manager.on("pending", (d) => pending.push(d));
     manager.on("failed", (p) => failed.push(p));
     manager.on("complete", () => { completed += 1; });
+    manager.on("log", (p) => logs.push(p));
+    manager.on("progress", (p) => progress.push(p));
   });
 
   afterEach(() => {
@@ -301,6 +308,126 @@ describe("AntigravityAuthManager", () => {
     expect(manager.isConfigured({ credentialDir: home })).toBe(false);
     writeToken({ access_token: "a" });
     expect(manager.isConfigured({ credentialDir: home })).toBe(true);
+  });
+
+  /**
+   * The sign-in diagnostics panel in Settings renders whatever a manager
+   * reports, for any harness. This one reported nothing, so an Antigravity
+   * login that failed left the user one summary sentence and no way to see what
+   * the CLI had said.
+   */
+  describe("what the sign-in reports to the panel", () => {
+    it("relays the CLI's own output, scoped to this login and account", () => {
+      start();
+      proc.emitData("Waiting for authentication (timeout 60s)...\n");
+
+      const cli = logs.filter((l) => l.source === "cli_stdout");
+      expect(cli.map((l) => l.message)).toContain("Waiting for authentication (timeout 60s)...");
+      expect(cli[0]).toMatchObject({ loginId: "google-antigravity-oauth", accountId: "acct-1" });
+      expect(cli[0]?.attemptId).toBeTruthy();
+    });
+
+    it("says the link arrived without putting the link through the sanitizer", () => {
+      start();
+      proc.emitData(`Please visit the URL to log in:\n  ${SIGN_IN_URL}\n`);
+
+      const arrival = logs.find((l) => l.source === "shipit" && l.message.includes("link received"));
+      expect(arrival).toBeDefined();
+      // The link the user needs is the challenge's button, unsanitized. A log
+      // line quoting it would arrive as `…/auth?[redacted]` and be useless.
+      expect(arrival?.message).not.toContain("accounts.google.com");
+      expect(pending[0]).toMatchObject({ verificationUri: SIGN_IN_URL });
+    });
+
+    it("says the code went to the CLI and never says what the code was", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode("4/0AY-secret-code");
+
+      const shipit = logs.filter((l) => l.source === "shipit").map((l) => l.message);
+      expect(shipit.some((m) => m.includes("Authorization code delivered"))).toBe(true);
+      expect(shipit.join("\n")).not.toContain("4/0AY-secret-code");
+      expect(progress.at(-1)).toMatchObject({ phase: "checking_credentials" });
+    });
+
+    /**
+     * A pty echoes what is written to it, so the code comes back on the CLI's
+     * own output — which the panel now shows. The sanitizer's long-secret rule
+     * would probably catch it; a credential does not get a "probably".
+     */
+    it("keeps the pasted code out of the CLI output the pty echoes back", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode("4/0AY-secret-code");
+      proc.emitData("4/0AY-secret-code\r\nExchanging the code…\n");
+
+      expect(logs.map((l) => l.message).join("\n")).not.toContain("4/0AY-secret-code");
+      expect(logs.map((l) => l.message).join("\n")).toContain("Exchanging the code…");
+    });
+
+    /**
+     * A chunk boundary lands wherever the pty buffer says, and both redactions
+     * are whole-string rules: a URL split at `&sta` / `te=…` leaves the second
+     * half looking like ordinary text, and a split echo stops matching the code
+     * that was submitted. Relaying whole lines is what makes either rule apply.
+     */
+    it("redacts a secret the pty split across two chunks", () => {
+      start();
+      const url = `${SIGN_IN_URL}&state=private-state-value`;
+      const at = url.indexOf("&sta") + 4;
+      proc.emitData(`Please visit: ${url.slice(0, at)}`);
+      proc.emitData(`${url.slice(at)}\n`);
+
+      manager.submitCode("4/0AY-secret-code");
+      proc.emitData("4/0AY-sec");
+      proc.emitData("ret-code\r\n");
+
+      const panel = logs.map((l) => l.message).join("\n");
+      expect(panel, "leaked the link's query string").not.toContain("private-state-value");
+      expect(panel, "leaked the authorization code").not.toContain("4/0AY-secret-code");
+    });
+
+    /**
+     * A cancelled pty keeps draining, and by then the manager may be running the
+     * NEXT account's flow — so unguarded output lands on that account's panel,
+     * and its expired link can be replayed as that account's challenge.
+     */
+    it("ignores a cancelled run's output instead of charging it to the next account", () => {
+      start();
+      const stale = proc;
+      manager.cancel();
+
+      proc = new FakePty();
+      manager.start({ credentialDir: home, accountId: "acct-2" });
+      logs.length = 0;
+      pending.length = 0;
+      stale.emitData(`stale line\n${SIGN_IN_URL} `);
+
+      expect(logs).toEqual([]);
+      expect(pending, "replayed the cancelled run's link").toEqual([]);
+    });
+
+    /**
+     * The one line that says which branch the exit took. It was on the terminal
+     * only, which the user cannot read — and a completed exchange reported as a
+     * failure is exactly the case where they need it (probes/signin-exit-shape.md).
+     */
+    it("puts the line that explains the ending in the panel, not only the terminal", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      proc.emitExit(1);
+
+      const ending = logs.find((l) => l.message.startsWith("sign-in ended"));
+      expect(ending?.message).toContain("exit=1");
+      expect(ending?.message).toContain("link=true");
+      expect(ending?.message).toContain("token=absent");
+    });
+
+    it("says where the sign-in has got to before the link arrives", () => {
+      start();
+      expect(progress.map((p) => p.phase)).toEqual(["starting", "waiting_for_url"]);
+      expect(progress[0]).toMatchObject({ loginId: "google-antigravity-oauth", accountId: "acct-1" });
+    });
   });
 });
 

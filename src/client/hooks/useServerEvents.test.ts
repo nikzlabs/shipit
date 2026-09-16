@@ -58,7 +58,7 @@ describe("useServerEvents — session_agent_started", () => {
     useSettingsStore.setState({
       providerAccountAuths: {},
       providerAccountAuthErrors: {},
-      claudeAuthDiagnostics: {},
+      authDiagnostics: {},
     });
     useUiStore.setState({ toast: null });
   });
@@ -191,7 +191,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
     FakeEventSource.last = null;
     useSettingsStore.setState({
-      claudeAuthDiagnostics: {},
+      authDiagnostics: {},
       providerAccountAuths: {},
       providerAccountAuthErrors: {},
     });
@@ -221,7 +221,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         attemptId: "attempt-1",
         timestamp: "2026-07-11T00:00:00.000Z",
         level: "info",
-        source: "claude_stdout",
+        source: "cli_stdout",
         message: "Browser did not open.",
       });
       es.emit("agent_auth_pending", {
@@ -237,7 +237,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       });
     });
 
-    const diagnostics = useSettingsStore.getState().claudeAuthDiagnostics;
+    const diagnostics = useSettingsStore.getState().authDiagnostics;
     expect(diagnostics["acct-a"]).toMatchObject({
       attemptId: "attempt-1",
       active: false,
@@ -262,7 +262,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         attemptId: "attempt-a",
         timestamp: "2026-07-11T00:00:00.000Z",
         level: "info",
-        source: "claude_stdout",
+        source: "cli_stdout",
         message: "A's output.",
       });
       es.emit("agent_auth_log", {
@@ -271,7 +271,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         attemptId: "attempt-b",
         timestamp: "2026-07-11T00:00:01.000Z",
         level: "info",
-        source: "claude_stdout",
+        source: "cli_stdout",
         message: "B's output.",
       });
       es.emit("agent_auth_failed", {
@@ -282,7 +282,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       });
     });
 
-    const diagnostics = useSettingsStore.getState().claudeAuthDiagnostics;
+    const diagnostics = useSettingsStore.getState().authDiagnostics;
     expect(diagnostics["acct-a"]?.entries.map((e) => e.message)).toEqual(["A's output."]);
     expect(diagnostics["acct-b"]?.entries.map((e) => e.message)).toEqual(["B's output."]);
 
@@ -323,12 +323,12 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         attemptId: "attempt-unscoped",
         timestamp: "2026-07-11T00:00:00.000Z",
         level: "info",
-        source: "claude_stdout",
+        source: "cli_stdout",
         message: "Browser did not open.",
       });
     });
 
-    expect(useSettingsStore.getState().claudeAuthDiagnostics).toEqual({});
+    expect(useSettingsStore.getState().authDiagnostics).toEqual({});
 
     expect(useSettingsStore.getState().providerAccountAuths).toEqual({});
   });

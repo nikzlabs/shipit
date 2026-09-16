@@ -64,7 +64,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useSettingsStore.getState().setProviderAccounts([]);
-  useSettingsStore.setState({ providerAccountNotices: {} });
+  useSettingsStore.setState({ providerAccountNotices: {}, authDiagnostics: {} });
 });
 
 describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () => {
@@ -365,6 +365,31 @@ describe("the authorization-code challenge", () => {
     expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled();
   });
 
+  /**
+   * The confirmation arrives on a click, so a panel that grows at that moment
+   * moves everything under the pointer — the same jump `ChallengePlaceholder`'s
+   * `h-8` slot prevents one step earlier. The line is reserved, not added.
+   */
+  it("reserves the confirmation's line rather than growing the panel under the click", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    const panel = screen.getByTestId("provider-account-challenge-acct-agy");
+    const slot = panel.querySelector("div.h-4");
+    expect(slot, "nothing holds the confirmation's line before it arrives").not.toBeNull();
+    expect(slot?.textContent).toBe("");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(screen.getByTestId("provider-account-code-submitted-acct-agy"))
+      .toBeInTheDocument());
+
+    // The same element, filled — not a new one pushing the panel down.
+    expect(panel.querySelector("div.h-4")).toBe(slot);
+    expect(slot?.textContent).toContain("Code submitted");
+  });
+
   it("does not claim a refused code went through", async () => {
     const user = userEvent.setup();
     installFailingFetch("Authorization code cannot be empty");
@@ -399,6 +424,27 @@ describe("the authorization-code challenge", () => {
 
     await waitFor(() => expect(screen.queryByTestId("provider-account-code-submitted-acct-agy"))
       .not.toBeInTheDocument());
+  });
+
+  /**
+   * The panel was gated on `provider === "claude"`, so an Antigravity sign-in
+   * that failed showed one summary sentence and nothing the CLI had said.
+   */
+  it("shows the CLI's output for a harness other than Claude, named after that harness", () => {
+    act(() => {
+      useSettingsStore.getState().appendAuthLog("acct-agy", {
+        attemptId: "attempt-1",
+        timestamp: "2026-09-16T00:00:00.000Z",
+        level: "error",
+        source: "cli_stdout",
+        message: "Error: authentication failed or timed out",
+      });
+    });
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    const buffer = screen.getByTestId("provider-account-diagnostics-acct-agy");
+    expect(buffer).toHaveTextContent("Antigravity CLI output (1)");
+    expect(buffer).toHaveTextContent("Error: authentication failed or timed out");
   });
 
   // The CLI gives up 60 s after printing the link, which covers the whole Google

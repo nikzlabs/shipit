@@ -399,6 +399,28 @@ one non-npm branch, gated on `contains antigravity $selected`:
   for `code-paste-url` — the only client edit is `ServicesPanel.tsx`'s
   hardcoded `signInProvider === "claude" ? "paste" : "code"` placeholder
   gate, which becomes a set of paste-shaped providers.
+- **The sign-in reports itself to the panel, like Claude's.** The manager emits
+  `progress` (`starting`, `waiting_for_url`, `checking_credentials`) and `log`
+  (the CLI's own lines as `cli_stdout`, plus ShipIt's own: the link arriving, the
+  code being delivered, and the `sign-in ended exit=… signal=… link=… token=…
+  refusal=…` line that says which branch the exit took). That line used to reach
+  the terminal only — which the user cannot read, and a completed exchange
+  reported as a failure is exactly when they need it. The diagnostics types moved
+  to `orchestrator/agents/auth-diagnostics.ts` and stopped being Claude-shaped
+  (`loginId: LoginIntegrationId`, sources `shipit` / `cli_stdout` / `cli_stderr` /
+  `cli_control`); the client's `AuthCliOutput` renders for any harness that
+  reports anything, labelled with that harness's name. **The sign-in URL is never
+  logged**: the sanitizer strips a URL's query string, which is all an OAuth link
+  is, so the manager reports that the link arrived and the usable link stays the
+  challenge's button. Two properties of the relay are load-bearing, and
+  cross-backend review caught both missing. It relays **whole lines, not pty
+  chunks** — every redaction protecting the panel is a whole-string rule, so a
+  URL split at `&sta`/`te=…` or an echoed code split anywhere passes straight
+  through a chunk-at-a-time sanitize (the same boundary that already cost the
+  link itself). And the data callback carries `this.proc !== proc`, like the exit
+  callback: a cancelled run keeps draining, and by then the manager may be
+  running the next account's flow, so unguarded output lands on that account's
+  panel and its expired link is replayed as that account's challenge.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it
@@ -420,7 +442,14 @@ one non-npm branch, gated on `contains antigravity $selected`:
   "GOOGLE_API_KEY"]`). Egress: sign-in and refresh need
   Google's OAuth hosts and account mode talks to a host candidates.md does
   not name — measure both with a signed-in token before the allowlist tests
-  are extended.
+  are extended. Three of the four were found that way rather than read off a
+  list: `daily-cloudcode-pa.googleapis.com` (the account-mode backend), and
+  `www.googleapis.com` — the **eligibility check, which runs after the token
+  exchange**. Blocked, the exchange succeeds, the token is written, and the run
+  then ends `Error: Eligibility check failed: … lookup www.googleapis.com …
+  server misbehaving`; the refusal outranks the token, correctly, so the account
+  never connects and the user sees a sign-in that failed with a good credential
+  on disk (observed in the dogfood, 2026-09-16).
 
 ## Adapter (`session/agents/antigravity/`, Claude-shaped)
 
