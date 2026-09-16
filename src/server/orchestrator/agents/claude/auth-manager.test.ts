@@ -516,6 +516,29 @@ describe("AuthManager / auth diagnostics", () => {
     mgr.kill();
   });
 
+  /**
+   * A pty echoes what is written to it, so the pasted code comes back on the
+   * CLI's own output — which the diagnostics panel shows. The sanitizer's
+   * long-secret rule catches a long code and nothing guarantees the code is one.
+   */
+  it("keeps the pasted code out of the CLI output the pty echoes back", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("short-code-1234#state");
+    ptyHoisted.dataHandlers[0]("short-code-1234#state\nExchanging the code…\n");
+
+    const panel = logs.map((l) => l.message).join("\n");
+    expect(panel, "leaked the authorization code").not.toContain("short-code-1234");
+    expect(panel).toContain("Exchanging the code…");
+    mgr.kill();
+  });
+
   it("does not submit an empty code when Claude collapses only some prompt spaces", () => {
     const mgr = new AuthManager();
     const pending: string[] = [];

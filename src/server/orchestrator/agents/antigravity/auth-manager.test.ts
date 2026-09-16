@@ -388,6 +388,39 @@ describe("AntigravityAuthManager", () => {
     });
 
     /**
+     * A pty colours its echo, so an escape sequence can land inside the code —
+     * and split across two chunks neither half is recognisable, so the code no
+     * longer matches what was submitted. The sanitizer strips the reassembled
+     * escape, which puts the code back together in plain sight.
+     */
+    it("keeps the code out when an escape sequence splits its echo", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode("4/0AY-secret-code");
+      proc.emitData("4/0AY-\x1b[9");
+      proc.emitData("0msecret-code\r\n");
+
+      expect(logs.map((l) => l.message).join("\n")).not.toContain("4/0AY-secret-code");
+    });
+
+    /**
+     * The code is taken out before the sanitizer runs, so the marker that
+     * replaces it is inside whatever the CLI printed. A URL match ends at the
+     * first space: a spaced marker cuts the link in half and everything after
+     * it is published as ordinary text.
+     */
+    it("redacts a whole link even when the code was echoed inside it", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode("4/0AY-secret-code");
+      proc.emitData("Redirecting to https://accounts.google.com/x?code=4/0AY-secret-code&hint=alice-hint\n");
+
+      const panel = logs.map((l) => l.message).join("\n");
+      expect(panel, "leaked the authorization code").not.toContain("4/0AY-secret-code");
+      expect(panel, "leaked the rest of the link's query string").not.toContain("alice-hint");
+    });
+
+    /**
      * A cancelled pty keeps draining, and by then the manager may be running the
      * NEXT account's flow — so unguarded output lands on that account's panel,
      * and its expired link can be replayed as that account's challenge.

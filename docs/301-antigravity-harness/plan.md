@@ -420,7 +420,19 @@ one non-npm branch, gated on `contains antigravity $selected`:
   link itself). And the data callback carries `this.proc !== proc`, like the exit
   callback: a cancelled run keeps draining, and by then the manager may be
   running the next account's flow, so unguarded output lands on that account's
-  panel and its expired link is replayed as that account's challenge.
+  panel and its expired link is replayed as that account's challenge. A third
+  property followed once the shape was copied into the Codex and Grok managers:
+  **the submitted code is redacted on both sides of the sanitizer, with a marker
+  carrying no whitespace.** Before, so a sanitizer rule that rewrites part of the
+  code cannot leave a fragment; after, because a terminal escape inside the echo
+  defeats an exact match until the sanitizer has stripped it; and without a space
+  because a URL match ends at the first one, so a spaced marker substituted
+  inside a link truncates the redaction and publishes the parameters after it.
+  Chunks are assembled raw for the same reason lines are relayed whole — an
+  escape split at `\x1b[9`/`0m…` is unrecognisable in either half, so a
+  chunk-at-a-time strip leaves it glued to the text. The Claude manager, which
+  had no code redaction at all, now shares the rule: a code under 32 characters
+  was reaching its panel verbatim.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it

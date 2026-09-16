@@ -145,6 +145,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   private _authenticated = false;
   private credentialsPollInterval: ReturnType<typeof setInterval> | null = null;
   private outputBuffer = "";
+  private submittedCode: string | null = null;
   private authUrlEmitted = false;
   private wizardTimer: ReturnType<typeof setTimeout> | null = null;
   private wizardEnterCount = 0;
@@ -234,12 +235,31 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     this.emit("progress", payload);
   }
 
+  /**
+   * A pty echoes what is written to it, so the pasted authorization code comes
+   * back on the CLI's own output — which this panel shows. The sanitizer's
+   * long-secret rule would probably catch it; "probably" is not good enough for
+   * a credential, so the exact string we submitted is taken out as well, on both
+   * sides of the sanitizer: before, so a rule that rewrites part of the code
+   * cannot leave a fragment, and after, because the sanitizer strips terminal
+   * escapes and what it returns is what reaches the panel.
+   */
+  private withoutSubmittedCode(text: string): string {
+    const code = this.submittedCode;
+    // The marker carries no whitespace: a URL match ends at the first space, so
+    // a spaced one substituted inside a link would truncate the redaction and
+    // publish every parameter after it.
+    return code && text.includes(code) ? text.split(code).join("[code-redacted]") : text;
+  }
+
   private emitDiagnosticLog(
     level: AgentAuthLogLevel,
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    const sanitized = sanitizeAuthDiagnostic(message);
+    const sanitized = this.withoutSubmittedCode(
+      sanitizeAuthDiagnostic(this.withoutSubmittedCode(message)),
+    );
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -337,6 +357,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     const generation = ++this.flowGeneration;
     this.terminalEmitted = false;
     this.outputBuffer = "";
+    this.submittedCode = null;
     this.authUrlEmitted = false;
     this.wizardEnterCount = 0;
     this.lastPendingDetails = null;
@@ -507,6 +528,7 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
   sendCode(code: string): void {
     if (this.proc) {
       const trimmed = code.trim();
+      this.submittedCode = trimmed;
       console.log("[auth] Sending auth code to PTY (%d chars)", trimmed.length);
       this.emitProgress("checking_credentials", "Authorization code submitted. Checking for credentials.");
       this.emitDiagnosticLog("info", "shipit", `Authorization code submitted (${trimmed.length} characters redacted).`);

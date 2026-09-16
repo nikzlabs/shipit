@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { stripAnsi } from "../../../shared/strip-ansi.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import {
   ANTIGRAVITY_SPAWN_ENV,
@@ -290,7 +289,15 @@ export class AntigravityAuthManager
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    const sanitized = sanitizeAuthDiagnostic(message);
+    // The submitted code is taken out on BOTH sides of the sanitizer. Before,
+    // because a sanitizer rule that rewrites part of the code would otherwise
+    // leave a fragment no later pass can match. After, because a terminal
+    // escape sequence inside the echoed code defeats the exact match until the
+    // sanitizer has stripped it — and what the sanitizer returns is what the
+    // panel shows.
+    const sanitized = this.withoutSubmittedCode(
+      sanitizeAuthDiagnostic(this.withoutSubmittedCode(message)),
+    );
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -368,7 +375,7 @@ export class AntigravityAuthManager
      */
     let lineBuffer = "";
     const relay = (text: string): void => {
-      const line = this.withoutSubmittedCode(text.trim());
+      const line = text.trim();
       if (line) this.emitDiagnosticLog("info", "cli_stdout", line);
     };
 
@@ -378,7 +385,12 @@ export class AntigravityAuthManager
       // account's scope, or replays an expired link as that account's challenge.
       if (this.proc !== proc) return;
       this.stderrBuffer += chunk;
-      const lines = (lineBuffer + stripAnsi(chunk)).split(/\r?\n/);
+      // Chunks are assembled RAW. Stripping a chunk at a time is the same
+      // mistake as redacting one: an escape sequence split at `\x1b[9` / `0m…`
+      // is unrecognisable in either half, so the strip leaves it glued to the
+      // text it was meant to leave alone. The sanitizer strips the assembled
+      // line, once.
+      const lines = (lineBuffer + chunk).split(/\r?\n/);
       lineBuffer = lines.pop() ?? "";
       for (const line of lines) relay(line);
       this.handleOutput(chunk);
@@ -470,11 +482,15 @@ export class AntigravityAuthManager
    * A pty echoes what is written to it, so the authorization code comes back on
    * the CLI's own output — which is relayed to the panel. The sanitizer's
    * long-secret rule would probably catch it; "probably" is not good enough for
-   * a credential, so the exact string we submitted is taken out first.
+   * a credential, so the exact string we submitted is taken out as well.
+   *
+   * **The marker carries no whitespace.** A URL match ends at the first space,
+   * so a spaced marker substituted inside a link truncates what the sanitizer
+   * then sees and publishes every parameter after it.
    */
   private withoutSubmittedCode(text: string): string {
     const code = this.submittedCode;
-    return code && text.includes(code) ? text.split(code).join("[code redacted]") : text;
+    return code && text.includes(code) ? text.split(code).join("[code-redacted]") : text;
   }
 
   /** `hadPending` is passed in: the exit handler clears the field before it asks. */
