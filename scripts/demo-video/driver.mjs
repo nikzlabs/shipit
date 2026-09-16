@@ -170,8 +170,12 @@ async function api(base, method, route, body) {
   return { ok: res.ok, status: res.status, body: parsed };
 }
 
-/** Poll `fn` until it returns a truthy value or the deadline passes. */
-async function until(fn, { ceilingMs, what }) {
+/**
+ * Poll `fn` until it returns a truthy value or the deadline passes. A thrown
+ * error is retried (a locator that is not there yet is not a failure) — except
+ * a `TakeAbortError`, which no amount of waiting resolves and escapes at once.
+ */
+export async function until(fn, { ceilingMs, what }) {
   const deadline = Date.now() + ceilingMs;
   let last;
   while (Date.now() < deadline) {
@@ -179,6 +183,7 @@ async function until(fn, { ceilingMs, what }) {
       last = await fn();
       if (last) return last;
     } catch (err) {
+      if (err instanceof TakeAbortError) throw err;
       last = err;
     }
     await new Promise((r) => setTimeout(r, POLL_MS));
@@ -188,6 +193,33 @@ async function until(fn, { ceilingMs, what }) {
 }
 
 class WaitCeilingError extends Error {}
+
+/** The take cannot continue as recorded; waiting would only run out the ceiling. */
+export class TakeAbortError extends Error {}
+
+/** The agent is blocked on a permission prompt only a human can answer (docs/193). */
+export class PermissionPromptError extends TakeAbortError {
+  constructor(prompt) {
+    const target = prompt.path ? `${prompt.toolName} ${prompt.path}` : prompt.summary ? prompt.summary : prompt.toolName;
+    super(`permission prompt pending: ${target} (${prompt.requestId}) — the agent is held on a prompt only a human can answer; a take never waits on one. Keep the scenario away from files the CLI gates (.claude/, .env, .npmrc) or pre-bake them into the demo repo`);
+    this.prompt = prompt;
+  }
+}
+
+/**
+ * The first still-pending permission card in a `GET /api/sessions/:id/history`
+ * body (`messages[].permissionPrompt`, phase `pending`), or null. Pending is the
+ * only phase that matters: approved and denied cards mean the CLI moved on.
+ */
+export function findPendingPermissionPrompt(history) {
+  for (const m of history?.messages ?? []) {
+    const p = m?.permissionPrompt;
+    if (p && p.phase === "pending") {
+      return { requestId: p.requestId, toolName: p.toolName, path: p.path ?? null, summary: p.summary ?? null };
+    }
+  }
+  return null;
+}
 
 function canonicalRepoKey(url) {
   const trimmed = (url ?? "").trim();
@@ -369,6 +401,9 @@ class Driver {
     /** Assistant message groups in the transcript when the last prompt was sent; null before any send. */
     this.assistantGroupsAtSend = null;
     this.panesClicked = new Set();
+    /** `GET /history` validator + last body, so a poll that changed nothing is a 304. */
+    this.historyEtag = null;
+    this.lastHistory = null;
   }
 
   t() { return (Date.now() - this.recordingStart) / 1000; }
@@ -509,6 +544,25 @@ class Driver {
     return res.ok ? res.body : null;
   }
 
+  /** The persisted transcript; `/status` says only `running`, the pending prompt lives here. */
+  async history() {
+    const id = await this.resolveSessionId();
+    if (!id) return null;
+    const res = await fetch(`${this.opts.instance}/api/sessions/${id}/history`, {
+      headers: this.historyEtag ? { "if-none-match": this.historyEtag } : {},
+    });
+    if (res.status === 304) return this.lastHistory;
+    if (!res.ok) return null;
+    this.historyEtag = res.headers.get("etag");
+    this.lastHistory = await res.json().catch(() => null);
+    return this.lastHistory;
+  }
+
+  async refusePendingPrompt() {
+    const pending = findPendingPermissionPrompt(await this.history());
+    if (pending) throw new PermissionPromptError(pending);
+  }
+
   // ── wait conditions ──
 
   async check(cond) {
@@ -537,6 +591,17 @@ class Driver {
         if ((await input.getAttribute("placeholder")) !== S.composerReadyPlaceholder) return false;
         if (await p.locator(S.trustNotice).count() > 0) return false;
         if (await p.locator(S.sendButton).count() === 0) return false;
+        if (this.sb.permissionMode) {
+          // The mode lives in the browser (a per-send field, defaulting to
+          // Auto in a fresh context), so the composer's own control is the
+          // only surface that can confirm it. A mismatch is a product change,
+          // not something a later poll fixes.
+          const control = p.locator(S.permissionModeSelector).first();
+          if (await control.count() === 0) return false;
+          const name = (await control.getAttribute("aria-label")) ?? "";
+          const expected = S.permissionModeLabel(this.sb.permissionMode);
+          if (!name.includes(expected)) throw new TakeAbortError(`composer reads "${name}", storyboard needs "${expected}"`);
+        }
         return this.claimed;
       }
       case "transcript_text":
@@ -577,6 +642,9 @@ class Driver {
     const conds = beat.wait ?? [];
     if (conds.length === 0) return;
     await until(async () => {
+      // Every wait, not only `turn`: a beat that waits on the preview or the
+      // PR card while the agent works stalls on a prompt just the same.
+      await this.refusePendingPrompt();
       for (const c of conds) if (!(await this.check(c))) return false;
       return true;
     }, { ceilingMs: this.ceilingMs, what: `beat ${beat.id}: ${JSON.stringify(conds)}` });
@@ -712,6 +780,9 @@ if (invokedDirectly) {
   }
   run(opts).then(
     () => process.exit(0),
-    (err) => { log(err.stack ?? String(err)); process.exit(err instanceof WaitCeilingError ? 3 : 1); },
+    (err) => {
+      log(err.stack ?? String(err));
+      process.exit(err instanceof WaitCeilingError ? 3 : err instanceof TakeAbortError ? 4 : 1);
+    },
   );
 }

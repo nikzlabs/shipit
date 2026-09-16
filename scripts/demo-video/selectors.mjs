@@ -16,6 +16,14 @@ export const SELECTORS = {
   /** Inline trust gate above the composer — `RepoTrustNotice.tsx`. */
   trustNotice: '[data-testid="repo-trust-notice"]',
   trustAccept: '[data-testid="repo-trust-notice-accept"]',
+  /**
+   * The composer's permission-mode control — `PermissionModeSelector.tsx`. Its
+   * aria-label states the effective mode ("Permission mode: Auto. Network: …"),
+   * which is what the driver reads; the mode has no server-side surface.
+   */
+  permissionModeSelector: '[data-testid="permission-mode-selector"]',
+  /** Storyboard `permissionMode` → the label fragment in that aria-label (`MODE_META[m].label`). */
+  permissionModeLabel: (mode) => `Permission mode: ${{ auto: "Auto", guarded: "Guarded", plan: "Plan" }[mode] ?? mode}`,
 
   /** Sidebar collapse — `SessionSidebar.tsx`, aria-labels. */
   sidebarCollapse: 'button[aria-label="Collapse sidebar"]',

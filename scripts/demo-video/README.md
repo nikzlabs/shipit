@@ -9,6 +9,8 @@ its `plan.md`; this file is only how to run what exists). Phase 1 pieces:
 | `driver.mjs` | Playwright run against an instance: setup over HTTP, beats, `recording.webm` + `beats.json` + `run.json` (plan §4) |
 | `selectors.mjs` | Every selector the driver uses, one map |
 | `make-demo-repo.sh` | The phase-1 demo repo as a deterministic local bare repo (plan §8) |
+| `reset-demo-repo.sh` | Before a phase-2 take: close PRs, delete branches, force-reset `main` to the pin (plan §6) |
+| `host/reset-demo-instance.sh` | On the demo host: fresh workspace volume, credentials kept, proxy re-attached (plan §9) |
 | `scenarios/<name>/storyboard.json` | Beats, repo pin, viewport, pace (plan §3) |
 | `cut-plan.mjs` | Slice math: beat log + storyboard + anchor to ffmpeg trim/concat filter (plan §5) |
 | `cut.sh` | ffmpeg wrapper around `cut-plan.mjs`: blackdetect anchor, muted VP9 webm + h264 mp4 |
@@ -66,13 +68,42 @@ instance, plan §8) is step 1 without the proxy URL, then step 3 with `--mode
 record` — the driver behaves the same; which side of a proxy the turn lands on
 is the repo's `.claude/settings.json`'s business.
 
+### Phase 2: the demo instance (plan §9)
+
+Against the dedicated instance the demo repo is on GitHub, so step 1 is a
+reset instead of a build, and the instance itself is reset between takes:
+
+```sh
+# On the demo host (ssh services), between takes: demo-proxy down, stop.sh,
+# drop shipit-prod_workspace (credentials kept), shipit_build_and_up, proxy up.
+# Refuses unless the install's Compose project is shipit-prod. --dry-run prints
+# the commands.
+bash ~/shipit-demo/reset-demo-instance.sh --dry-run
+
+# From the driver host: close every open PR, delete every non-default branch,
+# force-reset main to the storyboard's repo.commit. PRs close through the
+# instance (its own GitHub credential); branches and main need GITHUB_TOKEN in
+# the environment — the instance has no route for those. --dry-run does the
+# reads and prints each write.
+GITHUB_TOKEN=ghp_... scripts/demo-video/reset-demo-repo.sh \
+  --scenario scripts/demo-video/scenarios/website-hero \
+  --instance http://100-81-125-94.sslip.io:4123 --dry-run
+```
+
+Then steps 2–4 as above. The storyboard's `permissionMode: "auto"` is verified
+on the composer after the session is claimed, and a wait that finds a pending
+permission prompt in the session's history aborts the take (exit 4) naming the
+tool and path — a take never waits on a human.
+
 ## Add a scenario
 
 1. `mkdir scripts/demo-video/scenarios/<name>` and write `storyboard.json`
    (plan §3): `repo { url, commit }` (a full SHA), `viewport`, `pace {
    textCharsPerSecond, typingCharsPerSecond }`, optional `proxyUrl` (required
    for replay), `settings` (applied with `PUT /api/settings` before the take),
-   `model` (pins the warm session), `cursor`, and `beats[]`. Every beat has an
+   `model` (pins the warm session), `permissionMode` (`"auto"` only — the
+   composer's default and the one mode whose allowlisted tools never prompt;
+   verified on the composer control), `cursor`, and `beats[]`. Every beat has an
    `id`, at most one of `type` / `click`, a `pane`, a `wait` list, and numeric
    `lead` and `hold` (seconds). `scenarios/dogfood-smoke/storyboard.json` is a
    complete example.
@@ -141,8 +172,12 @@ answers 200. It then paints a black splash, stamps `anchor.wallAt` into
 `run.json`, navigates, and runs the beats — typing at
 `pace.typingCharsPerSecond`, waiting on state, and after each beat recording,
 still, until `max(actionAt + lead, readyAt + hold)` so every hold is real
-footage. A wait past the ceiling aborts with the beat id and a screenshot.
-Exit codes: 0 done, 3 wait ceiling, 1 anything else, 2 bad arguments.
+footage. A wait past the ceiling aborts with the beat id and a screenshot; a
+wait that finds a pending permission prompt (`GET /api/sessions/:id/history`,
+`messages[].permissionPrompt.phase === "pending"`) aborts at once, naming the
+tool and path. Exit codes: 0 done, 3 wait ceiling, 4 take aborted on state
+(pending permission prompt, composer not in the storyboard's permission mode),
+1 anything else, 2 bad arguments.
 
 ## Cut
 
