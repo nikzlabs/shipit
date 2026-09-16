@@ -53,8 +53,10 @@ not rebuild.**
 > **Qualified 2026-09-16.** The list is the *unarchived* sessions
 > (`sessionManager.unarchivedIds()`), not every row: archiving destroys the container, so
 > a survivor is a leak. Boot passed `allIds()` until then, which both spared such a
-> container the orphan sweep and re-adopted it — and since an archived session is refused
-> a runner, nothing else ever reclaimed it. Two ran for days across several deploys.
+> container the orphan sweep and re-adopted it. Boot's stale-worker reclaim then skipped it
+> for being archived (`restart-turn-reattach.ts:59`), leaving only the idle enforcer's
+> memory-pressure ladder — which reclaims nothing while the host has room. Two ran for days
+> across several deploys.
 
 > **Corrected 2026-08-10.** This paragraph originally read "deliberately leaves
 > session containers running" and was **false against the code** from the day it

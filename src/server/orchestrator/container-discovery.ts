@@ -315,13 +315,20 @@ export async function cleanupOrphanContainers(
           }
           await container.remove({ force: true });
           removed++;
-        } catch {
-          // Container may already be gone
+        } catch (err) {
+          // Usually already gone. When it is not, the container keeps running and this sweep
+          // is the only thing that looks for it, so say so rather than retrying next boot mute.
+          const detail = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[container] orphan reap failed for ${containerInfo.Id.slice(0, 12)} (session ${sessionId}): ${detail}`,
+          );
         }
-        // Reap what the container held open, as `destroyContainer` does: a per-session
-        // network created before the stack label existed is invisible to the stack-scoped
-        // janitor, so the container leak would keep a network leak alive behind it.
-        await cleanupSessionDockerResources(deps.docker, sessionId);
+        // Reap what the container held open, as `destroyContainer` does; nothing else sweeps
+        // the network of a session that ran no Compose service. Stack-scoped for the reason
+        // on `stackLabelFilters`: this id is by definition one our store does not know.
+        await cleanupSessionDockerResources(deps.docker, sessionId, {
+          labelFilters: deps.labelFilters(),
+        });
       }
     }
   } catch {

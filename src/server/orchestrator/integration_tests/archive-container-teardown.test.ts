@@ -20,6 +20,14 @@ import {
 } from "./test-helpers.js";
 import { allocateDeadLoopbackPort, waitFor } from "./container-test-helpers.js";
 
+/** Docker ANDs label filters; a bare `key` tests presence and `key=value` tests equality. */
+function matchesLabelFilters(labels: Record<string, string>, wanted: string[] | undefined): boolean {
+  return (wanted ?? []).every((filter) => {
+    const eq = filter.indexOf("=");
+    return eq < 0 ? filter in labels : labels[filter.slice(0, eq)] === filter.slice(eq + 1);
+  });
+}
+
 function createFakeDocker() {
   let counter = 0;
   const containers = new Map<string, { id: string; started: boolean; labels: Record<string, string> }>();
@@ -48,8 +56,12 @@ function createFakeDocker() {
       stop: async () => { const c = containers.get(id); if (c) c.started = false; },
       remove: async () => { containers.delete(id); },
     }),
-    listContainers: async () =>
-      [...containers.values()].map((c) => ({ Id: c.id, Labels: c.labels, State: c.started ? "running" : "exited" })),
+    // Honouring the filters is what makes the teardown assertion mean anything: an
+    // unfiltered fake lets a session-scoped sweep delete every other session's container.
+    listContainers: async ({ filters }: { filters?: { label?: string[] } } = {}) =>
+      [...containers.values()]
+        .filter((c) => matchesLabelFilters(c.labels, filters?.label))
+        .map((c) => ({ Id: c.id, Labels: c.labels, State: c.started ? "running" : "exited" })),
     getEvents: async () => new EventEmitter(),
   };
 }
@@ -62,6 +74,7 @@ describe("Integration: archiving tears the agent container down", () => {
   let sessionManager: SessionManager;
   let chatHistoryManager: ChatHistoryManager;
   let containerManager: SessionContainerManager;
+  let docker: ReturnType<typeof createFakeDocker>;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -69,8 +82,9 @@ describe("Integration: archiving tears the agent container down", () => {
     sessionManager = new SessionManager(dbManager);
     chatHistoryManager = new ChatHistoryManager(dbManager);
 
+    docker = createFakeDocker();
     containerManager = new SessionContainerManager({
-      docker: createFakeDocker() as never,
+      docker: docker as never,
       imageName: "shipit-session-worker:test",
       networkName: "shipit-test",
       workerPort: await allocateDeadLoopbackPort(),
@@ -115,6 +129,8 @@ describe("Integration: archiving tears the agent container down", () => {
 
     const client = await TestClient.connect(port, sessionId);
     await client.receiveType("preview_status");
+    await waitFor(() => containerManager.get(sessionId) !== undefined, 5000, "parent container");
+    const parentContainerId = containerManager.get(sessionId)!.id;
 
     client.send({ type: "rewind_at_gap", gapPosition: 2, action: "fork", sessionName: "Undo fork" });
     const forked = await client.receiveType("session_forked");
@@ -124,6 +140,8 @@ describe("Integration: archiving tears the agent container down", () => {
     // The child only leaks a container once it has one, which is what activating it does.
     const childClient = await TestClient.connect(port, childId);
     await waitFor(() => containerManager.get(childId) !== undefined, 5000, "child container");
+    const childContainerId = containerManager.get(childId)!.id;
+    expect(childContainerId).not.toBe(parentContainerId);
     childClient.close();
 
     client.send({ type: "rewind_restore_request", sessionId });
@@ -134,6 +152,10 @@ describe("Integration: archiving tears the agent container down", () => {
 
     expect(sessionManager.get(childId)?.archived).toBe(true);
     await waitFor(() => containerManager.get(childId) === undefined, 5000, "child container destroyed");
+    // Dropping the manager entry is not teardown: assert Docker itself, and that the
+    // session-scoped sweep took the child's container and nothing else.
+    expect(docker._containers.has(childContainerId)).toBe(false);
+    expect(docker._containers.has(parentContainerId)).toBe(true);
 
     client.close();
   });
