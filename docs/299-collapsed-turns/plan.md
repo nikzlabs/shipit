@@ -270,11 +270,18 @@ that does not exist.
 
 ## The expand control (req 8)
 
-One real button per collapsed turn, above the turn's content: a `Button` with
-`variant="secondary"` and a `CaretDown` icon at `ICON_SIZE.SM`, not the current
-ghost text (`MessageList.tsx:331`). It keeps `aria-expanded` and
-`aria-controls`. No hidden-row count, and no failure status beside it —
-requirement 11 already keeps the error row on screen.
+One button per collapsed turn, above the turn's content: a `Button` with
+`variant="ghost"`, `size="icon"` and a caret at `ICON_SIZE.SM`, and **no visible
+text**. It keeps `aria-expanded`, `aria-controls` and the accessible name that
+used to be the label ("Show full turn: <the user's message>"), which is also the
+tooltip — so the words are still there for a screen reader and on hover. No
+hidden-row count, and no failure status beside it — requirement 11 already keeps
+the error row on screen.
+
+The first form was a bordered `variant="secondary"` button carrying that text,
+which is what the shipped ghost *text* control (docs/296) was replaced with. It
+read as too heavy next to a turn's own prose; the chevron keeps the hit target
+and the semantics and drops the weight.
 
 docs/296's "Turn ended without an agent reply." note survives, on a narrower
 condition: a turn that keeps **nothing**, so its collapsed form is the button

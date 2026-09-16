@@ -58,6 +58,10 @@
       own copy in the collapsed and the expanded path (req 14).
 - [x] Keep an action card in a collapsed turn whether or not it was sent, and
       take the checklist's submitted flag out of the visibility rule (req 12).
+- [x] Add a fixture turn with hidden work *and* an action card, so the control
+      and a kept card can be looked at together.
+- [x] Make the control a chevron on a ghost button with no visible text, keeping
+      its accessible name and adding it as the tooltip (req 8).
 
 ## Tests
 

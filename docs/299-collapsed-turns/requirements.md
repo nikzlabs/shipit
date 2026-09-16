@@ -42,8 +42,10 @@ need their own messages and the significant events.
    reply. Requirements 11 and 12 are the exceptions to "no cards".
 6. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 2.
 7. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 3.
-8. The control that expands a turn is clearly a button. It is easy to see, and
-   the user can tell it apart from the content of the turn.
+8. The control that expands a turn is easy to see, and the user can tell it
+   apart from the content of the turn. It is a chevron on a ghost button, with
+   no visible text; the words it used to show are carried for assistive
+   technology and in the tooltip.
 9. The feature stays off by default. The user turns it on in Settings.
 10. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 4.
     In-app search keeps its current behavior here: it matches message text,
@@ -65,6 +67,14 @@ need their own messages and the significant events.
 None.
 
 ## Resolved questions
+
+2026-09-16 — Requirement 8 became a chevron alone, from *"let's try just showing
+a chevron with a ghost style button, no text"*. It replaces the bordered
+secondary button with a text label that the first reading of requirement 8
+produced, and which the user found too heavy beside a turn's own text. Named as
+a trial. Nothing about the control's behaviour changed: it keeps its accessible
+name, `aria-expanded` and `aria-controls`, and the label it no longer shows is
+now its tooltip.
 
 2026-09-16 — Requirement 12 carved out action cards, from *"action cards
 shouldn't be hidden in the compact mode"*, said while looking at the seeded

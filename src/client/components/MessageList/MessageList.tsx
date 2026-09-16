@@ -380,18 +380,19 @@ export function MessageList({
           {gapAtHeader !== undefined && renderRewindPoint(gapAtHeader)}
           {view.first && view.run && (
             <div className="text-xs text-(--color-text-secondary) flex items-center gap-2 py-0.5">
-              {/* req 8 — a real button, not ghost text that reads as content. */}
-              <Button variant="secondary" size="sm"
+              {/* req 8 — a chevron alone. The words live on `aria-label` and the
+                  tooltip, so the control marks the fold without competing with
+                  the turn's own text. */}
+              <Button variant="ghost" size="icon"
                 aria-expanded={view.open}
                 aria-controls={view.controls}
                 aria-label={`${view.open ? "Show compact turn" : "Show full turn"}: ${view.run.identity.text.slice(0, 80) || "Agent response"}`}
                 aria-disabled={view.search || undefined}
-                title={view.search ? "Revealed by the active search" : undefined}
+                title={view.search ? "Revealed by the active search" : view.open ? "Show compact turn" : "Show full turn"}
                 onClick={() => { if (!view.search) compact.toggle(view.run, view.open); }}>
                 {view.open
-                  ? <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
-                  : <CaretDownIcon size={ICON_SIZE.XS} weight="bold" />}
-                {view.open ? "Show compact turn" : "Show full turn"}
+                  ? <CaretUpIcon size={ICON_SIZE.SM} weight="bold" />
+                  : <CaretDownIcon size={ICON_SIZE.SM} weight="bold" />}
               </Button>
               {!view.open && view.empty && <span>Turn ended without an agent reply.</span>}
             </div>
