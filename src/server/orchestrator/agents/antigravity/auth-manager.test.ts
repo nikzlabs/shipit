@@ -351,6 +351,63 @@ describe("AntigravityAuthManager", () => {
     });
 
     /**
+     * A pty echoes what is written to it, so the code comes back on the CLI's
+     * own output — which the panel now shows. The sanitizer's long-secret rule
+     * would probably catch it; a credential does not get a "probably".
+     */
+    it("keeps the pasted code out of the CLI output the pty echoes back", () => {
+      start();
+      proc.emitData(`${SIGN_IN_URL} `);
+      manager.submitCode("4/0AY-secret-code");
+      proc.emitData("4/0AY-secret-code\r\nExchanging the code…\n");
+
+      expect(logs.map((l) => l.message).join("\n")).not.toContain("4/0AY-secret-code");
+      expect(logs.map((l) => l.message).join("\n")).toContain("Exchanging the code…");
+    });
+
+    /**
+     * A chunk boundary lands wherever the pty buffer says, and both redactions
+     * are whole-string rules: a URL split at `&sta` / `te=…` leaves the second
+     * half looking like ordinary text, and a split echo stops matching the code
+     * that was submitted. Relaying whole lines is what makes either rule apply.
+     */
+    it("redacts a secret the pty split across two chunks", () => {
+      start();
+      const url = `${SIGN_IN_URL}&state=private-state-value`;
+      const at = url.indexOf("&sta") + 4;
+      proc.emitData(`Please visit: ${url.slice(0, at)}`);
+      proc.emitData(`${url.slice(at)}\n`);
+
+      manager.submitCode("4/0AY-secret-code");
+      proc.emitData("4/0AY-sec");
+      proc.emitData("ret-code\r\n");
+
+      const panel = logs.map((l) => l.message).join("\n");
+      expect(panel, "leaked the link's query string").not.toContain("private-state-value");
+      expect(panel, "leaked the authorization code").not.toContain("4/0AY-secret-code");
+    });
+
+    /**
+     * A cancelled pty keeps draining, and by then the manager may be running the
+     * NEXT account's flow — so unguarded output lands on that account's panel,
+     * and its expired link can be replayed as that account's challenge.
+     */
+    it("ignores a cancelled run's output instead of charging it to the next account", () => {
+      start();
+      const stale = proc;
+      manager.cancel();
+
+      proc = new FakePty();
+      manager.start({ credentialDir: home, accountId: "acct-2" });
+      logs.length = 0;
+      pending.length = 0;
+      stale.emitData(`stale line\n${SIGN_IN_URL} `);
+
+      expect(logs).toEqual([]);
+      expect(pending, "replayed the cancelled run's link").toEqual([]);
+    });
+
+    /**
      * The one line that says which branch the exit took. It was on the terminal
      * only, which the user cannot read — and a completed exchange reported as a
      * failure is exactly the case where they need it (probes/signin-exit-shape.md).

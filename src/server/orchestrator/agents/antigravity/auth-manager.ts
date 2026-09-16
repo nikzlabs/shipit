@@ -231,6 +231,7 @@ export class AntigravityAuthManager
   private activeFlowAccountId: string | null = null;
   private activeAttemptId: string | null = null;
   private activeAttemptStartedAt = 0;
+  private submittedCode: string | null = null;
   private terminalEmitted = false;
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
@@ -315,6 +316,7 @@ export class AntigravityAuthManager
     this.outputBuffer = "";
     this.lastPendingDetails = null;
     this.terminalEmitted = false;
+    this.submittedCode = null;
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
     this.activeAttemptId = randomUUID();
@@ -355,16 +357,39 @@ export class AntigravityAuthManager
     this.emitProgress("waiting_for_url", "Waiting for the Antigravity CLI to print a sign-in link.");
     // A pty merges the two streams, so this buffer is also what req 4's error
     // sentence is read from.
+    /**
+     * **Diagnostics are relayed a LINE at a time, never a chunk at a time.** A
+     * pty chunk boundary lands wherever the buffer says, and both redactions
+     * that protect this panel are whole-string rules: a sign-in URL split at
+     * `&sta` / `te=…` leaves the second half looking like ordinary text, and an
+     * echoed authorization code split anywhere stops matching what was
+     * submitted. The same boundary already cost the link itself once
+     * ({@link handleOutput}).
+     */
+    let lineBuffer = "";
+    const relay = (text: string): void => {
+      const line = this.withoutSubmittedCode(text.trim());
+      if (line) this.emitDiagnosticLog("info", "cli_stdout", line);
+    };
+
     proc.onData((chunk) => {
+      // A cancelled run keeps draining, and by then `this.proc` may be the NEXT
+      // flow's process — so an unguarded callback labels old output with a new
+      // account's scope, or replays an expired link as that account's challenge.
+      if (this.proc !== proc) return;
       this.stderrBuffer += chunk;
-      const cleaned = stripAnsi(chunk).trim();
-      if (cleaned) this.emitDiagnosticLog("info", "cli_stdout", cleaned);
+      const lines = (lineBuffer + stripAnsi(chunk)).split(/\r?\n/);
+      lineBuffer = lines.pop() ?? "";
+      for (const line of lines) relay(line);
       this.handleOutput(chunk);
     });
 
     proc.onExit(({ exitCode, signal }) => {
       if (this.proc !== proc) return;
       this.proc = null;
+      // The CLI's last line carries no newline when it is a prompt.
+      relay(lineBuffer);
+      lineBuffer = "";
       const hadPending = this.lastPendingDetails !== null;
       this.lastPendingDetails = null;
       this.clearTimeout();
@@ -441,6 +466,17 @@ export class AntigravityAuthManager
     this.emit("pending", details);
   }
 
+  /**
+   * A pty echoes what is written to it, so the authorization code comes back on
+   * the CLI's own output — which is relayed to the panel. The sanitizer's
+   * long-secret rule would probably catch it; "probably" is not good enough for
+   * a credential, so the exact string we submitted is taken out first.
+   */
+  private withoutSubmittedCode(text: string): string {
+    const code = this.submittedCode;
+    return code && text.includes(code) ? text.split(code).join("[code redacted]") : text;
+  }
+
   /** `hadPending` is passed in: the exit handler clears the field before it asks. */
   private exitMessage(exitCode: number, signal: number | undefined, hadPending: boolean): string {
     if (wasSignalled(signal)) return `The Antigravity sign-in was stopped (signal ${String(signal)}).`;
@@ -464,7 +500,8 @@ export class AntigravityAuthManager
     try {
       // What a terminal sends when the user presses Enter; the line discipline
       // maps it to a newline, so the CLI reads one submitted line.
-      this.proc.write(`${code.trim()}\r`);
+      this.submittedCode = code.trim();
+      this.proc.write(`${this.submittedCode}\r`);
       // Never the code itself: it is a credential, and the panel is copyable.
       this.emitDiagnosticLog("info", "shipit", "Authorization code delivered to the CLI.");
       this.emitProgress("checking_credentials", "Code submitted — completing sign-in…");

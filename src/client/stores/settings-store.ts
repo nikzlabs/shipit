@@ -643,7 +643,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
             ...current,
             active: false,
             phase: status,
-            message: message ?? (status === "complete" ? "Claude sign-in completed." : "Claude sign-in failed."),
+            // The provider's own wording arrives as `message`; this is the
+            // fallback for a login that has none, so it names no harness.
+            message: message ?? (status === "complete" ? "Sign-in completed." : "Sign-in failed."),
             ...(status === "failed" && message ? { failedMessage: message } : {}),
           },
         },

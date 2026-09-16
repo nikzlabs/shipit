@@ -412,7 +412,15 @@ one non-npm branch, gated on `contains antigravity $selected`:
   reports anything, labelled with that harness's name. **The sign-in URL is never
   logged**: the sanitizer strips a URL's query string, which is all an OAuth link
   is, so the manager reports that the link arrived and the usable link stays the
-  challenge's button.
+  challenge's button. Two properties of the relay are load-bearing, and
+  cross-backend review caught both missing. It relays **whole lines, not pty
+  chunks** — every redaction protecting the panel is a whole-string rule, so a
+  URL split at `&sta`/`te=…` or an echoed code split anywhere passes straight
+  through a chunk-at-a-time sanitize (the same boundary that already cost the
+  link itself). And the data callback carries `this.proc !== proc`, like the exit
+  callback: a cancelled run keeps draining, and by then the manager may be
+  running the next account's flow, so unguarded output lands on that account's
+  panel and its expired link is replayed as that account's challenge.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it
