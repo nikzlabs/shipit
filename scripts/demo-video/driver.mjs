@@ -739,7 +739,8 @@ class Driver {
       // (`beatSlices`), so the prompt being typed is on camera (req 8a)
       // whatever the typing took; `actionAt` is the first keystroke.
       actionAt = this.t();
-      sentAt = await this.typeAndSend(beat.type, actionAt + beat.lead);
+      await this.typeAndSend(beat.type);
+      sentAt = this.t();
     }
     if (pending) await pending;
     await this.waitAll(beat);

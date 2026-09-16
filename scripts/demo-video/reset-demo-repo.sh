@@ -143,6 +143,14 @@ DEFAULT_BRANCH="$(gh_read "/repos/$SLUG" | json 'd.default_branch')"
 export RESET_DEFAULT="$DEFAULT_BRANCH"
 
 gh_read "/repos/$SLUG/git/commits/$PIN" > /dev/null || die "pin $PIN is not a commit in $SLUG"
+# Only a demo repo carries the proxy redirect (plan §1); a real repo with a valid
+# commit must never get its branches deleted and its default branch moved.
+REDIRECT="$(gh_read "/repos/$SLUG/contents/.claude/settings.json?ref=$PIN" 2>/dev/null \
+  | json 'Buffer.from(d.content ?? "", d.encoding ?? "base64").toString("utf8")' 2>/dev/null || true)"
+case "$REDIRECT" in
+  *"http://demo-proxy:8787"*) ;;
+  *) die "refusing: $SLUG@$PIN has no .claude/settings.json pointing ANTHROPIC_BASE_URL at http://demo-proxy:8787 — not a demo repo" ;;
+esac
 HEAD_SHA="$(gh_read "/repos/$SLUG/git/ref/heads/$DEFAULT_BRANCH" | json 'd.object.sha')"
 
 if [ -n "$SESSION" ]; then
@@ -150,9 +158,22 @@ if [ -n "$SESSION" ]; then
 else
   OPEN_PRS="$(gh_read "/repos/$SLUG/pulls?state=open&per_page=100" | json 'd.map((p) => p.number).join("\n")')"
 fi
-BRANCHES="$(gh_read "/repos/$SLUG/branches?per_page=100" | json 'd.map((b) => b.name).filter((n) => n !== process.env.RESET_DEFAULT).join("\n")')"
+BRANCH_PAGE="$(gh_read "/repos/$SLUG/branches?per_page=100")"
+BRANCH_PAGE_COUNT="$(printf '%s' "$BRANCH_PAGE" | json 'd.length')"
+BRANCHES="$(printf '%s' "$BRANCH_PAGE" | json 'd.map((b) => b.name).filter((n) => n !== process.env.RESET_DEFAULT).join("\n")')"
 
 log "$SLUG: default $DEFAULT_BRANCH at ${HEAD_SHA:-?}, pin $PIN; open PRs: ${OPEN_PRS:-none}; other branches: ${BRANCHES:-none}"
+
+# One page each is all this reads; a full page means there may be more, and a
+# partial reset would leave the repo in a state no take can start from.
+[ "$(printf '%s\n' "$OPEN_PRS" | grep -c .)" -lt 100 ] || die "refusing: $SLUG has 100+ open PRs; this script resets one page, not a repository that size"
+[ "${BRANCH_PAGE_COUNT:-0}" -lt 100 ] || die "refusing: $SLUG has 100+ branches; this script resets one page, not a repository that size"
+
+# Branch deletes and the ref reset need the token; check before the first PR
+# close so a missing token never leaves a half-reset repo.
+if [ "$DRY_RUN" -eq 0 ] && { [ -n "$BRANCHES" ] || [ "$HEAD_SHA" != "$PIN" ]; } && [ -z "${GITHUB_TOKEN:-}" ]; then
+  die "branch deletion / $DEFAULT_BRANCH reset need GITHUB_TOKEN in the environment; nothing was changed"
+fi
 
 # ── Writes, in order: PRs first so a branch delete never closes one as a side effect ──
 

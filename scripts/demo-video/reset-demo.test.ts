@@ -19,7 +19,7 @@ const PIN = "af344fbed791e454f6a0b96245b48f377b2d7aa3";
 
 interface Recorded { method: string; url: string; auth: string | undefined; body: string }
 
-function fakeServer(opts: { instanceSession: "warm" | "listed" | "none" }): Promise<{ url: string; writes: Recorded[]; close: () => void }> {
+function fakeServer(opts: { instanceSession: "warm" | "listed" | "none"; noRedirect?: boolean; manyBranches?: boolean }): Promise<{ url: string; writes: Recorded[]; close: () => void }> {
   const writes: Recorded[] = [];
   const server = http.createServer((req, res) => {
     let body = "";
@@ -49,10 +49,17 @@ function fakeServer(opts: { instanceSession: "warm" | "listed" | "none" }): Prom
       }
       if (/^\/api\/sessions\/[^/]+\/pr\/list\?/.test(url)) return send(200, { prs: [{ number: 7, head: "shipit/a" }, { number: 8, head: "shipit/b" }] });
       // GitHub
+      if (url === `/repos/demo/app/contents/.claude/settings.json?ref=${PIN}`) {
+        if (opts.noRedirect) return send(404, { message: "Not Found" });
+        return send(200, { encoding: "base64", content: Buffer.from('{ "env": { "ANTHROPIC_BASE_URL": "http://demo-proxy:8787" } }').toString("base64") });
+      }
       if (url === "/repos/demo/app") return send(200, { default_branch: "main" });
       if (url === `/repos/demo/app/git/commits/${PIN}`) return send(200, { sha: PIN });
       if (url === "/repos/demo/app/git/ref/heads/main") return send(200, { object: { sha: "1111111111111111111111111111111111111111" } });
-      if (url.startsWith("/repos/demo/app/branches")) return send(200, [{ name: "main" }, { name: "shipit/a" }, { name: "shipit/b" }]);
+      if (url.startsWith("/repos/demo/app/branches")) {
+        if (opts.manyBranches) return send(200, Array.from({ length: 100 }, (_, i) => ({ name: i === 0 ? "main" : `shipit/b${i}` })));
+        return send(200, [{ name: "main" }, { name: "shipit/a" }, { name: "shipit/b" }]);
+      }
       if (url.startsWith("/repos/demo/app/pulls")) return send(200, [{ number: 7 }, { number: 8 }]);
       send(404, { error: `unhandled ${method} ${url}` });
     });
@@ -150,12 +157,37 @@ describe("reset-demo-repo.sh", () => {
     }
   });
 
-  it("refuses a write without GITHUB_TOKEN, naming the call, after the reads succeeded", async () => {
-    const fake = await fakeServer({ instanceSession: "none" });
+  it("refuses without GITHUB_TOKEN before the first PR close, so a missing token never half-resets the repo", async () => {
+    const fake = await fakeServer({ instanceSession: "warm" });
     try {
-      const r = await runReset(["--repo", "demo/app", "--pin", PIN], { GITHUB_API_URL: fake.url });
+      // The instance could close the PRs on its own, but branches and main need the token: nothing may start.
+      const r = await runReset(["--repo", "demo/app", "--pin", PIN, "--instance", fake.url], { GITHUB_API_URL: fake.url });
       expect(r.status).toBe(1);
-      expect(r.stderr).toContain("PATCH /repos/demo/app/pulls/7 needs GITHUB_TOKEN");
+      expect(r.stderr).toContain("need GITHUB_TOKEN in the environment; nothing was changed");
+      expect(fake.writes).toEqual([]);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("refuses a repo whose pinned commit carries no demo-proxy redirect — a real repo with a valid commit", async () => {
+    const fake = await fakeServer({ instanceSession: "warm", noRedirect: true });
+    try {
+      const r = await runReset(["--repo", "demo/app", "--pin", PIN, "--instance", fake.url], { GITHUB_API_URL: fake.url, GITHUB_TOKEN: "t" });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("not a demo repo");
+      expect(fake.writes).toEqual([]);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("refuses a repo whose branch page is full rather than reset one page of it", async () => {
+    const fake = await fakeServer({ instanceSession: "warm", manyBranches: true });
+    try {
+      const r = await runReset(["--repo", "demo/app", "--pin", PIN, "--instance", fake.url], { GITHUB_API_URL: fake.url, GITHUB_TOKEN: "t" });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("100+ branches");
       expect(fake.writes).toEqual([]);
     } finally {
       fake.close();
@@ -180,6 +212,8 @@ describe("host/reset-demo-instance.sh", () => {
     writeFileSync(join(home, "deployment", "local", "stop.sh"), "#!/usr/bin/env bash\necho stop-ran\n");
     chmodSync(join(home, "deployment", "local", "stop.sh"), 0o755);
     writeFileSync(join(home, "docker", "local", "prod", "compose.yml"), "name: shipit-prod\nservices: {}\n");
+    // The operator's marker: what tells the demo host apart from a standard install.
+    writeFileSync(join(home, ".shipit-demo-instance"), `${os.hostname()}\n`);
     proxyCompose = join(home, "demo-proxy.compose.yml");
     writeFileSync(proxyCompose, "name: shipit-demo\n");
   });
@@ -203,7 +237,35 @@ describe("host/reset-demo-instance.sh", () => {
     expect(r.stdout).not.toContain("credentials");
   });
 
-  it("refuses any install whose Compose project is not shipit-prod", () => {
+  it("refuses a standard local install — project shipit-prod, the default, but no demo marker", () => {
+    const other = mkdtempSync(join(os.tmpdir(), "reset-other-"));
+    try {
+      cpSync(home, other, { recursive: true });
+      rmSync(join(other, ".shipit-demo-instance"));
+      const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", other, "--proxy-compose", proxyCompose], { encoding: "utf8" });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("no demo marker");
+      expect(r.stdout).toBe("");
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses when the marker names another host", () => {
+    const other = mkdtempSync(join(os.tmpdir(), "reset-other-"));
+    try {
+      cpSync(home, other, { recursive: true });
+      writeFileSync(join(other, ".shipit-demo-instance"), "some-other-box\n");
+      const r = spawnSync("bash", [RESET_INSTANCE, "--dry-run", "--shipit-home", other, "--proxy-compose", proxyCompose], { encoding: "utf8" });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("names 'some-other-box'");
+      expect(r.stdout).toBe("");
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses any install whose Compose project is not shipit-prod, marker or not", () => {
     const other = mkdtempSync(join(os.tmpdir(), "reset-other-"));
     try {
       cpSync(home, other, { recursive: true });

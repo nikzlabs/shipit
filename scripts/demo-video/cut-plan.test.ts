@@ -32,13 +32,34 @@ describe("planSlices", () => {
     expect(keptSeconds(plan)).toBe(12);
   });
 
-  it("merges the lead and hold of one beat when the result is ready inside the lead", () => {
+  it("keeps the full lead + hold budget when the result is ready inside the lead", () => {
     const plan = planSlices(
       [{ id: "session", actionAt: 10, readyAt: 12 }],
       storyboard([{ id: "session", lead: 4, hold: 1 }]),
     );
-    // [10,14] and [12,13] overlap: one slice, not five seconds of footage.
-    expect(plan).toEqual([{ start: 10, end: 14 }]);
+    // The lead is [10,14]; the hold starts where the lead ends, not at readyAt,
+    // so a fast beat still contributes exactly lead + hold (5 s), never less.
+    expect(plan).toEqual([{ start: 10, end: 15 }]);
+    expect(keptSeconds(plan)).toBe(5);
+  });
+
+  it("a type beat's lead is the last `lead` seconds before the send, so typing speed never moves the cut", () => {
+    const story = storyboard([{ id: "prompt", type: "Build it", lead: 4, hold: 1 }]);
+    const slow = beatSlices([{ id: "prompt", actionAt: 10, sentAt: 21, readyAt: 22 }], story.beats);
+    const quick = beatSlices([{ id: "prompt", actionAt: 10, sentAt: 16, readyAt: 22 }], story.beats);
+    expect(slow[0]).toEqual({ beat: "prompt", part: "lead", start: 17, end: 21 });
+    expect(quick[0]).toEqual({ beat: "prompt", part: "lead", start: 12, end: 16 });
+    // A log that is ready before its send is not a take.
+    expect(() => beatSlices([{ id: "prompt", actionAt: 10, sentAt: 21, readyAt: 15 }], story.beats)).toThrow(/must lie between/);
+    expect(() => beatSlices([{ id: "prompt", actionAt: 10, readyAt: 22 }], story.beats)).toThrow(/sentAt/);
+  });
+
+  it("a fast beat costs the same as a slow one: Σ(lead + hold) is the budget either way", () => {
+    const story = storyboard([{ id: "merge", lead: 3, hold: 4 }]);
+    const fast = planSlices([{ id: "merge", actionAt: 100, readyAt: 102 }], story);
+    const slow = planSlices([{ id: "merge", actionAt: 100, readyAt: 105 }], story);
+    expect(keptSeconds(fast)).toBe(7);
+    expect(keptSeconds(slow)).toBe(7);
   });
 
   it("merges a hold into the next beat's action when the driver acts inside the hold", () => {
@@ -65,14 +86,15 @@ describe("planSlices", () => {
     const raw = beatSlices(beats, storyboard([{ id: "prompt", lead: 4, hold: 1 }, { id: "work", lead: 6, hold: 6 }]).beats);
     expect(raw).toEqual([
       { beat: "prompt", part: "lead", start: 10, end: 14 },
-      { beat: "prompt", part: "hold", start: 12, end: 13 },
-      // previous hold ends at 13, so the work footage is [13, 19]
-      { beat: "work", part: "lead", start: 13, end: 19 },
+      // ready at 12, inside the lead: the hold starts where the lead ends
+      { beat: "prompt", part: "hold", start: 14, end: 15 },
+      // previous hold ends at 15, so the work footage is [15, 21]
+      { beat: "work", part: "lead", start: 15, end: 21 },
       { beat: "work", part: "hold", start: 90, end: 96 },
     ]);
-    // Merged: the prompt's lead absorbs its hold and abuts the work lead exactly.
+    // Merged: lead, hold and the work lead abut exactly; nothing overlaps.
     expect(mergeSlices(raw)).toEqual([
-      { start: 10, end: 19 },
+      { start: 10, end: 21 },
       { start: 90, end: 96 },
     ]);
   });
@@ -111,7 +133,12 @@ describe("planSlices", () => {
     expect(() => planSlices([{ id: "x", actionAt: 5, readyAt: 4 }], storyboard([{ id: "x", lead: 1, hold: 1 }]))).toThrow(
       /ready .* before its action/,
     );
+    // A log that never reached a storyboard beat is an aborted take first …
     expect(() => planSlices([{ id: "x", actionAt: 1, readyAt: 4 }], storyboard([{ id: "y", lead: 1, hold: 1 }]))).toThrow(
+      /stops before "y"/,
+    );
+    // … and a logged beat the storyboard does not know is rejected by the slice math itself.
+    expect(() => beatSlices([{ id: "x", actionAt: 1, readyAt: 4 }], [{ id: "y", lead: 1, hold: 1 }])).toThrow(
       /not in the storyboard/,
     );
     expect(() => planSlices([{ id: "x", actionAt: 1, readyAt: 4 }], storyboard([{ id: "x", lead: -1, hold: 1 }]))).toThrow(

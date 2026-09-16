@@ -184,7 +184,7 @@ describe("cut.sh", () => {
         const probe = readFileSync(join(f.dir, "ffprobe-argv"), "utf8");
         expect(probe).toContain("format=duration");
 
-        expect(result.stderr).toContain("anchor: driver left the splash at 1.9s, video shows it at 0.48s (file 70.5s)");
+        expect(result.stderr).toContain("anchor: driver's splash went white at 1.9s, video shows it at 0.48s (file 70.5s)");
         expect(result.stderr).not.toContain("WARNING");
         const webm = argvOf(f.dir, 1);
         expect(webm[webm.indexOf("-filter_complex") + 1]).toBe(ANCHORED_FILTER);
