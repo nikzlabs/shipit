@@ -263,9 +263,14 @@ Rules (review findings, both rounds):
 
   - **The install race is a property of services.** ShipIt *starts* a service,
     without waiting for `agent.install`, so mounting the dep dirs would hand it
-    a tree mid-write. A command is invoked by the agent or the user at a moment
-    they chose: there is no start to gate and nothing waits on it. Services keep
-    `dependsOnInstall: false` and keep the self-only nesting, untouched.
+    a tree mid-write — and ShipIt chose that moment. A command is *invoked*, by
+    the agent or the user, at a moment they chose. State that as the **ordering
+    assumption** it is rather than a guarantee: nothing stops a command run from
+    the terminal while `agent.install` is still writing, and it would then read
+    a half-written tree. What the mount does not do is introduce that race — the
+    same command reads the same half-written tree today on any session with the
+    store off. Services keep `dependsOnInstall: false` and keep the self-only
+    nesting, untouched.
   - **The trust boundary is about the *writable* handle, and is kept by keeping
     it.** A tracked import's dep-dir mounts are **read-only**; only `repo: self`
     gets them read-write, and there the identical directory is already

@@ -598,7 +598,9 @@ exports:
       expect(mountFor(host, "/plugin/node_modules")).toBeUndefined();
     });
 
-    it("mounts a dep dir whose parent is absent from the clone (.tools/blender, #2870)", async () => {
+    // Only the mount targets: whether the parent exists on the clone is decided upstream,
+    // by `ensureDepDirMountParents` when the agent's own container is built.
+    it("nests a multi-segment dep dir at its own path under /project (#2870)", async () => {
       declareConsumer();
       publishGeneration();
       const fake = fakeDocker();

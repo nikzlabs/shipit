@@ -93,16 +93,24 @@ Everything below follows from those three rows.
 
 Your **command** runs against the consuming project's working tree at `/project`,
 including every directory that project declares in `agent.dep-dirs` — the same
-content its agent sees in its own shell. ShipIt keeps those directories outside
-the project's clone, so each one arrives as a mount ShipIt adds rather than as a
-directory that is simply there; without it you would find the path present and
-empty. A program that imports from the project's `node_modules`, or reads a
-pinned toolchain out of a declared directory, therefore behaves in your run the
-way it does in the project's own terminal.
+content its agent sees in its own shell. ShipIt usually keeps those directories
+outside the project's clone, so each one arrives as a mount ShipIt adds rather
+than as a directory that is simply there; without it you would find the path
+present and empty. A program that imports from the project's `node_modules`, or
+reads a pinned toolchain out of a declared directory, therefore behaves in your
+run the way it does in the project's own terminal.
 
-Your **service** does not get them. A service starts without waiting for the
-project's `agent.install`, so what it would read is a tree mid-write. Work that
-needs the project's installed dependencies belongs in a command.
+**Read them, do not write them.** Those mounts are read-only for a tracked
+import — the consuming project's agent loads code out of that tree — so a
+command that needs to write goes somewhere else under `/project`, which is
+writable. (Under `repo: self` they are read-write, because the identical
+directory is already read-write at `/project`.)
+
+Your **service** is not handed them. A service starts without waiting for the
+project's `agent.install`, so what it would read is a tree mid-write. It may
+still find them when ShipIt is not storing them outside the clone, which is not
+something your service can detect or rely on — so work that needs the project's
+installed dependencies belongs in a command.
 
 ### Your service does not choose its port
 

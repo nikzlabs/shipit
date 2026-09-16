@@ -152,9 +152,15 @@ layer that belongs to the plugin's own execution environment, not to yours.
 The traffic runs the other way too. A plugin's **command** sees your working
 tree at `/project`, including the directories you declare in `agent.dep-dirs` —
 so a plugin program that imports one of your dependencies, or runs a tool you
-pinned into a declared directory, reads what your own shell reads. A plugin's
-**service** does not: it starts without waiting for `agent.install`, so it is
-given your tree without those directories.
+pinned into a declared directory, reads what your own shell reads. It *reads*
+them: a plugin from another repository gets that copy read-only, and a write
+there fails instead of reaching your tree.
+
+A plugin's **service** is the exception. ShipIt starts it without waiting for
+`agent.install`, so it is never handed those directories. It may still find
+them — when ShipIt is not storing them outside the clone, they are ordinary
+files in your tree like any others — so treat a service that reads your
+dependencies as working by accident, and put work that needs them in a command.
 
 ## What containment does not cover
 
@@ -163,8 +169,9 @@ project's workspace, mounted read-write in a plugin's containers, and it is the
 directory a companion CLI starts in — a purpose rather than a leak, since a
 plugin that generates code, formats files, or records its output into the
 project is the ordinary case, and a manifest's `settings` exist so this project
-can say where. ShipIt does not restrict which paths inside the workspace a
-plugin may write, so "it appeared under a path I did not expect" is not an
+can say where. ShipIt restricts one path and no others: a plugin from another
+repository gets your `agent.dep-dirs` read-only. Everywhere else in the
+workspace it may write, so "it appeared under a path I did not expect" is not an
 anomaly the platform will report — it is yours to notice.
 
 **And the workspace is not only content.** `shipit.yaml` (a changed
