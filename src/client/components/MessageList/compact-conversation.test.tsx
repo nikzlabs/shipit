@@ -336,7 +336,8 @@ describe("collapsed turns", () => {
   it("says what the fold is holding — tool calls, messages and cards (req 8)", () => {
     compactOn();
     const { rerender } = render(<MessageList messages={transcript()} isLoading={false} />);
-    expect(screen.getByRole("button", { name: /Show full turn/ })).toHaveTextContent("1 tool call · 1 message · 1 card");
+    expect(screen.getByRole("button", { name: /Show full turn/ }))
+      .toHaveAttribute("title", "Show full turn — 1 tool call · 1 message · 1 card");
 
     const plural = [user("Task"), bot("Step one"), bot("Step two"), {
       ...bot(""),
@@ -348,25 +349,26 @@ describe("collapsed turns", () => {
     }, { ...bot(""), compaction: { trigger: "auto" } }, bot("Done"),
       user("Next"), bot("Working now")] as ChatMessage[];
     rerender(<MessageList messages={plural} isLoading={false} />);
-    expect(screen.getByRole("button", { name: /Show full turn/ })).toHaveTextContent("2 tool calls · 2 messages · 1 card");
+    expect(screen.getByRole("button", { name: /Show full turn/ }))
+      .toHaveAttribute("title", "Show full turn — 2 tool calls · 2 messages · 1 card");
   });
 
-  it("draws the user's rewind anchor above the expand control, in both states", () => {
+  it("puts the control on the user's rewind strip, in both states (req 14)", () => {
     compactOn();
     const { container } = render(<MessageList messages={transcript()} isLoading={false} onRewindAtGap={vi.fn()} />);
     // Right-aligned anchors close a user message: this turn's and the newest one's.
     const anchors = () => [...container.querySelectorAll('[data-testid="rewind-point"][data-align="right"]')];
-    const above = () => {
+    // The strip is one row: the caret at the reply's side, the anchor at the
+    // user's. The count pins that hoisting leaves no second copy below it.
+    const onTheStrip = () => {
       const button = screen.getByRole("button", { name: /Show (full|compact) turn/ });
-      return anchors().filter((a) => a.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).length;
+      return anchors().filter((a) => button.parentElement?.contains(a)).length;
     };
-    // The anchor closes the user's message; the control opens the reply. The
-    // count pins that hoisting it does not leave a second copy on its own row.
     expect(anchors()).toHaveLength(2);
-    expect(above()).toBe(1);
+    expect(onTheStrip()).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: /Show full turn/ }));
     expect(anchors()).toHaveLength(2);
-    expect(above()).toBe(1);
+    expect(onTheStrip()).toBe(1);
   });
 
   it("keeps later row DOM parents fixed when an early run is expanded", () => {

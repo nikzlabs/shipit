@@ -43,9 +43,10 @@ need their own messages and the significant events.
 6. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 2.
 7. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 3.
 8. The control that expands a turn is easy to see, and the user can tell it
-   apart from the content of the turn. It is a caret and a hairline rule that
-   spans the column — the fold — and it says what the fold is holding: how many
-   tool calls, how many messages and how many cards.
+   apart from the content of the turn. It is a single caret in the accent
+   colour, and it costs the turn no vertical space of its own. What the fold is
+   holding — how many tool calls, how many messages, how many cards — is named
+   where it needs no room: in the control's tooltip.
 9. The feature stays off by default. The user turns it on in Settings.
 10. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 4.
     In-app search keeps its current behavior here: it matches message text,
@@ -60,13 +61,25 @@ need their own messages and the significant events.
 13. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 1.
 
 14. The expand control belongs to the agent's reply, not to the user's message.
-    The rewind anchor that closes the user's message is drawn above it.
+    It shares the strip the rewind anchor sits on, at the left of it: the anchor
+    closes the user's message at the user's side, the caret opens the reply at
+    the reply's side.
 
 ## Open questions
 
 None.
 
 ## Resolved questions
+
+2026-09-16 — Requirements 8 and 14 put the caret on the rewind strip, from
+*"let's try the single chevron on the left of this rewind anchor, so it doesn't
+take vertical space. Make it accent color"*. This is the fourth form of the
+control and it drops the fold rule's visible label: a row that carries text
+carries its height, and the height is what was being paid. The counts survive as
+the tooltip, so nothing the previous step added is lost. Requirement 14 changes
+with it — "above the control" becomes "the same strip", which keeps what that
+requirement was for: the anchor belongs to the user's message, the caret to the
+reply.
 
 2026-09-16 — Requirement 8 became the fold rule, from *"let's try fold rule, but
 show not only tool calls, but also counts for cards, messages"*, chosen from

@@ -270,28 +270,31 @@ that does not exist.
 
 ## The expand control (req 8)
 
-One button per collapsed turn, above the turn's content, drawn as the **fold**:
-a `Button` with `variant="ghost"`, full width and 14px high, holding a caret at
-`ICON_SIZE.XS`, the label, and a hairline that fills the rest of the column. The
-rule is what tells it apart from the prose, so the ink can stay small. It keeps
-`aria-expanded`, `aria-controls`, the accessible name ("Show full turn: <the
-user's message>") and that name as its tooltip. No failure status beside it —
+One button per collapsed turn, **on the rewind anchor's own strip** (req 14): a
+`Button` with `variant="ghost"`, holding a caret at `ICON_SIZE.XS` in
+`--color-accent`, at the left of an 8px row whose remaining width is the anchor.
+The caret is 12px in that 8px row and overflows it by 2px each side, into the
+gap the rows already leave — so the control adds **no height at all**, which is
+what the earlier forms were really paying. The accent is what makes it findable
+at that size. It keeps `aria-expanded`, `aria-controls` and the accessible name
+("Show full turn: <the user's message>"). No failure status beside it —
 requirement 11 already keeps the error row on screen.
 
-**The label counts what the fold holds**: `"3 tool calls · 1 message · 2 cards"`,
-each part dropped when it is zero. `countHidden` tallies it in the same pass
-that decides what is hidden (`useCompactConversation`), never in a second walk
-that could disagree with what is on screen, and `describeHidden` renders the
-tally. A to-do panel counts as a card — it is a panel rather than prose, and a
-fourth noun would make the label a list. The counts stay on screen when the turn
-is open, so the control does not change width as it is toggled.
+**The tooltip counts what the fold holds**: `"Show full turn — 3 tool calls ·
+1 message · 2 cards"`, each part dropped when it is zero. `countHidden` tallies
+it in the same pass that decides what is hidden (`useCompactConversation`),
+never in a second walk that could disagree with what is on screen, and
+`describeHidden` renders the tally. A to-do panel counts as a card — it is a
+panel rather than prose, and a fourth noun would make the label a list. The
+counts live in the tooltip rather than beside the caret because a row carrying
+text carries its height.
 
-Two earlier forms were rejected, and the reasons are what the rule answers. A
-bordered `variant="secondary"` button carrying "Show full turn" read as too
-heavy beside a turn's own prose. A chevron alone, ghost and iconic, was "too
-big, blends with everything else, takes a lot of vertical space" — with no rule
-to mark it as structure, a caret in the prose ink is just another glyph in the
-column.
+Three earlier forms were rejected, and their reasons are what this one answers.
+A bordered `variant="secondary"` button carrying "Show full turn" read as too
+heavy beside a turn's own prose. A ghost chevron alone was "too big, blends with
+everything else, takes a lot of vertical space". A full-width fold rule with the
+counts on it fixed the blending — a hairline is unmistakably structure — but
+still spent a 14px line on a control, which the strip does not.
 
 docs/296's "Turn ended without an agent reply." note survives, on a narrower
 condition: a turn that keeps **nothing**, so its collapsed form is the button
@@ -302,14 +305,15 @@ Both are decided by the same classification that hides the rows, so the note
 cannot disagree with what is on screen.
 
 The rewind anchor for the gap the turn opens on is **hoisted to the run's first
-row** and drawn above the control (req 14): the anchor closes the user's
-message, the control opens the reply. Hoisting rather than reordering one row is
-what makes the two agree when the run does not begin with a bubble — the anchor
-belongs to the run's first *message*, while the control sits on its first
-*element*, which can be a tool group. The row that owns the gap then suppresses
-its own copy, in both the collapsed path (`renderRewindPoint` beside the row)
-and the expanded one (`TranscriptRow`'s `showGapBefore`), so hoisting never
-leaves a second anchor behind.
+row** and shares that row with the control (req 14): the anchor closes the
+user's message at the right, the caret opens the reply at the left. Hoisting
+rather than reordering one row is what makes the two meet when the run does not
+begin with a bubble — the anchor belongs to the run's first *message*, while the
+control sits on its first *element*, which can be a tool group. The row that
+owns the gap then suppresses its own copy, in both the collapsed path
+(`renderRewindPoint` beside the row) and the expanded one (`TranscriptRow`'s
+`showGapBefore`), so hoisting never leaves a second anchor behind. A run with no
+rewind controls keeps the strip and draws the caret alone on it.
 
 Follow the `design-language` skill: semantic color tokens only, no hardcoded
 palette values, `@phosphor-icons/react` for the icon.

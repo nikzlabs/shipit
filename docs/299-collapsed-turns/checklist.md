@@ -64,6 +64,8 @@
       its accessible name and adding it as the tooltip (req 8).
 - [x] Replace it with the fold rule: a caret, a count of what the fold holds
       (tool calls, messages, cards) and a hairline across the column (req 8).
+- [x] Move the caret onto the rewind strip, in the accent colour, with the
+      counts in its tooltip, so the control costs no height (req 8, req 14).
 - [x] Add a fixture turn whose hidden rows include a card, so the third count
       can be seen in the dogfood instance.
 

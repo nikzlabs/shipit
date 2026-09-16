@@ -377,28 +377,32 @@ export function MessageList({
       visible: showsSomething,
       node: (
         <div key={key} hidden={!showsSomething}>
-          {gapAtHeader !== undefined && renderRewindPoint(gapAtHeader)}
-          {view.first && view.run && (
-            <div className="text-xs text-(--color-text-secondary)">
-              {/* req 8 — the fold rule: a caret and what the fold holds, on a
-                  hairline that spans the column. The rule is what tells it
-                  apart from the turn's own text, at one line of 14px. */}
-              <Button variant="ghost" size="sm"
-                className="group/fold w-full justify-start px-1 h-3.5 gap-1.5"
+          {/* req 8 — the caret rides the rewind anchor's own strip, at the left
+              end, so the control costs no height of its own. What the fold
+              holds is named in the tooltip rather than drawn beside it: a label
+              on this row would put the height back. */}
+          {view.first && view.run ? (
+            <div className="flex items-center gap-1 h-2">
+              <Button variant="ghost" size="icon"
+                className="-my-1 p-0 rounded-sm text-(--color-accent) hover:text-(--color-accent-hover)"
                 aria-expanded={view.open}
                 aria-controls={view.controls}
                 aria-label={`${view.open ? "Show compact turn" : "Show full turn"}: ${view.run.identity.text.slice(0, 80) || "Agent response"}`}
                 aria-disabled={view.search || undefined}
-                title={view.search ? "Revealed by the active search" : view.open ? "Show compact turn" : "Show full turn"}
+                title={view.search ? "Revealed by the active search"
+                  : `${view.open ? "Show compact turn" : "Show full turn"}${view.holds ? ` — ${view.holds}` : ""}`}
                 onClick={() => { if (!view.search) compact.toggle(view.run, view.open); }}>
                 {view.open
                   ? <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
                   : <CaretDownIcon size={ICON_SIZE.XS} weight="bold" />}
-                {view.holds && <span>{view.holds}</span>}
-                <span aria-hidden className="h-px flex-1 bg-(--color-border-primary) group-hover/fold:bg-(--color-border-secondary)" />
               </Button>
-              {!view.open && view.empty && <span className="px-1">Turn ended without an agent reply.</span>}
+              <div className="flex-1 min-w-0">
+                {gapAtHeader !== undefined && renderRewindPoint(gapAtHeader)}
+              </div>
             </div>
+          ) : gapAtHeader !== undefined && renderRewindPoint(gapAtHeader)}
+          {view.first && view.run && !view.open && view.empty && (
+            <div className="text-xs text-(--color-text-secondary)">Turn ended without an agent reply.</div>
           )}
           {view.hidden && ownGap && renderRewindPoint(el.index)}
           {rollbackHash && <CodeRollbackNotice hash={rollbackHash} />}
