@@ -346,9 +346,15 @@ undeclared**, that **the dialog's copy is the declaration's copy**
 declaration), and that **no declaration is unreachable** — `UNREACHED` at
 `:1512` names the exceptions, and `:1614` asserts the set exactly. Generating the
 rows makes the first impossible **for rows**, and the nine panels still hold
-hand-written controls. It does nothing about the other two. So requirement 12's
-safety argument does not hold as it was written, and the requirement is open
-again — see `requirements.md`. The **stored-shape** maps
+hand-written controls. It does nothing about the other two.
+
+**The walk is deleted anyway, and the loss is bounded** (req 12, decided
+2026-09-16 on these corrected facts). A generated row takes its words from the
+declaration and exists because the declaration exists, so for a row neither copy
+drift nor an unreachable declaration is possible. What goes unchecked is the
+**42 declarations owned by the nine panels and five components**: nothing will
+prove that their copy matches the declaration, or that a declaration a panel
+stopped rendering still has a control. The **stored-shape** maps
 (`MCP_SERVER_FIELD_SETTINGS` and its siblings) are unaffected and stay: they
 catch a stored field nobody declared, which is the opposite direction, and they
 are compile errors rather than tests.

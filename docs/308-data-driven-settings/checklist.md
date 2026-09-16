@@ -8,4 +8,4 @@ This branch's deliverable is the design set. The implementation order lives in
 - [x] Design: two declaration fields, a machine-readable route store, a shared scalar reader and writer, a control table by value kind
 - [x] Subtraction review, and the design cut down to what it found
 - [x] Pull-request review, and its corrections folded in — P17 to P19
-- [ ] Requirement 12 reopened: decide what replaces the coverage walk's copy and reachability guarantees
+- [x] Requirement 12 settled on the corrected facts: the walk goes, and the bounded loss is recorded

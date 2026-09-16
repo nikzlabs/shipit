@@ -158,10 +158,10 @@ existing one or renders a row that cannot save.
    declarations; they keep their own writers and operations.
 7. **Project Settings** (req 10) — the second dialog, its repo-scoped write, the
    colour picker and the secrets panel.
-8. **Cleanup** — **blocked on requirement 12, which is open again** (P15). The
-   walk proves three things and generation replaces one of them, so what replaces
-   the copy and reachability guarantees has to be settled before the walk and the
-   `data-setting` attribute go.
+8. **Cleanup.** Delete `settings-coverage.test.tsx` and the `data-setting`
+   attribute (req 12). The walk proves three things and generation replaces one;
+   the other two are given up knowingly, and the loss is bounded to the 42
+   declarations the panels and components own (P15).
 
 Until a slice moves a value's hydration, the old setter keeps writing into the
 value record, because `src/client/hooks/message-handlers/global-settings.ts`
@@ -174,8 +174,8 @@ still writes the named fields (P18).
 | `src/server/shared/settings-catalogue/types.ts` | the declaration; gains `section`, `component`, and the `own-route` address |
 | `src/client/components/Settings/declared-setting.ts` | today's boolean reader and writer — generalised into `useSetting` / `saveSetting` |
 | `src/client/components/Settings/declared.tsx` | today's declared controls — becomes the control table |
-| `src/client/components/Settings/setting-binding.ts` | `data-setting`; slice 8 |
-| `src/client/components/Settings/settings-coverage.test.tsx` | the walk; slice 8, and see P15 |
+| `src/client/components/Settings/setting-binding.ts` | `data-setting`; deleted in slice 8 |
+| `src/client/components/Settings/settings-coverage.test.tsx` | the walk; deleted in slice 8 (P15) |
 | `src/client/stores/settings-store.ts` | gains the value record; the named fields become views over it |
 | `src/client/hooks/message-handlers/global-settings.ts` | hydrates the named fields today; must reach the record (P18) |
 | `src/client/utils/local-storage.ts` | loses its 13 accessor pairs for settings; keeps the legacy keybinding fallback (P17) |

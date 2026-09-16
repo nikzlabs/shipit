@@ -66,26 +66,26 @@ they stand are not a requirement; they are how the code grew.
     second way of building a control.
 11. Where a row appears comes from its declaration. Where that changes the order
     a tab has today, the new order is what ships.
-12. No test walks the rendered dialog to prove that its controls are declared.
-    Once the rows are generated, that walk is deleted rather than narrowed.
+12. No test walks the rendered dialog. Once the rows are generated, that walk is
+    deleted rather than narrowed, and the two guarantees generation does not
+    replace — that a panel's copy matches its declaration, and that a
+    panel-owned declaration has a control at all — are given up knowingly.
 
 ## Open questions
 
-- **Requirement 12 was answered on a premise that turned out to be incomplete, so
-  it is open again.** The coverage walk proves **three** things, not one: that no
-  control is undeclared, that **the dialog's copy is the declaration's copy**
-  (`data-setting-label` / `data-setting-description` compared against the
-  declaration), and that **no declaration is unreachable** — every setting has a
-  control somewhere, with the exceptions listed in `UNREACHED`
-  (`src/client/components/Settings/settings-coverage.test.tsx:1512`). Generating
-  the rows makes the first impossible for rows, but not for the nine panels, and
-  does nothing about the other two. So: delete it anyway and accept losing the
-  copy and reachability guarantees, delete it once something structural replaces
-  them, or keep a much smaller walk over the panels. The 2026-09-16 receipt below
-  records the answer given before this was known.
+None.
 
 ## Resolved questions
 
+- 2026-09-16 — *The walk proves three things, not one, and generation replaces
+  only the first. Delete it anyway, replace the other two guarantees first, or
+  keep a small walk over the panels?* **Delete it anyway.** The user reaffirmed
+  the answer on the corrected facts. What is given up is bounded: a generated row
+  takes its words from the declaration and exists because the declaration does,
+  so neither copy drift nor an unreachable declaration is possible for one. The
+  loss covers the 42 declarations owned by the nine panels and five components —
+  nothing will check that their copy matches, or that a declaration a panel
+  dropped still has a control. → requirement 12, and `inventory.md` P15.
 - 2026-09-16 — *Do rows that are hidden today have to stay hidden?* No. The user:
   the hand-crafted tabs and rows are not a requirement, and showing every row
   is acceptable even when it affects nothing. Two are conditional today: the
@@ -109,9 +109,9 @@ they stand are not a requirement; they are how the code grew.
   cannot exist without a declaration, so the class the walk detects becomes
   impossible. The compile-time stored-shape maps stay: they run in the opposite
   direction and cost nothing. → requirement 12, and `inventory.md` P15.
-  **Reopened 2026-09-16**: that argument covered one of the walk's three
-  guarantees. See the open question above; the answer may well stand, but it was
-  given on incomplete information.
+  **Reopened 2026-09-16**, because that argument covered one of the walk's three
+  guarantees — and reaffirmed the same day on the corrected facts. The first
+  receipt above is the one that holds.
 - 2026-09-16 — *May the visible order and grouping of rows change?* Yes. Order
   comes from each declaration, and rows will move. The alternative — choosing
   order numbers that reproduce today's layout exactly — would have encoded how
