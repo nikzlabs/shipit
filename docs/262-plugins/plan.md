@@ -283,6 +283,19 @@ Rules (review findings, both rounds):
   *service* sees them only when the project's tree is its own tree, and then it
   waits for the project's install.**
 
+  **The service half is a known limitation, postponed rather than settled**
+  (user, 2026-09-16; tracked as planning#585). A tracked plugin's service finds
+  each declared dep dir present and empty, and that is inconsistent with itself
+  in exactly the way the command half was: with the store off, or in a pnpm
+  project where `prepareOverlaySpecs` returns `[]`, those same directories are
+  ordinary populated files that the service reads fine. Closing it means
+  settling the install gate first, and gating tracked plugin services on
+  `agent.install` would make a service that reads no project dependency wait for
+  an install it never uses — so the decision needs a real plugin service that
+  wants the project's dependencies, and none has asked yet. Until then the limit
+  is stated to plugin authors and to consumers rather than worked around, in
+  `shipit-docs/plugin-authoring.md` and `shipit-docs/plugins.md`.
+
   This is **not** a new requirement, and deliberately was not written as one. Req
   27 already says a plugin "works as a plugin inside its own repository", and a
   companion CLI that exits with `ERR_MODULE_NOT_FOUND` is not working; the
