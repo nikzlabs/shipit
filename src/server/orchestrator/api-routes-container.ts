@@ -12,6 +12,7 @@ import {
   restartContainer,
   ServiceError,
 } from "./services/index.js";
+import { postInterruptCommitDepsFrom } from "./services/post-interrupt-commit.js";
 import { getErrorMessage } from "./validation.js";
 import { accountServiceForHarness } from "./provider-account-manager.js";
 
@@ -90,20 +91,7 @@ export async function registerContainerRoutes(
             containerManager: deps.containerManager ?? null,
             runnerRegistry: deps.runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
-            ...(deps.prStatusPoller
-              ? {
-                  postInterruptCommitDeps: {
-                    sessionManager: deps.sessionManager,
-                    chatHistoryManager: deps.chatHistoryManager,
-                    prStatusPoller: deps.prStatusPoller,
-                    githubAuthManager: deps.githubAuthManager,
-                    credentialStore: deps.credentialStore,
-                    generateText: deps.generateText,
-                    createGitManager: deps.createGitManager,
-                    sseBroadcast: deps.sseBroadcast,
-                  },
-                }
-              : {}),
+            ...postInterruptCommitDepsFrom(deps),
           },
           request.params.id,
         );
@@ -157,6 +145,7 @@ export async function registerContainerRoutes(
             defaultAgentId: deps.defaultAgentId,
             ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
             ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
+            ...postInterruptCommitDepsFrom(deps),
           },
           request.params.id,
         );

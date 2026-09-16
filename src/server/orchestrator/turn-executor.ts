@@ -153,24 +153,94 @@ export async function executeAgentTurn(
     }
   };
 
-  // Set once this turn's prompt is known to have been accepted by the process.
-  let promptSubmitted = false;
+  /*
+    Which turn a result answers, recorded as each turn begins rather than
+    inferred from what the result looks like (docs/299-agent-settings-access
+    req 8). `agent_result` carries no identity of its own and a resident CLI
+    starts turns ShipIt composed no prompt for, so "the prompt was submitted and
+    the result looks like the agent's own work" is true of a result that ends
+    someone else's turn.
+
+    This prompt has exactly one turn, so its states are a lifecycle and not
+    flags. Only "running" — this prompt IS the turn the CLI is in — answers a
+    result. "queued" is the honest answer to a question the harness does not
+    make answerable: the prompt went in behind a turn the CLI had already
+    started, and from there no result can be told from any other. A queued
+    prompt therefore never acknowledges; only the CLI replaying it back moves it
+    on, and otherwise the receipt stays live and the notice rides the next turn.
+    Three rounds of review each found the ordering the previous guess traded
+    against, which is what says this is undecidable rather than unhandled.
+  */
+  let ownTurn: "unsubmitted" | "queued" | "running" | "ended" = "unsubmitted";
+  let cliTurnPending = false;
+  let resultsObserved = 0;
+
+  /**
+   * Submitting makes this prompt the running turn only when nothing else can
+   * have taken that place: no turn of the CLI's own is pending, and no result
+   * has passed since the submission was made. A result in that window may have
+   * ended a turn this prompt was folded into.
+   */
+  const noteSubmissionAccepted = (resultsIntervened: boolean): void => {
+    if (ownTurn !== "unsubmitted") return;
+    ownTurn = cliTurnPending || resultsIntervened ? "queued" : "running";
+  };
+
   const noteSubmitted = (): void => {
     const settled = agent.submissionSettled?.();
     // A synchronous submission has landed when the call returns; a proxied one
     // has not, and a resident CLI can finish a turn of its own in that window.
     if (!settled) {
-      promptSubmitted = true;
+      noteSubmissionAccepted(false);
       return;
     }
+    const resultsAtSubmission = resultsObserved;
     void (async () => {
       try {
         await settled;
-        promptSubmitted = true;
+        noteSubmissionAccepted(resultsObserved !== resultsAtSubmission);
       } catch {
         // The submission failed; the adapter's error path owns the turn.
       }
     })();
+  };
+
+  /**
+   * The two events ShipIt already reads as a turn the CLI began for itself, the
+   * ones `beginRearm` answers to. This matters only until the prompt is
+   * submitted, which is when it is read: that is what decides whether the prompt
+   * goes in behind a turn of the CLI's own. Afterwards the two are
+   * indistinguishable from the prompt's own turn — a background task notifies
+   * mid-turn, and a queued prompt's output looks exactly like a CLI-started
+   * turn's — and neither reading would be safe, which is why a queued prompt
+   * never acknowledges rather than guessing.
+   *
+   * Not read on a process this prompt spawned: it exists for this prompt alone,
+   * and its first output can race the proxied submission.
+   */
+  const noteCliStartedTurn = (): void => {
+    if (input.reuseExistingAgent !== true) return;
+    cliTurnPending = true;
+  };
+
+  /**
+   * The CLI echoing this prompt back is the one positive proof it has read it —
+   * stronger than the worker's own answer to the submission, and it can arrive
+   * first, so it does not wait for one. Only a turn already ended stays ended.
+   */
+  const notePromptReadBack = (text: string): void => {
+    if (text.trim() !== prompt.trim()) return;
+    if (ownTurn === "ended") return;
+    ownTurn = "running";
+  };
+
+  // Only the running turn is this prompt's. A queued one stays queued: the
+  // result may have ended the turn the prompt went in behind, or a turn the CLI
+  // started after it, or the prompt's own, and nothing here can tell them apart.
+  const takeResultAttribution = (): boolean => {
+    if (ownTurn !== "running") return false;
+    ownTurn = "ended";
+    return true;
   };
 
   const notePromptDelivered = (): void => {
@@ -1068,17 +1138,30 @@ export async function executeAgentTurn(
 
   agent.on("event", async (event: AgentEvent) => {
     if (event.type === "agent_self_wake") {
+      noteCliStartedTurn();
       await beginRearm("self-wake");
+      return;
+    }
+    if (event.type === "agent_user_replay") {
+      notePromptReadBack(event.text);
       return;
     }
     if (event.type === "agent_assistant") {
       if (!adoptsCliStartedTurns) return;
-      if (!event.parentToolUseId) await beginRearm("cli-started turn");
+      if (!event.parentToolUseId) {
+        noteCliStartedTurn();
+        await beginRearm("cli-started turn");
+      }
       return;
     }
     if (event.type !== "agent_result") return;
     // Capture before an await lets adoption reset the live summary.
     if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
+    // Which turn this result ends is decided by the order events arrived in, so
+    // it is taken BEFORE yielding: the await below can span a replay or a wake,
+    // and a result must not answer a turn that began while it was waiting.
+    resultsObserved += 1;
+    const answersThisPrompt = takeResultAttribution();
     if (rearmInFlight) await rearmInFlight;
     receivedResult = true;
     sawOwnResult = true;
@@ -1105,23 +1188,27 @@ export async function executeAgentTurn(
     // notice back rather than proves delivery, which is the safe direction
     // (docs/299-agent-settings-access plan.md → And a notice on the next turn).
     //
-    // `wasSuperseded` is one of them: a retired process can emit a result
-    // for its own prompt AFTER a successor took the agent slot, and this turn is
-    // then settled `interrupted` with its work discarded. Acknowledging there
-    // spends the receipt on a turn whose output nobody reads, and the successor
-    // — which carries the same notice — has no receipt left to settle. The
-    // failover and quota-retry paths do NOT set the flag, deliberately: those
-    // re-dispatch the same prompt, and their attempt acknowledges its own.
+    // `answersThisPrompt` is the whole of the "is this result mine" question,
+    // and it is asked of the turns this executor watched begin rather than of
+    // flags describing what is happening now. Both orderings of the woken-turn
+    // defect defeated the latter, in opposite directions: a wake AFTER a failed
+    // dispatched turn, and a wake already in flight when the prompt was
+    // submitted, which no "am I serving an adopted turn" flag can see because by
+    // then the prompt has been submitted and nothing is being adopted.
+    // requirements.md records a woken turn as carrying no notice and waiting for
+    // the next dispatched one; attributing its result elsewhere is what would
+    // make that untrue.
     //
-    // `servingCliStartedTurn` is the last, and draws the same distinction from
-    // the other side. This executor is re-armed for a turn the CLI began on its
-    // own, keeping `promptSubmitted` and the receipts of the prompt it was built
-    // for — so a self-wake following a failed dispatched turn would call that
-    // prompt's receipt for a turn carrying no notice at all. requirements.md
-    // records a woken turn as carrying none and waiting for the next dispatched
-    // one; spending the receipt here is what would make that untrue.
+    // `wasSuperseded` stays a condition of its own, because a retired process
+    // emits a result for a prompt that IS its own after a successor took the
+    // agent slot, and this turn is then settled `interrupted` with its work
+    // discarded. Acknowledging there spends the receipt on a turn whose output
+    // nobody reads, and the successor — which carries the same notice — has none
+    // left to settle. The failover and quota-retry paths do NOT set the flag,
+    // deliberately: those re-dispatch the same prompt on a new executor, which
+    // records its own submission and acknowledges that.
     if (
-      promptSubmitted && !exhausted && !wasSuperseded && !servingCliStartedTurn()
+      answersThisPrompt && !exhausted && !wasSuperseded
       && resultIsTheAgentsOwn(event)
     ) {
       notePromptDelivered();
