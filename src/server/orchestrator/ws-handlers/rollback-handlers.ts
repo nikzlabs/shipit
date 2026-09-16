@@ -456,7 +456,9 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       ctx.getSharedRepoDir,
       snapshot.childSessionId,
       undefined,
-      undefined,
+      // Without this the fork's agent container survives an archive that gives it no way
+      // back: an archived session is refused a runner, so nothing reclaims the container.
+      ctx.containerManager,
       ctx.removeSessionLogs,
       ctx.createGitManager,
     );

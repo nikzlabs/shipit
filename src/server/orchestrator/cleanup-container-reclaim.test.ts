@@ -136,12 +136,22 @@ describe("docs/299 req 8 — the boot orphan sweep does not take the cleanup con
     const byId = new Map(
       labelledSessionIds.map((sessionId, i) => [`container-${i}`, sessionId]),
     );
+    // The sweep re-queries per reaped session by `shipit-parent-session=<id>` to take what
+    // the container held open; a fixture that ignored the filter would answer that query
+    // with every container and hide which one the sweep actually selected.
     const docker = {
-      listContainers: async () => [...byId.entries()].map(([Id, sessionId]) => ({
-        Id,
-        State: "running",
-        Labels: { [CONTAINER_SESSION_ID_LABEL]: sessionId },
-      })),
+      listContainers: async (opts?: { filters?: { label?: string[] } }) => {
+        const labelsOf = (sessionId: string) => ({ [CONTAINER_SESSION_ID_LABEL]: sessionId });
+        return [...byId.entries()]
+          .filter(([, sessionId]) => (opts?.filters?.label ?? []).every((filter) => {
+            const eq = filter.indexOf("=");
+            const labels: Record<string, string> = labelsOf(sessionId);
+            return eq < 0 ? filter in labels : labels[filter.slice(0, eq)] === filter.slice(eq + 1);
+          }))
+          .map(([Id, sessionId]) => ({ Id, State: "running", Labels: labelsOf(sessionId) }));
+      },
+      listNetworks: async () => [],
+      listVolumes: async () => ({ Volumes: [] }),
       getContainer: (id: string) => ({
         stop: async () => {},
         remove: async () => { removed.push(byId.get(id)!); },
