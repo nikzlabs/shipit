@@ -264,13 +264,14 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
     );
   }
 
+  /** Returns what the panel was given, so a caller can log the same text. */
   private emitDiagnosticLog(
     level: AgentAuthLogLevel,
     source: AgentAuthLogSource,
     message: string,
-  ): void {
+  ): string | null {
     const sanitized = this.redacted(message);
-    if (!sanitized) return;
+    if (!sanitized) return null;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
       timestamp: new Date().toISOString(),
@@ -279,6 +280,7 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
       message: sanitized,
     };
     this.emit("log", payload);
+    return sanitized;
   }
 
   start(opts?: AgentAuthStartOptions): void {
@@ -351,7 +353,9 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      // Redacted everywhere it goes: the panel's copy was, the failure card's
+      // and the terminal's were not, and a spawn error quotes what it was given.
+      const msg = this.redacted(err instanceof Error ? err.message : String(err));
       console.warn("[xai-auth] Failed to spawn grok login:", msg);
       this.emitDiagnosticLog("error", "shipit", `Could not spawn the Grok CLI: ${msg}`);
       this.emit("xai_auth_failed", { reason: "error", message: msg });
@@ -366,8 +370,13 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
 
     // Grok 1.0.1 prints the CHALLENGE on stderr, so stderr is an ordinary
     // channel here: levelling it `error` would paint a healthy sign-in red.
+    // The terminal gets what the PANEL got, never the chunk it came in: a
+    // redacted chunk is still half a secret when the split fell inside one, and
+    // `console.log` has no relay behind it to put the halves back together.
     const relay = createCliLineRelay((source, line) => {
-      if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
+      if (!line.trim()) return;
+      const shown = this.emitDiagnosticLog("info", source, line.trim());
+      if (shown) console.log("[xai-auth output]", shown);
     });
     this.relay = relay;
 
@@ -391,9 +400,10 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
 
     proc.on("error", (err: Error) => {
       if (this.proc !== proc) return;
-      console.warn("[xai-auth] Process error:", err.message);
-      this.emitDiagnosticLog("error", "shipit", `The Grok CLI could not be run: ${err.message}`);
-      this.failOnce("error", err.message);
+      const message = this.redacted(err.message);
+      console.warn("[xai-auth] Process error:", message);
+      this.emitDiagnosticLog("error", "shipit", `The Grok CLI could not be run: ${message}`);
+      this.failOnce("error", message);
     });
 
     proc.on("close", (code) => {
@@ -489,9 +499,7 @@ export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implement
   private handleOutput(raw: string): void {
     const cleaned = stripAnsi(raw);
     this.outputBuffer += cleaned;
-    // A chunk, not a line: this is the detection path, which cannot wait for
-    // the relay — so it is redacted here rather than printed as it arrived.
-    if (cleaned.trim()) console.log("[xai-auth output]", this.redacted(cleaned.trim()));
+
     this.maybeEmitPending();
   }
 

@@ -127,6 +127,14 @@ export function createCliLineRelay(
   const endsBlock = (clean: string): boolean =>
     opts.wrapWidth === undefined || clean.length < opts.wrapWidth;
 
+  const withhold = (state: SourceState, characters: number): void => {
+    // The join goes into the count, not onto the panel: whatever was already
+    // accumulated belongs to the block being dropped.
+    state.withheld += characters + state.join.length;
+    state.join = "";
+    state.withholding = true;
+  };
+
   /**
    * **ANSI comes off the assembled line, never the chunk.** An escape sequence
    * split across chunks (`\x1b[9` + `0mCODE…`) is unrecognisable to each half,
@@ -139,7 +147,11 @@ export function createCliLineRelay(
     const clean = stripAnsi(line);
     if (state.withholding) {
       state.withheld += clean.length;
-      if (!endsBlock(clean)) return;
+      // An EMPTY line does not end the block. The rest of an over-long line
+      // arrives as one when the newline follows immediately, and taking that as
+      // the end published the line after it — which is the continuation the
+      // withholding exists to keep back.
+      if (!clean || !endsBlock(clean)) return;
       const characters = state.withheld;
       state.withheld = 0;
       state.withholding = false;
@@ -153,8 +165,7 @@ export function createCliLineRelay(
     if (!endsBlock(clean)) {
       if (joined.length >= MAX_JOINED_LINE) {
         state.join = "";
-        state.withheld = joined.length;
-        state.withholding = true;
+        withhold(state, joined.length);
         return;
       }
       state.join = joined;
@@ -172,8 +183,7 @@ export function createCliLineRelay(
       state.tail = lines.pop() ?? "";
       for (const line of lines) accept(source, line);
       if (state.tail.length > MAX_BUFFERED_LINE) {
-        state.withheld += state.tail.length;
-        state.withholding = true;
+        withhold(state, state.tail.length);
         state.tail = "";
       }
     },
@@ -183,8 +193,9 @@ export function createCliLineRelay(
         state.tail = "";
         if (tail) accept(source, tail);
         if (state.withholding) {
-          const characters = state.withheld;
+          const characters = state.withheld + state.join.length;
           state.withheld = 0;
+          state.join = "";
           state.withholding = false;
           onLine(source, withheldNotice(characters));
           continue;
@@ -211,10 +222,13 @@ const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
  */
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,255}\.[A-Z]{2,}\b/gi;
 const SECRET_KEYS =
-  "access[_-]?token|refresh[_-]?token|auth[_-]?token|api[_-]?key|client[_-]?secret|code_verifier|code_challenge|state|session|ticket|jwt|bearer";
+  "access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|code_verifier|code_challenge|state|session|ticket|jwt|bearer";
 /**
  * The key may be quoted and the separator may be a colon, because a CLI that
- * prints a credential usually prints the JSON it came in. The quote after the
+ * prints a credential usually prints the JSON it came in. The value's OPENING
+ * quote counts as part of the separator, so a value whose closing quote has not
+ * been printed yet — what a flush publishes mid-write — is still an assignment;
+ * {@link QUOTED_TOKEN_ASSIGNMENT_PATTERN} needs both quotes and runs first. The quote after the
  * key is optional and the value's is not part of the value, so this covers
  * `access_token=…`, `access_token: …` and `"access_token": …`; a value in
  * quotes is {@link QUOTED_TOKEN_ASSIGNMENT_PATTERN}, whose match ends at the
@@ -224,7 +238,7 @@ const SECRET_KEYS =
  * reading to work out what the CLI said should still look like what it said.
  */
 const TOKEN_ASSIGNMENT_PATTERN = new RegExp(
-  `\\b(${SECRET_KEYS})\\b(["']?\\s*[:=]\\s*)([^\\s"',;]+)`,
+  `\\b(${SECRET_KEYS})\\b(["']?\\s*[:=]\\s*["']?)([^\\s"',;]+)`,
   "gi",
 );
 /**
@@ -318,6 +332,10 @@ export function sanitizeAuthDiagnostic(input: string): string {
  */
 const MIN_PARTIAL_CODE = 8;
 
+/** No whitespace: a URL match ends at the first space, so a spaced marker
+ * substituted inside a link truncates the redaction that follows it. */
+const CODE_MARKER = "[code-redacted]";
+
 /**
  * Take the authorization codes ShipIt submitted out of text the CLI produced.
  *
@@ -339,11 +357,23 @@ export function withoutSubmittedCodes(text: string, codes: readonly string[]): s
   let out = text;
   for (const code of [...codes].sort((a, b) => b.length - a.length)) {
     if (!code) continue;
-    out = out.replace(wrappedCodePattern(code), "[code-redacted]");
+    out = code.length > MAX_CODE_PATTERN
+      ? out.split(code).join(CODE_MARKER)
+      : out.replace(wrappedCodePattern(code), CODE_MARKER);
     out = withoutTrailingPrefix(out, code);
   }
   return out;
 }
+
+/**
+ * **A submitted code is caller input, and a pattern built from it is unbounded
+ * unless something bounds it.** An 8 KiB "code" built a regex that Node refuses
+ * with a stack-overflow `SyntaxError` — thrown out of the redaction, carrying
+ * the generated pattern, and therefore the code, into the HTTP error. Past this
+ * length the exact string is taken out instead: nothing that long is a code, so
+ * the wrap tolerance is worth less than not throwing.
+ */
+const MAX_CODE_PATTERN = 512;
 
 /**
  * **The `\s*` joins go between NON-whitespace characters only.** Built from the
@@ -352,17 +382,35 @@ export function withoutSubmittedCodes(text: string, codes: readonly string[]): s
  * matches the same text and pins every `\s*` with the literal after it.
  */
 function wrappedCodePattern(code: string): RegExp {
-  const chars = (code.match(/[\s\S]/gu) ?? []).filter((ch) => !/\s/.test(ch));
+  const chars = compactCharacters(code);
   return new RegExp(chars.map((ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s*"), "g");
 }
 
+function compactCharacters(text: string): string[] {
+  return (text.match(/[\s\S]/gu) ?? []).filter((ch) => !/\s/.test(ch));
+}
+
+/**
+ * The comparison runs over the text with its whitespace taken out, because the
+ * half-printed echo can carry the CLI's wrap inside it too — `4/short.\nprivate/`
+ * is the same prefix as `4/short.private/`. The cut is made back in the original
+ * text, at the character the count reached.
+ */
 function withoutTrailingPrefix(text: string, code: string): string {
-  for (let length = Math.min(code.length - 1, text.length); length >= MIN_PARTIAL_CODE; length--) {
-    if (text.endsWith(code.slice(0, length))) {
-      return `${text.slice(0, text.length - length)}[code-redacted]`;
-    }
+  const compactCode = compactCharacters(code).join("");
+  if (compactCode.length <= MIN_PARTIAL_CODE) return text;
+  let compactTail = "";
+  // The LONGEST match, not the first: a code whose first characters repeat
+  // matches a short tail too, and cutting there leaves the rest of the prefix.
+  let longestCut = -1;
+  for (let i = text.length - 1; i >= 0 && compactTail.length < compactCode.length - 1; i -= 1) {
+    const ch = text[i];
+    if (/\s/.test(ch)) continue;
+    compactTail = ch + compactTail;
+    if (compactTail.length < MIN_PARTIAL_CODE) continue;
+    if (compactCode.startsWith(compactTail)) longestCut = i;
   }
-  return text;
+  return longestCut === -1 ? text : `${text.slice(0, longestCut)}${CODE_MARKER}`;
 }
 
 /**

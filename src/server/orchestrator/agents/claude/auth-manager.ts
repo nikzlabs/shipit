@@ -616,6 +616,10 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
         console.log("[auth] Credentials poll timed out — no fresh credentials written to", configDir);
         this.clearCredentialsPoll();
         if (!this.claimTerminalOutcome()) return;
+        // Ends the attempt without killing the process, so nothing else drains
+        // the relay — and what it is holding is the CLI's last word on why the
+        // credentials never arrived.
+        this.relay.flush();
         this.emitProgress("failed", "Timed out waiting for Claude credentials.");
         this.emitDiagnosticLog("error", "shipit", "Credentials poll timed out after 30 seconds.");
         this.lastPendingDetails = null;

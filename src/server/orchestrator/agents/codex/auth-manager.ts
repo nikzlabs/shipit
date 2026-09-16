@@ -279,13 +279,14 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     );
   }
 
+  /** Returns what the panel was given, so a caller can log the same text. */
   private emitDiagnosticLog(
     level: AgentAuthLogLevel,
     source: AgentAuthLogSource,
     message: string,
-  ): void {
+  ): string | null {
     const sanitized = this.redacted(message);
-    if (!sanitized) return;
+    if (!sanitized) return null;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
       timestamp: new Date().toISOString(),
@@ -294,6 +295,7 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
       message: sanitized,
     };
     this.emit("log", payload);
+    return sanitized;
   }
 
   start(opts?: AgentAuthStartOptions): void {
@@ -398,7 +400,9 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
         },
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      // Redacted everywhere it goes: the panel's copy was, the failure card's
+      // and the terminal's were not, and a spawn error quotes what it was given.
+      const msg = this.redacted(err instanceof Error ? err.message : String(err));
       console.warn("[codex-auth] Failed to spawn codex login:", msg);
       this.emitDiagnosticLog("error", "shipit", `Could not spawn the Codex CLI: ${msg}`);
       this.emit("codex_auth_failed", { reason: "error", message: msg } satisfies CodexAuthFailedEvent);
@@ -413,8 +417,13 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
 
     // Both streams carry ordinary progress, so the level says nothing about a
     // line and the source says which stream it came from.
+    // The terminal gets what the PANEL got, never the chunk it came in: a
+    // redacted chunk is still half a secret when the split fell inside one, and
+    // `console.log` has no relay behind it to put the halves back together.
     const relay = createCliLineRelay((source, line) => {
-      if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
+      if (!line.trim()) return;
+      const shown = this.emitDiagnosticLog("info", source, line.trim());
+      if (shown) console.log("[codex-auth output]", shown);
     });
     this.relay = relay;
 
@@ -437,9 +446,10 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
 
     proc.on("error", (err: Error) => {
       if (this.proc !== proc) return;
-      console.warn("[codex-auth] Process error:", err.message);
-      this.emitDiagnosticLog("error", "shipit", `The Codex CLI could not be run: ${err.message}`);
-      this.failOnce("error", err.message);
+      const message = this.redacted(err.message);
+      console.warn("[codex-auth] Process error:", message);
+      this.emitDiagnosticLog("error", "shipit", `The Codex CLI could not be run: ${message}`);
+      this.failOnce("error", message);
     });
 
     proc.on("close", (code) => {
@@ -536,11 +546,7 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
   private handleOutput(raw: string): void {
     const cleaned = stripAnsi(raw);
     this.outputBuffer += cleaned;
-    if (cleaned.trim()) {
-      // A chunk, not a line: this is the detection path, which cannot wait for
-      // the relay — so it is redacted here rather than printed as it arrived.
-      console.log("[codex-auth output]", this.redacted(cleaned.trim()));
-    }
+
     this.maybeEmitPending();
   }
 

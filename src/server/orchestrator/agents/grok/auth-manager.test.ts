@@ -356,6 +356,31 @@ describe("what the Grok sign-in reports to the panel", () => {
   }
 
   /**
+   * The terminal used to get each CHUNK, redacted on its own — which is half a
+   * secret when the split fell inside one, and `console.log` has no relay behind
+   * it to put the halves back together. The panel was clean the whole time.
+   */
+  it("logs the relayed line, never the chunk it arrived in", async () => {
+    const written: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      written.push(args.map((a) => String(a)).join(" "));
+    });
+    try {
+      const { proc } = startWithDiagnostics();
+      emit(proc.stderr, "  Waiting for con");
+      await settle();
+      emit(proc.stderr, "firmation of the device code\n");
+      await settle();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const output = written.filter((line) => line.includes("xai-auth output"));
+    expect(output.some((line) => line.trimEnd().endsWith("con")), "logged a chunk on its own").toBe(false);
+    expect(output.some((line) => line.includes("Waiting for confirmation"))).toBe(true);
+  });
+
+  /**
    * `cancel()` detaches `close`, so the flush that path does never runs — and a
    * CLI that stopped part-way through its last sentence is exactly the failure
    * the user is cancelling to read about.

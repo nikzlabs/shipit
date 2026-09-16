@@ -624,6 +624,30 @@ describe("AuthManager / auth diagnostics", () => {
   });
 
   /**
+   * The credential poll's timeout ends the attempt without killing the process,
+   * so nothing else drains the relay — and what it holds is the CLI's last word
+   * on why the credentials never arrived.
+   */
+  it("flushes what the CLI last printed when the credential poll times out", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-poll-"));
+    try {
+      const mgr = new AuthManager();
+      const logs: { message: string }[] = [];
+      mgr.on("log", (l: { message: string }) => logs.push(l));
+      mgr.startOAuthFlow({ accountId: "acct-1", credentialDir: tmp });
+      mgr.sendCode("4/short.private/code");
+      ptyHoisted.dataHandlers[0]("Error: the token exchange did not complete");
+
+      vi.advanceTimersByTime(31_000);
+
+      expect(logs.map((l) => l.message).join("")).toContain("the token exchange did not complete");
+      mgr.kill();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * The flush publishes whatever the CLI had printed, and mid-echo that is the
    * first half of the code — which no whole-code match recognises. It reaches
    * the `[auth output]` log as well as the panel, from the same string.
@@ -642,7 +666,10 @@ describe("AuthManager / auth diagnostics", () => {
 
     mgr.cancel();
 
-    expect(logs.map((l) => l.message).join("")).not.toContain("4/short.private/");
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel).not.toContain("4/short.private/");
+    // Flushing nothing at all would satisfy the line above.
+    expect(panel).toContain("[code-redacted]");
   });
 
   /**

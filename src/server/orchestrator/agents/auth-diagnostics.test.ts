@@ -99,6 +99,20 @@ describe("sanitizeAuthDiagnostic", () => {
   });
 
   /**
+   * A flush publishes what the CLI had written so far, and mid-write the
+   * closing quote has not arrived — which the quoted-value rule requires. The
+   * value's OPENING quote is what makes this an assignment.
+   */
+  it("redacts a quoted value whose closing quote has not arrived", () => {
+    expect(sanitizeAuthDiagnostic('{"access_token":"short.secret/')).not.toContain("short.secret");
+  });
+
+  // An id_token is a credential like any other, and the key list omitted it.
+  it("redacts an id_token", () => {
+    expect(sanitizeAuthDiagnostic('{"id_token":"short.secret/value"}')).not.toContain("secret");
+  });
+
+  /**
    * `/[ \t]+\n/g` rescans every suffix of a long run of spaces that never
    * reaches a newline: 64 KiB of them cost 3.7 s in one call.
    */
@@ -143,6 +157,25 @@ describe("withoutSubmittedCodes", () => {
     expect(withoutSubmittedCodes("ends in 4/short", ["4/short.private/code"])).toBe(
       "ends in 4/short",
     );
+  });
+
+  // The half-printed echo can carry the CLI's wrap inside it too.
+  it("takes out a trailing prefix the CLI broke across a line", () => {
+    expect(withoutSubmittedCodes("echo 4/short.\nprivate/", ["4/short.private/code"])).toBe(
+      "echo [code-redacted]",
+    );
+  });
+
+  /**
+   * A code is caller input, and a pattern built from it is unbounded unless
+   * something bounds it: an 8 KiB one built a regex Node refuses with a stack
+   * overflow, thrown out of the redaction carrying the pattern — and therefore
+   * the code — into the HTTP error.
+   */
+  it("does not build a pattern from a code too long to be one", () => {
+    const absurd = `${"a".repeat(8192)}b`;
+
+    expect(withoutSubmittedCodes(`echo ${absurd} done`, [absurd])).toBe("echo [code-redacted] done");
   });
 
   /**
@@ -384,10 +417,41 @@ describe("createCliLineRelay, on a CLI that wraps its own output", () => {
 
     relay.push("cli_stdout", `${frames}${LINK.slice(0, WIDTH)}\nte=private-state-value\n`);
 
-    const shown = lines.map((l) => sanitizeAuthDiagnostic(l.line)).join("\n");
-    expect(shown, "published the continuation").not.toContain("private-state-value");
-    expect(shown, "published the half it broke on").not.toContain("authorize?code=true");
-    expect(shown).toContain("characters of unbroken CLI output withheld");
+    // Exactly one line, and it is the notice: emitting the aggregate first and
+    // then withholding would satisfy every assertion about what is absent.
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line).toContain("characters of unbroken CLI output withheld");
+    expect(sanitizeAuthDiagnostic(lines[0].line)).not.toContain("private-state-value");
+  });
+
+  /**
+   * The rest of an over-long line arrives as an EMPTY one when its newline
+   * follows immediately, and taking that as the end of the block published the
+   * line after it — the continuation the withholding exists to keep back.
+   */
+  it("does not let an empty remainder end a withheld block", () => {
+    const { relay, lines } = collect(WIDTH);
+    relay.push("cli_stdout", `${" ".repeat(70 * 1024)}https://h/?sta`);
+    relay.push("cli_stdout", "\nte=private-state-value\n");
+    relay.flush();
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line).toContain("characters of unbroken CLI output withheld");
+  });
+
+  // The cap has to account for what the join already held, or it is relayed
+  // later as though a block that was dropped had never been part of it.
+  it("drops what was already joined when a cap fires", () => {
+    const { relay, lines } = collect(WIDTH);
+    relay.push("cli_stdout", `${"X".repeat(WIDTH - 4)}4/ab\n`);
+    relay.push("cli_stdout", " ".repeat(70 * 1024));
+    // Past the withholding rather than into a flush: a held line left behind
+    // comes back attached to the next ordinary line, long after the block it
+    // belonged to was dropped.
+    relay.push("cli_stdout", "the block ends here\n");
+    relay.push("cli_stdout", "an ordinary line\n");
+
+    expect(lines.map((l) => l.line).join("\n")).not.toContain("4/ab");
   });
 
   // A run can end mid-block, and silence would read as "the CLI printed nothing".
@@ -423,3 +487,4 @@ describe("createCliLineRelay, on a CLI that wraps its own output", () => {
     expect(lines.map((l) => l.line)).toEqual([LINK]);
   });
 });
+

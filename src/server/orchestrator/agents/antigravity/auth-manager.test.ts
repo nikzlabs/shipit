@@ -299,7 +299,10 @@ describe("AntigravityAuthManager", () => {
 
     manager.cancel();
 
-    expect(logs.map((l) => l.message).join("")).not.toContain("4/short.private/");
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel).not.toContain("4/short.private/");
+    // Flushing nothing at all would satisfy the line above.
+    expect(panel).toContain("[code-redacted]");
   });
 
   /**

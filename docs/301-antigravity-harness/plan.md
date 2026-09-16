@@ -440,9 +440,8 @@ one non-npm branch, gated on `contains antigravity $selected`:
   `agents/auth-diagnostics.ts`, added when the Codex and Grok sign-ins were
   wired up — rather than a hand-rolled buffer each: per-source tails, ANSI
   stripped off the assembled line, a flush at every path that ends the run, and
-  a 64 KiB cap that acts as a synthetic break rather than a drop, sized so far
-  above a login's whole output that the break cannot fall inside a URL, token or
-  code. Claude holds its relay **per flow**, so a killed run's unterminated tail
+  a 64 KiB cap — which acted as a synthetic break until the rule below replaced
+  it, since a break is exactly what publishes half a secret. Claude holds its relay **per flow**, so a killed run's unterminated tail
   cannot be flushed onto the next attempt's panel. Its panel logging also goes
   through the redaction — a credential kept off the screen and written to the
   orchestrator's log is still a credential in a log — and its data callback
@@ -478,12 +477,17 @@ one non-npm branch, gated on `contains antigravity $selected`:
   it. Reading the display width exactly means emulating a terminal, which none
   of this is worth.
 - **A cap withholds; it never publishes a fragment.** Joining lines forced this
-  rule and then generalized it. Two rounds of review broke the same assumption
-  from opposite sides: the relay first published the aggregate at its cap and
-  carried the tail forward so the *next* line could be redacted against it,
-  which review answered by pointing at the other half — the fragment published
-  at the break can itself be the first half of a secret, and nothing retracts
-  it. **Every bound has that property**, the pre-existing 64 KiB buffered-line
+  rule and then generalized it. Review broke the same assumption from opposite
+  sides: the relay first published the aggregate at its cap and carried the tail
+  forward so the *next* line could be redacted against it, and the answer was
+  the other half — the fragment published at the break can itself be the first
+  half of a secret, and nothing retracts it. The withholding is **stateful, not
+  per line**: it runs until a line arrives that is non-empty AND does not fill
+  the width (an empty remainder is what the rest of an over-long line looks like
+  when its newline follows immediately, and taking that as the end published the
+  continuation), and it takes whatever was already joined down with it — left
+  behind, a held line came back attached to an ordinary line long after the
+  block it belonged to was dropped. **Every bound has that property**, the pre-existing 64 KiB buffered-line
   cap included (`" ".repeat(65530) + "https://h/?sta"` then `te=…` leaked
   through that one on main). So a cap now drops instead, keeps dropping until a
   line arrives that does not fill the width — the lines between are the rest of
@@ -498,6 +502,16 @@ one non-npm branch, gated on `contains antigravity $selected`:
   every suffix of a run of spaces (3.7 s → 0 ms), and `stripAnsi`'s OSC body
   excludes ESC, which also lets it end at the string terminator the way a
   terminal reads it (425 ms → 0 ms).
+- **What a flush publishes is a fragment too, and the redaction answers for
+  it.** A cancellation, a timeout and an exit all end in a flush, and what it
+  publishes is whatever the CLI had printed so far — mid-echo, half a code;
+  mid-write, a quoted value whose closing quote has not arrived. So the code
+  removal takes a **trailing prefix** of a submitted code, across the CLI's own
+  wrap, and the value's opening quote counts as part of an assignment's
+  separator. The code pattern is built from caller input, so it is bounded: an
+  8 KiB "code" built a regex Node refuses with a stack overflow, thrown out of
+  the redaction carrying the pattern — and therefore the code — into the HTTP
+  error.
 - **Every path that ends a run flushes, cancellation included.** The exit
   callback that flushes is gated on a process the manager has already detached,
   so a cancelled run's held line — the user's only record of why they cancelled
@@ -524,12 +538,26 @@ one non-npm branch, gated on `contains antigravity $selected`:
   one's tail behind with nothing left to match it, and it tolerates whitespace
   **between** characters while being built from the code without its own: 16
   spaces inside a submitted code took 10 s on one line. Codex and Grok printed
-  the CLI's raw chunks to the orchestrator log from their detection path, and
+  the CLI's raw chunks to the orchestrator log from their detection path — a
+  redacted chunk is still half a secret when the split fell inside one, and
+  `console.log` has no relay behind it, so both now log what the PANEL got — and
   both truncated their failure-buffer dump before redacting it rather than
-  after. And a credential file that will not parse was logged with the parse
+  after. Every manager's spawn and process-error path redacts the message it
+  hands the failure card and the terminal, not only the panel's copy. And a credential file that will not parse was logged with the parse
   error whole in all four managers, where Node quotes the bytes it tripped over
   (`Unexpected token 'y', ..."ss_token":ya29.secre"...`);
   `credentialParseFailure` drops the quoted context and keeps the reason.
+- **What is NOT unwrapped: the refusal sentence.** It is read from the raw
+  stderr buffer rather than through the relay, so a credential the CLI wrapped
+  inside it stays half-redacted — left open deliberately, after both ways of
+  closing it were tried and measured. Unwrapping the whole buffer joins the
+  sign-in link, which is longer than the terminal, onto the `error:` line after
+  it and hides the refusal completely; unwrapping the refusal's own lines joins
+  the two sentences of the captured eligibility refusal into one, because its
+  first line is 86 characters and the width test cannot tell a long line from a
+  wrapped one. A certain cost to req 4 against a speculative gain. The concrete
+  case — a submitted code quoted back across a wrap — is closed instead by the
+  code removal tolerating whitespace between characters.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it

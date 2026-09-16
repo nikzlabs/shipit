@@ -359,7 +359,8 @@ export class AntigravityAuthManager
       const message = err instanceof Error ? err.message : String(err);
       console.warn("[antigravity-auth] could not spawn the sign-in run:", this.redacted(message));
       this.emitDiagnosticLog("error", "shipit", `Could not spawn the Antigravity CLI: ${message}`);
-      this.fail("error", message);
+      // The panel's copy is redacted; the failure card's was not.
+      this.fail("error", this.redacted(message));
       return;
     }
 
