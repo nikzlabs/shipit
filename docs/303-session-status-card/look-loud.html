@@ -42,6 +42,14 @@
     --color-accent:#c07828; --color-accent-text:#ffffff; --color-accent-subtle:rgba(192,120,40,.12);
     --color-pr:#9a5bb8; --color-pr-subtle:rgba(154,91,184,.12); --color-pr-border:rgba(154,91,184,.3);
   }
+  .claude-light {
+    --color-bg-primary:#faf5ef; --color-bg-secondary:#f0e8de; --color-bg-tertiary:#e6dcd0;
+    --color-bg-elevated:#faf5ef; --color-bg-hover:rgba(180,100,60,.06);
+    --color-text-primary:#2a2018; --color-text-secondary:#5c5040; --color-text-tertiary:#9a8c78;
+    --color-text-link:#c06040; --color-border-primary:#decfbc; --color-border-secondary:#d0c0ac;
+    --color-accent:#d97757; --color-accent-text:#ffffff; --color-accent-subtle:rgba(217,119,87,.12);
+    --color-pr:#9a5bb8; --color-pr-subtle:rgba(154,91,184,.12); --color-pr-border:rgba(154,91,184,.3);
+  }
   .claude {
     --color-bg-primary:#1a1410; --color-bg-secondary:#231c16; --color-bg-tertiary:#2e2519;
     --color-bg-elevated:#2e2519; --color-bg-hover:rgba(217,119,87,.08);
@@ -145,9 +153,10 @@
 <h1>Session status card — louder (round 2)</h1>
 <p class="lead">
   <b>Round 1's verdict:</b> “in all cases the view is very similar to other cards in the transcript. It needs to attract
-  attention.” So these stop trying to be a well-behaved card. Above each one sits a real neighbour — the PR lifecycle card —
-  so the contrast is the thing being judged, not the card alone. Everything the card <em>says</em> is unchanged: same
-  sections, same rows, same accent “Stale” label bottom-right.
+  attention.” So these stop trying to be a well-behaved card. The neighbourhood is the real one this time: the agent's own
+  prose and tool rows above, the composer directly below — the PR lifecycle card is pinned at the top of the session, far
+  away, so it is not what the card competes with. First board is <b>claude-light</b>, the theme you use. Everything the card
+  <em>says</em> is unchanged: same sections, same rows, same accent “Stale” label bottom-right.
 </p>
 <ul class="legend">
   <li><b>E · Tinted</b> — the whole surface in <code>--color-accent-subtle</code> with a full accent border. Nothing else in a conversation is tinted in the accent colour, so it is the one coloured object on screen. <b>← recommended</b></li>
@@ -172,12 +181,20 @@ const I = {
   pr: `<path d="M104 192a32 32 0 1 1-40-31v-66a32 32 0 1 1 16 0v66a32 32 0 0 1 24 31Zm88-31V88a48.05 48.05 0 0 0-48-48h-20.69l10.35-10.34a8 8 0 0 0-11.32-11.32l-24 24a8 8 0 0 0 0 11.32l24 24a8 8 0 0 0 11.32-11.32L123.31 56H144a32 32 0 0 1 32 32v73a32 32 0 1 0 16 0Z"/>`,
 };
 
+/**
+ * The card's real neighbourhood on a desktop screen: the agent's own prose, a tool row or two,
+ * and the composer directly below. The PR lifecycle card is pinned at the top of the session,
+ * far above — so it is not what the card is competing with.
+ */
 const TAIL = `
-  <p>Wired <code>/webhooks/stripe</code> and its signature check, then ran the billing suite — all 41 green.</p>
-  <p class="tool">Read src/server/billing/webhook.ts · Edit src/server/billing/webhook.ts · Bash npx vitest run billing</p>
-  <p>PR #212 is up. The retry-on-5xx path is still open; I have not touched it.</p>
-  <div class="neighbour"><span style="color:var(--color-pr);display:flex">${icon(I.pr)}</span>
-    <b>#212 · Stripe webhook route</b><span class="muted">open · checks passing · ready to merge</span></div>`;
+  <p>Wired <code>/webhooks/stripe</code> and its signature check. The handler verifies the
+  <code>Stripe-Signature</code> header against the endpoint secret, rejects a skewed timestamp, and is idempotent on
+  the event id, so a redelivery cannot double-charge.</p>
+  <p class="tool">Read src/server/billing/webhook.ts · Edit src/server/billing/webhook.ts · Edit src/server/billing/webhook.test.ts</p>
+  <p>Then ran the billing suite — all 41 green, including the four new signature cases.</p>
+  <p class="tool">Bash npx vitest run billing</p>
+  <p>PR #212 is up. The retry-on-5xx path is still open; I have not touched it, and it is the one thing left before
+  the integration is complete.</p>`;
 
 function cardHtml(skin, stale) {
   const body = `
@@ -236,7 +253,7 @@ const OPTIONS = [
   ["opt-big", "H · Bigger", "no colour move — bigger, one type size up, real shadow"],
   ["opt-max", "I · Max", "tint + full-bleed + size, all three at once"],
 ];
-const THEMES = [["light", "light"], ["dark", "dark"], ["warm-light", "warm-light"], ["claude", "claude"]];
+const THEMES = [["claude-light", "claude-light — yours"], ["dark", "dark"], ["light", "light"], ["claude", "claude"]];
 
 const out = document.getElementById("out");
 for (const [skin, title, note] of OPTIONS) {
