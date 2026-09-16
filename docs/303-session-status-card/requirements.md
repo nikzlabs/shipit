@@ -138,7 +138,8 @@ taken inside one session, without building an agent that talks to many.
     status, the things only the user can do under the name "Manual steps", and
     the offered actions under the name "Follow-ups". Since req 33 the three
     top-level names are the caps of the three cards, and "Manual steps" and
-    "Follow-ups" are subtitles inside the middle one, with a rule between them.
+    "Follow-ups" are subtitles inside the "Next steps" card, with a rule
+    between them.
     A taken action says "sent" on the row, so its grey is never a mystery.
 29. Each manual step carries a toggle — "I've done this" — so the user can
     report by hand what they have done. What they ticked is sent to the agent
@@ -159,7 +160,8 @@ taken inside one session, without building an agent that talks to many.
 31. The card carries one or two sentences saying what the agent did in the
     last turn, or the direct answer when the user asked something. It is a
     field of its own, written by the agent, and a section of its own — since
-    req 33 the last of the three cards — never a convention inside the status
+    req 33 the second of the three cards, between the status and the next
+    steps — never a convention inside the status
     text, which goes on describing the session. When there is nothing worth
     saying about the turn, the section is absent. It is shown only while the card is current: on a
     stale card the line is hidden, because a turn line that is one turn behind

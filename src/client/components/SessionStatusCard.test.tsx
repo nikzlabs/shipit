@@ -47,33 +47,43 @@ describe("SessionStatusCard", () => {
     );
 
     const text = screen.getByTestId("session-status-card").textContent ?? "";
+    // Present first: an absent piece indexes as -1, which would order "correctly".
+    for (const piece of ["Billing service", "Wired the webhook route.", "Next steps"]) {
+      expect(text).toContain(piece);
+    }
     expect(text.indexOf("Billing service")).toBeLessThan(text.indexOf("Wired the webhook route."));
     // Next steps is last: it is the only card that asks something of the user,
     // and last puts it nearest the composer.
     expect(text.indexOf("Wired the webhook route.")).toBeLessThan(text.indexOf("Next steps"));
   });
 
-  it("draws the three caps loud, soft and neutral in that order (req 33)", () => {
+  it("draws the three caps loud, soft and neutral (req 33)", () => {
     render(
       <SessionStatusCard
         status={card({ lastTurn: "Wired the webhook route.", actions: [offer({ offerId: "o1" })] })}
       />,
     );
-    // The card that asks something of the user is the loud one.
-    const loud = screen.getByText("Next steps").parentElement!;
-    expect(loud.className).toContain("bg-(--color-accent)");
-    expect(loud.className).toContain("text-(--color-accent-text)");
+    // Whole class tokens, not substrings: "bg-(--color-accent)" is a prefix of
+    // "bg-(--color-accent)/5", so a substring match accepts the soft tone as
+    // the loud one and guards nothing.
+    const classesOf = (title: string) =>
+      new Set(screen.getByText(title).parentElement!.className.split(/\s+/));
 
-    // The status is read, not acted on: tinted, with accent text.
-    const soft = screen.getByText("Status").parentElement!;
-    expect(soft.className).toContain("bg-(--color-accent-subtle)");
-    expect(soft.className).toContain("text-(--color-accent)");
-    expect(soft.className).not.toContain("text-(--color-accent-text)");
+    const loud = classesOf("Next steps");
+    expect(loud).toContain("bg-(--color-accent)");
+    expect(loud).toContain("text-(--color-accent-text)");
+
+    // The status is read, not acted on: the accent tint carries the tone, and
+    // the label stays in primary text, which the tint has no contrast for.
+    const soft = classesOf("Status");
+    expect(soft).toContain("bg-(--color-accent-subtle)");
+    expect(soft).toContain("text-(--color-text-primary)");
+    expect(soft).not.toContain("bg-(--color-accent)");
 
     // The last turn is the aside, and leaves the accent system altogether.
-    const neutral = screen.getByText("Last turn").parentElement!;
-    expect(neutral.className).toContain("bg-(--color-bg-tertiary)");
-    expect(neutral.className).not.toContain("--color-accent");
+    const neutral = classesOf("Last turn");
+    expect(neutral).toContain("bg-(--color-bg-tertiary)");
+    expect([...neutral].filter((c) => c.includes("--color-accent"))).toEqual([]);
   });
 
   it("hides the last-turn card on a stale card, where it would be a turn behind (req 31)", () => {
@@ -94,10 +104,12 @@ describe("SessionStatusCard", () => {
     );
     const statusCap = screen.getByText("Status").closest("div")!;
     const mark = within(statusCap).getByText("Stale");
-    // The status cap is the soft tone, so the mark is accent on the tint.
-    expect(mark.className).toContain("text-(--color-accent)");
-    // Never faded: it is the smallest text on the cap.
-    expect(mark.className).not.toMatch(/accent\)\/\d/);
+    // req 14 — the accent colour, which the user chose over primary text.
+    const classes = new Set(mark.className.split(/\s+/));
+    expect(classes).toContain("text-(--color-accent)");
+    // Never faded, by either route: an alpha on the token or an opacity class.
+    expect([...classes].filter((c) => c.startsWith("opacity-"))).toEqual([]);
+    expect([...classes].some((c) => /^text-\(--color-accent\)\/\d/.test(c))).toBe(false);
   });
 
   it("puts the offers under a Follow-ups subtitle", () => {

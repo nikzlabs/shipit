@@ -60,29 +60,37 @@ function Subtitle({ icon, children }: { icon: ReactNode; children: ReactNode }) 
  *
  * Three tones, because the three cards are not equally worth the user's eye
  * (req 33). "Next steps" asks something of them and takes the filled cap; the
- * status is read and takes a tinted cap with accent text; the last turn is the
- * quietest and leaves the accent altogether for the ordinary card surface —
- * the accent then means "the session, and what to do about it", and the turn
- * summary reads as the aside it is.
+ * status is read and takes a tinted cap; the last turn is the quietest and
+ * leaves the accent altogether for the ordinary card surface — the accent then
+ * means "the session, and what to do about it", and the turn summary reads as
+ * the aside it is.
  *
  * `--color-info` was the better name for that third tone and cannot be used:
  * it is the same value as `--color-accent` in the light, cool-light and
  * antigravity themes, so it would differentiate nothing there.
+ *
+ * A cap's SURFACE carries its tone; its label does not. Only the filled cap has
+ * a background solid enough to colour text against, so the other two label in
+ * `--color-text-primary` and leave the tone to the icon: accent text on the
+ * accent tint measures 2.57:1 in claude-light, and under 4.5:1 in six themes.
  */
 const TONES = {
   loud: {
     card: "border-(--color-accent)",
     cap: "bg-(--color-accent) text-(--color-accent-text)",
+    icon: "",
     body: "bg-(--color-accent-subtle)",
   },
   soft: {
     card: "border-(--color-accent)/45",
-    cap: "bg-(--color-accent-subtle) text-(--color-accent) border-b border-(--color-accent)/30",
+    cap: "bg-(--color-accent-subtle) text-(--color-text-primary) border-b border-(--color-accent)/30",
+    icon: "text-(--color-accent)",
     body: "bg-(--color-accent)/5",
   },
   neutral: {
     card: "border-(--color-border-secondary)",
-    cap: "bg-(--color-bg-tertiary) text-(--color-text-secondary) border-b border-(--color-border-secondary)",
+    cap: "bg-(--color-bg-tertiary) text-(--color-text-primary) border-b border-(--color-border-secondary)",
+    icon: "text-(--color-text-secondary)",
     body: "bg-(--color-bg-secondary)",
   },
 } as const;
@@ -109,7 +117,7 @@ function Capped({
       className={`overflow-hidden rounded-lg border ${skin.card}`}
     >
       <div className={`flex items-center gap-1.5 px-3 py-1 ${skin.cap}`}>
-        <span className="shrink-0">{icon}</span>
+        <span className={`shrink-0 ${skin.icon}`}>{icon}</span>
         <span className="text-[13px] font-semibold">{title}</span>
         {trailing}
       </div>
