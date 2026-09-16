@@ -73,7 +73,8 @@ export function parseArgs(argv) {
     scenario: null,
     out: null,
     mode: "replay",
-    waitCeilingS: DEFAULT_WAIT_CEILING_S,
+    /** null = not given; resolved against the storyboard by `resolveWaitCeilingS`. */
+    waitCeilingS: null,
     headed: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -101,10 +102,20 @@ export function parseArgs(argv) {
   for (const k of ["instance", "scenario", "out"]) {
     if (!opts[k]) throw new Error(`--${k} is required`);
   }
-  if (!Number.isFinite(opts.waitCeilingS) || opts.waitCeilingS <= 0) {
+  if (opts.waitCeilingS !== null && (!Number.isFinite(opts.waitCeilingS) || opts.waitCeilingS <= 0)) {
     throw new Error("--wait-ceiling must be a positive number of seconds");
   }
   return opts;
+}
+
+/**
+ * The wait ceiling, in seconds: `--wait-ceiling` when given, else the
+ * storyboard's `waitCeilingSeconds`, else ten minutes. A real build turn is
+ * the scenario's to size — website-hero's first turn spans a container boot,
+ * `npm ci` and a full agent turn, all inside one beat's wait.
+ */
+export function resolveWaitCeilingS(opts, sb) {
+  return opts.waitCeilingS ?? sb.waitCeilingSeconds ?? DEFAULT_WAIT_CEILING_S;
 }
 
 export function readStoryboard(scenarioDir) {
@@ -116,6 +127,8 @@ export function readStoryboard(scenarioDir) {
   if (!Array.isArray(sb.beats) || sb.beats.length === 0) throw new Error(`${file}: beats[] is required`);
   const cps = sb.pace?.typingCharsPerSecond;
   if (cps !== undefined && (typeof cps !== "number" || !(cps > 0))) throw new Error(`${file}: pace.typingCharsPerSecond must be a positive number`);
+  const ceiling = sb.waitCeilingSeconds;
+  if (ceiling !== undefined && (typeof ceiling !== "number" || !(ceiling > 0))) throw new Error(`${file}: waitCeilingSeconds must be a positive number of seconds`);
   if (sb.permissionMode !== undefined && sb.permissionMode !== "auto") {
     throw new Error(`${file}: permissionMode must be "auto" — the one ShipIt mode whose allowlisted tools run without a prompt; Guarded (the CLI classifier) and Plan prompt by design`);
   }
@@ -491,10 +504,11 @@ class Driver {
 
   /** The merge button on the active session's card, or null; `enabled` says whether it can be clicked. */
   async mergeButton() {
-    const actions = this.page.locator(S.prCardActions).first();
-    if (await actions.count() === 0) return null;
+    const scope = this.page.locator(S.prCardMergeScope).first();
+    if (await scope.count() === 0) return null;
     for (const name of S.mergeButtonNames) {
-      const btn = actions.getByRole("button", { name, exact: true });
+      // Exact name: the split button's other half is "Select merge method".
+      const btn = scope.getByRole("button", { name, exact: true });
       if (await btn.count() > 0 && await btn.first().isVisible()) return { locator: btn.first(), enabled: await btn.first().isEnabled() };
     }
     return null;
@@ -631,6 +645,8 @@ class Driver {
         if (await frame.count() === 0) return false;
         const content = await frame.contentFrame();
         if (!content) return false;
+        // `exact: false` is Playwright's case-insensitive substring match, so
+        // "habit" holds on "Habits" and "New habit…" alike.
         return (await content.getByText(value, { exact: false }).count()) > 0;
       }
       default:
@@ -689,6 +705,8 @@ class Driver {
 
 export async function run(opts) {
   const sb = readStoryboard(opts.scenario);
+  opts = { ...opts, waitCeilingS: resolveWaitCeilingS(opts, sb) };
+  log(`wait ceiling ${opts.waitCeilingS}s`);
   fs.mkdirSync(opts.out, { recursive: true });
   await setup(opts, sb);
 

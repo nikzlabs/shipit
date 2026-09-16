@@ -7,6 +7,7 @@
   },
   "settings": { "autoCreatePr": true },
   "permissionMode": "auto",
+  "waitCeilingSeconds": 1800,
   "viewport": { "width": 1440, "height": 900 },
   "pace": { "textCharsPerSecond": 120, "typingCharsPerSecond": 30 },
   "cursor": true,
