@@ -100,4 +100,28 @@ describe("createCliLineRelay", () => {
 
     expect(lines).toEqual([{ source: "cli_stderr", line: "  NSJF-75ZB" }]);
   });
+
+  /**
+   * Buffering until a newline means a CLI that never sends one would grow the
+   * buffer for as long as the flow lives. The cap relays the fragment instead of
+   * dropping it, and then starts again from empty.
+   */
+  it("relays and resets rather than buffering a line that never ends", () => {
+    const { relay, lines } = collect();
+    relay.push("cli_stdout", "x".repeat(70 * 1024));
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line).toHaveLength(70 * 1024);
+
+    relay.push("cli_stdout", "after\n");
+    expect(lines[1], "the buffer kept the relayed fragment").toEqual({
+      source: "cli_stdout",
+      line: "after",
+    });
+  });
+
+  it("leaves a line under the cap buffered until its newline", () => {
+    const { relay, lines } = collect();
+    relay.push("cli_stdout", "y".repeat(60 * 1024));
+    expect(lines).toEqual([]);
+  });
 });

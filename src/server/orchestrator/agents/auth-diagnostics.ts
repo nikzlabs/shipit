@@ -55,6 +55,17 @@ export interface CliLineRelay {
   flush(): void;
 }
 
+/**
+ * The point at which a CLI that never emits a newline stops being buffered and
+ * starts being relayed anyway.
+ *
+ * **A cap is not a chunk boundary in disguise.** It sits three orders of
+ * magnitude above the whole output of a device-auth login, so no URL, token or
+ * code can straddle it — which is the one thing that would turn this back into
+ * the per-chunk relay the whole design exists to avoid.
+ */
+const MAX_BUFFERED_LINE = 64 * 1024;
+
 export function createCliLineRelay(
   onLine: (source: AgentAuthLogSource, line: string) => void,
 ): CliLineRelay {
@@ -70,7 +81,14 @@ export function createCliLineRelay(
   return {
     push(source, chunk) {
       const lines = ((tails.get(source) ?? "") + chunk).split(/\r?\n/);
-      tails.set(source, lines.pop() ?? "");
+      let tail = lines.pop() ?? "";
+      // The cap is a synthetic line break, not a drop: the fragment is relayed
+      // through the same redactions as any other line rather than discarded.
+      if (tail.length > MAX_BUFFERED_LINE) {
+        lines.push(tail);
+        tail = "";
+      }
+      tails.set(source, tail);
       for (const line of lines) emit(source, line);
     },
     flush() {

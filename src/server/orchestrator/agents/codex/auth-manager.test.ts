@@ -608,14 +608,22 @@ describe("what the Codex sign-in reports to the panel", () => {
     const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
     mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
     const stale = procs[0];
-    mgr.cancel();
-
-    mgr.startDeviceFlow({ accountId: "acct-2", credentialDir: diagDir() });
     const logs: AgentAuthLogPayload[] = [];
     const pending: CodexAuthPendingEvent[] = [];
     mgr.on("log", (p) => logs.push(p));
     mgr.on("codex_auth_pending", (ev: CodexAuthPendingEvent) => pending.push(ev));
+
+    // Both halves of the guard: every kill path clears `this.proc` BEFORE the
+    // signal, so a dead run is already foreign whether or not a successor
+    // exists — the identity compared is the process object, which a cancel
+    // cannot leave stale the way an un-advanced generation counter can.
+    mgr.cancel();
     emitStdout(stale.stdout, `stale line\n${URL}\nK8RE-8MIGC\n`);
+    await settle();
+    expect(logs, "a cancelled run kept reporting").toEqual([]);
+
+    mgr.startDeviceFlow({ accountId: "acct-2", credentialDir: diagDir() });
+    emitStdout(stale.stdout, `more stale\n${URL}\nK8RE-8MIGC\n`);
     await settle();
 
     expect(logs, "charged a dead run's output to the next account").toEqual([]);

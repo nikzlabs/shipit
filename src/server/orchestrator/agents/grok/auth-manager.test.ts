@@ -484,13 +484,21 @@ describe("what the Grok sign-in reports to the panel", () => {
     const mgr = new XaiAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
     mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
     const stale = procs[0];
-    mgr.cancel();
-
-    mgr.startDeviceFlow({ accountId: "acct-2", credentialDir: diagDir() });
     const logs: AgentAuthLogPayload[] = [];
     const pending: XaiAuthPendingEvent[] = [];
     mgr.on("log", (p) => logs.push(p));
     mgr.on("xai_auth_pending", (ev: XaiAuthPendingEvent) => pending.push(ev));
+
+    // Both halves of the guard: every kill path clears `this.proc` BEFORE the
+    // signal, so a dead run is already foreign whether or not a successor
+    // exists — the identity compared is the process object, which a cancel
+    // cannot leave stale the way an un-advanced generation counter can.
+    mgr.cancel();
+    emit(stale.stderr, REAL_STDERR);
+    await settle();
+    expect(logs, "a cancelled run kept reporting").toEqual([]);
+
+    mgr.startDeviceFlow({ accountId: "acct-2", credentialDir: diagDir() });
     emit(stale.stderr, REAL_STDERR);
     await settle();
 
