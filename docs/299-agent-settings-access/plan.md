@@ -1486,10 +1486,10 @@ transaction (`EgressAllowlistStore.removeGlobalHost`); ungrouped, a suppression
 that threw left the row deleted and reported `failed`, which says ShipIt verified
 nothing changed. `removeHost` is grouped for the same reason one layer down:
 rows that normalize alike are one host, and deleting them one by one could leave
-the host half off the list. And an operation whose writes landed while its *intent* did not
-is `partial`, never `failed`: removing a host a configured MCP server also
-supplies deletes the user's own row and leaves the host listed, and only a
-removal that wrote nothing at all may claim the list never moved.
+the host half off the list. And an operation whose writes landed while its
+*intent* did not is `partial`, never `failed`: removing a host a configured MCP
+server also supplies deletes the user's own row and leaves the host listed, and
+only a removal that wrote nothing at all may claim the list never moved.
 
 The same rule reaches past the outcome to what a write *does*. A save hook
 (`SAVE_HOOKS`) runs only for a value the store kept: a `failed` write is verified
