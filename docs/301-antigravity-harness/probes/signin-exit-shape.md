@@ -58,12 +58,25 @@ Three things follow, and the fix rests on all three:
    arrives as an `Error:` line, which `antigravityStderrErrorText` already
    relays. A generic ShipIt sentence is therefore the case where the CLI said
    nothing, which is worth keeping rare and accurate.
-3. **The exit code reports the print run, not the credential.** The sign-in is a
-   side effect of a prompt that runs afterwards, so a refusal or a quota error
-   past the exchange exits non-zero over a token that was written correctly.
-   Completion is now keyed on the token file changing since the flow started —
-   state, not the exit code — with a clean exit over an unchanged token still
-   counting, because a run on an already-signed-in home never rewrites it.
+3. **The exit code reports the print run, not the credential** — reasoned from
+   the shape of the flow, **not measured**: no probe here captures a successful
+   exchange followed by a non-zero exit, because completing one needs a real
+   Google account. The sign-in is a side effect of a prompt that runs afterwards,
+   so a prompt that fails for its own reasons (quota, a blocked host) should not
+   discard a credential that is fine — a user who cannot connect a working
+   account is stranded, since every retry ends the same way. Completion is
+   therefore keyed on the token file changing since the flow started, with a
+   clean exit over an unchanged token still counting (a run on an
+   already-signed-in home never rewrites it).
+
+   **A sentence from the CLI outranks the token, though.** The eligibility check
+   runs *after* the exchange, so an ineligible account gets a good token and then
+   `Error: Eligibility check failed…`. Completing there would discard the only
+   explanation the user gets (req 4) and leave an account whose every turn fails.
+   And the token is read as a *credential*, not as bytes — a save that died
+   part-way moves the mtime like any other write, and the completion claim is
+   that a run signed in. `isConfigured` keeps the looser size test on purpose:
+   it reports what the account **has**, not what a run just **did**.
 
 ## Why the tests were green
 

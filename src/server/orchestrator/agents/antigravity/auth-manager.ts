@@ -44,10 +44,24 @@ interface TokenStamp {
   size: number;
 }
 
+/**
+ * Stamped only when the file holds an actual credential. A sign-in is announced
+ * off this, so "the file changed" is not enough: a save that died part-way
+ * leaves a short, unparseable file whose mtime moved like any other write.
+ * `isConfigured` keeps the looser size test on purpose — it reports what the
+ * account HAS, while this claims what a run just DID.
+ */
 function tokenStamp(home: string): TokenStamp | null {
   try {
-    const st = statSync(antigravityTokenPath(home));
-    return st.isFile() && st.size > 0 ? { mtimeMs: st.mtimeMs, size: st.size } : null;
+    const file = antigravityTokenPath(home);
+    const st = statSync(file);
+    if (!st.isFile() || st.size === 0) return null;
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const fields = credentialFields(parsed as Record<string, unknown>);
+    const bearer = fields.access_token ?? fields.id_token;
+    if (typeof bearer !== "string" || bearer.length === 0) return null;
+    return { mtimeMs: st.mtimeMs, size: st.size };
   } catch {
     return null;
   }
@@ -293,35 +307,52 @@ export class AntigravityAuthManager
       this.clearTimeout();
       const now = tokenStamp(home);
       const wrote = now !== null && (now.mtimeMs !== baseline?.mtimeMs || now.size !== baseline?.size);
+      // req 4 — Google's own sentence, not ShipIt's generic copy. The
+      // eligibility refusal is the case this exists for.
+      const refusal = antigravityStderrErrorText(this.stderrBuffer);
       console.log(
         `[antigravity-auth] sign-in ended exit=${String(exitCode)} signal=${String(signal)}`
-        + ` link=${String(hadPending)} token=${now === null ? "absent" : wrote ? "written" : "unchanged"}`,
+        + ` link=${String(hadPending)} token=${now === null ? "absent" : wrote ? "written" : "unchanged"}`
+        + ` refusal=${String(refusal !== undefined)}`,
       );
       /**
-       * **The token decides, not the exit code.** The sign-in rides a print run,
-       * so a non-zero exit can mean the *prompt* failed after the credential
-       * landed. A freshly written token is the sign-in; an unchanged one plus a
-       * clean exit is a run that was already signed in. A killed run is never
-       * either — node-pty reports SIGTERM as `exitCode: 0`, so cancelling a flow
-       * on a home holding an OLD token would otherwise announce a sign-in that
-       * never happened.
+       * **A sentence from the CLI outranks the token; past that, the token
+       * outranks the exit code.**
+       *
+       * The refusal has to win because an eligibility check runs AFTER the
+       * exchange: an ineligible account gets a perfectly good token and then
+       * `Error: Eligibility check failed…`, and calling that connected discards
+       * the only explanation the user will get (req 4) to leave an account whose
+       * every turn fails.
+       *
+       * The token has to outrank the exit code because the sign-in rides a print
+       * run: a prompt that fails for its own reasons — quota, a blocked host —
+       * exits non-zero over a credential that is fine, and failing there strands
+       * a user who cannot connect a working account no matter how often they
+       * retry. Reasoned, not observed: no probe has captured that exit
+       * (probes/signin-exit-shape.md).
+       *
+       * A killed run is neither — node-pty reports SIGTERM as `exitCode: 0`, so
+       * cancelling a flow on a home holding an OLD token would otherwise
+       * announce a sign-in that never happened.
        */
-      if (!wasSignalled(signal) && (wrote || (exitCode === 0 && now !== null))) {
+      if (refusal === undefined && !wasSignalled(signal) && (wrote || (exitCode === 0 && now !== null))) {
         if (!this.claimTerminal()) return;
         this.emit("complete");
         this.clearActiveScope();
         return;
       }
-      // req 4 — Google's own sentence, not ShipIt's generic copy. The
-      // eligibility refusal is the case this exists for.
-      const message = antigravityStderrErrorText(this.stderrBuffer)
-        ?? this.exitMessage(exitCode, signal, hadPending);
-      this.fail("error", message);
+      this.fail("error", refusal ?? this.exitMessage(exitCode, signal, hadPending));
     });
 
     this.timeoutHandle = setTimeout(() => {
       this.timeoutHandle = null;
-      this.fail("timeout", "The Antigravity CLI printed no sign-in link.");
+      // Past a printed link this bound is not the one that matters — the CLI's
+      // own 60 s window closed long before — so it is a hung process, not a
+      // missing link, and saying "no link" contradicts the link on screen.
+      this.fail("timeout", this.lastPendingDetails
+        ? "The Antigravity sign-in did not finish. Start again."
+        : "The Antigravity CLI printed no sign-in link.");
       this.kill();
     }, this.timeoutMs);
   }

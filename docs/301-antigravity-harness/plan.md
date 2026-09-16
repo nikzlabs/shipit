@@ -391,8 +391,11 @@ one non-npm branch, gated on `contains antigravity $selected`:
   unreachable and announced every completed sign-in as a failure
   (`probes/signin-exit-shape.md`). A clean exit over an unchanged token still
   completes (an already-signed-in home rewrites nothing); a signalled run never
-  does. The CLI's 60 s window is surfaced as the failure reason on timeout and
-  now also in the challenge panel before the attempt. The client already renders the paste box
+  does; and an `Error:` sentence outranks the token, because the eligibility
+  check runs after the exchange, so an ineligible account gets a good credential
+  and then Google's refusal (req 4). The CLI's 60 s window is surfaced as the
+  failure reason on timeout and now also in the challenge panel before the
+  attempt. The client already renders the paste box
   for `code-paste-url` — the only client edit is `ServicesPanel.tsx`'s
   hardcoded `signInProvider === "claude" ? "paste" : "code"` placeholder
   gate, which becomes a set of paste-shaped providers.

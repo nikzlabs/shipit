@@ -430,18 +430,22 @@ export function AccountChallenge({
   const auths = useSettingsStore((s) => s.providerAccountAuths);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  /**
+   * **What was submitted, not that something was.** The POST only hands the code
+   * to the CLI, so it returns in milliseconds while the sign-in runs on for
+   * seconds — a button that snaps back is indistinguishable from a click that
+   * missed, and one that stays down forever strands anyone whose resolving event
+   * never arrives (an SSE drop leaves the challenge mounted, and the dialog
+   * offers "Try again" only when no challenge is pending). So the confirmation
+   * is a line of its own, the button stays usable for a retry, and holding the
+   * challenge it belongs to retires it the moment a new link replaces this one.
+   */
+  const [submittedFor, setSubmittedFor] = useState<string | null>(null);
   const loginId = loginForProvider(provider);
   const pendingAuth = loginId ? auths[providerAccountAuthKey(loginId, account.id)] ?? null : null;
   if (!pendingAuth) return null;
+  const submitted = submittedFor === pendingAuth.verificationUri;
 
-  /**
-   * **Busy is cleared only on failure.** The POST just hands the code to the
-   * CLI, so it returns in milliseconds while the sign-in itself takes seconds
-   * more — clearing it in a `finally` put the button back exactly as it was and
-   * the user could not tell a submitted code from a click that missed. There is
-   * no leak: `complete` and `failed` both clear the pending auth, which unmounts
-   * this panel.
-   */
   const submit = async () => {
     const trimmed = code.trim();
     if (!trimmed) return;
@@ -451,8 +455,10 @@ export function AccountChallenge({
         method: "POST",
         body: JSON.stringify({ code: trimmed }),
       });
+      setSubmittedFor(pendingAuth.verificationUri);
     } catch (err) {
       onError(messageOf(err, "Failed to submit authorization code"));
+    } finally {
       setBusy(false);
     }
   };
@@ -499,10 +505,19 @@ export function AccountChallenge({
             onClick={() => void submit()}
             {...bindSetting("services.providerAccounts[].connection")}
           >
-            {busy ? "Signing in…" : "Submit code"}
+            Submit code
           </Button>
         </div>
       )}
+
+      {submitted ? (
+        <p
+          className="text-xs text-(--color-text-secondary)"
+          data-testid={`provider-account-code-submitted-${account.id}`}
+        >
+          Code submitted — completing sign-in…
+        </p>
+      ) : null}
 
       {CHALLENGE_DEADLINE[provider] ? (
         <p className="text-xs text-(--color-text-secondary)">{CHALLENGE_DEADLINE[provider]}</p>

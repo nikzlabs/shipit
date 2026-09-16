@@ -347,11 +347,10 @@ describe("the authorization-code challenge", () => {
 
   /**
    * The POST only hands the code to the CLI, so it returns in milliseconds while
-   * the sign-in runs on for seconds. Clearing `busy` in a `finally` put the
-   * button back exactly as it was, and a user who had submitted could not tell
-   * that from a click that missed.
+   * the sign-in runs on for seconds. With nothing left behind, a user who had
+   * submitted could not tell that from a click that missed.
    */
-  it("stays submitted after the code is accepted, rather than resetting", async () => {
+  it("says the code went through, and keeps the button usable for a retry", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
     renderChallenge("antigravity", "google-antigravity-oauth");
@@ -359,10 +358,14 @@ describe("the authorization-code challenge", () => {
     await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
     await user.click(screen.getByRole("button", { name: "Submit code" }));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Signing in…" })).toBeDisabled());
+    await waitFor(() => expect(screen.getByTestId("provider-account-code-submitted-acct-agy"))
+      .toBeInTheDocument());
+    // A resolving event that never arrives — an SSE drop — must not leave the
+    // panel inert: the dialog offers "Try again" only once no challenge pends.
+    expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled();
   });
 
-  it("returns the button on a refusal, so the code can be pasted again", async () => {
+  it("does not claim a refused code went through", async () => {
     const user = userEvent.setup();
     installFailingFetch("Authorization code cannot be empty");
     renderChallenge("antigravity", "google-antigravity-oauth");
@@ -371,6 +374,31 @@ describe("the authorization-code challenge", () => {
     await user.click(screen.getByRole("button", { name: "Submit code" }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled());
+    expect(screen.queryByTestId("provider-account-code-submitted-acct-agy")).not.toBeInTheDocument();
+  });
+
+  // A second attempt reuses this component, so a confirmation that outlived its
+  // own challenge would tell the user the new link's code had been sent.
+  it("retires the confirmation when a new link replaces the one it answered", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(screen.getByTestId("provider-account-code-submitted-acct-agy"))
+      .toBeInTheDocument());
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("google-antigravity-oauth", "acct-agy", {
+        loginId: "google-antigravity-oauth",
+        accountId: "acct-agy",
+        verificationUri: "https://accounts.google.com/o/oauth2/auth?client_id=5678",
+      });
+    });
+
+    await waitFor(() => expect(screen.queryByTestId("provider-account-code-submitted-acct-agy"))
+      .not.toBeInTheDocument());
   });
 
   // The CLI gives up 60 s after printing the link, which covers the whole Google

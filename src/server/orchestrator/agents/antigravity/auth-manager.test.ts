@@ -156,10 +156,10 @@ describe("AntigravityAuthManager", () => {
   });
 
   /**
-   * The sign-in rides a PRINT run, so the exit code reports the prompt, not the
-   * credential: an eligibility refusal or a quota error after the exchange exits
-   * non-zero with the token already on disk. Announcing that as a failure sends
-   * the user back through a sign-in they have already completed.
+   * The sign-in rides a PRINT run, so a non-zero exit can be the prompt failing
+   * for its own reasons — quota, a blocked host — over a credential that is
+   * fine. Failing there strands a user who cannot connect a working account
+   * however often they retry, because every retry ends the same way.
    */
   it("completes on a non-zero exit when the token was still written", () => {
     start();
@@ -168,12 +168,55 @@ describe("AntigravityAuthManager", () => {
     expect(completed).toBe(1);
   });
 
+  /**
+   * The eligibility check runs AFTER the exchange, so an ineligible account gets
+   * a perfectly good token and then Google's refusal. Calling that connected
+   * discards the only explanation the user gets (req 4) and leaves an account
+   * whose every turn fails — so a sentence from the CLI outranks the token.
+   */
+  it("fails a refusal that arrives over a token this run wrote", () => {
+    start();
+    writeToken({ access_token: "a", expiry: "2030-01-01T00:00:00Z" });
+    proc.emitData("Error: Eligibility check failed: Your current account is not eligible.\n");
+    proc.emitExit(1);
+    expect(completed).toBe(0);
+    expect(failed[0]?.message).toBe("Eligibility check failed: Your current account is not eligible.");
+  });
+
+  /**
+   * A save that died part-way moves the file's mtime like any other write. The
+   * completion claim is "a run signed in", so it is read as a credential, not
+   * as bytes — `isConfigured` keeps the looser test, which reports what the
+   * account has rather than what a run just did.
+   */
+  it("does not read a half-written token file as a sign-in", () => {
+    start();
+    const file = antigravityTokenPath(home);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{"auth_method":"cons');
+    proc.emitExit(0);
+    expect(completed).toBe(0);
+  });
+
   // A run on an already-signed-in home never touches the token and still succeeds.
   it("completes on a clean exit when a token was already there", () => {
     writeToken({ access_token: "old", expiry: "2030-01-01T00:00:00Z" });
     start();
     proc.emitExit(0);
     expect(completed).toBe(1);
+  });
+
+  // Past a printed link this bound is not the one that lapsed — the CLI's own
+  // 60 s window closed long before — so "no link" contradicts the link on screen.
+  it("does not blame a missing link for a timeout that came after one", async () => {
+    const bounded = new AntigravityAuthManager({ spawn: () => proc, timeoutMs: 10 });
+    const seen: (AgentAuthFailedPayload | undefined)[] = [];
+    bounded.on("failed", (p) => seen.push(p));
+    bounded.start({ credentialDir: home, accountId: "acct-1" });
+    proc.emitData(`Sign in here: ${SIGN_IN_URL}\n`);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(seen[0]?.reason).toBe("timeout");
+    expect(seen[0]?.message).not.toContain("no sign-in link");
   });
 
   it("does not complete on exit zero with no token", () => {
