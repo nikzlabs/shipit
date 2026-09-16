@@ -22,7 +22,7 @@ const TOOL_DESCRIPTION = [
   "`needsYou` is a LIST, one entry per thing only the USER can do by hand, shown on the card",
   "under \"Manual steps\" with a toggle each; send [] to clear it. An action is YOUR work,",
   "shown under \"Follow-ups\", and every action needs a `description` as well as a `label`.",
-  "Every field is a delta on the stored card — an omitted field is left unchanged, and a",
+  "Every OTHER field is a delta on the stored card — an omitted field is left unchanged, and a",
   "call with NO arguments is you confirming the card still holds, which is what you send",
   "when nothing moved. A turn that ends with a question needs no call. Offers persist",
   "across turns: `actions` adds to the list, `actions` with `replaceActions: true` makes",

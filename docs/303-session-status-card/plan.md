@@ -550,14 +550,23 @@ element that renders it, or `null`:
 - It scans `visualElements` from the end, stepping over trailing **card rows** —
   a message element whose message has no text, no images, no files and no tools,
   and carries one of `CARD_MESSAGE_FIELDS`. A voice note is exactly that, which
-  is why it stops being the thing the view lands on.
-- The first element that is not a card row qualifies when it carries an
-  **unanswered** `AskUserQuestion` (well-formed: an array of `questions`) or
+  is why it stops being the thing the view lands on. It steps over a trailing
+  **task panel** for a different reason: the panel is folded out of the message
+  it came from and emitted after it, so an agent that updates its to-do list in
+  the same message as the question leaves one below the question; and the panel
+  moves down the transcript by design, so it is no more the end of the
+  conversation than a card row is.
+- The first element that is neither qualifies when it carries an **unanswered**
+  `AskUserQuestion` (well-formed: an array of `questions`) or
   `ExitPlanMode` — a tool block with no `toolResults` entry of its own. Those are
   the two that end a turn waiting for the user; a permission or egress prompt
   blocks *inside* a turn, where req 30 already holds the status card above it.
 - A question the agent asked, that the user then replied past, is not lifted:
   the user's own row is not a card row, so the scan stops there.
+- A **`message` element with `hideTools`** never claims the card, even when its
+  message carries the tool. A question beside a groupable tool is split into a
+  prose row with the tools hidden and a standalone element for the question, and
+  claiming both would give two siblings the same container key.
 
 **Every answer card gets a container of its own, keyed by its tool** —
 `qa-<toolUseId>`, a sibling of the row groups rather than a row inside one —
@@ -575,13 +584,29 @@ container keyed by the tool, the card's parent never changes: pending, it is the
 last entry of the flow; not pending, it is an entry at its own position; and the
 move between the two is a reorder among siblings of the scroll content.
 
-**The chunk split generalises.** A group is keyed by the chunk of `ROWS_PER_GROUP`
-rows it belongs to, and the status card's anchor could already split one chunk in
-two (req 30). An answer card splits a chunk the same way, and a chunk can now be
-split more than once, so the `openedByCard` flag becomes a `chunkSplits` counter
-and the suffix names the piece (`b1`, `b2`, …). It resets at every real chunk
-boundary, so removing a split still re-parents only the rows in the pieces after
-it, inside that one chunk, and leaves every later chunk alone.
+**The chunk split generalises, and it happens at EVERY answer card** — the
+pending one included, which renders elsewhere. A group is keyed by the chunk of
+`ROWS_PER_GROUP` rows it belongs to, and the status card's anchor could already
+split one chunk in two (req 30). An answer card splits a chunk the same way, and
+a chunk can now be split more than once, so the `openedByCard` flag becomes a
+`chunkSplits` counter and the suffix names the piece (`b1`, `b2`, …). It resets
+at every real chunk boundary, so removing a split re-parents only the rows in
+the pieces after it, inside that one chunk, and leaves every later chunk alone.
+
+Two details there are load-bearing, and both were found by review rather than by
+reading the happy path:
+
+- **Splitting only for the NON-pending card would move the boundary as the
+  question is answered**, so the rows just under it change group — and one of
+  those rows is the transcript's own follow-up action card, which would lose the
+  ticks the user had just made (req 19). Splitting unconditionally makes the
+  boundary the same in both states.
+- **The chunk boundary is decided by comparing keys, not by testing
+  `anchorsSeen % ROWS_PER_GROUP`.** A split that lands exactly on a boundary has
+  already opened the next chunk's group; a movable row (a task panel) can then
+  sit in that group, and the next ordinary row would flush it and open a second
+  group under the same key. Comparing the open group's key with the one this row
+  would get is the same test everywhere and has no such gap.
 
 **Document order stops being row order**, and one place read the two as the same:
 `CompactLayout`'s anchor search walked `[data-compact-content]` in the DOM and
@@ -599,12 +624,6 @@ writes, returns to the end when the turn stops, and the answer the user has to
 give is still the last thing below it. Its offers are unaffected — a turn can end
 with a question while the card offers actions, and both are reachable, the
 question last because it is what holds the session up (req 32).
-
-One consequence, accepted: the split an answer card makes appears and disappears
-with the card's pending state, so a card row sitting just after it — the voice
-note — re-parents when the conversation moves past the question. Those rows are
-card carriers with no local state, and the row that has state is precisely the
-one whose container never changes.
 
 ## Evolving the action card (req 19, 21)
 
@@ -688,7 +707,9 @@ built file is named in brackets. Every one of them exists.
   queued successor deferring with nothing left in the queue; a streaming
   `agent_result` + `done` giving one nudge; a predecessor's late exit leaving
   the successor's card current.
-- `sessions.test.ts`, `integration_tests/rewind-fork.test.ts`,
+- `sessions.test.ts` — `lastTurn` through the column and back, and a card
+  stored before the field existed read as one with no line (req 31);
+  `integration_tests/rewind-fork.test.ts`,
   `services/session-fork-merge.test.ts` — the lifecycle marks.
 - `send-message.test.ts` — offers taken after admission on each path, not
   on a refused enqueue; old cards still get `submittedAt`.
@@ -728,7 +749,10 @@ built file is named in brackets. Every one of them exists.
   above it and the question last; the same with offers on the card, and the same
   with no card stored at all; the question is not remounted when the voice note
   lands after it, nor when the conversation moves past it, so a typed answer
-  survives both; a question the user replied past is left where it is.
+  survives both; a trailing follow-up action card keeps its ticks when the
+  question is answered; every group keeps a distinct key when an answer card
+  splits a chunk exactly on a boundary; a question the user replied past is left
+  where it is.
 - `MessageList/CompactLayout.test.tsx` — a row's visibility is read off its id
   rather than its place in the DOM, which req 32 separates; the reading anchor is restored when
   the card's anchor moves with the visibility string unchanged, under the
@@ -738,10 +762,11 @@ built file is named in brackets. Every one of them exists.
   asks the container, so a dispatched turn's user row arming auto-follow does
   not suppress it, and a reader at the bottom is left alone.
 - `MessageList/pending-answer.test.ts` — the question the conversation ends
-  with, found past a trailing voice note and inside a message that also carries
-  the agent's prose; a plan waiting for approval; and `null` for an answered
-  question, one the user replied past, a malformed one, and an ordinary
-  conversation (req 32).
+  with, found past a trailing voice note, past a trailing task panel, and inside
+  a message that also carries the agent's prose; claimed exactly once when that
+  message also carries a grouped tool; a plan waiting for approval; and `null`
+  for an answered question, one the user replied past, a malformed one, and an
+  ordinary conversation (req 32).
 - `SessionStatusCard.test.tsx` — the last-turn line above the status with both
   labelled, and hidden on a stale card (req 31); the markdown status; the two subtitles; the
   manual-step toggles and their "I've done this" names; "Stale" only when

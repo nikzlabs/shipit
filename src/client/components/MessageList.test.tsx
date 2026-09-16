@@ -2290,6 +2290,75 @@ describe("session status card slot", () => {
       expect((typed as HTMLTextAreaElement).value).toBe("Only the src folder");
     });
 
+    // req 19 — the transcript's own follow-up action card keeps working, and a
+    // card the user has ticked sits exactly where this change moves rows
+    // around: between the question and the end of the conversation.
+    it("keeps a trailing action card's selection when the question is answered", () => {
+      seed(status);
+      const checklistCard = {
+        role: "assistant",
+        text: "",
+        actionChecklist: {
+          cardId: "c1",
+          title: "Follow-ups",
+          createdAt: "2026-09-16T00:00:00Z",
+          // Two, so the card is a checklist rather than its single-button form.
+          actions: [
+            { id: "doc", label: "Write the ADR", payload: "Write the ADR." },
+            { id: "bench", label: "Benchmark it", payload: "Benchmark it." },
+          ],
+        },
+      } as ChatMessage;
+      const withCard = [msg("user", "decide"), question(), checklistCard];
+      const { rerender } = render(<MessageList messages={withCard} isLoading={false} />);
+      const tick = screen.getByRole("checkbox", { name: /Write the ADR/ });
+      fireEvent.click(tick);
+      expect(tick).toBeChecked();
+
+      rerender(<MessageList messages={[...withCard, msg("user", "Redis")]} isLoading={true} />);
+      rerender(
+        <MessageList messages={[...withCard, msg("user", "Redis"), msg("assistant", "on it")]} isLoading={true} />,
+      );
+      expect(screen.getByRole("checkbox", { name: /Write the ADR/ })).toBe(tick);
+      expect(tick).toBeChecked();
+    });
+
+    // A split that lands exactly on a `ROWS_PER_GROUP` boundary has already
+    // opened the next chunk's group, and a movable row can sit in that gap —
+    // so the boundary test has to compare keys, not count rows.
+    it("gives every row group a distinct key when an answer card splits a chunk at a boundary", () => {
+      seed(status);
+      const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+      const plain = (i: number) => msg("assistant", `line ${i}`);
+      const answeredWithTasks = {
+        role: "assistant",
+        text: "",
+        toolUse: [
+          {
+            type: "tool_use",
+            id: "todo-1",
+            name: "TodoWrite",
+            input: { todos: [{ content: "pick a cache", status: "in_progress", activeForm: "picking" }] },
+          },
+          { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT },
+        ],
+        toolResults: [{ toolUseId: "ask-1", content: "Redis" }],
+      } as ChatMessage;
+      const messages = [
+        ...Array.from({ length: 20 }, (_, i) => plain(i)),
+        answeredWithTasks,
+        msg("assistant", "after the panel"),
+      ];
+
+      const { rerender } = render(<MessageList messages={messages} isLoading={false} />);
+      rerender(<MessageList messages={[...messages, msg("assistant", "one more")]} isLoading={false} />);
+
+      expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).not.toContain("same key");
+      expect(screen.getByText("after the panel")).toBeInTheDocument();
+      expect(screen.getByText("one more")).toBeInTheDocument();
+      warn.mockRestore();
+    });
+
     it("leaves a question the user replied past where it is", () => {
       seed(status);
       const replied = [...asked, msg("user", "never mind"), msg("assistant", "doing that instead")];

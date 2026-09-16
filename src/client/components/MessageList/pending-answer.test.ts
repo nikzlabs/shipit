@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pendingAnswerElementIndex } from "./pending-answer.js";
+import { answerCardElements, pendingAnswerElementIndex } from "./pending-answer.js";
 import { buildVisualElements } from "../visual-elements.js";
 import type { ChatMessage } from "./types.js";
 
@@ -93,6 +93,48 @@ describe("pendingAnswerElementIndex", () => {
       { role: "assistant", text: "done" } as ChatMessage,
     ];
     expect(find(messages)).toBeNull();
+  });
+
+  it("finds a question the agent asked while updating its task list", () => {
+    // A `TodoWrite` beside the question folds into a task panel, which is
+    // emitted AFTER the element that renders the question.
+    const messages = [
+      { role: "user", text: "decide" } as ChatMessage,
+      ask({
+        toolUse: [
+          {
+            type: "tool_use",
+            id: "todo-1",
+            name: "TodoWrite",
+            input: { todos: [{ content: "pick a cache", status: "in_progress", activeForm: "picking" }] },
+          },
+          { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT },
+        ],
+      }),
+    ];
+    const elements = buildVisualElements(messages);
+    expect(elements[elements.length - 1].kind).toBe("task-panel");
+    expect(pendingAnswerElementIndex(elements, messages)).toBe(1);
+  });
+
+  it("claims the question once when its message also carries prose and a grouped tool", () => {
+    // The prose becomes a row of its own with `hideTools`, and the question a
+    // standalone element. Both read the same message, so claiming both would
+    // give two siblings the same container key.
+    const messages = [
+      { role: "user", text: "decide" } as ChatMessage,
+      ask({
+        text: "Two options here.",
+        toolUse: [
+          { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "cache.ts" } },
+          { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT },
+        ],
+      }),
+    ];
+    const elements = buildVisualElements(messages);
+    const claimed = answerCardElements(elements, messages);
+    expect([...claimed.values()]).toEqual(["ask-1"]);
+    expect(elements[[...claimed.keys()][0]].kind).toBe("standalone-tool");
   });
 
   it("ignores a malformed question, which the CLI answers itself and never interrupts", () => {

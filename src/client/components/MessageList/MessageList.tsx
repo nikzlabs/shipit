@@ -503,22 +503,27 @@ export function MessageList({
       flow.push(statusCard);
     }
     if (answerCards.has(index)) {
+      // The split happens whether or not this one is pending, so the rows just
+      // under an answer card keep their group when it becomes the end of the
+      // conversation and when it stops being it. Without that, answering a
+      // question re-parents the card rows below it — and a follow-up action
+      // card losing its ticks that way is req 19's regression.
+      splitChunk();
       // The pending one is pushed at the end of the flow, below the status card.
-      if (index !== pendingAnswerIndex) {
-        splitChunk();
-        flow.push(answerCardNode(index));
-      }
+      if (index !== pendingAnswerIndex) flow.push(answerCardNode(index));
       return;
     }
-    if (!row.movable && anchorsSeen > 0 && anchorsSeen % ROWS_PER_GROUP === 0) {
+    const groupKey = () =>
+      `${Math.floor(anchorsSeen / ROWS_PER_GROUP)}${chunkSplits > 0 ? `b${chunkSplits}` : ""}`;
+    // Compared with the open group's key rather than tested on `anchorsSeen`
+    // alone: a split that lands exactly on a chunk boundary already opened the
+    // next chunk's group, and flushing it again here would emit a second group
+    // under the same key. A movable row is what can sit in that gap.
+    if (!row.movable && current !== null && current.key !== groupKey()) {
       flushGroup();
       chunkSplits = 0;
     }
-    const group = (current ??= {
-      key: `${Math.floor(anchorsSeen / ROWS_PER_GROUP)}${chunkSplits > 0 ? `b${chunkSplits}` : ""}`,
-      visible: 0,
-      children: [],
-    });
+    const group = (current ??= { key: groupKey(), visible: 0, children: [] });
     if (row.visible) group.visible++;
     if (!row.movable) anchorsSeen++;
     group.children.push(row.node);

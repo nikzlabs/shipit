@@ -21,9 +21,10 @@ export const MAX_NEEDS_YOU_ITEMS = 10;
 /**
  * One accepted `session_status` call, as a delta on the stored card.
  *
- * Every field is optional: an omitted one leaves the stored value alone, so a
- * call with nothing in it is the agent confirming the card still holds
- * (docs/303 req 14). `needsYou: []` is the one field that clears.
+ * Every field is optional, and every one but `lastTurn` is a delta: an omitted
+ * one leaves the stored value alone, so a call with nothing in it is the agent
+ * confirming the card still holds (docs/303 req 14). `needsYou: []` is how that
+ * field clears; `lastTurn` clears by being omitted, for the reason req 31 gives.
  */
 export interface ValidatedSessionStatus {
   /**

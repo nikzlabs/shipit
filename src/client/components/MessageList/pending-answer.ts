@@ -22,7 +22,11 @@ function answerToolId(el: VisualElement, messages: ChatMessage[]): string | unde
   }
   if (el.kind !== "message") return undefined;
   // A message that carries the agent's closing prose renders the card inline
-  // rather than as an element of its own.
+  // rather than as an element of its own — but only when it renders its tools
+  // at all. A message with a groupable tool beside the question is split into a
+  // prose row with `hideTools` and a standalone element for the question, and
+  // claiming the prose row too would give two siblings the same key.
+  if (el.hideTools) return undefined;
   return messages[el.index]?.toolUse?.find((t) => isAnswerTool(t.name, t.input))?.id;
 }
 
@@ -81,6 +85,11 @@ export function pendingAnswerElementIndex(
     const el = elements[i];
     const toolId = answerToolId(el, messages);
     if (toolId !== undefined) return isAnswered(el, messages, toolId) ? null : i;
+    // A to-do panel is emitted after the message it was folded from, so the
+    // agent updating its task list in the same message as the question puts one
+    // below it. It moves down the transcript by design, so it is no more the
+    // end of the conversation than a card row is.
+    if (el.kind === "task-panel") continue;
     if (el.kind !== "message") return null;
     const msg = messages[el.index];
     if (!msg || !isCardRow(msg)) return null;
