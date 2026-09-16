@@ -53,7 +53,8 @@ need their own messages and the significant events.
 12. A card that still needs the user stays visible when its turn collapses, and
     keeps its state. Examples: an action checklist that is not ticked, a bug
     report that is not submitted. A card the user has already acted on is
-    hidden with the rest of the turn.
+    hidden with the rest of the turn — except an **action card**, which stays
+    visible whether or not it was sent.
 13. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 1.
 
 14. The expand control belongs to the agent's reply, not to the user's message.
@@ -64,6 +65,14 @@ need their own messages and the significant events.
 None.
 
 ## Resolved questions
+
+2026-09-16 — Requirement 12 carved out action cards, from *"action cards
+shouldn't be hidden in the compact mode"*, said while looking at the seeded
+dogfood transcript, where a submitted checklist had disappeared. It narrows the
+2026-09-13 answer below: the submitted flag stays — it is still recorded and
+persisted — but it no longer decides whether the card is on screen. A sent card
+is the record of what the user took, and the offer is one they can still take
+again.
 
 2026-09-16 — Requirement 14 added from *"the 'rewind options' anchor should be
 below the 'show full turn' section. I.e. that section should be a part of the

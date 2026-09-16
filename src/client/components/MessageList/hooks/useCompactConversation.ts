@@ -17,7 +17,9 @@ type CompactRowView =
 
 /**
  * docs/299 req 12 — a card is kept while the product is waiting on a person,
- * and hides once they have acted. The three stores outrank the persisted row:
+ * and hides once they have acted. An action card is NOT decided here: it is
+ * kept unconditionally in `isCompactDetail`. The three stores outrank the
+ * persisted row:
  * they are re-seeded from history on every load (`session-data.ts`), and a live
  * update lands there rather than on the message.
  */
@@ -40,7 +42,6 @@ function useNeedsUser(): NeedsUser {
     }
     if (m.settingsProposal) return m.settingsProposal.phase === "pending";
     if (m.releaseCard) return m.releaseCard.phase === "proposed";
-    if (m.actionChecklist) return !m.actionChecklist.submittedAt;
     return false;
   }, [bugReports, permissions, egress]);
 }

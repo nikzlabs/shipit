@@ -451,17 +451,21 @@ describe("collapsed turns", () => {
     expect(window.getSelection()?.toString()).toBe("Selected outside the conversation");
   });
 
-  it("hides an action checklist once the server has recorded a submission", () => {
+  it("keeps an action checklist in a collapsed turn, submitted or not (req 12)", () => {
     compactOn();
     const base = { cardId: "a1", actions: [{ id: "1", label: "Open a PR", payload: "Open a PR" }], createdAt: "2026-09-13T00:00:00.000Z" };
     const withCard = (card: typeof base & { submittedAt?: string }): ChatMessage[] =>
-      [user("Task"), { ...bot(""), actionChecklist: card }, user("Next"), bot("Working now")];
+      [user("Task"), bot("Working on it"), { ...bot(""), actionChecklist: card }, bot("Done"),
+        user("Next"), bot("Working now")];
 
     const { rerender } = render(<MessageList messages={withCard(base)} isLoading={false} />);
     expect(screen.getByTestId("action-checklist-card")).toBeVisible();
 
     rerender(<MessageList messages={withCard({ ...base, submittedAt: "2026-09-13T01:00:00.000Z" })} isLoading={false} />);
-    expect(screen.getByTestId("action-checklist-card")).not.toBeVisible();
+    expect(screen.getByTestId("action-checklist-card")).toBeVisible();
+    // The turn is genuinely collapsed around it: the reply stays, the rest goes.
+    expect(screen.getByText("Done")).toBeVisible();
+    expect(screen.getByText("Working on it")).not.toBeVisible();
   });
 
   it("reads each pending card's own source of truth (req 12)", () => {

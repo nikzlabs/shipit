@@ -148,7 +148,7 @@ person.
 | An egress prompt is pending | `phase === "pending"` (`EgressPromptCard.tsx:21`) |
 | A release is proposed but not confirmed | `phase === "proposed"` (`ReleaseLifecycleCard.tsx:173`) |
 | A bug report is not filed | the card store, seeded on every load (`session-data.ts:331`) |
-| An action checklist was never submitted | a new `submittedAt`, below |
+| An action card, always | the card's presence — `isCompactDetail` keeps it whether or not `submittedAt` is set (req 12) |
 
 **No tool is ever kept, and requirement 2 has no exception.** An earlier draft
 carved one out for an unanswered question, reading "the tool has no result" as
@@ -215,12 +215,16 @@ database-only write loses, at the next persistence boundary or snapshot.
 nothing, so the documented contract at `chat.ts:71` still holds. Expanding the
 turn brings the card back in full working order.
 
-**The accepted cost.** A user who ticks one action now and means to tick another
-later finds the card collapsed after the first submission. Any finer rule —
-recording which action ids were submitted, and keeping the card visible while
-one is unclaimed — keeps a partly-used checklist on screen for the life of the
-session, which is the retain-forever failure that removed the issue-write
-exception above. One submission means acted upon.
+**The flag no longer hides the card (req 12, 2026-09-16).** It was written to
+decide that, and the cost it carried — a user who ticks one action now and means
+to tick another later finding the card gone — is what the user rejected on
+seeing it. An action card is now kept unconditionally, which removes the cost
+without the finer rule that was rejected with it (recording which action ids
+were claimed keeps a partly-used checklist on screen for the life of the
+session, the retain-forever failure that removed the issue-write exception
+above). `submittedAt` stays: it is still set at acceptance, persisted and
+broadcast, as the record that the user acted — nothing reads it to decide
+visibility any more.
 
 ## Client
 

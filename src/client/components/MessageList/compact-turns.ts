@@ -73,8 +73,9 @@ export type NeedsUser = (m: ChatMessage) => boolean;
 
 /**
  * Whether this element is hidden when its turn is collapsed. Kept: the user's
- * row, an error or notice, a card still needing the user, and the turn's last
- * reply. Everything else, including every tool, hidden. docs/299.
+ * row, an error or notice, an action card, a card still needing the user, and
+ * the turn's last reply. Everything else, including every tool, hidden.
+ * docs/299.
  *
  * **No tool is kept, not even one with no result.** Reading an absent result as
  * "unanswered" does not work on Codex, whose adapter drops the result for a
@@ -92,6 +93,10 @@ export function isCompactDetail(
   const m = messages[el.index];
   if (m.role === "user") return false;
   if (m.isError || m.notice) return false;
+  // req 12 — an action card is kept whether or not it was sent. The offer is a
+  // standing one the user can still take, and a sent one is the record of what
+  // they took; neither reads as finished work the collapsed turn can drop.
+  if (m.actionChecklist) return false;
   if (needsUser(m)) return false;
   return el.index !== run.lastReply;
 }

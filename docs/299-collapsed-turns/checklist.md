@@ -56,6 +56,8 @@
 
 - [x] Hoist the run's rewind anchor above the control, and suppress the row's
       own copy in the collapsed and the expanded path (req 14).
+- [x] Keep an action card in a collapsed turn whether or not it was sent, and
+      take the checklist's submitted flag out of the visibility rule (req 12).
 
 ## Tests
 
