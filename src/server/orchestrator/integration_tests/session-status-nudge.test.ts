@@ -295,6 +295,14 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     client.close();
   });
 
+  /**
+   * These two tests stand behind two complete turn set-ups before the step they are
+   * really about, and the default 5s proved too tight for that on a loaded CI run
+   * (one flake per full suite). The waits are on conditions, not on the clock, so a
+   * longer deadline costs nothing when the box is quick.
+   */
+  const SLOW_CI_MS = 20_000;
+
   describe("on the streaming path", () => {
     beforeEach(() => {
       credentialStore.setLiveSteering(true);
@@ -384,7 +392,7 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
         : "when nothing in the turn follows the steer";
       it(`does not nudge a turn the user steered into, ${label} (req 34)`, async () => {
         const client = await TestClient.connect(port);
-        const { stop } = pump(client);
+        const { seen, stop } = pump(client);
 
         client.send({ type: "send_message", text: "Do the billing routes" });
         const resident = await waitForClaude(() => lastClaude);
@@ -403,14 +411,25 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
           () => resident.stdinData.length > beforeSecond
             && runnerFor(client.sessionId)?.running === true,
           "the resident took the second turn",
+          SLOW_CI_MS,
         );
         runnerFor(client.sessionId)?.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
 
         // Nik steers it. The CLI replays the message, which is how ShipIt learns it was taken.
+        // Only what the session says from here on: an earlier message may legitimately
+        // have been queued, and that is not this assertion's business.
+        const beforeSteer = seen.length;
+        const answeredSteer = () =>
+          seen.slice(beforeSteer).filter((m) => m.type === "message_steered" || m.type === "message_queued");
         client.send({ type: "send_message", text: "Actually, also check the linter" });
+        // The server says which path it took, so a message that was queued instead of
+        // steered fails as that fact rather than as a bare timeout on the state below.
+        await waitFor(() => answeredSteer().length > 0, "the session answered the steer", SLOW_CI_MS);
+        expect(answeredSteer()[0]?.type).toBe("message_steered");
         await waitFor(
           () => (runnerFor(client.sessionId)?.steeredMessages.length ?? 0) > 0,
           "the steer was recorded",
+          SLOW_CI_MS,
         );
         if (closingText) {
           resident.emit("event", {
