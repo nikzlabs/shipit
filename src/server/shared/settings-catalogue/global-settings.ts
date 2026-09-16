@@ -20,6 +20,33 @@ import type {
  * `registry.ts`.
  */
 export const GLOBAL_SETTINGS = {
+  /*
+    First on the Advanced tab because its section is: the update panel's own
+    chrome — the running version, Check for Updates, the changelog — belongs
+    beside the channel it acts on, and a group's place is where its first
+    declaration is (docs/308-data-driven-settings req 11).
+  */
+  "advanced.releaseChannel": defineSetting({
+    key: "advanced.releaseChannel",
+    tab: "advanced",
+    section: "Software Updates",
+    scope: "global",
+    label: "Release channel",
+    description: "Which ShipIt releases this install follows.",
+    type: enumOf({
+      default: "stable",
+      options: [
+        // "Recommended" rides in the option's own words: the dialog renders
+        // these, so a badge beside them would be copy with no declaration.
+        { value: "stable", label: "Stable", description: "Vetted releases, fewer updates. Recommended." },
+        { value: "edge", label: "Edge", description: "Latest changes from main, updated continuously." },
+      ],
+    }),
+    store: { kind: "own-route", method: "POST", path: "/api/updates/channel", bodyField: "channel" },
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "advanced.enableSubAgents": defineSetting({
     key: "advanced.enableSubAgents",
     tab: "advanced",
@@ -126,6 +153,8 @@ export const GLOBAL_SETTINGS = {
   "advanced.memoryBudgetMb": defineSetting({
     key: "advanced.memoryBudgetMb",
     tab: "advanced",
+    // Stored in MB and shown in GB, with an explicit Save (inventory.md P4).
+    component: "memory-budget",
     scope: "global",
     label: "Memory budget",
     description:
@@ -138,26 +167,6 @@ export const GLOBAL_SETTINGS = {
     type: numeric({ default: null, nullable: true, unsetBelow: 1, integer: true, unit: "MB" }),
     store: { kind: "credential-store", field: "memoryBudgetMb" },
     wire: "memoryBudgetMb",
-    emits: plain(),
-    propose: { kind: "yes" },
-  }),
-
-  "advanced.releaseChannel": defineSetting({
-    key: "advanced.releaseChannel",
-    tab: "advanced",
-    scope: "global",
-    label: "Release channel",
-    description: "Which ShipIt releases this install follows.",
-    type: enumOf({
-      default: "stable",
-      options: [
-        // "Recommended" rides in the option's own words: the dialog renders
-        // these, so a badge beside them would be copy with no declaration.
-        { value: "stable", label: "Stable", description: "Vetted releases, fewer updates. Recommended." },
-        { value: "edge", label: "Edge", description: "Latest changes from main, updated continuously." },
-      ],
-    }),
-    store: { kind: "own-route", route: "POST /api/updates/channel" },
     emits: plain(),
     propose: { kind: "yes" },
   }),
@@ -282,7 +291,7 @@ export const GLOBAL_SETTINGS = {
       "On (recommended): default-deny egress with an allowlist and inline prompts. Off: "
       + "unrestricted egress, no prompts. Applies the next time each session's container starts.",
     type: bool({ default: true }),
-    store: { kind: "own-route", route: "PUT /api/egress/settings" },
+    store: { kind: "own-route", method: "PUT", path: "/api/egress/settings", bodyField: "globalEnabled" },
     emits: plain(),
     propose: { kind: "yes" },
   }),

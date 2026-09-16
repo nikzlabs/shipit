@@ -5,6 +5,7 @@ import { Settings, type SettingsProps } from "./Settings.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { initialSettingValues } from "../stores/setting-values.js";
 
 afterEach(() => {
   cleanup();
@@ -23,6 +24,9 @@ afterEach(() => {
     providerAccountAuthErrors: {},
     authDiagnostics: {},
     providerAccountNotices: {},
+    // The generated rows' values outlive a render, so a test that changes one
+    // would otherwise seed the next.
+    settingValues: initialSettingValues(),
   });
 });
 
@@ -58,8 +62,6 @@ const defaultProps: SettingsProps = {
   agentList: [claudeAuthed],
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
-  memoryBudgetMb: null,
-  onMemoryBudgetSave: vi.fn(),
   agentSystemInstructions: "You are working inside ShipIt.",
   hasActiveSession: false,
   onClose: vi.fn(),
@@ -766,34 +768,27 @@ describe("Settings - Advanced tab", () => {
     expect(btn).toBeDisabled();
   });
 
-  it("renders the Memory Budget section, empty when no budget is set", async () => {
+  // The declaration names a component; the block renders it in the declaration's
+  // place, with no branch in the tab file naming this setting (docs/308 req 3).
+  it("renders the memory budget from its declared component", async () => {
     await renderOnAdvancedTab();
     expect(screen.getByText("Memory budget")).toBeInTheDocument();
     expect(screen.getByTestId("settings-memory-budget")).toHaveValue(null);
   });
 
-  it("shows the stored budget in GB and saves it back in MB", async () => {
-    const onMemoryBudgetSave = vi.fn();
-    await renderOnAdvancedTab({ memoryBudgetMb: 8192, onMemoryBudgetSave });
-    const input = screen.getByTestId("settings-memory-budget");
-    expect(input).toHaveValue(8);
-    fireEvent.change(input, { target: { value: "16" } });
-    await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
-    expect(onMemoryBudgetSave).toHaveBeenCalledWith(16 * 1024);
-  });
-
-  it("saves null when the budget field is cleared", async () => {
-    const onMemoryBudgetSave = vi.fn();
-    await renderOnAdvancedTab({ memoryBudgetMb: 8192, onMemoryBudgetSave });
-    fireEvent.change(screen.getByTestId("settings-memory-budget"), { target: { value: "" } });
-    await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
-    expect(onMemoryBudgetSave).toHaveBeenCalledWith(null);
-  });
-
-  it("renders the release-channel selector", async () => {
+  it("renders the release-channel selector, generated from its declaration", async () => {
     await renderOnAdvancedTab();
-    expect(screen.getByTestId("settings-channel-stable")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-channel-edge")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stable" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edge" })).toBeInTheDocument();
+  });
+
+  // The update panel is the Software Updates section's own chrome, so the
+  // channel it acts on renders beneath it rather than three sections away.
+  it("keeps the release channel inside the Software Updates section", async () => {
+    await renderOnAdvancedTab();
+    const section = screen.getByRole("region", { name: "Software Updates" });
+    expect(within(section).getByTestId("settings-check-updates")).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Stable" })).toBeInTheDocument();
   });
 
   it("shows the channel-aware version label from the store", async () => {
@@ -845,43 +840,122 @@ describe("Settings - Advanced tab", () => {
     }
   });
 
-  it("marks the active channel via aria-pressed", async () => {
-    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+  // The channel comes from the value record, which `refreshOwnRouteSettings`
+  // fills from the declaration's own route — not from the running build's
+  // version, which describes the image rather than the setting.
+  it("marks the stored channel via aria-pressed", async () => {
+    act(() => {
+      useSettingsStore.getState().setSettingValue("advanced.releaseChannel", "edge");
+    });
     await renderOnAdvancedTab();
-    expect(screen.getByTestId("settings-channel-edge")).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("settings-channel-stable")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Edge" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Stable" })).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("POSTs the chosen channel and reflects the response", async () => {
-    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+  // The declaration carries the method, the path and the body field, so the
+  // generated row posts the same request the hand-written one did (P2).
+  it("POSTs the chosen channel to the route its declaration names", async () => {
+    act(() => {
+      useSettingsStore.getState().setSettingValue("advanced.releaseChannel", "edge");
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByRole("button", { name: "Stable" }));
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledWith(
+          "/api/updates/channel",
+          expect.objectContaining({ method: "POST", body: JSON.stringify({ channel: "stable" }) }),
+        );
+      });
+      expect(screen.getByRole("button", { name: "Stable" })).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  // A check describes one channel. The route drops its own answer when the
+  // channel moves, and the panel has to do the same or it shows the other
+  // channel's update as this one's.
+  it("replaces a stale update status by checking the channel just chosen", async () => {
+    act(() => {
+      useSettingsStore.getState().setSettingValue("advanced.releaseChannel", "edge");
+    });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
           available: true,
-          behindBy: 0,
-          commitMessages: ["feat: something"],
+          behindBy: 2,
+          commitMessages: ["feat: a"],
           currentCommit: "abc1234",
-          channel: "stable",
+          channel: "edge",
           currentVersion: "main @ abc1234",
-          latestVersion: "v1.3.0",
-          isDowngrade: true,
+          latestVersion: "main @ def5678",
+          isDowngrade: false,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
     try {
       await renderOnAdvancedTab();
-      await userEvent.click(screen.getByTestId("settings-channel-stable"));
-      await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(
-          "/api/updates/channel",
-          expect.objectContaining({ method: "POST" }),
-        );
-      });
+      await userEvent.click(screen.getByTestId("settings-check-updates"));
+      await waitFor(() => expect(screen.getByText(/commits behind/)).toBeInTheDocument());
 
-      await waitFor(() => {
-        expect(screen.getByTestId("settings-downgrade-warning")).toBeInTheDocument();
+      // The switch stores the channel, and what was on screen described the one
+      // just left — so the panel asks again and shows the new channel's answer,
+      // which is what the write's own response used to carry.
+      fetchSpy.mockImplementation((url: unknown) => Promise.resolve(
+        String(url) === "/api/updates/check"
+          ? new Response(JSON.stringify({
+              available: true, behindBy: 0, commitMessages: [], currentCommit: "abc1234",
+              channel: "stable", currentVersion: "main @ abc1234", latestVersion: "v1.3.0",
+              isDowngrade: true,
+            }), { status: 200, headers: { "Content-Type": "application/json" } })
+          : new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+      ));
+
+      await userEvent.click(screen.getByRole("button", { name: "Stable" }));
+      await waitFor(() => expect(screen.queryByText(/commits behind/)).not.toBeInTheDocument());
+      await waitFor(() =>
+        expect(screen.getByTestId("settings-downgrade-warning")).toBeInTheDocument());
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  /*
+    The other ordering: a check that was already running when the channel moved.
+    Its answer names the channel it describes, and that is no longer the one on
+    screen — showing it would put Edge's changelog and an enabled "Update Now"
+    under a Stable selection.
+  */
+  it("drops a check that finishes after the channel it describes was left", async () => {
+    act(() => {
+      useSettingsStore.getState().setSettingValue("advanced.releaseChannel", "edge");
+    });
+    let finishCheck!: () => void;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url: unknown) => {
+      if (String(url) !== "/api/updates/check") {
+        return Promise.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return new Promise((resolve) => {
+        finishCheck = () => { resolve(new Response(JSON.stringify({
+          available: true, behindBy: 4, commitMessages: ["feat: a"], currentCommit: "abc1234",
+          channel: "edge", currentVersion: "main @ abc1234", latestVersion: "main @ def5678",
+          isDowngrade: false,
+        }), { status: 200, headers: { "Content-Type": "application/json" } })); };
       });
+    });
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByTestId("settings-check-updates"));
+      await userEvent.click(screen.getByRole("button", { name: "Stable" }));
+      await act(async () => { finishCheck(); await Promise.resolve(); });
+
+      expect(screen.queryByText(/commits behind/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Stable" })).toHaveAttribute("aria-pressed", "true");
     } finally {
       fetchSpy.mockRestore();
     }

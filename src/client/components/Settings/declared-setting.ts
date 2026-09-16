@@ -33,18 +33,20 @@ type WireOf<K extends GlobalSettingKey> =
   GlobalSettingsCatalogue[K] extends { readonly wire: infer W extends string } ? W : never;
 
 /**
- * A declared boolean the browser store already holds under its wire name, with
- * the setter beside it. Every clause has to hold, because the value is read back
- * through that field wherever the record does not yet carry the setting.
+ * A declared boolean the browser store already holds under its wire name.
+ *
+ * Both clauses have to hold, because the value is read back through that field
+ * wherever the record does not yet carry the setting. It used to demand a
+ * `set<Wire>` setter beside it as well; that was a proxy for "something hydrates
+ * this field", and hydration now walks the declarations
+ * (`stores/setting-hydration.ts`) rather than calling a setter per setting.
  */
 type DerivableBoolean<K extends GlobalSettingKey> =
   GlobalSettingsCatalogue[K]["store"] extends { readonly kind: "credential-store" }
     ? SettingValue<GlobalSettingsCatalogue[K]> extends boolean
       ? WireOf<K> extends keyof Settings
         ? Settings[WireOf<K>] extends boolean
-          ? `set${Capitalize<WireOf<K>>}` extends keyof Settings
-            ? K
-            : never
+          ? K
           : never
         : never
       : never
@@ -99,10 +101,33 @@ interface SaveState {
 const SAVES = new Map<string, SaveState>();
 
 /**
+ * The request that stores one setting's value.
+ *
+ * The settings payload takes every value it carries under the declaration's
+ * `wire`; a setting the payload does not carry takes the method, the path and
+ * the body field its own store names (inventory.md P2) — the two that use it
+ * post different body shapes, so a route string could not have produced either
+ * payload.
+ */
+function requestFor(
+  declaration: ReturnType<typeof settingOf>,
+  value: unknown,
+): { path: string; method: string; body: Record<string, unknown> } | null {
+  const { store } = declaration;
+  if (store.kind === "credential-store" && declaration.wire) {
+    return { path: "/api/settings", method: "PUT", body: { [declaration.wire]: value } };
+  }
+  if (store.kind === "own-route") {
+    return { path: store.path, method: store.method, body: { [store.bodyField]: value } };
+  }
+  return null;
+}
+
+/**
  * Put a value where its declaration says it lives.
  *
  * A browser value is already there once the record has it, so there is nothing
- * to await and no refusal to roll back from. A payload value is written
+ * to await and no refusal to roll back from. A stored value is written
  * optimistically and then durably, and the server's own value goes back when the
  * save does not land, so a control never shows a state the server refused.
  */
@@ -114,10 +139,10 @@ export async function saveSetting(key: SettingKey, value: unknown): Promise<void
     apply(value);
     return;
   }
-  if (declaration.store.kind !== "credential-store" || !declaration.wire) {
+  const request = requestFor(declaration, value);
+  if (!request) {
     throw new Error(`Cannot save "${key}": nothing writes a ${declaration.store.kind} store yet`);
   }
-  const wire = declaration.wire;
 
   const existing = SAVES.get(key);
   // With nothing in flight the displayed value IS the server's, so re-seed from
@@ -136,10 +161,10 @@ export async function saveSetting(key: SettingKey, value: unknown): Promise<void
   state.pending += 1;
   apply(value);
   try {
-    const res = await fetch("/api/settings", {
-      method: "PUT",
+    const res = await fetch(request.path, {
+      method: request.method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [wire]: value }),
+      body: JSON.stringify(request.body),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.confirmed = value;

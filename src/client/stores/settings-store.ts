@@ -316,7 +316,6 @@ interface SettingsState {
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
   setSystemPromptOpsContent: (content: string) => void;
-  setMemoryBudgetMb: (mb: number | null) => void;
   setAgentSystemInstructionsEnabled: (enabled: boolean) => void;
   setAgentSystemInstructions: (text: string) => void;
   /** Update one generated setting's value in the browser, record and mirror alike. */
@@ -339,15 +338,9 @@ interface SettingsState {
   setVoiceWebhookConfigured: (configured: boolean) => void;
   setVoiceHandsFree: (enabled: boolean) => void;
   setAutoCreatePr: (enabled: boolean) => void;
-  setLiveSteering: (enabled: boolean) => void;
-  setAutoResolveConflicts: (enabled: boolean) => void;
-  setAutoFixCi: (enabled: boolean) => void;
-  setSessionStatusCard: (enabled: boolean) => void;
 
   setFailoverCutoffs: (modeKey: string, cutoffs: { session: number; weekly: number }) => void;
   setAccountSelectionMode: (modeKey: string, mode: "strict" | "balanced") => void;
-  setAutoResetMergedBranch: (enabled: boolean) => void;
-  setEnableSubAgents: (enabled: boolean) => void;
   setAuthProgress: (accountId: string, progress: {
     attemptId: string;
     phase: AgentAuthPhase;
@@ -493,8 +486,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setSystemPromptOpsContent: (content) => set({ systemPromptOpsContent: content }),
 
-  setMemoryBudgetMb: (mb) => set({ memoryBudgetMb: mb }),
-
   setAgentSystemInstructionsEnabled: (enabled) => set({ agentSystemInstructionsEnabled: enabled }),
 
   setAgentSystemInstructions: (text) => set({ agentSystemInstructions: text }),
@@ -595,23 +586,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
 
-  // Hydration from the settings payload still arrives through these six, so
-  // each one writes the record as well as the field it is named for (P18).
-  setLiveSteering: (enabled) => get().setSettingValue("advanced.liveSteering", enabled),
-
-  setAutoResolveConflicts: (enabled) =>
-    get().setSettingValue("advanced.autoResolveConflicts", enabled),
-
-  setAutoFixCi: (enabled) => get().setSettingValue("advanced.autoFixCi", enabled),
-  setSessionStatusCard: (enabled) => get().setSettingValue("advanced.sessionStatusCard", enabled),
   setFailoverCutoffs: (modeKey, cutoffs) =>
     set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [modeKey]: cutoffs } })),
   setAccountSelectionMode: (modeKey, mode) =>
     set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [modeKey]: mode } })),
-  setAutoResetMergedBranch: (enabled) =>
-    get().setSettingValue("advanced.autoResetMergedBranch", enabled),
-  setEnableSubAgents: (enabled) => get().setSettingValue("advanced.enableSubAgents", enabled),
-
   setAuthProgress: (accountId, progress) =>
     set((state) => {
       const current = state.authDiagnostics[accountId] ?? EMPTY_AUTH_DIAGNOSTICS;

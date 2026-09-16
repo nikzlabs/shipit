@@ -140,6 +140,7 @@ import { useTerminalStore } from "./stores/terminal-store.js";
 import { useLogStore } from "./stores/log-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
+import { hydrateSettingValues, refreshOwnRouteSettings } from "./stores/setting-hydration.js";
 import { useUiStore, type RightTab } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { composeReviewMessage } from "./utils/compose-review-body.js";
@@ -276,7 +277,6 @@ export default function App() {
   const agentSystemInstructions = useSettingsStore(
     (s) => s.agentSystemInstructions,
   );
-  const memoryBudgetMb = useSettingsStore((s) => s.memoryBudgetMb);
 
   const rightTabRaw = useUiStore((s) => s.rightTab);
   const runtimeMode = useUiStore((s) => s.runtimeMode);
@@ -896,10 +896,12 @@ export default function App() {
         useSettingsStore
           .getState()
           .setHasSystemPrompt(data.settings.systemPrompt.length > 0);
-        if (data.settings.memoryBudgetMb !== undefined)
-          {useSettingsStore
-            .getState()
-            .setMemoryBudgetMb(data.settings.memoryBudgetMb);}
+        // Every generated row, from its declaration's `wire`, and the ones the
+        // payload does not carry from their own routes
+        // (docs/308-data-driven-settings req 1). Opening the dialog is also
+        // where a read that failed at boot gets another go.
+        hydrateSettingValues(data.settings);
+        void refreshOwnRouteSettings();
         if (data.settings.agentSystemInstructionsEnabled !== undefined)
           {useSettingsStore
             .getState()
@@ -914,16 +916,6 @@ export default function App() {
           {useSettingsStore
             .getState()
             .setAutoCreatePr(data.settings.autoCreatePr);}
-        if (data.settings.liveSteering !== undefined)
-          {useSettingsStore
-            .getState()
-            .setLiveSteering(data.settings.liveSteering);}
-        if (data.settings.autoResolveConflicts !== undefined)
-          {useSettingsStore
-            .getState()
-            .setAutoResolveConflicts(data.settings.autoResolveConflicts);}
-        if (data.settings.autoFixCi !== undefined)
-          {useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);}
         if (data.settings.failoverCutoffs !== undefined) {
           for (const [agentId, cutoffs] of Object.entries(data.settings.failoverCutoffs)) {
             useSettingsStore.getState().setFailoverCutoffs(agentId, cutoffs);
@@ -934,18 +926,6 @@ export default function App() {
             useSettingsStore.getState().setAccountSelectionMode(agentId, mode);
           }
         }
-        if (data.settings.autoResetMergedBranch !== undefined)
-          {useSettingsStore
-            .getState()
-            .setAutoResetMergedBranch(data.settings.autoResetMergedBranch);}
-        if (data.settings.enableSubAgents !== undefined)
-          {useSettingsStore
-            .getState()
-            .setEnableSubAgents(data.settings.enableSubAgents);}
-        if (data.settings.sessionStatusCard !== undefined)
-          {useSettingsStore
-            .getState()
-            .setSessionStatusCard(data.settings.sessionStatusCard);}
         if (data.settings.voiceDeliveryMode !== undefined)
           {useSettingsStore
             .getState()
@@ -1837,24 +1817,6 @@ export default function App() {
                 .submitGitIdentity(name, email)
                 .catch(() => {})
             }
-            memoryBudgetMb={memoryBudgetMb}
-            onMemoryBudgetSave={async (mb) => {
-              try {
-                const raw = await apiPut("/api/settings", {
-                  memoryBudgetMb: mb,
-                });
-                const res = raw as Record<string, unknown>;
-                if (res.memoryBudgetMb !== undefined)
-                  {useSettingsStore
-                    .getState()
-                    .setMemoryBudgetMb(res.memoryBudgetMb as number | null);}
-              } catch (err) {
-                console.error(
-                  "[settings] Failed to save the memory budget:",
-                  err,
-                );
-              }
-            }}
             agentSystemInstructions={agentSystemInstructions}
             hasActiveSession={!!sessionId}
             onClose={() => {

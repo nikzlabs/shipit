@@ -23,8 +23,6 @@ const props: SettingsProps = {
   agentList: [],
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
-  memoryBudgetMb: null,
-  onMemoryBudgetSave: vi.fn(),
   agentSystemInstructions: "",
   hasActiveSession: false,
   onClose: vi.fn(),

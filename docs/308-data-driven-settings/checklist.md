@@ -15,7 +15,7 @@ each, and the work is tracked on planning#580.
 ## Slices
 
 - [x] 1 — The spine, on Advanced's nine toggles
-- [ ] 2 — Routes and the rest of Advanced
+- [x] 2 — Routes and the rest of Advanced
 - [ ] 3 — Instructions and Git
 - [ ] 4 — Voice
 - [ ] 5 — Integrations

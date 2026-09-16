@@ -11,7 +11,15 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GENERATED_SETTINGS, initialSettingValues, readBrowserValue, writeBrowserValue } from "./setting-values.js";
+import {
+  GENERATED_SETTINGS,
+  isGeneratedRow,
+  OWN_ROUTE_SETTINGS,
+  initialSettingValues,
+  ownRouteOf,
+  readBrowserValue,
+  writeBrowserValue,
+} from "./setting-values.js";
 import { findSetting, type AnySettingDeclaration } from "../../server/shared/settings-catalogue/index.js";
 
 afterEach(() => {
@@ -77,22 +85,93 @@ describe("a browser value that was never saved", () => {
 });
 
 describe("the record covers the settings this slice generates", () => {
-  it("holds the Advanced tab's nine toggles and nothing else", () => {
+  it("holds every row on the two converted tabs and nothing else", () => {
     expect(GENERATED_SETTINGS.map((d) => d.key)).toEqual([
+      "advanced.releaseChannel",
       "advanced.enableSubAgents",
       "advanced.liveSteering",
       "advanced.autoFixCi",
       "advanced.sessionStatusCard",
       "advanced.autoResolveConflicts",
       "advanced.autoResetMergedBranch",
+      "advanced.memoryBudgetMb",
+      "network.egressContained",
       "advanced.compactConversation",
       "advanced.notifyOnFinish",
       "advanced.soundOnFinish",
     ]);
   });
 
+  // A component is why the memory budget is a row: its value kind has no
+  // control, and the block renders it because the declaration names one (req 3).
+  it("takes in a declaration whose value kind has no control, when it names a component", () => {
+    const declaration = findSetting("advanced.memoryBudgetMb")!;
+    expect(declaration.type.kind).toBe("number");
+    expect(declaration.component).toBe("memory-budget");
+    expect(GENERATED_SETTINGS).toContain(declaration);
+  });
+
+  // The Network tab's panels are slice 6, so its collection and its per-item
+  // field stay hand-written while the one value on it is generated (P18).
+  it("leaves the Network tab's panel declarations out", () => {
+    const keys = GENERATED_SETTINGS.map((d) => d.key);
+    expect(keys).not.toContain("network.egress.hosts");
+    expect(keys).not.toContain("network.egress.hosts[].host");
+  });
+
   it("seeds a payload setting from its declared default", () => {
     expect(initialSettingValues()["advanced.liveSteering"]).toBe(true);
     expect(initialSettingValues()["advanced.autoFixCi"]).toBe(false);
+  });
+});
+
+/*
+  Written against the rule rather than against today's catalogue: no browser enum
+  is declared yet, and the first one arrives with the voice settings in slice 4 —
+  by which time a row that renders, changes on screen and writes nothing would
+  already have shipped.
+*/
+describe("a browser value the store cannot spell", () => {
+  const browserEnum = {
+    ...declarationOf("advanced.compactConversation"),
+    key: "advanced.somethingChosen",
+    type: { ...declarationOf("voice.sttProvider").type },
+  } as AnySettingDeclaration;
+
+  it("is not a generated row, because nothing could encode it", () => {
+    expect(browserEnum.store.kind).toBe("browser");
+    expect(browserEnum.type.kind).toBe("enum");
+    expect(isGeneratedRow(browserEnum)).toBe(false);
+  });
+
+  it("is a generated row for a kind the codec does spell", () => {
+    expect(isGeneratedRow(declarationOf("advanced.compactConversation"))).toBe(true);
+  });
+});
+
+describe("the rows the settings payload does not carry", () => {
+  it("names the two settings written through a route of their own", () => {
+    expect(OWN_ROUTE_SETTINGS.map((d) => d.key)).toEqual([
+      "advanced.releaseChannel",
+      "network.egressContained",
+    ]);
+  });
+
+  /*
+    P2 — the write address and the read address are the same two facts. A route
+    string could not have produced either payload below: the bodies differ, and
+    neither declaration carries a `wire` to fall back on.
+  */
+  it("carries a method, a path and a body field for each", () => {
+    expect(ownRouteOf(declarationOf("advanced.releaseChannel"))).toEqual({
+      kind: "own-route", method: "POST", path: "/api/updates/channel", bodyField: "channel",
+    });
+    expect(ownRouteOf(declarationOf("network.egressContained"))).toEqual({
+      kind: "own-route", method: "PUT", path: "/api/egress/settings", bodyField: "globalEnabled",
+    });
+  });
+
+  it("is nothing at all for a setting stored in the payload", () => {
+    expect(ownRouteOf(declarationOf("advanced.autoFixCi"))).toBeUndefined();
   });
 });

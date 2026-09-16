@@ -664,8 +664,6 @@ const settingsProps: SettingsProps = {
   agentList: agents,
   gitIdentity: { name: "Nik", email: "nik@example.com" },
   onGitIdentitySave: vi.fn(),
-  memoryBudgetMb: null,
-  onMemoryBudgetSave: vi.fn(),
   agentSystemInstructions: "You are working inside ShipIt.",
   hasActiveSession: true,
   onClose: vi.fn(),
