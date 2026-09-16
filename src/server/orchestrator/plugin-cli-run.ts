@@ -202,12 +202,17 @@ async function runHeldPluginCommand(
       mountErrors.push(message(err));
     }
   };
-  const workspaceTreeTargets: string[] = [];
+  // Every import mounts the project's tree; a self import mounts the same tree twice.
+  // Read-only under a tracked import, so a third-party plugin gets no writable handle on the
+  // tree the agent's own processes load code from (#2302 review); self IS the project.
+  const workspaceTreeTargets: { target: string; readOnly: boolean }[] = [
+    { target: CONTAINER_PROJECT_DIR, readOnly: pinned !== null },
+  ];
   let commit: string | null = null;
   let overlaySpec: PluginOverlaySpec | undefined;
   if (!pinned) {
     addSessionMount(deps.workspaceDir, CONTAINER_PLUGIN_DIR, false);
-    workspaceTreeTargets.push(CONTAINER_PLUGIN_DIR, CONTAINER_PROJECT_DIR);
+    workspaceTreeTargets.push({ target: CONTAINER_PLUGIN_DIR, readOnly: false });
   } else {
     commit = pinned.commit;
     try {
@@ -248,14 +253,18 @@ async function runHeldPluginCommand(
   if (hasSettings) {
     addSessionMount(hostSettings, CONTAINER_PLUGIN_SETTINGS_FILE, true);
   }
+  // `/project` shows what the agent's own shell sees, tracked import or not, so the overlay
+  // store stays a storage detail. Plugin *services* keep the self-only rule (compose-generator):
+  // they start without waiting for agent.install, and a command run has no such ordering.
   // Missing overlays may break dependent commands; keep dependency-free commands usable.
   try {
     for (const { depDir, volumeName } of (await deps.overlayDepDirs?.()) ?? []) {
-      for (const target of workspaceTreeTargets) {
+      for (const { target, readOnly } of workspaceTreeTargets) {
         mounts.push({
           Type: "volume",
           Source: volumeName,
           Target: path.posix.join(target, depDir),
+          ...(readOnly ? { ReadOnly: true } : {}),
         });
       }
     }

@@ -579,6 +579,8 @@ exports:
           Type: "volume",
           Source: "shipit-s1_overlay-aaaa",
         });
+        // The identical directory is already read-write at /project under `repo: self`.
+        expect(mountFor(host, target)?.ReadOnly).toBeFalsy();
       }
       expectBoundaryHolds(created, [
         "/plugin", "/plugin/node_modules", "/plugin-state", "/project", "/project/node_modules",
@@ -586,7 +588,23 @@ exports:
       expect(fake.connected).toEqual([]);
     });
 
-    it("adds nothing for a tracked generation — its dependencies are its own", async () => {
+    it("nests them under a TRACKED import's /project, so it sees what the agent sees", async () => {
+      declareConsumer();
+      publishGeneration();
+      const fake = fakeDocker();
+
+      await runPluginCommand(deps(fake.docker, { overlayDepDirs }), call);
+
+      const host = fake.containers[0].opts.HostConfig as { Mounts: Mount[] };
+      expect(mountFor(host, "/project/node_modules")).toMatchObject({
+        Type: "volume",
+        Source: "shipit-s1_overlay-aaaa",
+        // No writable handle on the tree the agent's own processes load code from.
+        ReadOnly: true,
+      });
+    });
+
+    it("leaves a TRACKED import's own /plugin tree alone — its dependencies are its own", async () => {
       declareConsumer();
       publishGeneration();
       const fake = fakeDocker();
@@ -595,7 +613,30 @@ exports:
 
       const host = fake.containers[0].opts.HostConfig as { Mounts: Mount[] };
       expect(mountFor(host, "/plugin/node_modules")).toBeUndefined();
-      expect(mountFor(host, "/project/node_modules")).toBeUndefined();
+    });
+
+    // Only the mount targets: whether the parent exists on the clone is decided upstream,
+    // by `ensureDepDirMountParents` when the agent's own container is built.
+    it("nests a multi-segment dep dir at its own path under /project (#2870)", async () => {
+      declareConsumer();
+      publishGeneration();
+      const fake = fakeDocker();
+
+      await runPluginCommand(
+        deps(fake.docker, {
+          overlayDepDirs: async () => [
+            { depDir: ".tools/blender", volumeName: "shipit-s1_overlay-bbbb" },
+            { depDir: "game/node_modules", volumeName: "shipit-s1_overlay-cccc" },
+          ],
+        }),
+        call,
+      );
+
+      const created = fake.containers[0].opts;
+      expectBoundaryHolds(created, [
+        "/plugin", "/plugin-state", "/project",
+        "/project/.tools/blender", "/project/game/node_modules",
+      ]);
     });
 
     it("degrades to the mounts it has always had when they cannot be resolved", async () => {
@@ -687,7 +728,9 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
       call,
     );
 
-    expectBoundaryHolds(fake.containers[0].opts, ["/plugin", "/plugin-state", "/project"]);
+    expectBoundaryHolds(fake.containers[0].opts, [
+      "/plugin", "/plugin-state", "/project", "/project/node_modules",
+    ]);
     expect(fake.connected).toEqual([]);
   });
 

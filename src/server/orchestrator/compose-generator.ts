@@ -931,7 +931,11 @@ function overlayMountsForService(
   return mounts;
 }
 
-/** Only self plugins share project dependencies; tracked plugins do not wait for agent.install. */
+/**
+ * Self only: a tracked plugin's service starts without waiting for agent.install (docs/137), so
+ * it must not read the project's dep dirs. A one-shot command run has no such ordering and does
+ * mount them — see `plugin-cli-run.ts`.
+ */
 function overlayMountsForPluginService(
   rawVolumes: unknown[],
   overlayDepDirs: OverlayDepDirVolume[],

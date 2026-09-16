@@ -229,13 +229,13 @@ Rules (review findings, both rounds):
   volumes that the agent container and the project's own compose services attach.
   A plugin's containers attached neither, so under `repo: self` both `/plugin`
   and `/project` held an empty directory exactly where the plugin's own
-  dependencies belong, and no entry point could start. One rule now covers both
-  surfaces: **a plugin sees the project's dependency directories precisely when
-  the project's tree is its own tree, and then it waits for the project's
-  install** — the nesting targets are empty for a tracked import, and
-  `dependsOnInstall` becomes `svc.self`.
+  dependencies belong, and no entry point could start. The first rule covering
+  both surfaces was **a plugin sees the project's dependency directories
+  precisely when the project's tree is its own tree, and then it waits for the
+  project's install** — the nesting targets empty for a tracked import, and
+  `dependsOnInstall` set to `svc.self`.
 
-  Two things about that rule are load-bearing rather than incidental. The
+  Two things about that rule were load-bearing rather than incidental. The
   **self-only narrowing came from review, not from design**: nesting uniformly
   would have given a *tracked* plugin's `/project` the project's real
   dependencies while it kept `dependsOnInstall: false`, so it would read
@@ -245,11 +245,51 @@ Rules (review findings, both rounds):
   writable handle on the tree the agent's own processes load code from. Under
   `repo: self` there is no such boundary to hold — the plugin IS the project.
 
+  **Amended 2026-09-16 (`nikzlabs/shipit#2870`) — the rule splits by surface,
+  and the command half becomes uniform.** A consuming project pinned a Blender
+  build into `.tools/blender` and a second `node_modules` into `game/`, declared
+  both in `agent.dep-dirs`, and every plugin command that read them found the
+  path present and empty. This is not a missing feature but the **storage
+  mechanism leaking into semantics**: with the overlay store off, a tracked
+  plugin's `/project/node_modules` is the real populated directory on the
+  workspace volume, so enabling docs/183 silently changed what a plugin command
+  could read. It is also the third path to show this defect, after the project's
+  own compose services (#2440) and the CLI's *choice of volume* (`ed6cf4bf`,
+  which made a self import read the agent's recorded mounts instead of
+  re-deriving them).
+
+  Neither original reason survives on the command path, and both still hold on
+  the service path, which is why the rule splits rather than reverses:
+
+  - **The install race is a property of services.** ShipIt *starts* a service,
+    without waiting for `agent.install`, so mounting the dep dirs would hand it
+    a tree mid-write — and ShipIt chose that moment. A command is *invoked*, by
+    the agent or the user, at a moment they chose. State that as the **ordering
+    assumption** it is rather than a guarantee: nothing stops a command run from
+    the terminal while `agent.install` is still writing, and it would then read
+    a half-written tree. What the mount does not do is introduce that race — the
+    same command reads the same half-written tree today on any session with the
+    store off. Services keep `dependsOnInstall: false` and keep the self-only
+    nesting, untouched.
+  - **The trust boundary is about the *writable* handle, and is kept by keeping
+    it.** A tracked import's dep-dir mounts are **read-only**; only `repo: self`
+    gets them read-write, and there the identical directory is already
+    read-write at `/project` anyway. A third-party plugin still gets no writable
+    handle on the tree the agent's own processes load code from, and gains
+    exactly the read the report asked for.
+
+  So the rule is now: **a plugin *command* sees the project's dependency
+  directories, read-only unless the project's tree is its own tree; a plugin
+  *service* sees them only when the project's tree is its own tree, and then it
+  waits for the project's install.**
+
   This is **not** a new requirement, and deliberately was not written as one. Req
   27 already says a plugin "works as a plugin inside its own repository", and a
   companion CLI that exits with `ERR_MODULE_NOT_FOUND` is not working; the
   outcome was always required. Which directories are mounted where is *how*, so
-  it belongs here rather than in `requirements.md`.
+  it belongs here rather than in `requirements.md`. The amendment is the same
+  shape: req 17 gives a consuming project a plugin's commands, and a command
+  that cannot read the project it was pointed at is not one.
 
 ### 1b. Plugin side — `exports.plugins:` (reqs 5, 17, 22, 23, 24, 26)
 
@@ -1210,7 +1250,9 @@ instead of a repeat.
   produced — under `repo: self` the session's own working tree instead, live and
   writable per req 27; the rule both surfaces follow is stated under "`/plugin`
   is writable exactly when it is the project" below), the project workspace at
-  `/project` and as the cwd, this
+  `/project` and as the cwd — **with each of the project's `agent.dep-dirs`
+  nested under it as its own overlay volume, read-only for a tracked import
+  (#2870)** — this
   import's state directory at `/plugin-state`, its validated settings file
   read-only at `/plugin-settings.json`, `SHIPIT_PROJECT_DIR` /
   `SHIPIT_PLUGIN_STATE` / `SHIPIT_SETTINGS` / `SHIPIT_PLUGIN_COMMIT` (the last
