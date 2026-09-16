@@ -53,9 +53,7 @@ const env = {
 
 const result = spawnSync(
   "npx",
-  // Same cache file as `npm run lint`, so the strategy must match or each run invalidates the
-  // other's entries.
-  ["eslint", "--cache", "--cache-strategy", "content", "--cache-location", "node_modules/.cache/eslint/", ...files],
+  ["eslint", "--cache", "--cache-location", "node_modules/.cache/eslint/", ...files],
   { cwd: ROOT, stdio: "inherit", env },
 );
 process.exit(result.status ?? 1);
