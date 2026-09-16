@@ -26,4 +26,4 @@ docs-only PR and their review history is on planning#550.
 - [x] Req 33: three capped, accent-tinted cards — Status, Next steps, Last turn — with the Stale mark in the status cap; the unticked checkbox given a surface of its own so it survives the tint; `mockup.html` redrawn as the shipped look, with every drawn round kept beside it; reqs 14, 28 and 31 amended.
 - [x] Verify req 33 by hand in the dogfood instance, wide and at 390x780, fresh and stale, in a light and a dark theme.
 - [x] Req 33, second pass: two tones — soft caps on Status and Last turn, the filled cap on Next steps, which moves last; the Stale mark redrawn in the accent for the now-soft status cap.
-- [ ] Verify the two tones by hand in the dogfood instance — blocked while the `dev` service cannot recreate the session network (it has this agent container as an active endpoint).
+- [x] Verify the two tones by hand in the dogfood instance, including the empty case: with no manual step and no offer the whole "Next steps" card is absent, leaving the two soft cards.
