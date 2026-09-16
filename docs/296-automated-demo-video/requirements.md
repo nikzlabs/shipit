@@ -37,7 +37,7 @@ Design: [`plan.md`](./plan.md). Build state: [`checklist.md`](./checklist.md).
 
 13. The pipeline is built in two phases. Phase 1 fleshes out the basics against the dogfood inner instance, which runs inside a ShipIt session with no preview. Phase 2, once everything works, sets up the dedicated demo service (req 4) for the real video.
 
-14. The dedicated demo instance (req 4) is a second ShipIt deployment on the "shipit stable" machine, next to the stable instance Nik uses to test stable releases, and it must not disturb that instance. The session reaches the machine over the tailnet through a ShipIt SSH destination grant, and controls the demo instance live from the session.
+14. The dedicated demo instance (req 4) is a ShipIt deployment on Nik's "Services" machine, reached over the tailnet through a ShipIt SSH destination grant, and controlled live from the session. (Nik first named the "shipit stable" machine; a second orchestrator next to the stable instance turned out to be unsafe on one Docker daemon, so he moved the demo to "Services" — see the resolved questions.)
 
 ## Open questions
 
@@ -55,3 +55,4 @@ Design: [`plan.md`](./plan.md). Build state: [`checklist.md`](./checklist.md).
 - 2026-09-08 — Nik added, unprompted: the final video may need cuts — boring loading, and anything that should look instant but is not (his example: opening a new session with its preview). Requirement 12.
 - 2026-09-08 — Where does the demo instance run? Nik: "Let's start with the dogfood version. So we flesh out the basics, and once everything works, we'll set up a demo service." Phase 1 is the dogfood inner instance; the host for phase 2 stays open. Requirement 13.
 - 2026-09-16 — Where is the demo instance hosted, and how does the session reach it? Nik asked why an SSH tunnel would be needed when the tailnet IP or MagicDNS could be used directly, and whether opening the session's network mode removes the resolver restriction (it does: an Open session installs no egress tier). He then granted this session the "shipit stable" machine as an SSH destination (tailnet IP 100.87.221.1) and asked for a second ShipIt instance to be deployed there for the demo. Requirement 14. The previous open question is closed.
+- 2026-09-16 — Which machine? After the agent reported that two ShipIt orchestrators on one Docker daemon reap each other's session resources (filed as planning#584), Nik chose to deploy the demo instance on a different machine, "Services", granted to this session as an SSH destination (tailnet IP 100.81.125.94), and asked for a separate fix session for planning#584 rather than an issue alone. Requirement 14 updated.
