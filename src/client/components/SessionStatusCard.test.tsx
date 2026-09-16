@@ -53,7 +53,7 @@ describe("SessionStatusCard", () => {
     expect(text.indexOf("Wired the webhook route.")).toBeLessThan(text.indexOf("Next steps"));
   });
 
-  it("gives Next steps the filled cap and the other two a soft one (req 33)", () => {
+  it("draws the three caps loud, soft and neutral in that order (req 33)", () => {
     render(
       <SessionStatusCard
         status={card({ lastTurn: "Wired the webhook route.", actions: [offer({ offerId: "o1" })] })}
@@ -64,13 +64,16 @@ describe("SessionStatusCard", () => {
     expect(loud.className).toContain("bg-(--color-accent)");
     expect(loud.className).toContain("text-(--color-accent-text)");
 
-    // The two that are read rather than acted on are tinted, with accent text.
-    for (const title of ["Status", "Last turn"]) {
-      const cap = screen.getByText(title).parentElement!;
-      expect(cap.className).toContain("bg-(--color-accent-subtle)");
-      expect(cap.className).toContain("text-(--color-accent)");
-      expect(cap.className).not.toContain("text-(--color-accent-text)");
-    }
+    // The status is read, not acted on: tinted, with accent text.
+    const soft = screen.getByText("Status").parentElement!;
+    expect(soft.className).toContain("bg-(--color-accent-subtle)");
+    expect(soft.className).toContain("text-(--color-accent)");
+    expect(soft.className).not.toContain("text-(--color-accent-text)");
+
+    // The last turn is the aside, and leaves the accent system altogether.
+    const neutral = screen.getByText("Last turn").parentElement!;
+    expect(neutral.className).toContain("bg-(--color-bg-tertiary)");
+    expect(neutral.className).not.toContain("--color-accent");
   });
 
   it("hides the last-turn card on a stale card, where it would be a turn behind (req 31)", () => {

@@ -58,10 +58,16 @@ function Subtitle({ icon, children }: { icon: ReactNode; children: ReactNode }) 
  * the stack is the one coloured thing in a conversation and is found at a
  * glance rather than reading as one more transcript card (req 33).
  *
- * Two tones, because the three are not equally worth the user's eye (req 33).
- * "Next steps" is the card that asks something of them, so it takes the filled
- * cap; the status and the last turn are read, not acted on, and take a tinted
- * cap with accent text over a lighter body.
+ * Three tones, because the three cards are not equally worth the user's eye
+ * (req 33). "Next steps" asks something of them and takes the filled cap; the
+ * status is read and takes a tinted cap with accent text; the last turn is the
+ * quietest and leaves the accent altogether for the ordinary card surface —
+ * the accent then means "the session, and what to do about it", and the turn
+ * summary reads as the aside it is.
+ *
+ * `--color-info` was the better name for that third tone and cannot be used:
+ * it is the same value as `--color-accent` in the light, cool-light and
+ * antigravity themes, so it would differentiate nothing there.
  */
 const TONES = {
   loud: {
@@ -73,6 +79,11 @@ const TONES = {
     card: "border-(--color-accent)/45",
     cap: "bg-(--color-accent-subtle) text-(--color-accent) border-b border-(--color-accent)/30",
     body: "bg-(--color-accent)/5",
+  },
+  neutral: {
+    card: "border-(--color-border-secondary)",
+    cap: "bg-(--color-bg-tertiary) text-(--color-text-secondary) border-b border-(--color-border-secondary)",
+    body: "bg-(--color-bg-secondary)",
   },
 } as const;
 
@@ -234,12 +245,13 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
       </Capped>
 
       {/* req 33 — what the last turn did, between the session's state and what
-          can happen next; soft, because it is read rather than acted on. */}
+          can happen next. The quietest of the three: it is an aside, and the
+          user has usually just read the turn itself on screen above. */}
       {lastTurn && (
         <Capped
           icon={<ClockCounterClockwiseIcon size={ICON_SIZE.SM} />}
           title="Last turn"
-          tone="soft"
+          tone="neutral"
           testId="session-status-last-turn"
         >
           <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>

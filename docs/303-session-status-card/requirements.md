@@ -184,12 +184,15 @@ taken inside one session, without building an agent that talks to many.
     user is in the session.
 
     The three are not equally loud, and the order follows what they ask of the
-    user. **Status** comes first and **Last turn** second, both quiet — a cap
-    tinted in the accent with accent text — because they are read, not acted
-    on. **Next steps** comes last, nearest the input field, and is the loud one
-    — a cap filled with the accent — because it is the only card that asks
+    user. **Status** comes first, quiet — a cap tinted in the accent with accent
+    text — because it is read, not acted on. **Last turn** comes second and is
+    quieter still: it carries no accent at all, only the ordinary card surface,
+    because it is an aside beside a turn the user has usually just read.
+    **Next steps** comes last, nearest the input field, and is the loud one — a
+    cap filled with the accent — because it is the only card that asks
     something: it holds the manual steps and the follow-ups together, under the
-    one Submit they share (req 29).
+    one Submit they share (req 29). The accent therefore means "the session,
+    and what to do about it".
 
 ## Open questions
 
@@ -197,6 +200,17 @@ taken inside one session, without building an agent that talks to many.
 
 ## Resolved questions
 
+- 2026-09-16 — Nik, fifth round: "Can we use some other color for 'Last turn'?
+  What tokens do we have available?" Only five tokens exist in all 20 themes
+  with a tint to build a cap and a body from — `accent`, `info`, `pr`,
+  `success`, `warning` — and the inventory ruled three of them out before he
+  chose: `success` and `warning` already mean passed and caution, so they would
+  claim something about the turn that may be false, and **`--color-info` is the
+  same value as `--color-accent` in the `light`, `cool-light` and `antigravity`
+  themes**, so the best-named candidate would differentiate nothing in three of
+  them. Shown `pr` (distinct everywhere, but it is the pull-request colour) and
+  a neutral card (the ordinary surface, no accent), he chose **neutral**.
+  → req 33 amended: three tones, not two.
 - 2026-09-16 — Nik, on the three capped cards, fourth round: "make 'status' and
   'last turn' soft caps, they should attract less attention then next steps.
   Make next steps last card." → req 33 amended: two tones rather than one, and

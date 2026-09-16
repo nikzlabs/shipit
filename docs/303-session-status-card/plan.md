@@ -334,9 +334,9 @@ store and renders nothing without one. `text-xs`, semantic tokens only. It is
 │   - routes and tests done; PR #212 ready to merge         │
 │   - webhook not started                                   │
 └───────────────────────────────────────────────────────────┘
-┌─ 🕘 Last turn ────────────────────────────────────────────┐  ← soft cap
-│ Wired the webhook route and its signature check; green.   │
-└───────────────────────────────────────────────────────────┘
+┌─ 🕘 Last turn ────────────────────────────────────────────┐  ← neutral: no accent
+│ Wired the webhook route and its signature check; green.   │     at all, the ordinary
+└───────────────────────────────────────────────────────────┘     card surface
 ┏━ 🪜 Next steps ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓  ← filled cap, last
 ┃ ✋ Manual steps                                            ┃
 ┃ ☐ Add the Stripe test key in Settings → Secrets.          ┃  ("I've done this")
@@ -375,15 +375,25 @@ shows its description (req 26).
   one coloured object on the screen — which is *findability*, not attention:
   req 9 is about the sidebar indicator and is untouched. `Gauge` caps the
   status, `ClockCounterClockwise` the last turn, `Steps` the next steps.
-- **Two tones, and the order (req 33).** `TONES` in the component holds them.
-  **soft** — `bg-(--color-accent-subtle)` cap with `text-(--color-accent)` and a
-  `/30` divider, body `bg-(--color-accent)/5`, border `/45` — is for the cards
-  that are *read*: Status, then Last turn. **loud** — `bg-(--color-accent)` cap
-  with `text-(--color-accent-text)`, body `bg-(--color-accent-subtle)`, full
-  accent border — is for the one that *asks*: Next steps, which carries the
-  single Submit and therefore goes **last**, nearest the composer. Loudness
-  tracks what a card wants from the user, so the eye lands on the only one with
-  a control in it.
+- **Three tones, and the order (req 33).** `TONES` in the component holds them.
+  **loud** — `bg-(--color-accent)` cap with `text-(--color-accent-text)`, body
+  `bg-(--color-accent-subtle)`, full accent border — is for the card that
+  *asks*: Next steps, which carries the single Submit and therefore goes
+  **last**, nearest the composer. **soft** — `bg-(--color-accent-subtle)` cap
+  with `text-(--color-accent)` and a `/30` divider, body `bg-(--color-accent)/5`,
+  border `/45` — is for the one that is *read*: Status, first. **neutral** —
+  `bg-(--color-bg-tertiary)` cap with `text-(--color-text-secondary)`, body
+  `bg-(--color-bg-secondary)`, `--color-border-secondary` border — is the
+  ordinary card surface, for the aside: Last turn. Loudness tracks what a card
+  wants from the user, so the eye lands on the only one with a control in it,
+  and the accent comes to mean "the session, and what to do about it".
+
+  **`--color-info` is not available for the neutral card**, though it is the
+  better name for it: it is the *same value* as `--color-accent` in
+  `light.css`, `cool-light.css` and `antigravity.css`, so it would
+  differentiate nothing in three of the 20 themes. `--color-pr` is the only
+  coloured token distinct from the accent everywhere, and it means "pull
+  request" throughout the rest of ShipIt. Hence the ordinary surface.
 - **The Next steps card (reqs 28, 29).** One card named **"Next steps"** holds both
   lists under the one Submit they share: **"Manual steps"** (`ClipboardText`,
   `needsYou` keeps its field name) and **"Follow-ups"** (`ListChecks`), as
