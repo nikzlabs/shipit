@@ -110,9 +110,9 @@ Kept time: 1 + 5 + 12 + 11 + 7 = **36 s**. Beat 0 is the instant case (req 12): 
 
 **Repeatable GitHub state.** `reset-demo-repo.sh` runs before each take against the pinned repo: close every open PR, delete every branch but the default, `git push --force origin <pinned-sha>:refs/heads/main`. The demo account's token is the same `GITHUB_TOKEN` the instance gets. After the run the merged squash commit sits on `main` until the next reset; nothing else is retained.
 
-## 7. Open questions (from `requirements.md`, not answered here)
+## 7. Open questions
 
-- **Where the demo instance is hosted.** Depends on it: the Compose file's bind address and published ports; where Playwright's Chromium and ffmpeg are installed (the driver must run on that host, §4); whether the prod images (`shipit:prod`, `shipit-session-worker:prod`, built by `deploy.sh`) exist there or the file builds them. The proxy hostname does not depend on it.
+None. The last one (where the demo instance is hosted) was answered on 2026-09-16 — requirements.md req 14 — and §9 records the deployment. What depended on it: the driver and ffmpeg run in the session container (not on the demo host), reaching the instance over the tailnet at an sslip.io host; the proxy hostname never depended on it.
 
 ## 8. Phase 1 — dogfood (req 13)
 
@@ -130,6 +130,43 @@ Measured 2026-09-08 against the `dev` Compose service (`shipit service start dev
 
 **Commands** (agent container): `PLAYWRIGHT_BROWSERS_PATH=/persist/ms-playwright npx playwright install chromium` once (the baked `/opt/playwright-browsers/chromium-1237` belongs to an alpha and does not match 1.62.1's build 1234); `scripts/demo-video/make-demo-repo.sh /workspace/.inner-shipit/demo-video/demo-repo.git [proxyUrl]`; `PLAYWRIGHT_BROWSERS_PATH=/persist/ms-playwright node scripts/demo-video/driver.mjs --instance <url> --scenario scripts/demo-video/scenarios/dogfood-smoke --out /persist/demo-video/run-N --mode record`; `FFMPEG=/persist/ffmpeg/bin/ffmpeg scripts/demo-video/cut.sh /persist/demo-video/run-N/recording.webm /persist/demo-video/run-N/beats.json scripts/demo-video/scenarios/dogfood-smoke/storyboard.json /persist/demo-video/run-N/smoke`. The full recipe, with the proxy in the loop, is in `scripts/demo-video/README.md`.
 
+## 9. Phase 2 — the demo instance (req 14)
+
+Deployed 2026-09-16 from public `main` at `8aef63a5` (two commits past the workspace's `origin/main` snapshot `a7a9ab86`, which is its ancestor). It is the **local install** recipe (`deployment/local/`), unmodified — not the `scripts/demo-video/compose.yml` §1 and §4 planned, which is now replaced by it (see §Key files). Nothing in §2–§6 changes: the proxy still becomes a Compose sibling on the instance's network, now `shipit-prod`.
+
+**Host.** SSH alias `services` (tailnet `100.81.125.94`, user `nik`, passwordless sudo, docker group; Ubuntu, kernel 6.8, Docker 29.7.2, Compose v5.5.0, 4 cores, 7.8 GB, 141 GB free before the install). Req 14 names the "shipit stable" machine (`100.87.221.1`); the coordinator directed this deploy to `services` instead — both are granted to session `3qujcu`, and requirements.md still says the other one. Untouched and verified so after the install: `reply-radar-app-1` on `127.0.0.1:8080`, `tailscaled` serving on `100.81.125.94:443`.
+
+**What the scripts do, measured.** `setup.sh` runs non-interactively when `SHIPIT_HARNESSES` is set (no TTY → every other question takes its default); on the host it writes `/etc/sysctl.d/99-shipit-inotify.conf` via sudo and checks Docker, nothing else — Docker is never installed by it. Two knobs did **not** do what the brief expected. `SHIPIT_EGRESS=off` is consulted only when the NET_ADMIN probe *fails*; this host passes it, so the answer is ignored and containment stays on. The opt-out that works is the same file the script would have written: `SESSION_EGRESS_ENFORCE=0` in `$SHIPIT_HOME/.shipit.env`, which `shipit_build_and_up` loads into the Compose environment. And a fresh clone gets `.release-channel=stable`, so `shipit_sync_checkout` resets to `origin/stable`, not main — the channel is set to `edge` before the first run. Both are `$SHIPIT_HOME` files, so the install stays within the recipe.
+
+**Commands run** (on `services`, in this order; `setup.sh` was launched detached with `nohup setsid … < /dev/null` and polled):
+
+```bash
+git clone https://github.com/nikzlabs/shipit.git ~/.shipit
+echo edge > ~/.shipit/.release-channel                      # sync to origin/main, not origin/stable
+printf 'SESSION_EGRESS_ENFORCE=0\n' > ~/.shipit/.shipit.env  # the egress opt-out that a NET_ADMIN-capable host honours
+chmod 600 ~/.shipit/.shipit.env
+SHIPIT_HARNESSES=claude SHIPIT_EGRESS=off bash ~/.shipit/deployment/local/setup.sh   # 204 s, launch → "Started"
+bash ~/.shipit/deployment/local/tailscale.sh                                          # 23 s: cached rebuild + restart
+```
+
+`setup.sh` persisted `SHIPIT_HARNESSES=claude` beside the egress line, so only the Claude CLI is baked in (bootstrap: `claude installed=true`, the other four `installed=false`). `tailscale.sh` appended `SHIPIT_TAILNET_BIND=1` and wrote the overlay `~/.shipit/.shipit-tailnet.compose.yml` publishing `100.81.125.94:4123:4123`. Disk after: images 7.3 GB (`shipit-session-worker:prod` 5.44 GB, `shipit-prod-shipit` 1.74 GB, sidecar 48 MB) + 10 GB build cache; `/` went from 3.9 to 18 GB used.
+
+**Bind and URL.** `ss -ltnp`: `4123` on `100.81.125.94` and `127.0.0.1`, `4124` (the Vite port, unused in prod) on loopback only. Browse at **`http://100-81-125-94.sslip.io:4123`** — the sslip host, never the raw IP: `usePreviewSlot.ts:39` returns no preview URL for an IPv4 literal, while on the sslip host the client builds `http://{sessionId}--{port}.100-81-125-94.sslip.io:4123/`, and a probe of that shape (`GET` with a random UUID) reached the instance's preview proxy and got its 502 JSON — the wildcard resolves and routes. Both names resolve from a session whose network mode is **Open**; a contained session cannot resolve `*.sslip.io` at all, so the driver, which must run at `localhost` anyway (§4), belongs on `services`. Verified from session `3qujcu`: `GET /` 200 (`x-frame-options: DENY`), `GET /api/bootstrap` → `runtimeMode: "containerized"`, `sessions: []`, `repos: []`, `githubStatus.authenticated: false`, `settings.canRunTurns: false`, `autoCreatePr: false`; the container env carries `SESSION_EGRESS_ENFORCE=0` and `SHIPIT_BUILD_ID=8aef63a5…`; a warm-pool worker `agent-00000000-000` was up within seconds. The first screen is the onboarding modal, **Connect GitHub** — a "GitHub personal access token" field (placeholder `ghp_…`, disabled Connect button, a link to a classic PAT with `repo` + `workflow`) beside the product pitch; behind it the app shell with an empty sidebar ("No repositories yet"). Nothing was entered. The harness and credential steps come after GitHub, so they were not seen.
+
+**What it still needs from Nik.** (1) A GitHub token for the demo account — the account that owns `shipit-demo-app` (§1), entered in that modal; it also becomes the `GITHUB_TOKEN` `reset-demo-repo.sh` uses (§6). (2) A metered **Anthropic API key**, added as a credential in Settings — this is what makes `canRunTurns` true and what session naming spends (§6); the recording run additionally needs it as `DEMO_PROXY_ANTHROPIC_API_KEY` on the proxy (§2). The local Compose file passes no `ANTHROPIC_API_KEY` env, so the docs/252 boot adoption §4 item 1 relies on is not available here; the key is entered once and lives in the credentials volume. Both are Nik's to type — nothing was entered by the session.
+
+**Reset between takes.** State is in two named volumes: `shipit-prod_workspace` (mounted at `/workspace`; `.shipit.db` at its root — `app-di.ts:238`, the state dir is the workspace dir in container mode — plus `sessions/`, `repo-cache/`) and `shipit-prod_credentials` (`/credentials/shipit-credentials.json`: provider keys **and** the GitHub token, `credential-store.ts:72,152`). So a take-to-take reset drops the workspace volume and keeps the credentials one — not `stop.sh --purge`, which deletes both and puts the instance back at the GitHub modal. Not run; the sequence:
+
+```bash
+~/.shipit/deployment/local/stop.sh                 # compose down (volumes kept) + removes session containers
+docker volume rm shipit-prod_workspace
+SHIPIT_HOME=~/.shipit bash -c '. ~/.shipit/deployment/local/lib.sh && shipit_build_and_up'   # cached build, loads .shipit.env, refreshes the tailnet overlay, up
+```
+
+`update.sh` would do the last step too, but it also re-syncs the checkout to `origin/main`, which moves the instance under a pinned take. Unverified until the first reset: whether a fresh `.shipit.db` next to a populated credentials file re-runs onboarding (harness choice, `autoCreatePr`) or reads the stored token as connected — the driver's `PUT /api/settings` step covers the settings either way. This replaces §4 item 1's `rm -rf state/`: the instance's state is a volume, not a bind-mounted dir.
+
+**Teardown.** `~/.shipit/deployment/local/stop.sh --purge` (both volumes), then `docker rmi shipit-session-worker:prod shipit-prod-shipit shipit-egress-sidecar:prod`, `docker builder prune`, `rm -rf ~/.shipit`, and `sudo rm /etc/sysctl.d/99-shipit-inotify.conf` (the one file outside `$SHIPIT_HOME`). The `shipit-prod` network goes with `down`.
+
 ## Key files (planned)
 
 - `scripts/demo-video/proxy.mjs` — record/replay at `/v1/messages`, lanes by auth kind, pacing
@@ -140,7 +177,7 @@ Measured 2026-09-08 against the `dev` Compose service (`shipit service start dev
 - `scripts/demo-video/cut-plan.mjs` — slice math: beat log + storyboard → slices, anchor offset (`anchorOffset`, `anchorSlices`), ffmpeg filter
 - `scripts/demo-video/cut.sh` — ffprobe + blackdetect anchor, then ffmpeg trim + export (mp4 h264 / webm), muted
 - `scripts/demo-video/reset-demo-repo.sh` — close PRs, prune branches, force-reset `main` to the pin
-- `scripts/demo-video/compose.yml` — the demo instance (prod image, own state dir, `SESSION_EGRESS_ENFORCE=0`) + `demo-proxy`
+- `deployment/local/{setup,tailscale,lib,stop}.sh` + `docker/local/prod/compose.yml` — the demo instance (§9); replaces the planned `scripts/demo-video/compose.yml`. `demo-proxy` still to be added as a sibling on the `shipit-prod` network
 - `scripts/demo-video/scenarios/website-hero/{storyboard.json,cassette/}`
 - `shipit-demo-app` (sibling repo) — Vite + React scaffold, `docker-compose.yml`, `shipit.yaml`, `.claude/settings.json`
 - `/persist/harness-probe/fake-api.mjs` — the measured starting point for the proxy (request logging, SSE framing, upgrade refusal)
