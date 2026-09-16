@@ -52,6 +52,11 @@
       nothing, so it cannot contradict what the collapsed turn shows.
 - [x] Update the Settings help text, which promises "all cards" today.
 
+## Iteration on the expand control
+
+- [x] Hoist the run's rewind anchor above the control, and suppress the row's
+      own copy in the collapsed and the expanded path (req 14).
+
 ## Tests
 
 - [x] Component tests, including one that goes red without each new guard.

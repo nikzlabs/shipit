@@ -333,6 +333,24 @@ describe("collapsed turns", () => {
     expect(container.querySelectorAll("[data-compact-content]").length).toBeGreaterThan(0);
   });
 
+  it("draws the user's rewind anchor above the expand control, in both states", () => {
+    compactOn();
+    const { container } = render(<MessageList messages={transcript()} isLoading={false} onRewindAtGap={vi.fn()} />);
+    // Right-aligned anchors close a user message: this turn's and the newest one's.
+    const anchors = () => [...container.querySelectorAll('[data-testid="rewind-point"][data-align="right"]')];
+    const above = () => {
+      const button = screen.getByRole("button", { name: /Show (full|compact) turn/ });
+      return anchors().filter((a) => a.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).length;
+    };
+    // The anchor closes the user's message; the control opens the reply. The
+    // count pins that hoisting it does not leave a second copy on its own row.
+    expect(anchors()).toHaveLength(2);
+    expect(above()).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: /Show full turn/ }));
+    expect(anchors()).toHaveLength(2);
+    expect(above()).toBe(1);
+  });
+
   it("keeps later row DOM parents fixed when an early run is expanded", () => {
     compactOn();
     const data = Array.from({ length: 30 }, (_, i) => [user(`Task ${i}`), bot(`Progress ${i}`), bot(`Result ${i}`)]).flat();

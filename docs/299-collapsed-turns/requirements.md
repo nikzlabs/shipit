@@ -56,11 +56,21 @@ need their own messages and the significant events.
     hidden with the rest of the turn.
 13. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 1.
 
+14. The expand control belongs to the agent's reply, not to the user's message.
+    The rewind anchor that closes the user's message is drawn above it.
+
 ## Open questions
 
 None.
 
 ## Resolved questions
+
+2026-09-16 — Requirement 14 added from *"the 'rewind options' anchor should be
+below the 'show full turn' section. I.e. that section should be a part of the
+assistant reply, not a part of the user message"*, said while looking at a
+collapsed turn in the dogfood instance. The shipped order drew the control
+first and the anchor under it, which read as though the anchor opened the
+reply and the control closed the request.
 
 2026-09-13 — Is the feature on by default? The user answered: off by default.
 They want to test it first and expect some iterations. Turning it on by default

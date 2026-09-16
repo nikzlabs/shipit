@@ -314,8 +314,14 @@ export function MessageList({
     // docs/299 — the rollback pill explains the response it sits above, so it
     // lives between the rows rather than inside one a collapsed turn can hide.
     const rollbackHash = isBubble && anchorMsg?.rolledBack ? anchorMsg.codeRollbackHash : undefined;
-    const showsSomething = !view.hidden || !!view.first || !!rollbackHash
-      || (isBubble && shouldShowGapBefore(el.index));
+    // docs/299-collapsed-turns — the rewind anchor closes the user's message and
+    // the expand control opens the reply, so the anchor is hoisted to the head of
+    // the run: it must sit ABOVE the control even when the row carrying the
+    // control is not the row the gap belongs to.
+    const runGap = view.run && shouldShowGapBefore(view.run.start) ? view.run.start : undefined;
+    const gapAtHeader = view.first ? runGap : undefined;
+    const ownGap = isBubble && shouldShowGapBefore(el.index) && el.index !== runGap;
+    const showsSomething = !view.hidden || !!view.first || !!rollbackHash || ownGap;
     return {
       key,
       // planning#491 — a row that can MOVE within the list must not be allowed
@@ -324,6 +330,7 @@ export function MessageList({
       visible: showsSomething,
       node: (
         <div key={key} hidden={!showsSomething}>
+          {gapAtHeader !== undefined && renderRewindPoint(gapAtHeader)}
           {view.first && view.run && (
             <div className="text-xs text-(--color-text-secondary) flex items-center gap-2 py-0.5">
               {/* req 8 — a real button, not ghost text that reads as content. */}
@@ -342,7 +349,7 @@ export function MessageList({
               {!view.open && view.empty && <span>Turn ended without an agent reply.</span>}
             </div>
           )}
-          {view.hidden && isBubble && shouldShowGapBefore(el.index) && renderRewindPoint(el.index)}
+          {view.hidden && ownGap && renderRewindPoint(el.index)}
           {rollbackHash && <CodeRollbackNotice hash={rollbackHash} />}
           <div id={`compact-row-${rowIndex}`} data-compact-content data-compact-index={anchorIndex} hidden={view.hidden}>
         <TranscriptRow
@@ -358,7 +365,7 @@ export function MessageList({
           hasRewindControls={hasRewindControls}
           forkDefaultName={forkDefaultName}
           rewindPreviews={rewindPreviews}
-          showGapBefore={!view.hidden && isBubble && shouldShowGapBefore(el.index)}
+          showGapBefore={!view.hidden && ownGap}
           gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
           collapseTools={view.collapseTools}
         />

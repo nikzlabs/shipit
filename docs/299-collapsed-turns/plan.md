@@ -280,6 +280,16 @@ for a turn whose only content was an error row, where it was redundant anyway.
 Both are decided by the same classification that hides the rows, so the note
 cannot disagree with what is on screen.
 
+The rewind anchor for the gap the turn opens on is **hoisted to the run's first
+row** and drawn above the control (req 14): the anchor closes the user's
+message, the control opens the reply. Hoisting rather than reordering one row is
+what makes the two agree when the run does not begin with a bubble — the anchor
+belongs to the run's first *message*, while the control sits on its first
+*element*, which can be a tool group. The row that owns the gap then suppresses
+its own copy, in both the collapsed path (`renderRewindPoint` beside the row)
+and the expanded one (`TranscriptRow`'s `showGapBefore`), so hoisting never
+leaves a second anchor behind.
+
 Follow the `design-language` skill: semantic color tokens only, no hardcoded
 palette values, `@phosphor-icons/react` for the icon.
 
