@@ -85,4 +85,19 @@ describe("createCliLineRelay", () => {
 
     expect(lines).toEqual([{ source: "cli_stderr", line: "NSJF-75ZB" }]);
   });
+
+  /**
+   * The escape sequence itself can straddle a chunk boundary, and each half is
+   * unrecognisable alone — so stripping per chunk leaves `\x1b[90m` glued to the
+   * text. `m` is a word character, which destroys the `\b` every redaction
+   * pattern needs; the sanitizer then removes the escape and publishes the
+   * secret. Stripping the ASSEMBLED line is what closes it.
+   */
+  it("strips an escape sequence that was itself split across two chunks", () => {
+    const { relay, lines } = collect();
+    relay.push("cli_stderr", "  \x1b[9");
+    relay.push("cli_stderr", "0mNSJF-75ZB\x1b[0m\n");
+
+    expect(lines).toEqual([{ source: "cli_stderr", line: "  NSJF-75ZB" }]);
+  });
 });

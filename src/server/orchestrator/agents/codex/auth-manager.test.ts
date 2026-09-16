@@ -472,13 +472,68 @@ describe("what the Codex sign-in reports to the panel", () => {
 
   it("redacts a verification URL's query string when the split lands inside it", async () => {
     const { proc, panel } = startWithDiagnostics();
-    const url = `${URL}?foo=bar&state=private-state-value`;
-    const at = url.indexOf("&sta") + 4;
+    // `device_code`, not `state`: no assignment rule names it and it is under the
+    // long-secret threshold, so ONLY the URL rule can remove it.
+    const url = `${URL}?foo=bar&device_code=private-grant`;
+    const at = url.indexOf("&dev") + 4;
     emitStdout(proc.stdout, `Open this link: ${url.slice(0, at)}`);
     emitStdout(proc.stdout, `${url.slice(at)}\n`);
     await settle();
 
-    expect(panel(), "leaked the link's query string").not.toContain("private-state-value");
+    expect(panel(), "leaked the link's query string").not.toContain("private-grant");
+  });
+
+  /**
+   * Removing the code BEFORE the sanitizer truncated the link it then saw:
+   * `[code redacted]` carries a space and a URL matches up to the first
+   * whitespace, so everything after the code's own parameter stayed in the clear.
+   */
+  it("does not let the code's removal expose the query parameters after it", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, `   ${URL}?user_code=K8RE-8MIGC&device_code=private-grant\n`);
+    await settle();
+
+    expect(panel(), "leaked a parameter after the redacted code").not.toContain("private-grant");
+    expect(panel()).not.toContain("K8RE-8MIGC");
+  });
+
+  /**
+   * The escape sequence can straddle a chunk boundary, and each half is
+   * unrecognisable alone — so `\x1b[90m` stays glued to the text, `m` is a word
+   * character, and the `\b` the code pattern needs is gone.
+   *
+   * **This is an end-to-end guard, not a one-line one.** Two layers stop it
+   * independently — the relay strips ANSI off the assembled line, and the
+   * redaction runs after the sanitizer rather than before — so it goes red only
+   * when BOTH are lost. Each layer has its own single-line guard elsewhere; this
+   * pins the property the user actually has.
+   */
+  it("redacts a code an ANSI sequence split across two chunks would have exposed", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, "   \x1b[9");
+    emitStdout(proc.stdout, "0mK8RE-8MIGC\x1b[0m\n");
+    await settle();
+
+    expect(panel(), "an ANSI split exposed the code").not.toContain("K8RE-8MIGC");
+    expect(panel()).toContain("[code redacted]");
+  });
+
+  /**
+   * A CLI that hangs part-way through its last sentence is exactly the failure
+   * whose explanation has no newline after it — and the timeout path kills the
+   * process with `killProc`, which detaches the `close` handler that flushes.
+   */
+  it("flushes the unterminated final line when the flow times out", async () => {
+    const { proc, spawnFn } = makeSpawn();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false, timeoutMs: 20 });
+    const logs: AgentAuthLogPayload[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("failed", () => { /* the timeout's own failure */ });
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+    emitStdout(proc.stdout, "Error: your account is not eligible.");
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(logs.map((l) => l.message).join("\n")).toContain("Error: your account is not eligible.");
   });
 
   it("says the device code arrived without putting the link or the code in the panel", async () => {

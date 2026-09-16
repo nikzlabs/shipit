@@ -403,13 +403,48 @@ describe("what the Grok sign-in reports to the panel", () => {
 
   it("redacts a verification URL's query string when the split lands inside it", async () => {
     const { proc, panel } = startWithDiagnostics();
-    const url = `${URL}?user_code=AAAA-BBBB&state=private-state-value`;
-    const at = url.indexOf("&sta") + 4;
+    // `device_code`, not `state`: no assignment rule names it and it is under the
+    // long-secret threshold, so ONLY the URL rule can remove it.
+    const url = `${URL}?user_code=AAAA-BBBB&device_code=private-grant`;
+    const at = url.indexOf("&dev") + 4;
     emit(proc.stderr, `open this URL: ${url.slice(0, at)}`);
     emit(proc.stderr, `${url.slice(at)}\n`);
     await settle();
 
-    expect(panel(), "leaked the link's query string").not.toContain("private-state-value");
+    expect(panel(), "leaked the link's query string").not.toContain("private-grant");
+  });
+
+  /**
+   * Removing the code BEFORE the sanitizer truncated the link it then saw:
+   * `[code redacted]` carries a space and a URL matches up to the first
+   * whitespace, so everything after the code's own parameter stayed in the clear.
+   */
+  it("does not let the code's removal expose the query parameters after it", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emit(proc.stderr, `  ${URL}?user_code=NSJF-75ZB&device_code=private-grant\n`);
+    await settle();
+
+    expect(panel(), "leaked a parameter after the redacted code").not.toContain("private-grant");
+    expect(panel()).not.toContain("NSJF-75ZB");
+  });
+
+  /**
+   * A CLI that hangs part-way through its last sentence is exactly the failure
+   * whose explanation has no newline after it — and the timeout path kills the
+   * process with `killProc`, which detaches the `close` handler that flushes.
+   */
+  it("flushes the unterminated final line when the flow times out", async () => {
+    const { proc, spawnFn } = makeSpawn();
+    const mgr = new XaiAuthManager({ spawn: spawnFn, checkAuthFile: () => false, timeoutMs: 20 });
+    const logs: AgentAuthLogPayload[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("failed", () => { /* the timeout's own failure */ });
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+    emit(proc.stderr, "Error: this account cannot use Grok Build.");
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(logs.map((l) => l.message).join("\n"))
+      .toContain("Error: this account cannot use Grok Build.");
   });
 
   /** A CLI's last word — the sentence explaining a failure — carries no newline. */

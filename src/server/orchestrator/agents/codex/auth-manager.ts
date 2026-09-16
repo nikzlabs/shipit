@@ -248,17 +248,23 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
 
   /**
    * What the panel in Settings shows, and the only record a failed sign-in
-   * leaves the user: the CLI's own words. Until this existed a `codex login`
-   * that failed reported `codex login exited with code 1`, while whatever the
-   * CLI had said about why went to the orchestrator log, truncated at 500
-   * characters, where no user can read it.
+   * leaves the user: the CLI's own words.
+   *
+   * **The code is removed AFTER the sanitizer, not before.** `[code redacted]`
+   * contains a space, and a URL matches up to the first whitespace — so
+   * substituting it inside `?user_code=…&device_code=…` truncates the link the
+   * sanitizer then sees, and every later query parameter survives in the clear.
+   * Run second, it has nothing left to break: a code inside a URL left with the
+   * stripped query string, and one printed on its own line is short enough that
+   * no other rule touches it.
    */
   private emitDiagnosticLog(
     level: AgentAuthLogLevel,
     source: AgentAuthLogSource,
     message: string,
   ): void {
-    const sanitized = sanitizeAuthDiagnostic(message);
+    const sanitized = sanitizeAuthDiagnostic(message)
+      .replace(USER_CODE_EVERY_OCCURRENCE, "[code redacted]");
     if (!sanitized) return;
     const payload: AgentAuthLogPayload = {
       ...this.authEventBase(),
@@ -388,22 +394,18 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     console.log("[codex-auth] Spawned codex login --device-auth (pid %d)", proc.pid);
     this.emitProgress("waiting_for_url", "Waiting for the Codex CLI to print a device code.");
 
+    // Both streams carry ordinary progress, so the level says nothing about a
+    // line and the source says which stream it came from.
     const relay = createCliLineRelay((source, line) => {
-      // The device code is a live grant for as long as the challenge stands, and
-      // the panel is copyable and outlives the challenge card that shows it.
-      const text = line.replace(USER_CODE_EVERY_OCCURRENCE, "[code redacted]").trim();
-      // Both streams carry ordinary progress — `codex login` writes its prompts
-      // wherever it likes — so the level says nothing and the source says which.
-      if (text) this.emitDiagnosticLog("info", source, text);
+      if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
     });
 
     /**
-     * One listener per stream, and the liveness guard is taken ONCE here rather
-     * than inside each consumer. A cancelled run keeps draining (`cancel()`
-     * detaches `close` and `error`, never `data`), and by then `this.proc` may
-     * be the NEXT account's process — unguarded, that run's output lands on the
-     * new account's panel and its expired challenge is replayed as the new
-     * account's code.
+     * The liveness guard is taken ONCE here rather than inside each consumer. A
+     * cancelled run keeps draining — `cancel()` detaches `close` and `error`,
+     * never `data` — and by then `this.proc` may be the NEXT account's process,
+     * so unguarded output lands on that account's panel and its expired
+     * challenge is replayed as that account's code.
      */
     const consume = (source: AgentAuthLogSource, chunk: Buffer): void => {
       if (this.proc !== proc) return;
@@ -463,6 +465,10 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     this.timeoutHandle = setTimeout(() => {
       if (this.proc === proc) {
         console.warn("[codex-auth] Device-auth flow timed out");
+        // `killProc` detaches `close`, so this is the only chance to drain the
+        // tail — and a CLI that hung part-way through its last sentence is
+        // exactly the failure whose explanation has no newline after it.
+        relay.flush();
         this.emitDiagnosticLog("warn", "shipit", "The device code expired before the sign-in finished.");
         this.failOnce("timeout", "Device code expired");
         this.killProc();
