@@ -12,3 +12,9 @@
 - [x] `src/server/shipit-docs/sessions.md` — agent-facing documentation
 - [x] lint:dev + typecheck clean
 - [x] Independent review against the numbered requirements
+- [x] Claude `--allowedTools`: the bridge served the tool but neither tool list
+      named it, so the CLI routed every call to `--permission-prompt-tool` and the
+      user approved `mcp__shipit__propose_repo_session` by hand before the card
+      appeared. Both lists hoisted to one module constant; guard derives the
+      expectation from the bridge's own tool list
+      (`agents/claude/shipit-tool-allowlist.test.ts`)
