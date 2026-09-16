@@ -455,7 +455,7 @@ one non-npm branch, gated on `contains antigravity $selected`:
   line, each manager's own `stripAnsi` is unreachable from the relay path, so
   the guards pin that ordering through the relay and the call in the emitter is
   defence for callers that skip it. A whole line was still not a whole string,
-  which planning#586 carried and the relay now handles: **a CLI on a pty wraps
+  which planning#586 carried and the relay now narrows: **a CLI on a pty wraps
   its own output at the width ShipIt spawned it with**, newline included — a
   capture of the Claude login at 80 columns breaks its link across three lines
   — so a link split at `&sta`/`te=…` loses its query string on the first line
@@ -463,25 +463,47 @@ one non-npm branch, gated on `contains antigravity $selected`:
   cut in half. **Widening the spawn is not the fix**: anything longer than the
   width still wraps, and the OAuth links are longer than any width worth
   spawning, so it only moves the boundary. The relay takes a `wrapWidth`
-  instead, holds a line that fills it, and joins the continuation before the
-  redaction runs — the width is not a heuristic but the number the spawn
-  passed, which is why each manager keeps the two in one constant
-  (`SIGN_IN_COLS`, `LOGIN_COLS`) and the guard tests read it back from the
-  spawn call rather than restating it. A line that merely happens to fill the
-  width — a full-width TUI frame — is joined to its successor for nothing,
-  which costs one long panel line; the cap ends the join, so a TUI drawing
-  frames forever cannot grow the buffer. Codex and Grok read pipes, where
-  nothing wraps, and pass no width. The two gaps that shared planning#586's
-  cause closed with it: the sanitizer now reads a token assignment written as
-  quoted JSON (`{"access_token":"short.secret/value"}` matched no rule at all,
-  being below the long-secret threshold), and the refusal text — which req 4
-  keeps out of the generic rules — has the submitted code taken out by name
-  before it reaches `failed.message`. One more line was the same defect in all
-  four managers: a credential file that will not parse was logged with the
-  parse error whole, and Node quotes the bytes it tripped over, so a
-  half-written token file put part of the token in the orchestrator's log
-  (`Unexpected token 'y', ..."ss_token":ya29.secre"...`). `credentialParseFailure`
-  drops the quoted context and keeps the reason.
+  instead, holds a line that fills it, and joins the continuation — without its
+  indent, which would otherwise end the URL match at the space — before the
+  redaction runs. The width comes from the spawn, which is why each manager
+  keeps the two in one constant (`SIGN_IN_COLS`, `LOGIN_COLS`) and the guards
+  read it back from the spawn call rather than restating it. **"This line
+  continues that one" is still a guess, and the bounds are known rather than
+  assumed** (ShipIt's reviewer reproduced each): a line that reaches the width
+  through cursor motion or a double-width character holds fewer characters than
+  the width and is not recognised; and a line that merely happens to fill the
+  width is joined to a successor it never continued, which costs more than a
+  long panel line — the successor's text is read as part of the first line's
+  URL, so a short diagnostic after a full-width one can be redacted away with
+  it. Reading the display width exactly means emulating a terminal, which none
+  of this is worth. Two consequences of aggregating lines needed answering.
+  Joining has **its own cap, far below the buffered-line cap** (8 KiB against
+  64 KiB), because a join aggregates unrelated rows where the line cap only
+  ever held one line: 64 KiB of joined near-addresses cost one
+  `sanitizeAuthDiagnostic` call **5.6 seconds** on the thread that serves the
+  UI, so the email rule's local part and domain now carry RFC 5321's length
+  bounds. And the join's cap **is** reachable by ordinary output, unlike the
+  line cap, so a secret can straddle it — the forced break carries the last
+  `wrapWidth` characters into the next line rather than dropping them, which
+  costs the panel one duplicated line's worth of text and keeps the split from
+  being a leak. Every path that ends a run flushes, **cancellation included**:
+  the exit callback that flushes is gated on a process the manager has already
+  detached, so a cancelled run's held line — the user's only record of why they
+  cancelled — was dropped. The two gaps that shared planning#586's cause closed
+  with it: the sanitizer now reads a token assignment written as quoted JSON
+  (`{"access_token":"short.secret/value"}` matched no rule at all, being below
+  the long-secret threshold), with the value ending at **its own** quote, since
+  excluding both quote characters let `"short'private/secret"` through whole
+  and published the tail of `"short\"private/secret"`; and the refusal text —
+  which req 4 keeps out of the generic rules — has the submitted code taken out
+  by name before it reaches `failed.message`, **tolerating whitespace inside
+  the code**, because the refusal is read from the raw buffer where the CLI's
+  wrap can fall inside it and an exact match then fails on `4/0AY\n-code`. One
+  more line was the same defect in all four managers: a credential file that
+  will not parse was logged with the parse error whole, and Node quotes the
+  bytes it tripped over, so a half-written token file put part of the token in
+  the orchestrator's log (`Unexpected token 'y', ..."ss_token":ya29.secre"...`).
+  `credentialParseFailure` drops the quoted context and keeps the reason.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it

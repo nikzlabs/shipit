@@ -208,6 +208,41 @@ describe("AntigravityAuthManager", () => {
   });
 
   /**
+   * The refusal is read from the raw buffer, because req 4 wants Google's
+   * sentence and not the relay's cleaned-up copy — so the code inside it can
+   * still carry the CLI's own wrap, and an exact-string removal does not match
+   * `4/0AY\n-code`. The panel's copy of that same line was clean, which is the
+   * shape that hides this.
+   */
+  it("keeps a code the CLI wrapped out of the refusal", () => {
+    start();
+    manager.submitCode("4/0AY-code");
+    proc.emitData(`Error: rejected ${"x".repeat(59)}4/0AY\n-code was rejected.\n`);
+    proc.emitExit(1);
+
+    expect(failed[0]?.message).not.toContain("4/0AY");
+    expect(failed[0]?.message).toContain("[code-redacted]");
+  });
+
+  /**
+   * A held line is held because it might be half a secret, and cancelling is
+   * when the user most wants to read why. The exit callback that flushes is
+   * gated on the process the manager has already detached, so nothing else
+   * drains it.
+   */
+  it("relays a held line when the sign-in is cancelled", () => {
+    start();
+    const line = "Error: the CLI refused to start the sign-in for this account.".padEnd(80, ".");
+    proc.emitData(`${line}\n`);
+    expect(logs.map((l) => l.message).join(""), "relayed before the line could be joined")
+      .not.toContain("Error: the CLI refused");
+
+    manager.cancel();
+
+    expect(logs.map((l) => l.message).join("")).toContain("Error: the CLI refused");
+  });
+
+  /**
    * The CLI wraps its own output at the width ShipIt spawned it with, so a
    * whole physical line is still half a link — and the half carrying the query
    * string looks like ordinary text to every whole-string rule. Reading the
@@ -226,7 +261,10 @@ describe("AntigravityAuthManager", () => {
 
     proc.emitData(`${url.slice(0, cols)}\n${url.slice(cols)}\n`);
 
-    expect(logs.map((l) => l.message).join("")).not.toContain("private-state-value");
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel).not.toContain("private-state-value");
+    // Relaying nothing at all would satisfy the line above.
+    expect(panel).toContain("https://accounts.google.com/o/oauth2/v2/auth?[redacted]");
   });
 
   /**

@@ -594,8 +594,33 @@ describe("AuthManager / auth diagnostics", () => {
 
     ptyHoisted.dataHandlers[0](`${url.slice(0, cols)}\n${url.slice(cols)}\n`);
 
-    expect(logs.map((l) => l.message).join("")).not.toContain("private-state-value");
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel).not.toContain("private-state-value");
+    // Relaying nothing at all would satisfy the line above.
+    expect(panel).toContain("https://claude.ai/oauth/authorize?[redacted]");
     mgr.kill();
+  });
+
+  /**
+   * A held line is held because it might be half a secret, and cancelling is
+   * when the user most wants to read why. `kill()` is the only path left that
+   * can drain it — the exit callback runs on a process that has been detached.
+   */
+  it("relays a held line when the login is cancelled", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    const cols = ptyHoisted.calls[0].opts.cols ?? 0;
+    const line = "The Claude CLI could not reach the authentication service.".padEnd(cols, ".");
+    ptyHoisted.dataHandlers[0](`${line}\n`);
+    expect(logs.map((l) => l.message).join(""), "relayed before the line could be joined")
+      .not.toContain("could not reach");
+
+    mgr.cancel();
+
+    expect(logs.map((l) => l.message).join("")).toContain("could not reach");
   });
 
   /**

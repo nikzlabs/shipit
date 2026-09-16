@@ -54,6 +54,36 @@ describe("sanitizeAuthDiagnostic", () => {
     );
   });
 
+  /**
+   * A quoted value ends at its own quote and nothing else. Excluding both quote
+   * characters let the first of these through whole and cut the second in half,
+   * publishing the tail as ordinary text.
+   */
+  it.each([
+    { name: "the other quote character inside the value", line: `{"client_secret":"short'private/secret"}` },
+    { name: "an escaped quote inside the value", line: `{"client_secret":"short\\"private/secret"}` },
+    { name: "an unquoted key with a quoted value", line: `access_token="short.secret/value"` },
+  ])("redacts a quoted value with $name", ({ line }) => {
+    const sanitized = sanitizeAuthDiagnostic(line);
+
+    expect(sanitized).toContain("[redacted]");
+    expect(sanitized).not.toContain("private/secret");
+    expect(sanitized).not.toContain("secret/value");
+  });
+
+  /**
+   * Unbounded, the local part rescans every suffix of a long run that never
+   * reaches an `@`. The input is the largest one the relay can hand over — a
+   * line that reaches the buffered-line cap — and it cost 5.2 s in a single
+   * call, on the thread that serves the UI.
+   */
+  it("does not scan quadratically over a long near-address", () => {
+    const started = Date.now();
+    sanitizeAuthDiagnostic("a.".repeat(32 * 1024));
+
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   // The separator is re-emitted, so the line still reads like what the CLI said.
   it("keeps the separator a token assignment was written with", () => {
     expect(sanitizeAuthDiagnostic("api_key: v1.short/secret")).toBe("api_key: [redacted]");
@@ -266,12 +296,56 @@ describe("createCliLineRelay, on a CLI that wraps its own output", () => {
     expect(lines.map((l) => l.line)).toEqual([LINK.slice(0, WIDTH), LINK.slice(WIDTH)]);
   });
 
-  // The cap still ends a join: a TUI drawing full-width frames must not grow it.
-  it("stops joining at the buffered-line cap", () => {
+  /**
+   * A TUI drawing full-width frames joins rows that continue nothing, so the
+   * accumulator has to end somewhere — and the end of an accumulator is exactly
+   * the split that publishes half a secret. The carried tail is what stops the
+   * forced break from being a leak.
+   */
+  it("keeps a secret whole across the break the join cap forces", () => {
     const { relay, lines } = collect(WIDTH);
-    relay.push("cli_stdout", `${"x".repeat(WIDTH)}\n`.repeat(Math.ceil((64 * 1024) / WIDTH) + 1));
+    // Just under the cap, so it is the link's first half that crosses it —
+    // anywhere else and the break falls on a frame, where nothing is at stake.
+    const frames = `${"frame ".repeat(WIDTH).slice(0, WIDTH)}\n`.repeat(Math.floor((8 * 1024) / WIDTH));
 
-    expect(lines).toHaveLength(1);
-    expect(lines[0].line.length).toBeGreaterThanOrEqual(64 * 1024);
+    relay.push("cli_stdout", `${frames}${LINK.slice(0, WIDTH)}\nte=private-state-value\n`);
+
+    expect(lines.length, "the accumulator never ended").toBeGreaterThan(1);
+    expect(lines.map((l) => sanitizeAuthDiagnostic(l.line)).join("\n")).not.toContain(
+      "private-state-value",
+    );
+  });
+
+  // Text already published at that break must not come back a second time.
+  it("does not repeat the carried tail on flush", () => {
+    const { relay, lines } = collect(WIDTH);
+    const frames = `${"frame ".repeat(WIDTH).slice(0, WIDTH)}\n`.repeat(Math.ceil((8 * 1024) / WIDTH));
+    relay.push("cli_stdout", frames);
+    const published = lines.length;
+
+    relay.flush();
+
+    expect(lines).toHaveLength(published);
+  });
+
+  /**
+   * Width is a count of what the terminal counted, so the escapes come off
+   * first: measuring the raw bytes makes a short coloured line look full-width
+   * and joins it to a successor it never continued.
+   */
+  it("measures the line without its colour codes", () => {
+    const { relay, lines } = collect(WIDTH);
+    relay.push("cli_stdout", `\x1b[90m${"short line".padEnd(40)}\x1b[0m${"\x1b[2m".repeat(12)}\n`);
+    relay.push("cli_stdout", "a second line\n");
+
+    expect(lines.map((l) => l.line.trim())).toEqual(["short line", "a second line"]);
+  });
+
+  // Having decided the line was cut mid-token, the remainder's indent is decoration.
+  it("drops the indent a CLI puts in front of a continuation", () => {
+    const { relay, lines } = collect(WIDTH);
+    relay.push("cli_stdout", `${LINK.slice(0, WIDTH)}\n   ${LINK.slice(WIDTH)}\n`);
+
+    expect(lines.map((l) => l.line)).toEqual([LINK]);
   });
 });

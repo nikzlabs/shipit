@@ -8,6 +8,7 @@ import { stripAnsi } from "../../../shared/strip-ansi.js";
 import {
   createCliLineRelay,
   credentialParseFailure,
+  withoutSubmittedCodes,
   sanitizeAuthDiagnostic,
   type CliLineRelay,
   type AgentAuthLogPayload,
@@ -250,22 +251,8 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
     this.emit("progress", payload);
   }
 
-  /**
-   * A pty echoes what is written to it, so the pasted authorization code comes
-   * back on the CLI's own output — which this panel shows. The sanitizer's
-   * long-secret rule would probably catch it; "probably" is not good enough for
-   * a credential, so the exact string we submitted is taken out first.
-   *
-   * **The marker carries no whitespace.** A URL match ends at the first space,
-   * so a spaced marker substituted inside a link truncates what the sanitizer
-   * then sees and publishes every parameter after it.
-   */
   private withoutSubmittedCode(text: string): string {
-    let out = text;
-    for (const code of this.submittedCodes) {
-      if (out.includes(code)) out = out.split(code).join("[code-redacted]");
-    }
-    return out;
+    return withoutSubmittedCodes(text, this.submittedCodes);
   }
 
   /**
@@ -678,6 +665,9 @@ export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implement
 
   // Claim before teardown so its asynchronous exit cannot emit another outcome.
   kill(): void {
+    // Before anything else: a cancelled run's held line is the user's only
+    // record of why they cancelled, and no other path drains it.
+    this.relay.flush();
     this.claimTerminalOutcome();
     // A killed pty keeps draining, and the generation is what both callbacks
     // test: without this, a cancelled run's output still reached the panel and

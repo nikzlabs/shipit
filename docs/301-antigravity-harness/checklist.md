@@ -161,7 +161,9 @@ Antigravity-specific is in [plan.md](./plan.md).
       relay unwraps at the width the spawn passed, the sanitizer reads a token
       assignment written as quoted JSON, the refusal text loses the submitted
       code without losing Google's sentence, and a credential file's parse error
-      no longer carries the bytes it tripped over into the log
+      no longer carries the bytes it tripped over into the log. The link
+      extractor's own wrap handling is **not** part of that — over-inclusion is
+      safe for a redaction and breaks a link, so it is planning#588
 - [x] Account identity is honestly ABSENT: a `consumer` sign-in's token has no
       `id_token` at all — only an opaque `access_token`, a `refresh_token`,
       `token_type` and `expiry` — so no email or external id can be shown. The

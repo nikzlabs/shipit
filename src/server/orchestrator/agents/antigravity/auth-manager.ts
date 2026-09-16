@@ -15,7 +15,9 @@ import { ensureConfigDir } from "../agent-auth-base.js";
 import {
   createCliLineRelay,
   credentialParseFailure,
+  withoutSubmittedCodes,
   sanitizeAuthDiagnostic,
+  type CliLineRelay,
   type AgentAuthLogLevel,
   type AgentAuthLogPayload,
   type AgentAuthLogSource,
@@ -241,6 +243,7 @@ export class AntigravityAuthManager
   private activeAttemptId: string | null = null;
   private activeAttemptStartedAt = 0;
   private submittedCodes: string[] = [];
+  private relay: CliLineRelay | null = null;
   private terminalEmitted = false;
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
@@ -374,6 +377,7 @@ export class AntigravityAuthManager
       },
       { wrapWidth: SIGN_IN_COLS },
     );
+    this.relay = relay;
 
     proc.onData((chunk) => {
       // A cancelled run keeps draining, and by then `this.proc` may be the NEXT
@@ -475,22 +479,8 @@ export class AntigravityAuthManager
     this.emit("pending", details);
   }
 
-  /**
-   * A pty echoes what is written to it, so the authorization code comes back on
-   * the CLI's own output — which is relayed to the panel. The sanitizer's
-   * long-secret rule would probably catch it; "probably" is not good enough for
-   * a credential, so the exact string we submitted is taken out first.
-   *
-   * **The marker carries no whitespace.** A URL match ends at the first space,
-   * so a spaced marker substituted inside a link truncates what the sanitizer
-   * then sees and publishes every parameter after it.
-   */
   private withoutSubmittedCode(text: string): string {
-    let out = text;
-    for (const code of this.submittedCodes) {
-      if (out.includes(code)) out = out.split(code).join("[code-redacted]");
-    }
-    return out;
+    return withoutSubmittedCodes(text, this.submittedCodes);
   }
 
   /**
@@ -571,6 +561,12 @@ export class AntigravityAuthManager
 
   kill(): void {
     this.clearTimeout();
+    // Before the process is detached, because the exit callback that would
+    // otherwise flush is gated on it: a cancelled run's held line — the one the
+    // relay is holding precisely because it might be half a secret — was
+    // dropped, and it is the user's only record of why they cancelled.
+    this.relay?.flush();
+    this.relay = null;
     const proc = this.proc;
     this.proc = null;
     this.lastPendingDetails = null;
