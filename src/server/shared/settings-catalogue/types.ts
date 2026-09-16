@@ -128,10 +128,21 @@ export type PayloadSettingStore<T> =
   | ([T] extends [string] ? { readonly kind: "system-prompt-file"; readonly promptScope: "standard" | "ops" } : never)
   | ([T] extends [GitIdentity] ? { readonly kind: "git-config" } : never);
 
-/** Written by a route of its own, so the settings payload does not carry it. */
+/**
+ * Written by a route of its own, so the settings payload does not carry it.
+ *
+ * An address rather than a sentence (inventory.md P2): the two settings stored
+ * this way post *different* body shapes and neither carries a `wire`, so a
+ * client reading a route string could work out neither the payload to send nor
+ * the field to read back. The write is `method path` with
+ * `{ [bodyField]: value }`; the read is a GET of the same path, answering the
+ * same field.
+ */
 export interface OwnRouteStore {
   readonly kind: "own-route";
-  readonly route: string;
+  readonly method: "POST" | "PUT";
+  readonly path: string;
+  readonly bodyField: string;
 }
 
 /**
@@ -200,6 +211,13 @@ interface SettingDeclarationBase<T> {
    * both come from the catalogue (docs/308-data-driven-settings req 11).
    */
   readonly section?: string;
+  /**
+   * The component that renders this setting, for one whose editing needs its own
+   * logic (docs/308-data-driven-settings req 3). Custom is what it LOOKS like:
+   * the declaration and the store are the ones every generated row uses. One
+   * component may be named by several declarations and renders once.
+   */
+  readonly component?: string;
   readonly scope: SettingScope;
   /** The dialog renders these two, and the agent reads the same words (req 7). */
   readonly label: string;

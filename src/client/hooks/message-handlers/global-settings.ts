@@ -1,6 +1,7 @@
 import type { WsGlobalSettings } from "../../../server/shared/types.js";
 import { useGitStore } from "../../stores/git-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { hydrateSettingValues } from "../../stores/setting-hydration.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { Handler } from "./types.js";
 
@@ -12,12 +13,9 @@ export const handleGlobalSettings: Handler<WsGlobalSettings> = (_ctx, data) => {
   settings.setSystemPromptContent(data.systemPrompt);
   settings.setHasSystemPrompt(data.systemPrompt.length > 0);
   ui.setAgentList(data.agents);
-  if (data.liveSteering !== undefined) settings.setLiveSteering(data.liveSteering);
-  if (data.autoResolveConflicts !== undefined) settings.setAutoResolveConflicts(data.autoResolveConflicts);
-  if (data.autoFixCi !== undefined) settings.setAutoFixCi(data.autoFixCi);
-  if (data.sessionStatusCard !== undefined) settings.setSessionStatusCard(data.sessionStatusCard);
-  if (data.autoResetMergedBranch !== undefined) settings.setAutoResetMergedBranch(data.autoResetMergedBranch);
-  if (data.enableSubAgents !== undefined) settings.setEnableSubAgents(data.enableSubAgents);
+  // Every generated row, from its declaration's `wire`
+  // (docs/308-data-driven-settings req 1).
+  hydrateSettingValues(data as unknown as Record<string, unknown>);
   if (data.failoverCutoffs !== undefined) {
     for (const [agentId, cutoffs] of Object.entries(data.failoverCutoffs)) {
       settings.setFailoverCutoffs(agentId, cutoffs);

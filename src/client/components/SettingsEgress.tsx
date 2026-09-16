@@ -17,7 +17,9 @@ import { Alert } from "./ui/banner.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { summarizeEgressGrant } from "./egress-grant-summary.js";
-import { DeclaredToggle, SettingCopy, bindSetting } from "./Settings/declared.js";
+import { SettingCopy, bindSetting } from "./Settings/declared.js";
+import { DeclaredSettings } from "./Settings/DeclaredSettings.js";
+import { useSetting } from "./Settings/declared-setting.js";
 import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
 import type {
   EgressAllowlistEntry,
@@ -193,8 +195,14 @@ function GrantOutcome({
 export function SettingsEgress() {
   const loaded = useEgressStore((s) => s.loaded);
   const entries = useEgressStore((s) => s.entries) ?? [];
-  const globalEnabled = useEgressStore((s) => s.globalEnabled);
   const enforcementActive = useEgressStore((s) => s.enforcementActive);
+  /*
+    The warning is about the toggle right above it, so it reads the same value
+    the toggle does — the setting's own, rather than this panel's copy of it in
+    the allowlist view. The two agree, and reading one of them means they cannot
+    disagree for the round trip after a change.
+  */
+  const contained = useSetting("network.egressContained").value === true;
   const defaultsCustomized = useEgressStore((s) => s.defaultsCustomized);
 
   const [hostInput, setHostInput] = useState("");
@@ -213,17 +221,6 @@ export function SettingsEgress() {
   }, []);
 
   const toast = (message: string) => useUiStore.getState().setToast({ message });
-
-  const handleToggle = async (v: boolean) => {
-
-    setGrant(null);
-    try {
-      await useEgressStore.getState().setGlobalEnabled(v);
-    } catch (err) {
-      toast("Failed to update egress containment setting");
-      console.error("[settings] egress toggle failed:", err);
-    }
-  };
 
   const handleAdd = async () => {
     const host = hostInput.trim();
@@ -276,7 +273,7 @@ export function SettingsEgress() {
   const editableEntries = entries.filter((e) => e.removable);
   const derivedEntries = entries.filter((e) => !e.removable);
 
-  const showEnforcementWarning = loaded && globalEnabled && !enforcementActive;
+  const showEnforcementWarning = loaded && contained && !enforcementActive;
 
   return (
     <div className="space-y-4" data-testid="settings-egress">
@@ -291,12 +288,12 @@ export function SettingsEgress() {
           defense against a prompt-injected agent exfiltrating your credentials.
         </p>
 
-        <DeclaredToggle
-          settingKey="network.egressContained"
-          enabled={globalEnabled}
-          onToggle={(v) => void handleToggle(v)}
-          testId="settings-egress-contained"
-        />
+        {/* The containment toggle is generated from its declaration
+            (docs/308-data-driven-settings slice 2); the heading, the paragraph
+            above and the warning below are this tab's own chrome (P12). The
+            rest of this panel — the allowlist and its operations — is
+            registered as a component in slice 6. */}
+        <DeclaredSettings tab="network" />
 
         {showEnforcementWarning && (
           <Alert

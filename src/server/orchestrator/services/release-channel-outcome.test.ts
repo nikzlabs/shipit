@@ -102,7 +102,7 @@ describe("switching the release channel", () => {
 });
 
 describe("POST /api/updates/channel, which answers with an update status", () => {
-  it("still answers the check's own 503 and records no result", async () => {
+  it("reports the write as done when the check that follows it fails, and records no result", async () => {
     updates.checkForUpdates.mockRejectedValue(
       new ServiceError(503, "Failed to fetch updates: could not resolve github.com"),
     );
@@ -116,10 +116,16 @@ describe("POST /api/updates/channel, which answers with an update status", () =>
     });
     await app.close();
 
-    // The write no longer raises this error, so the endpoint does — its callers
-    // asked for an update status and there is none.
-    expect(res.statusCode).toBe(503);
-    expect(res.json().error).toContain("Failed to fetch updates");
+    /*
+      The channel IS stored, so the one caller — the settings row's shared
+      writer, which reads the status code as "did the write land" — must not be
+      told otherwise; it would roll the control back to the old channel
+      (docs/299-agent-settings-access req 4, docs/308-data-driven-settings).
+      Why the status is missing still travels, for a caller that wants to say so.
+    */
+    expect(res.statusCode).toBe(200);
+    expect(res.json().channel).toBe("edge");
+    expect(res.json().checkError).toContain("Failed to fetch updates");
     expect(updates.writeReleaseChannel).toHaveBeenCalledWith("edge");
     // A check that did not run records nothing: the banner keeps saying nothing
     // is known until the next one succeeds.

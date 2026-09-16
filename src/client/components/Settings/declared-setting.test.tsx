@@ -19,7 +19,9 @@ import {
   type DeclaredBooleanKey,
 } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { hydrateSettingValues } from "../../stores/setting-hydration.js";
 import { useUiStore } from "../../stores/ui-store.js";
+import { recordHolds } from "../../stores/setting-values.js";
 import {
   GLOBAL_SETTINGS,
   findSetting,
@@ -115,7 +117,7 @@ describe("two saves of one setting that overlap", () => {
 
   beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    useSettingsStore.getState().setEnableSubAgents(true);
+    hydrateSettingValues({ [WIRE]: true });
   });
 
   it("shows the server's value when both fail, not the reverse of the later one", async () => {
@@ -155,7 +157,7 @@ describe("two saves of one setting that overlap", () => {
     // A `settings_changed` refetch, or another viewer's save: nothing is in
     // flight, so the displayed value is the server's and the remembered one is
     // stale.
-    act(() => { useSettingsStore.getState().setEnableSubAgents(false); });
+    act(() => { hydrateSettingValues({ [WIRE]: false }); });
 
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
     await act(async () => { await saveSetting(KEY, true); });
@@ -172,7 +174,7 @@ describe("two saves of one setting that overlap", () => {
  */
 describe("a setting the record does not hold", () => {
   const OUTSIDE = (Object.values(GLOBAL_SETTINGS) as AnyPayloadDeclaration[]).filter(
-    (d) => d.store.kind === "credential-store" && d.type.kind === "bool" && d.tab !== "advanced",
+    (d) => d.store.kind === "credential-store" && d.type.kind === "bool" && !recordHolds(d.key),
   );
 
   it("covers the settings still reading through their named field", () => {

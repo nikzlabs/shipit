@@ -41,7 +41,7 @@ lists the five fields that looked necessary and were not (req 5).
 | `store.kind` | What the writer does |
 |---|---|
 | `credential-store`, `system-prompt-file`, `git-config` | `PUT /api/settings` with `{ [wire]: value }` |
-| `browser` | encode for `localStorage`, write `localStorageKey`, update the value record (P17) |
+| `browser` | encode for `localStorage`, write `localStorageKey`, update the value record (P17) — and a kind the codec cannot spell is **not** a generated row at all, because a control that changes on screen and stores nothing is worse than one that is not there |
 | `own-route` | `method` `path` with `{ [bodyField]: value }` |
 
 **`own-route` is why five settings can be rows at all** (P2). The two that use it
@@ -50,6 +50,14 @@ values a panel happens to write — `project.allowAgentMerge`,
 `integrations.github.connection`, `integrations.linear.credential` — and are
 re-declared `own-route` rather than `bespoke`, which is what makes them generated
 rows.
+
+**The path and the field are the READ as well** (slice 2). The store carries
+three facts and no fourth: the read is a `GET` of the same `path`, answering
+under the same `bodyField`. `GET /api/egress/settings` already did; the release
+channel had no reader at all, so slice 2 added `GET /api/updates/channel` rather
+than a fourth field naming somewhere else to look. A later own-route setting owes
+its path a GET — that is the contract, and it is what keeps the whole of req 1
+inside the declaration for a setting the settings payload does not carry.
 
 It generalises what `src/client/components/Settings/declared-setting.ts` already
 solved for booleans (P6): optimistic write, per-field sequencing, and rollback to
@@ -73,6 +81,32 @@ settings payload by `wire`, from `localStorage` by `localStorageKey`, and from
 its own route for the `own-route` settings. `useSetting(key)` returns
 `{ value, set }`.
 
+**Hydration walks the declarations, and that is what finishes req 1** (slice 2,
+`src/client/stores/setting-hydration.ts`). Slice 1 left a row that saved
+correctly and came back as its default after a reload, because the three places
+that apply a settings payload — `App.tsx`, `session-data.ts`,
+`message-handlers/global-settings.ts` — each named the settings they knew about.
+They now call `hydrateSettingValues(payload)`, which walks `GENERATED_SETTINGS`
+and reads each row from its own `wire`; `applyGlobalSettings` additionally calls
+`refreshOwnRouteSettings()`, which reads the rows the payload does not carry from
+their declared paths. Both run wherever global settings land — so also on the
+`settings_changed` broadcast, which is what keeps a row the agent changed
+current.
+
+**A read in flight is discarded when the value moves under it.** These reads
+take as long as a request, and a save writes the record the moment it is made —
+so a read that began first and answered second would put the old value back
+under a control the user has just changed, after the `settings_changed` refresh
+that would have corrected it had already run. The record's value before and
+after the read is the whole test.
+
+So **for a tab in `GENERATED_TABS`, adding a row is one edit in one place**:
+declaration in, row rendered, value written, value read back. The seven
+per-setting hydration lines and the six store setters that existed only to carry
+them are gone. What a later slice still owes req 1 is each tab's *entry* into
+`GENERATED_TABS` — a setting on an unconverted tab is still read through its
+named field, written by that field's own setter (P18).
+
 **Keeping the storage key is necessary and not sufficient** (req 9, P17).
 `localStorage` holds strings and JSON, and `bool.read` returns its default for
 anything that is not a real boolean — so a reader that hands stored text straight
@@ -94,7 +128,7 @@ forces a migration.
 | Value kind | Control |
 |---|---|
 | `bool` | toggle |
-| `enumOf` | select, or a segmented picker for a short static set |
+| `enumOf` | select, or a segmented picker for a short static set — slice 2 built the picker, which is what its one enum wanted; the select arrives with slice 4's voice enums, whose option sets are long or produced by the install |
 | `numeric` | number input, with the declared unit |
 | `text` | input; textarea when the store is `system-prompt-file` |
 | `gitIdentity` | the name-and-email pair |
@@ -131,9 +165,17 @@ it.
 component: "services-panel"
 ```
 
-A registry maps the name to a React component, which receives the declaration and
-the current value. Custom is presentation; the declaration and the destination
-are the same ones every row uses (req 3).
+A registry maps the name to a React component
+(`src/client/components/Settings/components/registry.ts`, slice 2), which
+receives the setting's **key** and resolves its own value through `useSetting` —
+one prop rather than two, and the same hook every generated control uses, so
+there is no second way for a component to read or write. Custom is presentation;
+the declaration and the destination are the same ones every row uses (req 3).
+
+A declaration naming a component is a generated row whatever its value kind: what
+the control table has no control for is exactly what a component is for. The
+memory budget is the first, and it is why the Advanced tab's number row is a row
+at all (P4).
 
 Nine panels own the 34 addressed fields between them (P11) — one of which,
 `keyboard.keybindings`, has a fixed item set rather than a user-created one and
@@ -157,6 +199,30 @@ existing one or renders a row that cannot save.
 2. **Routes and the rest of Advanced.** The `own-route` store shape (P2), then
    the release channel — including removing the duplicate control from the update
    panel — the memory-budget component (P4), and `network.egressContained`.
+   Shipped with two things the design had not settled. **The release channel got
+   a `section`, and moved to the front of the catalogue's Advanced block**: its
+   own row is useless three sections away from the Check-for-Updates button that
+   acts on it, so the update panel became the Software Updates section's `note`
+   and the channel renders beneath it (req 11 — order comes from the
+   declaration, and this is what moving the declaration is for). **The
+   enforcement warning on the Network tab now reads the setting's value rather
+   than the egress store's copy of it**: the two agree, and reading one of them
+   is what stops them disagreeing for the round trip after a change. What slice 2
+   gave up with the hand-written channel control: it can no longer be disabled
+   while an update applies, and a failed switch reports through the shared toast
+   instead of the panel's own error line.
+
+   **One route had to change, because a shared writer reads a status code
+   literally.** `POST /api/updates/channel` stored the channel and then answered
+   the *update check's* error — 503 — on the reasoning that its caller wanted an
+   update status. Its caller is now the shared writer, which reads any non-2xx as
+   "the write did not land" and rolls the control back: the user would have been
+   shown the old channel with the new one stored (docs/299 req 4). It answers 200
+   once the write has landed, with `checkError` carrying why there is no status.
+   **The update panel re-checks when the channel moves**, which is what keeps the
+   changelog and the downgrade warning beside the choice that produced them now
+   that the write's own answer is not read; and it keeps an answer only while the
+   selection has not moved since it asked, because both orderings happen.
 3. **Instructions and Git.** The textarea rule and the instruction conflict state
    (P14), and the git identity control.
 4. **Voice.** The remaining browser values, the TTS component (P3, P7), the
@@ -173,9 +239,9 @@ existing one or renders a row that cannot save.
    the other two are given up knowingly, and the loss is bounded to the 42
    declarations the panels and components own (P15).
 
-Until a slice moves a value's hydration, the old setter keeps writing into the
-value record, because `src/client/hooks/message-handlers/global-settings.ts`
-still writes the named fields (P18). Slice 1 made that rule explicit rather than
+Until a tab joins `GENERATED_TABS`, its values are read through their named store
+fields and written by those fields' own setters (P18) — hydration walks the
+declarations for the rows the record holds, and reaches nothing else. Slice 1 made that rule explicit rather than
 a convention: `GENERATED_TABS` in `src/client/stores/setting-values.ts` names the
 tabs whose rows are generated, and so exactly which settings the record holds. A
 tab joins that list in the slice that moves its hydration, and a setting the
@@ -191,11 +257,13 @@ on the same reader while their tabs wait for slices 5 and 3.
 | `src/client/components/Settings/declared-setting.ts` | today's boolean reader and writer — generalised into `useSetting` / `saveSetting` |
 | `src/client/components/Settings/declared.tsx` | today's declared controls — becomes the control table |
 | `src/client/components/Settings/DeclaredSettings.tsx` | the renderer: the control table, the section grouping, `notes` |
-| `src/client/stores/setting-values.ts` | which settings the record holds, the browser codec (P17), the named fields each one mirrors (P1) |
+| `src/client/stores/setting-values.ts` | which settings the record holds, the browser codec (P17), the named fields each one mirrors (P1), where an own-route row is written and read (P2) |
+| `src/client/stores/setting-hydration.ts` | the payload read and the own-route read, both walking the declarations |
+| `src/client/components/Settings/components/registry.ts` | the components a declaration may name |
+| `src/client/components/Settings/tabs/UpdatePanel.tsx` | the Software Updates chrome, placed as that section's note (P12) |
 | `src/client/components/Settings/setting-binding.ts` | `data-setting`; deleted in slice 8 |
 | `src/client/components/Settings/settings-coverage.test.tsx` | the walk; deleted in slice 8 (P15) |
 | `src/client/stores/settings-store.ts` | gains the value record; the named fields become views over it |
-| `src/client/hooks/message-handlers/global-settings.ts` | hydrates the named fields today; must reach the record (P18) |
 | `src/client/utils/local-storage.ts` | loses its 13 accessor pairs for settings; keeps the legacy keybinding fallback (P17) |
 
 ## What stays exactly as it is

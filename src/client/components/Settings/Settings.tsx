@@ -40,8 +40,6 @@ export interface SettingsProps {
   onFullReset?: () => void;
   gitIdentity: { name: string; email: string };
   onGitIdentitySave: (name: string, email: string) => void;
-  memoryBudgetMb: number | null;
-  onMemoryBudgetSave: (mb: number | null) => void;
   agentSystemInstructions: string;
   hasActiveSession: boolean;
   onClose: () => void;
@@ -58,8 +56,6 @@ export function Settings({
   onFullReset,
   gitIdentity,
   onGitIdentitySave,
-  memoryBudgetMb,
-  onMemoryBudgetSave,
   agentSystemInstructions,
   hasActiveSession,
   onClose,
@@ -228,11 +224,7 @@ export function Settings({
           </TabsContent>
 
           <TabsContent value="advanced">
-            <AdvancedTab
-              onFullReset={onFullReset}
-              memoryBudgetMb={memoryBudgetMb}
-              onMemoryBudgetSave={onMemoryBudgetSave}
-            />
+            <AdvancedTab onFullReset={onFullReset} />
           </TabsContent>
 
         </Tabs>

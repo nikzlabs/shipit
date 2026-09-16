@@ -891,7 +891,7 @@ function isItemAddressed(declaration: AnySettingDeclaration): boolean {
 /** Where a value lives, for a reader following an entry that has no value. */
 function storeLocation(declaration: AnySettingDeclaration): string {
   const { store } = declaration;
-  if (store.kind === "own-route") return `written by ${store.route}`;
+  if (store.kind === "own-route") return `written by ${store.method} ${store.path}`;
   if (store.kind === "bespoke") return `owned by ${store.ownedBy}`;
   if (store.kind === "browser") return `kept in the browser under ${store.localStorageKey}`;
   return "stored by ShipIt";

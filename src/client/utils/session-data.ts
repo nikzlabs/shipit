@@ -13,6 +13,7 @@ import { useFileStore } from "../stores/file-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { hydrateSettingValues, refreshOwnRouteSettings } from "../stores/setting-hydration.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useBugReportStore, type BugReportCardState } from "../stores/bug-report-store.js";
 import { useEgressPromptStore, type EgressPromptCardState } from "../stores/egress-prompt-store.js";
@@ -604,16 +605,18 @@ function applyGlobalSettings(settings: BootstrapResponse["settings"]): void {
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
   useSettingsStore.getState().setSystemPromptOpsContent(data.settings.systemPromptOps ?? "");
-  if (data.settings.memoryBudgetMb !== undefined) useSettingsStore.getState().setMemoryBudgetMb(data.settings.memoryBudgetMb);
   if (data.settings.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(data.settings.agentSystemInstructionsEnabled);
   if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
   if (data.settings.autoCreatePr !== undefined) useSettingsStore.getState().setAutoCreatePr(data.settings.autoCreatePr);
-  if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
-  if (data.settings.autoResolveConflicts !== undefined) useSettingsStore.getState().setAutoResolveConflicts(data.settings.autoResolveConflicts);
-  if (data.settings.autoFixCi !== undefined) useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);
-  if (data.settings.autoResetMergedBranch !== undefined) useSettingsStore.getState().setAutoResetMergedBranch(data.settings.autoResetMergedBranch);
-  if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
-  if (data.settings.sessionStatusCard !== undefined) useSettingsStore.getState().setSessionStatusCard(data.settings.sessionStatusCard);
+
+  /*
+    Every generated row, from its declaration's `wire` — and then the generated
+    rows this payload does not carry, from their own routes
+    (docs/308-data-driven-settings req 1, inventory.md P2). Both walk the
+    catalogue, so a new row on a generated tab is read back with no edit here.
+  */
+  hydrateSettingValues(data.settings);
+  void refreshOwnRouteSettings();
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   if (data.settings.credentialRoutes) useSettingsStore.getState().setCredentialRoutes(data.settings.credentialRoutes);
 

@@ -9,6 +9,7 @@ import {
   versionAnchor,
   type UpdateNoticeDeps,
 } from "./services/update-notice.js";
+import { readChannelOutcome } from "./release-channel.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { UpdateNotice, VersionInfo } from "../shared/types.js";
 import { ServiceError } from "./services/types.js";
@@ -50,6 +51,26 @@ export async function registerUpdateRoutes(app: FastifyInstance, deps: UpdateRou
     }
   });
 
+  /*
+    The read half of `advanced.releaseChannel`'s own route
+    (docs/308-data-driven-settings, inventory.md P2). The declaration carries one
+    path and one body field, and the dialog reads the value back from the same
+    two — so an own-route setting is readable from its declaration alone, with no
+    second place naming where its value comes from.
+
+    An unreadable channel file is an error rather than the default channel, for
+    the reason `OWN_ROUTE_READERS` gives: the default is a real channel, so
+    answering it would tell a `stable` install it is on `edge`.
+  */
+  app.get("/api/updates/channel", async (_request, reply) => {
+    const read = await readChannelOutcome();
+    if (!read.ok) {
+      reply.code(500).send({ error: `Failed to read the release channel: ${getErrorMessage(read.error)}` });
+      return;
+    }
+    return { channel: read.channel };
+  });
+
   app.post<{ Body: { channel?: unknown } }>("/api/updates/channel", async (request, reply) => {
     const channel = request.body?.channel;
     if (channel !== "stable" && channel !== "edge") {
@@ -68,12 +89,22 @@ export async function registerUpdateRoutes(app: FastifyInstance, deps: UpdateRou
         reply.code(500).send({ error: outcome.detail ?? "Failed to set channel", outcome });
         return;
       }
-      // The channel is stored by now. This endpoint answers with an update
-      // status, so a check that failed is still this request's error — it is
-      // raised here rather than inside the write, where it would also reach the
-      // callers that only changed the setting.
+      /*
+        The channel is stored by now, so this answers 200 even when the check
+        that follows the write could not run — "saved" has to mean saved
+        (docs/299-agent-settings-access req 4). It used to raise the check's own
+        error, on the reasoning that a caller asking for an update status must
+        hear when there is none; the one caller there is now is the settings
+        row, whose writer reads the status code as "did the write land" and
+        rolls the control back when it did not. That rollback showed the old
+        channel while the new one was stored.
+
+        A check that did not run still records nothing: the banner keeps saying
+        nothing is known until the next check repairs it, and `checkError` is
+        here for a caller that wants to say why.
+      */
       if (!status) {
-        throw checkError ?? new ServiceError(503, "Failed to check for updates on the new channel");
+        return { channel, checkError: getErrorMessage(checkError ?? "the check did not run") };
       }
       // That write ran its own check under the new channel; record it rather
       // than paying for a second fetch.
