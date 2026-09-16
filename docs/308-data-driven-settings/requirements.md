@@ -34,26 +34,29 @@ they stand are not a requirement; they are how the code grew.
 
 ## Requirements
 
-1. Adding a setting, or changing one, is one edit in one place. Its row, its
-   read, its write, where it is stored and where it appears all follow from the
-   declaration. No second file has to be touched for the setting to work, and no
-   step can be forgotten, because there is no second step.
+1. Adding a setting a standard control can show, or changing one, is one edit in
+   one place. Its row, its read, its write, where it is stored and where it
+   appears all follow from the declaration. No second file has to be touched for
+   it to work, and no step can be forgotten, because there is no second step.
+   A setting that needs its own component still has one declaration and one
+   destination; only what it looks like is written by hand.
 2. Standard settings render from the declarations. A setting a standard control
    can show is not hand-written anywhere, so a control for an undeclared setting
    has nowhere to exist.
 3. A setting whose editing needs its own logic keeps its own component — and that
-   component uses the same declaration and writes through the same path as every
-   other setting. Custom means how it **looks**, never where the value **goes**.
-4. Every row is always visible. A setting that cannot take effect yet says so in
-   place, instead of disappearing. Hiding a row is not a behaviour this feature
-   has to keep.
+   component uses the same declaration and writes to the same place as every
+   other setting, with the same save behaviour. Custom means how it **looks**,
+   never where the value **goes**.
+4. Every row is always visible. A setting that cannot take effect yet is not
+   hidden. Hiding a row is not a behaviour this feature has to keep.
 5. The declaration gains a field only because a real setting needs it. Where the
    simpler thing already works, the simpler thing is what ships.
 6. Where VS Code has already settled the same question, ShipIt takes its answer
-   unless there is a reason to differ, and the reason is written down.
+   when it makes sense here.
 7. Every setting is written down before the change: what it is today, what its
    declaration becomes, and which problems and dependencies it carries.
-   `inventory.md` in this folder is that document.
+   `inventory.md` in this folder is that document. This one is a deliverable of
+   the change rather than behaviour the product has afterwards.
 8. The agent's view of settings does not change. One declaration serves the
    dialog and `shipit settings`, and every guarantee `docs/299-agent-settings-access`
    makes — descriptions, refusals, proposal cards — still holds.
@@ -74,8 +77,10 @@ None. All three were answered on 2026-09-16; the receipts are below.
 
 - 2026-09-16 — *Do rows that are hidden today have to stay hidden?* No. The user:
   the hand-crafted tabs and rows are not a requirement, and showing every row
-  is acceptable even when it affects nothing. One row group is conditional today
-  (the voice webhook, hidden unless delivery is external or both). → requirement 4.
+  is acceptable even when it affects nothing. Two are conditional today: the
+  voice webhook pair, hidden unless delivery is external or both, and
+  `integrations.autoCreatePr`, hidden while GitHub is disconnected.
+  → requirement 4.
 - 2026-09-16 — *What happens to settings that need real custom logic, like the
   services panel?* They keep a custom component, and that component still uses
   the same definition and writes to the same place. → requirement 3.

@@ -5,11 +5,12 @@ Design is settled: [requirements.md](requirements.md), [plan.md](plan.md),
 
 - [x] Requirements written, with all three open questions answered and receipted
 - [x] Per-setting inventory: all 77 declarations, 15 problems and dependencies
-- [x] Design: four declaration fields, one reader, one writer, a component registry
-- [ ] Slice 1 — the spine: declaration fields, registry, `useSetting` / `saveSetting`, the Advanced toggles and the memory budget
-- [ ] Slice 2 — browser values: generic `localStorage` read and write, all 14
-- [ ] Slice 3 — sections and order: generate Advanced, Instructions, Git, Network, including non-setting components (P12)
-- [ ] Slice 4 — Voice: dynamic enum sources (P7), credential rows (P10), the webhook pair (P9), the webhook always visible (P13)
-- [ ] Slice 5 — panels: register the nine components, narrow their props
-- [ ] Slice 6 — Project Settings: the second dialog and its repo-scoped write (req 10)
-- [ ] Slice 7 — cleanup: delete the coverage walk and `data-setting` (req 12), drop the named selectors, move the ~72 call sites (P1)
+- [x] Design: two declaration fields, a shared scalar reader and writer, a control table by value kind
+- [x] Subtraction review, and the design cut down to what it found
+- [ ] Slice 1 — the spine, delivered on Advanced: value record, `useSetting` / `saveSetting`, the control table, `section`, the whole Advanced tab
+- [ ] Slice 2 — Instructions, Git, Network: the textarea convention and conflict state (P14), the git identity control, `own-route` writes (P2)
+- [ ] Slice 3 — Voice: the remaining browser values, the TTS choices component (P7), the webhook pair (P9), the webhook always visible (P13)
+- [ ] Slice 4 — Integrations: the two credential rows (P10), `autoCreatePr` always visible (P13)
+- [ ] Slice 5 — panels: register the nine components and bind them to their declarations
+- [ ] Slice 6 — Project Settings: the second dialog, its repo-scoped write, the colour picker, the secrets panel (req 10)
+- [ ] Slice 7 — cleanup: delete the coverage walk and `data-setting` (req 12, P15)
