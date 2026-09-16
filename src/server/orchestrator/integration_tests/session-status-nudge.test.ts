@@ -393,9 +393,17 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
         resident.emit("event", { type: "result", subtype: "success", session_id: "resident-turn" });
         await waitFor(() => runnerFor(client.sessionId)?.running === false, "the first turn settled");
 
-        // A turn that launches background work and never touches the card.
+        // A turn that launches background work and never touches the card. Waiting for the
+        // resident to have the prompt, not merely for `running`: under load the send can
+        // still be in its async setup, and the message after it would then start a turn of
+        // its own rather than steer this one.
+        const beforeSecond = resident.stdinData.length;
         client.send({ type: "send_message", text: "Kick off the tests" });
-        await waitFor(() => runnerFor(client.sessionId)?.running === true, "the second turn is running");
+        await waitFor(
+          () => resident.stdinData.length > beforeSecond
+            && runnerFor(client.sessionId)?.running === true,
+          "the resident took the second turn",
+        );
         runnerFor(client.sessionId)?.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
 
         // Nik steers it. The CLI replays the message, which is how ShipIt learns it was taken.

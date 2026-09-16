@@ -437,6 +437,8 @@ describe("shouldNudgeForStatusCard (docs/303 req 12–15)", () => {
     receivedResult: true,
     silent: false,
     statusNudge: false,
+    steered: false,
+    promptQueued: false,
     postTurn: "commit-push",
     writeSeq: 3,
     ...over,
