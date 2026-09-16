@@ -329,12 +329,15 @@ store and renders nothing without one. `text-xs`, semantic tokens only. It is
 **three capped cards in a stack** (req 33), not one card with rules in it:
 
 ```
-┏━ ⏱ Status ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Stale ━┓  ← accent-filled cap
-┃ Billing service. Markdown, so a list reads as a list:     ┃  ← accent-tinted body
-┃   - routes and tests done; PR #212 ready to merge         ┃
-┃   - webhook not started                                   ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-┏━ 🪜 Next steps ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┌─ ⏱ Status ──────────────────────────────────────── Stale ─┐  ← soft cap: accent on tint
+│ Billing service. Markdown, so a list reads as a list:     │  ← lighter tinted body
+│   - routes and tests done; PR #212 ready to merge         │
+│   - webhook not started                                   │
+└───────────────────────────────────────────────────────────┘
+┌─ 🕘 Last turn ────────────────────────────────────────────┐  ← soft cap
+│ Wired the webhook route and its signature check; green.   │
+└───────────────────────────────────────────────────────────┘
+┏━ 🪜 Next steps ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓  ← filled cap, last
 ┃ ✋ Manual steps                                            ┃
 ┃ ☐ Add the Stripe test key in Settings → Secrets.          ┃  ("I've done this")
 ┃ ────────────────────────────────────────────────────────  ┃
@@ -344,9 +347,6 @@ store and renders nothing without one. `text-xs`, semantic tokens only. It is
 ┃ ☐ Add a README section on billing       SENT              ┃  (greyed, tickable again)
 ┃   What the service does and how to run it locally.        ┃
 ┃ [ Submit ]  Add comment…                                  ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-┏━ 🕘 Last turn ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Wired the webhook route and its signature check; green.   ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
@@ -369,18 +369,22 @@ shows its description (req 26).
 
 - **Three cards, and why (req 33).** The card shipped as one translucent
   surface and read as "one more transcript card" — the complaint that opened
-  this round was that it blends into the conversation text. Each card is now
-  `border-(--color-accent)` around an **accent-filled cap** (icon + 13px
-  semibold, `text-(--color-accent-text)`) over an **accent-tinted body**
-  (`bg-(--color-accent-subtle)`). Nothing else in a conversation is coloured in
-  the accent, so the stack is the one coloured object on the screen — which is
-  *findability*, not attention: req 9 is about the sidebar indicator and is
-  untouched. `Gauge` caps the status, `Steps` the middle, `ClockCounterClockwise`
-  the last turn.
-- **Order (req 33).** Status first — it is what the user opened the session to
-  read. Next steps in the middle. The last turn last, because it is the part
-  the user may already have read on screen above.
-- **The middle card (reqs 28, 29).** One card named **"Next steps"** holds both
+  this round was that it blends into the conversation text. Each card is now a
+  cap (icon + 13px semibold label) over a tinted body, bordered in the accent.
+  Nothing else in a conversation is coloured in the accent, so the stack is the
+  one coloured object on the screen — which is *findability*, not attention:
+  req 9 is about the sidebar indicator and is untouched. `Gauge` caps the
+  status, `ClockCounterClockwise` the last turn, `Steps` the next steps.
+- **Two tones, and the order (req 33).** `TONES` in the component holds them.
+  **soft** — `bg-(--color-accent-subtle)` cap with `text-(--color-accent)` and a
+  `/30` divider, body `bg-(--color-accent)/5`, border `/45` — is for the cards
+  that are *read*: Status, then Last turn. **loud** — `bg-(--color-accent)` cap
+  with `text-(--color-accent-text)`, body `bg-(--color-accent-subtle)`, full
+  accent border — is for the one that *asks*: Next steps, which carries the
+  single Submit and therefore goes **last**, nearest the composer. Loudness
+  tracks what a card wants from the user, so the eye lands on the only one with
+  a control in it.
+- **The Next steps card (reqs 28, 29).** One card named **"Next steps"** holds both
   lists under the one Submit they share: **"Manual steps"** (`ClipboardText`,
   `needsYou` keeps its field name) and **"Follow-ups"** (`ListChecks`), as
   subtitles inside it with a rule between them, each omitted when empty and the
@@ -394,9 +398,10 @@ shows its description (req 26).
   dark themes, where `--color-border-primary` is a hair off the tint. The change
   is in the shared component, so the transcript action card gets it too.
 - **Freshness.** A current card carries no mark. A stale one carries the word
-  **"Stale"** (`text-[11px] font-semibold text-(--color-accent-text)/85`) at the
-  right-hand end of the **Status cap** — the stack has no single bottom-right
-  corner any more, and the first cap is read first (req 14). No tooltip: its
+  **"Stale"** (`text-[11px] font-semibold text-(--color-accent)`, the soft cap's
+  own colour, never faded) at the right-hand end of the **Status cap** — the
+  stack has no single bottom-right corner any more, and the first cap is read
+  first (req 14). No tooltip: its
   wording would be wrong after a toggle or a rewind, and the label is real text
   for assistive technology.
 - **Actions.** The presentational checklist of `ActionChecklistCard` — items,

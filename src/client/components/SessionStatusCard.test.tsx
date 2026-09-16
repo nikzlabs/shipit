@@ -35,7 +35,7 @@ describe("SessionStatusCard", () => {
     expect(screen.getByText("Add the Stripe test key.")).toBeInTheDocument();
   });
 
-  it("stacks status, next steps and last turn in that order (req 33)", () => {
+  it("stacks status, last turn and next steps in that order (req 33)", () => {
     render(
       <SessionStatusCard
         status={card({
@@ -47,26 +47,30 @@ describe("SessionStatusCard", () => {
     );
 
     const text = screen.getByTestId("session-status-card").textContent ?? "";
-    expect(text.indexOf("Billing service")).toBeLessThan(text.indexOf("Next steps"));
-    expect(text.indexOf("Next steps")).toBeLessThan(text.indexOf("Wired the webhook route."));
+    expect(text.indexOf("Billing service")).toBeLessThan(text.indexOf("Wired the webhook route."));
+    // Next steps is last: it is the only card that asks something of the user,
+    // and last puts it nearest the composer.
+    expect(text.indexOf("Wired the webhook route.")).toBeLessThan(text.indexOf("Next steps"));
   });
 
-  it("gives each of the three an accent-filled cap over a tinted body (req 33)", () => {
+  it("gives Next steps the filled cap and the other two a soft one (req 33)", () => {
     render(
       <SessionStatusCard
         status={card({ lastTurn: "Wired the webhook route.", actions: [offer({ offerId: "o1" })] })}
       />,
     );
-    for (const title of ["Status", "Next steps", "Last turn"]) {
-      // A cap is accent-filled with inverse text; a subtitle inside a card is not.
+    // The card that asks something of the user is the loud one.
+    const loud = screen.getByText("Next steps").parentElement!;
+    expect(loud.className).toContain("bg-(--color-accent)");
+    expect(loud.className).toContain("text-(--color-accent-text)");
+
+    // The two that are read rather than acted on are tinted, with accent text.
+    for (const title of ["Status", "Last turn"]) {
       const cap = screen.getByText(title).parentElement!;
-      expect(cap.className).toContain("bg-(--color-accent)");
-      expect(cap.className).toContain("text-(--color-accent-text)");
+      expect(cap.className).toContain("bg-(--color-accent-subtle)");
+      expect(cap.className).toContain("text-(--color-accent)");
+      expect(cap.className).not.toContain("text-(--color-accent-text)");
     }
-    const tinted = screen
-      .getByTestId("session-status-card")
-      .querySelectorAll(".bg-\\(--color-accent-subtle\\)");
-    expect(tinted).toHaveLength(3);
   });
 
   it("hides the last-turn card on a stale card, where it would be a turn behind (req 31)", () => {
@@ -86,9 +90,11 @@ describe("SessionStatusCard", () => {
       <SessionStatusCard status={card({ fresh: false, actions: [offer({ offerId: "o1" })] })} />,
     );
     const statusCap = screen.getByText("Status").closest("div")!;
-    expect(within(statusCap).getByText("Stale").className).toContain("--color-accent-text");
-    // Never faded: the accent/accent-text pair has no contrast to spare.
-    expect(within(statusCap).getByText("Stale").className).not.toMatch(/accent-text\)\/\d/);
+    const mark = within(statusCap).getByText("Stale");
+    // The status cap is the soft tone, so the mark is accent on the tint.
+    expect(mark.className).toContain("text-(--color-accent)");
+    // Never faded: it is the smallest text on the cap.
+    expect(mark.className).not.toMatch(/accent\)\/\d/);
   });
 
   it("puts the offers under a Follow-ups subtitle", () => {

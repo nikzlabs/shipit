@@ -54,34 +54,55 @@ function Subtitle({ icon, children }: { icon: ReactNode; children: ReactNode }) 
 }
 
 /**
- * One of the three cards. The accent-filled cap names it and the accent-tinted
- * body carries it: nothing else in a conversation is coloured, so the stack is
- * found at a glance instead of reading as one more transcript card (req 33).
+ * One of the three cards: a cap that names it over an accent-tinted body, so
+ * the stack is the one coloured thing in a conversation and is found at a
+ * glance rather than reading as one more transcript card (req 33).
+ *
+ * Two tones, because the three are not equally worth the user's eye (req 33).
+ * "Next steps" is the card that asks something of them, so it takes the filled
+ * cap; the status and the last turn are read, not acted on, and take a tinted
+ * cap with accent text over a lighter body.
  */
+const TONES = {
+  loud: {
+    card: "border-(--color-accent)",
+    cap: "bg-(--color-accent) text-(--color-accent-text)",
+    body: "bg-(--color-accent-subtle)",
+  },
+  soft: {
+    card: "border-(--color-accent)/45",
+    cap: "bg-(--color-accent-subtle) text-(--color-accent) border-b border-(--color-accent)/30",
+    body: "bg-(--color-accent)/5",
+  },
+} as const;
+
 function Capped({
   icon,
   title,
+  tone,
   trailing,
   testId,
   children,
 }: {
   icon: ReactNode;
   title: string;
+  tone: keyof typeof TONES;
   trailing?: ReactNode;
   testId?: string;
   children: ReactNode;
 }) {
+  const skin = TONES[tone];
   return (
     <div
       {...(testId ? { "data-testid": testId } : {})}
-      className="overflow-hidden rounded-lg border border-(--color-accent)"
+      className={`overflow-hidden rounded-lg border ${skin.card}`}
     >
-      <div className="flex items-center gap-1.5 bg-(--color-accent) px-3 py-1 text-(--color-accent-text)">
+      <div className={`flex items-center gap-1.5 px-3 py-1 ${skin.cap}`}>
         <span className="shrink-0">{icon}</span>
         <span className="text-[13px] font-semibold">{title}</span>
         {trailing}
       </div>
-      <div className="bg-(--color-accent-subtle) px-3 py-2">{children}</div>
+      <div className={`px-3 py-2 ${skin.body}`}>{children}</div>
     </div>
   );
 }
@@ -193,14 +214,14 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
       <Capped
         icon={<GaugeIcon size={ICON_SIZE.SM} />}
         title="Status"
+        tone="soft"
         {...(stale
           ? {
               // req 14 — one mark for the whole stack, on the first cap, since
-              // the stack has no single bottom-right corner any more.
-              // Full strength, never faded: it is already the smallest text on
-              // the cap, and the accent/accent-text pair has no contrast to spare.
+              // the stack has no single bottom-right corner any more. Full
+              // strength, never faded: it is the smallest text on the cap.
               trailing: (
-                <span className="ml-auto text-[11px] font-semibold text-(--color-accent-text)">
+                <span className="ml-auto text-[11px] font-semibold text-(--color-accent)">
                   Stale
                 </span>
               ),
@@ -212,10 +233,26 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
         </div>
       </Capped>
 
-      {/* req 33 — what can happen next, in the middle: the steps only the user
-          can do and the offers the agent makes, under one Submit (req 29). */}
+      {/* req 33 — what the last turn did, between the session's state and what
+          can happen next; soft, because it is read rather than acted on. */}
+      {lastTurn && (
+        <Capped
+          icon={<ClockCounterClockwiseIcon size={ICON_SIZE.SM} />}
+          title="Last turn"
+          tone="soft"
+          testId="session-status-last-turn"
+        >
+          <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
+            <MarkdownContent text={lastTurn} />
+          </div>
+        </Capped>
+      )}
+
+      {/* req 33 — what can happen next goes last, in the loud tone: it is the
+          only card that asks something of the user, it carries the one Submit
+          (req 29), and last puts it nearest the composer. */}
       {hasNextSteps && (
-        <Capped icon={<StepsIcon size={ICON_SIZE.SM} />} title="Next steps">
+        <Capped icon={<StepsIcon size={ICON_SIZE.SM} />} title="Next steps" tone="loud">
           {needsYou.length > 0 && (
             <div>
               <Subtitle icon={<ClipboardTextIcon size={ICON_SIZE.SM} />}>Manual steps</Subtitle>
@@ -263,20 +300,6 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
                 Add comment…
               </Button>
             </div>
-          </div>
-        </Capped>
-      )}
-
-      {/* req 33 — the turn the user has just read about goes last: it is the
-          one part of the stack they may already know. */}
-      {lastTurn && (
-        <Capped
-          icon={<ClockCounterClockwiseIcon size={ICON_SIZE.SM} />}
-          title="Last turn"
-          testId="session-status-last-turn"
-        >
-          <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
-            <MarkdownContent text={lastTurn} />
           </div>
         </Capped>
       )}

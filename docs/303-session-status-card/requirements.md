@@ -177,14 +177,19 @@ taken inside one session, without building an agent that talks to many.
 
 33. The card is found at a glance. It does not blend into the conversation
     text, and it does not read as one more transcript card: it is three cards
-    in a stack, each with a coloured cap naming it — **Status** first,
-    **Next steps** in the middle, **Last turn** last — and each drawn in the
-    theme's accent colour, a filled cap with a tinted body. Nothing else in a
-    conversation is coloured that way, so the stack is the one coloured object
-    on the screen. "Next steps" holds the manual steps and the follow-ups
-    together, under the one Submit they share (req 29). This does not make the
+    in a stack, each with a cap naming it, drawn in the theme's accent colour
+    over a tinted body. Nothing else in a conversation is coloured that way, so
+    the stack is the one coloured object on the screen. This does not make the
     session need attention (req 9): it makes the card easy to find once the
     user is in the session.
+
+    The three are not equally loud, and the order follows what they ask of the
+    user. **Status** comes first and **Last turn** second, both quiet — a cap
+    tinted in the accent with accent text — because they are read, not acted
+    on. **Next steps** comes last, nearest the input field, and is the loud one
+    — a cap filled with the accent — because it is the only card that asks
+    something: it holds the manual steps and the follow-ups together, under the
+    one Submit they share (req 29).
 
 ## Open questions
 
@@ -192,6 +197,17 @@ taken inside one session, without building an agent that talks to many.
 
 ## Resolved questions
 
+- 2026-09-16 — Nik, on the three capped cards, fourth round: "make 'status' and
+  'last turn' soft caps, they should attract less attention then next steps.
+  Make next steps last card." → req 33 amended: two tones rather than one, and
+  the order becomes Status · Last turn · Next steps. The reading is that
+  loudness follows what a card asks of the user — the two that are read are
+  quiet, the one that carries the Submit is loud and sits nearest the composer
+  — and the "Stale" mark, which lives on the now-soft Status cap, is drawn in
+  the accent rather than in the inverse text. This supersedes the previous
+  round's single filled-cap treatment and its Status · Next steps · Last turn
+  order, which had put the last turn last as the part the user may already have
+  read.
 - 2026-09-16 — Nik, on the shipped card: "so the card is very bleak, blends
   with the conversation text. Let's iterate on the UI a bit." Three rounds were
   drawn. Round 1 kept the card's shape and changed its surface (solid, an accent

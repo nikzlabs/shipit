@@ -111,10 +111,12 @@
 <body>
 <h1>Session status card — the look</h1>
 <p class="lead">
-  The card as it ships (req 33): three capped cards rather than one, each with an accent-filled cap and an accent-tinted
-  body, stacked <b>Status</b> · <b>Next steps</b> · <b>Last turn</b>. Drawn in the card's real place — agent prose and tool
-  rows above, the composer below — in four themes. The stack is the one coloured object in a conversation, which is what
-  makes it findable at a glance without the session needing attention (req 9).
+  The card as it ships (req 33): three capped cards rather than one, stacked <b>Status</b> · <b>Last turn</b> ·
+  <b>Next steps</b>. The two that are <em>read</em> take a soft cap — an accent tint with accent text — and the one that
+  <em>asks</em> something takes the filled cap and goes last, nearest the composer, because it carries the Submit. Drawn in
+  the card's real place — agent prose and tool rows above, the composer below — in four themes. The stack is the one
+  coloured object in a conversation, which is what makes it findable at a glance without the session needing attention
+  (req 9).
 </p>
 <p class="legend">
   <b>Where “Stale” goes.</b> It describes the whole stack, not one card, so it sits at the right-hand end of the
@@ -184,23 +186,25 @@ function kard(skin, capIcon, capTitle, body, stale) {
   </div>`;
 }
 
-function stack(skin, { split = false, stale = false } = {}) {
-  const middle = split
-    ? kard(skin, I.clip, "Manual steps", STEPS_ROWS) +
-      kard(skin, I.checks, "Follow-ups", FOLLOWUP_ROWS + FOOT)
-    : kard(skin, I.checks, "Next steps", `
+/**
+ * The shipped arrangement: the two cards that are READ take the soft cap, and
+ * the one that ASKS something — "Next steps", which carries the Submit — takes
+ * the filled cap and goes last, nearest the composer.
+ */
+function stack(_skin, { stale = false } = {}) {
+  const nextSteps = kard("s-filled", I.checks, "Next steps", `
         <div class="inner"><div class="sub">${icon(I.clip)}<b>Manual steps</b></div>${STEPS_ROWS}</div>
         <div class="inner"><div class="sub">${icon(I.checks)}<b>Follow-ups</b></div>${FOLLOWUP_ROWS}</div>
         ${FOOT}`);
   return `<div class="stack">
-    ${kard(skin, I.gauge, "Status", STATUS_BODY, stale)}
-    ${middle}
-    ${stale ? "" : kard(skin, I.clock, "Last turn", LAST_TURN_BODY)}
+    ${kard("s-soft", I.gauge, "Status", STATUS_BODY, stale)}
+    ${stale ? "" : kard("s-soft", I.clock, "Last turn", LAST_TURN_BODY)}
+    ${nextSteps}
   </div>`;
 }
 
 const OPTIONS = [
-  ["s-filled", "The card", "accent-filled caps, accent-tinted bodies, three cards", {}],
+  ["s-filled", "The card", "soft caps on Status and Last turn, the filled cap on Next steps, which goes last", {}],
 ];
 const THEMES = [["claude-light", "claude-light"], ["dark", "dark"], ["light", "light"], ["claude", "claude"]];
 
