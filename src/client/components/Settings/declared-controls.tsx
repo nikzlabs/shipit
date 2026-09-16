@@ -22,11 +22,12 @@ import type {
 import { useSetting, useSettingDraft } from "./declared-setting.js";
 import {
   DeclaredEnumCards,
+  DeclaredSelect,
   DeclaredTextarea,
   DeclaredToggle,
   SettingCopy,
 } from "./declared.js";
-import { bindSetting, settingOf } from "./setting-binding.js";
+import { bindSetting, settingOf, settingOptions } from "./setting-binding.js";
 import { inputClass } from "./shared.js";
 
 function GeneratedToggle({ settingKey }: { settingKey: SettingKey }) {
@@ -35,20 +36,30 @@ function GeneratedToggle({ settingKey }: { settingKey: SettingKey }) {
 }
 
 /**
- * A choice as a row of cards, each carrying its own declared description.
+ * A choice: a row of cards, or a `<select>`.
  *
- * The plan's control table also names a `<select>`, for an enum whose options
- * are many or produced by the install rather than written down. Nothing on the
- * tabs generated so far is one — the release channel is two options with a
- * sentence each — so the select arrives with the settings that need it, in
- * slice 4.
+ * **What decides it is already in the declaration** (req 5): a card exists to
+ * carry an option's own sentence, so an option set that declares descriptions
+ * gets cards and one that does not gets a select. The release channel is the
+ * first — two choices whose consequences need a sentence each — and the voice
+ * enums are the second: a dozen dictation languages and two provider lists the
+ * install produces, none of which has anything to put on a card. VS Code makes
+ * every enum a dropdown and hangs `enumDescriptions` beside it (req 6); the
+ * cards are the one place we spend more room than that, and only where there is
+ * something to spend it on.
  */
-function GeneratedEnumCards({ settingKey }: { settingKey: SettingKey }) {
+function GeneratedEnum({ settingKey }: { settingKey: SettingKey }) {
   const { value, set } = useSetting(settingKey);
+  const selected = typeof value === "string" ? value : "";
+  const options = settingOptions(settingKey);
+  if (options.length > 0 && options.every((option) => option.description)) {
+    return <DeclaredEnumCards settingKey={settingKey} value={selected} onChange={set} />;
+  }
   return (
-    <DeclaredEnumCards
+    <DeclaredSelect
       settingKey={settingKey}
-      value={typeof value === "string" ? value : ""}
+      id={`setting-${settingKey}`}
+      value={selected}
       onChange={set}
     />
   );
@@ -161,7 +172,7 @@ function GeneratedGitIdentity({ settingKey }: { settingKey: SettingKey }) {
 
 export const CONTROLS: Partial<Record<SettingValueKind, (key: SettingKey) => ReactNode>> = {
   bool: (key) => <GeneratedToggle settingKey={key} />,
-  enum: (key) => <GeneratedEnumCards settingKey={key} />,
+  enum: (key) => <GeneratedEnum settingKey={key} />,
   text: (key) => <GeneratedTextarea settingKey={key} />,
   gitIdentity: (key) => <GeneratedGitIdentity settingKey={key} />,
 };

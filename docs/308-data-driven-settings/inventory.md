@@ -127,10 +127,10 @@ it:**
 | `voice.cleanupEnabled` | voice | bool | localStorage `shipit-voice-cleanup-enabled` | named only | **generated row** |
 | `voice.language` | voice | enumOf | localStorage `shipit-voice-language` | named only | **generated row** |
 | `voice.playbackEnabled` | voice | bool | localStorage `shipit-voice-playback-enabled` | named only | **generated row** |
-| `voice.ttsProvider` | voice | enumOf | localStorage `shipit-tts-provider` | named only | tts-choices component |
-| `voice.ttsVoice` | voice | text | localStorage `shipit-tts-voice` | named only | tts-choices component |
-| `voice.ttsSpeed` | voice | numeric | localStorage `shipit-tts-speed` | named only | tts-choices component |
-| `voice.handsFree` | voice | bool | localStorage `shipit-voice-hands-free` | named only | hands-free component |
+| `voice.ttsProvider` | voice | enumOf | localStorage `shipit-tts-provider` | named only | `voice-tts` component |
+| `voice.ttsVoice` | voice | text | localStorage `shipit-tts-voice` | named only | `voice-tts` component |
+| `voice.ttsSpeed` | voice | numeric | localStorage `shipit-tts-speed` | named only | `voice-tts` component |
+| `voice.handsFree` | voice | bool | localStorage `shipit-voice-hands-free` | named only | `voice-hands-free` component |
 | `advanced.compactConversation` | advanced | bool | localStorage `shipit-compact-conversation` | named only | **generated row** |
 | `advanced.notifyOnFinish` | advanced | bool | localStorage `shipit-notify-on-finish` | named only | **generated row** |
 | `advanced.soundOnFinish` | advanced | bool | localStorage `shipit-sound-on-finish` | named only | **generated row** |
@@ -139,9 +139,9 @@ it:**
 
 | Setting | Tab | Type | Stored in | Agent reads | Becomes |
 |---|---|---|---|---|---|
-| `voice.providerKey` | voice | text | panel | configured? | repeated by its panel |
-| `voice.webhook.url` | voice | text | panel | configured? | webhook-pair component |
-| `voice.webhook.token` | voice | text | panel | configured? | webhook-pair component |
+| `voice.providerKey` | voice | text | panel | configured? | `voice-provider-keys` component |
+| `voice.webhook.url` | voice | text | own route `POST /api/voice/webhook` → `url` | configured? | `voice-webhook` component |
+| `voice.webhook.token` | voice | text | own route `POST /api/voice/webhook` → `token` | configured? | `voice-webhook` component |
 
 ### Network — `network-settings.ts` (2)
 
@@ -305,6 +305,15 @@ entry, two boxes over one declaration, and it needed nothing the kind does not
 already carry — the coverage walk's one-control rule already exempts composite
 kinds for exactly this shape, and its Save is the tab's rather than the row's.
 
+*Slice 4 settled the second half.* The webhook is a component, and what it cost
+was **an address and a grouping**: both declarations carry the same `own-route`
+`path` and `method` and differ only in `bodyField`, and `commitSettings` sends
+one request per destination rather than one per setting. So the component's Save
+names two keys and no path — the whole of requirement 3 — and the shared-component
+dedup slice 2 deleted came back, because two renders of one credential would be
+two Saves. The read follows the same address: one GET per path, a field per
+setting, and nothing answers the token.
+
 **P10 — The credentials are not one shape.** Of the 14 `configuredOnly`
 declarations, `integrations.github.connection` is a **personal access token
 form** (`src/client/components/GitHubTokenForm.tsx`) and
@@ -324,6 +333,13 @@ no collection declaration** — the Voice tab repeats it over the providers that
 need a key (`src/client/components/Settings/tabs/VoiceTab.tsx:304`). Its owner is
 that list, which is a component; the renderer must not treat it as a standalone
 row.
+
+*Slice 4:* naming a component is exactly how an addressed declaration says that.
+The renderer skips an addressed declaration **that names no component**, and the
+key list keeps its own writer as a panel does — the write is addressed and
+carries a second body field, which no value writer has a shape for. It is a row
+without being in the value record: nothing would ever hydrate a per-provider key,
+and the reader prefers the record to the named field.
 
 **P12 — Tabs hold content that is not a setting, and it stays hand-placed.** The
 update panel, the egress enforcement warning, the built-in agent instructions and
@@ -347,6 +363,10 @@ hidden unless delivery is external or both
 `integrations.autoCreatePr`, which sits in the authenticated branch of the GitHub
 card (`src/client/components/SettingsIntegrations.tsx:131`) and so disappears
 while GitHub is disconnected. Requirement 4 accepts both.
+
+*Slice 4 made the first permanent.* The pair renders whatever the delivery mode
+is, which is the honest order: the webhook has to be configured before either
+mode that uses it does anything. `integrations.autoCreatePr` is slice 5.
 
 **P14 — The instruction boxes write to files and detect outside edits.** Both
 `system-prompt-file` settings carry a conflict notice when the file changed while
@@ -409,6 +429,17 @@ its default. The keybindings collection is stored as a JSON override object and
 value kind for the browser store**, plus that legacy fallback kept, plus fixtures
 written in today's on-disk formats. Keeping the storage key is necessary and not
 sufficient.
+
+*Slice 4 added three kinds and found a second half to the problem.* A choice and
+a line of text are stored as themselves, so the codec hands the raw string to the
+value type's own `read`; a speed is stored as `String(value)` and has to be
+parsed first, because `numeric.read` answers its default for a string. Going
+*through* `read` rather than past it is what the accessors it replaces did not
+do: `getSavedString` returned any stored text, so a provider the catalogue no
+longer offers reached a `<select>` with no such option and rendered blank, and
+the speed accessor accepted any number above zero, including one outside the
+declared range. A collection is still a kind the codec cannot spell, which is
+what keeps the keybindings on the reader they have (P16).
 
 **P18 — The slices need coexistence rules, not just an order.** A tab converted
 to a generated block while some of its controls are not yet supported will

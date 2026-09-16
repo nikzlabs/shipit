@@ -248,6 +248,7 @@ export const GLOBAL_SETTINGS = {
   "voice.deliveryMode": defineSetting({
     key: "voice.deliveryMode",
     tab: "voice",
+    section: "Voice notes",
     scope: "global",
     label: "Delivery",
     description: "Where a voice note goes when the agent records one.",

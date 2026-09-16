@@ -1583,6 +1583,10 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   "voice.ttsProvider",
   "voice.ttsSpeed",
   "voice.ttsVoice",
+  // Generated in slice 4. The hand-written pair rendered each declared label and
+  // no description at all, beneath a sentence the panel had written itself.
+  "voice.webhook.token",
+  "voice.webhook.url",
 ];
 
 describe("the walk is not passing vacuously", () => {

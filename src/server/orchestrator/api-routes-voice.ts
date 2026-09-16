@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { getErrorMessage } from "./validation.js";
 import { ServiceError } from "./services/index.js";
+import { SETTINGS_CHANGED_EVENT } from "./services/settings-apply.js";
 import {
   setVoiceKey,
   clearVoiceKey,
@@ -14,6 +15,25 @@ import {
 import type { VoiceCleanupDeps } from "./services/voice-cleanup.js";
 import { TtsCache } from "./voice/index.js";
 import { routeVoiceNote, sanitizeVoiceContext } from "./voice/voice-note-router.js";
+
+/** The stored webhook url, or the empty string — the value `voice.webhook.url` holds. */
+function storedUrl(credentialStore: ApiDeps["credentialStore"]): { url: string } {
+  return { url: credentialStore.getVoiceWebhook()?.url ?? "" };
+}
+
+/**
+ * Tell every viewer the webhook moved, as `PUT /api/settings` already does for
+ * the settings it carries (`services/settings-apply.ts`).
+ *
+ * The webhook is now a declared row read on the `settings_changed` refresh, and
+ * this route is the only thing that changes it — so without the broadcast a
+ * second browser's save reaches an open dialog nowhere. The Voice tab used to
+ * re-read the status whenever it was mounted, which covered less: it needed
+ * somebody to leave the tab and come back.
+ */
+function announceWebhookChange(deps: ApiDeps): void {
+  deps.sseBroadcast(SETTINGS_CHANGED_EVENT, { keys: ["voice.webhook.url", "voice.webhook.token"] });
+}
 
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const { credentialStore } = deps;
@@ -154,19 +174,29 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
       // The browser cannot read the token; a blank field preserves the stored value.
       const storedToken = credentialStore.getVoiceWebhook()?.token ?? "";
       credentialStore.setVoiceWebhook(url, token || storedToken);
-      return { ok: true };
+      announceWebhookChange(deps);
+      // The stored url, echoed under the field the declaration writes it through,
+      // because the shared writer records what the server ACCEPTED rather than
+      // what was sent (docs/308-data-driven-settings). Nothing echoes the token:
+      // it is `configuredOnly`, and a route that answered it would be the one
+      // place the browser could read it back.
+      return storedUrl(credentialStore);
     },
   );
 
   app.delete("/api/voice/webhook", async () => {
     credentialStore.clearVoiceWebhook();
-    return { ok: true };
+    announceWebhookChange(deps);
+    return storedUrl(credentialStore);
   });
 
-  app.get("/api/voice/webhook/status", async () => {
-    const wh = credentialStore.getVoiceWebhook();
-    return { configured: !!wh, url: wh?.url ?? null };
-  });
+  /*
+    The own-route READ for both webhook halves (inventory.md P2): a GET of the
+    same path, answering under the same body field. It replaced
+    `/api/voice/webhook/status`, whose `{ configured, url }` said the same thing
+    in a second shape — a webhook exists exactly when a url is stored.
+  */
+  app.get("/api/voice/webhook", async () => storedUrl(credentialStore));
 
   app.post<{
     Params: { sessionId: string };

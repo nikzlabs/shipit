@@ -33,30 +33,50 @@ function declarationOf(key: string): AnySettingDeclaration {
   return declaration;
 }
 
-/** Each key's saved value written the way it is already on disk, both ways round. */
-const SAVED: readonly { key: string; storageKey: string; saved: boolean }[] = [
-  { key: "advanced.compactConversation", storageKey: "shipit-compact-conversation", saved: true },
-  { key: "advanced.compactConversation", storageKey: "shipit-compact-conversation", saved: false },
-  { key: "advanced.notifyOnFinish", storageKey: "shipit-notify-on-finish", saved: false },
-  { key: "advanced.notifyOnFinish", storageKey: "shipit-notify-on-finish", saved: true },
-  { key: "advanced.soundOnFinish", storageKey: "shipit-sound-on-finish", saved: false },
-  { key: "advanced.soundOnFinish", storageKey: "shipit-sound-on-finish", saved: true },
+/**
+ * Each key's saved value written the way it is already on disk, both ways round.
+ *
+ * The four kinds below the booleans are slice 4's: a choice and a line of text
+ * were written by `saveString` and read by `getSavedString`, and the speed was
+ * written by `String(value)` and parsed back with `Number`. `stored` is exactly
+ * what those wrote.
+ */
+const SAVED: readonly { key: string; storageKey: string; stored: string; value: unknown }[] = [
+  { key: "advanced.compactConversation", storageKey: "shipit-compact-conversation", stored: "true", value: true },
+  { key: "advanced.compactConversation", storageKey: "shipit-compact-conversation", stored: "false", value: false },
+  { key: "advanced.notifyOnFinish", storageKey: "shipit-notify-on-finish", stored: "false", value: false },
+  { key: "advanced.notifyOnFinish", storageKey: "shipit-notify-on-finish", stored: "true", value: true },
+  { key: "advanced.soundOnFinish", storageKey: "shipit-sound-on-finish", stored: "false", value: false },
+  { key: "advanced.soundOnFinish", storageKey: "shipit-sound-on-finish", stored: "true", value: true },
+  { key: "voice.sttProvider", storageKey: "shipit-stt-provider", stored: "deepgram", value: "deepgram" },
+  { key: "voice.ttsProvider", storageKey: "shipit-tts-provider", stored: "elevenlabs", value: "elevenlabs" },
+  { key: "voice.language", storageKey: "shipit-voice-language", stored: "fr", value: "fr" },
+  // The declared default is "" — Auto — so a stored "" has to survive as itself
+  // rather than being mistaken for nothing stored.
+  { key: "voice.language", storageKey: "shipit-voice-language", stored: "", value: "" },
+  { key: "voice.ttsVoice", storageKey: "shipit-tts-voice", stored: "shimmer", value: "shimmer" },
+  { key: "voice.ttsSpeed", storageKey: "shipit-tts-speed", stored: "1.25", value: 1.25 },
+  { key: "voice.ttsSpeed", storageKey: "shipit-tts-speed", stored: "0.8", value: 0.8 },
+  { key: "voice.inputEnabled", storageKey: "shipit-voice-input-enabled", stored: "true", value: true },
+  { key: "voice.cleanupEnabled", storageKey: "shipit-voice-cleanup-enabled", stored: "false", value: false },
+  { key: "voice.playbackEnabled", storageKey: "shipit-voice-playback-enabled", stored: "true", value: true },
+  { key: "voice.handsFree", storageKey: "shipit-voice-hands-free", stored: "true", value: true },
 ];
 
 describe("a value the user already saved is still read afterwards", () => {
-  for (const { key, storageKey, saved } of SAVED) {
-    it(`reads ${key} back as ${saved}`, () => {
-      localStorage.setItem(storageKey, String(saved));
+  for (const { key, storageKey, stored, value } of SAVED) {
+    it(`reads ${key} back as ${JSON.stringify(value)}`, () => {
+      localStorage.setItem(storageKey, stored);
 
-      expect(readBrowserValue(declarationOf(key))).toBe(saved);
-      expect(initialSettingValues()[key]).toBe(saved);
+      expect(readBrowserValue(declarationOf(key))).toBe(value);
+      expect(initialSettingValues()[key]).toBe(value);
     });
   }
 
   it("writes the same text the accessors it replaces wrote", () => {
-    for (const { key, storageKey, saved } of SAVED) {
-      writeBrowserValue(declarationOf(key), saved);
-      expect(localStorage.getItem(storageKey)).toBe(String(saved));
+    for (const { key, storageKey, stored, value } of SAVED) {
+      writeBrowserValue(declarationOf(key), value);
+      expect(localStorage.getItem(storageKey)).toBe(stored);
     }
   });
 });
@@ -72,6 +92,26 @@ describe("a browser value that was never saved", () => {
   it("reads as the declaration's default for text ShipIt never wrote", () => {
     localStorage.setItem("shipit-compact-conversation", "invalid");
     expect(readBrowserValue(declarationOf("advanced.compactConversation"))).toBe(false);
+  });
+
+  /*
+    A choice and a speed are the two the raw accessors got wrong. `getSavedString`
+    handed back any stored text, so a provider the catalogue no longer offers
+    reached a `<select>` that has no such option and rendered blank; the speed
+    accessor accepted any number above zero, including one outside the range the
+    declaration states. Both now answer the declared default, because the codec
+    hands the decoded value to the value type rather than past it.
+  */
+  it("reads an option the catalogue no longer offers as the default", () => {
+    localStorage.setItem("shipit-stt-provider", "a-provider-that-was-removed");
+    expect(readBrowserValue(declarationOf("voice.sttProvider"))).toBe("openai");
+  });
+
+  it("reads a number outside the declared range as the default", () => {
+    localStorage.setItem("shipit-tts-speed", "9");
+    expect(readBrowserValue(declarationOf("voice.ttsSpeed"))).toBe(1);
+    localStorage.setItem("shipit-tts-speed", "not a number");
+    expect(readBrowserValue(declarationOf("voice.ttsSpeed"))).toBe(1);
   });
 
   it("falls back, and does not throw, when storage is unavailable", () => {
@@ -99,11 +139,63 @@ describe("the record covers the settings the converted tabs generate", () => {
       "instructions.userInstructions",
       "instructions.opsInstructions",
       "instructions.agentInstructionsEnabled",
+      "voice.deliveryMode",
       "network.egressContained",
+      "voice.providerKey",
+      "voice.webhook.url",
+      "voice.webhook.token",
+      "voice.inputEnabled",
+      "voice.sttProvider",
+      "voice.cleanupEnabled",
+      "voice.language",
+      "voice.playbackEnabled",
+      "voice.ttsProvider",
+      "voice.ttsVoice",
+      "voice.ttsSpeed",
+      "voice.handsFree",
       "advanced.compactConversation",
       "advanced.notifyOnFinish",
       "advanced.soundOnFinish",
     ]);
+  });
+
+  /*
+    P11 — `voice.providerKey` is addressed by a provider and belongs to no
+    collection declaration, so the list that repeats it is its owner and it is a
+    row. Its value is NOT the record's: a key is written per provider and never
+    read back, so a value here would be one nothing ever hydrates, under a reader
+    that prefers the record to the named field.
+  */
+  it("renders an addressed declaration that names a component, and holds no value for it", () => {
+    const declaration = findSetting("voice.providerKey")!;
+    expect(declaration.address?.kind).toBe("item");
+    expect(GENERATED_SETTINGS).toContain(declaration);
+    expect(Object.keys(initialSettingValues())).not.toContain("voice.providerKey");
+  });
+
+  /*
+    The other half of P11, written against the rule because nothing declares it
+    today: an addressed declaration with no component belongs to a panel, which
+    renders it per item. Generating it would put one control on screen for a
+    setting that exists once per provider, per server or per host.
+  */
+  /*
+    The other half of P11, written against the rule because nothing declares it
+    today: an addressed declaration with no component belongs to a panel, which
+    renders it per item. The fixture is a row that IS generated — a choice the
+    codec can spell, over a store the writer reaches — so the address is the only
+    thing left to keep it out. Generating it would put one control on screen for
+    a setting that exists once per provider, per server or per host.
+  */
+  it("leaves an addressed declaration that names no component out", () => {
+    const perItem = {
+      ...declarationOf("voice.sttProvider"),
+      key: "voice.somethingPerProvider",
+      address: { kind: "item", noun: "a speech provider id" },
+    } as AnySettingDeclaration;
+
+    expect(isGeneratedRow({ ...perItem, address: undefined })).toBe(true);
+    expect(isGeneratedRow(perItem)).toBe(false);
   });
 
   // A component is why the memory budget is a row: its value kind has no
@@ -136,16 +228,25 @@ describe("the record covers the settings the converted tabs generate", () => {
   already have shipped.
 */
 describe("a browser value the store cannot spell", () => {
-  const browserEnum = {
-    ...declarationOf("advanced.compactConversation"),
-    key: "advanced.somethingChosen",
-    type: { ...declarationOf("voice.sttProvider").type },
+  /*
+    A composite: the control table has one, so the fixture reaches the codec gate
+    rather than stopping at "no control for this kind" — which is what the first
+    cut of this test did, leaving the gate itself unexercised. `localStorage`
+    holds strings and nothing encodes a name-and-email pair, so a row that
+    rendered would change on screen and store nothing.
+  */
+  const browserComposite = {
+    ...declarationOf("git.identity"),
+    key: "advanced.somethingPaired",
+    tab: "advanced",
+    store: { kind: "browser", localStorageKey: "shipit-something-paired" },
   } as AnySettingDeclaration;
 
   it("is not a generated row, because nothing could encode it", () => {
-    expect(browserEnum.store.kind).toBe("browser");
-    expect(browserEnum.type.kind).toBe("enum");
-    expect(isGeneratedRow(browserEnum)).toBe(false);
+    expect(browserComposite.store.kind).toBe("browser");
+    expect(isGeneratedRow({ ...browserComposite, store: declarationOf("git.identity").store }))
+      .toBe(true);
+    expect(isGeneratedRow(browserComposite)).toBe(false);
   });
 
   it("is a generated row for a kind the codec does spell", () => {
@@ -180,11 +281,29 @@ describe("a text value whose store is not the prompt files", () => {
 });
 
 describe("the rows the settings payload does not carry", () => {
-  it("names the two settings written through a route of their own", () => {
+  it("names the settings written through a route of their own", () => {
     expect(OWN_ROUTE_SETTINGS.map((d) => d.key)).toEqual([
       "advanced.releaseChannel",
       "network.egressContained",
+      "voice.webhook.url",
+      "voice.webhook.token",
     ]);
+  });
+
+  /*
+    Two declarations at ONE address, which is what says they share a write
+    (plan.md → Slices → 4). The webhook is one credential in two halves, and the
+    address is where that fact lives: the pair is a component because of how it
+    LOOKS, and one request because of what the declarations say.
+  */
+  it("gives the two webhook halves the same address and different fields", () => {
+    const url = ownRouteOf(declarationOf("voice.webhook.url"));
+    const token = ownRouteOf(declarationOf("voice.webhook.token"));
+    expect(url?.path).toBe("/api/voice/webhook");
+    expect(token?.path).toBe(url?.path);
+    expect(url?.method).toBe("POST");
+    expect(token?.method).toBe(url?.method);
+    expect([url?.bodyField, token?.bodyField]).toEqual(["url", "token"]);
   });
 
   /*

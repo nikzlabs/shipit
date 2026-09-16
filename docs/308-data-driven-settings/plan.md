@@ -42,7 +42,7 @@ lists the five fields that looked necessary and were not (req 5).
 |---|---|
 | `credential-store`, `system-prompt-file`, `git-config` | `PUT /api/settings` with `{ [wire]: value }` |
 | `browser` | encode for `localStorage`, write `localStorageKey`, update the value record (P17) — and a kind the codec cannot spell is **not** a generated row at all, because a control that changes on screen and stores nothing is worse than one that is not there |
-| `own-route` | `method` `path` with `{ [bodyField]: value }` |
+| `own-route` | `method` `path` with `{ [bodyField]: value }` — and two declarations may share one `path`, which is what says they are one write (slice 4) |
 
 **`own-route` is why five settings can be rows at all** (P2). The two that use it
 today post different body shapes and carry no `wire`. Three more are single
@@ -76,7 +76,8 @@ single write, so the button cannot belong to either declaration — and requirem
 would have done. So the edit lives in a **draft record** beside the value record
 (`useSettingDraft`), and `<DeclaredCommit tab="…"/>` in the tab's footer commits
 every edited row on that tab through `commitSettings`, which sends one
-`PUT /api/settings` carrying each declaration's `wire`. The button names a tab
+one request to the destination those declarations name — `PUT /api/settings`
+carrying each one's `wire` for the tabs that have one. The button names a tab
 and never a setting, so a third box added to the Instructions tab is committed by
 it with no edit anywhere. `git.identity` is the same button on another tab.
 
@@ -102,12 +103,21 @@ holding what was sent is done and goes, one typed in since stays with its **seed
 advanced to what is now stored**, because that write was the user's own and not
 the outside change the seed exists to detect.
 
-**Two commits of one setting must not overlap**, and the button is what stops
-them: it is disabled while its write is in flight. `commitSettings` has no
-sequencing of its own — out-of-order responses would leave the record on the
-older value with the server holding the newer, after the `settings_changed`
-refresh that would have corrected it had already run — and it needs none while it
-has one caller that cannot produce them.
+**Two commits of one destination must not overlap**, and slice 3's answer — the
+button is disabled while its write is in flight — turned out not to be enough.
+That state belongs to a component, so switching tabs re-mounts the button enabled
+while the request is still out, and the older of two responses then leaves the
+record on the older value with the server holding the newer, after the
+`settings_changed` refresh that would have corrected it has already run. So
+`commitSettings` keeps a module-level sequence **per destination**, exactly as
+`saveSetting` keeps one per setting: an answer that is not the newest moves
+nothing. The disabled button stays, as the thing that makes a double-click do
+nothing.
+
+**Unless one component owns every half of the commit** (slice 4). The webhook's
+Save saves both halves of one credential to one address, so it belongs to that
+component: a tab-level button would have sat at the foot of the tab, away from
+the boxes it saves. The rule below is for a Save that spans two independent rows.
 
 **A tab that has an explicit-commit row must place a `DeclaredCommit`**, and
 nothing checks that it does: moving a `system-prompt-file` row to a tab without
@@ -173,7 +183,7 @@ forces a migration.
 | Value kind | Control |
 |---|---|
 | `bool` | toggle |
-| `enumOf` | select, or a segmented picker for a short static set — slice 2 built the picker, which is what its one enum wanted; the select arrives with slice 4's voice enums, whose option sets are long or produced by the install |
+| `enumOf` | a card per option when every option declares a **description**, otherwise a select — the declaration decides, with no new field (slice 4). A card exists to carry an option's sentence; the release channel is the only set that has one |
 | `numeric` | number input, with the declared unit |
 | `text` | textarea when the store is `system-prompt-file`; a `text` row over any other store has no control yet, so it is **not generated at all** (slice 3) |
 | `gitIdentity` | the name-and-email pair |
@@ -181,10 +191,14 @@ forces a migration.
 | `text` whose dialog value is write-only | credential row: configured or not, replace, remove |
 | a declaration naming a `component` | that component, rendered **once** however many declarations name it |
 
-**What the walk skips**: any declaration carrying an `address`, because a panel
-owns it and renders it per item (P11). `voice.providerKey` is addressed and has
-no collection declaration — its owner is the Voice tab's provider-key list, which
-is a component, so the walk must not treat it as a standalone row.
+**What the walk skips**: a declaration carrying an `address` and naming no
+`component`, because a panel owns it and renders it per item (P11).
+`voice.providerKey` is addressed and has no collection declaration — its owner is
+the Voice tab's provider-key list, which is a component, so naming one is exactly
+how an addressed declaration says it is not a standalone row (slice 4). Such a
+component may also own a store the shared writer cannot reach, and then it writes
+as a panel does; what it never does is put a value in the record, which nothing
+would hydrate.
 
 Label and description come from the declaration. Validation messages come from
 the value type's `validate()`, which already returns the `Rendered` text the
@@ -193,6 +207,11 @@ agent is shown, so a control stops carrying its own bounds and placeholders (P8)
 **Content that is not a setting stays hand-placed and needs no schema** (P12). A
 tab file is still a React component; it puts `<DeclaredSettings/>` and the update
 panel or the enforcement warning where it wants them.
+
+The renderer also takes `rowNotes`, keyed by **setting**: derived status that
+reports on the row above it, which a section's prose cannot be because it renders
+above the whole group (slice 4 — the key a dictation provider still needs, and
+whether transcript cleanup can run).
 
 Slice 1 found one shape that needs more than "around the block": prose that
 belongs to a **section** rather than to any one declaration — Advanced's *"Saved
@@ -221,6 +240,12 @@ A declaration naming a component is a generated row whatever its value kind: wha
 the control table has no control for is exactly what a component is for. The
 memory budget is the first, and it is why the Advanced tab's number row is a row
 at all (P4).
+
+**A component named by several declarations renders once, at the first of them,
+and names its own keys** (slice 4). The prop is the one key a single-setting
+component needs; a component that owns several has to know which is which — the
+TTS trio is a provider, a voice and a speed — so a positional list would put that
+decision in the catalogue file instead.
 
 Nine panels own the 34 addressed fields between them (P11) — one of which,
 `keyboard.keybindings`, has a fixed item set rather than a user-created one and
@@ -305,6 +330,127 @@ existing one or renders a row that cannot save.
 4. **Voice.** The remaining browser values, the TTS component (P3, P7), the
    hands-free component (P3), the provider-key list (P11), the webhook pair (P9),
    and the webhook becoming always visible (P13).
+
+   **The shared component is decided, and it is both halves of the question at
+   once.** The webhook's URL and token are one credential written in one request
+   and declared as two settings, so the store became a machine-readable
+   **address** — both declarations name the same `own-route` `path` and `method`
+   and differ only in the `bodyField` they occupy — *and* `commitSettings` takes
+   its destination **from the declarations** instead of assuming the settings
+   payload. Neither half works alone: prose could not have produced the request,
+   and a commit hard-coded to `PUT /api/settings` could not have sent it. What it
+   buys is exactly requirement 3: the component's Save names two keys and no
+   path, no method and no payload field. The read follows the same contract — one
+   GET per **address**, whose answer carries a field per setting, so
+   `GET /api/voice/webhook` answers `{ url }` and nothing answers the token,
+   which is what `configuredOnly` already said about it. A field the answer omits
+   leaves the record alone, on both the read and the commit.
+
+   **What it did NOT need is a commit that fans out across destinations.** The
+   first cut grouped entries by address and reported partial success; review
+   asked what would notice if that went, and nothing would — every commit that
+   exists targets one address. So a commit resolves one destination, refuses a
+   caller that mixes two by name, and sends one request (req 5). "One
+   destination" is not "a hard-coded destination", and conflating them is what
+   made the fan-out look necessary.
+
+   **A component that owns several declarations renders once, at the first of
+   them, and names its own keys.** The dedup slice 2 deleted comes back because
+   two Saves over one credential is what the second render would be. The keys
+   are NOT passed in as a list: the TTS component has to know which of its three
+   is the provider, which the voice and which the speed, so a positional list
+   would decide that in the catalogue file. The registry's one prop stays what a
+   single-setting component needs, and a component that does not need it takes no
+   props.
+
+   **A component may own a declaration the shared value machinery cannot hold.**
+   `voice.providerKey` is addressed by a provider and its write carries a second
+   body field, so the list that repeats it keeps its own writer, as a panel does
+   — and it is a generated row because it names a component, not in spite of its
+   address (P11). What it must not do is enter the value record: nothing would
+   hydrate it, and the reader prefers the record to the named field. So
+   membership of the record is narrower than membership of the rows.
+
+   **An explicit commit is a tab's — unless one component owns every half of it.**
+   The webhook's Save is the component's, because it saves both halves of one
+   credential to one address; a `DeclaredCommit` at the foot of the tab would
+   have been a Save far from the boxes it saves, and a second one beside them.
+   The rule slice 3 wrote still holds for the case it was written for: a Save
+   that spans two independent rows belongs to the tab.
+
+   **A choice is cards or a select, decided by the declaration** (req 5): cards
+   exist to carry an option's own sentence, so an option set that declares
+   descriptions gets cards and one that does not gets a select. That leaves the
+   release channel on cards and puts the two provider lists, the dozen dictation
+   languages and the delivery mode on selects, with no new field and no threshold
+   anyone has to maintain. It is VS Code's answer (req 6) with one exception,
+   taken only where there is something to spend the room on.
+
+   **The renderer gained `rowNotes`, keyed by setting rather than by section.**
+   Slice 3 found that a section `note` renders above its rows and left it with
+   one user; this tab has two lines that report on the row *above* them — the key
+   the chosen dictation provider still needs, and whether transcript cleanup can
+   run at all. Both are derived status rather than copy, so P12 holds: they stay
+   in the tab file.
+
+   **Order changed, and one part of it could not be chosen** (req 11). The tab
+   reads Voice notes → Provider API keys → Voice input (dictation) → Voice
+   playback. A section is placed where its first declaration is, and
+   `voice.deliveryMode` is a payload setting in `GLOBAL_SETTINGS`, which is the
+   first source in the registry — so the Voice notes section leads whatever the
+   other files say. Moving the declaration across files would have changed the
+   derived `GlobalSettings` payload types, and reordering the registry's sources
+   would have moved rows on other tabs and in `shipit settings list`. Neither is
+   worth it: requirement 11 accepts the order that falls out.
+
+   **A commit is sequenced by the writer, not by the button** (found in review).
+   Slice 3's rule was that `DeclaredCommit` is disabled while its write is in
+   flight, and that is a component's state: switching tabs re-mounts the button
+   enabled while the request is still out, so two commits of one address overlap
+   and the older answer can put the older value in the record with the server
+   holding the newer. `commitSettings` now keeps a module-level sequence per
+   destination, exactly as `saveSetting` does per setting, and an answer that is
+   not the newest moves nothing.
+
+   **A draft settles against what was SENT, so the component must not normalise**
+   (found in review). Trimming the token before the commit sent `"secret"` while
+   the draft still held `" secret "`; settling read that as typing since the save
+   and left a stored credential in the password box, which the next save would
+   send again instead of the blank that keeps the stored one. The route trims and
+   the record takes what it echoed — normalisation belongs to the writer.
+
+   **Removing settles rather than drops** (found in review). The first cut
+   discarded both drafts outright when the DELETE landed, which erased a
+   replacement typed while it was in flight. It now settles the values that were
+   on screen when Remove was pressed, so a box typed in since keeps what was
+   typed — the same rule every other write follows.
+
+   **A webhook write broadcasts `settings_changed`** (found in review). The old
+   tab re-read the webhook status whenever it mounted, so switching tabs picked
+   up another browser's change; the generated row reads on the global-settings
+   refresh instead, and this route raised no such event. Broadcasting covers
+   strictly more than the mount-fetch it replaces: every open viewer re-reads,
+   not just one that left the tab and came back.
+
+   Knowingly given up: the webhook's hand-written sentence about the POST body
+   (it moved into `voice.webhook.url`'s declared description, so the agent reads
+   it too) and its `Configured → <url>` line (the URL box shows the URL);
+   `voiceWebhookConfigured` as a store field (a webhook exists exactly when a url
+   is stored, and the url is read back, so the second fact was the first one
+   twice); and `GET /api/voice/webhook/status`, replaced by the own-route
+   `GET /api/voice/webhook` that answers the same thing under the declared field.
+   One more, and it is a **correction** rather than a loss: the old speed
+   accessor accepted any finite number above zero, so a stored `"9"` read back as
+   9; going through `numeric.read` answers the declared default for anything
+   outside `[0.25, 4]`. Nothing the dialog or the play button ever offered is
+   outside that range, so no selection a user made is affected.
+
+   Two limitations this slice inherits and does not fix, both stated so they are
+   not read as new: the scalar writer's rollback is still wrong for an older
+   request succeeding after a newer one failed (slice 1 recorded it, and
+   `voice.deliveryMode` now rides it), and two concurrent own-route reads can
+   still leave the older answer in the record, because the guard compares the
+   value rather than ordering the requests (slice 2).
 5. **Integrations.** The two credential rows over their declared routes (P2, P10)
    and `autoCreatePr` becoming always visible (P13).
 6. **Panels.** Register the nine as components and bind them to their
@@ -339,6 +485,11 @@ on the same reader while their tabs wait for slices 5 and 3.
 | `src/client/stores/setting-values.ts` | which settings the record holds, the browser codec (P17), the named fields each one mirrors (P1), where an own-route row is written and read (P2) |
 | `src/client/stores/setting-hydration.ts` | the payload read and the own-route read, both walking the declarations |
 | `src/client/components/Settings/components/registry.ts` | the components a declaration may name |
+| `src/client/components/Settings/components/VoiceWebhook.tsx` | the first component two declarations share: one credential, one address, one Save |
+| `src/client/components/Settings/components/VoiceTts.tsx` | provider, voice and speed together, because changing the first repairs the other two (P3, P7) |
+| `src/client/components/Settings/components/VoiceHandsFree.tsx` | the toggle that arms audio inside the click gesture (P3) |
+| `src/client/components/Settings/components/VoiceProviderKeys.tsx` | the addressed key list, which keeps its own writer as a panel does (P11) |
+| `src/client/voice/voice-key-status.ts` | which speech providers have a key: one fact, three readers, and a component takes no props to pass it by |
 | `src/client/components/Settings/tabs/UpdatePanel.tsx` | the Software Updates chrome, placed as that section's note (P12) |
 | `src/client/components/Settings/setting-binding.ts` | `data-setting`; deleted in slice 8 |
 | `src/client/components/Settings/settings-coverage.test.tsx` | the walk; deleted in slice 8 (P15) |
