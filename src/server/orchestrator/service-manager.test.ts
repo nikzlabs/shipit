@@ -368,6 +368,55 @@ services:
     );
   });
 
+  it("re-attaches the session network after ComposeCli recreates it under a stale config hash", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  dev:
+    image: node:22
+    ports: ["3000:3000"]
+    x-shipit-preview: manual
+`);
+
+    const network = "shipit-session-test-session";
+    const dockerCalls: string[][] = [];
+    const networkJoinCalls: string[] = [];
+    let ups = 0;
+    const composeRunner: ComposeRunner = (args) => {
+      if (!args.includes("up")) return Promise.resolve();
+      ups += 1;
+      if (ups > 1) return Promise.resolve();
+      return Promise.reject(new Error(
+        `docker compose up failed (exit 1): Error response from daemon: error while removing ` +
+        `network: network ${network} id 8f1c has active endpoints`,
+      ));
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      dockerCalls.push(args);
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+      networkJoinFn: (name) => { networkJoinCalls.push(name); return Promise.resolve(); },
+    });
+
+    await mgr.start();
+    networkJoinCalls.length = 0;
+    await mgr.startService("dev");
+
+    expect(dockerCalls).toContainEqual(["network", "rm", network]);
+    // Once from the recovery's hand-back, once from startService's own join.
+    expect(networkJoinCalls).toEqual([network, network]);
+    expect(ups).toBe(2);
+  });
+
   it("throws for unknown service in startService", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");

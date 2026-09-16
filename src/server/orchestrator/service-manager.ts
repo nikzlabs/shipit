@@ -308,6 +308,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
       ...(opts.onTopologyChange ? { onTopologyChange: opts.onTopologyChange } : {}),
+      rejoinSessionNetwork: () => this.joinSessionNetwork(),
     });
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;

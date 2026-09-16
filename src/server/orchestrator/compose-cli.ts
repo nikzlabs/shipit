@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import os from "node:os";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
@@ -29,7 +30,14 @@ export interface ComposeCliOptions {
   composeQuery?: ComposeQuery;
   /** Invalidate the API guard's container index before services can reach it. */
   onTopologyChange?: () => () => void;
+  /**
+   * Re-attach ShipIt's own endpoints after the session network has been taken out from under them.
+   * Owned here rather than by each caller: `refreshSecrets` reaches `up` without ever joining.
+   */
+  rejoinSessionNetwork?: () => Promise<void>;
 }
+
+type UpRecovery = "none" | "container" | "network";
 
 export class ComposeCli {
   private readonly sessionId: string;
@@ -40,6 +48,7 @@ export class ComposeCli {
   private readonly runner: ComposeRunner;
   readonly query: ComposeQuery;
   private readonly onTopologyChange?: () => () => void;
+  private readonly rejoinFn?: () => Promise<void>;
 
   constructor(opts: ComposeCliOptions) {
     this.sessionId = opts.sessionId;
@@ -50,6 +59,7 @@ export class ComposeCli {
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
     this.onTopologyChange = opts.onTopologyChange;
+    this.rejoinFn = opts.rejoinSessionNetwork;
   }
 
   setComposeFile(file: string, noProjectFile = false): void {
@@ -219,17 +229,95 @@ export class ComposeCli {
     try {
       await this.run(onOutput, ...subArgs);
     } catch (err) {
-      const conflictId = extractConflictContainerId((err as Error).message);
-      if (!conflictId) throw err;
+      const recovery = await this.clearUpBlocker(err as Error);
+      if (recovery === "none") throw err;
+      try {
+        await this.run(onOutput, ...subArgs);
+      } finally {
+        // The retry recreates the network, so re-attach even when it failed: `up` creates the
+        // network before the step that failed as often as not.
+        if (recovery === "network") await this.rejoinSessionNetwork();
+      }
+    }
+  }
+
+  /** Resolve a failure `up` cannot make progress past on its own; "none" when a retry is pointless. */
+  private async clearUpBlocker(err: Error): Promise<UpRecovery> {
+    const conflictId = extractConflictContainerId(err.message);
+    if (conflictId) {
       console.warn(
         `[compose:${this.sessionId}] Container-name conflict; removing ${conflictId.slice(0, 12)} and retrying`,
       );
       try {
         await this.query(["rm", "-f", conflictId], this.workspaceDir);
       } catch {
-        throw err;
+        return "none";
       }
-      await this.run(onOutput, ...subArgs);
+      return "container";
+    }
+
+    const network = extractActiveEndpointNetwork(err.message);
+    if (network === `shipit-session-${this.sessionId}`) {
+      return await this.recreateSessionNetwork(network) ? "network" : "none";
+    }
+    return "none";
+  }
+
+  /**
+   * Compose recreates the session network whenever its definition changes (planning#584 added a
+   * stack label, changing the config hash), but its `network rm` fails while ShipIt's own
+   * out-of-band endpoints are attached — the session's agent container and the orchestrator, which
+   * joins every session network to route previews. Compose owns neither, so it can never clear
+   * them and the `up` fails identically forever. Endpoints Compose DOES own are left alone: it
+   * removes those itself and recovers unaided.
+   *
+   * Remove the network here rather than leaving it to the retried `up`: that would widen the
+   * window between the disconnect and the removal to a whole build, and the poller's network heal
+   * re-attaches the agent inside it.
+   */
+  private async recreateSessionNetwork(network: string): Promise<boolean> {
+    console.warn(
+      `[compose:${this.sessionId}] Network ${network} has active endpoints; ` +
+        `disconnecting ShipIt's own and recreating it`,
+    );
+    // Two passes: the poller's network heal can re-attach the agent between the disconnect and
+    // the removal, and covering that here is far less machinery than serialising with the poller.
+    let severed = false;
+    for (let pass = 0; pass < 2; pass++) {
+      let disconnected = 0;
+      for (const endpoint of [`agent-${this.sessionId.slice(0, 12)}`, os.hostname()]) {
+        try {
+          await this.query(["network", "disconnect", "-f", network, endpoint], this.workspaceDir);
+          disconnected++;
+          severed = true;
+        } catch {
+          // Not attached, or already gone.
+        }
+      }
+      // Nothing of ours holds it, so the retry would fail identically.
+      if (disconnected === 0) break;
+      try {
+        await this.query(["network", "rm", network], this.workspaceDir);
+        return true;
+      } catch {
+        // Either a re-attach raced us, or an endpoint we do not own still holds it.
+      }
+    }
+    // Put back what we took before the caller reports the original failure — the alternative
+    // leaves the session detached from a network that still exists.
+    if (severed) await this.rejoinSessionNetwork();
+    return false;
+  }
+
+  private async rejoinSessionNetwork(): Promise<void> {
+    try {
+      await this.rejoinFn?.();
+    } catch (err) {
+      // Never mask the `up` failure this runs alongside.
+      console.warn(
+        `[compose:${this.sessionId}] re-attaching to the session network failed:`,
+        (err as Error).message,
+      );
     }
   }
 
@@ -355,6 +443,30 @@ const COMPOSE_BUILD_LINE =
   /(?:\bBuilding\b|\bBuilt\b|\bPulling\b|\bPulled\b|\bDownloading\b|\bExtracting\b|load build definition|exporting to image|naming to)/;
 
 const BUILDKIT_STEP_LINE = /^\s*(?:#\d+\s|=>)/;
+
+/** `defaultComposeRunner`'s own rejection text, ahead of the first line of the command's stderr. */
+const RUNNER_FAILURE_PREFIX = /^docker compose \S+ failed \(exit [^)]*\): /;
+
+// The name carries an id on some daemon versions and not others. Requiring the surrounding daemon
+// record keeps a bare mention of the phrase from reading as one.
+const ACTIVE_ENDPOINTS_LINE =
+  /(?:Error response from daemon|while removing network).*?\bnetwork ([^\s"]+?)(?: id [0-9a-f]+)? has active endpoints/;
+
+/**
+ * The network a failed `up` could not remove. A rejected `up` reports the tail of its whole
+ * stderr, build output included, so a build that echoes a daemon error — even a complete one —
+ * must not be able to trigger a destructive recovery against a healthy network.
+ */
+export function extractActiveEndpointNetwork(message: string): string | undefined {
+  for (const raw of message.split("\n")) {
+    // Strip our own wrapper first: it is glued to stderr's first line, hiding its build prefix.
+    const line = raw.replace(RUNNER_FAILURE_PREFIX, "");
+    if (BUILDKIT_STEP_LINE.test(line)) continue;
+    const m = ACTIVE_ENDPOINTS_LINE.exec(line);
+    if (m) return m[1];
+  }
+  return undefined;
+}
 
 export function composeUpPhaseOf(line: string): "build" | "create" | null {
   if (COMPOSE_CREATE_LINE.test(line)) return "create";

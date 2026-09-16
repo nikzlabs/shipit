@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   ComposeCli,
   composeUpPhaseOf,
+  extractActiveEndpointNetwork,
   type ComposeOutputSink,
   type ComposeRunner,
   type ComposeQuery,
@@ -521,6 +522,298 @@ describe("ComposeCli — container-topology bracket", () => {
     const { cli, openWhileRunning } = makeCli(false);
     await expect(cli.up(["web"])).resolves.toBeUndefined();
     expect(openWhileRunning).toEqual([0]);
+  });
+});
+
+describe("ComposeCli — active-endpoint network recovery", () => {
+  // A real session id: the network carries the whole id, the agent container only its first 12.
+  const NET_SID = "6d898efe-6c1f-4b0a-9f6e-3a2b1c0d5e7f";
+  const NETWORK = `shipit-session-${NET_SID}`;
+  const ORCHESTRATOR = os.hostname();
+  const AGENT = `agent-${NET_SID.slice(0, 12)}`;
+  const OURS = [AGENT, ORCHESTRATOR].sort();
+
+  function activeEndpointsError(network: string): Error {
+    return new Error(
+      `docker compose up failed (exit 1): failed to remove network ${network}: ` +
+        `Error response from daemon: error while removing network: network ${network} ` +
+        `id 8f1c2d3e4a5b has active endpoints (name:"${AGENT}", name:"shipit-shipit-1")`,
+    );
+  }
+
+  /**
+   * Models the daemon: `network rm` fails while any endpoint remains, a removed network stops
+   * existing, and only a `up` that reaches the create phase brings it back.
+   */
+  function makeCli(opts: {
+    failWith: Error;
+    attached?: string[];
+    retryFails?: boolean;
+    /** Stands in for the poller's heal landing between the disconnect and the removal. */
+    heal?: (attached: Set<string>, healsSoFar: number) => void;
+  }) {
+    const attached = new Set(opts.attached ?? OURS);
+    const docker: string[][] = [];
+    const rejoined: number[] = [];
+    let networkExists = true;
+    let attempts = 0;
+    let heals = 0;
+
+    const query = vi.fn(async (args: string[]): Promise<string> => {
+      docker.push(args);
+      if (args[0] === "network" && args[1] === "disconnect") {
+        if (!networkExists) throw new Error(`No such network: ${args[3]}`);
+        const endpoint = args[4]!;
+        if (!attached.delete(endpoint)) throw new Error(`is not connected to network ${args[3]}`);
+        opts.heal?.(attached, heals++);
+        return "";
+      }
+      if (args[0] === "network" && args[1] === "rm") {
+        if (!networkExists) throw new Error(`No such network: ${args[2]}`);
+        if (attached.size > 0) throw new Error(`network ${args[2]} has active endpoints`);
+        networkExists = false;
+        return "";
+      }
+      return "";
+    });
+
+    const cli = new ComposeCli({
+      sessionId: NET_SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: query,
+      composeRunner: vi.fn(async () => {
+        attempts++;
+        if (attempts === 1) throw opts.failWith;
+        // A build failure never reaches the create phase, so the network stays absent.
+        if (opts.retryFails) throw new Error("ERROR: failed to solve: process exited 1");
+        networkExists = true;
+      }),
+      rejoinSessionNetwork: async () => {
+        rejoined.push(attempts);
+        if (networkExists) for (const e of OURS) attached.add(e);
+      },
+    });
+
+    return {
+      cli,
+      docker,
+      rejoined,
+      attempts: () => attempts,
+      networkExists: () => networkExists,
+      stillAttached: () => [...attached].sort(),
+    };
+  }
+
+  function disconnected(docker: string[][]): string[] {
+    const names = docker.filter(a => a[0] === "network" && a[1] === "disconnect").map(a => a[4]!);
+    return [...new Set(names)].sort();
+  }
+
+  function removals(docker: string[][]): string[][] {
+    return docker.filter(a => a[0] === "network" && a[1] === "rm");
+  }
+
+  it("disconnects ShipIt's own endpoints, removes the network, and retries the up", async () => {
+    const { cli, docker, attempts } = makeCli({ failWith: activeEndpointsError(NETWORK) });
+
+    await expect(cli.up(["web"])).resolves.toBeUndefined();
+
+    expect(disconnected(docker)).toEqual(OURS);
+    expect(removals(docker)).toEqual([["network", "rm", NETWORK]]);
+    expect(attempts()).toBe(2);
+  });
+
+  it("re-attaches ShipIt's endpoints after the retry, which no caller does on every path", async () => {
+    const { cli, rejoined, stillAttached } = makeCli({ failWith: activeEndpointsError(NETWORK) });
+
+    await cli.up(["web"]);
+
+    expect(rejoined).toEqual([2]);
+    expect(stillAttached()).toEqual(OURS);
+  });
+
+  it("hands the endpoints back even when the retried up fails for an unrelated reason", async () => {
+    const { cli, rejoined, networkExists } = makeCli({
+      failWith: activeEndpointsError(NETWORK),
+      retryFails: true,
+    });
+
+    await expect(cli.up(["web"])).rejects.toThrow(/failed to solve/);
+
+    // The build never reached the create phase, so there is no network left to re-attach to.
+    expect(rejoined).toEqual([2]);
+    expect(networkExists()).toBe(false);
+  });
+
+  it("recovers when only one of ShipIt's endpoints is still attached", async () => {
+    const { cli, docker, attempts } = makeCli({
+      failWith: activeEndpointsError(NETWORK),
+      attached: [ORCHESTRATOR],
+    });
+
+    await expect(cli.up(["web"])).resolves.toBeUndefined();
+
+    expect(removals(docker)).toEqual([["network", "rm", NETWORK]]);
+    expect(attempts()).toBe(2);
+  });
+
+  it("recovers when the poller's heal re-attaches the agent inside the removal window", async () => {
+    const { cli, docker, attempts, rejoined } = makeCli({
+      failWith: activeEndpointsError(NETWORK),
+      heal: (attached, healsSoFar) => {
+        if (attached.size === 0 && healsSoFar < 2) attached.add(AGENT);
+      },
+    });
+
+    await expect(cli.up(["web"])).resolves.toBeUndefined();
+
+    expect(removals(docker)).toHaveLength(2);
+    expect(attempts()).toBe(2);
+    expect(rejoined).toEqual([2]);
+  });
+
+  it("gives up and restores when the heal wins every pass", async () => {
+    const { cli, docker, attempts, rejoined, stillAttached } = makeCli({
+      failWith: activeEndpointsError(NETWORK),
+      heal: (attached) => { if (attached.size === 0) attached.add(AGENT); },
+    });
+
+    await expect(cli.up(["web"])).rejects.toThrow(/id 8f1c2d3e4a5b has active endpoints/);
+
+    expect(removals(docker)).toHaveLength(2);
+    expect(rejoined).toEqual([1]);
+    expect(stillAttached()).toEqual(OURS);
+    expect(attempts()).toBe(1);
+  });
+
+  it("leaves a user's own Compose endpoint attached and restores ours when removal fails", async () => {
+    const { cli, docker, rejoined, attempts, stillAttached } = makeCli({
+      failWith: activeEndpointsError(NETWORK),
+      attached: [...OURS, "user-db-1"],
+    });
+
+    await expect(cli.up(["web"])).rejects.toThrow(/id 8f1c2d3e4a5b has active endpoints/);
+
+    expect(disconnected(docker)).toEqual(OURS);
+    expect(rejoined).toEqual([1]);
+    expect(stillAttached()).toEqual([...OURS, "user-db-1"].sort());
+    expect(attempts()).toBe(1);
+  });
+
+  it("does not retry when NEITHER of our endpoints held the network", async () => {
+    const { cli, docker, rejoined, attempts } = makeCli({
+      failWith: activeEndpointsError(NETWORK),
+      attached: ["user-db-1"],
+    });
+
+    await expect(cli.up(["web"])).rejects.toThrow(/has active endpoints/);
+
+    expect(removals(docker)).toEqual([]);
+    expect(rejoined).toEqual([]);
+    expect(attempts()).toBe(1);
+  });
+
+  it("does NOT touch a network belonging to another session", async () => {
+    const { cli, docker, attempts } = makeCli({
+      failWith: activeEndpointsError("shipit-session-other"),
+    });
+
+    await expect(cli.up(["web"])).rejects.toThrow(/has active endpoints/);
+
+    expect(disconnected(docker)).toEqual([]);
+    expect(attempts()).toBe(1);
+  });
+
+  it("does NOT act on a build step echoing a COMPLETE daemon error", async () => {
+    const { cli, docker, attempts } = makeCli({
+      failWith: new Error(
+        "docker compose up failed (exit 1): " +
+          `#8 0.4 Error response from daemon: network ${NETWORK} has active endpoints\n` +
+          "ERROR: failed to solve: process exited 1",
+      ),
+    });
+
+    await expect(cli.up(["web"])).rejects.toThrow(/failed to solve/);
+
+    expect(disconnected(docker)).toEqual([]);
+    expect(attempts()).toBe(1);
+  });
+
+  it("holds ONE topology bracket across the network-recovery retry", async () => {
+    let open = 0;
+    const observed: number[] = [];
+    let attempts = 0;
+    const cli = new ComposeCli({
+      sessionId: NET_SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      composeRunner: vi.fn(async () => {
+        observed.push(open);
+        attempts++;
+        if (attempts === 1) throw activeEndpointsError(NETWORK);
+      }),
+      onTopologyChange: () => { open++; return () => { open--; }; },
+    });
+
+    await cli.up(["web"]);
+
+    expect(observed).toEqual([1, 1]);
+    expect(open).toBe(0);
+  });
+});
+
+describe("extractActiveEndpointNetwork", () => {
+  it("reads the network name past Compose's own `failed to remove network` prefix", () => {
+    expect(
+      extractActiveEndpointNetwork(
+        "failed to remove network shipit-session-abc: Error response from daemon: " +
+          "error while removing network: network shipit-session-abc id 8f1c has active endpoints",
+      ),
+    ).toBe("shipit-session-abc");
+  });
+
+  it("reads the newer daemon message, which carries no network id", () => {
+    expect(
+      extractActiveEndpointNetwork(
+        'Error response from daemon: network shipit-session-abc has active endpoints (name:"db-1")',
+      ),
+    ).toBe("shipit-session-abc");
+  });
+
+  it("ignores the phrase without the daemon record around it — stderr carries build output", () => {
+    expect(extractActiveEndpointNetwork("network shipit-session-abc has active endpoints"))
+      .toBeUndefined();
+  });
+
+  it("ignores a COMPLETE daemon error quoted by a build step", () => {
+    expect(
+      extractActiveEndpointNetwork(
+        "#8 0.4 Error response from daemon: network shipit-session-abc has active endpoints",
+      ),
+    ).toBeUndefined();
+    expect(
+      extractActiveEndpointNetwork(
+        " => ERROR response from daemon: network shipit-session-abc has active endpoints",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("still finds the daemon record on a later line of a multi-line failure", () => {
+    expect(
+      extractActiveEndpointNetwork(
+        "#8 building\n => CACHED [base 1/2]\n" +
+          "Error response from daemon: network shipit-session-abc has active endpoints",
+      ),
+    ).toBe("shipit-session-abc");
+  });
+
+  it("says nothing about an unrelated failure", () => {
+    expect(extractActiveEndpointNetwork("ERROR: failed to solve: process did not complete"))
+      .toBeUndefined();
   });
 });
 

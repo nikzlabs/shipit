@@ -278,6 +278,14 @@ describe("auto-push: a branch left ahead converges without another turn", () => 
       env: { ...process.env, HOME: tmpDir },
     }).toString().includes(file);
 
+  /** The auto-push holds a post-turn lease from arm time until well after the remote has the objects. */
+  const waitForPushSettled = async (sessionId: string): Promise<void> => {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && app.runnerRegistry.get(sessionId)?.agentBusy) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
+
   const waitForRemote = async (bareDir: string, file: string): Promise<boolean> => {
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline && !remoteHas(bareDir, file)) {
@@ -312,10 +320,21 @@ describe("auto-push: a branch left ahead converges without another turn", () => 
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
     const bareDir = createBareRemote(sessionDir);
+    // Hold the push open past the ref update, so the gap between "the remote has it" and "the
+    // push has settled" is always wide here. Without it the gap is sub-millisecond on an idle
+    // box and only a loaded CI runner lands inside it — the shape this test failed in.
+    const slowHook = path.join(bareDir, "hooks", "post-receive");
+    fs.writeFileSync(slowHook, "#!/bin/sh\nsleep 1\n");
+    fs.chmodSync(slowHook, 0o755);
     commitWithoutPushing(sessionDir, "stranded.txt");
 
     await app.prStatusPoller!.healBranchAhead(sessionId);
     expect(await waitForRemote(bareDir, "stranded.txt")).toBe(true);
+
+    // The bare repo holds the objects before the push settles: `pushToOrigin` has yet to return,
+    // so the local tracking ref still reads ahead and the push's post-turn lease still holds the
+    // session busy. Settling is the precondition, not the assertion — heal once, after it.
+    await waitForPushSettled(sessionId);
 
     expect(await app.prStatusPoller!.healBranchAhead(sessionId))
       .toEqual({ action: "skip", reason: "not-ahead" });
