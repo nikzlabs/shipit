@@ -2,6 +2,7 @@ import { Fragment, useMemo, useRef, useDeferredValue, type ReactNode } from "rea
 import { CompactLayout } from "./CompactLayout.js";
 import { useCompactConversation } from "./hooks/useCompactConversation.js";
 import { elementLastMessageIndex, elementMessageIndex } from "./compact-turns.js";
+import { answerCardElements, pendingAnswerElementIndex } from "./pending-answer.js";
 import { CaretDownIcon, CaretUpIcon } from "@phosphor-icons/react";
 import { Button } from "../ui/button.js";
 import { ICON_SIZE } from "../../design-tokens.js";
@@ -439,9 +440,38 @@ export function MessageList({
 
   // FRONT, and that is the load-bearing detail. A row that changes group changes
 
+  // docs/303 req 32 — a card the user answers is never inside a row group: it
+  // gets a container of its own, keyed by its tool, so that moving the pending
+  // one to the end of the conversation and back is a reorder among siblings
+  // rather than a change of DOM parent. A remount there would discard the
+  // selections and the typed "Other" answer it holds in component state.
+  const answerCards = useMemo(
+    () => answerCardElements(visualElements, messages),
+    [visualElements, messages],
+  );
+  const pendingAnswerIndex = useMemo(
+    () => pendingAnswerElementIndex(visualElements, messages),
+    [visualElements, messages],
+  );
+  const answerCardNode = (index: number) => (
+    <div key={`qa-${answerCards.get(index)}`} className="space-y-3 sm:space-y-2">
+      {rows[index].node}
+    </div>
+  );
+
   const flow: ReactNode[] = [];
   let anchorsSeen = 0;
-  let openedByCard = false;
+  // Which chunk of `ROWS_PER_GROUP` rows the open group belongs to, and which
+  // piece of it: the status card's anchor and an answer card both split a chunk,
+  // and a chunk can be split more than once. The chunk is tracked rather than
+  // recomputed at each flush because a split landing exactly on a boundary opens
+  // the next chunk's first piece, and a movable row can then sit in it — so
+  // `anchorsSeen % ROWS_PER_GROUP === 0` no longer means "no group of this chunk
+  // has been opened yet", and taking it to mean that emitted two groups under
+  // one key. The suffix names the piece, so removing a split re-parents only the
+  // rows in the pieces after it and leaves every later chunk alone.
+  let chunkIndex = -1;
+  let chunkPiece = 0;
   let current: { key: string; visible: number; children: ReactNode[] } | null = null;
   const flushGroup = () => {
     if (!current) return;
@@ -469,18 +499,39 @@ export function MessageList({
     );
     current = null;
   };
+  const splitChunk = () => {
+    flushGroup();
+    chunkPiece += 1;
+  };
   rows.forEach((row, index) => {
     if (statusCard && index === cardRowIndex) {
-      flushGroup();
+      splitChunk();
       flow.push(statusCard);
-      openedByCard = anchorsSeen % ROWS_PER_GROUP !== 0;
     }
-    if (!row.movable && anchorsSeen > 0 && anchorsSeen % ROWS_PER_GROUP === 0) {
-      flushGroup();
-      openedByCard = false;
+    if (answerCards.has(index)) {
+      // The split happens whether or not this one is pending, so the rows just
+      // under an answer card keep their group when it becomes the end of the
+      // conversation and when it stops being it. Without that, answering a
+      // question re-parents the card rows below it — and a follow-up action
+      // card losing its ticks that way is req 19's regression.
+      splitChunk();
+      // The pending one is pushed at the end of the flow, below the status card.
+      if (index !== pendingAnswerIndex) flow.push(answerCardNode(index));
+      return;
+    }
+    // A movable row never opens a chunk: it is placed in whatever group is open,
+    // so that it can move down the transcript without re-keying the rows around
+    // it (planning#491).
+    if (!row.movable) {
+      const chunk = Math.floor(anchorsSeen / ROWS_PER_GROUP);
+      if (chunk !== chunkIndex) {
+        flushGroup();
+        chunkIndex = chunk;
+        chunkPiece = 0;
+      }
     }
     const group = (current ??= {
-      key: `${Math.floor(anchorsSeen / ROWS_PER_GROUP)}${openedByCard ? "b" : ""}`,
+      key: `${chunkIndex}${chunkPiece > 0 ? `b${chunkPiece}` : ""}`,
       visible: 0,
       children: [],
     });
@@ -512,6 +563,10 @@ export function MessageList({
   // it reorders the DOM node instead of remounting the component, and the rows
   // it knows to be sent survive the move (req 30).
   if (statusCard && cardRowIndex === null) flow.push(statusCard);
+
+  // docs/303 req 32 — last, below the status card and below anything else the
+  // turn produced, so the view lands on the control the user has to reach.
+  if (pendingAnswerIndex !== null) flow.push(answerCardNode(pendingAnswerIndex));
 
   return (
     <ShipitPointerSessionProvider value={deferred.sessionId ?? null}>

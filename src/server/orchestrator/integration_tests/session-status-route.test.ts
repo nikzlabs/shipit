@@ -136,6 +136,25 @@ describe("Integration: session-status route", () => {
     expect(after?.needsYou).toEqual(before?.needsYou);
   });
 
+  it("carries the last-turn line through, and drops it on the next write (req 31)", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    const res = await post({ status: "Billing service.", lastTurn: "Wired the webhook route." });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { lastTurn?: string }).lastTurn).toBe("Wired the webhook route.");
+    expect(sessionManager.get(sessionId)?.sessionStatus?.lastTurn).toBe("Wired the webhook route.");
+
+    // The line names the turn that is ending, so the next write owns it: a call
+    // that omits it clears it rather than leaving a sentence about a turn that
+    // is over. The bare confirmation is a write like any other.
+    const bare = await post({});
+    expect(bare.statusCode).toBe(200);
+    expect((bare.json() as { lastTurn?: string }).lastTurn).toBeUndefined();
+    expect(sessionManager.get(sessionId)?.sessionStatus?.lastTurn).toBeUndefined();
+    expect(sessionManager.get(sessionId)?.sessionStatus?.status).toBe("Billing service.");
+  });
+
   it("refuses a bare call before the session has a card, naming status", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive();

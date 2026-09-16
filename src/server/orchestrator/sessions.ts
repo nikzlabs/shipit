@@ -94,6 +94,7 @@ function parseSessionStatus(json: string): SessionStatus | undefined {
     const card = JSON.parse(json) as Partial<SessionStatus> | null;
     if (!card || typeof card.status !== "string") return undefined;
     return {
+      ...(typeof card.lastTurn === "string" && card.lastTurn ? { lastTurn: card.lastTurn } : {}),
       status: card.status,
       ...(Array.isArray(card.needsYou) && card.needsYou.length > 0
         ? { needsYou: card.needsYou.filter((item: unknown): item is string => typeof item === "string") }

@@ -43,6 +43,7 @@ export function runStatusExclusive<T>(sessionId: string, fn: () => Promise<T>): 
 function shown(card: SessionStatus | undefined): string {
   if (!card) return "";
   return JSON.stringify({
+    lastTurn: card.lastTurn ?? "",
     status: card.status,
     needsYou: card.needsYou ?? [],
     fresh: card.fresh,
@@ -133,6 +134,10 @@ export function recordSessionStatus(
     const now = new Date().toISOString();
     const needsYou = write.needsYou ?? stored?.needsYou ?? [];
     const card: SessionStatus = {
+      // req 31 — the one field that is not a delta: it names the turn that is
+      // ending, so a call that omits it drops the line rather than inheriting a
+      // line about a turn that is over.
+      ...(write.lastTurn ? { lastTurn: write.lastTurn } : {}),
       status,
       ...(needsYou.length > 0 ? { needsYou } : {}),
       actions: reconcileOffers(stored?.actions ?? [], write, now),

@@ -36,6 +36,33 @@ describe("SessionStatusCard", () => {
     expect(screen.getByText("Add the Stripe test key.")).toBeInTheDocument();
   });
 
+  it("opens with the last turn, above the status, and labels both (req 31)", () => {
+    render(<SessionStatusCard status={card({ lastTurn: "Wired the webhook route." })} />);
+
+    expect(screen.getByText("Last turn")).toBeInTheDocument();
+    expect(screen.getByText("Wired the webhook route.")).toBeInTheDocument();
+    // Two blocks of prose in a row need labels; one does not (req 28).
+    expect(screen.getByText("Status")).toBeInTheDocument();
+
+    const card_ = screen.getByTestId("session-status-card");
+    const text = card_.textContent ?? "";
+    expect(text.indexOf("Wired the webhook route.")).toBeLessThan(text.indexOf("Billing service"));
+  });
+
+  it("hides the last-turn line on a stale card, where it would be a turn behind (req 31)", () => {
+    render(
+      <SessionStatusCard status={card({ lastTurn: "Wired the webhook route.", fresh: false })} />,
+    );
+
+    expect(screen.queryByTestId("session-status-last-turn")).not.toBeInTheDocument();
+    expect(screen.queryByText("Last turn")).not.toBeInTheDocument();
+    // The status still describes the session, so it stays — with the Stale mark.
+    expect(screen.getByText(/routes and tests done/)).toBeInTheDocument();
+    expect(screen.getByText("Stale")).toBeInTheDocument();
+    // And with no last-turn line on screen, the status needs no label of its own.
+    expect(screen.queryByText("Status")).not.toBeInTheDocument();
+  });
+
   it("puts the offers under a Follow-ups subtitle", () => {
     render(<SessionStatusCard status={card({ actions: [offer({ offerId: "o1" })] })} />);
     expect(screen.getByText("Follow-ups")).toBeInTheDocument();

@@ -1359,6 +1359,19 @@ describe("setSessionStatus (docs/303 req 10)", () => {
     expect(new SessionManager(dbManager).get("c1")?.sessionStatus).toEqual(card);
   });
 
+  it("round-trips the last-turn line, and reads a card written before it existed", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    mgr.setSessionStatus("c1", { ...card, lastTurn: "Wired the webhook route." });
+    expect(new SessionManager(dbManager).get("c1")?.sessionStatus)
+      .toEqual({ ...card, lastTurn: "Wired the webhook route." });
+
+    // A card stored before req 31 has no line, and neither has one the agent
+    // cleared: the field is absent rather than empty.
+    mgr.setSessionStatus("c1", card);
+    expect(new SessionManager(dbManager).get("c1")?.sessionStatus?.lastTurn).toBeUndefined();
+  });
+
   it("has no card before the first write, and none after a clear", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("c1");

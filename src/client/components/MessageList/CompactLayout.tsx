@@ -37,6 +37,22 @@ function anchorNode(snapshot: Snapshot, root: HTMLElement): HTMLElement | null {
   return id ? root.querySelector<HTMLElement>(`#${CSS.escape(id)}`) : null;
 }
 
+const ROW_ID_PREFIX = "compact-row-";
+
+/**
+ * Which row of the visibility string this node is.
+ *
+ * Not its position in the DOM: docs/303 req 32 renders the card the user has to
+ * answer at the END of the conversation whatever its place in the transcript, so
+ * document order and row order part company from that row on. The id carries the
+ * row, and a node without one falls back to its position.
+ */
+function rowIndexOf(node: HTMLElement, domIndex: number): number {
+  if (!node.id.startsWith(ROW_ID_PREFIX)) return domIndex;
+  const parsed = Number(node.id.slice(ROW_ID_PREFIX.length));
+  return Number.isInteger(parsed) ? parsed : domIndex;
+}
+
 /** A row that is about to change height: hidden ("1"), or tools collapsed ("t"). */
 const hasCollapsedRow = (visibility: string) => visibility.includes("1") || visibility.includes("t");
 
@@ -67,7 +83,7 @@ export class CompactLayout extends Component<Props, Record<string, never>, Snaps
     const nodes = root.querySelectorAll<HTMLElement>("[data-compact-content]");
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
-      if (node.hidden || visibility[i] === "1") continue;
+      if (node.hidden || visibility[rowIndexOf(node, i)] === "1") continue;
       const rect = node.getBoundingClientRect();
       if (rect.height > 0 && rect.bottom > top) return { node, top: rect.top, allowed };
     }

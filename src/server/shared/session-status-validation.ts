@@ -9,17 +9,30 @@ import { charLength, validateActionItems } from "./propose-actions-validation.js
  * each entry, and the list of them is the agent's to size.
  */
 export const MAX_STATUS_LEN = 1200;
+/**
+ * req 31 — one or two sentences. Two sentences of ordinary prose run to roughly
+ * 200–300 characters, so this leaves room without letting the line become a
+ * second status.
+ */
+export const MAX_LAST_TURN_LEN = 400;
 export const MAX_NEEDS_YOU_LEN = 240;
 export const MAX_NEEDS_YOU_ITEMS = 10;
 
 /**
  * One accepted `session_status` call, as a delta on the stored card.
  *
- * Every field is optional: an omitted one leaves the stored value alone, so a
- * call with nothing in it is the agent confirming the card still holds
- * (docs/303 req 14). `needsYou: []` is the one field that clears.
+ * Every field is optional, and every one but `lastTurn` is a delta: an omitted
+ * one leaves the stored value alone, so a call with nothing in it is the agent
+ * confirming the card still holds (docs/303 req 14). `needsYou: []` is how that
+ * field clears; `lastTurn` clears by being omitted, for the reason req 31 gives.
  */
 export interface ValidatedSessionStatus {
+  /**
+   * The exception: `lastTurn` is NOT a delta. An accepted call that omits it
+   * clears the stored line (req 31), so `undefined` here means "no line", not
+   * "leave the stored one".
+   */
+  lastTurn?: string;
   status?: string;
   needsYou?: string[];
   actions?: ActionChecklistItem[];
@@ -28,6 +41,7 @@ export interface ValidatedSessionStatus {
 
 export function validateSessionStatus(
   body: {
+    lastTurn?: unknown;
     status?: unknown;
     needsYou?: unknown;
     actions?: unknown;
@@ -36,6 +50,21 @@ export function validateSessionStatus(
   opts: { hasStoredCard: boolean },
 ): ValidatedSessionStatus | { error: string } {
   const call: ValidatedSessionStatus = {};
+
+  if (body.lastTurn !== undefined) {
+    if (typeof body.lastTurn !== "string") {
+      return { error: "`lastTurn` must be a string." };
+    }
+    const lastTurn = body.lastTurn.trim();
+    // An empty string is the same as omitting it: no line on the card. It is
+    // not refused, because "" is the natural way to say "nothing worth saying".
+    if (lastTurn) {
+      if (charLength(lastTurn) > MAX_LAST_TURN_LEN) {
+        return { error: overLength("lastTurn", charLength(lastTurn), MAX_LAST_TURN_LEN) };
+      }
+      call.lastTurn = lastTurn;
+    }
+  }
 
   if (body.status !== undefined) {
     if (typeof body.status !== "string") {

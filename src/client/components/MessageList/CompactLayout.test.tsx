@@ -21,6 +21,31 @@ it.each([true, false])("restores the pre-mutation anchor only when scroll guards
   expect(root.current!.scrollTop).toBe(allowed ? 100 : 200);
 });
 
+// docs/303 req 32 — the card the user has to answer renders at the end of the
+// conversation whatever its place in the transcript, so a node's position in the
+// DOM stops being its position in the visibility string. Reading the row off the
+// id is what keeps the anchor search skipping the row that is actually hidden.
+it("reads a row's visibility from its id, not from its place in the DOM", () => {
+  const root = createRef<HTMLDivElement>();
+  // Row 0 is hidden; it is rendered SECOND, as a lifted answer card would be.
+  const content = (hidden: boolean) => <div ref={root}><CompactLayout visibility={hidden ? "10" : "00"} cardAnchor={null} canPreserveAcrossCardMove={() => true}
+    containerRef={root} canRestoreReadingAnchor={() => true}>
+    <div id="compact-row-1" data-compact-content>Result</div>
+    <div id="compact-row-0" data-compact-content hidden={hidden}>Detail</div>
+  </CompactLayout></div>;
+  const { rerender } = render(content(false));
+  const result = root.current!.children[0] as HTMLElement;
+  const detail = root.current!.children[1] as HTMLElement;
+  // Only the visible row may be the anchor: it is the one that moves when the
+  // hidden row collapses. Reading row 0's "1" off the FIRST node instead skips
+  // it, measures the row that is about to disappear, and restores nothing.
+  result.getBoundingClientRect = () => new DOMRect(0, detail.hidden ? 20 : 120, 100, 40);
+  detail.getBoundingClientRect = () => new DOMRect(0, 300, 100, 40);
+  root.current!.scrollTop = 200;
+  rerender(content(true));
+  expect(root.current!.scrollTop).toBe(100);
+});
+
 // docs/303-session-status-card req 30 — returning the card to the end takes it
 // out from above a reader who has scrolled up, which would shift their row by
 // the card's height. The visibility string does not change when it moves, and

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  MAX_LAST_TURN_LEN,
   MAX_NEEDS_YOU_ITEMS,
   MAX_NEEDS_YOU_LEN,
   MAX_STATUS_LEN,
@@ -19,6 +20,24 @@ const item = (over: Record<string, unknown> = {}) => ({
 describe("validateSessionStatus", () => {
   it("accepts a bare call on a session that has a card", () => {
     expect(validateSessionStatus({}, stored)).toEqual({});
+  });
+
+  it("takes the last-turn line, trimmed, and treats an empty one as no line (req 31)", () => {
+    expect(validateSessionStatus({ lastTurn: "  Wired the webhook route.  " }, stored)).toEqual({
+      lastTurn: "Wired the webhook route.",
+    });
+    expect(validateSessionStatus({ lastTurn: "   " }, stored)).toEqual({});
+    expect(validateSessionStatus({ lastTurn: 7 }, stored)).toEqual({
+      error: expect.stringContaining("`lastTurn` must be a string"),
+    });
+  });
+
+  it("caps the last-turn line well below the status, so it cannot become one (req 31)", () => {
+    expect(validateSessionStatus({ lastTurn: "x".repeat(MAX_LAST_TURN_LEN) }, stored))
+      .toEqual({ lastTurn: "x".repeat(MAX_LAST_TURN_LEN) });
+    expect(validateSessionStatus({ lastTurn: "x".repeat(MAX_LAST_TURN_LEN + 1) }, stored))
+      .toEqual({ error: expect.stringContaining(`the cap is ${MAX_LAST_TURN_LEN}`) });
+    expect(MAX_LAST_TURN_LEN).toBeLessThan(MAX_STATUS_LEN);
   });
 
   it("refuses a call that would leave a session with no status at all", () => {
