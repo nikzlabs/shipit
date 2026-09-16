@@ -21,7 +21,7 @@ afterEach(() => {
   useSettingsStore.setState({
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
-    claudeAuthDiagnostics: {},
+    authDiagnostics: {},
     providerAccountNotices: {},
   });
 });
@@ -224,11 +224,11 @@ describe("Settings - Model providers → Anthropic subscription", () => {
       accountId: "acct-a",
       verificationUri: "https://claude.ai/oauth/authorize?acct-a",
     });
-    useSettingsStore.getState().appendClaudeAuthLog("acct-a", {
+    useSettingsStore.getState().appendAuthLog("acct-a", {
       attemptId: "attempt-a",
       timestamp: "2026-08-03T00:00:00.000Z",
       level: "info",
-      source: "claude_stdout",
+      source: "cli_stdout",
       message: "A's CLI output.",
     });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));

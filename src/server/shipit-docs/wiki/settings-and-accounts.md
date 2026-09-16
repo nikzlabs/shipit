@@ -109,6 +109,14 @@ A subscription arrives one of two ways, and some services take both at once:
 the work needs, then: *Settings → Model providers → Add a model provider*. Do
 not narrate the rest of the flow; they are looking at it.
 
+**When a sign-in fails, the reason is usually on that same panel.** A login that
+ShipIt runs through a harness CLI — Claude's and Antigravity's — carries a
+collapsed **&lt;harness&gt; CLI output** disclosure inside the sign-in box, holding
+what the CLI printed and the line that says how the attempt ended. That is the
+first thing to ask a user to open, rather than the container logs: the summary
+sentence above it is often generic where the CLI's own sentence is not. A login
+that runs no CLI shows no disclosure, which is not a fault.
+
 ### Several credentials on one service
 
 A subscription mode takes more than one credential, and **their order is the

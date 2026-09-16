@@ -64,7 +64,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useSettingsStore.getState().setProviderAccounts([]);
-  useSettingsStore.setState({ providerAccountNotices: {} });
+  useSettingsStore.setState({ providerAccountNotices: {}, authDiagnostics: {} });
 });
 
 describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () => {
@@ -399,6 +399,27 @@ describe("the authorization-code challenge", () => {
 
     await waitFor(() => expect(screen.queryByTestId("provider-account-code-submitted-acct-agy"))
       .not.toBeInTheDocument());
+  });
+
+  /**
+   * The panel was gated on `provider === "claude"`, so an Antigravity sign-in
+   * that failed showed one summary sentence and nothing the CLI had said.
+   */
+  it("shows the CLI's output for a harness other than Claude, named after that harness", () => {
+    act(() => {
+      useSettingsStore.getState().appendAuthLog("acct-agy", {
+        attemptId: "attempt-1",
+        timestamp: "2026-09-16T00:00:00.000Z",
+        level: "error",
+        source: "cli_stdout",
+        message: "Error: authentication failed or timed out",
+      });
+    });
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    const buffer = screen.getByTestId("provider-account-diagnostics-acct-agy");
+    expect(buffer).toHaveTextContent("Antigravity CLI output (1)");
+    expect(buffer).toHaveTextContent("Error: authentication failed or timed out");
   });
 
   // The CLI gives up 60 s after printing the link, which covers the whole Google

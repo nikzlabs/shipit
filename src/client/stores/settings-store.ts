@@ -21,7 +21,7 @@ import {
 } from "../utils/local-storage.js";
 import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
 import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js";
-import type { AgentAuthPhase } from "../../server/shared/types/ws-server-messages/auth.js";
+import type { AgentAuthPhase, WsAgentAuthLog } from "../../server/shared/types/ws-server-messages/auth.js";
 
 /**
  * Keyed by the LOGIN FLOW that produced the challenge, not by the harness that
@@ -56,34 +56,40 @@ function withKey<T>(map: Record<string, T>, key: string, value: T | null): Recor
   return { ...map, [key]: value };
 }
 
-export interface ClaudeAuthDiagnosticEntry {
+/**
+ * One line of a sign-in's record, for **any** harness — the panel and these
+ * types carried a `claude` prefix until every other harness's login needed the
+ * same panel. `level` and `source` are taken from the wire message rather than
+ * restated, so a new source on the server cannot silently fail to arrive here.
+ */
+export interface AuthDiagnosticEntry {
   id: string;
   attemptId: string;
   timestamp: string;
-  level: "debug" | "info" | "warn" | "error";
-  source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+  level: WsAgentAuthLog["level"];
+  source: WsAgentAuthLog["source"];
   message: string;
 }
 
-export interface ClaudeAuthDiagnostics {
+export interface AuthDiagnostics {
   attemptId: string | null;
   active: boolean;
   phase: AgentAuthPhase | null;
   message: string | null;
   elapsedMs?: number;
   failedMessage?: string;
-  entries: ClaudeAuthDiagnosticEntry[];
+  entries: AuthDiagnosticEntry[];
 }
 
-export const EMPTY_CLAUDE_AUTH_DIAGNOSTICS: ClaudeAuthDiagnostics = Object.freeze({
+export const EMPTY_AUTH_DIAGNOSTICS: AuthDiagnostics = Object.freeze({
   attemptId: null,
   active: false,
   phase: null,
   message: null,
-  entries: [] as ClaudeAuthDiagnosticEntry[],
+  entries: [] as AuthDiagnosticEntry[],
 });
 
-const MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES = 200;
+const MAX_AUTH_DIAGNOSTIC_ENTRIES = 200;
 
 /**
  * docs/257 req 5 — an inline result or failure on a provider's accounts card.
@@ -211,7 +217,7 @@ interface SettingsState {
    */
   accountSelectionMode: Record<string, "strict" | "balanced">;
 
-  claudeAuthDiagnostics: Record<string, ClaudeAuthDiagnostics>;
+  authDiagnostics: Record<string, AuthDiagnostics>;
   /**
    * Which accounts' output buffers the user has opened, keyed by account id.
    *
@@ -221,7 +227,7 @@ interface SettingsState {
    * the moment the code arrives. Uncontrolled, the buffer a user had open
    * snapped shut under them, and the panel jumped by the height of it.
    */
-  claudeAuthOutputOpen: Record<string, boolean>;
+  authOutputOpen: Record<string, boolean>;
   providerAccounts: CredentialRoute[];
 
   credentialRoutes: CredentialRoute[];
@@ -334,19 +340,19 @@ interface SettingsState {
   setAccountSelectionMode: (modeKey: string, mode: "strict" | "balanced") => void;
   setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
-  setClaudeAuthProgress: (accountId: string, progress: {
+  setAuthProgress: (accountId: string, progress: {
     attemptId: string;
     phase: AgentAuthPhase;
     message: string;
     elapsedMs?: number;
   }) => void;
-  appendClaudeAuthLog: (accountId: string, entry: Omit<ClaudeAuthDiagnosticEntry, "id">) => void;
-  finishClaudeAuthDiagnostics: (
+  appendAuthLog: (accountId: string, entry: Omit<AuthDiagnosticEntry, "id">) => void;
+  finishAuthDiagnostics: (
     accountId: string,
     status: "complete" | "failed",
     message?: string,
   ) => void;
-  setClaudeAuthOutputOpen: (accountId: string, open: boolean) => void;
+  setAuthOutputOpen: (accountId: string, open: boolean) => void;
   setProviderAccounts: (accounts: CredentialRoute[]) => void;
   setCredentialRoutes: (routes: CredentialRoute[]) => void;
 
@@ -444,8 +450,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   enableSubAgents: true,
   failoverCutoffs: {},
   accountSelectionMode: {},
-  claudeAuthDiagnostics: {},
-  claudeAuthOutputOpen: {},
+  authDiagnostics: {},
+  authOutputOpen: {},
   providerAccounts: [],
   credentialRoutes: [],
   nonTurnModel: null,
@@ -585,13 +591,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
 
-  setClaudeAuthProgress: (accountId, progress) =>
+  setAuthProgress: (accountId, progress) =>
     set((state) => {
-      const current = state.claudeAuthDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+      const current = state.authDiagnostics[accountId] ?? EMPTY_AUTH_DIAGNOSTICS;
       const isNewAttempt = current.attemptId !== progress.attemptId;
       return {
-        claudeAuthDiagnostics: {
-          ...state.claudeAuthDiagnostics,
+        authDiagnostics: {
+          ...state.authDiagnostics,
           [accountId]: {
             attemptId: progress.attemptId,
             active: progress.phase !== "complete" && progress.phase !== "failed",
@@ -603,18 +609,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         },
       };
     }),
-  appendClaudeAuthLog: (accountId, entry) =>
+  appendAuthLog: (accountId, entry) =>
     set((state) => {
-      const current = state.claudeAuthDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+      const current = state.authDiagnostics[accountId] ?? EMPTY_AUTH_DIAGNOSTICS;
       const isNewAttempt = current.attemptId !== entry.attemptId;
       const kept = isNewAttempt ? [] : current.entries;
       const entries = [
         ...kept,
         { ...entry, id: `${entry.attemptId}:${entry.timestamp}:${kept.length}` },
-      ].slice(-MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES);
+      ].slice(-MAX_AUTH_DIAGNOSTIC_ENTRIES);
       return {
-        claudeAuthDiagnostics: {
-          ...state.claudeAuthDiagnostics,
+        authDiagnostics: {
+          ...state.authDiagnostics,
           [accountId]: {
             ...current,
             attemptId: entry.attemptId,
@@ -624,15 +630,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         },
       };
     }),
-  finishClaudeAuthDiagnostics: (accountId, status, message) =>
+  finishAuthDiagnostics: (accountId, status, message) =>
     set((state) => {
-      const current = state.claudeAuthDiagnostics[accountId];
+      const current = state.authDiagnostics[accountId];
 
       // that never ran a challenge.
       if (!current) return {};
       return {
-        claudeAuthDiagnostics: {
-          ...state.claudeAuthDiagnostics,
+        authDiagnostics: {
+          ...state.authDiagnostics,
           [accountId]: {
             ...current,
             active: false,
@@ -643,9 +649,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         },
       };
     }),
-  setClaudeAuthOutputOpen: (accountId, open) =>
+  setAuthOutputOpen: (accountId, open) =>
     set((state) => ({
-      claudeAuthOutputOpen: { ...state.claudeAuthOutputOpen, [accountId]: open },
+      authOutputOpen: { ...state.authOutputOpen, [accountId]: open },
     })),
 
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),

@@ -4,7 +4,7 @@ import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages
 import type {
   AgentAuthLogPayload,
   AgentAuthProgressPayload,
-} from "./agents/claude/auth-diagnostics.js";
+} from "./agents/auth-diagnostics.js";
 
 export interface AgentAuthFailedPayload {
   reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";

@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { stripAnsi } from "../../../shared/strip-ansi.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import {
   ANTIGRAVITY_SPAWN_ENV,
@@ -10,6 +12,13 @@ import {
 } from "../../../shared/antigravity-home.js";
 import { antigravityStderrErrorText } from "../../../shared/antigravity-stream.js";
 import { ensureConfigDir } from "../agent-auth-base.js";
+import {
+  sanitizeAuthDiagnostic,
+  type AgentAuthLogLevel,
+  type AgentAuthLogPayload,
+  type AgentAuthLogSource,
+  type AgentAuthProgressPayload,
+} from "../auth-diagnostics.js";
 import type {
   AgentAuthManager,
   AgentAuthManagerEvents,
@@ -17,7 +26,10 @@ import type {
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
 import type { LoginIntegrationId } from "../../../shared/catalogue/types.js";
-import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
+import type {
+  AgentAuthPendingDetails,
+  AgentAuthPhase,
+} from "../../../shared/types/ws-server-messages.js";
 
 const DEFAULT_HOME = "/root";
 
@@ -217,6 +229,8 @@ export class AntigravityAuthManager
   private lastPendingDetails: AgentAuthPendingDetails | null = null;
   private activeCredentialDir: string | null = null;
   private activeFlowAccountId: string | null = null;
+  private activeAttemptId: string | null = null;
+  private activeAttemptStartedAt = 0;
   private terminalEmitted = false;
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
@@ -245,6 +259,48 @@ export class AntigravityAuthManager
     return this.lastPendingDetails;
   }
 
+  private authEventBase(): { loginId: LoginIntegrationId; accountId?: string; attemptId: string } {
+    return {
+      loginId: this.loginId,
+      ...(this.activeFlowAccountId ? { accountId: this.activeFlowAccountId } : {}),
+      attemptId: this.activeAttemptId ?? "unknown",
+    };
+  }
+
+  private emitProgress(phase: AgentAuthPhase, message: string): void {
+    const elapsedMs = this.activeAttemptStartedAt ? Date.now() - this.activeAttemptStartedAt : undefined;
+    const payload: AgentAuthProgressPayload = {
+      ...this.authEventBase(),
+      phase,
+      message: sanitizeAuthDiagnostic(message),
+      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+    };
+    this.emit("progress", payload);
+  }
+
+  /**
+   * What the panel in Settings shows, and the only record a failed sign-in
+   * leaves: the CLI's own words. The sanitizer keeps a URL's origin and drops
+   * its query string, so the sign-in link arrives here as a statement that it
+   * was printed — the usable link is the challenge's button, one layer up.
+   */
+  private emitDiagnosticLog(
+    level: AgentAuthLogLevel,
+    source: AgentAuthLogSource,
+    message: string,
+  ): void {
+    const sanitized = sanitizeAuthDiagnostic(message);
+    if (!sanitized) return;
+    const payload: AgentAuthLogPayload = {
+      ...this.authEventBase(),
+      timestamp: new Date().toISOString(),
+      level,
+      source,
+      message: sanitized,
+    };
+    this.emit("log", payload);
+  }
+
   readIdentity(credentialDir?: string): { externalId: string; email?: string } | null {
     const parsed = readTokenFile(this.homeFor(credentialDir));
     return parsed ? extractAntigravityIdentity(parsed) : null;
@@ -261,6 +317,9 @@ export class AntigravityAuthManager
     this.terminalEmitted = false;
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
+    this.activeAttemptId = randomUUID();
+    this.activeAttemptStartedAt = Date.now();
+    this.emitProgress("starting", "Starting the Antigravity CLI sign-in.");
     const home = this.homeFor();
     // Read BEFORE the run: what makes a sign-in a sign-in is a token this flow wrote.
     const baseline = tokenStamp(home);
@@ -287,15 +346,19 @@ export class AntigravityAuthManager
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn("[antigravity-auth] could not spawn the sign-in run:", message);
+      this.emitDiagnosticLog("error", "shipit", `Could not spawn the Antigravity CLI: ${message}`);
       this.fail("error", message);
       return;
     }
 
     this.proc = proc;
+    this.emitProgress("waiting_for_url", "Waiting for the Antigravity CLI to print a sign-in link.");
     // A pty merges the two streams, so this buffer is also what req 4's error
     // sentence is read from.
     proc.onData((chunk) => {
       this.stderrBuffer += chunk;
+      const cleaned = stripAnsi(chunk).trim();
+      if (cleaned) this.emitDiagnosticLog("info", "cli_stdout", cleaned);
       this.handleOutput(chunk);
     });
 
@@ -310,11 +373,14 @@ export class AntigravityAuthManager
       // req 4 — Google's own sentence, not ShipIt's generic copy. The
       // eligibility refusal is the case this exists for.
       const refusal = antigravityStderrErrorText(this.stderrBuffer);
-      console.log(
-        `[antigravity-auth] sign-in ended exit=${String(exitCode)} signal=${String(signal)}`
+      // The one line that says which branch below was taken, on the terminal
+      // AND in the panel — a user reading a failure is looking at the panel.
+      const ending =
+        `sign-in ended exit=${String(exitCode)} signal=${String(signal)}`
         + ` link=${String(hadPending)} token=${now === null ? "absent" : wrote ? "written" : "unchanged"}`
-        + ` refusal=${String(refusal !== undefined)}`,
-      );
+        + ` refusal=${String(refusal !== undefined)}`;
+      console.log(`[antigravity-auth] ${ending}`);
+      this.emitDiagnosticLog("info", "shipit", ending);
       /**
        * **A sentence from the CLI outranks the token; past that, the token
        * outranks the exit code.**
@@ -371,6 +437,7 @@ export class AntigravityAuthManager
     if (!match) return;
     const details: AgentAuthPendingDetails = { kind: "code-paste-url", verificationUri: match[1] };
     this.lastPendingDetails = details;
+    this.emitDiagnosticLog("info", "shipit", "Sign-in link received; waiting for the authorization code.");
     this.emit("pending", details);
   }
 
@@ -387,14 +454,27 @@ export class AntigravityAuthManager
   submitCode(code: string): void {
     if (!this.proc) {
       console.warn("[antigravity-auth] submitCode with no sign-in process; the code was dropped");
+      this.emitDiagnosticLog(
+        "warn",
+        "shipit",
+        "An authorization code arrived after the sign-in run had ended; it was dropped.",
+      );
       return;
     }
     try {
       // What a terminal sends when the user presses Enter; the line discipline
       // maps it to a newline, so the CLI reads one submitted line.
       this.proc.write(`${code.trim()}\r`);
+      // Never the code itself: it is a credential, and the panel is copyable.
+      this.emitDiagnosticLog("info", "shipit", "Authorization code delivered to the CLI.");
+      this.emitProgress("checking_credentials", "Code submitted — completing sign-in…");
     } catch (err) {
       console.warn(`[antigravity-auth] could not deliver the authorization code: ${String(err)}`);
+      this.emitDiagnosticLog(
+        "error",
+        "shipit",
+        `Could not deliver the authorization code: ${String(err)}`,
+      );
     }
   }
 
@@ -437,5 +517,7 @@ export class AntigravityAuthManager
   private clearActiveScope(): void {
     this.activeCredentialDir = null;
     this.activeFlowAccountId = null;
+    this.activeAttemptId = null;
+    this.activeAttemptStartedAt = 0;
   }
 }

@@ -399,6 +399,20 @@ one non-npm branch, gated on `contains antigravity $selected`:
   for `code-paste-url` — the only client edit is `ServicesPanel.tsx`'s
   hardcoded `signInProvider === "claude" ? "paste" : "code"` placeholder
   gate, which becomes a set of paste-shaped providers.
+- **The sign-in reports itself to the panel, like Claude's.** The manager emits
+  `progress` (`starting`, `waiting_for_url`, `checking_credentials`) and `log`
+  (the CLI's own lines as `cli_stdout`, plus ShipIt's own: the link arriving, the
+  code being delivered, and the `sign-in ended exit=… signal=… link=… token=…
+  refusal=…` line that says which branch the exit took). That line used to reach
+  the terminal only — which the user cannot read, and a completed exchange
+  reported as a failure is exactly when they need it. The diagnostics types moved
+  to `orchestrator/agents/auth-diagnostics.ts` and stopped being Claude-shaped
+  (`loginId: LoginIntegrationId`, sources `shipit` / `cli_stdout` / `cli_stderr` /
+  `cli_control`); the client's `AuthCliOutput` renders for any harness that
+  reports anything, labelled with that harness's name. **The sign-in URL is never
+  logged**: the sanitizer strips a URL's query string, which is all an OAuth link
+  is, so the manager reports that the link arrived and the usable link stays the
+  challenge's button.
 - **Refusals reach the user verbatim (req 4).** At sign-in: the manager
   emits `failed({reason: "error", message: <the stderr error: line>})` —
   `app-lifecycle.ts` forwards `message` and `useServerEvents.ts` prefers it

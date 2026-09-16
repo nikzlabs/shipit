@@ -15,7 +15,7 @@ import type { ProviderAccountNotice } from "../../stores/settings-store.js";
 import {
   useSettingsStore,
   providerAccountAuthKey,
-  EMPTY_CLAUDE_AUTH_DIAGNOSTICS,
+  EMPTY_AUTH_DIAGNOSTICS,
 } from "../../stores/settings-store.js";
 import { CredentialRowShell } from "./CredentialRowShell.js";
 import { credentialStatusWord, isUnconnectedAttempt } from "../../utils/credential-state.js";
@@ -79,6 +79,14 @@ export function serviceNameForProvider(provider: AgentId): string {
   const serviceId = serviceIdForProvider(provider);
   return getService(serviceId)?.name ?? serviceId;
 }
+
+/**
+ * Harnesses whose sign-in spawns their CLI and reports what it prints. Read
+ * ONLY to decide whether to reserve the output disclosure's place before the
+ * first line arrives ({@link AuthCliOutput}) — never to decide whether output is
+ * shown, which is decided by whether there is any.
+ */
+const CLI_DRIVEN_SIGN_INS: ReadonlySet<AgentId> = new Set<AgentId>(["claude", "antigravity"]);
 
 const harnessNames: Record<AgentId, string> = {
   claude: "Claude",
@@ -319,15 +327,31 @@ export function ChallengePlaceholder({
  * not a stack of things near one.
  */
 export function useAuthStatus(accountId: string | undefined): string | undefined {
-  const all = useSettingsStore((s) => s.claudeAuthDiagnostics);
-  const diagnostics = (accountId ? all[accountId] : undefined) ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+  const all = useSettingsStore((s) => s.authDiagnostics);
+  const diagnostics = (accountId ? all[accountId] : undefined) ?? EMPTY_AUTH_DIAGNOSTICS;
   return diagnostics.message ?? undefined;
 }
 
-export function ClaudeAuthOutput({
+/**
+ * **The CLI's own words, for whichever harness is running the sign-in.**
+ *
+ * This was `ClaudeAuthOutput`, rendered behind `provider === "claude"`, so an
+ * Antigravity login that failed left the user one summary sentence and nothing
+ * to read. Nothing about it was Claude-specific except the gate and the label:
+ * the SSE layer forwards `progress` and `log` from every auth manager, and a
+ * harness that reports neither still renders nothing here — `entries` stays
+ * empty and there is no record to open.
+ *
+ * Labelled by HARNESS, not by service: this is the output of the `antigravity`
+ * / `claude` CLI, and the service that owns the account is "Google" or
+ * "Anthropic" — a name the user would not recognise on a terminal dump.
+ */
+export function AuthCliOutput({
+  provider,
   accountId,
   evenWhenEmpty,
 }: {
+  provider: AgentId;
 
   accountId?: string;
 
@@ -335,9 +359,9 @@ export function ClaudeAuthOutput({
 }) {
   // Read the map, then index — never `accountId ? useSettingsStore(...) : …`,
 
-  const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
+  const allDiagnostics = useSettingsStore((s) => s.authDiagnostics);
   const diagnostics = (accountId ? allDiagnostics[accountId] : undefined)
-    ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+    ?? EMPTY_AUTH_DIAGNOSTICS;
   /**
    * **Open/closed is held in the store, not by the `<details>` element.**
    *
@@ -348,10 +372,16 @@ export function ClaudeAuthOutput({
    * height of what they were reading. Keyed by account, so two rows cannot
    * share one answer.
    */
-  const open = useSettingsStore((s) => (accountId ? s.claudeAuthOutputOpen[accountId] ?? false : false));
-  const setOpen = useSettingsStore((s) => s.setClaudeAuthOutputOpen);
+  const open = useSettingsStore((s) => (accountId ? s.authOutputOpen[accountId] ?? false : false));
+  const setOpen = useSettingsStore((s) => s.setAuthOutputOpen);
   const { entries } = diagnostics;
-  if (entries.length === 0 && !evenWhenEmpty) return null;
+  /**
+   * An empty disclosure is held open only for a sign-in that will fill it. Once
+   * a line has landed the panel renders for ANY harness — that is the whole
+   * point — but reserving the slot before the first line is a claim that one is
+   * coming, and for a device-code flow, which runs no CLI, it never is.
+   */
+  if (entries.length === 0 && !(evenWhenEmpty && CLI_DRIVEN_SIGN_INS.has(provider))) return null;
 
   return (
     <details
@@ -361,7 +391,7 @@ export function ClaudeAuthOutput({
       data-testid={`provider-account-diagnostics-${accountId ?? "pending"}`}
     >
       <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
-        Claude CLI output{entries.length > 0 ? ` (${entries.length})` : ""}
+        {harnessNames[provider]} CLI output{entries.length > 0 ? ` (${entries.length})` : ""}
       </summary>
       {/*
         **Pinned to the newest line, by `flex-col-reverse` rather than by a
@@ -523,11 +553,13 @@ export function AccountChallenge({
         <p className="text-xs text-(--color-text-secondary)">{CHALLENGE_DEADLINE[provider]}</p>
       ) : null}
 
-      {/* Claude's CLI-driven sign-in is the one that strands users, so its
-        record stays reachable — docs/150 — and it belongs to the attempt that
-        produced it, so it is read by account id. Inside the panel, because
-        the panel is where the sign-in is. */}
-      {provider === "claude" && <ClaudeAuthOutput accountId={account.id} />}
+      {/* A CLI-driven sign-in is the one that strands users, so its record stays
+        reachable — docs/150 — and it belongs to the attempt that produced it, so
+        it is read by account id. Inside the panel, because the panel is where
+        the sign-in is. Every harness, because every CLI-driven sign-in can fail
+        in a way only its own output explains; one that reports nothing renders
+        nothing. */}
+      <AuthCliOutput provider={provider} accountId={account.id} />
     </AuthPanel>
   );
 }

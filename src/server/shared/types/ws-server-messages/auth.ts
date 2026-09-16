@@ -66,6 +66,6 @@ export interface WsAgentAuthLog {
   attemptId: string;
   timestamp: string;
   level: "debug" | "info" | "warn" | "error";
-  source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+  source: "shipit" | "cli_stdout" | "cli_stderr" | "cli_control";
   message: string;
 }

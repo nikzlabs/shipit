@@ -152,6 +152,11 @@ Antigravity-specific is in [plan.md](./plan.md).
       refreshed token was never published back. The reconstructed fixture was
       flat and carried an `id_token`, which is why the pre-existing guard
       (`token-freshness-guard.test.ts`, planning#449) could not fail
+- [x] A failing sign-in leaves a record the user can read. The diagnostics stack
+      was Claude-shaped and gated on `provider === "claude"`, so Antigravity's
+      login could report nothing; the types are harness-neutral now
+      (`agents/auth-diagnostics.ts`), the manager emits `progress` and `log`, and
+      the panel renders for any harness that reports anything
 - [x] Account identity is honestly ABSENT: a `consumer` sign-in's token has no
       `id_token` at all — only an opaque `access_token`, a `refresh_token`,
       `token_type` and `expiry` — so no email or external id can be shown. The
