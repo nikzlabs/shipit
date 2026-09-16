@@ -10,6 +10,7 @@ import {
   findPendingPermissionPrompt,
   parseArgs,
   readStoryboard,
+  resolveWaitCeilingS,
   until,
   verifyRepoPin,
 } from "./driver.mjs";
@@ -30,11 +31,11 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--instance", "http://x", "--scenario", "s"])).toThrow("--out is required");
   });
 
-  it("defaults to replay mode and a ten-minute ceiling, and strips a trailing slash", () => {
+  it("defaults to replay mode and no ceiling of its own, and strips a trailing slash", () => {
     const opts = parseArgs(["--instance", "http://x:3000/", "--scenario", "s", "--out", "o"]);
     expect(opts.instance).toBe("http://x:3000");
     expect(opts.mode).toBe("replay");
-    expect(opts.waitCeilingS).toBe(600);
+    expect(opts.waitCeilingS).toBeNull();
     expect(opts.headed).toBe(false);
   });
 
@@ -43,6 +44,15 @@ describe("parseArgs", () => {
     expect(() => parseArgs([...base, "--mode", "live"])).toThrow("--mode must be record or replay");
     expect(() => parseArgs([...base, "--wait-ceiling", "0"])).toThrow("--wait-ceiling");
     expect(() => parseArgs([...base, "--bogus"])).toThrow("unknown argument: --bogus");
+  });
+});
+
+describe("resolveWaitCeilingS", () => {
+  it("prefers the flag, then the storyboard's waitCeilingSeconds, then ten minutes", () => {
+    const base = ["--instance", "http://x", "--scenario", "s", "--out", "o"];
+    expect(resolveWaitCeilingS(parseArgs(base), {})).toBe(600);
+    expect(resolveWaitCeilingS(parseArgs(base), { waitCeilingSeconds: 1800 })).toBe(1800);
+    expect(resolveWaitCeilingS(parseArgs([...base, "--wait-ceiling", "90"]), { waitCeilingSeconds: 1800 })).toBe(90);
   });
 });
 
@@ -69,6 +79,19 @@ describe("readStoryboard", () => {
     const sb = readStoryboard(join(HERE, "scenarios", "website-hero"));
     expect(sb.permissionMode).toBe("auto");
     expect(sb.settings).toEqual({ autoCreatePr: true });
+    // A real build turn sits inside one beat's wait; the first take on the
+    // demo instance (2026-09-16) showed the default ten minutes is too tight a
+    // margin for it.
+    expect(sb.waitCeilingSeconds).toBe(1800);
+    // The agent-works wait keys on the prompt's own noun, not on how the model
+    // labels its counter: the first take rendered a zero streak as "—".
+    expect(sb.beats[2].wait).toEqual([{ preview_text: "habit" }, { pr_card: "open" }]);
+  });
+
+  it("rejects a waitCeilingSeconds that is not a positive number", () => {
+    for (const waitCeilingSeconds of [0, -5, "1800"]) {
+      expect(() => readStoryboard(write({ ...valid, waitCeilingSeconds }))).toThrow("waitCeilingSeconds must be a positive number");
+    }
   });
 
   it("allows only the auto permission mode: guarded and plan prompt by design", () => {

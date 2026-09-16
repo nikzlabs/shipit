@@ -68,14 +68,20 @@ export const SELECTORS = {
    * renders the same `PrStateBadge` for every session.
    */
   prCardHeader: 'div:has(> div > button[aria-label="Search conversation"])',
-  /** The card's actions row (status chips + merge controls), the header's next sibling. */
-  prCardActions: 'div:has(> div > button[aria-label="Search conversation"]) + div',
+  /**
+   * Where the merge controls live: inside the header at desktop widths
+   * (`OpenPhase.tsx` renders `PrMergeActions` there); the separate actions row
+   * below the header exists only on mobile (`actionsRowShown = isMobile && …`),
+   * which no storyboard viewport is. Measured on the demo instance 2026-09-16:
+   * `header + div` was the changed-docs strip, and the button was never found.
+   */
+  prCardMergeScope: 'div:has(> div > button[aria-label="Search conversation"])',
   /** PR lifecycle card state — `PrStateBadge.tsx` puts the state in `title`; scoped to the header above. */
   prBadgeOpen:
     'div:has(> div > button[aria-label="Search conversation"]) [title^="PR #"]:not([title$="merged"]):not([title$="closed"]), ' +
     'div:has(> div > button[aria-label="Search conversation"]) [title="PR open"]',
   prBadgeMerged: 'div:has(> div > button[aria-label="Search conversation"]) [title$="merged"]',
-  /** Merge button — `PrStatusControls.tsx`, visible text per merge method; found inside `prCardActions`. */
+  /** Merge button — `PrStatusControls.tsx`, the split button's primary half, named by its visible text per merge method; found inside `prCardMergeScope`. */
   mergeButtonNames: ["Squash and merge", "Create a merge commit", "Rebase and merge"],
 
   /** Preview iframe — `PreviewFrame.tsx`. Absent entirely in local mode. */

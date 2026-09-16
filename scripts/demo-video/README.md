@@ -103,7 +103,9 @@ tool and path — a take never waits on a human.
    for replay), `settings` (applied with `PUT /api/settings` before the take),
    `model` (pins the warm session), `permissionMode` (`"auto"` only — the
    composer's default and the one mode whose allowlisted tools never prompt;
-   verified on the composer control), `cursor`, and `beats[]`. Every beat has an
+   verified on the composer control), `waitCeilingSeconds` (how long one wait
+   may take before the take aborts; default 600, `--wait-ceiling` overrides —
+   a beat that spans a real build turn needs more), `cursor`, and `beats[]`. Every beat has an
    `id`, at most one of `type` / `click`, a `pane`, a `wait` list, and numeric
    `lead` and `hold` (seconds). `scenarios/dogfood-smoke/storyboard.json` is a
    complete example.
