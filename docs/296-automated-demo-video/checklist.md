@@ -1,9 +1,10 @@
 # 296 — Automated demo video checklist
 
-- [ ] Resolve the open question in `requirements.md` (demo-instance host) — implementation code waits on it
+- [x] Resolve the open question in `requirements.md` (demo-instance host) — req 14, 2026-09-16; instance deployed on `services` (plan §9)
 - [ ] Create the `shipit-demo-app` repo on the demo GitHub account: Vite + React scaffold, `docker-compose.yml` with the `x-shipit-preview: auto` dev service, `shipit.yaml` with `agent.install: npm ci`, `.claude/settings.json` (`ANTHROPIC_BASE_URL` → `http://demo-proxy:8787`, dummy `ANTHROPIC_API_KEY`), no `.github/workflows`, no branch protection; record the snapshot SHA
 - [x] Add `playwright` as an exact-pinned `devDependency` (≥ 7 days old, `npm run check-deps` green) — with user sign-off if a younger release is needed (1.62.1, published 2026-07-30)
-- [ ] `scripts/demo-video/compose.yml` — `shipit` (prod image, bind-mounted fresh `SHIPIT_STATE_DIR`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `SESSION_EGRESS_ENFORCE=0`, `DOCKER_NETWORK`) + `demo-proxy` on the same network
+- [x] The demo instance itself — `scripts/demo-video/compose.yml` was not written; the local install recipe (`deployment/local/setup.sh` + `tailscale.sh`, `SESSION_EGRESS_ENFORCE=0` via `.shipit.env`) deployed it on `services` at `http://100-81-125-94.sslip.io:4123` (plan §9). State is the `shipit-prod_workspace` volume, not a bind-mounted `SHIPIT_STATE_DIR`; no env-adopted `ANTHROPIC_API_KEY` / `GITHUB_TOKEN` — both entered once by Nik
+- [ ] `demo-proxy` as a Compose sibling on the instance's `shipit-prod` network (plan §2, §9)
 - [ ] Verify the settings-file redirect beats a *shaped* container spawn (`applyServiceRouting` sets `ANTHROPIC_BASE_URL` + the real key in the env): one turn on the demo instance with the proxy logging, zero requests at api.anthropic.com
   - [x] …for the *in-process* spawn of the dogfood instance (plan §8): a Z.ai-shaped turn arrived at the proxy on the `x-api-key` lane, nothing reached the vendor
 - [x] `proxy.mjs` — lanes by auth header kind; record mode (forward, swap `x-api-key` for the proxy's key, save `<lane>/<n>.sse` + fingerprints); replay mode (nth response per lane, paced SSE, drift log, `HEAD /api/hello` → 200, exhausted cassette → 400, non-retryable; a chunked request is forwarded with `content-length` and no `transfer-encoding`); `proxy.test.ts`
