@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import os from "node:os";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
@@ -219,18 +220,60 @@ export class ComposeCli {
     try {
       await this.run(onOutput, ...subArgs);
     } catch (err) {
-      const conflictId = extractConflictContainerId((err as Error).message);
-      if (!conflictId) throw err;
+      if (!(await this.clearUpBlocker(err as Error))) throw err;
+      await this.run(onOutput, ...subArgs);
+    }
+  }
+
+  /** Resolve a failure `up` cannot make progress past on its own. True when a retry is worth it. */
+  private async clearUpBlocker(err: Error): Promise<boolean> {
+    const conflictId = extractConflictContainerId(err.message);
+    if (conflictId) {
       console.warn(
         `[compose:${this.sessionId}] Container-name conflict; removing ${conflictId.slice(0, 12)} and retrying`,
       );
       try {
         await this.query(["rm", "-f", conflictId], this.workspaceDir);
       } catch {
-        throw err;
+        return false;
       }
-      await this.run(onOutput, ...subArgs);
+      return true;
     }
+
+    const network = extractActiveEndpointNetwork(err.message);
+    if (network === `shipit-session-${this.sessionId}`) {
+      return this.recreateSessionNetwork(network);
+    }
+    return false;
+  }
+
+  /**
+   * Compose recreates the session network whenever its definition changes (planning#584 added a
+   * stack label, changing the config hash), but its `network rm` fails while ShipIt's own
+   * out-of-band endpoints are attached — the session's agent container and the orchestrator, which
+   * joins every session network to route previews. Compose owns neither, so it can never clear
+   * them and the `up` fails identically forever. Endpoints Compose DOES own are left alone: it
+   * removes those itself and recovers unaided.
+   */
+  private async recreateSessionNetwork(network: string): Promise<boolean> {
+    console.warn(
+      `[compose:${this.sessionId}] Network ${network} has active endpoints; ` +
+        `disconnecting ShipIt's own and recreating it`,
+    );
+    for (const endpoint of [`agent-${this.sessionId.slice(0, 12)}`, os.hostname()]) {
+      try {
+        await this.query(["network", "disconnect", "-f", network, endpoint], this.workspaceDir);
+      } catch {
+        // Not attached, or already gone.
+      }
+    }
+    try {
+      await this.query(["network", "rm", network], this.workspaceDir);
+    } catch {
+      // Something we do not own still holds it; the original failure is the honest one to report.
+      return false;
+    }
+    return true;
   }
 
   private async run(
@@ -344,6 +387,12 @@ function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
 
 export function extractConflictContainerId(message: string): string | undefined {
   const m = /already in use by container "([0-9a-f]{12,64})"/.exec(message);
+  return m?.[1];
+}
+
+/** The daemon names the network it could not remove, with an id on some versions and not others. */
+export function extractActiveEndpointNetwork(message: string): string | undefined {
+  const m = /network ([^\s"]+?)(?: id [0-9a-f]+)? has active endpoints/.exec(message);
   return m?.[1];
 }
 

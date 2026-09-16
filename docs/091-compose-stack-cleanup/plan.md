@@ -1,3 +1,6 @@
+---
+issue: planning#587
+---
 
 # Compose Stack Cleanup
 
@@ -86,6 +89,12 @@ The filter is positive: a resource with **no** stack label is treated as foreign
 
 For a scoped sweep to see its own resources, everything ShipIt creates has to carry the label. Session workers, standbys, egress sidecars, session networks and dep-dir overlays always did (`baseLabels()`); the compose service containers have since this feature landed. planning#584 added it to the rest: the Compose-created session network and user-named volumes (`compose-generator.ts`), plugin install/CLI/netns containers with their sidecars and plugin overlay volumes (`plugin-install.ts`, `plugin-cli-run.ts`, `plugin-egress.ts`, `plugin-overlay.ts`), and everything a session creates through the Docker proxy (`ownershipLabels()` in `docker-proxy-helpers.ts`). **Consequence:** a Compose network, user-named volume, plugin resource or proxy-created resource that already existed when planning#584 shipped has no label, so the boot sweeps and stop scripts leave it alone from then on — including this instance's own already-orphaned ones. That is deliberate: the alternative is guessing ownership. The per-session paths are unaffected, since they select by session id or Compose project rather than by stack: `destroy` and archive (`cleanupSessionDockerResources`, `pruneSessionVolumes`) and generation deletion for plugin overlays (`plugin-leases.ts`).
 
+#### A live session's network is not litter — labelling it deadlocked `compose up`
+
+The consequence above reads as "unlabelled leftovers are merely never reclaimed". For the Compose **session network** of a session that is still alive, it was worse than that. Compose hashes the network's definition into `com.docker.compose.config-hash`, so adding the label changed the hash for networks created before the deploy: the next `up` decided the network must be recreated, and its `docker network rm` failed on the endpoints **ShipIt** attaches out-of-band — the session's agent container (`container-lifecycle.ts`) and the orchestrator, which joins every session network to route previews (`joinSessionNetwork`). Compose owns neither, so it could never clear them; `up` exited 1 after the build with no service container ever created, deterministically and forever. Two production sessions needed an operator to disconnect the endpoints by hand. The orphan-network sweep cannot help here either, and not only because the network is unlabelled: the session is in the store, so it is not an orphan by any definition.
+
+The recovery therefore belongs to the session's own `up`, beside the container-name-conflict recovery: `ComposeCli.recreateSessionNetwork` (`compose-cli.ts`) parses the network out of the daemon error, and — only for `shipit-session-<this session's id>` — disconnects exactly the two endpoints ShipIt owns, removes the network, and retries the `up` once. Endpoints Compose owns are deliberately left attached: Compose removes those itself and recovers unaided, and force-disconnecting a user's service would be ShipIt breaking a container it does not manage. `joinSessionNetwork` re-attaches both endpoints after the retried `up`, as it does after every `up`. Any later change to the network definition — another label, `internal`, a driver option — takes the same path instead of stranding every pre-existing session.
+
 ### Edge case: active sessions with stale compose stacks
 
 Sessions that still exist in the DB but whose compose stacks are orphaned (orchestrator restarted mid-session) are handled by the existing `ServiceManager.killStaleContainers()`, which runs at the start of `ServiceManager.start()` when the session is re-activated. No change needed.
@@ -95,6 +104,7 @@ Sessions that still exist in the DB but whose compose stacks are orphaned (orche
 | File | Role |
 |------|------|
 | `src/server/orchestrator/compose-generator.ts` | Add `shipit-stack` label to compose override |
+| `src/server/orchestrator/compose-cli.ts` | `up` recovery when a changed network definition meets ShipIt's own endpoints |
 | `src/server/orchestrator/container-discovery.ts` | Add `cleanupOrphanComposeResources()` |
 | `src/server/orchestrator/container-lifecycle.ts` | Existing `cleanupSessionDockerResources()` — reused, not modified |
 | `src/server/orchestrator/app-lifecycle.ts` | Pass stack name to ServiceManager; call new cleanup function during startup |
