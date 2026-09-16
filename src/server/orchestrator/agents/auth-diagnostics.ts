@@ -38,6 +38,69 @@ export interface AgentAuthLogPayload {
   message: string;
 }
 
+/**
+ * Turns a CLI's stream chunks into whole LINES, one tail per source.
+ *
+ * **Every redaction protecting this panel is a whole-string rule**, so relaying
+ * a chunk at a time defeats all of them: a sign-in URL split at `&sta` / `te=…`
+ * leaves the second half looking like ordinary text, and a device code split
+ * anywhere stops matching the pattern that removes it. stdout and stderr break
+ * at independent points, so each carries its own tail, and {@link
+ * CliLineRelay.flush} drains them where a CLI's last line — a prompt, or the
+ * sentence explaining a failure — has no newline at all.
+ */
+export interface CliLineRelay {
+  push(source: AgentAuthLogSource, chunk: string): void;
+  /** Drain every source's unterminated tail, at every path that ends the run. */
+  flush(): void;
+}
+
+/**
+ * The point at which a CLI that never emits a newline stops being buffered and
+ * starts being relayed anyway.
+ *
+ * **A cap is not a chunk boundary in disguise.** It sits three orders of
+ * magnitude above the whole output of a device-auth login, so no URL, token or
+ * code can straddle it — which is the one thing that would turn this back into
+ * the per-chunk relay the whole design exists to avoid.
+ */
+const MAX_BUFFERED_LINE = 64 * 1024;
+
+export function createCliLineRelay(
+  onLine: (source: AgentAuthLogSource, line: string) => void,
+): CliLineRelay {
+  const tails = new Map<AgentAuthLogSource, string>();
+  /**
+   * **ANSI comes off the assembled line, never the chunk.** An escape sequence
+   * split across chunks (`\x1b[9` + `0mCODE…`) is unrecognisable to each half,
+   * so a per-chunk strip leaves `\x1b[90m` glued to the text — and `m` is a word
+   * character, so the `\b` a redaction pattern needs is gone. The sanitizer
+   * strips the escape later and publishes the secret it was meant to remove.
+   */
+  const emit = (source: AgentAuthLogSource, line: string): void => onLine(source, stripAnsi(line));
+  return {
+    push(source, chunk) {
+      const lines = ((tails.get(source) ?? "") + chunk).split(/\r?\n/);
+      let tail = lines.pop() ?? "";
+      // The cap is a synthetic line break, not a drop: the fragment is relayed
+      // through the same redactions as any other line rather than discarded.
+      if (tail.length > MAX_BUFFERED_LINE) {
+        lines.push(tail);
+        tail = "";
+      }
+      tails.set(source, tail);
+      for (const line of lines) emit(source, line);
+    },
+    flush() {
+      for (const [source, tail] of tails) {
+        // Cleared before the emit, so a re-entrant push cannot replay the tail.
+        tails.set(source, "");
+        if (tail) emit(source, tail);
+      }
+    },
+  };
+}
+
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const TOKEN_ASSIGNMENT_PATTERN =

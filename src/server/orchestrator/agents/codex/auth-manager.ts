@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -11,6 +12,14 @@ import {
   pickString,
   probeNestedString,
 } from "../agent-auth-base.js";
+import {
+  createCliLineRelay,
+  sanitizeAuthDiagnostic,
+  type AgentAuthLogLevel,
+  type AgentAuthLogPayload,
+  type AgentAuthLogSource,
+  type AgentAuthProgressPayload,
+} from "../auth-diagnostics.js";
 import type {
   AgentAuthManager,
   AgentAuthManagerEvents,
@@ -18,7 +27,10 @@ import type {
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
 import type { LoginIntegrationId } from "../../../shared/catalogue/types.js";
-import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
+import type {
+  AgentAuthPendingDetails,
+  AgentAuthPhase,
+} from "../../../shared/types/ws-server-messages.js";
 
 export type CodexAuthFailureReason = "timeout" | "denied" | "error";
 
@@ -52,6 +64,20 @@ export const DEVICE_AUTH_TIMEOUT_MS = 15 * 60 * 1000;
 export const VERIFICATION_URL_PATTERN = /https:\/\/auth\.openai\.com\/codex\/device[^\s"']*/;
 
 export const USER_CODE_PATTERN = /\b([A-Z0-9]{4}-[A-Z0-9]{5})\b/;
+
+/**
+ * The same shape, every occurrence, for taking the code back OUT of the CLI
+ * output the diagnostics panel shows. Matching the pattern rather than the one
+ * code this flow detected is deliberate: detection needs the URL *and* the code,
+ * so a CLI that prints them the other way round would relay the code's line
+ * before there was anything to compare it against.
+ */
+const USER_CODE_EVERY_OCCURRENCE = new RegExp(USER_CODE_PATTERN.source, "g");
+
+/** No whitespace, ever: a URL matches up to the first space, so a spaced marker
+ * substituted inside a link truncates what the sanitizer then sees and publishes
+ * every query parameter after it. */
+const CODE_MARKER = "[code-redacted]";
 
 function authFileExistsAt(authFile: string): boolean {
   try {
@@ -186,6 +212,8 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
   private timeoutMs: number;
   private activeCredentialDir: string | null = null;
   private activeFlowAccountId: string | null = null;
+  private activeAttemptId: string | null = null;
+  private activeAttemptStartedAt = 0;
 
   constructor(opts: CodexAuthManagerOptions = {}) {
     super();
@@ -202,6 +230,58 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
 
   getActiveAccountId(): string | null {
     return this.activeFlowAccountId;
+  }
+
+  private authEventBase(): { loginId: LoginIntegrationId; accountId?: string; attemptId: string } {
+    return {
+      loginId: this.loginId,
+      ...(this.activeFlowAccountId ? { accountId: this.activeFlowAccountId } : {}),
+      attemptId: this.activeAttemptId ?? "unknown",
+    };
+  }
+
+  private emitProgress(phase: AgentAuthPhase, message: string): void {
+    const elapsedMs = this.activeAttemptStartedAt ? Date.now() - this.activeAttemptStartedAt : undefined;
+    const payload: AgentAuthProgressPayload = {
+      ...this.authEventBase(),
+      phase,
+      message: sanitizeAuthDiagnostic(message),
+      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+    };
+    this.emit("progress", payload);
+  }
+
+  /**
+   * What the panel in Settings shows, and the only record a failed sign-in
+   * leaves the user: the CLI's own words.
+   *
+   * **The three steps are a composition ORDER, not three passes.** Terminal
+   * escapes come off first, so an escape sitting inside the code cannot hide its
+   * shape; the known secret is removed next, while it is still intact; the
+   * generic rules run last, over text that no longer contains it. Every other
+   * order has a hole — redacting before the strip loses the `\b` the pattern
+   * needs, and redacting after the generic rules asks an exact match to
+   * recognise a string those rules may already have rewritten (measured on the
+   * Antigravity manager, whose long submitted code came out as
+   * `4/[redacted].private-tail`).
+   */
+  private emitDiagnosticLog(
+    level: AgentAuthLogLevel,
+    source: AgentAuthLogSource,
+    message: string,
+  ): void {
+    const sanitized = sanitizeAuthDiagnostic(
+      stripAnsi(message).replace(USER_CODE_EVERY_OCCURRENCE, CODE_MARKER),
+    );
+    if (!sanitized) return;
+    const payload: AgentAuthLogPayload = {
+      ...this.authEventBase(),
+      timestamp: new Date().toISOString(),
+      level,
+      source,
+      message: sanitized,
+    };
+    this.emit("log", payload);
   }
 
   start(opts?: AgentAuthStartOptions): void {
@@ -290,6 +370,9 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     this.lastPendingEvent = null;
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
+    this.activeAttemptId = randomUUID();
+    this.activeAttemptStartedAt = Date.now();
+    this.emitProgress("starting", "Starting the Codex CLI sign-in.");
     const home = this.activeCredentialDir ?? CODEX_DEFAULT_HOME;
 
     ensureConfigDir(codexConfigDirFor(this.activeCredentialDir), "[codex-auth]");
@@ -308,6 +391,7 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[codex-auth] Failed to spawn codex login:", msg);
+      this.emitDiagnosticLog("error", "shipit", `Could not spawn the Codex CLI: ${msg}`);
       this.emit("codex_auth_failed", { reason: "error", message: msg } satisfies CodexAuthFailedEvent);
       this.emit("failed", { reason: "error", message: msg });
       this.clearActiveScope();
@@ -316,27 +400,55 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
 
     this.proc = proc;
     console.log("[codex-auth] Spawned codex login --device-auth (pid %d)", proc.pid);
+    this.emitProgress("waiting_for_url", "Waiting for the Codex CLI to print a device code.");
 
-    proc.stdout?.on("data", (chunk: Buffer) => this.handleOutput(chunk.toString("utf-8")));
-    proc.stderr?.on("data", (chunk: Buffer) => this.handleOutput(chunk.toString("utf-8")));
+    // Both streams carry ordinary progress, so the level says nothing about a
+    // line and the source says which stream it came from.
+    const relay = createCliLineRelay((source, line) => {
+      if (line.trim()) this.emitDiagnosticLog("info", source, line.trim());
+    });
+
+    /**
+     * The liveness guard is taken ONCE here rather than inside each consumer. A
+     * cancelled run keeps draining — `cancel()` detaches `close` and `error`,
+     * never `data` — and by then `this.proc` may be the NEXT account's process,
+     * so unguarded output lands on that account's panel and its expired
+     * challenge is replayed as that account's code.
+     */
+    const consume = (source: AgentAuthLogSource, chunk: Buffer): void => {
+      if (this.proc !== proc) return;
+      const text = chunk.toString("utf-8");
+      // Detection first, so the challenge still reaches the user as early as it did.
+      this.handleOutput(text);
+      relay.push(source, text);
+    };
+    proc.stdout?.on("data", (chunk: Buffer) => consume("cli_stdout", chunk));
+    proc.stderr?.on("data", (chunk: Buffer) => consume("cli_stderr", chunk));
 
     proc.on("error", (err: Error) => {
+      if (this.proc !== proc) return;
       console.warn("[codex-auth] Process error:", err.message);
+      this.emitDiagnosticLog("error", "shipit", `The Codex CLI could not be run: ${err.message}`);
       this.failOnce("error", err.message);
     });
 
     proc.on("close", (code) => {
       console.log("[codex-auth] Process exited with code", code);
-      const wasRunning = this.proc === proc;
+      // Guard first: the old handler nulled `this.proc`, `lastPendingEvent` and
+      // the timeout before asking whether this process was still the live one,
+      // so a late close tore down whatever flow had replaced it.
+      if (this.proc !== proc) return;
       this.proc = null;
+      relay.flush();
       this.lastPendingEvent = null;
       this.clearTimeoutHandle();
 
-      if (!wasRunning) {
-        return;
-      }
+      const hasCredentials = this.checkCredentials();
+      const ending = `sign-in ended exit=${String(code)} credentials=${hasCredentials ? "written" : "absent"}`;
+      console.log(`[codex-auth] ${ending}`);
+      this.emitDiagnosticLog("info", "shipit", ending);
 
-      if (code === 0 && this.checkCredentials()) {
+      if (code === 0 && hasCredentials) {
         console.log("[codex-auth] Authentication successful");
         this.emit("codex_auth_complete");
         this.emit("complete");
@@ -359,8 +471,13 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     });
 
     this.timeoutHandle = setTimeout(() => {
-      if (this.proc) {
+      if (this.proc === proc) {
         console.warn("[codex-auth] Device-auth flow timed out");
+        // `killProc` detaches `close`, so this is the only chance to drain the
+        // tail — and a CLI that hung part-way through its last sentence is
+        // exactly the failure whose explanation has no newline after it.
+        relay.flush();
+        this.emitDiagnosticLog("warn", "shipit", "The device code expired before the sign-in finished.");
         this.failOnce("timeout", "Device code expired");
         this.killProc();
       }
@@ -421,6 +538,11 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
     this.pendingEmitted = true;
     const ev: CodexAuthPendingEvent = { verificationUri, userCode, expiresInSec };
     this.lastPendingEvent = ev;
+    // Neither the link nor the code: the sanitizer strips an OAuth URL down to
+    // its origin anyway, and both reach the user unredacted on the challenge
+    // card. This says only that they arrived.
+    this.emitDiagnosticLog("info", "shipit", "Device code received; waiting for you to approve it in the browser.");
+    this.emitProgress("waiting_for_code", "Waiting for the device code to be approved.");
     this.emit("codex_auth_pending", ev);
     this.emit("pending", {
       kind: "device-code",
@@ -452,6 +574,8 @@ export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> imple
   private clearActiveScope(): void {
     this.activeCredentialDir = null;
     this.activeFlowAccountId = null;
+    this.activeAttemptId = null;
+    this.activeAttemptStartedAt = 0;
   }
 
   private clearTimeoutHandle(): void {
