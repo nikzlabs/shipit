@@ -559,6 +559,83 @@ ext4, and that is a host migration with its own risk, downtime and rollback
 story. On ext4 as it stands, "space savings **and** isolation" is not available:
 `clone` fails closed and `clone-or-copy` is just `copy`.
 
+## Option F — overlayfs: copy-on-write on ext4, with no reflink and no privileges
+
+*Asked by the requester, 2026-09-17, after option E was shown to depend on the
+host filesystem: "make savings work in ext4 somehow."*
+
+Option E needs the filesystem to share extents. **overlayfs needs nothing from the
+filesystem at all** — it implements copy-on-write in the VFS layer, so it behaves
+identically on ext4. Each session mounts its own overlay over one shared,
+read-only base: reads come from the base, and the first write to any file copies
+*that file* into the session's private upper layer. The base is never modified,
+and no other session sees the write.
+
+**ShipIt already builds this** — the docs/183 overlay dep store. And it is mounted
+by **Docker, as a volume** (`overlay-volume.ts:196`, `type: "overlay"`), so the
+orchestrator needs no `CAP_SYS_ADMIN` and this works wherever Docker works,
+including the Linux VM behind Docker Desktop on macOS and Windows. That is the
+portability property the loopback image lacked.
+
+### Measured on ext4, 2026-09-17
+
+Two sessions mounted over one shared base of 59 MB / 1 547 files:
+
+| | session A | session B | shared base |
+|---|---|---|---|
+| immediately after mount | **4 KB** | **4 KB** | 59 MB |
+| after reading the whole tree | **4 KB** | **4 KB** | 59 MB |
+| after A overwrites a shared file | 64 KB | **4 KB — unchanged** | **unchanged** |
+| after A poisons a shared **store** entry | — | **unchanged** | **unchanged** |
+| after A adds a dependency | 63 MB | **4 KB — unchanged** | **unchanged** |
+
+So on plain ext4: **two full dependency trees for 4 KB each, and H3 closed.** A
+session's write is real from its own point of view and invisible to everyone else
+— which is exactly the brief.
+
+### The cost, and why docs/198's objection is narrower than it reads
+
+An installing session pays for its own tree — 63 MB above, and docs/198 Part 2
+measured 464 MB at ShipIt's scale, which is why that doc moved pnpm off the
+overlay. That number is real, but it applies **only to sessions that change their
+dependencies**, and such a session no longer has the base's dependency tree. The
+copy is not a tax on sharing; it is the cost of having stopped being the same as
+the base. Sessions that merely *use* the deps — the common case when several
+sessions work on one repo — pay 4 KB and are fully isolated.
+
+### How F and E compose
+
+They solve different halves and are not alternatives:
+
+- **F** shares the *base tree* between sessions and isolates writes to it. Works
+  everywhere, including ext4.
+- **E** governs how the pnpm store materialises into `node_modules` *within* a
+  session. `package-import-method=copy` closes H3 on the store→`node_modules`
+  hardlink, and silently upgrades to reflink on XFS/btrfs, which is what makes an
+  *installing* session cheap too.
+
+Together: base-hit sessions cost ~nothing on any filesystem, installing sessions
+cost a full tree on ext4 and almost nothing on a reflink filesystem.
+
+### What to verify before building on this
+
+Not yet measured, and each could change the picture:
+
+- **Where the pnpm store sits.** In the measurement above the store was *inside*
+  the overlay, which is what let a poisoned store entry stay private. ShipIt today
+  mounts it at `/workspace/.pnpm-store` as a separate read-write bind, **outside**
+  any overlay — so as deployed, F does not cover the store at all and H3 survives
+  there. Moving it inside the overlay is the change, and it is what causes the
+  installing-session copy cost.
+- **Base publication.** A session's improvements land in its own upper and are not
+  shared back; docs/183's publish path with its compare-and-swap is what promotes
+  a tree to a new base, and its ancestry rules are unchanged by any of this.
+- **A recursive `chown` through an overlay mount copies up every file** and
+  destroys the sharing outright — measured accidentally here, turning a 4 KB upper
+  into 110 MB. This is the same hazard CLAUDE.md records for shared git trees
+  (docs/272). Any ownership handoff must act on the base or the upper directly,
+  never through the mount.
+
 ## Exactly which installs a lockfile protects
 
 An earlier draft of this plan said lockfile-pinned installs "close H1 outright".

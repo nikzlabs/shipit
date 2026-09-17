@@ -69,6 +69,21 @@ only their own items, not this list.
       **91 MB**, copy **92 MB**, clone **92 MB** for a 3 353-file / 86 MB
       `node_modules`. Extent sharing confirmed with `filefrag` (1 054/1 057 files
       flagged `shared`, different inode). **Option E confirmed.**
+- [ ] **Evaluate option F (overlayfs) as the ext4 answer.** Measured 2026-09-17:
+      two sessions over one shared 59 MB / 1 547-file base cost **4 KB each**, and
+      a write by one session left the other session and the base untouched — on
+      plain ext4, no reflink, no privileges (Docker mounts the overlay as a
+      volume). This is docs/183 machinery that docs/198 turned off for pnpm.
+- [ ] Decide whether the pnpm store moves **inside** the overlay. As deployed it is
+      a separate read-write bind at `/workspace/.pnpm-store`, outside any overlay,
+      so option F does not cover it and H3 survives there. Moving it in is what
+      closes that, and what costs an installing session its own tree.
+- [ ] Re-frame docs/198 Part 2's 464 MB objection rather than treating it as
+      settled: it applies only to sessions that CHANGE dependencies, which by
+      definition no longer share the base's tree. Base-hit sessions pay ~nothing.
+- [ ] Never `chown -R` through an overlay mount — it copies up every file and
+      destroys the sharing (measured: a 4 KB upper became 110 MB). Same hazard as
+      docs/272 for shared git trees. Act on the base or the upper directly.
 - [ ] Detect reflink support on the state directory at startup and surface it, so
       an operator on ext4 can see why per-session disk rose and what would change
       it. **Detect and report — never require.** ShipIt installs on laptops and in
