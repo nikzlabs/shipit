@@ -14,7 +14,10 @@
 
 import { OWN_ROUTE_SETTINGS, GENERATED_SETTINGS, ownRouteOf } from "./setting-values.js";
 import { useSettingsStore } from "./settings-store.js";
-import type { SettingKey } from "../../server/shared/settings-catalogue/index.js";
+import type {
+  AnySettingDeclaration,
+  SettingKey,
+} from "../../server/shared/settings-catalogue/index.js";
 
 /**
  * Apply a settings payload to every generated row it carries.
@@ -50,21 +53,36 @@ export function hydrateSettingValues(payload: Readonly<Record<string, unknown>>)
  * this answer is describing a state nobody is in any more.
  */
 export async function refreshOwnRouteSettings(): Promise<void> {
-  await Promise.all(OWN_ROUTE_SETTINGS.map(async (declaration) => {
+  const byPath = new Map<string, AnySettingDeclaration[]>();
+  for (const declaration of OWN_ROUTE_SETTINGS) {
     const route = ownRouteOf(declaration);
-    if (!route) return;
-    const key = declaration.key as SettingKey;
-    const before = useSettingsStore.getState().settingValues[key];
+    if (!route) continue;
+    byPath.set(route.path, [...byPath.get(route.path) ?? [], declaration]);
+  }
+
+  await Promise.all([...byPath].map(async ([path, declarations]) => {
+    // Settings that share an address share the read, because the answer is one
+    // object carrying a field each — the voice webhook's url and token are one
+    // credential, and asking twice would be two requests for one answer.
+    const before = declarations.map(
+      (d) => useSettingsStore.getState().settingValues[d.key as SettingKey],
+    );
     try {
-      const res = await fetch(route.path);
+      const res = await fetch(path);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json() as Record<string, unknown>;
-      const value = body[route.bodyField];
-      if (value === undefined) return;
-      if (useSettingsStore.getState().settingValues[key] !== before) return;
-      useSettingsStore.getState().setSettingValue(key, value);
+      for (const [index, declaration] of declarations.entries()) {
+        const key = declaration.key as SettingKey;
+        const value = body[ownRouteOf(declaration)?.bodyField ?? ""];
+        if (value === undefined) continue;
+        if (useSettingsStore.getState().settingValues[key] !== before[index]) continue;
+        useSettingsStore.getState().setSettingValue(key, value);
+      }
     } catch (err) {
-      console.error(`[settings] reading ${declaration.key} from ${route.path} failed:`, err);
+      console.error(
+        `[settings] reading ${declarations.map((d) => d.key).join(", ")} from ${path} failed:`,
+        err,
+      );
     }
   }));
 }

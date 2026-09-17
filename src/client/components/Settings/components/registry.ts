@@ -12,9 +12,23 @@
 import type { ReactNode } from "react";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 import { MemoryBudget } from "./MemoryBudget.js";
+import { VoiceHandsFree } from "./VoiceHandsFree.js";
+import { VoiceProviderKeys } from "./VoiceProviderKeys.js";
+import { VoiceTts } from "./VoiceTts.js";
+import { VoiceWebhook } from "./VoiceWebhook.js";
 
+/**
+ * The key is the FIRST declaration naming the component, which is where the
+ * renderer places it. A component that owns several declarations names them
+ * itself and takes no props — it has to know which of them is which, and a
+ * positional list would decide that in the catalogue file instead.
+ */
 export type SettingComponent = (props: { settingKey: SettingKey }) => ReactNode;
 
 export const SETTING_COMPONENTS: Readonly<Record<string, SettingComponent>> = {
   "memory-budget": MemoryBudget,
+  "voice-provider-keys": VoiceProviderKeys,
+  "voice-tts": VoiceTts,
+  "voice-hands-free": VoiceHandsFree,
+  "voice-webhook": VoiceWebhook,
 };

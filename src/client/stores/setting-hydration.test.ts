@@ -32,6 +32,11 @@ function storedSample(declaration: AnySettingDeclaration): unknown {
   switch (declaration.type.kind) {
     case "bool": return declaration.type.defaultValue !== true;
     case "number": return 4096;
+    // Any declared option but the default, so a hydration that quietly answered
+    // the default would not pass.
+    case "enum": return (declaration.type.shape as { options: { value: string }[] }).options
+      .map((o) => o.value)
+      .find((v) => v !== declaration.type.defaultValue)!;
     case "text": return "what the user typed";
     case "gitIdentity": return { name: "Ada", email: "ada@example.com" };
     default:
@@ -121,14 +126,20 @@ describe("the rows the payload does not carry", () => {
     const fetchMock = answer({
       "/api/updates/channel": { channel: "edge" },
       "/api/egress/settings": { globalEnabled: false, enforcementActive: true },
+      "/api/voice/webhook": { url: "https://hook.example/notes" },
     });
 
     await refreshOwnRouteSettings();
 
+    // One read per ADDRESS, not per setting: the two webhook halves share a
+    // path, and one answer carries a field each.
     expect(fetchMock.mock.calls.map(([url]) => url).sort())
-      .toEqual(OWN_ROUTE_SETTINGS.map((d) => ownRouteOf(d)!.path).sort());
+      .toEqual([...new Set(OWN_ROUTE_SETTINGS.map((d) => ownRouteOf(d)!.path))].sort());
     expect(recorded("advanced.releaseChannel")).toBe("edge");
     expect(recorded("network.egressContained")).toBe(false);
+    expect(recorded("voice.webhook.url")).toBe("https://hook.example/notes");
+    // Nothing answers the token, so the record keeps the value it had.
+    expect(recorded("voice.webhook.token")).toBe("");
   });
 
   /*

@@ -4,19 +4,9 @@ import type { CredentialRoute, PermissionMode, FileContextRef } from "../../serv
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { EligibleModelOption } from "../agent-types.js";
 import {
-  getSavedVoiceInputEnabled, saveVoiceInputEnabled,
-  getSavedSttProvider, saveSttProvider,
-  getSavedCleanupEnabled, saveCleanupEnabled,
-  getSavedVoiceLanguage, saveVoiceLanguage,
-  getSavedVoicePlaybackEnabled, saveVoicePlaybackEnabled,
-  getSavedVoiceHandsFree, saveVoiceHandsFree,
-  getSavedTtsProvider, saveTtsProvider,
-  getSavedTtsVoice, saveTtsVoice,
-  getSavedTtsSpeed, saveTtsSpeed,
   getSavedKeybindings, saveKeybindings,
   getSavedPermissionModeBySession, savePermissionModeBySession,
 } from "../utils/local-storage.js";
-import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
 import {
   initialSettingValues,
   mirrorFieldOf,
@@ -225,8 +215,6 @@ interface SettingsState {
 
   voiceDeliveryMode: "native" | "external" | "both";
 
-  voiceWebhookConfigured: boolean;
-
   voiceHandsFree: boolean;
   autoCreatePr: boolean;
   liveSteering: boolean;
@@ -358,17 +346,6 @@ interface SettingsState {
   setKeybinding: (id: KeybindingId, chord: string) => void;
 
   resetKeybinding: (id: KeybindingId) => void;
-  setVoiceInputEnabled: (enabled: boolean) => void;
-  setSttProvider: (provider: string) => void;
-  setCleanupEnabled: (enabled: boolean) => void;
-  setVoiceLanguage: (language: string) => void;
-  setVoicePlaybackEnabled: (enabled: boolean) => void;
-  setTtsProvider: (provider: string) => void;
-  setTtsVoice: (voice: string) => void;
-  setTtsSpeed: (speed: number) => void;
-  setVoiceDeliveryMode: (mode: "native" | "external" | "both") => void;
-  setVoiceWebhookConfigured: (configured: boolean) => void;
-  setVoiceHandsFree: (enabled: boolean) => void;
   setAutoCreatePr: (enabled: boolean) => void;
 
   setFailoverCutoffs: (modeKey: string, cutoffs: { session: number; weekly: number }) => void;
@@ -441,9 +418,25 @@ interface SettingsState {
 
 const INITIAL_SETTING_VALUES = initialSettingValues();
 
-/** A generated boolean's value, for the named field that mirrors it. */
+/**
+ * A generated setting's seeded value, for the named field that mirrors it (P1).
+ *
+ * The record already holds what the browser had stored, decoded by the value
+ * kind's own codec, so a mirror reads it rather than the storage key a second
+ * time. The narrowing is for the field's type; the codec is what makes it true.
+ */
 function initial(key: SettingKey): boolean {
   return INITIAL_SETTING_VALUES[key] === true;
+}
+
+function initialText(key: SettingKey): string {
+  const value = INITIAL_SETTING_VALUES[key];
+  return typeof value === "string" ? value : "";
+}
+
+function initialNumber(key: SettingKey): number {
+  const value = INITIAL_SETTING_VALUES[key];
+  return typeof value === "number" ? value : 1;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -464,17 +457,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   notifyOnFinish: initial("advanced.notifyOnFinish"),
   soundOnFinish: initial("advanced.soundOnFinish"),
   keybindings: getSavedKeybindings(),
-  voiceInputEnabled: getSavedVoiceInputEnabled(),
-  sttProvider: getSavedSttProvider(),
-  cleanupEnabled: getSavedCleanupEnabled(),
-  voiceLanguage: getSavedVoiceLanguage(),
-  voicePlaybackEnabled: getSavedVoicePlaybackEnabled(),
-  ttsProvider: getSavedTtsProvider(),
-  ttsVoice: getSavedTtsVoice(),
-  ttsSpeed: getSavedTtsSpeed(),
+  voiceInputEnabled: initial("voice.inputEnabled"),
+  sttProvider: initialText("voice.sttProvider"),
+  cleanupEnabled: initial("voice.cleanupEnabled"),
+  voiceLanguage: initialText("voice.language"),
+  voicePlaybackEnabled: initial("voice.playbackEnabled"),
+  ttsProvider: initialText("voice.ttsProvider"),
+  ttsVoice: initialText("voice.ttsVoice"),
+  ttsSpeed: initialNumber("voice.ttsSpeed"),
   voiceDeliveryMode: "native",
-  voiceWebhookConfigured: false,
-  voiceHandsFree: getSavedVoiceHandsFree(),
+  voiceHandsFree: initial("voice.handsFree"),
   autoCreatePr: false,
   liveSteering: initial("advanced.liveSteering"),
   autoResolveConflicts: initial("advanced.autoResolveConflicts"),
@@ -580,69 +572,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     delete next[id];
     saveKeybindings(next);
     set({ keybindings: next });
-  },
-
-  setVoiceInputEnabled: (enabled) => {
-    saveVoiceInputEnabled(enabled);
-    set({ voiceInputEnabled: enabled });
-  },
-
-  setSttProvider: (provider) => {
-    saveSttProvider(provider);
-    set({ sttProvider: provider });
-  },
-
-  setCleanupEnabled: (enabled) => {
-    saveCleanupEnabled(enabled);
-    set({ cleanupEnabled: enabled });
-  },
-
-  setVoiceLanguage: (language) => {
-    saveVoiceLanguage(language);
-    set({ voiceLanguage: language });
-  },
-
-  setVoicePlaybackEnabled: (enabled) => {
-    saveVoicePlaybackEnabled(enabled);
-    set({ voicePlaybackEnabled: enabled });
-  },
-
-  setTtsProvider: (provider) => {
-    saveTtsProvider(provider);
-
-    const { ttsVoice, ttsSpeed } = get();
-    const updates: { ttsProvider: string; ttsVoice?: string; ttsSpeed?: number } = { ttsProvider: provider };
-    if (!isValidVoice(provider, ttsVoice)) {
-      const nextVoice = defaultVoiceFor(provider);
-      saveTtsVoice(nextVoice);
-      updates.ttsVoice = nextVoice;
-    }
-    const speeds = providerSpeeds(provider);
-    if (!speeds.includes(ttsSpeed)) {
-      const nextSpeed = speeds.includes(1) ? 1 : speeds[0];
-      saveTtsSpeed(nextSpeed);
-      updates.ttsSpeed = nextSpeed;
-    }
-    set(updates);
-  },
-
-  setTtsVoice: (voice) => {
-    saveTtsVoice(voice);
-    set({ ttsVoice: voice });
-  },
-
-  setTtsSpeed: (speed) => {
-    saveTtsSpeed(speed);
-    set({ ttsSpeed: speed });
-  },
-
-  setVoiceDeliveryMode: (mode) => set({ voiceDeliveryMode: mode }),
-
-  setVoiceWebhookConfigured: (configured) => set({ voiceWebhookConfigured: configured }),
-
-  setVoiceHandsFree: (enabled) => {
-    saveVoiceHandsFree(enabled);
-    set({ voiceHandsFree: enabled });
   },
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),

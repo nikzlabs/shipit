@@ -855,8 +855,6 @@ export default function App() {
             autoResetMergedBranch?: boolean;
             enableSubAgents?: boolean;
             sessionStatusCard?: boolean;
-            voiceDeliveryMode?: "native" | "external" | "both";
-            voiceWebhookConfigured?: boolean;
             providerAccounts?: CredentialRoute[];
             failoverCutoffs?: Record<string, { session: number; weekly: number }>;
             accountSelectionMode?: Record<string, "strict" | "balanced">;
@@ -907,14 +905,6 @@ export default function App() {
             useSettingsStore.getState().setAccountSelectionMode(agentId, mode);
           }
         }
-        if (data.settings.voiceDeliveryMode !== undefined)
-          {useSettingsStore
-            .getState()
-            .setVoiceDeliveryMode(data.settings.voiceDeliveryMode);}
-        if (data.settings.voiceWebhookConfigured !== undefined)
-          {useSettingsStore
-            .getState()
-            .setVoiceWebhookConfigured(data.settings.voiceWebhookConfigured);}
         useSettingsStore.getState().setNonTurnModel(
           data.settings.nonTurnModel ?? null,
           data.settings.nonTurnModelResolved ?? null,

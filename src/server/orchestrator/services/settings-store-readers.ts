@@ -823,14 +823,6 @@ export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
       })),
     );
   },
-  "voice.webhook.url": (ctx) => {
-    const missing = needsCredentialStore(ctx);
-    return missing ?? value(ctx.deps.credentialStore?.getVoiceWebhook()?.url ?? null);
-  },
-  "voice.webhook.token": (ctx) => {
-    const missing = needsCredentialStore(ctx);
-    return missing ?? value(ctx.deps.credentialStore?.getVoiceWebhook()?.token ?? null);
-  },
 
   // Project Settings.
   "project.allowAgentMerge": (ctx) => repoField(ctx, (repo) => repo.allowAgentMerge ?? false),

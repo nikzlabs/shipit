@@ -13,6 +13,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { GitTab } from "./tabs/GitTab.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
+import { commitSettings } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { initialSettingValues } from "../../stores/setting-values.js";
@@ -273,5 +274,54 @@ describe("the Git tab's Save", () => {
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "" } });
 
     expect(screen.getByRole("button", { name: /^Save/ })).toBeDisabled();
+  });
+});
+
+/**
+ * `commitSettings` takes its **destination from the declarations**, and every
+ * entry has to share it (plan.md → Slices → 4). That is what lets the voice
+ * webhook's two halves be one write to their shared address while the two
+ * instruction boxes stay one write to the settings payload — a caller names keys
+ * and never a path.
+ */
+describe("a commit whose destination is not the settings payload", () => {
+  const WEBHOOK_URL = "voice.webhook.url" as SettingKey;
+  const WEBHOOK_TOKEN = "voice.webhook.token" as SettingKey;
+
+  it("sends one request to the address both declarations name", async () => {
+    await commitSettings([[WEBHOOK_URL, "https://hook.example/notes"], [WEBHOOK_TOKEN, "s3cret"]]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string }];
+    expect(url).toBe("/api/voice/webhook");
+    expect(init.method).toBe("POST");
+    expect(bodyOf(0)).toEqual({ url: "https://hook.example/notes", token: "s3cret" });
+  });
+
+  /*
+    Nothing commits across two destinations today, so nothing fans out — a caller
+    that mixes them is a mistake, and saying so by name beats splitting the write
+    silently or posting one setting to the other's route.
+  */
+  it("refuses to commit settings stored in two different places", async () => {
+    await expect(commitSettings([[USER, "Be brief."], [WEBHOOK_URL, "https://hook.example/notes"]]))
+      .rejects.toThrow(/different destinations/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /*
+    The webhook token is write-only: `configuredOnly` says so, and the route that
+    stored it answers the url alone. A record that took `undefined` for the
+    missing field would be inventing a value for a secret the browser may not
+    read back.
+  */
+  it("leaves a write-only half out of the record while the echoed half moves", async () => {
+    answersWith({ url: "https://hook.example/notes" });
+
+    await commitSettings([[WEBHOOK_URL, "https://hook.example/notes"], [WEBHOOK_TOKEN, "s3cret"]]);
+
+    const values = useSettingsStore.getState().settingValues;
+    expect(values[WEBHOOK_URL]).toBe("https://hook.example/notes");
+    expect(values[WEBHOOK_TOKEN]).toBe("");
   });
 });

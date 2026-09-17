@@ -14,9 +14,21 @@ import { DeclaredSettings, controlFor } from "./DeclaredSettings.js";
 import { resetDeclaredSaves } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { GENERATED_SETTINGS, initialSettingValues } from "../../stores/setting-values.js";
-import { findSetting, type SettingKey } from "../../../server/shared/settings-catalogue/index.js";
+import {
+  findSetting,
+  type AnySettingDeclaration,
+  type SettingKey,
+} from "../../../server/shared/settings-catalogue/index.js";
 
 const ROWS = GENERATED_SETTINGS.filter((d) => d.tab === "advanced");
+
+/** A declared enum's options, as the control that offers them reads them. */
+function optionsOf(declaration: AnySettingDeclaration): { value: string; label: string; description?: string }[] {
+  const { options } = declaration.type.shape as {
+    options?: { value: string; label: string; description?: string }[];
+  };
+  return options ?? [];
+}
 /** The rows a value kind's own control renders — everything but the components. */
 const TOGGLES = ROWS.filter((d) => d.type.kind === "bool" && !d.component);
 
@@ -114,6 +126,105 @@ describe("the Advanced tab's rows come from the declarations", () => {
 
     const group = screen.getByRole("region", { name: "Notifications" });
     expect(within(group).getByText("Only when you are away.")).toBeInTheDocument();
+  });
+
+  /*
+    Derived status belonging to ONE row, which a section note cannot carry
+    because it renders above the rows (inventory.md P12, found with one user in
+    slice 3 and two more here). What it must land beneath is the row it is about.
+  */
+  it("places a row's own status after that row, where a section's prose goes before it", () => {
+    const declaration = findSetting("advanced.autoFixCi")!;
+    const { container } = render(
+      <DeclaredSettings
+        tab="advanced"
+        notes={{ [declaration.section!]: <p>About this whole group.</p> }}
+        rowNotes={{ "advanced.autoFixCi": <p>Nothing to fix right now.</p> }}
+      />,
+    );
+
+    const row = container.querySelector('[data-setting="advanced.autoFixCi"]')!;
+    const sectionNote = screen.getByText("About this whole group.");
+    const rowNote = screen.getByText("Nothing to fix right now.");
+    const follows = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    expect(follows(sectionNote, row)).toBe(true);
+    expect(follows(row, rowNote)).toBe(true);
+  });
+});
+
+/**
+ * Which control a choice gets, decided by the declaration alone (req 5).
+ *
+ * A card carries an option's own sentence, so an option set that declares
+ * descriptions gets cards and one that does not gets a select. Written against
+ * the rule rather than against the two settings that happen to exemplify it
+ * today: the branch is what a new enum inherits.
+ */
+describe("a choice is cards or a select, by what its options declare", () => {
+  const ENUMS = GENERATED_SETTINGS.filter((d) => d.type.kind === "enum" && !d.component);
+
+  it("covers both shapes with what is declared today", () => {
+    const described = ENUMS.filter((d) => optionsOf(d).every((o) => o.description));
+    expect(described.map((d) => d.key)).toEqual(["advanced.releaseChannel"]);
+    expect(ENUMS.length).toBeGreaterThan(described.length);
+  });
+
+  for (const declaration of ENUMS) {
+    const described = optionsOf(declaration).every((o) => o.description);
+    it(`renders ${declaration.key} as ${described ? "cards" : "a select"}`, () => {
+      render(<DeclaredSettings tab={declaration.tab} />);
+
+      const select = screen.queryByRole("combobox", { name: declaration.label });
+      if (described) {
+        expect(select).toBeNull();
+        for (const option of optionsOf(declaration)) {
+          expect(screen.getByRole("button", { name: option.label }))
+            .toHaveAttribute("data-setting", declaration.key);
+        }
+        return;
+      }
+      expect(select).toHaveAttribute("data-setting", declaration.key);
+      expect([...(select as HTMLSelectElement).options].map((o) => o.value))
+        .toEqual(optionsOf(declaration).map((o) => o.value));
+    });
+  }
+
+  it("writes the chosen option to the declaration's store", () => {
+    render(<DeclaredSettings tab="voice" />);
+    const declaration = findSetting("voice.language")!;
+
+    fireEvent.change(
+      screen.getByRole("combobox", { name: declaration.label }),
+      { target: { value: "fr" } },
+    );
+
+    expect(settingValue("voice.language")).toBe("fr");
+    expect(localStorage.getItem("shipit-voice-language")).toBe("fr");
+  });
+});
+
+/**
+ * A component named by several declarations renders once, at the first of them
+ * (plan.md → Slices → 4). Two renders would be two Saves over one credential and
+ * two provider pickers that disagree.
+ */
+describe("a component several declarations name", () => {
+  it("renders once however many name it", () => {
+    render(<DeclaredSettings tab="voice" />);
+
+    const shared = new Map<string, number>();
+    for (const declaration of GENERATED_SETTINGS) {
+      if (declaration.tab !== "voice" || !declaration.component) continue;
+      shared.set(declaration.component, (shared.get(declaration.component) ?? 0) + 1);
+    }
+    // The two the Voice tab has: three declarations for the TTS trio, two for
+    // the webhook pair.
+    expect([...shared.values()].filter((n) => n > 1).sort()).toEqual([2, 3]);
+
+    expect(screen.getAllByRole("button", { name: "Save webhook" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Test playback" })).toHaveLength(1);
   });
 });
 

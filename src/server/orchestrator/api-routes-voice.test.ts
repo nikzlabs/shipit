@@ -124,19 +124,22 @@ async function buildApp(overrides?: {
 }): Promise<{
   app: FastifyInstance;
   credentialStore: ReturnType<typeof makeCredentialStore>;
+  broadcasts: { event: string; data: unknown }[];
 }> {
   const credentialStore = overrides?.credentialStore ?? makeCredentialStore();
+  const broadcasts: { event: string; data: unknown }[] = [];
   const app = Fastify();
   await app.register(fastifyMultipart);
   await registerVoiceRoutes(app, {
     credentialStore,
     workspaceDir: tmpDir,
     stateDir: tmpDir,
+    sseBroadcast: (event: string, data: unknown) => broadcasts.push({ event, data }),
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
     chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn(), append: vi.fn() },
   } as unknown as ApiDeps);
   await app.ready();
-  return { app, credentialStore };
+  return { app, credentialStore, broadcasts };
 }
 
 beforeEach(() => {
@@ -611,7 +614,14 @@ describe("POST /api/voice/transcribe", () => {
 });
 
 describe("Voice-note webhook config (docs/163)", () => {
-  it("stores the webhook on POST and reports configured status without the token", async () => {
+  /*
+    The write and the read are one address (docs/308-data-driven-settings
+    inventory.md P2): the dialog POSTs both halves to this path and reads the url
+    back from a GET of the same path, under the same field name. Nothing answers
+    the token — that is what `configuredOnly` means, and a route that returned it
+    would be the one place the browser could read it back.
+  */
+  it("stores the webhook on POST and echoes the stored url, never the token", async () => {
     const { app, credentialStore } = await buildApp();
     const res = await app.inject({
       method: "POST",
@@ -620,12 +630,19 @@ describe("Voice-note webhook config (docs/163)", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(credentialStore.setVoiceWebhook).toHaveBeenCalledWith("https://hook.example/notes", "super-secret");
+    expect(res.json()).toEqual({ url: "https://hook.example/notes" });
 
-    const status = await app.inject({ method: "GET", url: "/api/voice/webhook/status" });
-    const body = status.json();
-    expect(body.configured).toBe(true);
-    expect(body.url).toBe("https://hook.example/notes");
-    expect(JSON.stringify(body)).not.toContain("super-secret");
+    const read = await app.inject({ method: "GET", url: "/api/voice/webhook" });
+    expect(read.json()).toEqual({ url: "https://hook.example/notes" });
+    expect(JSON.stringify(read.json())).not.toContain("super-secret");
+    await app.close();
+  });
+
+  it("answers an empty url when no webhook is stored", async () => {
+    const { app } = await buildApp();
+    const read = await app.inject({ method: "GET", url: "/api/voice/webhook" });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual({ url: "" });
     await app.close();
   });
 
@@ -648,6 +665,38 @@ describe("Voice-note webhook config (docs/163)", () => {
     await app.close();
   });
 
+  /*
+    The webhook is a declared row now, read back on the `settings_changed`
+    refresh — so a write that stayed silent would reach no browser but the one
+    that made it. The tab used to re-read the status on mount, which covered
+    less: it needed somebody to leave the Voice tab and come back.
+  */
+  it("tells every viewer the webhook moved, on both the write and the removal", async () => {
+    const credentialStore = makeCredentialStore();
+    const { app, broadcasts } = await buildApp({ credentialStore });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/voice/webhook",
+      payload: { url: "https://hook.example/notes", token: "t" },
+    });
+    await app.inject({ method: "DELETE", url: "/api/voice/webhook" });
+
+    expect(broadcasts.map((b) => b.event)).toEqual(["settings_changed", "settings_changed"]);
+    expect(broadcasts[0]!.data).toEqual({ keys: ["voice.webhook.url", "voice.webhook.token"] });
+    expect(JSON.stringify(broadcasts)).not.toContain("hook.example");
+    await app.close();
+  });
+
+  it("says nothing to anyone when the write is refused", async () => {
+    const { app, broadcasts } = await buildApp();
+
+    await app.inject({ method: "POST", url: "/api/voice/webhook", payload: { url: "ftp://nope" } });
+
+    expect(broadcasts).toEqual([]);
+    await app.close();
+  });
+
   it("rejects a non-http URL with 400", async () => {
     const { app } = await buildApp();
     const res = await app.inject({
@@ -667,6 +716,7 @@ describe("Voice-note webhook config (docs/163)", () => {
     expect(res.statusCode).toBe(200);
     expect(credentialStore.clearVoiceWebhook).toHaveBeenCalled();
     expect(credentialStore.getVoiceWebhook()).toBeNull();
+    expect(res.json()).toEqual({ url: "" });
     await app.close();
   });
 });

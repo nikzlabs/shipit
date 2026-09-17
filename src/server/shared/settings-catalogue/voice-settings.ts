@@ -9,10 +9,25 @@ import { text } from "./value-types.js";
  * credential, declared here, or browser-local, declared in `browser-settings.ts`.
  */
 
+/**
+ * The two webhook halves share ONE address: they are one credential written in
+ * one request, so both name the same path and differ only in the body field
+ * they occupy (docs/308-data-driven-settings plan.md → Slices → 4). A GET of
+ * the same path answers the url; nothing answers the token, which is what
+ * `configuredOnly` already says about it.
+ */
+const WEBHOOK_PATH = "/api/voice/webhook";
+
 export const VOICE_SETTINGS = {
   "voice.providerKey": defineSetting({
     key: "voice.providerKey",
     tab: "voice",
+    section: "Provider API keys",
+    // Addressed by a provider and belonging to no collection declaration, so the
+    // list that repeats it over the key-requiring providers is its owner
+    // (docs/308-data-driven-settings inventory.md P11). Its write is per
+    // provider and has a second body field, which is why the list keeps it.
+    component: "voice-provider-keys",
     scope: "global",
     address: itemAddress("a speech provider id, e.g. openai"),
     label: "Provider API key",
@@ -28,14 +43,16 @@ export const VOICE_SETTINGS = {
   "voice.webhook.url": defineSetting({
     key: "voice.webhook.url",
     tab: "voice",
+    section: "Voice notes",
+    component: "voice-webhook",
     scope: "global",
     label: "Voice note webhook URL",
     description:
-      "Where a voice note is POSTed when delivery includes the external mode. It is half of one "
-      + "credential — the bearer token is the other half — so ShipIt reports only whether the "
-      + "webhook is configured.",
+      "Where a voice note is POSTed when delivery includes the external mode. The body is "
+      + "{ v: 1, summary, needsAttention, context }. It is half of one credential — the bearer "
+      + "token is the other half — so ShipIt reports only whether the webhook is configured.",
     type: text({ maxLength: 2_000, noun: "Voice webhook URL" }),
-    store: { kind: "bespoke", ownedBy: "the voice webhook credential (POST /api/voice/webhook)" },
+    store: { kind: "own-route", method: "POST", path: WEBHOOK_PATH, bodyField: "url" },
     emits: configuredOnly(),
     propose: { kind: "no", reason: "secret" },
   }),
@@ -43,13 +60,15 @@ export const VOICE_SETTINGS = {
   "voice.webhook.token": defineSetting({
     key: "voice.webhook.token",
     tab: "voice",
+    section: "Voice notes",
+    component: "voice-webhook",
     scope: "global",
     label: "Voice note webhook bearer token",
     description:
       "Sent as the bearer token on every voice-note POST. Saving with it left blank keeps the "
       + "stored one; ShipIt never shows it again.",
     type: text({ maxLength: 4_000, noun: "Voice webhook token" }),
-    store: { kind: "bespoke", ownedBy: "the voice webhook credential (POST /api/voice/webhook)" },
+    store: { kind: "own-route", method: "POST", path: WEBHOOK_PATH, bodyField: "token" },
     emits: configuredOnly(),
     propose: { kind: "no", reason: "secret" },
   }),

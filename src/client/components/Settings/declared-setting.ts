@@ -28,6 +28,7 @@ import {
   type AnySettingDeclaration,
   type GlobalSettingKey,
   type GlobalSettingsCatalogue,
+  type OwnRouteStore,
   type SettingKey,
   type SettingTab,
   type SettingValue,
@@ -248,23 +249,53 @@ export function useTabDrafts(tab: SettingTab): readonly PendingEdit[] {
   });
 }
 
+/** Where a value is stored, as the one string that says two settings share a write. */
+function destinationOf(declaration: AnySettingDeclaration): { method: string; path: string } {
+  if (isPayloadDeclaration(declaration)) return { method: "PUT", path: SETTINGS_PATH };
+  if (declaration.store.kind === "own-route") {
+    return { method: declaration.store.method, path: declaration.store.path };
+  }
+  throw new Error(
+    `Cannot commit "${declaration.key}": ${declaration.store.kind} has no shared write`,
+  );
+}
+
+/** The field this setting occupies in the request body, and answers under. */
+function fieldOf(declaration: AnySettingDeclaration): string {
+  return declaration.wire ?? (declaration.store as OwnRouteStore).bodyField;
+}
+
+/** Monotonic per commit destination; only the newest response may move the record. */
+const COMMITS = new Map<string, number>();
+
 /**
  * Store several settings in ONE write, and tell the caller whether it landed.
  *
- * This is what an explicit Save is: the settings payload takes every field at
- * once, so a button committing two boxes sends one request rather than two —
- * which is what the catalogue's `instructions.commit` exclusion describes, and
- * what a per-row Save would have changed.
+ * The destination comes from the declarations, and **every entry must share it**:
+ * the settings payload takes each of its fields at once, which is what the
+ * catalogue's `instructions.commit` exclusion describes, and the voice webhook's
+ * URL and token are one credential at one address, so they are one request too
+ * (plan.md → Slices → 4). Nothing today commits across two destinations, so
+ * nothing here fans out — a caller that mixes them is a mistake, and it is
+ * refused by name rather than silently split.
  *
  * **No optimistic write and no rollback** (plan.md → One writer, for the
  * scalars). A row that commits on a button has its edit in the draft, where the
  * user can still see it; the record moves only once the server has answered, and
  * it moves to the value the server ECHOED — the writers trim, so the stored
- * value is not always the one that was sent. A refused write moves nothing and
- * keeps every draft, because that is the user's unsaved work.
+ * value is not always the one that was sent. A field the answer omits leaves the
+ * record alone, which is how a write-only half is stored without being read back:
+ * nothing echoes the webhook token, and inventing a value for it would be the one
+ * place the browser held a secret it may not see. A refused write moves nothing
+ * and keeps every draft, because that is the user's unsaved work.
  *
- * **Nothing here sequences two overlapping commits**, and the one caller does not
- * produce them: `DeclaredCommit` is disabled while its write is in flight.
+ * **Two commits of one destination are sequenced HERE, not by the button.** A
+ * Save is disabled while its own write is in flight, and that was the whole of
+ * it until review found the hole: the button's state is a component's, so
+ * switching tabs re-mounts it enabled while the first request is still out, and
+ * the older of two responses could then put the older value in the record with
+ * the server holding the newer. This map is module-level and outlives every
+ * control, exactly as {@link saveSetting}'s does.
  */
 export async function commitSettings(
   entries: readonly (readonly [SettingKey, unknown])[],
@@ -272,23 +303,35 @@ export async function commitSettings(
   if (entries.length === 0) return true;
   const pending = entries.map(([key, value]) => {
     const declaration = settingOf(key);
-    if (!isPayloadDeclaration(declaration)) {
-      throw new Error(`Cannot commit "${key}": ${declaration.store.kind} has no shared write`);
-    }
-    return { key, value, declaration };
+    return { key, value, declaration, field: fieldOf(declaration) };
   });
-  const body = Object.fromEntries(pending.map((p) => [p.declaration.wire, p.value]));
+  const first = pending[0];
+  if (!first) return true;
+  const { method, path } = destinationOf(first.declaration);
+  const elsewhere = pending.find((p) => destinationOf(p.declaration).path !== path);
+  if (elsewhere) {
+    throw new Error(
+      `Cannot commit "${elsewhere.key}" with "${first.key}": different destinations`,
+    );
+  }
 
+  const mine = (COMMITS.get(path) ?? 0) + 1;
+  COMMITS.set(path, mine);
   try {
-    const res = await fetch(SETTINGS_PATH, {
-      method: "PUT",
+    const res = await fetch(path, {
+      method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(Object.fromEntries(pending.map((p) => [p.field, p.value]))),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const stored = await res.json() as Record<string, unknown>;
+    // An older write's answer describes a state nobody is in any more: the newer
+    // one is what the server holds, and the drafts belong to whatever is newest.
+    if (COMMITS.get(path) !== mine) return true;
     const { setSettingValue, settleSettingDrafts } = useSettingsStore.getState();
-    for (const { key, declaration } of pending) setSettingValue(key, stored[declaration.wire]);
+    for (const { key, field } of pending) {
+      if (stored[field] !== undefined) setSettingValue(key, stored[field]);
+    }
     settleSettingDrafts(pending.map(({ key, value }) => ({ key, value })));
     return true;
   } catch (err) {
@@ -312,4 +355,5 @@ export function useDeclaredBoolean(key: DeclaredBooleanKey): {
 /** Test seam: the in-flight bookkeeping is process-wide and outlives a render. */
 export function resetDeclaredSaves(): void {
   SAVES.clear();
+  COMMITS.clear();
 }

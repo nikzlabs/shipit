@@ -25,10 +25,18 @@ import { SETTING_COMPONENTS } from "./components/registry.js";
  * What one declaration renders: its component where it names one, otherwise the
  * control its value kind gets.
  *
- * One component per declaration, because every component there is names exactly
- * one. The first that is shared by two — the voice webhook's URL and token, in
- * slice 4 — is what decides how a pair renders once, and guessing that here
- * would be a branch nothing runs.
+ * **A component is rendered once, however many declarations name it** — at the
+ * first of them, so its place is still a declaration's place (req 11). The voice
+ * webhook decided that: one URL and one token are one credential saved by one
+ * button, so a second render would be a second Save writing the same request.
+ * The same rule puts the TTS provider, voice and speed in one control, which is
+ * what lets changing the provider repair the other two (inventory.md P3, P7).
+ *
+ * A component that owns several declarations names them itself rather than
+ * reading them off a list, because it has to know which is which: a positional
+ * `[provider, voice, speed]` would be decided by catalogue order in another
+ * file. So the prop stays the one key a single-setting component needs, and a
+ * component that does not need it takes no props at all.
  */
 export function controlFor(declaration: AnySettingDeclaration): ReactNode {
   const key = declaration.key as SettingKey;
@@ -43,11 +51,19 @@ interface Group {
   rows: AnySettingDeclaration[];
 }
 
-/** Rows grouped by `section`, each group placed where its first declaration is. */
+/**
+ * Rows grouped by `section`, each group placed where its first declaration is —
+ * with a shared component appearing only at the first declaration that names it.
+ */
 function groupsOf(tab: SettingTab): Group[] {
   const groups: Group[] = [];
+  const rendered = new Set<string>();
   for (const declaration of GENERATED_SETTINGS) {
     if (declaration.tab !== tab) continue;
+    if (declaration.component !== undefined) {
+      if (rendered.has(declaration.component)) continue;
+      rendered.add(declaration.component);
+    }
     const section = declaration.section ?? "";
     const group = groups.find((g) => g.section === section);
     if (group) group.rows.push(declaration);
@@ -59,10 +75,21 @@ function groupsOf(tab: SettingTab): Group[] {
 export function DeclaredSettings({
   tab,
   notes,
+  rowNotes,
 }: {
   tab: SettingTab;
   /** Prose a section carries, keyed by section name. */
   notes?: Readonly<Record<string, ReactNode>>;
+  /**
+   * Derived status belonging to one row, keyed by setting key and rendered
+   * beneath that row's control (inventory.md P12).
+   *
+   * A section `note` renders above its rows, which is the wrong place for a line
+   * that reports on the row above it — the Voice tab has two, the key a provider
+   * still needs and whether transcript cleanup can run at all. Slice 3 found the
+   * same limit with one user and left it; this is the second and third.
+   */
+  rowNotes?: Readonly<Record<string, ReactNode>>;
 }) {
   const groups = groupsOf(tab);
   return (
@@ -79,6 +106,7 @@ export function DeclaredSettings({
               {group.rows.map((declaration) => (
                 <Fragment key={declaration.key}>
                   {controlFor(declaration)}
+                  {rowNotes?.[declaration.key]}
                 </Fragment>
               ))}
             </div>
