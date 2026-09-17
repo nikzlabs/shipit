@@ -112,20 +112,25 @@ interface SaveState {
 const SAVES = new Map<string, SaveState>();
 
 /**
- * Put a value where its declaration says it lives.
+ * Put a value where its declaration says it lives, and answer whether it landed.
  *
  * A browser value is already there once the record has it, so there is nothing
  * to await and no refusal to roll back from. A stored value is written
  * optimistically and then durably, and the server's own value goes back when the
  * save does not land, so a control never shows a state the server refused.
+ *
+ * It answers `true` once the value is stored and `false` when the server refused
+ * it — for a control that reports its own save, since the rollback is invisible
+ * to one holding its own draft. A store nothing writes still THROWS: that is a
+ * declaration nobody could have saved, not a refusal the user can retry.
  */
-export async function saveSetting(key: SettingKey, value: unknown): Promise<void> {
+export async function saveSetting(key: SettingKey, value: unknown): Promise<boolean> {
   const declaration = settingOf(key);
   const apply = (next: unknown) => { useSettingsStore.getState().setSettingValue(key, next); };
 
   if (declaration.store.kind === "browser") {
     apply(value);
-    return;
+    return true;
   }
   const request = settingRequest(declaration, value);
   if (!request) {
@@ -156,24 +161,31 @@ export async function saveSetting(key: SettingKey, value: unknown): Promise<void
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.confirmed = value;
+    return true;
   } catch (err) {
     if (state.seq === mine) apply(state.confirmed);
     // The declaration's own label, so the toast names the control the user just
     // used rather than a second phrasing of it written beside the fetch.
     useUiStore.getState().setToast({ message: `Failed to update ${declaration.label}` });
     console.error(`[settings] saving ${key} failed:`, err);
+    return false;
   } finally {
     state.pending -= 1;
   }
 }
 
-/** A declared setting's current value and the only write it needs. */
+/**
+ * A declared setting's current value and the only write it needs.
+ *
+ * `set` hands back {@link saveSetting}'s outcome rather than swallowing it, so
+ * there is one place to read whether a write landed rather than two.
+ */
 export function useSetting(key: SettingKey): {
   value: unknown;
-  set: (next: unknown) => void;
+  set: (next: unknown) => Promise<boolean>;
 } {
   const value = useSettingsStore((state) => currentValue(state, key));
-  return { value, set: (next) => { void saveSetting(key, next); } };
+  return { value, set: (next) => saveSetting(key, next) };
 }
 
 export interface SettingDraftView {
@@ -322,7 +334,7 @@ export async function commitSettings(
 /** {@link useSetting} for a control that is a switch, so the value is a boolean. */
 export function useDeclaredBoolean(key: DeclaredBooleanKey): {
   value: boolean;
-  set: (next: boolean) => void;
+  set: (next: boolean) => Promise<boolean>;
 } {
   const { value, set } = useSetting(key);
   return { value: value === true, set };

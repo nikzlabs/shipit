@@ -5,6 +5,8 @@ import { MemoryBudget } from "./MemoryBudget.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { initialSettingValues } from "../../../stores/setting-values.js";
 import { useUiStore } from "../../../stores/ui-store.js";
+import { findSetting } from "../../../../server/shared/settings-catalogue/index.js";
+import { resetDeclaredSaves } from "../declared-setting.js";
 
 const KEY = "advanced.memoryBudgetMb" as const;
 
@@ -17,6 +19,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   useSettingsStore.setState({ settingValues: initialSettingValues(), memoryBudgetMb: null });
   useUiStore.getState().setDockerMemory(null as never);
+  useUiStore.getState().setToast(null);
+  resetDeclaredSaves();
 });
 
 /**
@@ -68,6 +72,44 @@ describe("MemoryBudget", () => {
     });
   });
 
+  it("does not report a save the server refused", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 500 }));
+    render(<MemoryBudget settingKey={KEY} />);
+    fireEvent.change(screen.getByTestId("settings-memory-budget"), { target: { value: "4" } });
+
+    await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
+
+    await waitFor(() => {
+      expect(useUiStore.getState().toast?.message).toBe(
+        `Failed to update ${findSetting(KEY)!.label}`,
+      );
+    });
+    expect(screen.getByTestId("settings-memory-budget-save").textContent).toBe("Save");
+  });
+
+  // One write at a time, and "Saved" is about the value that was SENT: the
+  // button is out of use while the request is, the box is not, so typing since
+  // the send is unsaved work (slices 3, 4 and 7).
+  it("takes one write at a time, and reports only the value it sent", async () => {
+    let land: (() => void) | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise((resolve) => {
+      land = () => { resolve(new Response("{}", { status: 200 })); };
+    }));
+    render(<MemoryBudget settingKey={KEY} />);
+    fireEvent.change(screen.getByTestId("settings-memory-budget"), { target: { value: "4" } });
+    await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
+
+    expect(screen.getByTestId("settings-memory-budget-save").textContent).toBe("Saving…");
+    await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByTestId("settings-memory-budget"), { target: { value: "6" } });
+    await act(async () => { land!(); await Promise.resolve(); });
+
+    expect(screen.getByTestId("settings-memory-budget-save").textContent).toBe("Save");
+  });
+
   it("reports the save, and stops reporting it once the field is edited again", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -75,9 +117,10 @@ describe("MemoryBudget", () => {
     render(<MemoryBudget settingKey={KEY} />);
     fireEvent.change(screen.getByTestId("settings-memory-budget"), { target: { value: "4" } });
     await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
-    expect(screen.getByTestId("settings-memory-budget-save")).toHaveTextContent("Saved");
+    // Exact, because `toHaveTextContent("Save")` accepts "Saved" too.
+    expect(screen.getByTestId("settings-memory-budget-save").textContent).toBe("Saved");
     fireEvent.change(screen.getByTestId("settings-memory-budget"), { target: { value: "6" } });
-    expect(screen.getByTestId("settings-memory-budget-save")).toHaveTextContent("Save");
+    expect(screen.getByTestId("settings-memory-budget-save").textContent).toBe("Save");
   });
 
   // docs/284 req 13 — an install default is not this setting's value, so it is

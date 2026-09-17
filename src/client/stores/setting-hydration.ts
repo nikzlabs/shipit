@@ -51,6 +51,9 @@ export function hydrateSettingValues(
   }
 }
 
+/** Monotonic per own-route address; only the newest read may move the record. */
+const READS = new Map<string, number>();
+
 /**
  * Read the generated rows the settings payload does not carry, from their own
  * routes.
@@ -59,13 +62,14 @@ export function hydrateSettingValues(
  * last knew beats one that resets itself to a declared default the install may
  * not be on.
  *
- * **A read that started before the value moved is discarded.** These reads are
- * in flight for as long as a request takes, and a save writes the record the
- * moment it is made — so a read that began first and answered second would put
- * the old value back under a control the user has since changed, and the
- * `settings_changed` refresh that would have corrected it has already run. The
- * record's own value before and after the read is the whole test: it moved, so
- * this answer is describing a state nobody is in any more.
+ * **Two answers are refused, and neither guard covers the other's case.** An
+ * answer that is not the NEWEST read's for that address moves nothing: two
+ * reads overlap whenever `settings_changed` arrives while one is out, and left
+ * unordered the older one writes its stale value AND makes the newer answer
+ * look superseded by the guard beside it. And an answer fetched before the
+ * record moved is discarded, because a write is not a read and the sequence
+ * cannot see one — a save the user just made would otherwise be undone by an
+ * answer older than the click.
  */
 export async function refreshOwnRouteSettings(): Promise<void> {
   const byPath = new Map<string, AnySettingDeclaration[]>();
@@ -82,10 +86,13 @@ export async function refreshOwnRouteSettings(): Promise<void> {
     const before = declarations.map(
       (d) => useSettingsStore.getState().settingValues[d.key as SettingKey],
     );
+    const mine = (READS.get(path) ?? 0) + 1;
+    READS.set(path, mine);
     try {
       const res = await fetch(path);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json() as Record<string, unknown>;
+      if (READS.get(path) !== mine) return;
       for (const [index, declaration] of declarations.entries()) {
         const key = declaration.key as SettingKey;
         const value = body[ownRouteOf(declaration)?.bodyField ?? ""];

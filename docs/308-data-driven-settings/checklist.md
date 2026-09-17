@@ -23,3 +23,5 @@ each, and the work is tracked on planning#580.
 - [x] 6b — The Roles and Services panels, and `services.nonTurnModel`
 - [x] 7 — Project Settings
 - [x] 8 — Cleanup: the coverage walk and `data-setting` go
+- [x] The two runtime defects slice 8 recorded: `saveSetting` answers whether the
+      write landed, and the own-route reads are ordered per address

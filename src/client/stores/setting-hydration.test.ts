@@ -203,6 +203,41 @@ describe("the rows the payload does not carry", () => {
   });
 
   /*
+    Every settings refresh starts a read of each address, so two of them overlap
+    whenever a `settings_changed` broadcast arrives while one is out. The older
+    answer describes the state the address was in first — and left unordered it
+    wins twice: it writes the stale value, and that write then makes the newer
+    read's own answer look superseded by the moved-underneath guard.
+  */
+  it("keeps the newer read's answer when an older read lands first", async () => {
+    const WEBHOOK = "/api/voice/webhook";
+    useSettingsStore.getState().setSettingValue("voice.webhook.url", "https://a.example");
+    const pending: { url: string; settle: (body: Record<string, unknown>) => void }[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => new Promise((resolve) => {
+      pending.push({
+        url,
+        settle: (body) => {
+          resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+        },
+      });
+    })));
+
+    const older = refreshOwnRouteSettings();
+    const newer = refreshOwnRouteSettings();
+    const webhookReads = pending.filter((p) => p.url === WEBHOOK);
+    expect(webhookReads).toHaveLength(2);
+
+    // What the address held when the first read was served, answering after the
+    // second read has already been issued.
+    webhookReads[0]!.settle({ url: "https://b.example" });
+    webhookReads[1]!.settle({ url: "https://c.example" });
+    for (const p of pending) p.settle({});
+    await Promise.all([older, newer]);
+
+    expect(recorded("voice.webhook.url")).toBe("https://c.example");
+  });
+
+  /*
     A failed read keeps the last value ShipIt knew. Answering the declared
     default instead would tell an install tracking `stable` that it is on
     `stable` — a real channel, and possibly the wrong one — which is the same

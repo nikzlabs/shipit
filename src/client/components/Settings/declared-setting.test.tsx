@@ -70,8 +70,10 @@ describe("a declared boolean saves itself", () => {
 
     it(`writes ${key} to the browser store and to its declared payload field`, async () => {
       const next = !storeValue(wire);
-      await act(async () => { await saveSetting(key, next); });
+      let stored: boolean | undefined;
+      await act(async () => { stored = await saveSetting(key, next); });
 
+      expect(stored).toBe(true);
       expect(storeValue(wire)).toBe(next);
       const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
       expect(url).toBe("/api/settings");
@@ -85,9 +87,13 @@ describe("a declared boolean saves itself", () => {
       fetchMock.mockResolvedValue({ ok: false, status: 500 });
       vi.spyOn(console, "error").mockImplementation(() => {});
       const before = storeValue(wire);
+      let stored: boolean | undefined;
 
-      await act(async () => { await saveSetting(key, !before); });
+      await act(async () => { stored = await saveSetting(key, !before); });
 
+      // The rollback and the toast are what a row reports with; the answer is
+      // for a control that reports its own save (`MemoryBudget`).
+      expect(stored).toBe(false);
       expect(storeValue(wire)).toBe(before);
       // The declaration's own label, so the toast names the control the user
       // just used rather than a second phrasing written beside the fetch.

@@ -26,7 +26,7 @@ export function VoiceHandsFree({ settingKey }: { settingKey: SettingKey }) {
         // Before the write, and synchronously: the gesture is what the browser
         // is granting on, and an await would end it.
         if (enabled) armAutoplay();
-        set(enabled);
+        void set(enabled);
       }}
       testId="voice-hands-free"
     />
