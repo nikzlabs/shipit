@@ -258,9 +258,6 @@ describe("block-branch-ops.mjs", () => {
       `until ! pgrep --full "${JOB}"; do sleep 1; done`,
       `(until ! pgrep -f ${JOB}; do sleep 1; done) && echo ok`,
       `echo "x"; until ! pgrep -f ${JOB}; do sleep 1; done`,
-      // A quoted operand is an operand: a pattern opening with `(` is not the
-      // shell's subshell syntax, and reading it as such let a real one through.
-      `while pgrep -f '(${JOB}|second_job)' >/dev/null; do sleep 1; done`,
       // Quoting a command NAME does not stop it running — bash runs `"echo" x`
       // — even though quoting a keyword does stop it being one.
       `until ! "pgrep" -f ${JOB}; do sleep 1; done`,
@@ -376,8 +373,15 @@ describe("block-branch-ops.mjs", () => {
       `cat <<"END-TEXT"\npgrep -f ${JOB}\nEND-TEXT`,
       `cat <<\\EOF\npgrep -f ${JOB}\nEOF`,
       `cat <<A <<B\npgrep -f ${JOB}\nA\npgrep -f ${JOB}\nB`,
-      // `<<<` is a herestring and opens no body.
-      `grep -q x <<<"${JOB}" && echo hit`,
+      // `<<<` is a herestring and opens no body. The `pgrep` on the next line
+      // is what makes this load-bearing: reading the last two `<` as a heredoc
+      // opener swallowed that line, so the case passed while inspecting nothing.
+      `grep -q x <<<"${JOB}" && echo hit\npgrep -f '[${JOB[0]}]${JOB.slice(1)}'`,
+      // A numeric delimiter is a delimiter, and `<<-` strips leading TABS only —
+      // an indented `EOF` is data. Both misreadings ended a body early and let
+      // a `cat`'s data be scanned as commands.
+      `cat <<123\npgrep -f ${JOB}\n123`,
+      `cat <<EOF\n  EOF\npgrep -f ${JOB}\nEOF`,
       // The other fix the refusal recommends: a pattern that cannot match its
       // own literal. The check is a regex and not a substring test precisely so
       // this works.
@@ -412,9 +416,23 @@ describe("block-branch-ops.mjs", () => {
       // Inside double quotes bash keeps a backslash before `.`, so the pattern
       // pgrep receives has a literal dot and does not match the `X` below.
       `pgrep -f "${JOB}\\.js"; : ${JOB}Xjs`,
-      // The submitted text is not the start of the real command line — that is
-      // the wrapper — so an opening anchor cannot be judged from the text.
+      // Only a pattern with no metacharacter is judged, and then by substring.
+      // An anchor in either spelling, a group, a class and an escape all mean
+      // the pattern is not its own characters, so none of them is judged.
       `pgrep -f '^pgrep.*${JOB}'`,
+      `pgrep -fc '(^pgrep.*${JOB})'`,
+      `pgrep -fc '${JOB}$'`,
+      // An array is data, not a subshell: these words are never run.
+      `args=(pgrep -f ${JOB}); printf '%s\\n' "\${args[@]}"`,
+      // A backtick substitution is not known until it runs.
+      "pgrep -fc `hostname`",
+      // `-o` / `-n` select ONE process, which is a way to exclude the caller:
+      // measured, `pgrep -of` returned an older target and `pkill -of` killed
+      // it while this shell lived.
+      `pgrep -of ${JOB}`,
+      `pkill -of ${JOB}`,
+      // Process substitution: bash passes the `-A` written after it.
+      `pgrep -fc ${JOB} > >(cat) -A`,
       // A redirection does not hide the option after it. bash passes `-A` to
       // pgrep, and `-A` is the caller-excluding fix the refusal recommends.
       // `&>` is the same word, and reading its `&` as a separator hid it too.
@@ -453,11 +471,12 @@ describe("block-branch-ops.mjs", () => {
       });
     }
 
-    it("gives up on a pattern that backtracks, instead of stalling the hook", () => {
-      // `a(a+)+$` over 26 characters takes seconds in this runtime and a `try`
-      // cannot interrupt it. A hook that stalls is the failure this one exists
-      // to prevent, so the match runs under a deadline it is allowed to lose.
-      const command = `until ! pgrep -f "a(a+)+$"; do sleep 1; done # ${"a".repeat(26)}!`;
+    it("cannot be stalled by a pattern, because it compiles none", () => {
+      // `a(a+)+$` backtracks for seconds once compiled, which used to need a
+      // `vm.runInNewContext` deadline. A pattern carrying metacharacters is no
+      // longer judged at all, so the pathological case is answered by the same
+      // rule as every other non-literal and there is no deadline to lose.
+      const command = `until ! pgrep -f "a(a+)+$"; do sleep 1; done ${"a".repeat(26)}`;
       const started = Date.now();
       const r = runHook(bash(command));
       expect(Date.now() - started).toBeLessThan(2_000);
