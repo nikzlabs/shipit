@@ -25,12 +25,18 @@ recorded in [requirements.md](./requirements.md); none is open.
 
 ## H2/H4 — the pnpm store index is trusted (reqs 1, 3, 6)
 
-- [ ] **Spike the store-index isolation.** pnpm trusts `v11/index.db`, so a
-      manifest rewrite (H4) or a warm-store byte poison (H2) installs attacker
-      content with `verify-store-integrity=true`. Confirm whether pnpm can keep a
-      per-session (or per-repo) `index.db` while sharing content blobs, the
-      pnpm analogue of the H1 npm fix. Reproduce first with `verify-h4.sh`. This
-      is the one unsolved mechanism in the design; do not build until it holds.
+- [x] **Spike the store-index isolation (2026-09-17).** A per-session *cold*
+      `index.db` over shared blobs does **not** work — measured, offline install
+      fails because the manifest lives only in `index.db` and is not
+      reconstructable from the content-addressed blobs. The fix is to put the
+      whole store inside the overlay (plan.md section 5 → section 3): overlayfs
+      copy-up isolates an `index.db` or blob write per session and closes H2, H3
+      and H4 together. Not a separate mechanism.
+- [ ] Move the pnpm store inside the docs/183 overlay (the H3 item below is the
+      same move). Then measure the two residuals: pnpm installs correctly with
+      `index.db` on an overlay (whole-file copy-up, store lock), and the fallback
+      for a host where the store cannot be overlay-mounted (`--frozen-store` is
+      read-only; a session must still install its own packages, req 9).
 - [ ] Set `verify-store-integrity=true` explicitly (ShipIt sets neither pnpm
       value today), but treat it as necessary, not sufficient — it trusts the
       writable `index.db`.

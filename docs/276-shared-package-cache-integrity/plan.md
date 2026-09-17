@@ -135,7 +135,8 @@ Set the value explicitly so the protection is asserted rather than inherited,
 and describe it in shipit-docs as pnpm's check, not ShipIt's. But it does **not**
 make the shared store safe on its own: pnpm skips re-hashing an entry `index.db`
 already vouches for, and `index.db` is attacker-writable. The store is safe only
-once section 5 removes that trust. Ship this alongside section 5, not instead.
+once the store is inside the overlay (section 5 → section 3). Ship this
+alongside that, not instead.
 
 ### 5. H4 — the pnpm store index is trusted metadata (reqs 1, 3, 6)
 
@@ -151,15 +152,36 @@ vouch for the entry. Two consequences, both measured
 
 This is the pnpm analogue of H1, and worse-scoped: the store is shared
 per-runtime across **repos**, so an untrusted repo poisons a private repo's
-install. The copy fix (section 2) does not help — it copies whatever the
-manifest names.
+install. `verify-store-integrity` (section 4) does not close it, and the copy
+fix (section 2) does not help — it copies whatever the manifest names.
 
-The fix has H1's shape: do not share the trusted store index across trust
-boundaries. Give each session (or repo) its own `index.db` while sharing the
-content blobs, or verify the manifest against the package integrity the lockfile
-pins. pnpm exposes no documented knob to split the index from the content, so
-**this needs a spike** before it is a committed mechanism — it is the one part
-of the design not yet reduced to a known-good fix, and it is load-bearing.
+The fix is to not share the trusted store index across trust boundaries.
+**Spiked 2026-09-17, and it resolves to section 3, not to a new mechanism:**
+
+- **A per-session *cold* `index.db` over shared content blobs does not work.**
+  Measured: with `files/` symlinked to a shared store and an empty private
+  `index.db`, an offline install fails (`snapshot not present in local store`).
+  The manifest lives only in `index.db` (no manifest blob exists under `files/`),
+  it is derived from the tarball, and pnpm cannot reconstruct it from the bare
+  content-addressed blobs. So the index cannot simply be split off cold.
+- **What the index needs is a per-session *trusted copy* that is writable
+  privately while the content blobs stay shared and read-until-written. That is
+  exactly overlayfs (section 3).** Put the whole store — `files/` and `index.db`
+  — inside the overlay, and by overlayfs's copy-on-write guarantee a session's
+  write to `index.db` (H4) or to a blob in place (H2 warm) copies up to that
+  session's private upper and leaves the shared base byte-identical. Section 3's
+  table already measured the store-poisoning row staying private; the guarantee
+  is the kernel's, not pnpm's, so it holds for `index.db` the same as for a blob.
+
+So H4 is **not** a separate unsolved mechanism: it is closed by the same "move
+the store inside the overlay" decision section 3 already carries, and that one
+move closes H2, H3 and H4 together. Two residuals still to measure before
+building: that pnpm operates correctly with its `index.db` on an overlay (the
+whole SQLite file copies up on first store write, and pnpm's store lock must
+still work), and the fallback for a host where the store cannot be
+overlay-mounted (`--frozen-store` opens the store read-only, but a session must
+still install its own new packages — req 9 — so the writable path needs an
+answer there).
 
 ### Sequencing
 
@@ -168,10 +190,10 @@ of the design not yet reduced to a known-good fix, and it is load-bearing.
    **On ext4, section 2 alone regresses disk ~1.8× (req 10) until section 3
    lands**, so on ext4 ship 2 and 3 together, or accept the interim cost
    deliberately.
-3. Section 3 (overlay), including the store-placement decision.
-4. Section 5 (H4) after its spike; it, not section 2, is what makes the pnpm
-   store safe against a metadata rewrite.
-5. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
+3. Section 3 (overlay), **with the pnpm store moved inside the overlay** — that
+   is what closes H2, H3 and H4 together (section 5). This is the load-bearing
+   step for the pnpm store, not section 2.
+4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
    pnpm store is safe against H3 and H4 (req 8).
 
 ## Rejected
