@@ -565,8 +565,108 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
 
       // Off changes nothing stored: the settlement does not even read the card.
       expect(card(client.sessionId)).toEqual(before);
+      // req 35 — and the stored card reaches no turn while the setting is off.
+      expect(skipper.lastPrompt).not.toContain("<session_status_card>");
       expect(followUps()).toHaveLength(0);
       expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
+
+      stop();
+      client.close();
+    });
+  });
+
+  /**
+   * req 35 — the card is in the turn's prompt, which is what a resident process and every
+   * harness alike receive. Without it the agent is asked to reconcile state it cannot read.
+   */
+  describe("the card reaches the turn (req 35)", () => {
+    it("carries nothing on the first turn, when no card is stored yet (req 22)", async () => {
+      const client = await TestClient.connect(port);
+      const { stop } = pump(client);
+
+      client.send({ type: "send_message", text: "Do the billing routes" });
+      const agent = await waitForClaude(() => lastClaude);
+      expect(agent.lastPrompt).not.toContain("<session_status_card>");
+      expect(agent.lastPrompt).toContain("Do the billing routes");
+
+      stop();
+      client.close();
+    });
+
+    it("puts the stored card, its manual steps and its offers into the next turn's prompt", async () => {
+      const client = await TestClient.connect(port);
+      const { stop } = pump(client);
+
+      await turnThatWritesTheCard(client, "Do the billing routes");
+      const writer = lastClaude;
+      expect(
+        (await callTool(client.sessionId, {
+          needsYou: ["Paste the Stripe test key."],
+          actions: [{
+            id: "webhook",
+            label: "Wire the Stripe webhook",
+            description: "Adds the route and its signature check.",
+            payload: "Add /webhooks/stripe and verify the signature.",
+          }],
+        })).statusCode,
+      ).toBe(200);
+
+      client.send({ type: "send_message", text: "Now the webhook" });
+      const next = await waitForClaude(() => lastClaude, writer);
+
+      expect(next.lastPrompt).toContain("<session_status_card>");
+      expect(next.lastPrompt).toContain("Billing routes done");
+      expect(next.lastPrompt).toContain("- Paste the Stripe test key.");
+      expect(next.lastPrompt).toContain("id: webhook");
+      expect(next.lastPrompt).toContain("Add /webhooks/stripe and verify the signature.");
+      // The user's own message is still last, after the standing context.
+      expect(next.lastPrompt.indexOf("</session_status_card>"))
+        .toBeLessThan(next.lastPrompt.indexOf("Now the webhook"));
+
+      stop();
+      client.close();
+    });
+
+    it("carries it on a message that waited in the queue behind a running turn", async () => {
+      const client = await TestClient.connect(port);
+      const { stop } = pump(client);
+
+      await turnThatWritesTheCard(client, "Do the billing routes");
+      const writer = lastClaude;
+
+      client.send({ type: "send_message", text: "Now the webhook" });
+      const running = await waitForClaude(() => lastClaude, writer);
+      running.initSession("running-turn");
+      // Queued, so it is composed when the queue drains rather than when the user sent it.
+      client.send({ type: "send_message", text: "Then the README" });
+      await waitFor(() => (runnerFor(client.sessionId)?.queueLength ?? 0) > 0, "message queued");
+      running.finish("running-turn");
+
+      const drained = await waitForClaude(() => lastClaude, running);
+      expect(drained.lastPrompt).toContain("Then the README");
+      expect(drained.lastPrompt).toContain("<session_status_card>");
+      expect(drained.lastPrompt).toContain("Billing routes done");
+
+      stop();
+      client.close();
+    });
+
+    it("prints the card exactly once on the nudge turn, whose own prompt carries it", async () => {
+      const client = await TestClient.connect(port);
+      const { stop } = pump(client);
+
+      await turnThatWritesTheCard(client, "Do the billing routes");
+      const writer = lastClaude;
+
+      client.send({ type: "send_message", text: "Now the webhook" });
+      const skipper = await waitForClaude(() => lastClaude, writer);
+      skipper.initSession("skipping-turn");
+      skipper.finish("skipping-turn");
+
+      const nudge = await waitForClaude(() => lastClaude, skipper);
+      const printed = nudge.lastPrompt.split("<session_status_card>").length - 1;
+      expect(printed).toBe(1);
+      expect(nudge.lastPrompt).toContain("Billing routes done");
 
       stop();
       client.close();

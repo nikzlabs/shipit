@@ -39,6 +39,7 @@ import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-rout
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 import { takeRoleStandingInstructions } from "../services/session-role.js";
 import { dependencyGapAgentPrefix } from "../dependency-staleness.js";
+import { sessionStatusTurnContext } from "../services/session-status.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
 export { selectAgentEnvForPush };
@@ -451,12 +452,22 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const imageContext =
     images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
   const dependencyPrefix = opts.compact ? "" : dependencyGapAgentPrefix(runner?.dependencyGap);
+  // docs/303 req 35 — read, never consumed: the card is standing state, so it rides
+  // every turn. Last in the prefix, so the one-shot notices keep the top.
+  const statusContext =
+    capturedSessionId && !opts.compact && !ridesTurnAsCommand
+      ? sessionStatusTurnContext(
+          { sessionManager: ctx.sessionManager, credentialStore: ctx.credentialStore },
+          capturedSessionId,
+        )
+      : "";
   const agentPrefix = [
     pendingAgentNotice,
     bugOutcomeNotice,
     settingsOutcome?.notice,
     resetAgentPrefix,
     dependencyPrefix,
+    statusContext,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -517,6 +528,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     },
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     statusCardEnabled: () => ctx.credentialStore.getSessionStatusCard(),
+    sessionStatusContext: (sessionId) =>
+      sessionStatusTurnContext(
+        { sessionManager: ctx.sessionManager, credentialStore: ctx.credentialStore },
+        sessionId,
+      ),
     listenerDeps,
     buildRunParams: async (sessionId, id, p, turnRoute) => {
       // Env preparation can replace agentSessionId; read it again.

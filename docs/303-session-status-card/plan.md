@@ -752,6 +752,124 @@ is a question, not an offer (CLAUDE.md §5). The tool description repeats the
 rules in brief. Tests assert the section is present in the flag-on variants
 and absent in the flag-off ones, never its wording.
 
+## The card reaches the agent every turn (req 35)
+
+The card was asked for and never shown. `agent-instructions.ts` reads the
+setting only to choose which section of the injected prompt to render
+(`:83`); no path put the stored card's own contents into a turn, and the nudge
+carried the offer *labels* and their taken state alone. So the agent was
+maintaining state it could not read, and both symptoms Nik reported follow from
+that: a bare confirmation is the only honest call available to an agent that
+cannot see what it is confirming, and an entry it has forgotten exists cannot be
+dropped.
+
+**The channel: the per-turn agent prefix.** Every turn's prompt is composed in
+exactly two places — `runAgentWithMessage` (`ws-handlers/agent-execution.ts`)
+for an interactive turn and `runDispatchedTurnInner` (`dispatched-turn.ts`) for
+a dispatched one — and each joins an `agentPrefix` of notices ahead of the user
+text. The card block joins that list, **last**, immediately before the user's
+message: the one-shot notices keep their place at the top, and the ambient
+state sits nearest the work.
+
+Why this channel and not another, checked against the two properties req 35
+names:
+
+- **Every harness.** The prefix is message text. It reaches the CLI through the
+  same prompt string on all five adapters, so nothing per-harness is needed and
+  nothing can be missed for one of them — unlike `SHIPIT_SESSION_STATUS_CARD`,
+  which had to be threaded through five adapter tool lists and two Claude
+  allowlists.
+- **A resident agent.** A process that outlives its turn is *sent the next
+  message* and builds no run params (`turn-executor.ts`, Claude's shortcut in
+  `agents/claude/adapter.ts`), which is why the setting itself needs the
+  retirement machinery under "Setting". The prompt is the one thing such a turn
+  does still carry, so the card rides it with no retirement at all.
+
+**Two turns carry no prompt of ShipIt's, and the nudge is what covers them.**
+Found by review, and stated here rather than built around:
+
+- A **CLI-started turn** — a resident Claude that starts a turn of its own when a
+  background task completes — is *adopted* (`turn-executor.ts`,
+  `adoptInFlightTurn`). ShipIt composed no prompt for it, so there is nothing to
+  put the card in.
+- A **native `/goal` command turn** (docs/297) is delivered verbatim, because the
+  harness reads it as a command only when the prompt is exactly the command.
+  Every other prefix entry is excluded there for the same reason.
+
+Both are still checked for a status update, so a turn of either kind that does
+not write the card is nudged — and the nudge carries the card. The agent is
+therefore never asked to reconcile the card without being shown it; on these two
+paths it is shown it one turn later, by the turn that does the asking. That is
+what req 35's last sentence covers, and it needs no mechanism of its own.
+- **Not the system prompt.** It renders once at module load into a frozen
+  per-variant constant and the CLI string must stay byte-stable
+  (`prompt-architecture`); per-session content there would cost a cache miss
+  every turn.
+- **`pendingAgentNotice` is the precedent for the shape, not the mechanism.**
+  It is a *take*: consumed by the turn that carries it, so it rides exactly one
+  turn. The card is standing state and must ride every turn, so it is read and
+  never consumed — which also means no re-parking path (`dispatched-turn.ts`
+  keeps one for the notice) and nothing to lose when a dispatch fails setup.
+
+**When nothing is sent.** The block is empty — the prefix is byte-for-byte
+today's — when the setting is off, when the session has no stored card (req 22:
+a new session sends nothing at all), and on the turns the other prefix entries
+already skip: compaction, whose prompt is an instruction to summarise, a
+verbatim goal command, which the harness reads only when the prompt is exactly
+the command, and a `postTurn: "none"` driver-owned turn, which is never checked
+for an update either. **And on the nudge turn**, whose own prompt carries the
+same block; sending both would print the card twice in one prompt.
+
+**What it contains, and what it costs.** `formatSessionStatusContext`
+(`services/session-status.ts`) renders the status, the manual steps, and every
+offer with its `id`, label, description and whether it has been sent — the
+whole of what req 35 asks the agent to reconcile.
+
+- **The offer payload is included**, though it is the one long field. Dropping a
+  finished offer while keeping the others means sending the others back with
+  `replaceActions: true`, and an offer whose payload differs by a byte arrives
+  as a *new, untaken* offer. Listing the payload is what makes that a copy
+  rather than a reconstruction.
+- **`lastTurn` is deliberately absent.** It describes the turn that produced it,
+  every write rewrites or clears it (req 31), and showing the previous turn's
+  line invites carrying it forward — the one thing req 31 rules out. Freshness
+  is absent for the same reason: the agent is being asked to reconcile the
+  card's contents, and whether it currently reads stale changes none of them.
+- **The cap is 8000 characters** (`MAX_STATUS_CONTEXT_CHARS`), and **it falls on
+  the payloads, not on the offers**. The fixed part is already bounded by the
+  field limits the validator enforces — `status` 1200, ten `needsYou` entries of
+  240 — so only the offer list, which has no count limit (req 18), can grow. The
+  block is rendered at the fullest detail that fits: every payload, then none,
+  then no descriptions either, and only when the ids and labels alone will not
+  fit does the listing itself shrink. Dropping offers first would be the wrong
+  order twice over — req 35 asks that the agent see *each* offer, and an offer it
+  cannot see is exactly the one a `replaceActions` would silently drop. So
+  whenever the listing is anything less than complete the block says so and tells
+  the agent not to replace the list that turn: a large card costs reconciliation
+  power, never offers. **No field is ever truncated mid-value**: a half-printed
+  payload is one the agent would echo back as a changed offer, which silently
+  re-creates the offer it meant to keep.
+  A worst-case card therefore costs about 2k tokens a turn; a real one costs a
+  few hundred. The cost accumulates in a long conversation — each turn's copy
+  stays in the history behind it, as every per-turn notice does — which is the
+  other reason the cap is on the block rather than on the stored card.
+
+**The nudge asks for a reconciliation, not a call** (`prompts/status-card-nudge.md`).
+It carried the offer labels and asked for "one `session_status` call and nothing
+else" — which is a fair description of the empty confirmation Nik was getting
+back. It now carries the same rendered block through a `{{CARD}}` token and asks
+the agent to go through it line by line: is this manual step still outstanding,
+is this offer still worth offering, has it been done. The turn is still one call
+and nothing else (req 15's budget is unchanged); what changed is what the call is
+asked to contain.
+
+**Wiring.** `SystemTurnDeps.sessionStatusContext?: (sessionId) => string` — the
+gate and the read together, so a dispatched turn needs neither the session
+manager nor the credential store — is wired at the two sites that already supply
+`statusCardEnabled` (`runner-registry-factory.ts`, `ws-handlers/agent-execution.ts`)
+from the shared `sessionStatusTurnContext` helper, which `runAgentWithMessage`
+calls directly.
+
 ## Tests
 
 Names below are the design's; where the build put a test somewhere else, the

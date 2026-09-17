@@ -204,11 +204,40 @@ taken inside one session, without building an agent that talks to many.
     card then shows that it may be behind (req 14), and the next turn is checked
     afresh, as after any nudge ShipIt did not send (req 15).
 
+35. The card the agent is asked to keep current is in front of it every turn it
+    could be asked to update: what the status says, each manual step, and each
+    offered action with whether it has been sent. Reconciling the card is then
+    reading, not remembering — a step the user has done or an offer no longer
+    worth offering can be dropped because the agent can see that it is there.
+    This holds on every harness and for an agent that stays running between
+    turns. A session with no card yet carries nothing. The turn ShipIt sends
+    when an update is missing (req 12) carries the same contents and asks the
+    agent to go through the card line by line, rather than only asking for a
+    call. The agent is never asked to reconcile the card without having been
+    shown it: where it cannot be put in front of the agent during a turn, the
+    turn that does the asking carries it.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-17 — Nik, after several days of the shipped card: "the agent very
+  frequently forgets to update the card — every turn, I would say... what often
+  happens is that the agent may not update it fully, but would just say 'Okay,
+  everything is good', or update only one field. The card would contain stale
+  manual steps or stale follow-ups" (planning#591). The cause was found by
+  reading the code rather than inferred from the symptom: the card's contents
+  reach the agent nowhere — not in the injected prompt, which uses the setting
+  only to choose a section, not in the turn, and not in the nudge, which carries
+  the offer labels and their taken state and nothing else. So a bare confirming
+  call is the only honest call an agent that cannot see the card can make, and a
+  finished offer or a done manual step can never be dropped by an agent that has
+  forgotten it exists. → req 35. Asked whether ShipIt should also refuse a bare
+  confirmation while the card still has open manual steps or offers, he chose
+  not to: that forces the symptom rather than removing the cause, and is worth
+  doing only if the card still goes stale once it is visible.
 
 - 2026-09-16 — Nik, on the shipped card: "Some weird behavior when steering the
   agent that is waiting for background tasks. ShipIt immediately nudges about

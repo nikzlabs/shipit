@@ -265,19 +265,110 @@ export function shouldNudgeForStatusCard(
   return true;
 }
 
+/** req 35 — the whole block rides every turn, so it is bounded. */
+export const MAX_STATUS_CONTEXT_CHARS = 8000;
+
+/** How much of an offer fits. Each step drops a whole field, never half of one. */
+type OfferDetail = "full" | "no-payload" | "id-only";
+
+function offerBlock(offer: OfferedAction, detail: OfferDetail): string {
+  return [
+    `- id: ${offer.id}${offer.takenAt ? " — ALREADY SENT to you" : ""}`,
+    `  label: ${offer.label}`,
+    ...(detail !== "id-only" && offer.description ? [`  description: ${offer.description}`] : []),
+    // Not part of the offer's identity, so a replacement that omits it would drop the
+    // recommendation silently; the prompt tells the agent to repeat what is printed.
+    ...(offer.defaultChecked ? ["  defaultChecked: true"] : []),
+    ...(detail === "full" ? [`  payload: ${offer.payload}`] : ["  payload: (not printed this turn — too long)"]),
+  ].join("\n");
+}
+
+const REPLACE_UNSAFE =
+  "This listing is incomplete, so you cannot repeat every offer exactly."
+  + " Do NOT use `replaceActions` this turn — it would drop the ones not printed in full.";
+
 /**
- * The nudge's own prompt (req 12). The offer list is composed here; the prose is the
- * `.md` above, loaded once at module load, per the `prompt-architecture` skill.
+ * docs/303 req 35 — what the agent reconciles at the end of the turn. Without it
+ * a bare confirmation is the only honest call available, and an entry the agent
+ * has forgotten cannot be dropped.
+ *
+ * `lastTurn` and the freshness mark are deliberately absent: the line describes
+ * the turn that wrote it and every write rewrites or clears it (req 31), so
+ * showing it invites carrying it forward, and whether the card currently reads
+ * stale changes none of the contents being reconciled.
+ *
+ * The payload is listed because dropping one offer and keeping the rest means
+ * sending the rest back with `replaceActions`, and an offer whose payload
+ * differs by a byte arrives as a new untaken one (req 17).
+ *
+ * The cap therefore falls on the PAYLOADS, never on the offers: req 35 asks that
+ * the agent see each offer, and an offer it cannot see is one a replacement would
+ * silently drop. When a payload is withheld the block says so and forbids
+ * `replaceActions` for that turn, so a large card costs reconciliation power, not
+ * offers.
+ */
+export function formatSessionStatusContext(card: SessionStatus | undefined): string {
+  if (!card) return "";
+  const head = [
+    "<session_status_card>",
+    "This is the status card currently on screen, which you own. Reconcile it before the turn ends.",
+    "",
+    "Status:",
+    card.status,
+  ];
+  const steps = card.needsYou ?? [];
+  if (steps.length > 0) {
+    head.push("", "Manual steps (only the user can do these):", ...steps.map((s) => `- ${s}`));
+  }
+  const offers = card.actions;
+  head.push("", offers.length === 0 ? "Follow-ups offered: none." : "Follow-ups offered:");
+  const tail = "</session_status_card>";
+
+  // Rendered at the fullest detail that fits, and never half a value: a truncated
+  // payload is one the agent would echo back as a changed offer, silently re-creating
+  // the offer it meant to keep.
+  const render = (detail: OfferDetail, shown: number): string => {
+    const lines = [...head];
+    for (const offer of offers.slice(0, shown)) lines.push(offerBlock(offer, detail));
+    if (shown < offers.length) {
+      lines.push(`(${offers.length - shown} further offer(s) are on the card, not listed here.)`);
+    }
+    if (detail !== "full" || shown < offers.length) lines.push("", REPLACE_UNSAFE);
+    lines.push(tail);
+    return lines.join("\n");
+  };
+
+  for (const detail of ["full", "no-payload", "id-only"] as const) {
+    const whole = render(detail, offers.length);
+    if (whole.length <= MAX_STATUS_CONTEXT_CHARS) return whole;
+  }
+  // A card with a great many offers: shrink the list itself, which the warning covers.
+  let shown = offers.length;
+  while (shown > 0 && render("id-only", shown).length > MAX_STATUS_CONTEXT_CHARS) shown -= 1;
+  return render("id-only", shown);
+}
+
+export interface StatusContextDeps {
+  sessionManager: Pick<SessionManager, "get">;
+  credentialStore: { getSessionStatusCard(): boolean };
+}
+
+/** The setting gate and the read together, so a caller needs neither (req 21, 35). */
+export function sessionStatusTurnContext(deps: StatusContextDeps, sessionId: string): string {
+  if (!deps.credentialStore.getSessionStatusCard()) return "";
+  return formatSessionStatusContext(deps.sessionManager.get(sessionId)?.sessionStatus);
+}
+
+/**
+ * The nudge's own prompt (req 12). It carries the whole card (req 35) and asks for a
+ * reconciliation; the prose is the `.md` above, loaded once at module load, per the
+ * `prompt-architecture` skill.
  */
 export function statusNudgePrompt(card: SessionStatus | undefined): string {
-  const offers = card?.actions ?? [];
-  // The agent has to see the taken state to keep or replace an offer knowingly (req 17).
-  const list = offers.length === 0
-    ? "The card offers no actions at the moment."
-    : ["The card currently offers:", ...offers.map(
-      (offer) => `- ${offer.label}${offer.takenAt ? " (already taken)" : ""}`,
-    )].join("\n");
-  return fillPromptTokens(STATUS_NUDGE_PROMPT, { OFFERS: list }).trim();
+  const block = formatSessionStatusContext(card);
+  return fillPromptTokens(STATUS_NUDGE_PROMPT, {
+    CARD: block || "The card is empty: write it with `status`.",
+  }).trim();
 }
 
 /**
