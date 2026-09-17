@@ -24,7 +24,7 @@ import { Badge } from "../../ui/badge.js";
 import { useEgressStore } from "../../../stores/egress-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { summarizeEgressGrant } from "../../egress-grant-summary.js";
-import { SettingCopy, bindSetting } from "../declared.js";
+import { SettingCopy } from "../declared.js";
 import { RichErrorText } from "../../PrLifecycleCard/RichErrorText.js";
 import type {
   EgressAllowlistEntry,
@@ -80,7 +80,6 @@ function AllowlistRow({
           aria-label={`Host, editing ${entry.host}`}
           className="flex-1 rounded bg-(--color-bg-tertiary) border border-(--color-border-focus) px-2 py-1 text-sm font-mono text-(--color-text-primary) focus:outline-none"
           data-testid={`settings-egress-edit-input-${entry.host}`}
-          {...bindSetting("network.egress.hosts[].host")}
         />
       ) : (
         <span className="flex-1 truncate text-sm text-(--color-text-primary) font-mono">{entry.host}</span>
@@ -97,7 +96,6 @@ function AllowlistRow({
                 className="text-(--color-text-tertiary) hover:text-(--color-success) transition-[color] duration-(--duration-fast)"
                 aria-label={`Save ${entry.host}`}
                 data-testid={`settings-egress-edit-save-${entry.host}`}
-                {...bindSetting("network.egress.hosts[].host")}
               >
                 <CheckIcon size={ICON_SIZE.SM} />
               </button>
@@ -105,7 +103,6 @@ function AllowlistRow({
                 onClick={() => { setDraft(entry.host); setEditing(false); }}
                 className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast)"
                 aria-label={`Stop editing ${entry.host}`}
-                {...bindSetting("network.egress.hosts[].host")}
               >
                 <XIcon size={ICON_SIZE.SM} />
               </button>
@@ -117,7 +114,6 @@ function AllowlistRow({
                 className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast)"
                 aria-label={`Edit ${entry.host}`}
                 data-testid={`settings-egress-edit-${entry.host}`}
-                {...bindSetting("network.egress.hosts[].host")}
               >
                 <PencilSimpleIcon size={ICON_SIZE.SM} />
               </button>
@@ -126,7 +122,6 @@ function AllowlistRow({
                 className="text-(--color-text-tertiary) hover:text-(--color-error) transition-[color] duration-(--duration-fast)"
                 aria-label={`Remove ${entry.host}`}
                 data-testid={`settings-egress-host-remove-${entry.host}`}
-                {...bindSetting("network.egress.hosts")}
               >
                 <TrashIcon size={ICON_SIZE.SM} />
               </button>
@@ -255,7 +250,6 @@ export function EgressHosts() {
             onClick={() => void handleRestoreDefaults()}
             className="shrink-0 text-xs text-(--color-text-link) hover:underline"
             data-testid="settings-egress-restore-defaults"
-            {...bindSetting("network.egress.hosts")}
           >
             Restore defaults
           </button>
@@ -275,7 +269,6 @@ export function EgressHosts() {
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleAdd(); } }}
           className="flex-1 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
           data-testid="settings-egress-host-input"
-          {...bindSetting("network.egress.hosts[].host")}
         />
         <Button
           variant="primary"
@@ -285,7 +278,6 @@ export function EgressHosts() {
           className="rounded-md"
           data-testid="settings-egress-host-add"
           aria-label="Add host to the allowlist"
-          {...bindSetting("network.egress.hosts")}
         >
           Add
         </Button>

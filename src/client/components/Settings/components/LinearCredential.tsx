@@ -22,7 +22,7 @@ import { Button } from "../../ui/button.js";
 import { ICON_SIZE } from "../../../design-tokens.js";
 import { useIssuesStore } from "../../../stores/issues-store.js";
 import { settingRequest } from "../../../stores/setting-values.js";
-import { bindSetting, settingOf } from "../setting-binding.js";
+import { settingOf } from "../setting-copy.js";
 import { inputClass } from "../shared.js";
 import { ConnectedServiceCard, ConnectionStatus } from "./ConnectedServiceCard.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
@@ -167,7 +167,6 @@ export function LinearCredential({ settingKey }: { settingKey: SettingKey }) {
           onClick={() => { void disconnect(); }}
           data-testid="trackers-disconnect"
           aria-label="Disconnect Linear"
-          {...bindSetting(settingKey)}
         >
           Disconnect
         </Button>
@@ -219,7 +218,6 @@ export function LinearCredential({ settingKey }: { settingKey: SettingKey }) {
           data-testid="linear-token-input"
           autoComplete="off"
           className={inputClass}
-          {...bindSetting(settingKey)}
         />
         <p className="text-xs text-(--color-text-tertiary)">
           Create a personal API key in Linear → Settings → Security &amp; access → Personal API keys.
@@ -231,7 +229,6 @@ export function LinearCredential({ settingKey }: { settingKey: SettingKey }) {
           disabled={busy || !token.trim()}
           onClick={() => { void connect(); }}
           aria-label={busy ? "Connecting Linear" : connected ? "Replace the Linear API token" : "Connect Linear"}
-          {...bindSetting(settingKey)}
         >
           {busy ? "Connecting…" : connected ? "Replace" : "Connect Linear"}
         </Button>

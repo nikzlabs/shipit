@@ -65,7 +65,7 @@ import { BillingModePill } from "../../BillingModePill.js";
 import { reasoningOptionsFor } from "../../../../server/shared/catalogue/index.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
-import { bindSetting, settingCopy } from "../declared.js";
+import { settingCopy } from "../declared.js";
 import type { AgentOption, EligibleModelOption } from "../../../agent-types.js";
 import type {
   ReviewerPinPatch,
@@ -205,10 +205,10 @@ export function ReviewerSection({
   return (
     <div className="flex flex-col gap-4" data-testid="reviewer-tab">
       <div>
-        <h3 className="text-sm font-medium text-(--color-text-primary)" data-setting-label="reviewers">
+        <h3 className="text-sm font-medium text-(--color-text-primary)">
           {settingCopy("reviewers").label}
         </h3>
-        <p className="mt-0.5 text-xs text-(--color-text-tertiary)" data-setting-description="reviewers">
+        <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
           {settingCopy("reviewers").description}
         </p>
         {/* Not the setting's own words: how ShipIt ranks the two, which is a
@@ -449,7 +449,6 @@ function ReviewerSlotCard({
             onChange={changeService}
             disabled={busy}
             idPrefix={`reviewer-${view.slot}`}
-            settingKey="reviewers[].model"
           />
           {/*
             req 14 — no models, no control. The auto row alone is not a choice:
@@ -513,7 +512,6 @@ function ReviewerSlotCard({
               onClick={() => onSave(null)}
               data-testid={`reviewer-reset-${view.slot}`}
               aria-label={`Reset ${SLOT_TITLE[view.slot] ?? view.slot} to auto`}
-              {...bindSetting("reviewers")}
             >
               <ArrowCounterClockwiseIcon size={ICON_SIZE.XS} />
               Reset to auto
@@ -576,7 +574,6 @@ function ModelMenu({
       menuTestId={`reviewer-model-menu-${slot}`}
       menuWidth="w-72"
       disabled={disabled}
-      settingKey="reviewers[].model"
     >
       {/*
         The derived default as a LABELLED option (req 8), always first and never
@@ -632,7 +629,6 @@ function ReasoningMenu({
       menuLabel={label}
       menuWidth="w-48"
       disabled={disabled}
-      settingKey="reviewers[].reasoningEffort"
     >
       {options.map((option) => (
         <PickerOption

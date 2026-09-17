@@ -1,5 +1,5 @@
 import { Button } from "../ui/button.js";
-import { bindSetting, settingCopy } from "../Settings/setting-binding.js";
+import { settingCopy } from "../Settings/setting-copy.js";
 import { inputClass } from "./shared.js";
 import type { KvRow } from "./utils/payload.js";
 
@@ -32,7 +32,6 @@ export function KvEditor({
             onChange={(e) =>
               onChange(kv.map((r, i) => (i === idx ? { ...r, key: e.target.value } : r)))
             }
-            {...bindSetting(settingKey)}
           />
           <input
             className={inputClass}
@@ -43,14 +42,12 @@ export function KvEditor({
             onChange={(e) =>
               onChange(kv.map((r, i) => (i === idx ? { ...r, value: e.target.value } : r)))
             }
-            {...bindSetting(settingKey)}
           />
           <Button
             size="md"
             variant="ghost"
             onClick={() => onChange(kv.filter((_, i) => i !== idx))}
             aria-label={`Remove ${noun} ${idx + 1}`}
-            {...bindSetting(settingKey)}
           >
             ✕
           </Button>
@@ -60,7 +57,6 @@ export function KvEditor({
         size="md"
         variant="secondary"
         onClick={() => onChange([...kv, { key: "", value: "" }])}
-        {...bindSetting(settingKey)}
       >
         + Add {noun}
       </Button>

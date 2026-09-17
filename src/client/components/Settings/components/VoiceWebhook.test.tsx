@@ -17,7 +17,7 @@ import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { initialSettingValues, ownRouteOf } from "../../../stores/setting-values.js";
 import { resetDeclaredSaves } from "../declared-setting.js";
-import { settingCopy, settingOf } from "../setting-binding.js";
+import { settingCopy, settingOf } from "../setting-copy.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 
 const URL_KEY = "voice.webhook.url" as SettingKey;
@@ -63,8 +63,9 @@ describe("the voice webhook is one write at one declared address", () => {
     render(<DeclaredSettings tab="voice" />);
 
     expect(screen.getAllByRole("button", { name: "Save webhook" })).toHaveLength(1);
-    expect(urlBox()).toHaveAttribute("data-setting", URL_KEY);
-    expect(tokenBox()).toHaveAttribute("data-setting", TOKEN_KEY);
+    // Both finders are `getBy…`, so each throws on a second box as well as on none.
+    expect(urlBox()).toBeInTheDocument();
+    expect(tokenBox()).toBeInTheDocument();
   });
 
   it("sends both halves in one request, each under its declared body field", async () => {

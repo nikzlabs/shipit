@@ -6,39 +6,20 @@
  * from `ALL_SETTINGS` and carries none of its own. That is the whole of req 7's
  * last sentence: the description the agent reads is the description the user
  * reads, because there is only one of them.
- *
- * Each control also carries its {@link bindSetting} binding, as does every
- * bespoke control elsewhere in the two dialogs — see `setting-binding.ts` for
- * why that is an attribute of its own rather than a test id, and
- * `settings-coverage.test.tsx` for what reads it.
  */
 
 import type { ReactNode } from "react";
 import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import { ToggleSwitch } from "./ToggleSwitch.js";
 import { inputClass } from "./shared.js";
-import { bindSetting, bindSettingOption, settingCopy, settingOptions, type DeclaredOption } from "./setting-binding.js";
+import { settingCopy, settingOptions, type DeclaredOption } from "./setting-copy.js";
 import { useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
 
 export { saveSetting, useSetting, useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
 
-export {
-  SETTING_ATTR,
-  SETTING_OPTION_ATTR,
-  bindSetting,
-  bindSettingOption,
-  settingCopy,
-  settingOf,
-  settingOptions,
-  type DeclaredOption,
-  type SettingBinding,
-} from "./setting-binding.js";
+export { settingCopy, settingOf, settingOptions, type DeclaredOption } from "./setting-copy.js";
 
-/**
- * The label and help text, marked so the coverage walk can compare them against
- * the declaration. A control that wrote its own words would fail that
- * comparison, which is the defect this slice exists to make impossible.
- */
+/** The label and help text, from the declaration and from nowhere else. */
 export function SettingCopy({
   settingKey,
   heading,
@@ -54,18 +35,15 @@ export function SettingCopy({
   return (
     <div className="min-w-0">
       {heading ? (
-        <h3
-          className="text-sm font-medium text-(--color-text-primary)"
-          data-setting-label={settingKey}
-        >
+        <h3 className="text-sm font-medium text-(--color-text-primary)">
           {label}
         </h3>
       ) : (
-        <span className="text-sm text-(--color-text-primary)" data-setting-label={settingKey}>
+        <span className="text-sm text-(--color-text-primary)">
           {label}
         </span>
       )}
-      <p className="text-xs text-(--color-text-tertiary)" data-setting-description={settingKey}>
+      <p className="text-xs text-(--color-text-tertiary)">
         {description}
       </p>
       {detail}
@@ -105,7 +83,6 @@ function ToggleRow({
         enabled={enabled}
         onToggle={onToggle}
         label={label}
-        settingKey={settingKey}
         {...(testId ? { testId } : {})}
       />
     </div>
@@ -177,11 +154,10 @@ export function DeclaredSelect({
       <label
         className="block text-sm text-(--color-text-primary)"
         htmlFor={id}
-        data-setting-label={settingKey}
       >
         {label}
       </label>
-      <p className="text-xs text-(--color-text-tertiary)" data-setting-description={settingKey}>
+      <p className="text-xs text-(--color-text-tertiary)">
         {description}
       </p>
       <select
@@ -189,7 +165,6 @@ export function DeclaredSelect({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className={`${width} ${inputClass}`}
-        {...bindSetting(settingKey)}
         {...(testId ? { "data-testid": testId } : {})}
       >
         {rendered.map((option) => (
@@ -224,13 +199,10 @@ export function DeclaredEnumCards({
   const { label, description } = settingCopy(settingKey);
   return (
     <div className="space-y-1.5">
-      <span
-        className="block text-xs font-medium text-(--color-text-secondary)"
-        data-setting-label={settingKey}
-      >
+      <span className="block text-xs font-medium text-(--color-text-secondary)">
         {label}
       </span>
-      <p className="text-xs text-(--color-text-tertiary)" data-setting-description={settingKey}>
+      <p className="text-xs text-(--color-text-tertiary)">
         {description}
       </p>
       <div className="flex gap-2" role="group" aria-label={label}>
@@ -244,7 +216,6 @@ export function DeclaredEnumCards({
               aria-pressed={active}
               aria-label={option.label}
               {...(testIdPrefix ? { "data-testid": `${testIdPrefix}-${option.value}` } : {})}
-              {...bindSettingOption(settingKey, option.value)}
               onClick={() => onChange(option.value)}
               className={`flex-1 rounded-md border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
                 active
@@ -282,16 +253,10 @@ export function DeclaredTextarea({
   return (
     <>
       <div>
-        <h3
-          className="text-sm font-medium text-(--color-text-primary) mb-1"
-          data-setting-label={settingKey}
-        >
+        <h3 className="text-sm font-medium text-(--color-text-primary) mb-1">
           {label}
         </h3>
-        <p
-          className="text-xs text-(--color-text-secondary) mb-2"
-          data-setting-description={settingKey}
-        >
+        <p className="text-xs text-(--color-text-secondary) mb-2">
           {description}
         </p>
       </div>
@@ -300,7 +265,6 @@ export function DeclaredTextarea({
         onChange={(e) => onChange(e.target.value)}
         aria-label={label}
         {...(className ? { className } : {})}
-        {...bindSetting(settingKey)}
       />
     </>
   );

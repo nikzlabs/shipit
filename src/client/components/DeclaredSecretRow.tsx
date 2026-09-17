@@ -1,5 +1,4 @@
 import type { DeclaredSecretState } from "../stores/preview-store.js";
-import { bindSetting } from "./Settings/setting-binding.js";
 
 const PLATFORM_SOURCE_LABELS: Record<string, string> = {
   "platform:claude_oauth": "Claude OAuth",
@@ -128,7 +127,6 @@ export function DeclaredSecretRow({
             aria-label={`Value for ${requirement.name}`}
             className="flex-1 rounded-md bg-(--color-bg-primary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
             data-testid={`secret-value-${requirement.name}`}
-            {...bindSetting("project.secrets[].value")}
           />
           {isSet && value.length === 0 && (
             <button
@@ -136,7 +134,6 @@ export function DeclaredSecretRow({
               className="text-xs text-(--color-text-tertiary) hover:text-(--color-error) transition-colors shrink-0"
               data-testid={`secret-clear-${requirement.name}`}
               aria-label={`Clear ${requirement.name}`}
-              {...bindSetting("project.secrets[].value")}
             >
               Clear
             </button>

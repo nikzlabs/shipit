@@ -19,7 +19,7 @@ export type ExclusionReason =
   | "other-dialog";
 
 export interface SettingExclusion {
-  /** Stable id, so a coverage walk can name what it matched. */
+  /** Stable id, so review can name what an entry accounts for. */
   readonly id: string;
   readonly tab: SettingTab;
   readonly scope: SettingScope;
@@ -28,28 +28,6 @@ export interface SettingExclusion {
   readonly reason: ExclusionReason;
   /** Why it is not a setting. This sentence is what review reads. */
   readonly why: string;
-  /**
-   * The accessible names the coverage walk should accept for this entry, when
-   * the controls are not named by the label itself — a group of buttons, or a
-   * label written for a reader rather than for a control. Defaults to the label.
-   */
-  readonly controls?: readonly string[];
-  /**
-   * Every control on the tab is this exclusion. Only for a tab that holds no
-   * setting at all, which today is Skills.
-   */
-  readonly wholeTab?: true;
-  /**
-   * A `data-testid` naming a container whose every control is this exclusion.
-   *
-   * For a surface whose controls cannot be listed by name because the INSTALL
-   * produces them — the supported-models dialog renders one filter per
-   * (service, billing mode, harness) the catalogue happens to hold, so a name
-   * list here would be a copy of the catalogue that rots on the next entry. The
-   * claim it makes is about the whole container, so the `why` has to be true of
-   * every control in it, which is what review reads.
-   */
-  readonly region?: string;
 }
 
 export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
@@ -71,10 +49,7 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     why: "Opens a read-only list of what each service offers; nothing about it is stored. Every "
       + "control inside it narrows or clears what the list shows — there is no value in the dialog "
       + "to set, and the filters are one per (service, billing mode, harness) the installed "
-      + "catalogue holds, so they are covered as a region rather than named one by one.",
-    // Twice over: the panel heading's reference, and the count on each card.
-    controls: ["Supported models"],
-    region: "supported-models-dialog",
+      + "catalogue holds.",
   },
   {
     id: "services.quotaReadout",
@@ -84,7 +59,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "derived-status",
     why: "The provider's own reported usage. The cutoffs beside it are the settings. Its one "
       + "control re-reads the provider's figure and stores nothing.",
-    controls: ["Refresh subscription usage"],
   },
   {
     id: "services.addCredentialDismiss",
@@ -95,7 +69,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     why: "All three close the dialog; Done is the same act once the account is connected and there "
       + "is nothing left to call off. Save and Sign in are the writes, and they belong to the "
       + "credential collection and the account connection.",
-    controls: ["Cancel", "Done", "Close"],
   },
   {
     id: "roles.reviewerParams",
@@ -114,7 +87,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "action",
     why: "Both close the editor and discard the draft. Save is the write, and it belongs to the "
       + "roles collection.",
-    controls: ["Cancel", "Close"],
   },
   {
     id: "roles.unavailableReason",
@@ -141,7 +113,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     label: "Test (an MCP server)",
     reason: "action",
     why: "Runs a connection attempt and reports its tools; stores nothing.",
-    controls: ["Test", "Testing…"],
   },
   {
     id: "integrations.mcpFormCancel",
@@ -151,7 +122,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "action",
     why: "Closes the form and discards the draft. Save is the write, and it belongs to the MCP "
       + "servers collection.",
-    controls: ["Cancel"],
   },
   {
     id: "integrations.sshHostPublicLine",
@@ -161,7 +131,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "action",
     why: "Copies the destination's authorized_keys line to the clipboard so the user can install "
       + "it on the server. Public material, and it stores nothing.",
-    controls: ["Copy public key", "Copied"],
   },
   {
     id: "integrations.sshHostKeyForget",
@@ -173,7 +142,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
       + "the destination, the other of the server's own key as the orchestrator saw it at the "
       + "configured address (docs/305-ssh-hosts req 13). Neither is stored by anyone setting it, "
       + "and Forget only clears the observation so the next connection records afresh.",
-    controls: ["Forget"],
   },
   {
     id: "integrations.sshHostFormCancel",
@@ -184,7 +152,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     why: "Closes the form and discards the draft. Add destination is the write, and it belongs to "
       + "the SSH hosts collection; the four boxes above it are declared per field, because the "
       + "address, the user and the port are all stored and then displayed.",
-    controls: ["Cancel"],
   },
   {
     id: "integrations.linearTeams",
@@ -203,7 +170,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "explanatory-copy",
     why: "Displayed content, shipped with ShipIt. The setting beside it is the toggle that "
       + "enables it, and its one control only shows and hides the text.",
-    controls: ["View instructions", "Hide instructions"],
   },
   {
     id: "instructions.commit",
@@ -214,7 +180,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     why: "Save commits every edited box on the tab in one write, so it belongs to neither "
       + "declaration; Cancel closes the dialog, discarding what was not saved. The two "
       + "textareas above are the settings.",
-    controls: ["Save", "Saved", "Cancel"],
   },
   {
     id: "git.commit",
@@ -225,7 +190,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     why: "The same tab-level commit as the Instructions tab's: it stores whichever declared "
       + "rows the user edited and holds no value of its own. The name and email boxes are the "
       + "setting, and they are one setting because they are written together.",
-    controls: ["Save", "Saved"],
   },
   {
     id: "skills.tab",
@@ -234,8 +198,8 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     label: "Skills",
     reason: "action",
     why: "Discover-only — no installed list and no uninstall. Installing is repo-targeted and "
-      + "opens a pull request in a session of its own (`SkillsTab.tsx:1`).",
-    wholeTab: true,
+      + "opens a pull request in a session of its own (`SkillsTab.tsx:1`). The whole tab is this "
+      + "exclusion: it holds no setting at all.",
   },
   {
     id: "keyboard.fixedKeys",
@@ -254,7 +218,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "explanatory-copy",
     why: "Names the Background work model and links to it. The setting is that model pin, on the "
       + "Services tab.",
-    controls: ["Background work"],
   },
   {
     id: "voice.keyboardTabLink",
@@ -264,7 +227,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "explanatory-copy",
     why: "A sentence pointing at the Keyboard tab, whose link moves the dialog there. The "
       + "shortcuts themselves are that tab's settings.",
-    controls: ["Keyboard"],
   },
   {
     id: "voice.adoptVoiceKey",
@@ -274,7 +236,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "action",
     why: "An offer to copy a stored speech key into the model providers, which runs a server-side "
       + "copy rather than storing a value of its own. Declining only hides the offer.",
-    controls: ["Add it as a model provider", "Not now"],
   },
   {
     id: "voice.testPlayback",
@@ -310,7 +271,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "derived-status",
     why: "Reports where a just-added host took effect and where it did not. Its one control "
       + "dismisses the report; the host itself is already in the list above.",
-    controls: ["Dismiss"],
   },
   {
     id: "network.sessionHosts",
@@ -338,7 +298,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     label: "Check for Updates · Update Now · Just Restart",
     reason: "action",
     why: "Each runs something. None of the three stores a value.",
-    controls: ["Check for Updates", "Update Now", "Just Restart"],
   },
   {
     id: "advanced.resetEverything",
@@ -348,7 +307,6 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "action",
     why: "Deletes sessions, history and settings. An action, and a destructive one — which is why "
       + "it asks again before running, and why its two in-flight labels are named here too.",
-    controls: ["Reset Everything", "Click again to confirm reset", "Resetting..."],
   },
   {
     id: "project-deployments.hostingLinks",

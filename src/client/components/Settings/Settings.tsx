@@ -18,12 +18,8 @@ import { SETTING_TAB_LABELS } from "../../../server/shared/settings-catalogue/in
 
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-/**
- * Every tab this dialog renders, in order. Exported because
- * `settings-coverage.test.tsx` walks each one: a tab added here but not there
- * would be a pane the coverage guard never sees.
- */
-export const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
+/** Every tab this dialog renders, in order. */
+const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
 type Tab = (typeof SETTINGS_TABS)[number];
 

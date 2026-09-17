@@ -13,7 +13,7 @@ import { VoiceTts } from "./VoiceTts.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useVoiceKeyStatus } from "../../../voice/voice-key-status.js";
 import { initialSettingValues } from "../../../stores/setting-values.js";
-import { settingCopy } from "../setting-binding.js";
+import { settingCopy } from "../setting-copy.js";
 import { providerVoices } from "../../../../server/shared/voice-catalog.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 

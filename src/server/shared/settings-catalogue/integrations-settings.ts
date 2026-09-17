@@ -510,14 +510,10 @@ type DeclarationForField<C extends string, F extends string> =
  * **Every field of a stored MCP server, mapped to the declaration that
  * describes it** (req 7: no way to ship a setting the agent cannot see).
  *
- * The coverage walk cannot do this. It reads the rendered DOM, so it can check
- * that a control names *a* declaration and not that the declaration is the one
- * the handler saves — a new box bound to `mcp.servers[].command` passes it while
- * writing something else entirely. What the walk cannot see, the stored TYPE
- * can: this map is keyed by `keyof McpServerConfig`, so a field added to
- * `mcp-types.ts` is a compile error here until it is either declared or
- * explained. That is the structural half; the walk still covers the other
- * direction, a control nobody declared.
+ * It runs over the STORED shape rather than over the dialog, which is what
+ * makes it a compile error rather than a test: keyed by `keyof McpServerConfig`,
+ * a field added to `mcp-types.ts` fails here until it is either declared or
+ * explained, whatever the dialog renders.
  *
  * The gap was not hypothetical. `setup` — a pre-start command for non-npm stdio
  * servers, designed in `docs/088-mcp-integration/plan.md:405` — was accepted by
@@ -546,12 +542,11 @@ export const MCP_SERVER_FIELD_SETTINGS: {
  * The same map for a stored SSH destination, keyed by `keyof SshHostPublic` —
  * the shape every read path returns.
  *
- * It exists because the walk missed these fields for weeks and a DOM walk is
- * structurally unable to find them: the add-a-destination form is not rendered
- * until somebody presses a button, so a control that was never on screen was
- * never a control the walk could fail on. This map does not depend on anything
- * being rendered. A field added to `SshHostPublic` is a compile error here until
- * it is declared or explained, whatever the dialog does.
+ * It exists because these fields went undeclared for weeks: the
+ * add-a-destination form is not rendered until somebody presses a button, so
+ * nothing that reads the dialog could have found them. This map depends on
+ * nothing being rendered — a field added to `SshHostPublic` is a compile error
+ * here until it is declared or explained.
  *
  * Most of this destination is ShipIt's own: the id, the key material and the
  * fingerprints are generated or observed, and none is a value anyone sets.

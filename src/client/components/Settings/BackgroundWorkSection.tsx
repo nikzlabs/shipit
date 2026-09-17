@@ -209,7 +209,6 @@ export function BackgroundWorkSection({ settingKey }: { settingKey: SettingKey }
             onChange={changeService}
             idPrefix="background-work"
             fallbackLabel={pinnedIsStale && pinned ? pinned.serviceId : "No provider"}
-            settingKey={settingKey}
           />
           {serviceModels.length > 0 && (
             <Picker
@@ -221,7 +220,6 @@ export function BackgroundWorkSection({ settingKey }: { settingKey: SettingKey }
               menuTestId="background-work-model-menu"
               menuWidth="w-72"
               align="start"
-              settingKey={settingKey}
             >
               {/*
                 The models, and nothing else. This menu used to open on a

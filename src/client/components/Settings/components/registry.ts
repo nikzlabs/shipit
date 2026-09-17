@@ -2,11 +2,14 @@
  * The components a declaration may name (docs/308-data-driven-settings
  * plan.md → Components, req 3).
  *
- * A component takes the setting's key and nothing else — it reads and writes
- * through `useSetting`, so custom stays presentation and the destination is the
- * one the declaration names (req 3). A name with no entry here renders nothing,
- * which is how a slice converts the components it has and leaves the rest
- * hand-written (P18).
+ * A component takes the setting's key and nothing else, and what is custom
+ * about it is the presentation: the destination is still the one its
+ * declaration names (req 3). A small one over a value the record holds reaches
+ * it through `useSetting` and the shared writer; a PANEL, and a component over a
+ * value the record cannot hold (`voice.providerKey`, the five repository
+ * settings), keeps its own reader and writer at the address its declaration
+ * names in prose — membership of the rows is wider than membership of the
+ * record (P11).
  */
 
 import type { ReactNode } from "react";

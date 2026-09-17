@@ -12,7 +12,6 @@ import {
   type KeybindingGroup,
 } from "../keybindings/registry.js";
 import { KeybindingCapture } from "./KeybindingCapture.js";
-import { bindSetting } from "./Settings/setting-binding.js";
 import { SettingCopy } from "./Settings/declared.js";
 
 const GROUP_ORDER: KeybindingGroup[] = ["General", "Sessions", "Chat", "Search", "Voice"];
@@ -110,7 +109,6 @@ export function KeybindingSettings() {
                           className="h-7 w-7 p-0"
                           aria-label={`Reset ${def.label} to default`}
                           title={`Reset to ${getKeybindingDef(def.id).defaultBinding}`}
-                          {...bindSetting("keyboard.keybindings")}
                           onClick={() => {
                             setErrors((e) => {
                               const next = { ...e };

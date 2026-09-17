@@ -24,11 +24,10 @@ import { useUiStore } from "../../stores/ui-store.js";
 import {
   GENERATED_SETTINGS,
   SETTINGS_PATH,
-  mirrorFieldOf,
   sameSettingValue,
   settingRequest,
 } from "../../stores/setting-values.js";
-import { settingOf } from "./setting-binding.js";
+import { settingOf } from "./setting-copy.js";
 import {
   isPayloadDeclaration,
   type AnySettingDeclaration,
@@ -49,10 +48,10 @@ type WireOf<K extends GlobalSettingKey> =
 /**
  * A declared boolean the browser store already holds under its wire name.
  *
- * Both clauses have to hold, because the value is read back through that field
- * wherever the record does not yet carry the setting. It used to demand a
- * `set<Wire>` setter beside it as well; that was a proxy for "something hydrates
- * this field", and hydration now walks the declarations
+ * Both clauses have to hold, because the rest of the app still reads the value
+ * through that field — it is a view over the record (inventory.md P1). It used
+ * to demand a `set<Wire>` setter beside it as well; that was a proxy for
+ * "something hydrates this field", and hydration now walks the declarations
  * (`stores/setting-hydration.ts`) rather than calling a setter per setting.
  */
 type DerivableBoolean<K extends GlobalSettingKey> =
@@ -72,19 +71,17 @@ export type DeclaredBooleanKey = {
 }[GlobalSettingKey];
 
 /**
- * A setting's current value.
+ * A setting's current value: the record, and nothing else.
  *
- * The record is the source where it carries the setting; where it does not yet,
- * the named store field the declaration's `wire` names still is — which is how a
- * tab whose hydration has not moved keeps working (inventory.md P1, P18).
+ * The fall-back to the named store field is gone with the last unconverted tab
+ * (slice 8). Every key that reaches here is one the record holds — it is seeded
+ * with exactly those and `setSettingValue` refuses any other — so what a
+ * fall-back would serve now is a declared default for a component named by a
+ * declaration the record deliberately does NOT hold (`voice.providerKey`, the
+ * five repository settings). `undefined` is the louder failure for that call.
  */
 function currentValue(state: Settings, key: SettingKey): unknown {
-  const values = state.settingValues;
-  if (key in values) return values[key];
-  const declaration = settingOf(key);
-  const field = mirrorFieldOf(declaration);
-  if (field && field in state) return (state as unknown as Record<string, unknown>)[field];
-  return declaration.type.defaultValue;
+  return state.settingValues[key];
 }
 
 /**

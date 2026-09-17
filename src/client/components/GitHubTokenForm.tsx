@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
-import { bindSetting } from "./Settings/setting-binding.js";
 
 export interface GitHubTokenFormProps {
   onSubmit: (token: string) => Promise<boolean | undefined>;
@@ -79,7 +78,6 @@ export function GitHubTokenForm({
         autoFocus={autoFocus}
         disabled={loading || disabled}
         data-testid="github-token-input"
-        {...bindSetting("integrations.github.connection")}
       />
 
       {error && (
@@ -94,7 +92,6 @@ export function GitHubTokenForm({
         className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
         data-testid="github-token-submit"
         aria-label={loading ? "Connecting to GitHub" : `${submitLabel} GitHub`}
-        {...bindSetting("integrations.github.connection")}
       >
         {loading ? (
           <>

@@ -61,7 +61,7 @@ import type { BillingMode } from "../../../server/shared/catalogue/index.js";
 import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { WithTooltip } from "../ui/tooltip.js";
-import { bindSetting, settingCopy, settingOptions } from "./setting-binding.js";
+import { settingCopy, settingOptions } from "./setting-copy.js";
 
 /**
  * The declaration's words, with its collective noun swapped for the one this
@@ -169,7 +169,6 @@ export function CredentialSelectionModeControl({
           disabled={saving}
           onClick={() => void save(value)}
           aria-label={fullName}
-          {...bindSetting("services.accountSelectionMode")}
           className={`rounded px-2 py-0.5 text-[11px] transition-colors disabled:opacity-50 ${
             mode === value
               ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
@@ -344,7 +343,6 @@ export function FailoverCutoffControls({
             aria-label={`${serviceName} ${longLabel} failover cutoff, percent`}
             className="w-11 rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1 py-0.5 text-right text-[11px] text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
             data-testid={`failover-cutoff-${key}-${name}`}
-            {...bindSetting(CUTOFF_SETTINGS[name])}
           />
           %
         </label>

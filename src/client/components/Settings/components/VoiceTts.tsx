@@ -29,7 +29,7 @@ import {
 import { useVoiceKeyStatus } from "../../../voice/voice-key-status.js";
 import { saveSetting, useSetting } from "../declared-setting.js";
 import { DeclaredSelect, SettingCopy } from "../declared.js";
-import { bindSettingOption, settingCopy } from "../setting-binding.js";
+import { settingCopy } from "../setting-copy.js";
 
 function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -125,8 +125,7 @@ export function VoiceTts() {
 
       <div className="space-y-1.5">
         <SettingCopy settingKey={SPEED} />
-        {/* A named group, because the speeds are one choice over one field —
-            which is what `settings-coverage.test.tsx` counts them as. */}
+        {/* A named group, because the speeds are one choice over one field. */}
         <div
           className="flex items-center gap-2"
           role="group"
@@ -139,7 +138,6 @@ export function VoiceTts() {
               onClick={() => { void saveSetting(SPEED, s); }}
               aria-label={`Playback speed ${s}×`}
               aria-pressed={speed === s}
-              {...bindSettingOption(SPEED, String(s))}
               className={`rounded-md border px-3 py-1 text-sm transition-colors ${
                 speed === s
                   ? "border-(--color-accent) bg-(--color-accent)/15 text-(--color-text-primary)"

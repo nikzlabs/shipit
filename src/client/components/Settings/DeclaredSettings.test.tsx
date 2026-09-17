@@ -60,9 +60,9 @@ describe("the Advanced tab's rows come from the declarations", () => {
     render(<DeclaredSettings tab="advanced" />);
 
     expect(screen.getAllByRole("switch")).toHaveLength(TOGGLES.length);
+    // Found by the DECLARED label: one writing words of its own would not be found.
     for (const declaration of TOGGLES) {
-      const control = screen.getByRole("switch", { name: declaration.label });
-      expect(control).toHaveAttribute("data-setting", declaration.key);
+      expect(screen.getByRole("switch", { name: declaration.label })).toBeInTheDocument();
     }
   });
 
@@ -73,9 +73,8 @@ describe("the Advanced tab's rows come from the declarations", () => {
 
     const declaration = findSetting("advanced.releaseChannel")!;
     for (const option of (declaration.type.shape as { options: { label: string; description: string }[] }).options) {
-      const card = screen.getByRole("button", { name: option.label });
-      expect(card).toHaveAttribute("data-setting", declaration.key);
-      expect(card).toHaveTextContent(option.description);
+      expect(screen.getByRole("button", { name: option.label }))
+        .toHaveTextContent(option.description);
     }
   });
 
@@ -84,23 +83,7 @@ describe("the Advanced tab's rows come from the declarations", () => {
   it("renders a declaration's component in place of a generated control", () => {
     render(<DeclaredSettings tab="advanced" />);
 
-    expect(screen.getByTestId("settings-memory-budget")).toHaveAttribute(
-      "data-setting",
-      "advanced.memoryBudgetMb",
-    );
-  });
-
-  it("shows each row's declared label and description, and nothing of its own", () => {
-    const { container } = render(<DeclaredSettings tab="advanced" />);
-
-    for (const declaration of ROWS) {
-      expect(
-        container.querySelector(`[data-setting-label="${declaration.key}"]`),
-      ).toHaveTextContent(declaration.label);
-      expect(
-        container.querySelector(`[data-setting-description="${declaration.key}"]`),
-      ).toHaveTextContent(declaration.description);
-    }
+    expect(screen.getByTestId("settings-memory-budget")).toBeInTheDocument();
   });
 
   it("groups rows under their declared section, in declaration order", () => {
@@ -137,7 +120,7 @@ describe("the Advanced tab's rows come from the declarations", () => {
   */
   it("places a row's own status after that row, where a section's prose goes before it", () => {
     const declaration = findSetting("advanced.autoFixCi")!;
-    const { container } = render(
+    render(
       <DeclaredSettings
         tab="advanced"
         notes={{ [declaration.section!]: <p>About this whole group.</p> }}
@@ -145,7 +128,7 @@ describe("the Advanced tab's rows come from the declarations", () => {
       />,
     );
 
-    const row = container.querySelector('[data-setting="advanced.autoFixCi"]')!;
+    const row = screen.getByRole("switch", { name: declaration.label });
     const sectionNote = screen.getByText("About this whole group.");
     const rowNote = screen.getByText("Nothing to fix right now.");
     const follows = (a: Node, b: Node) =>
@@ -182,12 +165,10 @@ describe("a choice is cards or a select, by what its options declare", () => {
       if (described) {
         expect(select).toBeNull();
         for (const option of optionsOf(declaration)) {
-          expect(screen.getByRole("button", { name: option.label }))
-            .toHaveAttribute("data-setting", declaration.key);
+          expect(screen.getByRole("button", { name: option.label })).toBeInTheDocument();
         }
         return;
       }
-      expect(select).toHaveAttribute("data-setting", declaration.key);
       expect([...(select as HTMLSelectElement).options].map((o) => o.value))
         .toEqual(optionsOf(declaration).map((o) => o.value));
     });
@@ -306,9 +287,7 @@ describe("the instruction boxes", () => {
 
     for (const key of BOXES) {
       const declaration = findSetting(key)!;
-      const box = screen.getByRole("textbox", { name: declaration.label });
-      expect(box.tagName).toBe("TEXTAREA");
-      expect(box).toHaveAttribute("data-setting", key);
+      expect(screen.getByRole("textbox", { name: declaration.label }).tagName).toBe("TEXTAREA");
     }
   });
 
@@ -337,8 +316,7 @@ describe("the instruction boxes", () => {
     render(<DeclaredSettings tab="instructions" />);
 
     const declaration = findSetting("instructions.agentInstructionsEnabled")!;
-    expect(screen.getByRole("switch", { name: declaration.label }))
-      .toHaveAttribute("data-setting", declaration.key);
+    expect(screen.getByRole("switch", { name: declaration.label })).toBeInTheDocument();
   });
 });
 
@@ -360,7 +338,9 @@ describe("the git identity", () => {
 
     expect(screen.getByLabelText("Name")).toHaveValue("Ada");
     expect(screen.getByLabelText("Email")).toHaveValue("ada@example.com");
-    expect(container.querySelectorAll('[data-setting="git.identity"]')).toHaveLength(2);
+    // Two boxes over ONE declaration: the tab has no second row they could be.
+    expect(GENERATED_SETTINGS.filter((d) => d.tab === "git").map((d) => d.key)).toEqual([KEY]);
+    expect(container.querySelectorAll("input")).toHaveLength(2);
   });
 
   it("edits one half without discarding the other", () => {
@@ -444,7 +424,7 @@ describe("the Integrations tab's rows", () => {
     expect([...container.querySelectorAll("section")].map((s) => s.getAttribute("aria-label")))
       .toEqual(["Pull requests", "Connected services", null]);
     expect(screen.getByRole("switch", { name: findSetting("integrations.autoCreatePr")!.label }))
-      .toHaveAttribute("data-setting", "integrations.autoCreatePr");
+      .toBeInTheDocument();
     expect(screen.getByTestId("settings-github")).toBeInTheDocument();
     expect(screen.getByTestId("settings-trackers")).toBeInTheDocument();
   });
