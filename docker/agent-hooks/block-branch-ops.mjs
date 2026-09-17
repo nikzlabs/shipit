@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 /**
  * ShipIt's PreToolUse guard for the Bash tool. It refuses two shapes: branch
- * changes and destructive git during merged-branch recovery, and a wait loop
- * whose own process pattern matches the command it is written in.
+ * changes and destructive git during merged-branch recovery, and a process
+ * test whose own pattern matches the command it is written in.
  */
 
 import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
 
 // Sandbox sessions own their branches (docs/211). That exemption is about
 // branch ownership and nothing else, so it scopes the git checks below rather
@@ -150,12 +149,16 @@ function offendsDestructive(seg) {
   return null;
 }
 
-// A wait loop whose own `pgrep -f` test can only ever be true. The Bash tool
-// runs a command as `bash -c '<the whole command>'`, so every literal in it is
-// part of the command line of the process running it, and `pgrep -f` matches
-// full command lines. What this judges is that test, not the loop's control
-// flow: a deadline or a `break` elsewhere can still end the loop, and the test
-// is broken either way.
+// A `pgrep -f` test that can only ever be true. The Bash tool runs a command
+// as `bash -c '<the whole command>'`, so every literal in it is part of the
+// command line of the process running it, and `pgrep -f` matches full command
+// lines. What this judges is the test alone — not a loop's control flow, and
+// not whether there is a loop at all. This first shipped scoped to `until` /
+// `while` conditions, on the reasoning that a one-shot listing "costs one
+// extra line of output". That reasoning was wrong and an incident refuted it:
+// `pgrep -f` exits 0 and `pgrep -fc` counts 1 when the job has finished, so a
+// bare liveness check returns a wrong answer with nothing to notice, and the
+// agent reported a test suite as still running minutes after it ended.
 
 /**
  * Options that cannot change whether the calling shell is among the matches.
@@ -164,26 +167,42 @@ function offendsDestructive(seg) {
  * way to exclude the caller or to invert the test, and the honest answer there
  * is no answer at all.
  */
+// `--newest` / `--oldest` (`-n` / `-o`) are NOT here: selecting one process is
+// a way to exclude the caller, measured — an older target with a unique marker
+// was returned by `pgrep -of` and killed by `pkill -of` while the shell lived.
 const HARMLESS_LONG = new Set([
   "--full", "--list-full", "--list-name", "--count", "--ignore-case",
-  "--lightweight", "--newest", "--oldest",
+  "--lightweight",
 ]);
 const HARMLESS_LONG_WITH_VALUE = new Set(["--delimiter", "--signal"]);
-const HARMLESS_SHORT = new Set(["f", "a", "l", "c", "i", "w", "n", "o"]);
+const HARMLESS_SHORT = new Set(["f", "a", "l", "c", "i", "w"]);
 const HARMLESS_SHORT_WITH_VALUE = new Set(["d"]);
 
 /** A heredoc body is data the shell feeds a program, never something it runs. */
 function withoutHeredocBodies(line) {
   const kept = [];
-  let terminator = null;
+  // A delimiter may be quoted, backslash-escaped, or carry characters a bare
+  // identifier cannot (`<<"END-TEXT"`), and one line may open several. Missing
+  // any of those read the body as commands and refused a `cat`. `<<<` is a
+  // herestring and opens nothing, which every branch here declines to match.
+  const OPENER =
+    /(?<!<)<<(-?)(?!<)[ \t]*(?:'([^']*)'|"([^"]*)"|\\([^\s;|&<>]+)|([A-Za-z0-9_][A-Za-z0-9_-]*))/g;
+  const pending = [];
+  let open = null;
   for (const one of line.split("\n")) {
-    if (terminator !== null) {
-      if (one.trim() === terminator) terminator = null;
+    if (open !== null) {
+      // The delimiter must be ALONE on the line. `<<-` strips leading TABS and
+      // nothing else, so trimming spaces ended a body early and let the rest of
+      // a `cat`'s data be read as commands.
+      const candidate = open.dash ? one.replace(/^\t+/, "") : one;
+      if (candidate === open.word) open = pending.shift() ?? null;
       continue;
     }
     kept.push(one);
-    const opener = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(one);
-    if (opener) terminator = opener[2];
+    for (const m of one.matchAll(OPENER)) {
+      pending.push({ dash: m[1] === "-", word: m[2] ?? m[3] ?? m[4] ?? m[5] });
+    }
+    if (pending.length) open = pending.shift();
   }
   return kept.join("\n");
 }
@@ -199,8 +218,24 @@ function tokenize(text) {
   let value = null;
   let quoted = false;
   let quote = null;
+  // Whether the next word would be the COMMAND of a simple command rather than
+  // an argument to one. `echo pgrep -f x` prints; it does not run pgrep, and
+  // reading the two the same way refuses ordinary work.
+  let atCommandStart = true;
   const push = () => {
-    if (value !== null) tokens.push({ value, quoted });
+    if (value !== null) {
+      tokens.push({ value, quoted, command: atCommandStart });
+      // An env assignment and a reserved word PRESERVE command position; they
+      // cannot create one. `echo time pgrep -f x` prints three words, and
+      // reading `time` as a keyword there refused an echo. A quoted keyword is
+      // not a keyword (bash rejects `wh"ile" x; do`), but `VAR="x" cmd` is
+      // still an assignment.
+      atCommandStart =
+        atCommandStart &&
+        (/^[A-Za-z_][A-Za-z0-9_]*=/.test(value) ||
+          (!quoted &&
+            ["!", "{", "time", "until", "while", "if", "then", "elif", "else", "do"].includes(value)));
+    }
     value = null;
     quoted = false;
   };
@@ -208,20 +243,55 @@ function tokenize(text) {
     const ch = text[i];
     if (quote) {
       if (ch === quote) { quote = null; continue; }
-      // Only a double-quoted context honours a backslash escape.
-      if (quote === '"' && ch === "\\" && i + 1 < text.length) { value += text[++i]; continue; }
+      // Inside double quotes bash KEEPS a backslash unless it escapes one of
+      // ``$ ` " \`` or a newline. Dropping every one of them changed the regex
+      // being judged: `"job\.js"` reaches pgrep as `job\.js` (a literal dot),
+      // and reading it as `job.js` made the dot match anything.
+      if (quote === '"' && ch === "\\" && i + 1 < text.length) {
+        const next = text[i + 1];
+        if (next === "\n") { i++; continue; }
+        if ("$`\"\\".includes(next)) { value += text[++i]; continue; }
+      }
       value += ch;
       continue;
     }
     if (ch === "'" || ch === '"') { quote = ch; value ??= ""; quoted = true; continue; }
-    if (/\s/.test(ch)) { push(); continue; }
-    if (";|&()".includes(ch)) {
+    // A backslash-newline is a line continuation: bash removes it entirely, so
+    // it must not seed a word. Seeding one hid the `#` below from the comment
+    // test on the line after a continuation.
+    if (ch === "\\" && text[i + 1] === "\n") { i++; continue; }
+    // Bash starts a comment at a `#` that begins a word, and `value === null`
+    // is exactly that position. Only the tokens are dropped: the comment text
+    // is still in the process's command line, so it stays matchable below.
+    if (ch === "#" && value === null) {
+      const nl = text.indexOf("\n", i);
+      if (nl === -1) break;
+      i = nl - 1;
+      continue;
+    }
+    // `2>&1`, `>&2` and `&>/dev/null` are each one redirection word. Reading
+    // that `&` as a control operator split the word: `2>&1` left a stray `1`
+    // looking like a second pattern, and `&>` ended the arguments early, hiding
+    // a `-A` written after it — the very escape the refusal recommends.
+    if (ch === "&" && (text[i + 1] === ">" || (value !== null && /[<>]$/.test(value)))) {
+      value = (value ?? "") + ch;
+      continue;
+    }
+    // A newline ends a command as surely as `;`. Treating it as plain
+    // whitespace ran one command's arguments into the next, which read as a
+    // second operand and silently declined to judge anything multi-line.
+    if (ch === "\n" || ";|&()".includes(ch)) {
+      // `args=(one two)` is an array, not a subshell: its words are data. Only
+      // `$(`, or a `(` that opens a real subshell, starts a command.
+      const arrayAssignment = ch === "(" && text[i - 1] === "=";
       push();
       const doubled = (ch === "&" || ch === "|") && text[i + 1] === ch;
       if (doubled) i++;
-      tokens.push({ value: doubled ? ch + ch : ch, quoted: false, operator: true });
+      tokens.push({ value: doubled ? ch + ch : ch === "\n" ? ";" : ch, quoted: false, operator: true });
+      atCommandStart = !arrayAssignment;
       continue;
     }
+    if (/\s/.test(ch)) { push(); continue; }
     if (ch === "\\" && i + 1 < text.length) { value = (value ?? "") + text[++i]; continue; }
     value = (value ?? "") + ch;
   }
@@ -229,9 +299,9 @@ function tokenize(text) {
   return quote ? null : tokens;
 }
 
-/** Where this invocation's arguments stop: an operator, or a redirection. */
-function endsArguments(token) {
-  return token.operator === true || (!token.quoted && /^\d*[<>]/.test(token.value));
+/** A redirection word — `>`, `2>`, `>>/dev/null`, `&>`. Not an argument, not a command. */
+function isRedirection(token) {
+  return !token.quoted && /^(?:\d*[<>]|&>)/.test(token.value);
 }
 
 /**
@@ -289,71 +359,83 @@ function fullCommandLinePattern(args, program) {
   return full && operands.length === 1 ? operands[0] : null;
 }
 
-/** Every readable `pgrep -f` / `pkill -f` pattern among these tokens. */
-function fullMatchPatterns(tokens) {
-  const patterns = [];
+/** Every readable `pgrep -f` / `pkill -f` invocation among these tokens. */
+function fullMatchInvocations(tokens) {
+  const found = [];
   for (let i = 0; i < tokens.length; i++) {
-    // An absolute path still names the program, and so does a quoted one:
-    // quoting stops `while` being a keyword, and does not stop `pgrep` being
-    // a command.
+    // An absolute path still names the program, and a quoted one still runs.
+    // Command POSITION is the real test: `echo pgrep -f x` prints a word.
+    if (tokens[i].command !== true) continue;
     const program = /^(?:.*\/)?(pgrep|pkill)$/.exec(tokens[i].value)?.[1];
     if (!program) continue;
     const args = [];
-    for (let j = i + 1; j < tokens.length && !endsArguments(tokens[j]); j++) args.push(tokens[j].value);
+    let j = i + 1;
+    for (; j < tokens.length && tokens[j].operator !== true; j++) {
+      // Step over a redirection, and over its operand when it has one. Stopping
+      // here instead hid every option written after it — `pgrep -f x >/dev/null
+      // -A` is a caller-excluding command bash accepts, and it read as a plain
+      // `-f`.
+      if (isRedirection(tokens[j])) {
+        if (/^\d*[<>]+$/.test(tokens[j].value)) j++;
+        continue;
+      }
+      args.push(tokens[j].value);
+    }
+    // Piped onward, a `pgrep`'s consumer decides what a match means — filtering
+    // the wrapper out with `grep -v` is a correct way to write this, and there
+    // is no reading the filter that is not a guess. `pkill` is NOT exempt: it
+    // has already sent the signal by the time anything downstream sees a byte,
+    // and measured here `pkill -f <self-matching> | cat` still kills the shell.
+    if (program === "pgrep" && tokens[j]?.value === "|") continue;
+    // An opening paren where the arguments stop means something this does not
+    // read began there — process substitution, `pgrep -f x > >(cat) -A`, whose
+    // `-A` bash passes and this would never have seen.
+    if (tokens[j]?.value === "(") continue;
     const pattern = fullCommandLinePattern(args, program);
-    if (pattern !== null) patterns.push(pattern);
+    if (pattern !== null) found.push({ program, pattern });
   }
-  return patterns;
+  return found;
 }
 
 /**
- * The tokens of each `until` / `while` condition, up to that loop's `do`.
- * A quoted keyword is not a keyword — bash refuses `wh"ile" x; do y; done` as
- * a syntax error — so quoting is what separates a loop from a word about one.
+ * Anything that could make the pattern mean more than the characters in it —
+ * an ERE metacharacter, or a shell expansion. Only a pattern with none of them
+ * is judged, and then by plain substring.
  */
-function loopConditions(tokens) {
-  const out = [];
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].quoted || !/^(?:until|while)$/.test(tokens[i].value)) continue;
-    let end = i + 1;
-    while (end < tokens.length && !(!tokens[end].quoted && tokens[end].value === "do")) end++;
-    out.push(tokens.slice(i + 1, end));
-  }
-  return out;
-}
-
-// A pattern is the agent's own text rather than anything hostile, but
-// catastrophic backtracking does not care: `a(a+)+$` over 26 characters takes
-// seconds, and a `try` cannot interrupt it. A hook that stalls is the failure
-// this one exists to prevent, so the match runs under a deadline it can lose.
-const MATCH_TIMEOUT_MS = 100;
+const NOT_A_LITERAL = /[\\^$.|?*+()[\]{}`]/;
 
 /**
- * Whether a pattern matches the command it is written in. Matching the command
- * TEXT is the sound half of the question: the harness embeds that text in the
- * process's command line, so a match here is a match there. A pattern that
- * matches only the wrapper around it — `bash`, say — is missed, and a miss
- * costs nothing a refusal would have saved.
+ * Whether the pattern is certainly present in the command line this command
+ * will run under. Two facts make a substring test SOUND where compiling the
+ * pattern was not: the harness embeds the command text in the process's argv,
+ * and a metacharacter-free ERE matches exactly its own characters. So a literal
+ * found in the text will be found by the real `pgrep`.
+ *
+ * Everything else is declined rather than approximated. Judging patterns as
+ * regexes meant reimplementing POSIX ERE in a JS `RegExp` and being wrong in
+ * the expensive direction — `[[:digit:]]+` read as a character set matched the
+ * pattern's own text and refused a correct command; `^…` was tested against a
+ * string that, unlike the real argv, began where the agent's text began. It
+ * also meant compiling a pattern under a timeout so `a(a+)+$` could not stall
+ * the hook. None of that exists now: a pattern carrying `^`, `$`, `[`, `(`, a
+ * backslash, a backtick or a `$`-expansion is simply not judged, which costs
+ * misses and cannot cost a refusal.
+ *
+ * The cost is real and worth naming: `pgrep -f '(myjob|other)'` does match its
+ * own text, and is no longer judged. That is the trade — three review rounds
+ * hunting for false refusals found about five each while patterns were compiled,
+ * and every incident this rule exists for used a plain literal.
  */
-function matchesOwnCommand(pattern, line) {
-  if (!pattern) return false;
-  try {
-    return runInNewContext("new RegExp(p).test(s)", { p: pattern, s: line }, {
-      timeout: MATCH_TIMEOUT_MS,
-    }) === true;
-  } catch {
-    // Not a regex this runtime reads, or too slow to decide inside the deadline.
-    return false;
-  }
+function certainlyInOwnCommand(pattern, line) {
+  if (!pattern || NOT_A_LITERAL.test(pattern)) return false;
+  return line.includes(pattern);
 }
 
-function offendsSelfMatchingWatcher(line) {
+function offendsSelfMatchingProcessTest(line) {
   const tokens = tokenize(withoutHeredocBodies(line));
   if (!tokens) return null;
-  for (const condition of loopConditions(tokens)) {
-    for (const pattern of fullMatchPatterns(condition)) {
-      if (matchesOwnCommand(pattern, line)) return pattern;
-    }
+  for (const found of fullMatchInvocations(tokens)) {
+    if (certainlyInOwnCommand(found.pattern, line)) return found;
   }
   return null;
 }
@@ -406,32 +488,53 @@ for (const seg of sandboxSession ? [] : segments(command)) {
 // and must not cost the git checks above either.
 let selfMatched = null;
 try {
-  selfMatched = offendsSelfMatchingWatcher(command);
+  selfMatched = offendsSelfMatchingProcessTest(command);
 } catch {
   selfMatched = null;
 }
 
 if (selfMatched) {
+  const consequence =
+    selfMatched.program === "pkill"
+      ? "This pattern matches ITSELF. `pkill` never signals its own process, but the " +
+        "shell running this command carries the same pattern, so this signals your own " +
+        "tool call. Measured in this harness: the command dies part-way through, with " +
+        "no error and no output after that point.\n"
+      : "This test matches ITSELF, so it is true whatever the processes are doing. It " +
+        "exits 0 and reports a match when the job you are asking about has already " +
+        "finished — `pgrep -fc` counts this shell as 1, and `-a` prints its command " +
+        "line among the results. A one-shot check therefore tells you work is still " +
+        "running when it is not, and a loop built on it waits for something that has " +
+        "already happened, or never notices that it did.\n";
+  const waysOut =
+    selfMatched.program === "pkill"
+      ? "Name the target in a way that cannot include you:\n" +
+        "     pkill -f '[v]itest run src/...'    # a pattern that cannot match itself\n" +
+        "     pkill -A -f 'vitest run src/...'   # ignore this shell's ancestors\n\n" +
+        "Better still, do not hunt for the process at all: a command started with the " +
+        "Bash tool's background mode can be stopped by the harness that started it.\n"
+      : "Three ways out, best first.\n\n" +
+        "1. Do not poll for work this harness already tracks. A command started with " +
+        "the Bash tool's background mode notifies you when it exits, so there is " +
+        "nothing to wait for.\n\n" +
+        "2. Wait on the artifact, not the process. Its output has a definite end " +
+        "state and matching it reads no process list at all:\n" +
+        "     until grep -qE '^(PASS|FAIL)' /tmp/run.log; do sleep 5; done\n\n" +
+        "3. If you must match processes, exclude yourself. Any of these is enough, " +
+        "and each is left alone here:\n" +
+        "     pgrep -A  -f 'vitest run src/...'   # ignore this shell's ancestors\n" +
+        "     pgrep -f '[v]itest run src/...'     # a pattern that cannot match itself\n\n" +
+        "If you do wait in a loop, bound it, so a mistake costs minutes and not the " +
+        "session:\n" +
+        "     timeout 600 bash -c 'until ...; done'\n";
   process.stderr.write(
-    `Blocked: this wait loop tests for \`${selfMatched}\`, which is text in this very command.\n\n` +
+    `Blocked: this \`${selfMatched.program} -f\` looks for \`${selfMatched.pattern}\`, ` +
+      "which is text in this very command.\n\n" +
       "The Bash tool runs a command as `bash -c '<the whole command>'`, so every " +
       "literal you write is part of the command line of the process that runs it — " +
-      "and `pgrep -f` matches full command lines. This test matches ITSELF, so it is " +
-      "true whatever the processes are doing: the loop waits for something that has " +
-      "already happened, or never notices that it did.\n\n" +
-      "Three ways out, best first.\n\n" +
-      "1. Do not poll for work this harness already tracks. A command started with " +
-      "the Bash tool's background mode notifies you when it exits, so there is " +
-      "nothing to wait for.\n\n" +
-      "2. Wait on the artifact, not the process. Its output has a definite end " +
-      "state and matching it reads no process list at all:\n" +
-      "     until grep -qE '^(PASS|FAIL)' /tmp/run.log; do sleep 5; done\n\n" +
-      "3. If you must match processes, exclude yourself. Any of these is enough, " +
-      "and each is left alone here:\n" +
-      "     pgrep -A  -f 'vitest run src/...'   # ignore this shell's ancestors\n" +
-      "     pgrep -f '[v]itest run src/...'     # a pattern that cannot match itself\n\n" +
-      "Bound the wait either way, so a mistake costs minutes and not the session:\n" +
-      "     timeout 600 bash -c 'until ...; done'\n",
+      `and \`${selfMatched.program} -f\` matches full command lines. ` +
+      `${consequence}\n` +
+      waysOut,
   );
   process.exit(2);
 }
