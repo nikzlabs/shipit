@@ -385,6 +385,46 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     h.runner.dispose({ force: true });
   });
 
+  /**
+   * req 36 — the same shape as the test above, with `/compact` as the prompt. The result
+   * that arrives ends the CLI's OWN turn, so it is real work and the card is behind;
+   * granting the compaction's exemption to it would leave the card reading current.
+   */
+  it("does not exempt a result that ended the CLI's own turn ahead of a compaction (req 36)", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "first" }));
+    await waitFor(() => h.agents.length === 1, "turn 1 started");
+    await h.agentWritesCard("Routes done.");
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.runner.running, "turn 1 settled with the process resident");
+    expect(h.card()!.fresh).toBe(true);
+
+    let releasePrep = (): void => {};
+    const prepEntered = { yes: false };
+    h.setPrepareEnv(async () => {
+      if (prepEntered.yes) return;
+      prepEntered.yes = true;
+      await new Promise<void>((resolve) => { releasePrep = resolve; });
+    });
+    h.runner.dispatch(testDispatch({ text: "/compact" }));
+    await waitFor(() => prepEntered.yes, "the compaction reached its pre-turn hook");
+
+    h.agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    releasePrep();
+    await waitFor(
+      () => h.agents[0]!.sendUserMessage.mock.calls.length > 0,
+      "the command reached the resident CLI",
+    );
+
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.card()!.fresh, "the CLI's own turn marked the card stale");
+    // The nudge is deferred, not sent, because the command is still unread (req 34).
+    expect(h.nudges()).toHaveLength(0);
+
+    h.runner.dispose({ force: true });
+  });
+
   it("with the setting off, nothing is marked and nothing is dispatched", async () => {
     const h = harness({ statusCardEnabled: false, card: { ...seeded } });
 
@@ -427,10 +467,10 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
   }
 
   /**
-   * req 36 — the exemption is the harness running the prompt as a command, and it only
-   * does that when the text reaches it bare. A `/compact` that arrives as a message from
-   * another session is wrapped in provenance prose, so no command runs and whatever the
-   * agent does with it is ordinary work.
+   * req 36 — the exemption is withheld when provenance wraps the text, because the
+   * harnesses disagree about what happens then (Claude reads prose and works; Codex and
+   * OpenCode still compact). Checking costs a needless nudge on two of them; exempting
+   * would hide a real stale card on the third, which is the failure req 15 forbids.
    */
   it("checks a compaction command that arrives wrapped as another session's message (req 36)", async () => {
     const h = harness({ card: { ...seeded } });

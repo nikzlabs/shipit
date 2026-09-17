@@ -252,14 +252,24 @@ and there is nothing to ask about. Every other turn answers yes, whoever started
 it.
 
 `harnessCommand` on `TurnInput` and `TurnStatusFacts` is that property: the turn
-is a compaction the harness will actually run. Each turn path decides it where it
-already knows — `opts.compact` on the interactive path
-(`ws-handlers/agent-execution.ts`), `isCompactRequest` on the dispatched one
-(`dispatched-turn.ts`) — and the dispatched path adds the condition the
-interactive one cannot meet: the text must reach the CLI **bare**. A `/compact`
-that arrives as a cross-session or agent-interface message is wrapped in
-provenance prose before delivery, so no command runs and whatever the agent does
-with it is ordinary work.
+is a compaction. Each turn path decides it where it already knows —
+`opts.compact` on the interactive path (`ws-handlers/agent-execution.ts`),
+`isCompactRequest` on the dispatched one (`dispatched-turn.ts`).
+
+The dispatched path narrows it further, and **deliberately errs towards
+checking**: it withholds the exemption when provenance wraps the text (a
+cross-session or agent-interface message). The harnesses disagree there — Claude
+reads the wrapped prose and does ordinary work, while Codex and OpenCode compact
+from the `compact` flag and never see the prompt at all
+(`codex-event-handler.ts`, `opencode/adapter.ts`). Exempting would hide a
+genuinely stale card on Claude; checking costs one needless nudge on the other
+two. The first is the failure req 15 forbids, so the condition takes the second.
+
+The exemption also requires the arriving result to be **this prompt's**
+(`ownTurn !== "queued"`). A user's `/compact` can reuse a resident CLI, and that
+CLI can start a turn of its own during environment preparation, before the
+command is submitted; the result that then arrives ends the CLI's work, not the
+compaction, and that work is exactly what the card must report.
 
 It **replaces** the `silent` entry rather than joining it. `silent` named a kind
 of turn — ShipIt's own, with no user row — and named it wrongly: ShipIt's
@@ -317,7 +327,7 @@ memory, walked against the rule:
 | A message through the HTTP API | `services/agent.ts` | **yes**, unless its text is itself a harness command |
 | Conflict remediation | `services/rebase-driver.ts` (`postTurn: "none"`) | **no nudge**, driver-owned; still marked stale |
 | Pre-turn compaction before a post-merge turn | `dispatched-turn.ts`, `runCompactionAhead` | **no** — `harnessCommand` |
-| A compaction wrapped as another session's message | `services/child-sessions.ts` | **yes** — the harness runs no command on wrapped prose |
+| A compaction wrapped as another session's message | `services/child-sessions.ts` | **yes**, conservatively — see the narrowing above |
 | The status nudge itself | `turn-executor.ts` | **no** — req 15, one attempt per missing update |
 
 **A pending successor is four things, not two** (req 34, planning#589), and the

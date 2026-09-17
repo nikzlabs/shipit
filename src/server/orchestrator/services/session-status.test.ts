@@ -460,7 +460,7 @@ describe("shouldNudgeForStatusCard (docs/303 req 12–15)", () => {
     ["the agent wrote or confirmed the card", { statusUpdated: true }],
     ["the turn was interrupted — a question, a plan approval or a stop", { wasInterrupted: true }],
     ["no result came back — a crash has its own recovery", { receivedResult: false }],
-    ["the harness ran the prompt as its own command — compaction, a goal command", { harnessCommand: true }],
+    ["the harness answered the turn by compacting the conversation", { harnessCommand: true }],
     ["the turn was itself a nudge (req 15: one attempt)", { statusNudge: true }],
     ["a driver owns the turn", { postTurn: "none" }],
   ];

@@ -736,7 +736,9 @@ export async function executeAgentTurn(
       // Not `receivedResult`: adoption keeps that from the predecessor on purpose, and a
       // crashed adopted turn produced no result of its own to judge.
       receivedResult: sawOwnResult,
-      harnessCommand: harnessCommandTurn,
+      // Only when the result is this prompt's: a resident CLI can start a turn of its
+      // own before the command is submitted, and that turn is work the card must report.
+      harnessCommand: harnessCommandTurn && ownTurn !== "queued",
       statusNudge: input.statusNudge === true,
       // Taken here, with the rest, because a drained successor resets both
       // (`resetRunnerTurnState`, and this executor's own re-arm) — read live at the

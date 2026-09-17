@@ -82,9 +82,12 @@ async function runDispatchedTurnInner(
 
   const isCompactRequest =
     (getAgentCapabilities(agentId)?.supportsCompaction ?? false) && isCompactCommand(text);
-  // docs/303 req 36 — a compaction only when the text reaches the CLI bare: a
-  // cross-session or agent-interface message wraps it in prose below, so no command runs
-  // and whatever the agent does with it is ordinary work.
+  /**
+   * docs/303 req 36. Narrower than `isCompactRequest` on purpose: when provenance wraps
+   * the text below, Claude reads prose and does ordinary work, while Codex and OpenCode
+   * still compact from the flag. Exempting would hide a real stale card on the first;
+   * checking costs one needless nudge on the others, so it errs that way.
+   */
   const harnessCommand = isCompactRequest && !opts.agentInterface && !opts.messageOrigin;
 
   const steer = opts.systemTurn ? undefined : deps.steerInputs?.();
