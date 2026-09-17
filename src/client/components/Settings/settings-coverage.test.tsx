@@ -773,6 +773,11 @@ beforeEach(() => {
     if (url.endsWith("/api/ssh-hosts") && (init?.method ?? "GET") === "GET") {
       return Promise.resolve({ ok: true, json: async () => ({ hosts: [SSH_HOST_ROW] }) });
     }
+    // The second such exception: the secrets panel renders a row per stored
+    // NAME, so with no answer there is no name and no row to walk into.
+    if (url.startsWith("/api/secrets") && (init?.method ?? "GET") === "GET") {
+      return Promise.resolve({ ok: true, json: async () => ({ keys: ["LEGACY_TOKEN"] }) });
+    }
     return Promise.reject(new Error("offline in this test"));
   }));
   seedStores();
@@ -792,6 +797,7 @@ afterEach(() => {
   useEgressStore.setState({ entries: [], loaded: false, defaultsCustomized: false });
   usePreviewStore.getState().setSecrets({ declared: [], missingByService: {}, missingRequired: [] });
   useRepoStore.setState({ repos: [] } as never);
+  useUiStore.getState().setProjectSettingsRepoUrl(null);
 });
 
 /** The pane the walk reads: the one tab Radix currently has mounted. */
@@ -1048,16 +1054,10 @@ async function renderGlobalTab(tab: SettingTab): Promise<HTMLElement> {
 }
 
 async function renderProjectTab(initial: ProjectTab): Promise<HTMLElement> {
-  render(
-    <ProjectSettings
-      repoUrl={REPO_URL}
-      repoName="app"
-      initialTab={initial}
-      onSecretsLoad={async () => ["LEGACY_TOKEN"]}
-      onSecretsSave={vi.fn()}
-      onClose={vi.fn()}
-    />,
-  );
+  // The repository is a READ since slice 7 — every control on these three tabs
+  // is a component, and one takes the setting's key and nothing else.
+  act(() => { useUiStore.getState().setProjectSettingsRepoUrl(REPO_URL); });
+  render(<ProjectSettings initialTab={initial} onClose={vi.fn()} />);
   await settle();
   return activePane();
 }
@@ -1581,6 +1581,9 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   "network.egressContained",
   "project.allowAgentMerge",
   "project.colorIndex",
+  // Generated in slice 7. The panel wrote its own "Environment Variables"
+  // heading and its own paragraph until then; it renders the declaration's.
+  "project.secrets",
   "reviewers",
   "roles",
   "roles[].description",

@@ -21,10 +21,18 @@ import {
  * its values stay with the named store fields and their own setters, because a
  * half-converted tab either duplicates a control or renders a row that cannot
  * save (inventory.md P18).
+ *
+ * **Generated is not the same as recorded, and the three `project-*` tabs are
+ * where the two come apart** (slice 7). Every Project Settings value belongs to
+ * one repository rather than to the install, and this record is keyed by setting
+ * alone — so a repo-scoped value in it would be the previous repository's the
+ * moment the dialog is opened for another. All five are `bespoke` and so fail
+ * {@link sharedValue}: they are rows, read and written through the repository
+ * store, and none of them enters the record.
  */
 export const GENERATED_TABS: readonly SettingTab[] =
   ["advanced", "network", "instructions", "git", "voice", "integrations", "keyboard",
-   "services", "roles"];
+   "services", "roles", "project-deployments", "project-secrets", "project-appearance"];
 
 /**
  * The stores `saveSetting` can write. The three payload stores share

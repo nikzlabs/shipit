@@ -35,6 +35,11 @@ export const PROJECT_SETTINGS = {
   "project.allowAgentMerge": defineSetting({
     key: "project.allowAgentMerge",
     tab: "project-deployments",
+    section: "Agent permissions",
+    // The row looks like every other generated toggle; what it cannot share is
+    // the VALUE, which belongs to one repository rather than to the install
+    // (docs/308-data-driven-settings plan.md → Slices → 7).
+    component: "agent-merge",
     scope: "project",
     address: REPOSITORY_ADDRESS,
     label: "Allow agents to merge their own pull requests",
@@ -53,12 +58,15 @@ export const PROJECT_SETTINGS = {
   "project.secrets": defineSetting({
     key: "project.secrets",
     tab: "project-secrets",
+    component: "project-secrets",
     scope: "project",
     address: REPOSITORY_ADDRESS,
     label: "Secrets",
     description:
       "Values this repository's services need at runtime — API keys, database URLs. ShipIt reports "
-      + "which names are set and never a value; the browser never receives one either.",
+      + "which names are set and never a value; the browser never receives one either. A value "
+      + "reaches the agent's own container only where the service declaring it in x-shipit-secrets "
+      + "marks it agent: true.",
     type: collection<string>({ operations: ["set", "remove"], patchableFields: [] }),
     store: { kind: "bespoke", ownedBy: "the repository secrets store (PUT /api/secrets)" },
     // Names only (plan.md → Scope inventory): the name says what is missing,
@@ -119,6 +127,7 @@ export const PROJECT_SETTINGS = {
   "project.colorIndex": defineSetting({
     key: "project.colorIndex",
     tab: "project-appearance",
+    component: "repo-color",
     scope: "project",
     address: REPOSITORY_ADDRESS,
     label: "Sidebar color",

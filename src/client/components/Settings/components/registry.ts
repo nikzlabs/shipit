@@ -11,8 +11,11 @@
 
 import type { ReactNode } from "react";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
+import { AgentPermissions } from "../../AgentPermissions.js";
 import { KeybindingSettings } from "../../KeybindingSettings.js";
 import { McpServerSettings } from "../../McpServerSettings.js";
+import { RepoColorPicker } from "../../RepoColorPicker.js";
+import { SecretsTab } from "../../SecretsTab.js";
 import { SshHostsSettings } from "../../SshHostsSettings.js";
 import { BackgroundWorkSection } from "../BackgroundWorkSection.js";
 import { ServicesPanel } from "../ServicesPanel.js";
@@ -50,4 +53,10 @@ export const SETTING_COMPONENTS: Readonly<Record<string, SettingComponent>> = {
   "voice-tts": VoiceTts,
   "voice-hands-free": VoiceHandsFree,
   "voice-webhook": VoiceWebhook,
+  // Project Settings (slice 7). Each reads the open repository (`project-repo.ts`)
+  // and writes where its declaration says, because the value record is keyed by
+  // setting alone and cannot hold a repository's value (`setting-values.ts`).
+  "agent-merge": AgentPermissions,
+  "repo-color": RepoColorPicker,
+  "project-secrets": SecretsTab,
 };

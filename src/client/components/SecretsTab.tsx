@@ -1,10 +1,26 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: clear the pending save-confirmation timer on unmount
-import { useState, useRef, useEffect } from "react";
+/**
+ * The repository's secrets, as the panel `project.secrets` names
+ * (docs/308-data-driven-settings slice 7).
+ *
+ * A collection with operations of its own — add, remove, clear, save several at
+ * once — so it keeps its own reader and writer, as every registered panel does
+ * (inventory.md P11). Both are its own rather than the dialog's since this
+ * slice: a component takes the setting's key and nothing else, so the repository
+ * is a read and the two requests live here.
+ */
+
+import { useRef, useState } from "react";
 import { Button } from "./ui/button.js";
 import { DeclaredSecretRow, isPlatformProvided } from "./DeclaredSecretRow.js";
 import { bindSetting } from "./Settings/setting-binding.js";
-import { SettingsTabPane } from "./Settings/SettingsTabPane.js";
-import { usePreviewStore } from "../stores/preview-store.js";
+import { SettingCopy } from "./Settings/declared.js";
+import { useProjectRepoUrl } from "./Settings/components/project-repo.js";
+import { usePreviewStore, type DeclaredSecretState } from "../stores/preview-store.js";
+import { usePluginReposStore } from "../stores/plugin-repos-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+import { useUiStore } from "../stores/ui-store.js";
+import { useApi } from "../hooks/useApi.js";
+import { parseRepoLabel } from "../utils/repo-label.js";
 
 /**
  * Save payload sent to `PUT /api/secrets`. Because the browser never receives
@@ -13,25 +29,53 @@ import { usePreviewStore } from "../stores/preview-store.js";
  * typed) and `keep` (existing keys to preserve as-is). Any existing key in
  * neither list is deleted server-side.
  */
-export interface SecretsSavePayload {
+interface SecretsSavePayload {
   set: Record<string, string>;
   keep: string[];
 }
 
-export interface SecretsTabProps {
-  repoUrl?: string;
-  onSecretsSave?: (repoUrl: string, payload: SecretsSavePayload) => void;
-  /** Loads the *names* of secrets set for the repo — never their values. */
-  onSecretsLoad?: (repoUrl: string) => Promise<string[]>;
+/** Stable empties, so a panel the snapshot does not describe re-renders no more. */
+const NO_DECLARATIONS: DeclaredSecretState[] = [];
+const NO_MISSING: Record<string, string[]> = {};
+
+/**
+ * The newest save per repository, module-level so it outlives the panel.
+ *
+ * Switching tabs unmounts this panel, so a second save can start while the
+ * first is still out — and the older answer must not report on a state nobody
+ * is in any more. It is `saveSetting`'s per-setting sequence, at the one
+ * destination this panel writes.
+ */
+const SAVES = new Map<string, number>();
+
+export function SecretsTab() {
+  const repoUrl = useProjectRepoUrl();
+  // Every piece of state below is one repository's — names loaded, values
+  // typed, rows added — so the panel is remounted rather than reset when the
+  // dialog is re-pointed at another.
+  return <SecretsPanel key={repoUrl ?? ""} repoUrl={repoUrl} />;
 }
 
-export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTabProps) {
+function SecretsPanel({ repoUrl }: { repoUrl: string | null }) {
+  const { get, put } = useApi();
 
-  const declared = usePreviewStore((s) => s.secrets.declared);
-  const missingByService = usePreviewStore((s) => s.secrets.missingByService);
+  /*
+    The declared names describe the ACTIVE SESSION's compose file, not this
+    dialog's repository, so they apply only where the two agree (found in
+    review). Reading them regardless was a way to LOSE a secret: another
+    repository's declaration hides a stored key from the custom rows, and a
+    hidden key is in neither `set` nor `keep`, so saving deletes it.
+  */
+  const sessionRepoUrl = useSessionStore(
+    (s) => s.sessions.find((session) => session.id === s.sessionId)?.remoteUrl,
+  );
+  const describesThisRepo = repoUrl !== null && sessionRepoUrl === repoUrl;
+  const snapshotDeclared = usePreviewStore((s) => s.secrets.declared);
+  const snapshotMissing = usePreviewStore((s) => s.secrets.missingByService);
+  const declared = describesThisRepo ? snapshotDeclared : NO_DECLARATIONS;
+  const missingByService = describesThisRepo ? snapshotMissing : NO_MISSING;
 
-  // tab opens. The browser NEVER receives the values themselves — set secrets
-
+  // Names only: the browser never receives a stored value (`loadSecretNames`).
   const [existingKeys, setExistingKeys] = useState<string[]>([]);
 
   const [values, setValues] = useState<Record<string, string>>({});
@@ -42,35 +86,42 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
     { key: string; value: string; existing: boolean }[] | null
   >(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const loadedRef = useRef(false);
+  /** Typed since the save in flight was sent, so its "Saved" is not this state's. */
+  const editedSinceSendRef = useRef(false);
 
-  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // eslint-disable-next-line no-restricted-syntax -- cancel the confirmation timer when the tab goes away
-  useEffect(() => () => {
-    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-  }, []);
-
-  if (!loadedRef.current && repoUrl && onSecretsLoad) {
+  function load(): void {
+    if (!repoUrl) return;
     loadedRef.current = true;
     // eslint-disable-next-line no-restricted-syntax -- fire-and-forget in render
-    void onSecretsLoad(repoUrl).then((keys) => {
-      setExistingKeys(keys);
-      setLoaded(true);
-    }).catch(() => {
-      setLoaded(true);
-    });
+    void get<{ keys: string[] }>(`/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`)
+      .then(({ keys }) => {
+        setExistingKeys(keys);
+        setLoaded(true);
+      }).catch((err: unknown) => {
+        console.error("[secrets] reading the stored names failed:", err);
+        setLoadFailed(true);
+      });
+  }
+
+  if (!loadedRef.current) load();
+
+  /** Anything the user changed, which a save in flight no longer speaks for. */
+  function touched(): void {
+    editedSinceSendRef.current = true;
+    setSaved(false);
   }
 
   const declaredNames = new Set(declared.map((d) => d.name));
   const existingSet = new Set(existingKeys);
 
+  // Until the first edit the custom rows are inferred from the stored names;
+  // from then on the user's own list is what renders, so a later snapshot can
+  // neither reorder it nor bring back a row they removed.
   const inferredCustomRows = existingKeys.map((key) => ({ key, value: "", existing: true }));
-
-  // stored key. That's load-bearing rather than tidy: the first edit pins
-
   const pinnedCustomRows = customRows ?? inferredCustomRows;
 
   const visibleCustomIdx = pinnedCustomRows
@@ -87,13 +138,13 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
       next.delete(name);
       return next;
     });
-    setSaved(false);
+    touched();
   }
 
   function clearDeclaredValue(name: string) {
     setValues((v) => Object.fromEntries(Object.entries(v).filter(([k]) => k !== name)));
     setCleared((c) => new Set(c).add(name));
-    setSaved(false);
+    touched();
   }
 
   function setCustomKey(idx: number, key: string) {
@@ -101,7 +152,7 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
     const at = visibleCustomIdx[idx];
     next[at] = { ...next[at], key };
     setCustomRows(next);
-    setSaved(false);
+    touched();
   }
 
   function setCustomValue(idx: number, value: string) {
@@ -109,30 +160,31 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
     const at = visibleCustomIdx[idx];
     next[at] = { ...next[at], value };
     setCustomRows(next);
-    setSaved(false);
+    touched();
   }
 
   function removeCustomRow(idx: number) {
     const at = visibleCustomIdx[idx];
     setCustomRows(pinnedCustomRows.filter((_, i) => i !== at));
-    setSaved(false);
+    touched();
   }
 
   function addCustomRow() {
     setCustomRows([...pinnedCustomRows, { key: "", value: "", existing: false }]);
-    setSaved(false);
+    touched();
   }
 
-  function save() {
-    if (!repoUrl || !onSecretsSave) return;
+  async function save() {
+    if (!repoUrl || saving) return;
     setSaving(true);
 
     const set: Record<string, string> = {};
     const keep: string[] = [];
 
     for (const d of declared) {
-
-      // real value, and the row is editable, so it must save like any other.
+      // Platform-sourced rows are not user-configurable. A row a plugin also
+      // claims is NOT one of them (docs/262 req 23): it needs a real value, and
+      // the row is editable, so it saves like any other.
       if (isPlatformProvided(d)) continue;
       const typed = values[d.name];
       if (typeof typed === "string" && typed.length > 0) {
@@ -154,15 +206,64 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
 
     }
 
-    onSecretsSave(repoUrl, { set, keep });
-    // Replace any in-flight confirmation so two quick saves can't race to
+    /*
+      "Saved" is the server's answer rather than a timer's: the panel owns the
+      write since slice 7, so it knows whether the write landed and says so —
+      and a refused one now reaches the user instead of being swallowed.
 
-    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-    savedTimerRef.current = setTimeout(() => {
-      savedTimerRef.current = null;
+      Two things it must not claim, both found in review. An answer that is not
+      the NEWEST save's describes a state nobody is in any more, so it reports
+      nothing. And "Saved" is about the values that were SENT: typing during the
+      write leaves the box holding something the server does not have.
+    */
+    const payload: SecretsSavePayload = { set, keep };
+    const mine = (SAVES.get(repoUrl) ?? 0) + 1;
+    SAVES.set(repoUrl, mine);
+    editedSinceSendRef.current = false;
+    try {
+      await put("/api/secrets", { repoUrl, ...payload });
+      if (SAVES.get(repoUrl) !== mine) return;
+      if (!editedSinceSendRef.current) setSaved(true);
+      // Repos without Compose emit no secrets_status event to trigger this
+      // refresh. It is not part of the save: awaiting it left Save disabled as
+      // "Saving..." for as long as the snapshot took (found in review).
+      const id = useSessionStore.getState().sessionId;
+      if (id) void usePluginReposStore.getState().fetchSnapshot(id);
+    } catch (err) {
+      console.error("[secrets] save failed:", err);
+      if (SAVES.get(repoUrl) !== mine) return;
+      // Named, because the panel it failed for may be gone by now: the dialog
+      // can have been closed, or opened for another repository.
+      useUiStore.getState().setToast({
+        message: `Failed to save secrets for ${parseRepoLabel(repoUrl)}`,
+      });
+    } finally {
       setSaving(false);
-      setSaved(true);
-    }, 500);
+    }
+  }
+
+  /*
+    A read that failed is not a repository with no secrets. Save replaces the
+    stored set with what is on screen, so an empty panel offered after a failed
+    read is a delete-everything button (found in review).
+  */
+  if (loadFailed) {
+    return (
+      <div className="space-y-2" data-testid="secrets-load-failed" role="alert">
+        <p className="text-sm text-(--color-text-primary)">
+          Could not read this repository&rsquo;s secrets, so they cannot be edited safely.
+        </p>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="rounded-md"
+          data-testid="secrets-retry"
+          onClick={() => { setLoadFailed(false); load(); }}
+        >
+          Try again
+        </Button>
+      </div>
+    );
   }
 
   if (!loaded) {
@@ -170,29 +271,8 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
   }
 
   return (
-    <SettingsTabPane
-      testId="secrets-tab"
-      footer={
-        <Button
-          variant="primary"
-          size="md"
-          disabled={saving}
-          onClick={save}
-          className="rounded-md"
-          data-testid="secrets-save"
-          aria-label={saving ? "Saving secrets" : saved ? "Secrets saved" : "Save secrets"}
-          {...bindSetting("project.secrets")}
-        >
-          {saving ? "Saving..." : saved ? "Saved" : "Save"}
-        </Button>
-      }
-    >
-      <div className="space-y-1">
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Environment Variables</h3>
-        <p className="text-xs text-(--color-text-secondary)">
-          Secrets are injected into the services that declare them in <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>. The agent only sees values you explicitly mark with <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">agent: true</code>.
-        </p>
-      </div>
+    <div className="flex flex-col gap-4" data-testid="secrets-tab">
+      <SettingCopy settingKey="project.secrets" heading />
 
       {/* Declared secrets — `x-shipit-secrets`, plus the credential names
           activated plugins declare (docs/262 req 23). Hidden when nothing
@@ -285,6 +365,27 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
           + Add variable
         </button>
       </section>
-    </SettingsTabPane>
+
+      {/*
+        Save stays in sight however long the list grows, which is what the tab's
+        pinned footer did before the panel moved inside the generated block. It
+        sticks to the bottom of the tab's scroll area and bleeds through its
+        padding, so it reads as the same bar.
+      */}
+      <div className="sticky bottom-0 -mx-5 -mb-4 flex items-center justify-end border-t border-(--color-border-secondary) bg-(--color-bg-elevated) px-5 py-3">
+        <Button
+          variant="primary"
+          size="md"
+          disabled={saving}
+          onClick={() => void save()}
+          className="rounded-md"
+          data-testid="secrets-save"
+          aria-label={saving ? "Saving secrets" : saved ? "Secrets saved" : "Save secrets"}
+          {...bindSetting("project.secrets")}
+        >
+          {saving ? "Saving..." : saved ? "Saved" : "Save"}
+        </Button>
+      </div>
+    </div>
   );
 }

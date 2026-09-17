@@ -13,6 +13,8 @@ import userEvent from "@testing-library/user-event";
 import { DeclaredSettings, controlFor } from "./DeclaredSettings.js";
 import { resetDeclaredSaves } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { useRepoStore } from "../../stores/repo-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
 import { GENERATED_SETTINGS, initialSettingValues, recordHolds } from "../../stores/setting-values.js";
 import {
   findSetting,
@@ -518,6 +520,64 @@ describe("the Services tab's rows", () => {
 
     const { container } = render(<DeclaredSettings tab="services" />);
     expect(container.querySelectorAll('[data-testid="services-panel"]')).toHaveLength(1);
+  });
+});
+
+/**
+ * Project Settings (slice 7, req 10) — the second dialog, and the one place
+ * where "a generated row" and "a value the record holds" come apart for every
+ * row on a tab.
+ *
+ * All five declarations are addressed by REPOSITORY, so each names a component
+ * and none of them is written by the shared writer: the record is keyed by
+ * setting alone, and a repo-scoped value in it would be the previous
+ * repository's the moment the dialog is opened for another one.
+ */
+describe("Project Settings' rows", () => {
+  beforeEach(() => {
+    // The secrets panel reads its stored names before it renders a row, and a
+    // read it cannot make is an error state rather than an empty repository.
+    fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({ keys: [] }) });
+    useUiStore.getState().setProjectSettingsRepoUrl("https://github.com/acme/app");
+    useRepoStore.setState({
+      repos: [{ url: "https://github.com/acme/app", colorIndex: 2, allowAgentMerge: false }],
+    } as never);
+  });
+
+  afterEach(() => {
+    useUiStore.getState().setProjectSettingsRepoUrl(null);
+    useRepoStore.setState({ repos: [] } as never);
+  });
+
+  it("places the agent-merge row under its declared section", () => {
+    render(<DeclaredSettings tab="project-deployments" />);
+    const section = screen.getByRole("region", { name: "Agent permissions" });
+    expect(within(section).getByTestId("allow-agent-merge-toggle")).toBeInTheDocument();
+  });
+
+  it("places the colour picker on the Appearance tab", () => {
+    render(<DeclaredSettings tab="project-appearance" />);
+    expect(screen.getByTestId("repo-color-picker")).toBeInTheDocument();
+  });
+
+  it("places the secrets panel on the Secrets tab", async () => {
+    render(<DeclaredSettings tab="project-secrets" />);
+    expect(await screen.findByTestId("secrets-tab")).toBeInTheDocument();
+  });
+
+  /*
+    The tab's one row is the collection. Its two item fields name no component,
+    because the collection is what places the panel and the renderer skips an
+    addressed declaration that names none (P11) — naming one on an item field
+    would claim a second row for a panel that renders once.
+  */
+  it("renders a row for the collection and none for its item fields", async () => {
+    render(<DeclaredSettings tab="project-secrets" />);
+    await screen.findByTestId("secrets-tab");
+
+    const rows = GENERATED_SETTINGS.filter((d) => d.tab === "project-secrets").map((d) => d.key);
+    expect(rows).toEqual(["project.secrets"]);
+    expect(document.querySelectorAll('[data-testid="secrets-tab"]')).toHaveLength(1);
   });
 });
 
