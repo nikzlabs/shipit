@@ -88,6 +88,12 @@ solved for booleans (P6): optimistic write, per-field sequencing, and rollback t
 the last value the **server** confirmed rather than to the value the failed
 request asked for. Explicit-commit rows do not need it and do not get it.
 
+**And it answers whether the write landed.** The rollback and the toast are the
+whole report for a control with no draft of its own, and every generated row
+discards the answer with `void`; a control that reports its own save — the
+memory budget's button — reads it, which is why the optimistic write no longer
+lets it claim a refusal as a success (slice 8's follow-up).
+
 **Commit mode is derived for generated rows** (P5): `text` commits on a button,
 everything else on change. That is not a universal rule about settings — an SSH
 port saves with its form, a failover cutoff commits on blur — and those live in
@@ -172,12 +178,19 @@ their declared paths. Both run wherever global settings land — so also on the
 `settings_changed` broadcast, which is what keeps a row the agent changed
 current.
 
-**A read in flight is discarded when the value moves under it.** These reads
+**Two answers are refused, and they are two different hazards.** An answer that
+is not the **newest read's** for that address moves nothing: every settings
+refresh starts a read of each address, so two of them overlap whenever
+`settings_changed` arrives while one is out, and left unordered the older one
+wins twice — it writes the stale value, and that write then makes the newer
+read's own answer look superseded by the guard below. That is `saveSetting`'s
+per-setting sequence and `commitSettings`' per-destination one, kept per address.
+And **a read in flight is discarded when the value moves under it**: these reads
 take as long as a request, and a save writes the record the moment it is made —
-so a read that began first and answered second would put the old value back
-under a control the user has just changed, after the `settings_changed` refresh
-that would have corrected it had already run. The record's value before and
-after the read is the whole test.
+so a read that began before the click would put the old value back under a
+control the user has just changed, after the `settings_changed` refresh that
+would have corrected it had already run. The sequence cannot see that, because a
+write is not a read; the record's value before and after is what says so.
 
 So **for a tab in `GENERATED_TABS`, adding a row is one edit in one place**:
 declaration in, row rendered, value written, value read back. The seven
@@ -488,12 +501,13 @@ existing one or renders a row that cannot save.
    outside `[0.25, 4]`. Nothing the dialog or the play button ever offered is
    outside that range, so no selection a user made is affected.
 
-   Two limitations this slice inherits and does not fix, both stated so they are
+   Two limitations this slice inherited and did not fix, both stated so they are
    not read as new: the scalar writer's rollback is still wrong for an older
    request succeeding after a newer one failed (slice 1 recorded it, and
-   `voice.deliveryMode` now rides it), and two concurrent own-route reads can
-   still leave the older answer in the record, because the guard compares the
-   value rather than ordering the requests (slice 2).
+   `voice.deliveryMode` now rides it), and two concurrent own-route reads could
+   leave the older answer in the record, because the guard compared the value
+   rather than ordering the requests (slice 2). The second is fixed — see the
+   follow-up under slice 8.
 5. **Integrations.** The two credential rows over their declared routes (P2, P10)
    and `autoCreatePr` becoming always visible (P13).
 
@@ -870,23 +884,40 @@ existing one or renders a row that cannot save.
    both said in the code that they were exported for the walk.
 
    **The whole-feature acceptance review found two runtime defects, neither of
-   them this slice's, and both are open.** They are written down here rather than
-   fixed, because each needs a change outside a cleanup slice.
+   them this slice's.** Both were recorded here rather than fixed in a cleanup
+   slice, and both are now fixed — in one follow-up pull request of their own,
+   which is what each of them needed and a cleanup slice is not.
 
-   - **The memory budget says "Saved" for a write that failed.**
-     `MemoryBudget.tsx` calls the setter and sets its own `saved` flag in the
-     same handler; the setter is fire-and-forget, so an HTTP 500 rolls the record
-     back while the box still shows what was typed and the button still reads
-     Saved. It is not fixable inside the component: `saveSetting` swallows its
-     own failure (it toasts and returns `void`), and the optimistic write means
-     the record equals the sent value from the click onward, so there is nothing
-     to watch. The fix is for `saveSetting` to return an outcome — the feature's
-     most load-bearing file, for one component.
-   - **Two overlapping own-route reads can leave the older answer in the
-     record.** Slice 2 recorded this and slice 4 restated it: the guard compares
-     the value before and after the read rather than ordering the requests, so an
-     older read that lands first changes the value and makes the newer one look
-     superseded. Still true, still known.
+   - **The memory budget said "Saved" for a write that failed.**
+     `MemoryBudget.tsx` called the setter and set its own `saved` flag in the
+     same handler; the setter was fire-and-forget, so an HTTP 500 rolled the
+     record back while the box still showed what was typed and the button still
+     read Saved. It was not fixable inside the component: the optimistic write
+     means the record equals the sent value from the click onward, so there was
+     nothing to watch. **So `saveSetting` returns an outcome** — `true` when the
+     value is stored, `false` when the server refused it, and a throw still for a
+     store nothing writes, which is a declaration nobody could have saved rather
+     than a refusal to retry. `useSetting`'s `set` hands that outcome back, so
+     the one hook every row already uses is also the one place to read whether a
+     write landed; nothing is added beside it. Every other caller was checked and
+     discards the answer — the generated toggle and select hand `set` straight to
+     a control whose prop returns nothing, the hands-free toggle and the two
+     model pickers `void` it — because the rollback and the toast are the whole
+     report for a control with no draft of its own. The button now reads Save /
+     Saving… / Saved, it is out of use while its write is in flight, "Saved" is
+     the server's answer rather than the click's, and — the rule slices 3, 4 and
+     7 settled — it is about the value that was SENT, so typing during the write
+     is not reported as stored.
+   - **Two overlapping own-route reads left the older answer in the record.**
+     Slice 2 recorded it and slice 4 restated it: the guard compared the value
+     before and after the read rather than ordering the requests, so an older
+     read that landed first won twice over — it wrote the stale value, and that
+     write then made the newer read's own answer look superseded.
+     `refreshOwnRouteSettings` now keeps a module-level sequence **per address**,
+     exactly as `saveSetting` keeps one per setting and `commitSettings` one per
+     destination, and an answer that is not the newest moves nothing. The
+     value-moved guard stays beside it, because the two catch different things:
+     a sequence cannot see a *write*, which is what slice 2 wrote it for.
 
 `GENERATED_TABS` in `src/client/stores/setting-values.ts` names the tabs whose
 rows are generated, and so exactly which settings the value record holds. While

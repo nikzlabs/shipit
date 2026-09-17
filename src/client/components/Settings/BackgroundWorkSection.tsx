@@ -146,7 +146,7 @@ export function BackgroundWorkSection({ settingKey }: { settingKey: SettingKey }
   const changeService = (service: ServiceChoice) => {
     const next = modelAfterServiceChange(currentModel, modelsOfService(models, service));
     if (!next) return;
-    set({ serviceId: next.serviceId, billingMode: next.billingMode, modelId: next.modelId });
+    void set({ serviceId: next.serviceId, billingMode: next.billingMode, modelId: next.modelId });
   };
 
   return (
@@ -235,7 +235,7 @@ export function BackgroundWorkSection({ settingKey }: { settingKey: SettingKey }
 
                   selected={current?.modelId === model.modelId}
                   onSelect={() =>
-                    { set({
+                    { void set({
                       serviceId: model.serviceId,
                       billingMode: model.billingMode,
                       modelId: model.modelId,
