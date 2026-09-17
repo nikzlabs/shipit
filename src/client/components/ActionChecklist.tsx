@@ -109,7 +109,11 @@ export function ActionChecklist({ items, selected, onToggle, ariaLabel, toggleHi
           <label
             key={item.key}
             title={toggleHint}
-            className={`flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors cursor-pointer ${
+            // `relative` contains the `sr-only` box below, which is absolutely
+            // positioned: with no containing block in the row it lands far down
+            // the page, and focusing it on click scrolls the chat column out of
+            // the window (planning#592).
+            className={`relative flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors cursor-pointer ${
               checked ? "bg-(--color-accent-subtle)" : "hover:bg-(--color-bg-hover)"
             }`}
           >
