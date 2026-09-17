@@ -1,14 +1,10 @@
 import { SettingsTabPane } from "../SettingsTabPane.js";
-import { DeclaredCommit } from "../DeclaredCommit.js";
 import { DeclaredSettings } from "../DeclaredSettings.js";
 
-/**
- * One declared row — the identity's name and email, which are one setting
- * because they are written together — and the Save that commits it.
- */
+/** One declared row: the identity's name and email, written together. */
 export function GitTab() {
   return (
-    <SettingsTabPane footer={<DeclaredCommit tab="git" />}>
+    <SettingsTabPane>
       <DeclaredSettings tab="git" />
     </SettingsTabPane>
   );

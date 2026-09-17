@@ -25,3 +25,6 @@ each, and the work is tracked on planning#580.
 - [x] 8 — Cleanup: the coverage walk and `data-setting` go
 - [x] The two runtime defects slice 8 recorded: `saveSetting` answers whether the
       write landed, and the own-route reads are ordered per address
+- [x] 9 — The last second edit against requirement 1: the renderer places the
+      tab's Save, and the `OWN_ROUTE_READERS` entry and the `ownedBy` prose are
+      decided rather than changed

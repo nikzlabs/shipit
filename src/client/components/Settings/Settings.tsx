@@ -80,7 +80,7 @@ export function Settings({
 
           {/* Right content area */}
           <TabsContent value="instructions">
-            <InstructionsTab onClose={onClose} />
+            <InstructionsTab />
           </TabsContent>
 
           <TabsContent value="skills">

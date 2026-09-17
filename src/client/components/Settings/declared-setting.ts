@@ -227,12 +227,19 @@ export interface PendingEdit {
   value: unknown;
 }
 
-/** Every uncommitted edit on one tab, in declaration order. */
+/**
+ * Every uncommitted edit on one tab that the tab's Save owns, in declaration
+ * order.
+ *
+ * A row naming a COMPONENT is not one: that component saves its own drafts, at
+ * its own address, so collecting them here would hand `commitSettings` two
+ * destinations and it refuses those by name.
+ */
 export function useTabDrafts(tab: SettingTab): readonly PendingEdit[] {
   const drafts = useSettingsStore((state) => state.settingDrafts);
   return GENERATED_SETTINGS.flatMap((declaration) => {
     const draft = drafts[declaration.key];
-    if (declaration.tab !== tab || !draft) return [];
+    if (declaration.tab !== tab || declaration.component !== undefined || !draft) return [];
     return [{ declaration, key: declaration.key as SettingKey, value: draft.value }];
   });
 }
