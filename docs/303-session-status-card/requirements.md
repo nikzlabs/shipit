@@ -257,11 +257,17 @@ taken inside one session, without building an agent that talks to many.
   them from every other ShipIt-started turn. Those stay checked: each was walked
   against the rule and tabulated in `plan.md`.
 
-  The stale **mark** follows the rule with the nudge — that half is his report's
-  own third candidate, which named a mark landing around a compaction as a defect
-  shape in its own right. A driver-owned turn keeps its existing split (not
-  nudged, because a git driver owns the interval, but still marked, because work
-  did happen). → req 14 amended to name the exception.
+  The stale **mark** follows the rule with the nudge. His words were about the
+  nudge, so he was asked: should a compaction still mark the card stale, for one
+  visual language with no exceptions, or leave it reading current because a
+  compaction cannot put the card behind? He chose the second. The argument put to
+  him was that the mark is inside his report rather than beside it — its own third
+  candidate named a mark landing around a compaction as a defect shape — and that
+  req 14's purpose, never presenting the card as current when it may be behind, is
+  preserved rather than weakened, since a compaction cannot put it behind. A
+  driver-owned turn keeps its existing split (not nudged, because a git driver
+  owns the interval, but still marked, because work did happen). → req 14 amended
+  to name the exception.
 
   Considered and rejected while writing the rule: treating a `/goal` command as
   the same class. It is delivered verbatim for the same reason a compaction is,
