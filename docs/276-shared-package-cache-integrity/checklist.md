@@ -1,8 +1,8 @@
 # Checklist — shared package cache integrity
 
 Implementation steps for [plan.md](./plan.md). The shape is now settled: Q1 and
-Q3 are closed by requirement 10 (2026-09-17) and Q2 is withdrawn. Only **Q4**
-remains open, and it gates only the sequencing guard at the end.
+Q3 are closed by requirement 10 (2026-09-17) and Q2 is withdrawn. **Q4 and Q5**
+remain open; Q4 gates only the sequencing guard at the end.
 
 ## Blocked on the requester
 
@@ -17,6 +17,10 @@ remains open, and it gates only the sequencing guard at the end.
       copy-on-write removes the disk, so the question no longer arises.
 - [ ] **Q4 answered** — hold `docs/266-orchestrator-git-trust-boundary` E4
       (req 8)?
+- [ ] **Q5 answered** — must the agent be able to edit files inside installed
+      packages? Promoted from prose under the old Q1 into a numbered question, so
+      it stops riding along in chat. Cheap to grant under options E/F (measured: a
+      64 KB copy-up), so it decides whether that is a requirement or a side effect.
 - [ ] Answers recorded as dated receipts under `## Resolved questions`, with the
       open-question bullets removed and any requirement change in the same diff.
 

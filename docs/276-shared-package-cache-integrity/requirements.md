@@ -6,10 +6,26 @@ description: What must be true so that a session cannot use a shared package cac
 
 # Requirements — shared package cache integrity
 
-Scoping doc for planning#414. The design lives in [plan.md](./plan.md) and is
-**not settled**: every open question below has to be answered first.
+Scoping doc for planning#414. The design lives in [plan.md](./plan.md). Two
+questions remain open below, and implementation waits on them.
 
 ## Context these requirements are written against
+
+**The problem in one paragraph.** To keep installs fast, sessions share one copy
+of downloaded packages on disk — the *actual files*, not copies. So a session that
+tampers with a shared file changes what other sessions run, and because the files
+are shared rather than copied this also reaches sessions that **already**
+installed, without them installing again. Running several sessions on one project
+is normal ShipIt use, and those sessions share the most.
+
+**The reach is not the same for every project type.** An npm or yarn project
+shares its download cache only with sessions of the *same* project, because the
+key already includes the project. A pnpm project shares its package store with
+**every pnpm project on the same ShipIt instance**, because the key is the runtime
+only. So a private project and an untrusted one, opened in two sessions, share one
+store if both use pnpm. A pnpm project gets the shared store only when it is
+repository-backed, is not an Ops session, and is detected as pnpm (a
+`packageManager` field, a pnpm install command, or a `pnpm-lock.yaml`).
 
 Sessions of the same repo share three caches so installs are fast:
 
@@ -101,99 +117,10 @@ the two directly-writable surfaces unless they name the base.
 
 ## Open questions
 
-**One decision is left: Q4.** Q1 and Q3 were closed by requirement 10, and Q2 is
-withdrawn — all three have dated receipts under Resolved questions. The reasoning
-and costs are in [plan.md](./plan.md). Q4 blocks implementation and may not be
-answered by inference.
-
-**The problem in one paragraph.** To keep installs fast, sessions share one copy
-of downloaded packages on disk. They share the *actual files*, not copies. So a
-session that tampers with a shared file changes what other sessions run — and
-because the files are shared rather than copied, this also hits sessions that
-**already** installed, without them installing again. Running several sessions
-on one project is normal ShipIt use, and those sessions share the most.
-
-**How far does it reach today?** Not equally:
-
-| Project type | What it shares | Who can affect it |
-|---|---|---|
-| npm / yarn | the download cache | **Only sessions of the same project.** The key already includes the project. |
-| pnpm | the package store | **Every pnpm project on the same ShipIt instance.** The key is the runtime only — there is no project in it. |
-
-So a private project and an untrusted one opened in another session share one
-store, if both use pnpm. A pnpm project gets the shared store only when it is
-repository-backed, is not an Ops session, and is detected as pnpm (a
-`packageManager` field, a pnpm install command, or a `pnpm-lock.yaml`).
-
-**Q1 is closed. See the 2026-09-17 receipt under Resolved questions.** The
-requester rejected both options it offered and restated the requirement: keep the
-space savings *and* stop sessions affecting each other. Measurement found a way to
-do both, so there is no longer a trade-off to choose between. The original text is
-kept below for provenance only — **do not answer it**.
-
-~~**Q1 — How much protection do you want?**~~
-
-- **(a) Contain it.** Give the pnpm store a project key, so it matches what npm
-  already does. A bad session then reaches only sessions of the *same project*,
-  instead of every project on the machine. Cheapest to build, uses more disk, and
-  it is **not a fix** — npm is already per-project and is still fully
-  exploitable. It leaves the common case open, since several sessions on one
-  project is normal use.
-- **(b) Give each session its own copy of installed packages.** Today sessions
-  share the actual files; this would give each session its own. Tampering then
-  cannot reach a session that already installed, and the agent keeps full control
-  of its own packages. **← recommended.** It does not stop a session installing
-  *fresh* from being handed a tampered package.
-
-  **Its disk cost depends on one thing, and you may get it for nearly free.**
-  Measured 2026-09-17: on the disk ShipIt uses today (ext4) this is a real copy —
-  about **1.8× the disk and 2× the install time**, the cost docs/198 was written
-  to remove. On a filesystem that supports **copy-on-write** (XFS with reflink,
-  or btrfs) the same setting keeps one copy of the bytes on disk and gives each
-  session only its own *reference* — isolation kept, disk given back. pnpm already
-  implements this (`package-import-method=clone`); it is one config value. The
-  catch is that it needs the data disk moved off ext4, which is a host migration,
-  and the saving itself is inferred from the mechanism rather than measured —
-  there is no reflink filesystem on this box to test against. See
-  [plan.md](./plan.md) option E.
-
-Both are compatible with requirement 9. Neither closes everything; what each does
-and does not close is the table in [plan.md](./plan.md).
-
-**Two other approaches were considered and are closed** — kept out of the choice
-above because they are no longer live, with the full reasoning in plan.md:
-"verify the packages at install time" (a check is only worth its expected value,
-and that value sits in the same writable place as the bytes), and "stop sessions
-writing the shared copy" (ruled out by requirement 9; its reshaped form was
-priced and refuted).
-
-**One thing requirement 9 did not settle.** You rejected "stop sessions writing"
-in response to a consequence about **editing files inside installed packages**,
-but stated the requirement as **running install commands**. Those are different
-capabilities. If the agent must also be able to edit a dependency in place — to
-debug it, or for `patch-package`-style fixes — say so, because it further
-constrains the answer. I have not assumed it.
-
-**Q2 is withdrawn — it should not have been asked.** It offered a lockfile
-requirement as protection for repos the real fix might not cover. Measured
-2026-09-17: the real fix covers them, including a repo with **no lockfile at all**,
-so the question buys nothing and would have cost a user-facing policy change. See
-the receipt under Resolved questions. **Do not answer it.**
-
-**Q3 is closed** by the same receipt — it existed only to ask whether per-session
-copying was worth its disk, and copy-on-write removes the disk. Kept for
-provenance; **do not answer it**.
-
-~~**Q3 — Does per-session copying conflict with the sharing rule you approved?**~~
-You approved a rule that sessions must keep sharing these copies so installs stay
-fast (`docs/270-per-session-worker-uids` req 9). My reading is that Q1 option (b)
-**does not break it literally** — the shared download store stays shared; what
-stops being shared is the installed files inside each project. But it spends the
-disk that rule's rationale was protecting, so the call is yours.
-
-- **(a) It is compatible; proceed.** **← recommended**, on the reading above.
-- **(b) It conflicts — do not spend that disk.** This leaves Q1 with only "contain
-  it", and the problem substantially open.
+**Two are left, and both are yours.** Q1, Q2 and Q3 are settled — see the dated
+receipts under [Resolved questions](#resolved-questions). Their text is not kept
+here: a question that has been answered is a receipt, not a question. Neither of
+the two below may be answered by inference, and both block implementation.
 
 **Q4 — Should we hold the other planned change?**
 A separate planned change (`docs/266-orchestrator-git-trust-boundary` E4) would
@@ -202,16 +129,39 @@ Those scripts run programs out of the project's installed packages — exactly t
 files this problem lets another session tamper with. So that change would turn
 "bad code sits on disk" into "bad code runs on a schedule ShipIt chose".
 
-- **(a) Hold it** until this is fixed. **← recommended.**
+- **(a) Hold it** until the H3 fix ships. **← recommended.**
 - **(b) Ship it with a safeguard** that keeps those programs out of reach. I have
   not verified this is possible, and common tools depend on that reach.
 - **(c) Ship it unchanged.** Not recommended.
 
+**Q5 — Must the agent be able to edit files inside installed packages?**
+Requirement 9 says the agent must be able to run `npm install`. You said that in
+response to a consequence about **editing a dependency in place** — to debug it,
+or for a `patch-package`-style fix — which is a different capability. I recorded
+only what you actually said, so this half is still unanswered.
+
+It is now cheap to grant: under the recommended design each session holds its own
+copy-on-write view, so such an edit is private to that session and was measured at
+a 64 KB copy-up. The answer therefore no longer constrains the design much — it
+decides whether that property is a **requirement** to preserve or a side effect we
+may trade away later.
+
+- **(a) Yes — the agent must be able to edit installed packages.** **← recommended**,
+  since you raised it and the design already allows it.
+- **(b) No — running install commands is enough.** One less capability to protect.
+
 ## Provenance
 
 Requirements 1–4 and 7 restate the problem or an already-approved requirement.
-Requirements 5, 6 and 8 were **supplied by the agent** and are the reason Q2 and
-Q4 exist — they are marked so a reviewer can see what a human did not say.
+Requirements 9 and 10 are the requester's, each with a dated receipt.
+
+Requirements **5, 6 and 8 were supplied by the agent**, and are marked so a
+reviewer can see what a human did not say. They are also why two questions existed:
+req 5 raised Q2 (now withdrawn, having been answered by measurement rather than by
+the requester) and req 8 raises Q4, which is still open. An agent-supplied
+requirement that generates a question for the requester deserves the most
+scepticism in review — it is the shape most likely to be a mechanism I chose
+wearing a requirement's clothes.
 
 Requirements 4, 5 and 6 exist because of tests run against this
 container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
@@ -289,15 +239,27 @@ option E:
   installed, and the data is still stored once.
 - Cost: **92 MB vs 91 MB** for a 3 353-file, 86 MB `node_modules` — about **1%**,
   being per-inode metadata. Not the ~1.8× a real copy costs.
-- The store stays shared and `pnpm install` is untouched, so **req 2 and req 9 both
-  hold** — which is why Q3 also goes away rather than being answered.
+- The store stays shared and `pnpm install` is untouched, so **req 2 and req 9
+  both hold**.
 
-Recorded as **requirement 10**. Two consequences are design matters for plan.md,
-not questions for the requester: the setting is `package-import-method=copy` (it
-reflinks automatically where the filesystem allows and never fails where it does
-not), and reflink cannot cross a filesystem boundary, so the state directory — the
-store *and* the workspaces — must sit on one reflink-capable filesystem. A loopback
-image supplies that without reformatting the host.
+**Q3 is closed by the same finding.** It asked whether giving each session its own
+copy conflicts with the sharing rule the requester approved
+(`docs/270-per-session-worker-uids` req 9), since that rule exists to protect the
+disk. Copy-on-write removes the disk cost, so there is no conflict left to rule on.
+
+Recorded as **requirement 10**. What follows from it is design, not further
+questions for the requester, and is worked out in plan.md:
+
+- The setting is `package-import-method=copy`. It reflinks automatically where the
+  filesystem allows and never fails where it does not, so it is correct on every
+  host and needs no second change later.
+- Reflink cannot cross a filesystem boundary, so where it is the mechanism, the
+  store and the workspaces must sit on one reflink-capable filesystem.
+- On a filesystem without reflink — ext4, which is what most laptop installs have —
+  **overlayfs** supplies the same property with no help from the filesystem at all
+  (plan.md option F). A loopback image was considered for this and **withdrawn**:
+  it needs privileges the orchestrator does not take, and ShipIt installs on
+  laptops.
 
 **2026-08-20 — the agent must keep being able to install packages.**
 Shown the measured consequences of Q1 option (c) ("stop sessions writing the
@@ -308,11 +270,13 @@ What this settles, and what it does not:
 
 - Option (c) **as originally written** is dead. It required a ShipIt-owned
   fetching step in place of the session's own install command.
-- It does **not** settle Q1. Three options remain, and (c) survives only in a
-  reshaped form where ShipIt mediates *fetching* invisibly and `npm install`
-  still works from the agent's point of view. That reshaping is unpriced.
+- It did **not** settle Q1, which stayed open until 2026-09-17 (see the receipt
+  above). The reshaped form of option (c) — ShipIt mediating *fetching* invisibly
+  so `npm install` still works from the agent's point of view — was later priced
+  as plan.md option D and **refuted**: the attacker writes the shared files
+  directly and never asks the registry.
 - The requester's words are about **running install commands**. They were said in
   response to a consequence about **editing files inside installed packages**,
-  which is a related but distinct capability. Requirement 9 is written to what
-  was actually said; the editing capability is asked about separately in Q1, and
-  is not assumed.
+  which is a related but distinct capability. Requirement 9 is written to what was
+  actually said; the editing capability is asked separately as **Q5** and is still
+  not assumed.
