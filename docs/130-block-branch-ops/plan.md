@@ -118,6 +118,49 @@ residual case is a user-typed turn on a session that merged mid-conversation,
 where nothing has refused and so nothing is being worked around. The same
 staleness already applies to `SHIPIT_AUTO_CREATE_PR`.
 
+### Third rule — a process test that matches its own command line
+
+Always on, and the only rule here that is not about `git`. The Bash tool runs a
+command as `bash -c '<the whole command>'`, so every literal in the command is
+part of the command line of the process running it — and `pgrep -f` / `pkill -f`
+match full command lines. A pattern written in the command therefore matches the
+shell running it, and the test can only ever be true.
+
+**Blocked:** a readable `pgrep -f` / `pkill -f` whose pattern, read as a regex,
+matches the command text it appears in. **Not blocked:** every form that
+excludes the caller (`-A`, `-P`, `-x`, `-v`, a uid or session filter), a bracket
+pattern (`'[v]itest'`) or an alternation that cannot match its own literal, a
+pattern only known at run time (`"$PAT"`), `pgrep` without `-f` (it matches a
+process *name*), an option the hook does not know, two operands, quoting that
+never closes, and a pattern this runtime does not read as a regex. The option
+list is an allowlist on purpose: only options that provably cannot change
+whether the caller matches are understood, and anything else means no judgement,
+because refusing the fix would be the worst outcome available.
+
+Quoting is the line between code and data, so a loop inside `printf '…'`, an
+`echo "…"` or a heredoc body is left alone; `#` comments are dropped for the
+same reason. The match itself runs under a 100 ms `vm.runInNewContext` deadline
+it is allowed to lose — `a(a+)+$` backtracks for seconds and a `try` cannot
+interrupt it, and a hook that stalls is the failure this rule exists to prevent.
+
+**Why it is not scoped to wait loops.** It first shipped judging only `until` /
+`while` conditions, after a loop ran 36 minutes against a test run that had
+already finished. The one-shot form was left alone on the reasoning that
+"matching itself costs one extra line of output". That was wrong, and a second
+incident refuted it: `pgrep -f` **exits 0** and `pgrep -fc` **counts 1** on the
+strength of the self-match, so a bare liveness check returns a wrong answer with
+nothing in the output to notice, and the agent told the user a suite was still
+running minutes after it finished. `pkill -f` is worse than wrong — measured
+here, it signals the shell running it, so the tool call dies part-way with no
+error. Dropping the loop scope also removed the code that found loop conditions:
+the rule judges the test, and a test that cannot change is broken with or
+without a loop around it.
+
+The refusal names the pattern and the ways out, and the escapes it recommends
+are escapes the hook actually leaves alone — pinned by a test, so the advice
+cannot drift from the behaviour. `pkill` gets a different message: the pgrep
+advice is all about waiting, and none of it applies to a kill.
+
 ### Wire-up — always-on settings file
 
 Previously `managed-settings.json` was passed to the Claude CLI only when
@@ -169,7 +212,7 @@ planning#267 additions:
 
 | Test | What it covers |
 |---|---|
-| `src/server/session/agent-shim/block-branch-ops.test.ts` | Runs the real hook with `node`: ~15 blocked forms (incl. compound commands, env prefixes, git global options), ~15 allowed forms, and fail-open cases. planning#267 adds the destructive-git matrix: blocked-when-armed, untouched-when-not, sandbox-exempt, `shipit branch reset-to-base` allowed, and branch ops still getting the branch-op message. |
+| `src/server/session/agent-shim/block-branch-ops.test.ts` | Runs the real hook with `node`: ~15 blocked forms (incl. compound commands, env prefixes, git global options), ~15 allowed forms, and fail-open cases. planning#267 adds the destructive-git matrix: blocked-when-armed, untouched-when-not, sandbox-exempt, `shipit branch reset-to-base` allowed, and branch ops still getting the branch-op message. The third rule adds its own matrix: self-matching loops **and** one-shot checks blocked, every caller-excluding form allowed, the two message variants, and the backtracking deadline. |
 | `src/server/orchestrator/session-agent-run-params.test.ts` | planning#267: the guard arms iff the session row carries `mergedHeadSha` (off when unmerged, cleared, missing, or sandbox). |
 | `src/server/orchestrator/agent-run-params-prep.test.ts` | planning#267: Claude's hook forwards `guardDestructiveGitActive` → `guardDestructiveGit`, defaulting false. |
 | `src/server/session/agents/claude/process.test.ts` | planning#267: `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` is set in the spawn env iff `guardDestructiveGit` is true. |

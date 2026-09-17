@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * ShipIt's PreToolUse guard for the Bash tool. It refuses two shapes: branch
- * changes and destructive git during merged-branch recovery, and a wait loop
- * whose own process pattern matches the command it is written in.
+ * changes and destructive git during merged-branch recovery, and a process
+ * test whose own pattern matches the command it is written in.
  */
 
 import { readFileSync } from "node:fs";
@@ -150,12 +150,16 @@ function offendsDestructive(seg) {
   return null;
 }
 
-// A wait loop whose own `pgrep -f` test can only ever be true. The Bash tool
-// runs a command as `bash -c '<the whole command>'`, so every literal in it is
-// part of the command line of the process running it, and `pgrep -f` matches
-// full command lines. What this judges is that test, not the loop's control
-// flow: a deadline or a `break` elsewhere can still end the loop, and the test
-// is broken either way.
+// A `pgrep -f` test that can only ever be true. The Bash tool runs a command
+// as `bash -c '<the whole command>'`, so every literal in it is part of the
+// command line of the process running it, and `pgrep -f` matches full command
+// lines. What this judges is the test alone — not a loop's control flow, and
+// not whether there is a loop at all. This first shipped scoped to `until` /
+// `while` conditions, on the reasoning that a one-shot listing "costs one
+// extra line of output". That reasoning was wrong and an incident refuted it:
+// `pgrep -f` exits 0 and `pgrep -fc` counts 1 when the job has finished, so a
+// bare liveness check returns a wrong answer with nothing to notice, and the
+// agent reported a test suite as still running minutes after it ended.
 
 /**
  * Options that cannot change whether the calling shell is among the matches.
@@ -214,6 +218,15 @@ function tokenize(text) {
       continue;
     }
     if (ch === "'" || ch === '"') { quote = ch; value ??= ""; quoted = true; continue; }
+    // Bash starts a comment at a `#` that begins a word, and `value === null`
+    // is exactly that position. Only the tokens are dropped: the comment text
+    // is still in the process's command line, so it stays matchable below.
+    if (ch === "#" && value === null) {
+      const nl = text.indexOf("\n", i);
+      if (nl === -1) break;
+      i = nl;
+      continue;
+    }
     if (/\s/.test(ch)) { push(); continue; }
     if (";|&()".includes(ch)) {
       push();
@@ -289,9 +302,9 @@ function fullCommandLinePattern(args, program) {
   return full && operands.length === 1 ? operands[0] : null;
 }
 
-/** Every readable `pgrep -f` / `pkill -f` pattern among these tokens. */
-function fullMatchPatterns(tokens) {
-  const patterns = [];
+/** Every readable `pgrep -f` / `pkill -f` invocation among these tokens. */
+function fullMatchInvocations(tokens) {
+  const found = [];
   for (let i = 0; i < tokens.length; i++) {
     // An absolute path still names the program, and so does a quoted one:
     // quoting stops `while` being a keyword, and does not stop `pgrep` being
@@ -301,25 +314,9 @@ function fullMatchPatterns(tokens) {
     const args = [];
     for (let j = i + 1; j < tokens.length && !endsArguments(tokens[j]); j++) args.push(tokens[j].value);
     const pattern = fullCommandLinePattern(args, program);
-    if (pattern !== null) patterns.push(pattern);
+    if (pattern !== null) found.push({ program, pattern });
   }
-  return patterns;
-}
-
-/**
- * The tokens of each `until` / `while` condition, up to that loop's `do`.
- * A quoted keyword is not a keyword — bash refuses `wh"ile" x; do y; done` as
- * a syntax error — so quoting is what separates a loop from a word about one.
- */
-function loopConditions(tokens) {
-  const out = [];
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].quoted || !/^(?:until|while)$/.test(tokens[i].value)) continue;
-    let end = i + 1;
-    while (end < tokens.length && !(!tokens[end].quoted && tokens[end].value === "do")) end++;
-    out.push(tokens.slice(i + 1, end));
-  }
-  return out;
+  return found;
 }
 
 // A pattern is the agent's own text rather than anything hostile, but
@@ -347,13 +344,11 @@ function matchesOwnCommand(pattern, line) {
   }
 }
 
-function offendsSelfMatchingWatcher(line) {
+function offendsSelfMatchingProcessTest(line) {
   const tokens = tokenize(withoutHeredocBodies(line));
   if (!tokens) return null;
-  for (const condition of loopConditions(tokens)) {
-    for (const pattern of fullMatchPatterns(condition)) {
-      if (matchesOwnCommand(pattern, line)) return pattern;
-    }
+  for (const found of fullMatchInvocations(tokens)) {
+    if (matchesOwnCommand(found.pattern, line)) return found;
   }
   return null;
 }
@@ -406,32 +401,53 @@ for (const seg of sandboxSession ? [] : segments(command)) {
 // and must not cost the git checks above either.
 let selfMatched = null;
 try {
-  selfMatched = offendsSelfMatchingWatcher(command);
+  selfMatched = offendsSelfMatchingProcessTest(command);
 } catch {
   selfMatched = null;
 }
 
 if (selfMatched) {
+  const consequence =
+    selfMatched.program === "pkill"
+      ? "This pattern matches ITSELF. `pkill` never signals its own process, but the " +
+        "shell running this command carries the same pattern, so this signals your own " +
+        "tool call. Measured in this harness: the command dies part-way through, with " +
+        "no error and no output after that point.\n"
+      : "This test matches ITSELF, so it is true whatever the processes are doing. It " +
+        "exits 0 and reports a match when the job you are asking about has already " +
+        "finished — `pgrep -fc` counts this shell as 1, and `-a` prints its command " +
+        "line among the results. A one-shot check therefore tells you work is still " +
+        "running when it is not, and a loop built on it waits for something that has " +
+        "already happened, or never notices that it did.\n";
+  const waysOut =
+    selfMatched.program === "pkill"
+      ? "Name the target in a way that cannot include you:\n" +
+        "     pkill -f '[v]itest run src/...'    # a pattern that cannot match itself\n" +
+        "     pkill -A -f 'vitest run src/...'   # ignore this shell's ancestors\n\n" +
+        "Better still, do not hunt for the process at all: a command started with the " +
+        "Bash tool's background mode can be stopped by the harness that started it.\n"
+      : "Three ways out, best first.\n\n" +
+        "1. Do not poll for work this harness already tracks. A command started with " +
+        "the Bash tool's background mode notifies you when it exits, so there is " +
+        "nothing to wait for.\n\n" +
+        "2. Wait on the artifact, not the process. Its output has a definite end " +
+        "state and matching it reads no process list at all:\n" +
+        "     until grep -qE '^(PASS|FAIL)' /tmp/run.log; do sleep 5; done\n\n" +
+        "3. If you must match processes, exclude yourself. Any of these is enough, " +
+        "and each is left alone here:\n" +
+        "     pgrep -A  -f 'vitest run src/...'   # ignore this shell's ancestors\n" +
+        "     pgrep -f '[v]itest run src/...'     # a pattern that cannot match itself\n\n" +
+        "If you do wait in a loop, bound it, so a mistake costs minutes and not the " +
+        "session:\n" +
+        "     timeout 600 bash -c 'until ...; done'\n";
   process.stderr.write(
-    `Blocked: this wait loop tests for \`${selfMatched}\`, which is text in this very command.\n\n` +
+    `Blocked: this \`${selfMatched.program} -f\` looks for \`${selfMatched.pattern}\`, ` +
+      "which is text in this very command.\n\n" +
       "The Bash tool runs a command as `bash -c '<the whole command>'`, so every " +
       "literal you write is part of the command line of the process that runs it — " +
-      "and `pgrep -f` matches full command lines. This test matches ITSELF, so it is " +
-      "true whatever the processes are doing: the loop waits for something that has " +
-      "already happened, or never notices that it did.\n\n" +
-      "Three ways out, best first.\n\n" +
-      "1. Do not poll for work this harness already tracks. A command started with " +
-      "the Bash tool's background mode notifies you when it exits, so there is " +
-      "nothing to wait for.\n\n" +
-      "2. Wait on the artifact, not the process. Its output has a definite end " +
-      "state and matching it reads no process list at all:\n" +
-      "     until grep -qE '^(PASS|FAIL)' /tmp/run.log; do sleep 5; done\n\n" +
-      "3. If you must match processes, exclude yourself. Any of these is enough, " +
-      "and each is left alone here:\n" +
-      "     pgrep -A  -f 'vitest run src/...'   # ignore this shell's ancestors\n" +
-      "     pgrep -f '[v]itest run src/...'     # a pattern that cannot match itself\n\n" +
-      "Bound the wait either way, so a mistake costs minutes and not the session:\n" +
-      "     timeout 600 bash -c 'until ...; done'\n",
+      `and \`${selfMatched.program} -f\` matches full command lines. ` +
+      `${consequence}\n` +
+      waysOut,
   );
   process.exit(2);
 }

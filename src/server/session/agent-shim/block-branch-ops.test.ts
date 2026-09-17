@@ -241,11 +241,11 @@ describe("block-branch-ops.mjs", () => {
   });
 
   /**
-   * A wait loop whose own `pgrep -f` test can only be true. The Bash tool runs
-   * a command as `bash -c '<the whole command>'`, so the pattern is part of the
-   * command line the test is searching.
+   * A `pgrep -f` test that can only be true. The Bash tool runs a command as
+   * `bash -c '<the whole command>'`, so the pattern is part of the command line
+   * the test is searching.
    */
-  describe("refuses a wait loop whose process test matches its own command line", () => {
+  describe("refuses a process test that matches its own command line", () => {
     const JOB = "some_job_name";
     const blocked = [
       // The incident, verbatim.
@@ -264,6 +264,21 @@ describe("block-branch-ops.mjs", () => {
       // Quoting a command NAME does not stop it running — bash runs `"echo" x`
       // — even though quoting a keyword does stop it being one.
       `until ! "pgrep" -f ${JOB}; do sleep 1; done`,
+      // A one-shot liveness check, the shape this guard first let through. Each
+      // of these answers "is it still running?" with yes, whatever is running:
+      // `-a` prints this shell's own command line, `-c` counts it, and a bare
+      // `pgrep -f` exits 0 on the strength of it.
+      `pgrep -fa "${JOB}"`,
+      `pgrep -fc '${JOB}'`,
+      `pgrep -f ${JOB} && echo "still running"`,
+      `if pgrep -f ${JOB}; then echo busy; else echo idle; fi`,
+      // A command substitution puts the same text in a second process's argv,
+      // which is why the count comes back 2 rather than 1. Inside double quotes
+      // the same substitution reads as data here and is missed; that is the
+      // standing trade — a miss costs nothing a refusal would have saved.
+      `N=$(pgrep -fc ${JOB}); echo $N`,
+      // Killing what you cannot exclude: this signals the shell running it.
+      `pkill -f "${JOB}"`,
     ];
     for (const command of blocked) {
       it(`blocks: ${command.slice(0, 58)}`, () => {
@@ -292,6 +307,22 @@ describe("block-branch-ops.mjs", () => {
       // Both escapes it names must be escapes this hook actually leaves alone.
       expect(r.stderr).toContain("pgrep -A");
       expect(r.stderr).toContain("[v]itest");
+    });
+
+    it("tells a one-shot check what it got wrong, which is the answer and not a hang", () => {
+      const r = runHook(bash('pgrep -fa "my-job"'));
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("`my-job`");
+      expect(r.stderr).toContain("has already finished");
+      expect(r.stderr).toContain("[v]itest");
+    });
+
+    it("tells pkill it signals its own shell, not that it waits too long", () => {
+      const r = runHook(bash('pkill -f "my-job"'));
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("signals your own");
+      // The pgrep advice is about waiting, and none of it applies to a kill.
+      expect(r.stderr).not.toContain("Wait on the artifact");
     });
 
     it("applies to a sandbox session, whose branch exemption is not about this", () => {
@@ -331,9 +362,13 @@ describe("block-branch-ops.mjs", () => {
       'until ! pgrep -f "npm (run|test)"; do sleep 1; done',
       // Nothing literal to match: the pattern is not known until it runs.
       `PAT=vitest; until ! pgrep -f "$PAT"; do sleep 1; done`,
-      // Listing processes to read them is not a loop, and matching itself there
-      // costs one extra line of output.
-      'pgrep -af "vitest|tsc --noEmit|eslint"',
+      // An alternation is still a pattern that does not match its own literal,
+      // so this listing reads real processes and only real ones. The one-shot
+      // `pgrep -af` that DOES match itself is in the blocked set above.
+      'pgrep -af "(vitest|eslint) --fix-nothing"',
+      // A `#` comment is not code. Reading it as code would refuse this the
+      // moment the scan stopped being scoped to loop conditions.
+      "npm test # if it hangs, check with pgrep -f myjob",
       // The shape the refusal recommends instead.
       "until grep -qE '^(PASS|FAIL)' /tmp/out.log; do sleep 5; done",
       "until [ -f /tmp/done ]; do sleep 1; done",
@@ -344,9 +379,6 @@ describe("block-branch-ops.mjs", () => {
       // pgrep takes exactly one pattern. Two operands is a command it would
       // reject itself, and picking one of them would be a guess.
       `until ! pgrep -f ${JOB} second_operand; do sleep 1; done`,
-      // A quoted keyword is not a keyword: bash refuses `wh"ile" x; do y; done`
-      // outright, so this is not a loop and nothing here judges it as one.
-      `wh"ile" pgrep -f ${JOB}; do sleep 1; done`,
       // Shapes this cannot read, where a guess would refuse correct work: an
       // option it does not know, quoting that never closes, and a pattern the
       // runtime does not read as a regex.
