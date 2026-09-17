@@ -197,9 +197,12 @@ before the first action is dropped. `lead: 0` makes an action look instant.
 
 The driver's clock is not the video's. `cut.sh` reads `run.json` beside the beat
 log, runs `ffmpeg -vf blackdetect` on the recording to find where the driver's
-black splash ends, and passes `--anchor-wall`/`--anchor-video` (plus the ffprobe
-duration) to `cut-plan.mjs`, which shifts the slices by the difference and clips
-them to the file. A `run.json` with an anchor that cannot be found in the file
+black splash ends — the driver flips it white itself before navigating, so that
+edge is its own paint, not the instance's first one — and passes
+`--anchor-wall`/`--anchor-video` (plus the ffprobe duration) to `cut-plan.mjs`,
+which shifts the slices by the difference and clips them to the file.
+`clock-probe.mjs <out-dir>` records a stamped sequence of repaints for checking
+how far the video's clock sits from the driver's (one frame, measured). A `run.json` with an anchor that cannot be found in the file
 fails the cut; `CUT_UNANCHORED=1` overrides, falling back to `wallDuration −
 duration` with a warning. `FFPROBE=<path>` overrides the probe (default: beside
 `$FFMPEG`, else on PATH).

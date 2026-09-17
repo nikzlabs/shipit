@@ -54,6 +54,24 @@ describe("planSlices", () => {
     expect(() => beatSlices([{ id: "prompt", actionAt: 10, readyAt: 22 }], story.beats)).toThrow(/sentAt/);
   });
 
+  it("refuses a type beat whose send comes sooner after the previous hold than its lead", () => {
+    // Take 2 of website-hero (2026-09-17): a 77-character prompt typed in 3.8 s
+    // under a 5 s lead put 1.18 s of the lead inside the previous hold, and the
+    // merged cut came out 34.8 s instead of 36. The driver now pauses before
+    // the send; a log without that pause is refused rather than cut short.
+    const story = storyboard([{ id: "work", lead: 6, hold: 6 }, { id: "prompt", type: "Dark mode", lead: 5, hold: 6 }]);
+    const early = [
+      { id: "work", actionAt: 10, readyAt: 20 },
+      { id: "prompt", actionAt: 26.01, sentAt: 29.8, readyAt: 80 },
+    ];
+    expect(() => beatSlices(early, story.beats)).toThrow(/prompt: its send at 29.8s is only 3.800s after the previous hold ended \(26s\), less than its lead \(5s\)/);
+    const paused = [
+      { id: "work", actionAt: 10, readyAt: 20 },
+      { id: "prompt", actionAt: 26.01, sentAt: 31.01, readyAt: 80 },
+    ];
+    expect(keptSeconds(planSlices(paused, story))).toBe(23);
+  });
+
   it("a fast beat costs the same as a slow one: Σ(lead + hold) is the budget either way", () => {
     const story = storyboard([{ id: "merge", lead: 3, hold: 4 }]);
     const fast = planSlices([{ id: "merge", actionAt: 100, readyAt: 102 }], story);
