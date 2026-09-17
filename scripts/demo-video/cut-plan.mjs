@@ -80,6 +80,11 @@ export function beatSlices(beatLog, storyboardBeats) {
         }
         leadEnd = beat.sentAt;
         leadStart = leadEnd - story.lead;
+        if (previousHoldEnd !== null && leadStart < previousHoldEnd - EPSILON) {
+          throw new Error(
+            `beat ${beat.id}: its send at ${beat.sentAt}s is only ${(beat.sentAt - previousHoldEnd).toFixed(3)}s after the previous hold ended (${previousHoldEnd}s), less than its lead (${story.lead}s), so the lead would reuse held footage and the cut would come out short. The driver pauses a short prompt before sending; this log is from one that did not.`,
+          );
+        }
       } else {
         leadStart = beat.actionAt;
         leadEnd = leadStart + story.lead;

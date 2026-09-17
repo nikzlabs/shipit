@@ -582,13 +582,19 @@ class Driver {
     return this.page.locator(S.transcript).first().locator(S.assistantMessage).count();
   }
 
-  async typeAndSend(text) {
+  async typeAndSend(text, { sendNotBefore = 0 } = {}) {
     const cps = this.sb.pace?.typingCharsPerSecond ?? DEFAULT_TYPING_CPS;
     const input = this.page.locator(S.composerInput).first();
     await this.click(input);
     await input.pressSequentially(text, { delay: 1000 / cps });
     const send = this.page.locator(S.sendButton).first();
     await until(() => send.isEnabled(), { ceilingMs: this.ceilingMs, what: "send button enabled" });
+    // A prompt shorter than the lead pauses, typed, before the send: the cut
+    // keeps the `lead` seconds before the send, so without this the lead
+    // would reach back into the previous beat's hold and the take would come
+    // out short by that much.
+    const pauseMs = (sendNotBefore - this.t()) * 1000;
+    if (pauseMs > 0) await this.page.waitForTimeout(pauseMs);
     // The baseline `turn: finished` compares against: the reply to this send
     // is a new assistant group. Counted before the click so a fast turn that
     // is over before the first poll still reads as finished — the transient
@@ -739,7 +745,7 @@ class Driver {
       // (`beatSlices`), so the prompt being typed is on camera (req 8a)
       // whatever the typing took; `actionAt` is the first keystroke.
       actionAt = this.t();
-      await this.typeAndSend(beat.type);
+      await this.typeAndSend(beat.type, { sendNotBefore: actionAt + beat.lead });
       sentAt = this.t();
     }
     if (pending) await pending;
@@ -788,16 +794,21 @@ export async function run(opts) {
   let anchorWallAt = null;
   let wallDuration = null;
   try {
-    // The anchor (plan §4): a black splash, painted and held, then the
-    // navigation — the first non-black frame in the recording is the first
-    // paint after `anchorWallAt`, so the cut step can put the driver's clock
-    // and the video's side by side. Stamped immediately before the goto, and
-    // the goto returns on commit, not on load: nothing runs between the stamp
-    // and the paint that would widen the gap.
+    // The anchor (plan §4): a black splash, painted and held, then flipped
+    // white by the driver itself and held again before the navigation — the
+    // first non-black frame in the recording is that flip, so the cut step
+    // can put the driver's clock and the video's side by side. The flip is
+    // the driver's own paint: stamping before the goto instead put the
+    // instance's first paint on film as the anchor, 0.4–1.1 s late (the
+    // take-2 cut of 2026-09-17 held on a keystroke that was never meant to be
+    // in it), while a paint the driver owns lands within a frame.
     await page.setContent('<body style="margin:0;background:#000"></body>');
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     await page.waitForTimeout(SPLASH_MS);
     anchorWallAt = driver.t();
+    await page.evaluate(() => { document.body.style.background = "#fff"; });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await page.waitForTimeout(ANCHOR_HOLD_MS);
     await page.goto(opts.instance, { waitUntil: "commit" });
     if (sb.cursor !== false) await page.mouse.move(driver.pointer.x, driver.pointer.y);
     // Each beat records through its own hold (`runBeat`), so the last beat's
