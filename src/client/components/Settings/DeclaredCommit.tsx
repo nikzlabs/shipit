@@ -59,7 +59,6 @@ export function DeclaredCommit({ tab }: { tab: SettingTab }) {
       onClick={() => { void commit(); }}
       disabled={disabled}
       className="rounded-md"
-      data-testid="declared-commit"
     >
       {saved && pending.length === 0 ? "Saved" : "Save"}
     </Button>

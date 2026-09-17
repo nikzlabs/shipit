@@ -228,16 +228,12 @@ export interface PendingEdit {
 }
 
 /**
- * Every uncommitted edit on one tab that the tab's Save is the owner of, in
- * declaration order.
+ * Every uncommitted edit on one tab that the tab's Save owns, in declaration
+ * order.
  *
- * **A row naming a COMPONENT is not one**, and that is the same exclusion the
- * renderer makes when it decides to place a Save at all: a component that holds
- * drafts owns both halves of its own commit — the voice webhook's url and token
- * are one credential at one address, saved by its own button (plan.md → Slices
- * → 4). Collecting one here would hand `commitSettings` two destinations at
- * once, which it refuses by name, so the tab's own row would stop saving the
- * moment a component on the same tab had been typed in.
+ * A row naming a COMPONENT is not one: that component saves its own drafts, at
+ * its own address, so collecting them here would hand `commitSettings` two
+ * destinations and it refuses those by name.
  */
 export function useTabDrafts(tab: SettingTab): readonly PendingEdit[] {
   const drafts = useSettingsStore((state) => state.settingDrafts);

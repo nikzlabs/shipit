@@ -172,10 +172,7 @@ interface Control {
   render: (key: SettingKey) => ReactNode;
   /**
    * The control holds a draft and is stored by the tab's Save rather than on
-   * change (inventory.md P5) — which is what tells the renderer to place one.
-   * It rides on the entry so that a control and its commit mode are written in
-   * one place; a new draft-holding control that omits it renders a box nobody
-   * can save, and nothing outside this table would say so.
+   * change (inventory.md P5), which is what tells the renderer to place one.
    */
   commitsOnButton?: true;
 }

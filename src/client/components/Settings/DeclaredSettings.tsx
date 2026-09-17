@@ -53,11 +53,8 @@ interface Group {
 }
 
 /**
- * Whether this tab has a row the tab's Save is the owner of.
- *
- * A row naming a component is excluded, whatever its kind — a component that
- * holds drafts owns its own commit, and `useTabDrafts` leaves those alone for
- * the same reason.
+ * Whether this tab has a row the tab's Save owns. A row naming a component is
+ * excluded whatever its kind, which is the exclusion `useTabDrafts` makes too.
  */
 function needsCommit(tab: SettingTab): boolean {
   return GENERATED_SETTINGS.some(

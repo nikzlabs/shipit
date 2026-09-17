@@ -922,54 +922,46 @@ existing one or renders a row that cannot save.
      a sequence cannot see a *write*, which is what slice 2 wrote it for.
 9. **The last second edit** (req 1). A `text` row over `system-prompt-file`
    used to need a `<DeclaredCommit tab="…"/>` in whichever tab file rendered it,
-   and a tab file that had none rendered a textarea nobody could save, with
+   so a tab file that had none rendered a textarea nobody could save, with
    nothing to say so. **`DeclaredSettings` places it now**, and no tab file
-   does. It has to be the renderer: that component is the only thing every
-   generated tab has, so a tab file and `SettingsTabPane` alike are conventions
-   a new tab can skip — and nine tabs of twelve hand-roll their container rather
-   than using the pane. Refusing to render such a row instead would have stopped
-   the silent failure and left the second edit standing.
+   does: that component is the only thing every generated tab has, so a tab file
+   and `SettingsTabPane` alike are conventions a new tab can skip — and nine
+   tabs of twelve hand-roll their container rather than using the pane.
+   Refusing to render such a row instead would have stopped the silent failure
+   and left the second edit standing.
 
-   **What the tab's Save owns is the same set the renderer counts**, and review
-   found the two disagreeing: `useTabDrafts` collected every draft on the tab,
-   so a prompt row on a tab with the voice webhook would have handed
-   `commitSettings` two destinations — refused by name, with neither row saved.
-   A component that holds drafts owns its own commit (slice 4), so the
-   collection excludes them, exactly as the placement does.
+   **What the tab's Save collects is the same set the renderer counts.**
+   `useTabDrafts` excludes a draft belonging to a declaration that names a
+   component, because that component owns its own commit (slice 4); collecting
+   one would hand `commitSettings` two destinations, which it refuses by name,
+   and the tab's own row would stop saving.
 
    **The cost is where the button sits**, and it is the trade slice 8 took for
    the secrets Save: the last thing in the tab's scroll area, sticking to the
    bottom of it, rather than a pinned footer outside it. The offsets are
    negative because a sticky `bottom-0` stops at the CONTENT box, which would
-   leave the tab's bottom padding of content showing under the bar. With a short
+   leave the tab's bottom padding of content showing under the bar. On a short
    tab (Git) it sits under the fields rather than at the dialog's bottom edge.
 
-   Three consequences, all knowingly taken. The Instructions tab's **Cancel is
+   Two consequences, both knowingly taken. The Instructions tab's **Cancel is
    gone** — a footer holding it alone would have been a second bar under the
    first, and the dialog's close and Escape do what it did, drafts dropped and
-   all; it was the only Cancel in either dialog. The built-in instructions are
-   the toggle's **`rowNote`** now, so they sit under the control that enables
-   them and above the bar rather than behind it — which is where P12 wanted them
-   and could not put them until slice 4 built the prop. And
-   **`SettingsTabPane`'s `footer` slot is gone** with its only two callers.
+   all. And the built-in instructions are the toggle's **`rowNote`**, so they
+   sit under the control that shows them rather than after the bar.
 
-   Which kinds need a Save is a field on the **control-table entry**
-   (`commitsOnButton`) rather than a set beside the table, so a kind's control
-   and its commit mode are written in one place. It is not a proof: a new
-   draft-holding control that omits the flag would still render a box nobody can
-   save, and nothing outside that table would say so.
+   Which kinds need a Save is a field on the control-table entry
+   (`commitsOnButton`), so a kind's control and its commit mode are written in
+   one place; a new draft-holding control that omits it would still render a box
+   nobody can save.
 
-   **Two things were weighed and deliberately not changed.** A new `own-route`
-   declaration still owes the agent's read an entry in `OWN_ROUTE_READERS` — a
-   real second file, and the one exception left to "no second file has to be
-   touched". It stays because it is a **compile error**, reproduced rather than
-   assumed: a probe declaration with no reader fails `npm run typecheck` with
-   `TS2741` at `services/settings-read.ts:312`, naming the missing key. Deriving
-   it would mean a declaration saying how to READ its own route, which is the
-   field slice 2 refused. And the `ownedBy` prose is not reopened: slices 6a and
-   7 each refused to make it machine-readable under requirement 5 — the path
-   needs interpolation, the GET half does not exist, and the value still could
-   not enter the record — and nothing here found anything they had not weighed.
+   **One second edit remains and is deliberate.** A new `own-route` declaration
+   owes the agent's read an entry in `OWN_ROUTE_READERS`. It stays because it is
+   a **compile error**, reproduced rather than assumed: a probe declaration with
+   no reader fails `npm run typecheck` with `TS2741` at
+   `services/settings-read.ts:312`, naming the missing key. Deriving it would
+   mean a declaration saying how to READ its own route, which is the field slice
+   2 refused. The `ownedBy` prose stays for the reasons slices 6a and 7 gave,
+   which still hold.
 
 `GENERATED_TABS` in `src/client/stores/setting-values.ts` names the tabs whose
 rows are generated, and so exactly which settings the value record holds. While

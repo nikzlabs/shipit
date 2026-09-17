@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DeclaredSettings, controlFor } from "./DeclaredSettings.js";
+import { CONTROLS } from "./declared-controls.js";
 import { resetDeclaredSaves } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useRepoStore } from "../../stores/repo-store.js";
@@ -275,21 +276,38 @@ describe("every generated row has a control", () => {
 /**
  * The Save a draft-holding row needs is the RENDERER's, and no tab file places
  * one (req 1). Rendering the block ALONE is what says so: there is no tab file
- * on screen to have supplied it.
+ * on screen to have supplied it, and the tabs are taken from the catalogue
+ * rather than named here, so a prompt row declared on a third tab tomorrow is
+ * checked the day it is declared. What that cannot distinguish is a renderer
+ * that hard-codes today's two tabs, since the derived list IS those two: the
+ * dogfood run in the pull request, which declared a prompt row on Advanced and
+ * watched the Save appear, is the evidence for that half.
  */
 describe("the Save a tab's drafts need", () => {
-  const commit = () => screen.queryByTestId("declared-commit");
+  const commit = () => screen.queryByRole("button", { name: "Save" });
+  const OWN_ROWS = GENERATED_SETTINGS.filter(
+    (d) => d.component === undefined && CONTROLS[d.type.kind]?.commitsOnButton === true,
+  );
 
-  it.each(["instructions", "git"] as const)("is placed by the renderer on the %s tab", (tab) => {
+  it.each([...new Set(OWN_ROWS.map((d) => d.tab))])("is placed on the %s tab", (tab) => {
     render(<DeclaredSettings tab={tab} />);
     expect(commit()).toBeInTheDocument();
   });
 
-  // Advanced has no row the renderer gives a draft-holding control to. It does
-  // have a component with a Save of its own — which is exactly what this must
-  // not count, since that component stores its value itself.
-  it("is absent from a tab with no draft-holding generated row", () => {
-    render(<DeclaredSettings tab="advanced" />);
+  /*
+    Voice is the negative case worth having. Its webhook rows are `text` — the
+    kind that DOES commit on a button — and they name a component, which saves
+    them itself at its own address. So a tab Save here would both be pointless
+    and, once it collected those drafts, refuse its own write for naming two
+    destinations.
+  */
+  it("is absent from a tab whose only draft-holding rows name a component", () => {
+    expect(GENERATED_SETTINGS.some(
+      (d) => d.tab === "voice" && d.component !== undefined
+        && CONTROLS[d.type.kind]?.commitsOnButton === true,
+    )).toBe(true);
+
+    render(<DeclaredSettings tab="voice" />);
     expect(commit()).toBeNull();
   });
 });

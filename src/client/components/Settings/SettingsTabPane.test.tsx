@@ -2,11 +2,11 @@
  * A tab's Save must stay in sight however long the form gets. It used to do so
  * by sitting OUTSIDE the scrolling body, in this pane's footer; the renderer
  * places it now, so it lives INSIDE the scroll area and sticks to the bottom of
- * it. The rendered tabs are here rather than in the renderer's own tests because
- * what is being checked is the pane the block sits in.
+ * it.
  *
- * Sticking is the one thing jsdom cannot measure, so the bar is asserted rather
- * than the position it produces.
+ * jsdom measures no layout, so what is checked here is that the bar is in the
+ * scrolling body and carries the offsets that stick it — not that it ends up
+ * visible, which was checked in a browser.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -43,12 +43,8 @@ describe("tab Save buttons stay in sight", () => {
     expect(barOf().className).toContain("-bottom-4");
   });
 
-  /*
-    The bar covers whatever follows it for the length of the scroll, so the
-    built-in instructions — the one thing on either tab that used to — are the
-    toggle's own row note now, under the control that enables them and above the
-    bar rather than below it.
-  */
+  // The built-in instructions are the toggle's own row note, so they sit under
+  // the control that shows them and inside the block rather than after the bar.
   it("comes after the built-in instructions, which sit under their toggle", () => {
     useSettingsStore.setState({ agentSystemInstructions: "Built-in context." });
     render(<InstructionsTab />);
