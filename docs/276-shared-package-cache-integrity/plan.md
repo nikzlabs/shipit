@@ -338,18 +338,26 @@ failed to import "<store>/v11/files/12/8ac153…" to
 `clone-or-copy` is the safe spelling: it falls back to a full copy, and on ext4 it
 measured **identical to `copy`** in both disk and behaviour.
 
-| import method | inode shared with store | store poisoning reaches installed files | combined disk (dedup) | warm install |
+| import method | inode shared with store | store poisoning reaches installed files | combined disk (dedup) | warm install (mean of 5) |
 |---|---|---|---|---|
-| `hardlink` *(today)* | yes (`links=2`) | **yes — H3 open** | 6 184 KB | 147 ms |
+| `hardlink` *(today)* | yes (`links=2`) | **yes — H3 open** | 6 180 KB | 170 ms |
 | `clone` | — | — | **install fails (ENOTSUP)** | — |
-| `clone-or-copy` | no | **no — H3 closed** | 11 160 KB | 308 ms |
-| `copy` | no | **no — H3 closed** | 11 160 KB | — |
+| `clone-or-copy` | no | **no — H3 closed** | 11 160 KB | 173 ms |
+| `copy` | no | **no — H3 closed** | 11 160 KB | 180 ms |
 
 One package (`lodash`), so read the ratios, not the absolutes: closing H3 on ext4
-costs **~1.8× the combined disk and ~2× the warm install**. `du` over
-`node_modules` alone hides this — it counts hardlinked blocks — so the numbers
-above are a single `du` run across store **and** `node_modules`, which dedups by
-inode.
+costs **~1.8× the combined disk**. `du` over `node_modules` alone hides this —
+it counts hardlinked blocks — so the numbers above are a single `du` run across
+store **and** `node_modules`, which dedups by inode.
+
+**The install-time cost is not real.** An earlier draft of this section reported
+`copy` at roughly **2× hardlink** (147 ms vs 308 ms). That was a single-shot
+measurement and it does not reproduce: over five runs each, hardlink averaged
+**170 ms** and copy **180 ms**, a ~6% gap inside the run-to-run spread
+(158–195 ms vs 161–212 ms). Req 7 is therefore **not** in tension with closing
+H3 — only disk is. Recorded rather than silently fixed, because a single
+favourable sample promoted to a stated cost is the same mistake this doc has
+already made twice about pnpm's verification.
 
 **What a reflink filesystem would change.** XFS with `reflink=1` (the mkfs default
 since xfsprogs 5.x) or btrfs would make the third row cost roughly the *first*
