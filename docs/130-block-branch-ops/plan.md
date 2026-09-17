@@ -124,7 +124,18 @@ Always on, and the only rule here that is not about `git`. The Bash tool runs a
 command as `bash -c '<the whole command>'`, so every literal in the command is
 part of the command line of the process running it — and `pgrep -f` / `pkill -f`
 match full command lines. A pattern written in the command therefore matches the
-shell running it, and the test can only ever be true.
+shell running it.
+
+**The precise claim, because a looser one is false.** This holds while that
+shell is still alive to be matched, and here it always is: the harness appends
+`&& pwd -P >| /tmp/claude-<id>-cwd`, so the agent's command is never the last
+thing the shell does. Measured — `bash -c 'pgrep -fc UNIQUE'` alone reports **0**,
+because bash `exec`s the final external command and replaces itself, while
+`bash -c 'pgrep -fc UNIQUE; echo done'` reports **1**. So the rule rests on the
+wrapper's trailing command, which is a property of the harness rather than a law
+about shells, and it is worth knowing that the upstream fix this repository
+cannot make — keeping the command text out of the wrapper's argv — would retire
+this rule rather than change it.
 
 **Blocked:** a readable `pgrep -f` / `pkill -f` whose pattern, read as a regex,
 matches the command text it appears in. **Not blocked:** every form that
@@ -170,10 +181,25 @@ because a loop condition is a small, tidy region and the whole command is not:
   declined rather than judged. Which letter escapes actually agree is a libc
   detail — measured here, glibc's ERE does support `\w` — so the class is
   declined whole and only misses are paid.
-- **A pipe means someone else reads the result.** `pgrep -af x | grep -v '[p]grep'`
-  filters the wrapper back out and is correct; no reading of the filter is
-  anything but a guess. Every shape that caused an incident — a bare check, a
-  count, `$(…)`, a kill — reaches no pipe.
+- **A pipe means someone else reads the result — for `pgrep` only.**
+  `pgrep -af x | grep -v '[p]grep'` filters the wrapper back out and is correct,
+  and no reading of the filter is anything but a guess. `pkill` is not exempt:
+  the signal is sent before anything downstream sees a byte, and
+  `pkill -f <self-matching> | cat` was measured still killing the shell.
+- **Quoting is read as bash reads it, not approximately.** Inside double quotes
+  a backslash survives unless it escapes ``$ ` " \`` or a newline, so
+  `"job\.js"` reaches `pgrep` as a literal dot; consuming it made the dot match
+  anything and refused a correct command. A heredoc delimiter may be quoted,
+  backslash-escaped or carry a hyphen, and one line may open two — each missed
+  delimiter read a `cat`'s data as commands.
+- **An opening `^` anchor cannot be judged from the submitted text.** The real
+  argv starts with the wrapper, so `^pgrep…` never matches it, while the text
+  the hook holds does start with `pgrep`. Declined.
+
+The second and third of these were found by successive reviews asked to hunt for
+false refusals, which is the standing lesson: the refusal is cheap to get wrong
+in a direction nobody sees, because a refused agent rewrites its command and
+moves on.
 
 **Why it is not scoped to wait loops.** It first shipped judging only `until` /
 `while` conditions, after a loop ran 36 minutes against a test run that had

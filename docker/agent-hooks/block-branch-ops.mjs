@@ -179,15 +179,21 @@ const HARMLESS_SHORT_WITH_VALUE = new Set(["d"]);
 /** A heredoc body is data the shell feeds a program, never something it runs. */
 function withoutHeredocBodies(line) {
   const kept = [];
+  // A delimiter may be quoted, backslash-escaped, or carry characters a bare
+  // identifier cannot (`<<"END-TEXT"`), and one line may open several. Missing
+  // any of those read the body as commands and refused a `cat`. `<<<` is a
+  // herestring and opens nothing, which every branch here declines to match.
+  const OPENER = /<<-?[ \t]*(?:'([^']*)'|"([^"]*)"|\\([^\s;|&<>]+)|([A-Za-z_][A-Za-z0-9_-]*))/g;
+  const pending = [];
   let terminator = null;
   for (const one of line.split("\n")) {
     if (terminator !== null) {
-      if (one.trim() === terminator) terminator = null;
+      if (one.trim() === terminator) terminator = pending.shift() ?? null;
       continue;
     }
     kept.push(one);
-    const opener = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(one);
-    if (opener) terminator = opener[2];
+    for (const m of one.matchAll(OPENER)) pending.push(m[1] ?? m[2] ?? m[3] ?? m[4]);
+    if (pending.length) terminator = pending.shift();
   }
   return kept.join("\n");
 }
@@ -210,13 +216,16 @@ function tokenize(text) {
   const push = () => {
     if (value !== null) {
       tokens.push({ value, quoted, command: atCommandStart });
-      // An env assignment and a reserved word both leave the next word in
-      // command position; anything else is a command, and what follows is its
-      // arguments. A redirection is neither, and keeps nothing.
+      // An env assignment and a reserved word PRESERVE command position; they
+      // cannot create one. `echo time pgrep -f x` prints three words, and
+      // reading `time` as a keyword there refused an echo. A quoted keyword is
+      // not a keyword (bash rejects `wh"ile" x; do`), but `VAR="x" cmd` is
+      // still an assignment.
       atCommandStart =
-        !quoted &&
+        atCommandStart &&
         (/^[A-Za-z_][A-Za-z0-9_]*=/.test(value) ||
-          ["!", "{", "time", "until", "while", "if", "then", "elif", "else", "do"].includes(value));
+          (!quoted &&
+            ["!", "{", "time", "until", "while", "if", "then", "elif", "else", "do"].includes(value)));
     }
     value = null;
     quoted = false;
@@ -225,8 +234,15 @@ function tokenize(text) {
     const ch = text[i];
     if (quote) {
       if (ch === quote) { quote = null; continue; }
-      // Only a double-quoted context honours a backslash escape.
-      if (quote === '"' && ch === "\\" && i + 1 < text.length) { value += text[++i]; continue; }
+      // Inside double quotes bash KEEPS a backslash unless it escapes one of
+      // ``$ ` " \`` or a newline. Dropping every one of them changed the regex
+      // being judged: `"job\.js"` reaches pgrep as `job\.js` (a literal dot),
+      // and reading it as `job.js` made the dot match anything.
+      if (quote === '"' && ch === "\\" && i + 1 < text.length) {
+        const next = text[i + 1];
+        if (next === "\n") { i++; continue; }
+        if ("$`\"\\".includes(next)) { value += text[++i]; continue; }
+      }
       value += ch;
       continue;
     }
@@ -244,10 +260,14 @@ function tokenize(text) {
       i = nl - 1;
       continue;
     }
-    // `2>&1` and `>&2` are one redirection word. Reading that `&` as a control
-    // operator split the word and left a stray `1` looking like a second
-    // pattern, which declined to judge the commonest shape there is.
-    if (ch === "&" && value !== null && /[<>]$/.test(value)) { value += ch; continue; }
+    // `2>&1`, `>&2` and `&>/dev/null` are each one redirection word. Reading
+    // that `&` as a control operator split the word: `2>&1` left a stray `1`
+    // looking like a second pattern, and `&>` ended the arguments early, hiding
+    // a `-A` written after it — the very escape the refusal recommends.
+    if (ch === "&" && (text[i + 1] === ">" || (value !== null && /[<>]$/.test(value)))) {
+      value = (value ?? "") + ch;
+      continue;
+    }
     // A newline ends a command as surely as `;`. Treating it as plain
     // whitespace ran one command's arguments into the next, which read as a
     // second operand and silently declined to judge anything multi-line.
@@ -267,9 +287,9 @@ function tokenize(text) {
   return quote ? null : tokens;
 }
 
-/** A redirection word — `>`, `2>`, `>>/dev/null`. Not an argument, not a command. */
+/** A redirection word — `>`, `2>`, `>>/dev/null`, `&>`. Not an argument, not a command. */
 function isRedirection(token) {
-  return !token.quoted && /^\d*[<>]/.test(token.value);
+  return !token.quoted && /^(?:\d*[<>]|&>)/.test(token.value);
 }
 
 /**
@@ -349,11 +369,12 @@ function fullMatchInvocations(tokens) {
       }
       args.push(tokens[j].value);
     }
-    // Piped into something, the consumer decides what a match means — filtering
+    // Piped onward, a `pgrep`'s consumer decides what a match means — filtering
     // the wrapper out with `grep -v` is a correct way to write this, and there
-    // is no reading the filter that is not a guess. The shapes that caused the
-    // incidents (a bare check, a count, `$(…)`, a kill) reach no pipe.
-    if (tokens[j]?.value === "|") continue;
+    // is no reading the filter that is not a guess. `pkill` is NOT exempt: it
+    // has already sent the signal by the time anything downstream sees a byte,
+    // and measured here `pkill -f <self-matching> | cat` still kills the shell.
+    if (program === "pgrep" && tokens[j]?.value === "|") continue;
     const pattern = fullCommandLinePattern(args, program);
     if (pattern !== null) found.push({ program, pattern });
   }
@@ -389,9 +410,19 @@ function readsDifferentlyAsEre(pattern) {
   return /\[\[:[a-z]+:\]\]/.test(pattern) || /\\[A-Za-z]/.test(pattern);
 }
 
+/**
+ * A pattern anchored to the START of a command line, which the agent's text
+ * never occupies: the real argv begins with the wrapper (`/bin/bash -c …`).
+ * Testing `^pgrep…` against the submitted text alone said yes where the live
+ * `pgrep` says no, so an opening anchor is declined rather than judged.
+ */
+function anchoredToCommandStart(pattern) {
+  return pattern.startsWith("^");
+}
+
 function matchesOwnCommand(pattern, line) {
   if (!pattern) return false;
-  if (readsDifferentlyAsEre(pattern)) return false;
+  if (readsDifferentlyAsEre(pattern) || anchoredToCommandStart(pattern)) return false;
   try {
     return runInNewContext("new RegExp(p).test(s)", { p: pattern, s: line }, {
       timeout: MATCH_TIMEOUT_MS,

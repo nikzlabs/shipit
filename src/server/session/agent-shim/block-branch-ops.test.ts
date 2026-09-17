@@ -272,10 +272,11 @@ describe("block-branch-ops.mjs", () => {
       `pgrep -fc '${JOB}'`,
       `pgrep -f ${JOB} && echo "still running"`,
       `if pgrep -f ${JOB}; then echo busy; else echo idle; fi`,
-      // A command substitution puts the same text in a second process's argv,
-      // which is why the count comes back 2 rather than 1. Inside double quotes
-      // the same substitution reads as data here and is missed; that is the
-      // standing trade — a miss costs nothing a refusal would have saved.
+      // A command substitution carries the same text onward. Measured here the
+      // count is 1, not the 2 a persistent subshell would add — either way it
+      // is not the 0 the agent is asking for. Inside double quotes the same
+      // substitution reads as data here and is missed; that is the standing
+      // trade — a miss costs nothing a refusal would have saved.
       `N=$(pgrep -fc ${JOB}); echo $N`,
       // Killing what you cannot exclude: this signals the shell running it.
       `pkill -f "${JOB}"`,
@@ -285,6 +286,14 @@ describe("block-branch-ops.mjs", () => {
       // A redirection is not the end of the arguments, but it is not an escape
       // either: there is still no option here that excludes the caller.
       `pgrep -f ${JOB} >/dev/null 2>&1`,
+      `pgrep -f ${JOB} &>/dev/null`,
+      // An assignment whose value is quoted is still an assignment, so the word
+      // after it is still the command.
+      `VAR="x" pgrep -fc ${JOB}`,
+      // A pipe is not an escape for a kill: the signal is sent before anything
+      // downstream sees a byte. Measured — `pkill -f <self-match> | cat` kills
+      // the shell, and `cat` prints nothing.
+      `pkill -f ${JOB} | cat`,
     ];
     for (const command of blocked) {
       it(`blocks: ${command.slice(0, 58)}`, () => {
@@ -358,6 +367,17 @@ describe("block-branch-ops.mjs", () => {
       `echo "until ! pgrep -f ${JOB}; do sleep 1; done"`,
       `cat <<'EOF'\nwhile pgrep -f ${JOB}; do sleep 1; done\nEOF`,
       `python3 - <<'PY'\nprint("while pgrep -f ${JOB}; do sleep 1; done")\nPY`,
+      // A heredoc body is data whatever its delimiter's quoting — bash never
+      // runs it, and only parameter expansion differs. Written bare so nothing
+      // but the heredoc stripping keeps this allowed.
+      `cat <<EOF\npgrep -f ${JOB}\nEOF`,
+      // Delimiters the opener has to read: quoted with a character an
+      // identifier cannot carry, backslash-escaped, and two on one line.
+      `cat <<"END-TEXT"\npgrep -f ${JOB}\nEND-TEXT`,
+      `cat <<\\EOF\npgrep -f ${JOB}\nEOF`,
+      `cat <<A <<B\npgrep -f ${JOB}\nA\npgrep -f ${JOB}\nB`,
+      // `<<<` is a herestring and opens no body.
+      `grep -q x <<<"${JOB}" && echo hit`,
       // The other fix the refusal recommends: a pattern that cannot match its
       // own literal. The check is a regex and not a substring test precisely so
       // this works.
@@ -372,9 +392,10 @@ describe("block-branch-ops.mjs", () => {
       // so this listing reads real processes and only real ones. The one-shot
       // `pgrep -af` that DOES match itself is in the blocked set above.
       'pgrep -af "(vitest|eslint) --fix-nothing"',
-      // A `#` comment is not code. Reading it as code would refuse this the
-      // moment the scan stopped being scoped to loop conditions.
-      "npm test # if it hangs, check with pgrep -f myjob",
+      // A `#` comment is not code. The `;` inside it is what makes this test
+      // load-bearing: read as code, that separator would put the `pgrep` in
+      // command position and refuse an `npm test`.
+      `npm test # if it hangs ; pgrep -f ${JOB}`,
       // A comment after a line continuation is still a comment. Verified
       // against bash: it removes the `\<newline>`, so the `#` begins a comment
       // that swallows the `;` too, and the whole line only echoes. Reading the
@@ -384,9 +405,21 @@ describe("block-branch-ops.mjs", () => {
       // Command POSITION is what makes a word a command. These print text.
       `echo pgrep -f ${JOB}`,
       `printf '%s\\n' 'pgrep' '-f' '${JOB}'`,
+      // An assignment or a reserved word can PRESERVE command position but
+      // never create one, so these are three words after an `echo`.
+      `echo time pgrep -f ${JOB}`,
+      `echo VAR=x pgrep -f ${JOB}`,
+      // Inside double quotes bash keeps a backslash before `.`, so the pattern
+      // pgrep receives has a literal dot and does not match the `X` below.
+      `pgrep -f "${JOB}\\.js"; : ${JOB}Xjs`,
+      // The submitted text is not the start of the real command line — that is
+      // the wrapper — so an opening anchor cannot be judged from the text.
+      `pgrep -f '^pgrep.*${JOB}'`,
       // A redirection does not hide the option after it. bash passes `-A` to
       // pgrep, and `-A` is the caller-excluding fix the refusal recommends.
+      // `&>` is the same word, and reading its `&` as a separator hid it too.
       `pgrep -f ${JOB} >/dev/null -A`,
+      `pgrep -f ${JOB} &>/dev/null -A`,
       // Piped onward, the consumer decides what a match means — and filtering
       // the wrapper back out is a correct way to write this.
       `pgrep -af ${JOB} | grep -v '[p]grep'`,
