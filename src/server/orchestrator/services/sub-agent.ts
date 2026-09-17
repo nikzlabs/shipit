@@ -130,15 +130,10 @@ export const HOST_SHUTDOWN_CONSULT_DETAIL =
   + "consult finished, so its result was lost. Re-run the consult if you still "
   + "need it.";
 
-/**
- * The setting is named from its declaration, never by hand: a refusal that
- * quotes a label it does not read goes stale the next time the dialog is
- * reworded, and the last one sent users hunting for a heading that no longer
- * existed (planning#580).
- */
 const SUB_AGENTS_SETTING = GLOBAL_SETTINGS["advanced.enableSubAgents"];
 
-export const SUB_AGENTS_DISABLED =
+/** Named from the declaration: a hand-quoted label goes stale on the next reword (planning#580). */
+const SUB_AGENTS_DISABLED =
   `Sub-agents are disabled. Turn on "${SUB_AGENTS_SETTING.label}" in `
   + `${settingPath(SUB_AGENTS_SETTING.tab)}.`;
 

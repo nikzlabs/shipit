@@ -17,10 +17,9 @@ const SUB_AGENTS_SETTING = GLOBAL_SETTINGS["advanced.enableSubAgents"];
  * A review is brokered to ShipIt's configured reviewer and has no second path —
  * the same-model `Task` fallback is gone (planning#571). `shipit agent run`
  * refuses while sub-agents are off, so without this the user spends a whole turn
- * to be told that; here they are told before it starts.
- *
- * The setting is named from its declaration so the instruction points at the row
- * the dialog actually renders (planning#580).
+ * to be told that; here they are told before it starts. The setting is named
+ * from its declaration, not by hand, so the row it points at is the row the
+ * dialog renders (planning#580).
  */
 export const REVIEW_NEEDS_SUB_AGENTS =
   "A review asks ShipIt's configured reviewer for a second opinion — turn on "

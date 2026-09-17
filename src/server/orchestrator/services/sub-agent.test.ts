@@ -244,18 +244,11 @@ async function expectServiceError(p: Promise<unknown>, status: number): Promise<
 }
 
 describe("runSubAgent — authorization gates", () => {
-  it("rejects when the setting is off (403) and never spawns", async () => {
-    const { deps, runner } = makeDeps({ enableSubAgents: false });
-    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 403);
-    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
-  });
-
-  // The refusal is the user's only instruction, so it has to name the row the
-  // dialog renders. Reading the declaration is what goes red if the words are
-  // ever written out by hand again (planning#580).
-  it("names the declared row and its tab, not a heading of its own", async () => {
+  // The refusal is read against the declaration, not a literal, so a reworded
+  // label shows up here rather than in the user's face (planning#580).
+  it("rejects when the setting is off (403), names the declared row, and never spawns", async () => {
     const declared = GLOBAL_SETTINGS["advanced.enableSubAgents"];
-    const { deps } = makeDeps({ enableSubAgents: false });
+    const { deps, runner } = makeDeps({ enableSubAgents: false });
 
     const err = await expectServiceError(
       runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
@@ -264,6 +257,7 @@ describe("runSubAgent — authorization gates", () => {
 
     expect(err.message).toContain(`"${declared.label}"`);
     expect(err.message).toContain(settingPath(declared.tab));
+    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown agent (400)", async () => {

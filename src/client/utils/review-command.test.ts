@@ -46,9 +46,8 @@ describe("resolveReviewRequest", () => {
     });
   });
 
-  // The refusal tells the user which row to turn on, so it has to name the row
-  // the dialog renders. Asserting against the declaration is what goes red if
-  // anyone writes the words out by hand again (planning#580).
+  // Read against the declaration, not a literal, so a reworded label shows up
+  // here rather than in the user's face (planning#580).
   const declared = GLOBAL_SETTINGS["advanced.enableSubAgents"];
 
   it("refuses while sub-agents are off — the review has no other path", () => {
