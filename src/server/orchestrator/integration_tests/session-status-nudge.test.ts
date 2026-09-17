@@ -105,6 +105,14 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
   const runnerFor = (sessionId: string) => app.runnerRegistry.get(sessionId);
 
   /**
+   * Some tests stand behind two complete turn set-ups before the step they are really
+   * about, and the default 5s proved too tight for that on a loaded CI run (one flake per
+   * full suite). The waits are on conditions, not on the clock, so a longer deadline costs
+   * nothing when the box is quick.
+   */
+  const SLOW_CI_MS = 20_000;
+
+  /**
    * The boundary a negative assertion needs: `running` alone clears at the drain, with the
    * commit, the nudge decision and the dispatch still to come. `agentBusy` covers the whole
    * post-turn sequence, because the nudge takes the same lease as the work around it.
@@ -212,6 +220,37 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     client.close();
   });
 
+  /**
+   * planning#594 — Nik: "'Context compacted' event shouldn't require a nudge". Reproduced
+   * here before the fix: a `/compact` the user types is an ordinary interactive turn, so
+   * the `silent` exemption (which covers only ShipIt's own pre-turn compaction) missed it
+   * and the card was both marked stale and asked about, beside the "Context compacted"
+   * card. req 36 replaces that exemption with what the turn did.
+   */
+  it("neither nudges nor marks stale after a compaction the user asked for (req 36)", async () => {
+    const client = await TestClient.connect(port);
+    const { stop } = pump(client);
+
+    await turnThatWritesTheCard(client, "Do the billing routes");
+    const writer = lastClaude;
+
+    client.send({ type: "send_message", text: "/compact" });
+    const compactor = await waitForClaude(() => lastClaude, writer);
+    compactor.initSession("compaction-turn");
+    compactor.finish("compaction-turn");
+
+    await postTurnSettled(client.sessionId);
+    expect(followUps()).toHaveLength(0);
+    expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
+    // The card is untouched, not merely un-asked-about: a compaction changed nothing
+    // about the session, so presenting the card as current is honest (req 14, 36).
+    expect(card(client.sessionId)?.fresh).toBe(true);
+    expect(card(client.sessionId)?.status).toContain("Billing routes done");
+
+    stop();
+    client.close();
+  }, SLOW_CI_MS);
+
   it("does not follow up a turn that ended with a question (req 13)", async () => {
     const client = await TestClient.connect(port);
     const { stop } = pump(client);
@@ -294,14 +333,6 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     stop();
     client.close();
   });
-
-  /**
-   * These two tests stand behind two complete turn set-ups before the step they are
-   * really about, and the default 5s proved too tight for that on a loaded CI run
-   * (one flake per full suite). The waits are on conditions, not on the clock, so a
-   * longer deadline costs nothing when the box is quick.
-   */
-  const SLOW_CI_MS = 20_000;
 
   describe("on the streaming path", () => {
     beforeEach(() => {

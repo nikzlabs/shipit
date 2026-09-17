@@ -227,9 +227,9 @@ heal (`turn-executor.ts:223`, `:524`) — before their `drain` step, and
 adoption resets it where it resets the other memoized work
 (`turn-executor.ts:756`). It does two things at once:
 
-1. Copies `{ statusUpdated, wasInterrupted, receivedResult, silent,
+1. Copies `{ statusUpdated, wasInterrupted, receivedResult, harnessCommand,
    statusNudge, postTurn, writeSeq }` into an executor-local snapshot.
-2. If the turn is not `silent` and `statusUpdated` is false, calls
+2. If the turn is not a `harnessCommand` (req 36) and `statusUpdated` is false, calls
    `markSessionStatusStale(sessionId, snapshot.writeSeq)` — immediately, so
    the card never reads as current between a missing update and the end of
    the network flow. The guard makes it a no-op if a later turn already
@@ -238,10 +238,97 @@ adoption resets it where it resets the other memoized work
 **The nudge decision** is a memoized step after `idle`, on the snapshot
 alone. It says **no** when: `statusUpdated`; `wasInterrupted` (question,
 plan approval, user stop); no `agent_result` (a crash has its own recovery);
-`silent` (compaction); the turn was itself a nudge; `postTurn: "none"` (a
+`harnessCommand` (req 36, below); the turn was itself a nudge; `postTurn: "none"` (a
 driver-owned turn); the record's `writeSeq` moved past the snapshot's; or a
 successor is pending (a deferral, not an exemption — the check repeats when
 that turn ends). Otherwise it dispatches the nudge.
+
+### What is checked, and why (req 36)
+
+The rule is one question asked of the turn: **could this turn have changed what
+the card says?** A turn the harness runs as its own command on the conversation
+answers no — the agent does no work of the session's, so the card is not behind
+and there is nothing to ask about. Every other turn answers yes, whoever started
+it.
+
+`harnessCommand` on `TurnInput` and `TurnStatusFacts` is that property: the turn
+is a compaction. Each turn path decides it where it already knows —
+`opts.compact` on the interactive path (`ws-handlers/agent-execution.ts`),
+`isCompactRequest` on the dispatched one (`dispatched-turn.ts`).
+
+The dispatched path narrows it further, and **deliberately errs towards
+checking**: it withholds the exemption when provenance wraps the text (a
+cross-session or agent-interface message). The harnesses disagree there — Claude
+reads the wrapped prose and does ordinary work, while Codex and OpenCode compact
+from the `compact` flag and never see the prompt at all
+(`codex-event-handler.ts`, `opencode/adapter.ts`). Exempting would hide a
+genuinely stale card on Claude; checking costs one needless nudge on the other
+two. The first is the failure req 15 forbids, so the condition takes the second.
+
+The exemption also requires the arriving result to be **this prompt's**
+(`ownTurn !== "queued"`). A user's `/compact` can reuse a resident CLI, and that
+CLI can start a turn of its own during environment preparation, before the
+command is submitted; the result that then arrives ends the CLI's work, not the
+compaction, and that work is exactly what the card must report.
+
+It **replaces** the `silent` entry rather than joining it. `silent` named a kind
+of turn — ShipIt's own, with no user row — and named it wrongly: ShipIt's
+pre-turn compaction is silent and was exempt, while the *user's* own `/compact`
+is an ordinary interactive turn and was nudged, which is planning#594. The
+property covers both, and covers a compaction sent through the HTTP message API
+as well, because none of them is a path the rule reads.
+
+**The property belongs to the turn being settled, not to the executor.** A
+compaction leaves the CLI resident, and an executor serving a turn the CLI then
+starts of its own (`rearmForCliStartedTurn`) would otherwise re-read the
+compaction's `input` and exempt real work — the card reading current when it is
+not, which is exactly what req 15 forbids. So the executor holds
+`harnessCommandTurn`, cleared in the re-arm beside `sawOwnResult`, and does not
+read `input` at settlement: `servingAdoptedTurn` is already false by the time the
+adopted turn's `agent_result` settles.
+
+**Considered and rejected: a `/goal` command.** It is delivered verbatim for the
+same reason a compaction is, and `ridesTurnGoalCommand` looked like the other
+half of one predicate. It is not: the harness answers `/goal` by *starting work*
+(Grok's `set` and `resume` re-enter its planner and verifier,
+`agents/grok/grok-goal.ts`), so exempting it would suppress a stale mark the
+session had earned. "Delivered verbatim" and "produced no work" are two
+properties, and only the second is the rule's. The prefix guards therefore keep
+reading the verbatim predicate, and the settlement reads this one.
+
+**Known limit.** A compaction that spans an orchestrator **restart** is adopted
+with no prompt text and no harness-command identity in the worker's status
+(`turn-adoption.ts`), so it settles as an ordinary turn: marked stale, nudged
+once. This is unchanged from `silent`, which was never carried across adoption
+either; closing it means carrying the property through the worker's run body and
+status the way `statusNudge` is.
+
+`harnessCommand` also governs the **stale mark**, which `silent` governed before
+it: a turn that produced no work of the agent's own cannot have left the card
+behind. The driver-owned exemption keeps its existing split and is deliberately
+not folded in — a conflict-remediation turn (`postTurn: "none"`) does real work,
+so the card IS marked stale after it; it is only the *nudge* that is withheld,
+because a git driver owns the interval around it.
+
+Every ShipIt-started turn, enumerated from the dispatch sites rather than from
+memory, walked against the rule:
+
+| Turn ShipIt starts | Where | Checked? |
+|---|---|---|
+| Merged-PR wake | `merge-watch.ts` → `wake-session.ts` | **yes** — it leads to the next piece of work |
+| Delivered result of a brokered agent run | `services/consult-result-delivery.ts` → `wake-session.ts` | **yes** |
+| A child session's report to its parent | `services/session-report.ts` → `wake-session.ts` | **yes** |
+| Continuation after a quota refusal | `services/quota-continuation.ts` → `wake-session.ts` | **yes** — the turn it resumes is the session's work |
+| CI fix | `services/github-ci-fix.ts`, `app-lifecycle.ts` | **yes** |
+| Continuation after a rebase | `services/rebase-followup.ts` | **yes** |
+| Credential remediation after a blocked push | `services/secret-block.ts` | **yes** |
+| A child session's first prompt; a message sent to a child | `services/child-sessions.ts` | **yes** |
+| A headless session's prompt | `services/headless-sessions.ts` | **yes** |
+| A message through the HTTP API | `services/agent.ts` | **yes**, unless its text is itself a harness command |
+| Conflict remediation | `services/rebase-driver.ts` (`postTurn: "none"`) | **no nudge**, driver-owned; still marked stale |
+| Pre-turn compaction before a post-merge turn | `dispatched-turn.ts`, `runCompactionAhead` | **no** — `harnessCommand` |
+| A compaction wrapped as another session's message | `services/child-sessions.ts` | **yes**, conservatively — see the narrowing above |
+| The status nudge itself | `turn-executor.ts` | **no** — req 15, one attempt per missing update |
 
 **A pending successor is four things, not two** (req 34, planning#589), and the
 last two are read from the turn's own snapshot rather than live. A turn
@@ -907,8 +994,11 @@ built file is named in brackets. Every one of them exists.
   nudged again.
 - `turn-status-settlement.test.ts` — the settlement and the nudge driven
   through the real executor: stale at once and one nudge on a plain turn; the
-  nudge turn not nudged again; no nudge after a question, a crash, a silent
-  compaction, a `postTurn: "none"` driver turn, or with the setting off; a
+  nudge turn not nudged again; no nudge and no stale mark after a compaction the
+  user asked for or one ShipIt started, while a wrapped compaction command and a
+  turn the CLI starts after a compaction are both checked (req 36); no nudge
+  after a question, a crash, a `postTurn: "none"` driver turn, or with the
+  setting off; a
   queued successor deferring with nothing left in the queue; a streaming
   `agent_result` + `done` giving one nudge; a predecessor's late exit leaving
   the successor's card current.
@@ -1006,7 +1096,7 @@ card, submission, the toggle — and the call itself is the route's own tests.
 - `src/server/orchestrator/api-routes-session-status.ts` — the route; `api-routes-propose-actions.ts` — refuses under the flag.
 - `src/server/shared/session-status-validation.ts`, `src/server/shared/propose-actions-validation.ts` — envelope; shared `validateActionItems`.
 - `src/server/orchestrator/services/session-status.ts` — record, stale, take, reconciliation, `shouldNudgeForStatusCard`, `statusNudgePrompt`.
-- `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts`, the memoized decision, dispatch from `finishTurn`; `silent` and `statusNudge` on `TurnInput`.
+- `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts`, the memoized decision, dispatch from `finishTurn`; `harnessCommand` and `statusNudge` on `TurnInput`.
 - `src/server/orchestrator/prepared-dispatch.ts`, `src/server/orchestrator/session-runner.ts` (`toQueuedMessage`, `QueuedMessage`), `src/server/shared/types/agent-types.ts` — the dispatch option.
 - `src/server/orchestrator/turn-accumulator.ts` — `statusUpdated`.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — acceptance after admission.

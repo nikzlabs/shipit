@@ -394,6 +394,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const ridesTurnAsCommand =
     !opts.compact && (opts.verbatim ?? ridesTurnGoalCommand(userText, agentInfo?.capabilities));
 
+  // docs/303 req 36 — the harness answers this turn by compacting the conversation, so it
+  // produces no work of the agent's own. A verbatim `/goal` is deliberately not one: it is
+  // delivered whole for the same reason, but the harness answers it by starting work.
+  const harnessCommand = opts.compact === true;
+
   // Compaction must neither move the branch nor receive instructions to resume work.
   let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
   if (capturedSessionId && capturedSessionDir && runner && !opts.compact && !ridesTurnAsCommand) {
@@ -473,8 +478,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     .join("\n\n");
   // takeRoleStandingInstructions is a take: reading it on a verbatim turn, which
   // cannot carry it, would destroy the role's brief for good.
-  // takeRoleStandingInstructions is a take, so reading it on a turn that cannot
-  // carry it would destroy the role's brief for good.
   const roleContext = capturedSessionId && !ridesTurnAsCommand
     ? takeRoleStandingInstructions(capturedSessionId, {
         sessionManager: ctx.sessionManager,
@@ -703,6 +706,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
       ...(opts.systemTurn ? { systemTurn: true } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+      ...(harnessCommand ? { harnessCommand: true } : {}),
       emitUserEcho: userEcho !== undefined,
       ...(userEcho ? { userEcho } : {}),
       persistUserMessage,

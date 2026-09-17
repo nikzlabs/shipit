@@ -114,6 +114,8 @@ export interface TurnInput {
   compact?: boolean;
   /** ShipIt's own turn, with no user row of its own: today, compaction. */
   silent?: boolean;
+  /** docs/303 req 36 — the harness answers this turn by compacting the conversation. */
+  harnessCommand?: boolean;
   /** docs/303 req 15 — this turn IS the status nudge, so it is never nudged again. */
   statusNudge?: boolean;
 }
@@ -699,6 +701,10 @@ export async function executeAgentTurn(
     return true;
   };
 
+  // Held rather than read from `input` at settlement: a CLI-started turn adopted here is
+  // the agent's own work, and `servingAdoptedTurn` is false again by the time it settles.
+  let harnessCommandTurn = input.harnessCommand === true;
+
   let receivedResult = false;
   // Distinct from `receivedResult`, which adoption retains from the predecessor so its
   // recovery semantics hold: this says THIS turn produced a result of its own.
@@ -730,7 +736,9 @@ export async function executeAgentTurn(
       // Not `receivedResult`: adoption keeps that from the predecessor on purpose, and a
       // crashed adopted turn produced no result of its own to judge.
       receivedResult: sawOwnResult,
-      silent: input.silent === true,
+      // Only when the result is this prompt's: a resident CLI can start a turn of its
+      // own before the command is submitted, and that turn is work the card must report.
+      harnessCommand: harnessCommandTurn && ownTurn !== "queued",
       statusNudge: input.statusNudge === true,
       // Taken here, with the rest, because a drained successor resets both
       // (`resetRunnerTurnState`, and this executor's own re-arm) — read live at the
@@ -749,7 +757,7 @@ export async function executeAgentTurn(
       console.error(`[turn] reading the status card for ${sessionId} failed:`, err);
     }
     turnFacts = facts;
-    if (cardOn && !facts.silent && !facts.statusUpdated) {
+    if (cardOn && !facts.harnessCommand && !facts.statusUpdated) {
       void markSessionStatusStale(statusDeps, sessionId, facts.writeSeq).catch((err: unknown) => {
         console.error(`[turn] marking the status card stale for ${sessionId} failed:`, err);
       });
@@ -1138,6 +1146,7 @@ export async function executeAgentTurn(
     // The adopted turn is a turn of its own: it settles its own facts and is decided afresh.
     turnFacts = null;
     sawOwnResult = false;
+    harnessCommandTurn = false;
     nudgeDecided = false;
     nudgePending = false;
     nudgeDispatched = false;

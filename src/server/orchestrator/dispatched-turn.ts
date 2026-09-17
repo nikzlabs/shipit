@@ -82,6 +82,13 @@ async function runDispatchedTurnInner(
 
   const isCompactRequest =
     (getAgentCapabilities(agentId)?.supportsCompaction ?? false) && isCompactCommand(text);
+  /**
+   * docs/303 req 36. Narrower than `isCompactRequest` on purpose: when provenance wraps
+   * the text below, Claude reads prose and does ordinary work, while Codex and OpenCode
+   * still compact from the flag. Exempting would hide a real stale card on the first;
+   * checking costs one needless nudge on the others, so it errs that way.
+   */
+  const harnessCommand = isCompactRequest && !opts.agentInterface && !opts.messageOrigin;
 
   const steer = opts.systemTurn ? undefined : deps.steerInputs?.();
   const useStreaming = steer ? steer.liveSteering && steer.steeringCapable : false;
@@ -355,6 +362,7 @@ async function runDispatchedTurnInner(
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+      ...(harnessCommand ? { harnessCommand: true } : {}),
       ...(opts.statusNudge !== undefined ? { statusNudge: opts.statusNudge } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
