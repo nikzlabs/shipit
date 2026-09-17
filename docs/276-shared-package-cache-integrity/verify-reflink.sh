@@ -8,16 +8,27 @@
 # store no longer reaches a session that already installed, and the disk barely
 # moves. pnpm implements this as `package-import-method=clone` / `clone-or-copy`.
 #
-# That argument has ONE unverified link, and this script exists to close it.
-# ShipIt's data disk is ext4, which has no reflink, so the saving was inferred
-# from the mechanism and never measured. Run this on a host with XFS
+# That argument had ONE unverified link, and this script exists to close it.
+# The filesystem holding ShipIt's state directory — every session workspace,
+# /dep-cache and the pnpm stores, all one filesystem — is ext4, which has no
+# reflink, so the saving was inferred and never measured. Run this on XFS
 # (reflink=1) or btrfs to replace the inference with a number.
 #
-# The measurement trap, stated because the first attempt fell into it:
-# `du` over node_modules ALONE cannot see hardlink sharing — it happily counts
-# blocks that the store already owns. The only honest figure is a SINGLE `du`
-# run spanning the store and node_modules together, which dedups by inode.
-# Every total below is measured that way.
+# TWO measurement traps, both of which this script fell into before you read it:
+#
+#   1. `du` is BLIND TO REFLINKS. Reflinked copies are separate inodes with
+#      their own extent maps, so du reports each at full size while the
+#      filesystem grows by zero. Measured on XFS: two reflinked 64 MB files,
+#      du says 64 MB each, `df` says +0 KB. A du-based harness refutes option E
+#      on evidence that cannot see the thing being claimed. du DOES see through
+#      hardlinks, which is how the ext4-only version got away with it — one
+#      tool, two sharing mechanisms, only one of them visible. Every disk figure
+#      below is therefore a `df` used-space delta.
+#
+#   2. Plain `cp` on XFS defaults to `--reflink=auto`. A "full copy" control
+#      written as `cp a b` silently makes a reflink and costs 0 KB, which reads
+#      as "reflink saves nothing" or "copies are free" depending on which you
+#      were hoping for. Controls here pass `--reflink=never` explicitly.
 #
 # Self-contained: needs bash, node, npm, and network for the initial store warm.
 # Touches only its own scratch dir. Does not read or write the ShipIt repo.
@@ -124,13 +135,21 @@ say ""
 
 [ -n "$TSV_OUT" ] && printf 'method\tfs\tinode_shared\tpoison_reaches_installed\tstore_kb\tnm_kb\tcombined_dedup_kb\tinstall_ms\tstatus\n' > "$TSV_OUT"
 
+# Filesystem used-space in KB for the scratch mount. This, not du, is what sees
+# through BOTH hardlinks and reflinks.
+fs_used_kb() { df -Pk "$SCRATCH" | awk 'NR==2{print $3}'; }
+
 run_method() {
   local METHOD="$1"
   local proj="$SCRATCH/run" store="$SCRATCH/store"
   rm -rf "$proj" "$store"; mkdir -p "$proj"
   cp "$TEMPLATE/package.json" "$proj/package.json"
   [ -f "$TEMPLATE/lock.keep" ] && cp "$TEMPLATE/lock.keep" "$proj/pnpm-lock.yaml"
-  cp -a "$PRISTINE" "$store"
+  # --reflink=never so the store copy itself never silently shares extents with
+  # the pristine tree: on XFS, plain `cp` defaults to --reflink=auto, which made
+  # an earlier "full copy" control cost 0 KB and look like a reflink.
+  cp -a --reflink=never "$PRISTINE" "$store"
+  sync; local FS_USED_BASE; FS_USED_BASE=$(fs_used_kb)
 
   local s e out rc
   s=$(date +%s%N)
@@ -146,16 +165,29 @@ run_method() {
     return
   fi
 
+  sync; local fs_used_after; fs_used_after=$(fs_used_kb)
+
   # inode sharing with the store
   local pino shared
   pino=$(stat -c %i "$proj/$PROBE_REL")
   if find "$store" -inum "$pino" 2>/dev/null | grep -q .; then shared="yes"; else shared="no"; fi
 
-  # THE honest disk figure: one du run across both trees, which dedups by inode.
+  # THE honest disk figure is the FILESYSTEM's used-space delta, not du.
+  #
+  # `du` is blind to reflinks. Reflinked copies are separate inodes with their
+  # own extent maps, so du reports each at full size even though they share
+  # every block — measured on XFS: two reflinked 64 MB files, du says 64 MB
+  # each, and the filesystem grew by 0 KB. A du-based harness would therefore
+  # report copy-on-write as costing exactly as much as a full copy and refute
+  # option E on evidence that cannot see the thing being claimed.
+  #
+  # (du DOES see through hardlinks, which is why the earlier ext4-only version
+  # got away with it. One tool, two sharing mechanisms, only one of them
+  # visible.)
   local store_kb nm_kb combined
   store_kb=$(du -sk "$store" | cut -f1)
   nm_kb=$(du -sk "$proj/node_modules" | cut -f1)
-  combined=$(du -sk --total "$store" "$proj/node_modules" 2>/dev/null | tail -1 | cut -f1)
+  combined=$(( fs_used_after - FS_USED_BASE ))
 
   # isolation: overwrite the backing store entry, see if the installed file moves
   local before after reaches
@@ -165,7 +197,7 @@ run_method() {
   [ "$before" != "$after" ] && reaches="YES" || reaches="no"
   cp "$SCRATCH/clean.bak" "$store/$ENTRY_REL"
 
-  printf '  %-14s inode-shared=%-4s poison-reaches=%-4s store=%sKB nm=%sKB COMBINED=%sKB install=%sms\n' \
+  printf "  %-14s inode-shared=%-4s poison-reaches=%-4s du-store=%sKB du-nm=%sKB REAL-DISK-COST=%sKB install=%sms\n" \
     "$METHOD" "$shared" "$reaches" "$store_kb" "$nm_kb" "$combined" "$ms"
   [ -n "$TSV_OUT" ] && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tOK\n' \
     "$METHOD" "$FSTYPE" "$shared" "$reaches" "$store_kb" "$nm_kb" "$combined" "$ms" >> "$TSV_OUT"

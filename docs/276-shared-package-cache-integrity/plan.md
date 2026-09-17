@@ -363,20 +363,87 @@ already made twice about pnpm's verification.
 since xfsprogs 5.x) or btrfs would make the third row cost roughly the *first*
 row's disk while keeping the *second* row's isolation. That is the whole proposal.
 
-**The one link in this chain I could not measure.** This container has no
-effective capabilities (`CapEff: 0000000000000000`), no `mkfs.xfs`/`mkfs.btrfs`,
-and cannot mount, so there is no reflink-capable filesystem here to test on. The
-ext4 failure and the copy costs above are measured; **the reflink saving is
-inferred from the mechanism and is not verified.** It must be measured on an XFS
-host before anyone commits to it — this doc has already had two claims flip under
-measurement, and an unverified benefit is how both started.
+### Measured on real reflink storage, 2026-09-17 — CONFIRMED
+
+An earlier version of this section said the reflink saving was inferred and had
+to be measured before anyone relied on it. It has now been measured, on a
+loopback **XFS (`reflink=1`)** image, with a freshly formatted filesystem per run
+and `df` read from empty:
+
+| import method | total FS used (store + `node_modules`) | inode shared with store | store poisoning reaches installed files |
+|---|---|---|---|
+| `hardlink` *(today)* | **91 MB** | yes | **yes — H3 open** |
+| `copy` | **92 MB** | no | **no — H3 closed** |
+| `clone` | **92 MB** | no | **no — H3 closed** |
+
+3 353 files, 86 MB of `node_modules`. **Isolation costs ~1 MB, not ~86 MB** — the
+residue is per-inode metadata, which is the irreducible price of wanting separate
+inodes. Extrapolating by file count, ShipIt's own 32 310-file tree would pay on
+the order of **10 MB per session instead of 557 MB**; that scaling is arithmetic,
+not a measurement.
+
+Extent sharing was confirmed directly rather than inferred from free space:
+`filefrag -v` reports **1 054 of 1 057** files in a `clone`-mode `node_modules`
+carrying the `shared` flag, at the same physical block as the store entry, with a
+**different inode**. Isolation was confirmed the same way as everywhere else in
+this doc — overwrite the backing store entry, re-read the installed file, no
+install in between.
+
+**Two traps, both of which this doc fell into before the numbers above were
+trusted.** They are recorded because either one silently produces a confident
+wrong answer:
+
+1. **`du` is blind to reflinks.** Reflinked files are separate inodes with their
+   own extent maps, so `du` bills each at full size while the filesystem grows by
+   nothing — two reflinked 64 MB files measured as 64 MB each by `du` and **+0 KB**
+   by `df`. `du` *does* see through hardlinks, which is exactly why the ext4-only
+   measurements earlier in this section were sound and the first XFS run was not.
+   One tool, two sharing mechanisms, only one of them visible.
+2. **Plain `cp` on XFS defaults to `--reflink=auto`.** A "full copy" control
+   written as `cp a b` silently reflinks and costs 0 KB. Controls must pass
+   `--reflink=never`.
+
+### The constraint that decides the deployment shape
+
+**Reflink cannot cross a filesystem boundary**, and neither can a hardlink. With
+the store on XFS and the project on ext4, measured: `clone` fails with **`os error
+18` (EXDEV)**, while `hardlink` and `copy` "succeed" by silently making real full
+copies — the same EXDEV degradation docs/198 Part 2 was written to escape.
+
+So the reflink filesystem must hold **both the pnpm store and the session
+workspaces**. ShipIt's state directory already holds both (`pnpmStoreDirForRuntime`
+puts the store under `stateDir`, beside the session dirs), so the unit that moves
+is the state directory — not "the pnpm store" on its own, which would buy nothing.
+
+**This does not require reformatting the host.** Every measurement above was taken
+inside a **loopback XFS image file sitting on an ordinary ext4 disk** — created
+with `truncate` + `mkfs.xfs -m reflink=1` and loop-mounted. That is a viable
+deployment shape for the state directory and avoids a host-level migration
+entirely; it costs a loop device, an image file to size, and its own fsck story.
 
 ### What it closes, and what it does not
 
-**H3 only** — the same coverage as `copy`, at near-zero marginal disk instead of
-full. It does **not** close H2: a reflink of poisoned store content is still
-poisoned content. It does **not** touch H1, which is npm's resolution cache and a
-different surface entirely.
+**H3** — at ~1% of the disk a full copy costs. It does **not** touch H1, which is
+npm's resolution cache and a different surface entirely. H2 needs nothing: pnpm's
+own content check already covers the install path.
+
+### Set `package-import-method=copy`, not `clone`
+
+Counter-intuitively, `copy` is the right value, and the measurements say so:
+
+- On a reflink filesystem, **`copy` already reflinks.** pnpm's copy path goes
+  through `copy_file_range`, which XFS implements as an extent share — measured,
+  `copy` produced separate inodes with `shared` extents and cost the same 92 MB as
+  `clone`. You do not need `clone` to get copy-on-write.
+- `clone` is the *strict* spelling and **fails the install** where reflink is
+  unavailable: `os error 95` on ext4, `os error 18` across a filesystem boundary.
+- So `copy` is correct on **every** filesystem: full cost on ext4 today, and
+  automatically near-free the day the state directory moves to XFS or btrfs — with
+  no second change and no flag to remember.
+
+That ordering matters for sequencing: the isolation can ship **first**, on the
+storage ShipIt already has, and the storage change later turns its cost into
+rounding error. Neither step blocks the other.
 
 **npm is unaffected either way.** Measured: npm does **not** hardlink `_cacache`
 into `node_modules` — the installed file has `links=1` and shares no inode with

@@ -1,20 +1,19 @@
 # Checklist — shared package cache integrity
 
-Implementation steps for [plan.md](./plan.md). **Nothing here may start** until
-the [open questions](./requirements.md#open-questions) are answered — **Q1 and Q3
-together** decide which of these items exist at all. Requirement 9 (2026-08-20)
-already removed one option — see requirements.md.
+Implementation steps for [plan.md](./plan.md). The shape is now settled: Q1 and
+Q3 are closed by requirement 10 (2026-09-17), which requires isolation **and** the
+storage saving rather than a choice between them. Q2 and Q4 remain open but gate
+only their own items, not this list.
 
 ## Blocked on the requester
 
-- [ ] **Q1 answered** — how much protection: contain it, or per-session copies?
-      *(Two live options. "Stop sessions writing" was ruled out by requirement 9;
-      "check at install time" collapses into the per-session resolution cache,
-      because a check is only worth its expectation source.)*
+- [x] **Q1 closed** — the requester rejected both options (2026-09-17) and
+      restated the requirement as having both. Copy-on-write satisfies it; recorded
+      as requirement 10 with a dated receipt.
 - [ ] **Q2 answered** — may we require projects to pin dependency versions?
       *(Defence in depth, not the fix — measured. Not urgent.)*
-- [ ] **Q3 answered** — is per-session copying compatible with
-      `docs/270-per-session-worker-uids` req 9? *(Gates Q1 option (b).)*
+- [x] **Q3 closed** — it asked whether per-session copying was worth its disk;
+      copy-on-write removes the disk, so the question no longer arises.
 - [ ] **Q4 answered** — hold `docs/266-orchestrator-git-trust-boundary` E4
       (req 8)?
 - [ ] Answers recorded as dated receipts under `## Resolved questions`, with the
@@ -60,18 +59,22 @@ already removed one option — see requirements.md.
 - [ ] Set `verify-store-integrity=true` **explicitly** rather than inheriting the
       default — `false` disables the check completely and ShipIt currently asserts
       neither value. Small, and the only H2 work left.
-- [ ] H3 (req 4), if Q1 is answered (b): set `package-import-method`. Prefer
-      `clone-or-copy` over `copy` — same isolation, and it becomes near-free the
-      moment the filesystem supports reflink. Never `clone`: it fails the install
-      outright on ext4 (measured, `os error 95`).
-- [ ] **Measure reflink on a real XFS(reflink=1)/btrfs host before pricing option
-      (b) as cheap.** This is the one unverified link in plan.md option E — this
-      container has no capabilities, no `mkfs.xfs`/`mkfs.btrfs` and cannot mount,
-      so the saving is inferred from the mechanism, not observed. Two claims in
-      this doc have already flipped under measurement.
-- [ ] Decide separately whether ShipIt's data disk moves off ext4. That is a host
-      storage migration with its own risk and rollback story, and it is what makes
-      option (b) cheap rather than a 1.8× disk regression.
+- [ ] H3 (reqs 4, 10): set **`package-import-method=copy`**. Not `clone` — that
+      fails the install outright where reflink is unavailable (`os error 95` on
+      ext4, `os error 18` across filesystems). `copy` is correct everywhere: full
+      cost on ext4, and it reflinks **automatically** on a reflink filesystem via
+      `copy_file_range`. Ships independently of any storage change.
+- [x] **Measure reflink on real XFS(reflink=1) storage.** Done 2026-09-17 on a
+      loopback XFS image: fresh filesystem per run, `df` from empty — hardlink
+      **91 MB**, copy **92 MB**, clone **92 MB** for a 3 353-file / 86 MB
+      `node_modules`. Extent sharing confirmed with `filefrag` (1 054/1 057 files
+      flagged `shared`, different inode). **Option E confirmed.**
+- [ ] Put the **state directory** — store *and* session workspaces together — on a
+      reflink-capable filesystem. Measured: reflink and hardlink both fail across a
+      filesystem boundary (`EXDEV`), and moving the store alone buys nothing. A
+      loopback XFS image on the existing ext4 works and avoids reformatting the
+      host; price its sizing, loop-device management and fsck story before
+      choosing it over a real filesystem.
 - [x] **Re-test H2 with a controlled harness.** Done — `verify-h2.sh`, committed
       beside this checklist. The apparent copied-vs-in-place difference that made
       H2 look unsettled was a defect in the first harness (one store reused across
@@ -91,7 +94,10 @@ already removed one option — see requirements.md.
       name `verify-store-integrity` as the thing it depends on. The residual to
       record is H3, which no content check can reach.
 
-## Step 3 — optional, orthogonal (Q1 answered (a))
+## Step 3 — optional, orthogonal (narrowing the store key)
+
+*Not selected by requirement 10, and not needed for it. Worth doing only if
+cross-repo blast radius is wanted for its own sake.*
 
 - [ ] Add the repo hash to `pnpmStoreDirForRuntime`
       (`src/server/orchestrator/overlay-session.ts:607`).
@@ -102,4 +108,4 @@ already removed one option — see requirements.md.
 ## Sequencing guard
 
 - [ ] `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until step 1
-      lands and Q1 is answered (req 8).
+      lands and the H3 item in step 2 ships (req 8).

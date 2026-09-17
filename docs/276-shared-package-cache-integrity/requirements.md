@@ -91,6 +91,13 @@ the two directly-writable surfaces unless they name the base.
    requester, 2026-08-20 — see Resolved questions. This rules out any design in
    which the session cannot manage its own installed packages.)*
 
+10. Requirement 1 MUST be met **without** materially increasing per-session disk
+    use. Isolating sessions from each other and keeping the storage savings are
+    both required; a design that buys one with the other does not satisfy this.
+    *(Stated by the requester, 2026-09-17, rejecting both options offered for Q1
+    — see Resolved questions. "Materially" is the requester's standard to set;
+    the measured cost of the recommended design is ~1%.)*
+
 ## Open questions
 
 Four decisions, and they are yours. The reasoning and the costs are in
@@ -116,7 +123,13 @@ store, if both use pnpm. A pnpm project gets the shared store only when it is
 repository-backed, is not an Ops session, and is detected as pnpm (a
 `packageManager` field, a pnpm install command, or a `pnpm-lock.yaml`).
 
-**Q1 — How much protection do you want?**
+**Q1 is closed. See the 2026-09-17 receipt under Resolved questions.** The
+requester rejected both options it offered and restated the requirement: keep the
+space savings *and* stop sessions affecting each other. Measurement found a way to
+do both, so there is no longer a trade-off to choose between. The original text is
+kept below for provenance only — **do not answer it**.
+
+~~**Q1 — How much protection do you want?**~~
 
 - **(a) Contain it.** Give the pnpm store a project key, so it matches what npm
   already does. A bad session then reaches only sessions of the *same project*,
@@ -176,7 +189,11 @@ not a question for you — it is step 1 of the plan.
 - **(b) No.** We build and maintain the protection for those projects. More work,
   ongoing.
 
-**Q3 — Does per-session copying conflict with the sharing rule you approved?**
+**Q3 is closed** by the same receipt — it existed only to ask whether per-session
+copying was worth its disk, and copy-on-write removes the disk. Kept for
+provenance; **do not answer it**.
+
+~~**Q3 — Does per-session copying conflict with the sharing rule you approved?**~~
 You approved a rule that sessions must keep sharing these copies so installs stay
 fast (`docs/270-per-session-worker-uids` req 9). My reading is that Q1 option (b)
 **does not break it literally** — the shared download store stays shared; what
@@ -242,6 +259,32 @@ container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
    versions and is corrected in the same PR as this one.*
 
 ## Resolved questions
+
+**2026-09-17 — both Q1 options rejected; the requirement is to have both.**
+Presented with Q1's two options — project-key the store, or give each session its
+own copy — the requester rejected both and restated the requirement: *"find a way
+to keep the space savings but avoid sessions to affect each other. Both options you
+presented are not good."*
+
+This is a rejection of the **trade-off**, not a choice within it, and it was
+correct: the trade-off was an artefact of the storage, not of the problem. Measured
+the same day on a loopback XFS (`reflink=1`) image — see [plan.md](./plan.md)
+option E:
+
+- Copy-on-write imports give each session its **own inode** with **shared
+  extents**. Poisoning the store no longer reaches a session that already
+  installed, and the data is still stored once.
+- Cost: **92 MB vs 91 MB** for a 3 353-file, 86 MB `node_modules` — about **1%**,
+  being per-inode metadata. Not the ~1.8× a real copy costs.
+- The store stays shared and `pnpm install` is untouched, so **req 2 and req 9 both
+  hold** — which is why Q3 also goes away rather than being answered.
+
+Recorded as **requirement 10**. Two consequences are design matters for plan.md,
+not questions for the requester: the setting is `package-import-method=copy` (it
+reflinks automatically where the filesystem allows and never fails where it does
+not), and reflink cannot cross a filesystem boundary, so the state directory — the
+store *and* the workspaces — must sit on one reflink-capable filesystem. A loopback
+image supplies that without reformatting the host.
 
 **2026-08-20 — the agent must keep being able to install packages.**
 Shown the measured consequences of Q1 option (c) ("stop sessions writing the
