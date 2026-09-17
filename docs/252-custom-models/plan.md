@@ -3251,59 +3251,92 @@ the first frame.
 
 **That pairing did not hold, and the section below is why it was never going to.**
 
-## One height for the whole sign-in (req 26)
+## One height for the whole dialog (req 26)
 
 **What was measured on 2026-09-17**, in the dogfood instance, driving one Anthropic sign-in end
 to end at the dialog's 448px width: **302px** idle, **329** once the wizard started, **349**
 when the code landed, and a success screen ~130px shorter again. Antigravity's challenge is
-**389**. The dialog is centred, so every one of those moved the whole window — title, panel and
-buttons — and only the first followed a click of the user's. The 20px between the waiting panel
-and the challenge is exactly the challenge's reserved "Code submitted" line plus its gap, added
-after the placeholder was written; Antigravity's extra 60px is its 60-second deadline sentence,
-added with the harness (docs/301). So the pairing above did not merely drift — **two shapes
-maintained against each other is a mechanism that drifts by construction**, silently, and every
-test still passed while it did.
+**389**. The three steps stood at **496 / 246 / 409**. The dialog is centred, so every one of
+those moved the whole window — title, panel and buttons — and only two of them followed a click
+of the user's. The 20px between the waiting panel and the challenge is exactly the challenge's
+reserved "Code submitted" line plus its gap, added after the placeholder was written;
+Antigravity's extra 60px is its 60-second deadline sentence, added with the harness
+(docs/301). So the pairing above did not merely drift — **two shapes maintained against each
+other is a mechanism that drifts by construction**, silently, and every test still passed while
+it did.
 
-**The fix is a fixed height, not a better pairing.** Everything that varies while the step is
-open — the sign-in panel, the token field, the error line and the model chips — is a child of
-one box (`add-service-stage`), and on a step that signs the user in that box is
-`SIGN_IN_STAGE_HEIGHT` (**17rem**) with `overflow-y-auto`. Three consequences, all of them the
-point:
+**The fix is a fixed height, not a better pairing.** Every step's body is
+`DIALOG_BODY_HEIGHT` (**24rem**) with `overflow-y-auto`, so the steps differ only in what is in
+it; and within the credential step, everything that varies while it is open — the sign-in
+panel, the token field, the error line and the model chips — is a child of one box
+(`add-service-stage`) that fills that body. Consequences, all of them the point:
 
 - The height is a constant in **CSS**, so no state can change it. Being wrong about the constant
   costs a scrollbar, never a jump — and the CLI-output disclosure, which grows the content to
   469px when a user opens it, now scrolls inside the box rather than growing the window by
   200px.
-- The guarantee is **testable without a layout engine**. The jsdom guard walks one sign-in
-  through all five states and asserts a *concrete* fixed length on the box (`height: auto`
-  would be stable across states and is the bug itself), that the footer is one row of `h-8`
-  buttons and nothing else, and that the dialog's markup *outside* the box is byte-identical in
-  every state — the failure the old approach could not produce. Each was proved red on its own
-  defect before being left green. What it cannot see is a state it does not walk and a geometry
-  it cannot measure; this repo has no browser-driven suite, so the live figures above are the
-  record of the geometry, taken by hand.
-- The number is measured for the narrowest width ShipIt is used at — a fullscreen dialog at
-  360px wraps Antigravity's challenge to 242px, plus the chip row, and 320px still fits — so it
-  is generous of the ~160px an idle Anthropic step needs. That slack sits above the chips,
-  which are the box's last child (`mt-auto`) and stay on its floor.
-- **The title is the one thing outside the box, and it is frozen.** A successful login adopts
-  the authenticated email over a generated account name (`recordAccountIdentity`), so a
-  reconnect's title could rewrap — and move the window — at the moment the sign-in completed.
-  `openingLabel` holds the name the dialog opened on. Found by the independent review, which
-  traced the rename to the manager rather than inferring it from the UI.
+- The **structure** that makes the guarantee is testable without a layout engine — the geometry
+  itself is not, and the guards do not claim to measure it. One jsdom guard walks the three steps
+  and asserts each body carries the dialog's one height — a *concrete* length, since
+  `h-auto` is equal across the steps and is the bug itself — and another walks one sign-in
+  through all five states, asserting the box's height anchors, that the footer is one row of
+  `h-8` buttons and nothing else, and that the dialog's markup *outside* the box is
+  byte-identical in every state: the failure the old approach could not produce. Each was
+  proved red on its own defect before being left green. What they cannot see is a state they do
+  not walk and a geometry they cannot measure; this repo has no browser-driven suite, so the
+  live figures here are the record of the geometry, taken by hand.
+- **The number is step 1's own height**, the tallest of the three and the one screen with
+  something to lose: measured at 382px wherever the dialog is a floating box, its list column
+  being capped at 26rem (`minmax(min-content, 26rem)`) and there being room for that cap at
+  every `md` width, so the rows do not wrap there — they do below `md`, which is the next
+  bullet. The two shorter steps keep the slack —
+  step 2 centres its two rows in it, and the sign-in's box fills it, so the slack lands above
+  the chips, which are the box's last child (`mt-auto`) and stay on its floor. Measured after:
+  **498px at every step and every sign-in state**, top unmoved.
+- **Only where the dialog IS a window.** Below `md` it is a fullscreen sheet whose height is the
+  viewport's, and step 1 needs 560px there (its rows wrap at 390px), so a fixed body would
+  scroll the one step that fits everywhere else, for a window that cannot move anyway. What
+  does move in a sheet is the content inside it, so the sign-in's box keeps a fixed
+  `SIGN_IN_STAGE_HEIGHT` (**17rem**) there — measured for the tallest state at the narrowest
+  width, Antigravity's challenge wrapping to 242px at 360px, plus the chip row; 320px still
+  fits. Verified: the footer's top does not move through a sign-in on a 390px sheet.
+- **The title is the one thing outside the body, so its height is fixed and its text cannot
+  change under the user.** Two ways it moved the window, both found by independent review in
+  Chromium rather than by reasoning: a successful login adopts the authenticated email over a
+  generated account name (`recordAccountIdentity`), so a reconnect's title rewrapped at the
+  moment the sign-in completed — `openingLabel` freezes the label the dialog opened on, not the
+  whole title, which still gains the provider's name at step 1 → 2; and that gain is itself
+  enough to wrap a longer name than today's catalogue has, measured at **498 → 518px with the
+  top moving 10px**. The title is therefore `h-10 line-clamp-2`: two lines' worth, always.
+  Clamped rather than truncated to one line, because what a long title ends with is what
+  identifies it (`· someone@example.com`).
 
-**A key-only step gets the reserved line instead of the box.** Nothing there changes as anything
-proceeds — the field, the hint and the mode's hazard notice are the same before and after the
-paste — and the one thing that can arrive is *Save*'s failure, so it gets a two-line
-fixed-height slot (`KEY_ERROR_SLOT`) and the step keeps its natural height. Those steps also
-differ from each other by service (98px for DeepSeek, 190px for Vercel, same day), so one box
-big enough for all of them is a hole under most of them, and the sign-in's 272px box is a hole
-under every one.
+**A key-only step gets a reserved line rather than a box of its own.** Nothing there changes as
+anything proceeds — the field, the hint and the mode's hazard notice are the same before and
+after the paste — and the one thing that can arrive is *Save*'s failure. Above `md` the fixed
+body already holds that still; in the sheet it gets a two-line fixed slot (`KEY_ERROR_SLOT`)
+and the step keeps its natural height, which differs by service (98px for DeepSeek, 190px for
+Vercel, same day) by more than a box could sit above without being a hole under most of them.
+The slot is `shrink-0`, which is not belt and braces: **a scrollable flex child has no automatic
+minimum**, so in a stage a long chip row had filled it shrank to 0px and took the error message
+with it — present in the DOM, invisible, and not reachable by scrolling. Reproduced in Chromium
+by the independent review with a 30-chip fixture.
 
-**Steps 1 and 2 keep their own heights** (495px and 246px). They are different screens reached
-by a click rather than states of a sign-in — the dialog already changes *width* between step 1
-and the rest, agreed earlier for the same reason — and step 1 is a table of every service, so
-one height across all three would strand a mode choice in a box twice its size.
+**What the unified height costs, stated because it is visible.** Step 2 — two rows and a
+sentence — now sits in 384px of body, centred, with roughly 250px of white space around it; the
+idle Anthropic sign-in has about 200px of it above the chips. That is the price of the window
+not moving, and it was the human's call: the first cut left steps 1 and 2 at their own heights
+and they asked for one height across the flow (receipt in `requirements.md`). The alternative
+priced against it was unifying on the *shorter* height instead, which puts the provider list
+behind a scroll on the one screen whose whole purpose is comparing the providers against each
+other. Mocked up in the dogfood before choosing; hiding half the table lost to white space.
+(That mock-up scrolled the heads away too, which is a separate defect and is now fixed on its
+own account — see the support-table section — because the catalogue's tenth service will scroll
+this list whatever height it is given.)
+
+**The width still changes and is meant to.** Step 1 is wider by exactly its harness table and
+the rest go back to `max-w-md`, which was agreed earlier and is the opposite call to this one:
+a wide box around a mode choice wastes half the window, while a tall one merely leaves space.
 
 ## The compact card (reqs 19, 20, 21)
 
@@ -3777,7 +3810,17 @@ So, in the code as it stands:
 - **A window too narrow for the pair scrolls it sideways as one unit**, with the list column
   `sticky left-0`. A tick is only an answer beside the question it is about, so the names are the
   one thing that must not leave; dropping the table on a narrow screen, or crushing a column,
-  loses one or the other.
+  loses one or the other. Since req 26 gave the step a fixed body, **both heads are `sticky
+  top-0`** and the scroller owns both axes for the same reason on the other side: a tick is no
+  answer under a harness name that has scrolled off either. Today's nine services fit the body
+  (382px of 384), so the tenth is what makes this live — which is exactly why it is in before
+  it is needed, and why the body's height is not load-bearing for whether the table can be
+  read. Sticky resolves against the NEAREST scrolling ancestor, so the heads had to move onto
+  the scroller rather than the body: with the scroll one level up they simply left with the
+  rows, measured in the dogfood. Putting the vertical scroll on the scroller does not break the
+  sticky column — the old warning here was about a *second* scrolling ancestor, and this is one
+  element scrolling both ways: at 480 × 240, scrolled 147px right and 120px down, the names
+  hold at left 0 and the heads at top 0 together.
 
 **The cell is the picker's own eligibility rule, asked about a credential that does not exist
 yet.** `harnessSupportsMode` (`catalogue/index.ts`) calls `eligibleEntriesForHarness` with a

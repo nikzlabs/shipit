@@ -361,21 +361,39 @@ No open questions remain.
     identifiers, API paths, stored columns and CLI flags are free to keep saying `service`,
     and a user never sees them.
 
-26. **The sign-in window does not move while the user signs in.** The window that connects a
-    subscription holds one height for every state the sign-in passes through — waiting for the
-    provider's code, showing it, reporting a failure, offering a retry, saying the account is
-    connected, and printing whatever the harness's CLI failed with. States arrive on the
-    provider's clock rather than the user's, so a window that resizes with them moves under
-    someone reading a code off it or reaching for the button beside it. A state too tall for
-    the window is shown inside it, never by growing it. This is about the login screen's
-    states; choosing a provider and choosing a billing mode are earlier screens, reached by a
-    click, and keep their own sizes.
+26. **The window that connects a model provider never changes height.** One height, from
+    choosing the provider to the end of the sign-in: the provider list, the billing-mode
+    choice, and every state the sign-in passes through — waiting for the provider's code,
+    showing it, reporting a failure, offering a retry, saying the account is connected, and
+    printing whatever the harness's CLI failed with. States arrive on the provider's clock
+    rather than the user's, so a window that resizes with them moves under someone reading a
+    code off it or reaching for the button beside it; and a step that resizes it moves
+    everything the user was just looking at. Anything too tall for the window is shown inside
+    it, never by growing it, and a step with less to show keeps the space rather than shrinking
+    the window.
+
+    Where the window is not a window — the fullscreen sheet a phone gets — its height is the
+    screen's and cannot change; what this requires there is that the sign-in's states do not
+    move the content and the buttons inside the sheet.
+
+    The window's **width** is not covered: it widens for the provider list, which carries a
+    table, and narrows again once a provider is chosen. That was decided separately and stands.
 
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-09-17 — **Does "the height never changes" cover the whole dialog, or only the states of
+  the sign-in?** The first cut read *"the state the login screen is in"* as the sign-in step's
+  states and left the provider list (496px) and the billing-mode choice (246px) at their own
+  heights, saying so in the requirement and flagging it as the agent's reading rather than the
+  human's. **Chosen: the whole dialog, all three steps, one height.** The human took the
+  offered follow-up — *"Give steps 1 and 2 the same height too … so the window never changes
+  height at any point in the add flow"* — and left the choice of height to the agent: the
+  dialog is now step 1's own height throughout, that being the tallest and the one screen with
+  something to lose. Req 26 rewritten; the sentence excluding the earlier screens is gone.
 
 - 2026-09-13 — **What is this surface called on screen?** *"people get confused by 'services'
   term, maybe rename to 'model providers'?"* The word already means a Docker Compose service
@@ -1089,14 +1107,13 @@ human, but most of the mechanism did not. What the human actually said, in order
 - "when logging in with the subscription, with Claude, Antigravity and so on, we show a UI window
   for that. This window currently sometimes changes height depending on the state the login
   screen is in. Please make it so the height never changes, and we need some kind of test for
-  that because this is very important for the UX" → req 26. The requirement is the UX statement;
-  which element holds the height, and the reserved line a key-only step gets instead, are the
-  agent's design and live in `plan.md`. **Req 26's last sentence is the agent's reading, not the
-  human's**: "the state the login screen is in" was taken to mean the states of the sign-in
-  step, leaving the provider list and the billing-mode choice — earlier screens, each reached
-  by a click, and already of different *widths* by an earlier decision — at their own heights.
-  Named here because the independent review was right that nobody approved the exclusion; if it
-  is wrong, the fix is one height across all three steps and the requirement says so instead.
+  that because this is very important for the UX" → req 26, with *"Give steps 1 and 2 the same
+  height too … so the window never changes height at any point in the add flow"* extending it
+  to the whole dialog the same day (see the receipt above — the first cut had excluded the two
+  earlier steps on the agent's own reading, and the independent review was right that nobody
+  had approved that). The requirement is the UX statement; which element holds the height, what
+  that height is, and the reserved line a key-only step gets in the fullscreen sheet are the
+  agent's design and live in `plan.md`.
 - "I meant leaving the panels with the services as is, with the separate table on the right. You
   extended the panels and included the support inside these panels, which is not what I wanted"
   → req 22's second sentence. The first cut read "table" as a set of columns *within* each row,
