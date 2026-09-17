@@ -546,3 +546,20 @@ the first of these. All six are fixed.
       review, reproduced in Chromium and both fixed: the title wrapping when it gains a long
       provider name (498 → 518px — now `h-10 line-clamp-2`), and the key step's reserved error
       line collapsing to 0px as a scrollable flex child (now `shrink-0`).
+- [x] **Req 26 narrowed back to the step, 2026-09-17.** The human looked at the one height and
+      asked for the two shorter steps back — *"a lot of empty space, especially on step 2"* —
+      so what must not move is now the step on screen, not the dialog. The fixed height is on
+      the one thing that changes under the user: the sign-in's box (`SIGN_IN_STAGE_HEIGHT`,
+      16rem at every width — the tallest state measured at the narrowest, Antigravity's
+      challenge at 242px in a 328px stage, against 225 at the dialog's own width). The model
+      chips moved OUT of that box, being identical in every state and worth up to 65px of it.
+      Step 1 keeps 24rem as a `max-h` cap, so a growing catalogue scrolls and a short one does
+      not pay; steps 2 and 3 carry no height class at all. Measured live: step 1 **518px**,
+      step 2 **266** (was 518), the Anthropic sign-in **440**, held at top 230 through idle →
+      waiting → challenge, with the CLI disclosure scrolling inside the box; key-only steps are
+      their content (DeepSeek 295, OpenRouter 364, OpenCode sub 409) and a refused key still
+      lands in its reserved line without moving the window. On a 390px sheet the box holds
+      256px and the footer's top does not move. The `shrink-0` on the key error slot went with
+      the fixed body that made it necessary; the hazard is recorded at the constant. Guards
+      inverted to match — step 1 capped, steps 2 and 3 unanchored, chips outside the box — each
+      proved red on its own defect.
