@@ -138,4 +138,16 @@ describe("ActionChecklist", () => {
     fireEvent.click(screen.getAllByRole("checkbox")[0]);
     expect(screen.getByTestId("selected")).toHaveTextContent("a");
   });
+
+  // planning#592 — jsdom computes no layout, so the focus scroll that blanked
+  // the pane is unassertable; the row containing its own `sr-only` box is the
+  // invariant that prevents it.
+  it("keeps every row a containing block for its own hidden checkbox", () => {
+    render(<Harness items={[item({ key: "a" }), item({ key: "b" })]} />);
+    for (const box of screen.getAllByRole("checkbox")) {
+      fireEvent.click(box);
+      expect(box.className).toContain("sr-only");
+      expect(box.closest("label")?.className.split(/\s+/)).toContain("relative");
+    }
+  });
 });

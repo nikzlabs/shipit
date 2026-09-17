@@ -398,4 +398,24 @@ describe("SessionStatusCard", () => {
     render(<SessionStatusCard status={card({ actions: [offer({ offerId: "o1" })] })} />);
     expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
   });
+
+  // planning#592 — the card renders outside the transcript's row groups
+  // (req 32), whose containment hid this everywhere else.
+  it("ticks a manual step and a follow-up without either box escaping its row", () => {
+    render(
+      <SessionStatusCard
+        status={card({
+          needsYou: ["Add the Stripe test key."],
+          actions: [offer({ offerId: "o1" })],
+        })}
+      />,
+    );
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(2);
+    for (const box of boxes) {
+      fireEvent.click(box);
+      expect(box.closest("label")?.className.split(/\s+/)).toContain("relative");
+    }
+    expect(screen.getByRole("button", { name: /submit/i })).toBeEnabled();
+  });
 });
