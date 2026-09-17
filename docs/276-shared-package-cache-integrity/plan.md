@@ -415,11 +415,54 @@ workspaces**. ShipIt's state directory already holds both (`pnpmStoreDirForRunti
 puts the store under `stateDir`, beside the session dirs), so the unit that moves
 is the state directory — not "the pnpm store" on its own, which would buy nothing.
 
-**This does not require reformatting the host.** Every measurement above was taken
-inside a **loopback XFS image file sitting on an ordinary ext4 disk** — created
-with `truncate` + `mkfs.xfs -m reflink=1` and loop-mounted. That is a viable
-deployment shape for the state directory and avoids a host-level migration
-entirely; it costs a loop device, an image file to size, and its own fsck story.
+### ShipIt installs anywhere, so the filesystem is not ShipIt's to choose
+
+An earlier draft of this section proposed a **loopback XFS image** on the ext4
+disk as the deployment shape, on the strength of the measurements above having
+been taken inside one. **That is withdrawn as a default.** ShipIt is installed on
+laptops as well as servers — macOS and Windows via a Docker VM, any Linux distro,
+any filesystem — and a loop-mounted image is none of those things portably:
+
+- **It needs `CAP_SYS_ADMIN`.** `mount` is privileged, and ShipIt's compose grants
+  the orchestrator no `privileged` flag and no `cap_add` (checked). Taking
+  `CAP_SYS_ADMIN` for the orchestrator in order to save disk would be a poor trade
+  in a change whose entire purpose is to *reduce* what one session can do.
+- **It is Linux-only**, and on macOS/Windows the "host disk" is already inside a
+  Docker VM, so the image would nest a filesystem in a filesystem in a VM.
+- **It adds an operator-visible failure mode** — image sizing, loop-device
+  exhaustion, its own fsck — to a component that currently has none.
+
+**The design does not need it.** `package-import-method=copy` requires no mount,
+no privilege and no new storage at all: it produces the isolation on *every*
+filesystem, and it **inherits** the space saving wherever the host filesystem
+happens to support reflink. ShipIt does not manufacture the saving; it gets it for
+free where it exists and pays a real copy where it does not.
+
+Verified on both reflink filesystems, with a multi-megabyte probe file:
+
+| host filesystem | `copy` gives isolation | extents shared | per-session data cost |
+|---|---|---|---|
+| **XFS** (`reflink=1`, the mkfs default) | yes | **yes** | ~free |
+| **btrfs** | yes | **yes** | ~free |
+| **ext4** | yes | no | a real copy |
+
+*(A caution for anyone re-running this: on btrfs a probe file under ~2 KB is
+**inlined into metadata**, so it has no extents and reflink sharing is invisible.
+A 986-byte probe reported btrfs as not sharing at all; a 6 MB probe showed it
+sharing exactly like XFS. Probe with a large file.)*
+
+So the honest position: **the isolation is universal and needs no infrastructure;
+the space saving is a property of the host's filesystem.** Fedora and openSUSE
+default to btrfs and RHEL-family to XFS with reflink on, so a large share of Linux
+hosts already get it. Ubuntu, Debian, and the Docker VMs behind macOS and Windows
+default to ext4 and pay the copy.
+
+What ShipIt should do about that is **detect and report**, not require: probe the
+state directory for reflink support at startup and surface the answer, so an
+operator on ext4 knows why their disk use went up and what would change it. A
+loopback image stays available to a self-hosted Linux operator who wants it, as an
+operator-level choice with the privilege cost stated — never as the default, and
+never as something ShipIt sets up on its own.
 
 ### What it closes, and what it does not
 

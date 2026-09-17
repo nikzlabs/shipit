@@ -69,12 +69,19 @@ only their own items, not this list.
       **91 MB**, copy **92 MB**, clone **92 MB** for a 3 353-file / 86 MB
       `node_modules`. Extent sharing confirmed with `filefrag` (1 054/1 057 files
       flagged `shared`, different inode). **Option E confirmed.**
-- [ ] Put the **state directory** — store *and* session workspaces together — on a
-      reflink-capable filesystem. Measured: reflink and hardlink both fail across a
-      filesystem boundary (`EXDEV`), and moving the store alone buys nothing. A
-      loopback XFS image on the existing ext4 works and avoids reformatting the
-      host; price its sizing, loop-device management and fsck story before
-      choosing it over a real filesystem.
+- [ ] Detect reflink support on the state directory at startup and surface it, so
+      an operator on ext4 can see why per-session disk rose and what would change
+      it. **Detect and report — never require.** ShipIt installs on laptops and in
+      Docker VMs; the filesystem is not ShipIt's to choose.
+- [ ] Do **not** build a loopback-image mount. It needs `CAP_SYS_ADMIN`, which the
+      orchestrator does not take today, and taking it to save disk in a change
+      meant to reduce what a session can do is the wrong trade. Linux-only, and it
+      nests a filesystem inside a VM on macOS/Windows. Left as an operator-level
+      option, documented with its privilege cost, not as a ShipIt feature.
+- [ ] Note for anyone re-running the reflink measurements: keep the store and the
+      workspace on ONE filesystem (`EXDEV` otherwise — measured), and probe with a
+      file larger than ~2 KB, since btrfs inlines smaller files into metadata and
+      hides extent sharing entirely.
 - [x] **Re-test H2 with a controlled harness.** Done — `verify-h2.sh`, committed
       beside this checklist. The apparent copied-vs-in-place difference that made
       H2 look unsettled was a defect in the first harness (one store reused across
