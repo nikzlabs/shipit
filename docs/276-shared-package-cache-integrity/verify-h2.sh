@@ -2,29 +2,15 @@
 #
 # verify-h2.sh — does pnpm install poisoned content from a shared store?
 #
-# This question has been answered wrongly twice in docs/276, in BOTH directions,
-# because the harness was never controlled. Each time the run produced the result
-# the hypothesis predicted and nobody asked which check had actually fired.
-#
-# Known confounds, all swept here as explicit variables:
-#
-#   store-state   A store copied aside with `cp -a` behaved DIFFERENTLY from the
-#                 same entry poisoned in place. That points at a verification
-#                 result pnpm caches, not at the poison.
-#   network       Online, pnpm can re-download and repair, which looks identical
-#                 to "it verified" unless you check whether the entry changed.
-#   verify-store-integrity   Setting it false installed poisoned bytes every
-#                 time, so a real check exists and something gates it.
-#   poison-length The store path IS the content hash. A real hash check catches
-#                 any edit; a size/mtime check is fooled by a same-length edit.
-#                 Sweeping both says WHICH check fired.
-#   pnpm-version  The claim first flipped right after corepack silently upgraded
-#                 pnpm mid-session.
+# Sweeps store-state (copied aside vs poisoned in place) × network ×
+# verify-store-integrity × poison-length (same-length vs shorter) × pnpm version.
+# Poison length tells a hash check from a size/mtime check; network tells
+# "verified and repaired" from "never checked".
 #
 # EVERY cell is run twice: once poisoned, once clean (the negative control). A
-# cell whose CLEAN run also fails proves nothing about the poison — that is
-# exactly the `ERR_PNPM_NO_OFFLINE_TARBALL` trap that produced the first wrong
-# answer. Such cells are reported as VOID, not as evidence.
+# cell whose clean run also fails proves nothing about the poison and is
+# reported as VOID. Without this, ERR_PNPM_NO_OFFLINE_TARBALL reads as "no
+# check fired" when it is the check's own eviction.
 #
 # Self-contained: needs bash, node, npm, and network for the initial store warm.
 # Touches only its own scratch dir. Does not read or write the ShipIt repo.
@@ -52,7 +38,7 @@ while [ $# -gt 0 ]; do
     --probe) PROBE_REL="$2"; shift 2 ;;
     --tsv)   TSV_OUT="$2"; shift 2 ;;
     --keep)  KEEP=1; shift ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -81,13 +67,8 @@ cat > "$TEMPLATE/package.json" <<EOF
   "dependencies": { "$PKG_NAME": "$PKG_VER" } }
 EOF
 
-# Resolve a pnpm invocation for a requested version.
-#
-# A pinned version is installed ONCE into its own prefix and invoked by path.
-# The obvious `npx -y pnpm@VER` re-resolves the package on every single call,
-# which at ~50 installs per version turns a two-minute sweep into a long wait —
-# and on a remote box it also means 50 registry round-trips over someone else's
-# network.
+# A pinned pnpm is installed once into its own prefix; `npx -y pnpm@VER` would
+# re-resolve on every one of ~50 calls per version.
 pnpm_cmd() {
   local ver="$1" prefix bin
   if [ "$ver" = "system" ]; then command -v pnpm >/dev/null || return 1; echo "pnpm"; return 0; fi
@@ -104,9 +85,8 @@ pnpm_cmd() {
 
 # ---------------------------------------------------------------------------
 # Per-version setup: build a pristine store, and locate the store entry that
-# backs the probe file. The location is derived from the INODE under hardlink
-# mode, never by grepping content — grepping finds a plausible file rather than
-# the right one, which silently invalidated an earlier run of this experiment.
+# backs the probe file by inode (a content grep finds a plausible file, not
+# the right one).
 # ---------------------------------------------------------------------------
 setup_version() {
   local PNPM="$1" root="$2"
@@ -158,15 +138,9 @@ trial() {
   case "$STATE" in
     copied)   store="$root/store-copy"; rm -rf "$store"; cp -a "$root/store-pristine" "$store" ;;
     in-place) # "in place" = a store THIS pnpm wrote and has already imported from
-              # once, then poisoned without the file ever being moved.
-              #
-              # This store is rebuilt for EVERY trial, deliberately. An earlier
-              # version built it once and reused it, which made each cell inherit
-              # whatever the previous cell left in pnpm's verification state: the
-              # second poison of a pair always ran against an entry pnpm had just
-              # re-verified, and duly came out "safe". That is the same
-              # order-dependence this harness exists to eliminate, reintroduced by
-              # the harness itself. Trials must not be able to see each other.
+              # once, then poisoned without the file ever being moved. Rebuilt
+              # for every trial: a store reused across trials lets one cell
+              # inherit the previous cell's re-verified entry.
               store="$root/store-live"; rm -rf "$store"
               cp -a "$root/store-pristine" "$store"
               ( cd "$proj" && $PNPM --store-dir "$store" \

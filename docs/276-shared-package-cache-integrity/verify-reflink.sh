@@ -3,32 +3,15 @@
 # verify-reflink.sh — can a session get isolation from the shared pnpm store
 #                     WITHOUT paying for a second copy of the bytes?
 #
-# docs/276 plan.md option E argues yes: a reflink (copy-on-write) import gives
-# each session its own inode while the extents stay shared, so poisoning the
-# store no longer reaches a session that already installed, and the disk barely
-# moves. pnpm implements this as `package-import-method=clone` / `clone-or-copy`.
+# Measures each pnpm package-import-method for inode sharing, whether a store
+# write reaches the installed file, and disk cost. Run on XFS (reflink=1) or
+# btrfs for the reflink numbers; ext4 gives the baseline.
 #
-# That argument had ONE unverified link, and this script exists to close it.
-# The filesystem holding ShipIt's state directory — every session workspace,
-# /dep-cache and the pnpm stores, all one filesystem — is ext4, which has no
-# reflink, so the saving was inferred and never measured. Run this on XFS
-# (reflink=1) or btrfs to replace the inference with a number.
-#
-# TWO measurement traps, both of which this script fell into before you read it:
-#
-#   1. `du` is BLIND TO REFLINKS. Reflinked copies are separate inodes with
-#      their own extent maps, so du reports each at full size while the
-#      filesystem grows by zero. Measured on XFS: two reflinked 64 MB files,
-#      du says 64 MB each, `df` says +0 KB. A du-based harness refutes option E
-#      on evidence that cannot see the thing being claimed. du DOES see through
-#      hardlinks, which is how the ext4-only version got away with it — one
-#      tool, two sharing mechanisms, only one of them visible. Every disk figure
-#      below is therefore a `df` used-space delta.
-#
-#   2. Plain `cp` on XFS defaults to `--reflink=auto`. A "full copy" control
-#      written as `cp a b` silently makes a reflink and costs 0 KB, which reads
-#      as "reflink saves nothing" or "copies are free" depending on which you
-#      were hoping for. Controls here pass `--reflink=never` explicitly.
+# Two measurement traps this script guards against:
+#   1. `du` is blind to reflinks (separate inodes, shared extents) though it
+#      sees through hardlinks. Every disk figure is a `df` used-space delta.
+#   2. Plain `cp` on XFS defaults to --reflink=auto, so a "full copy" control
+#      silently reflinks. Controls pass --reflink=never.
 #
 # Self-contained: needs bash, node, npm, and network for the initial store warm.
 # Touches only its own scratch dir. Does not read or write the ShipIt repo.
@@ -57,7 +40,7 @@ while [ $# -gt 0 ]; do
     --tsv)   TSV_OUT="$2"; shift 2 ;;
     --allow-non-reflink) ALLOW_NON_REFLINK=1; shift ;;
     --keep)  KEEP=1; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -99,7 +82,7 @@ rm -f "$SCRATCH/.rl-src" "$SCRATCH/.rl-dst"
 say ""
 
 if [ "$REFLINK" = "0" ] && [ "$ALLOW_NON_REFLINK" = "0" ]; then
-  say "This filesystem cannot answer the question option E is asking."
+  say "This filesystem cannot answer the reflink question."
   say "Re-run on XFS (mkfs.xfs defaults to reflink=1 since xfsprogs 5.x) or btrfs,"
   say "or pass --allow-non-reflink to record the non-reflink baseline instead."
   [ "$KEEP" = "1" ] || rm -rf "$SCRATCH"
@@ -119,9 +102,8 @@ say "--- warming a pristine store ---"
     --config.package-import-method=hardlink install --silent ) >"$SCRATCH/warm.log" 2>&1
 [ -f "$TEMPLATE/$PROBE_REL" ] || fail "warm install failed; see $SCRATCH/warm.log"
 
-# Locate the store entry backing the probe file BY INODE. Never by grepping
-# content: a grep finds a plausible file, not the right one, and that silently
-# invalidated an earlier run of this experiment.
+# Locate the store entry backing the probe file by inode, never by grepping
+# content (a grep finds a plausible file, not the right one).
 ino=$(stat -c %i "$TEMPLATE/$PROBE_REL")
 ENTRY_ABS=$(find "$PRISTINE" -inum "$ino" 2>/dev/null | head -1)
 [ -n "$ENTRY_ABS" ] || fail "probe file shares no inode with the store"
@@ -145,9 +127,7 @@ run_method() {
   rm -rf "$proj" "$store"; mkdir -p "$proj"
   cp "$TEMPLATE/package.json" "$proj/package.json"
   [ -f "$TEMPLATE/lock.keep" ] && cp "$TEMPLATE/lock.keep" "$proj/pnpm-lock.yaml"
-  # --reflink=never so the store copy itself never silently shares extents with
-  # the pristine tree: on XFS, plain `cp` defaults to --reflink=auto, which made
-  # an earlier "full copy" control cost 0 KB and look like a reflink.
+  # --reflink=never: on XFS plain `cp` would reflink the store against the pristine tree.
   cp -a --reflink=never "$PRISTINE" "$store"
   sync; local FS_USED_BASE; FS_USED_BASE=$(fs_used_kb)
 
@@ -172,18 +152,7 @@ run_method() {
   pino=$(stat -c %i "$proj/$PROBE_REL")
   if find "$store" -inum "$pino" 2>/dev/null | grep -q .; then shared="yes"; else shared="no"; fi
 
-  # THE honest disk figure is the FILESYSTEM's used-space delta, not du.
-  #
-  # `du` is blind to reflinks. Reflinked copies are separate inodes with their
-  # own extent maps, so du reports each at full size even though they share
-  # every block — measured on XFS: two reflinked 64 MB files, du says 64 MB
-  # each, and the filesystem grew by 0 KB. A du-based harness would therefore
-  # report copy-on-write as costing exactly as much as a full copy and refute
-  # option E on evidence that cannot see the thing being claimed.
-  #
-  # (du DOES see through hardlinks, which is why the earlier ext4-only version
-  # got away with it. One tool, two sharing mechanisms, only one of them
-  # visible.)
+  # The disk figure that counts is the filesystem's used-space delta; du is blind to reflinks.
   local store_kb nm_kb combined
   store_kb=$(du -sk "$store" | cut -f1)
   nm_kb=$(du -sk "$proj/node_modules" | cut -f1)
@@ -215,7 +184,7 @@ say "=== what the result means ==="
 say "hardlink       expect inode-shared=yes and poison-reaches=YES. This is today's"
 say "               behaviour and the hole docs/276 calls H3."
 say "clone          on a reflink filesystem: inode-shared=no, poison-reaches=no, and"
-say "               COMBINED close to hardlink's. That is option E's claim, confirmed."
+say "               COMBINED close to hardlink's. That is the copy-on-write claim, confirmed."
 say "               On ext4 it does not degrade — it fails with 'Operation not"
 say "               supported (os error 95)', which is why ShipIt must never set it"
 say "               unconditionally."

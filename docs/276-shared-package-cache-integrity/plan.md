@@ -1,823 +1,188 @@
 ---
 issue: planning#414
-title: Shared package cache integrity — priced options
-description: Prices the three directions planning#414 sketches, against measured behaviour of npm's and pnpm's own integrity checks, and recommends a sequence.
+title: Shared package cache integrity — design
+description: Closes the two real cross-session holes in the shared package caches, per-session npm resolution cache and copy-on-write pnpm imports, without giving up the storage sharing.
 ---
 
-# Shared package cache integrity — priced options
+# Shared package cache integrity — design
 
 Implements [requirements.md](./requirements.md). Read it first.
 
-> **All requirement questions are settled** as of 2026-09-17 — see the dated
-> receipts under [Resolved questions](./requirements.md#resolved-questions).
-> Requirements discipline no longer blocks implementation. This document priced
-> the options so those questions could be answered; **options E and F are the
-> recommendation**, and A–D are kept as the record of what was tried and why it
-> was rejected. Two measured gaps remain, neither of them a decision for the
-> requester: the pnpm store sits outside any overlay as deployed, and the H1 spike
-> has not been timed against req 7.
+All figures below were measured on npm 11.12.1 and pnpm 11.22.0 / 12.4.2. The
+two harnesses beside this doc, [`verify-h2.sh`](./verify-h2.sh) and
+[`verify-reflink.sh`](./verify-reflink.sh), reproduce the pnpm results.
 
-## What changed after measuring
+## The holes
 
-planning#414 says plainly that none of its three sketches were evaluated. They
-were evaluated here, against this container's npm 11.12.1 and pnpm 11.22.0. Two
-results reframe the problem, and both contradict the natural reading of the
-issue.
-
-**The issue's premise is half wrong: most of the integrity checking it proposes
-to add already exists and already works.**
-
-- npm's content cache is self-verifying — the cache path *is* the content hash,
-  and cacache checks it on read. A poisoned tarball is detected, discarded, and
-  an offline install fails closed.
-
-**This paragraph used to claim the opposite of the truth**, and is corrected in
-place rather than deleted, because the wrong version is what the early options
-were priced against. It said pnpm's store had no integrity check at all. It has
-one: pnpm content-hash-checks on import, evicting and re-downloading online and
-failing closed offline, identically on pnpm 11.22.0 and 12.4.2 — measured with a
-controlled harness, [the H2 result](#h2-settled-pnpm-does-verify-and-the-hole-was-never-there).
-Its single off switch is `verify-store-integrity=false`. So **the install path was
-never the pnpm hole.**
-
-**And the issue understates the pnpm channel.** It describes the risk as content
-"that another session of the same repo/runtime later installs". Because store
-entries are **hardlinked** into `node_modules`, no later install is needed:
-writing to the store file changes the victim session's *already-installed* file
-immediately, and that code then runs. Verified by inode and link count; the
-poisoned function executed. Requirement 4 exists for this.
-
-So the real, unprotected surface is not "cache content" uniformly — npm's
-content cache is genuinely safe. It is these three:
-
-| Hole | Surface | Protected today? |
+| Hole | Surface | Status |
 |---|---|---|
-| **H1** — cached *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` npm `_cacache/index-v5` | **No.** Demonstrated install-time RCE, offline, no warning. |
-| **H2** — poisoned store content installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Not a hole.** pnpm content-hash-checks on import: it evicts and re-downloads online, and fails closed offline. Measured 2026-09-17 — [see the result](#h2-settled-pnpm-does-verify-and-the-hole-was-never-there). Depends on `verify-store-integrity` staying at its default. |
-| **H3** — store file mutated in place, changing already-linked `node_modules` files | `/workspace/.pnpm-store` | **No**, and unfixable by verification: there is no install event to check at. |
+| **H1** — cached npm *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` `_cacache/index-v5` | **Open.** Install-time RCE: rewrite `dist.integrity` to attacker content placed at its own hash, set `hasInstallScript: true`, and `npm install` runs the attacker's `postinstall`. Works with the network available, because npm serves its local cache without asking the registry. |
+| **H2** — poisoned pnpm store content installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Not a hole.** pnpm content-hash-checks entries on import: online it evicts and re-downloads, offline it fails closed. Only `verify-store-integrity=false` defeats it. |
+| **H3** — store file mutated in place under a live `node_modules` | `/workspace/.pnpm-store` | **Open, and unreachable by verification.** Store files are hardlinked into `node_modules` (`links=2`), so a store write changes already-installed files with no install event. Req 4 exists for this. |
 
-**The overlay dependency base is not a third hole.** It is never mounted into a
-session container (`src/server/orchestrator/overlay-volume.ts:38-43`), so no
-session can write it directly; a session reaches it only by *publishing*, which
-is gated by the existing commit-ancestry CAS. The issue lists it alongside the
-other two, but it does not carry the write this work is about. Ruling it out
-here so no option below is priced for a surface that does not need one.
+Facts that shape the design:
 
-H1 is protected *incidentally* when the repo has a lockfile pinning `integrity`,
-because then npm trusts the lockfile rather than the cached packument. That was
-the whole of the protection that existed, which is why req 5 was written. It is no
-longer the plan: a lockfile covers neither `npm install <new-package>` nor a repo
-without one, and the per-session resolution cache covers both — measured, which is
-why the lockfile question (Q2) was withdrawn rather than answered.
+- npm's `content-v2` is self-verifying (the path is the hash); a poisoned tarball
+  is detected and an offline install fails closed. Only `index-v5` is forgeable.
+- npm does not hardlink `_cacache` into `node_modules` (`links=1`), so H3 is
+  pnpm-only.
+- The overlay dependency base (docs/183) is not a hole: it is never mounted into
+  a session container (`src/server/orchestrator/overlay-volume.ts`), and is
+  reached only through the publish path's compare-and-swap.
+- A lockfile is a partial mitigation for H1 only. Measured with a valid lockfile
+  present: `npm ci` and an in-sync `npm install` are protected; `npm install
+  <new-package>` and an out-of-sync lockfile are not. And after a poisoned add,
+  `package-lock.json` records the attacker's hash, which the post-turn
+  auto-commit then pushes to the user's repository.
+- ShipIt sets neither `package-import-method` nor `verify-store-integrity`
+  anywhere in `src/`; both run on pnpm defaults.
 
-## Option A — integrity rather than isolation
+## Design
 
-*Verify a cache entry against its lockfile hash on read, so a poisoned entry
-fails closed.*
+### 1. H1 — per-session npm resolution cache (reqs 1, 3, 5, 6)
 
-**What it costs — and the cost is split sharply by ecosystem.**
+Give each session its own `_cacache/index-v5` and keep sharing `content-v2`.
+The poisoned packument then does not exist in the session that reads it, so
+every install form is protected, including `npm install <new-package>` and a
+repo with no lockfile. The download saving stays: tarballs are found in
+`content-v2` by digest without an index entry.
 
-- *npm:* very little. The check already exists and works; the genuine remainder
-  is to make installs lockfile-pinned (`npm ci` semantics) and stop sharing the
-  one part of the npm cache that is not self-verifying.
-- *pnpm:* a great deal. There is no existing check to lean on — ShipIt would
-  have to verify store contents itself, on every install, for every linked file.
-  Measured on a realistic tree (this repo's own `node_modules`): **32,310 files,
-  478 MB, ~1.5 s** to sha512 every file, single-threaded with a warm page cache,
-  so cold is worse. docs/198 put the warm-install floor at ~5–7 s, so this is a
-  20–30 % tax on the exact path the caches exist to make fast (req 7) — and it
-  means reimplementing what the package manager was assumed to be doing.
+Spiked: a private `index-v5` beside a symlinked shared `content-v2` installs
+offline, the symlink survives the install, and the split is 64 KB private /
+688 KB shared. An attacker's write to the shared `index-v5` had no effect on
+the victim. Still to measure: warm-install time (req 7) and whether the
+symlinked `content-v2` survives `npm cache verify`.
 
-**The deeper problem with "just verify it": a check needs a trustworthy
-expectation, and there isn't one.** The expected hash lives in the same shared,
-writable surface as the bytes. Measured: rewriting the *expected* value made
-npm's own verification pass on the attacker's package and execute it. The check
-was not bypassed — it was satisfied, against a value the attacker supplied. So
-verification is only worth what its expectation source is worth, and there are
-exactly three sources: the project's lockfile (trustworthy, does not cover
-`npm install <new-package>`), a per-session copy of the resolution data
-(trustworthy — and then npm's existing check suffices, which is why the
-per-session `index-v5` is the recommendation), or the registry (option D,
-refuted).
+### 2. H3 — `package-import-method=copy` (reqs 1, 4, 10)
 
-**What it closes.** H1, completely and cheaply. H2 only by ShipIt building the
-verification pnpm does not provide.
+Copies give each session its own inode, so a store write no longer reaches an
+installed file. Set **`copy`**, not `clone`:
 
-**What it does not close.** H3, at all, and this is not a matter of degree. The
-victim is a process opening `node_modules/foo/index.js`; the kernel serves the
-poisoned inode. There is no read ShipIt mediates, no install to hook, and no
-hash to compare against at the moment it matters. **Any design whose answer is
-"check integrity on read" is silently a design that leaves H3 open.**
+- `clone` is the strict reflink spelling and fails the install where reflink is
+  unavailable: `os error 95` (ENOTSUP) on ext4, `os error 18` (EXDEV) across a
+  filesystem boundary.
+- `copy` goes through `copy_file_range`, which XFS and btrfs turn into an
+  extent share. Measured on XFS (`reflink=1`), fresh filesystem per run, `df`
+  from empty, 3 353 files / 86 MB of `node_modules`:
 
-**What it breaks.** Lockfile-pinned installs would break repos with no committed
-lockfile — they would install without the shared cache, or warn. That was Q2, and
-it is **withdrawn**: the per-session resolution cache protects a no-lockfile repo
-unchanged (measured), so nothing needs to break and no policy change is needed.
+  | import method | filesystem used (store + `node_modules`) | inode shared | store poisoning reaches installed files |
+  |---|---|---|---|
+  | `hardlink` (today) | 91 MB | yes | yes |
+  | `copy` | 92 MB | no | no |
+  | `clone` | 92 MB | no | no |
 
-**Verdict.** Right for H1, and the cheapest thing on the table for it. For pnpm
-it is neither cheap nor sufficient. Its honest description is "stop defeating a
-check that already exists" — which turns out to be true of npm only.
+  `filefrag` showed 1 054 of 1 057 files with the `shared` flag at the same
+  physical blocks as the store entry. btrfs behaves the same. On ext4 `copy` is
+  a real copy: about 1.8× the combined disk of hardlinks for the same tree.
+- Install time is unaffected: hardlink 170 ms, copy 180 ms, mean of five runs.
 
-## Option B — a writer that is not the session
+Reflink needs the store and the workspaces on one filesystem. ShipIt's state
+directory already holds both (`pnpmStoreDirForRuntime` puts the store under
+`stateDir`). The filesystem is the operator's: ShipIt installs on laptops and
+in Docker Desktop VMs, most of which are ext4. So **detect reflink support on
+the state directory at startup and report it; never require it.** A loopback
+XFS image is not a ShipIt feature: it needs `CAP_SYS_ADMIN`, which the
+orchestrator does not take, and is Linux-only.
 
-*Sessions read the caches; only a ShipIt-owned process populates them.*
+### 3. ext4 — overlayfs gives copy-on-write without reflink (reqs 10, 11)
 
-> **⚠️ Ruled out in this form by requirement 9** (2026-08-20): the agent must be
-> able to run `npm install` and equivalent commands, and they must work. This
-> option replaced the session's own install with a ShipIt-owned fetching step,
-> which is exactly what requirement 9 forbids. The section is kept because the
-> measurements below are what produced that requirement, and because a **reshaped**
-> variant survives — see [Reshaped B](#reshaped-b--mediate-the-fetch-not-the-write).
+overlayfs implements copy-on-write in the VFS, so it works on any filesystem.
+ShipIt already builds this: the docs/183 overlay dep store, mounted by Docker
+as an `overlay` volume (`src/server/orchestrator/overlay-volume.ts:196`), so no
+privileges are needed and it works under Docker Desktop.
 
-**What it costs.** The most of the three, and the cost is concentrated in one
-place: `pnpm install` writes to the store as a matter of course, so making the
-store read-only to sessions means brokering the populate step through a process
-running as a cache-owning identity. docs/270 req 10 ("everything the agent can
-do inside its own container today MUST still work") means the agent's own ad-hoc
-`npm install` in the terminal has to keep working through that broker too — not
-just the `agent.install` path.
+Measured on ext4, two sessions over one shared 59 MB / 1 547-file base:
 
-**One tempting variant does not work.** "Run the install command as the
-cache-owning uid" closes nothing against the threat in scope: `agent.install` is
-arbitrary repo-controlled code (the codegen hazard docs/198 documents), so
-running it as the cache owner hands the attacker exactly the write it wanted. It
-defends only against a compromised agent turn, not against a malicious repo.
-
-**Read-only permission bits are not enough — it must be a different owner.**
-Measured: with the session owning the store file's inode, `chmod 444` on the
-store file stops nothing. The session `chmod`s it back **through its own
-`node_modules` path** — the same inode, which it owns — and writes. So the store
-files must be owned by a ShipIt identity the session is not, which is the exact
-reverse of what docs/270 did when it added group write to keep sharing working
-(`shareOne`, `session-worker-uid.ts:381`).
-
-**The direct consequence: `node_modules` becomes read-only to the agent.** The
-`node_modules` entry and the store file are one inode, so a store file the
-session cannot write is a `node_modules` file the session cannot write or
-`chmod`. Editing a dependency in place to debug it, and `patch-package`-style
-workflows, both stop working. That collides with docs/270 req 10 — "everything
-the agent can do inside its own container today MUST still work" — so option B
-has to answer it rather than discover it later. pnpm's own escape hatches are
-`pnpm patch` and `package-import-method=copy`; the second is priced below.
-
-**Someone else has to fetch.** Sessions install constantly — `agent.install`, the
-agent adding a package mid-turn, the user's terminal. A read-only store means a
-package that is not already present cannot be fetched by the session at all.
-Pre-fetching from the lockfile covers the common case at no per-install cost, but
-`pnpm add <new package>` mid-turn still needs an on-demand call into the broker.
-And req 2 forbids a *silent* fallback to a private copy, which is precisely what
-pnpm does naturally when it cannot write the store — so the broker has to work,
-not degrade.
-
-### Variant — copy instead of hardlink *(now the leading candidate)*
-
-`package-import-method=copy` makes `node_modules` entries copies rather than
-hardlinks. That alone kills **H3**: with no shared inode, poisoning the store
-cannot reach a session that already installed, and `node_modules` stays writable
-by the agent. **H2 survives** — a poisoned store is still copied in — so this is
-a partial, not a fix.
-
-Its cost is exactly the thing docs/198 Part 2 was written to remove. That doc
-measured pnpm degrading to full copies across the overlay boundary at **464 MB
-per session** and moved to the shared store specifically to get hardlinks back.
-Choosing copy-mode re-buys that cost deliberately. It is worth stating as an
-option because it is the only cheap way to close H3, but it trades directly
-against req 7 and against docs/198's whole rationale.
-
-**That disk cost is separable from the isolation** — see
-[Option E](#option-e--copy-on-write-reflink-the-copy-variant-without-the-disk-cost),
-which keeps the isolation and gives the blocks back, at the price of moving the
-data disk off ext4.
-
-**What it closes.** H1, H2 and H3 — and it is the **only** option that closes
-H3, because it is the only one that removes the session's write to the inode.
-It is also the only option that closes H2 without ShipIt reimplementing pnpm's
-missing verification.
-
-**What it breaks.** It strains req 2 hardest. pnpm falling back to a per-session
-store on a read-only shared store is precisely the "silently fall back to a
-private copy" that req 2 forbids, so the broker has to actually work rather than
-degrade. Whether "shared for reads, not for writes" satisfies
-`docs/270-per-session-worker-uids` req 9 is Q3, and is the requester's call.
-
-**Verdict.** The only complete answer, and **not available as written** —
-requirement 9 forbids replacing the session's install command. Its value now is
-that it defines what a complete answer would have to do, which is what "Reshaped
-B" has to reproduce without the session noticing.
-
-### Reshaped B — mediate the fetch, not the write
-
-Requirement 9 constrains what the agent **observes**, not how ShipIt implements
-it: if `npm install` runs in the session and works, the requirement is met, even
-if ShipIt supplies the bytes underneath. That leaves one route open — mediate at
-the **registry/network** layer rather than the **filesystem** layer, so the
-session keeps running its own install command and keeps owning its own
-`node_modules`, while what enters the shared store is fetched and verified by
-ShipIt.
-
-**This has now been priced, as [Option D](#option-d--registry-mediation-priced-and-refuted-for-this-threat),
-and it is refuted.** The three questions it needed answering were answered
-against it, and a fourth killed it outright: the attacker never uses the network,
-so a mediator is never asked. Kept here as the record of what was tried.
-
-## Option C — narrow the blast radius (pnpm store key)
-
-*Add the repo to the pnpm store key, matching `/dep-cache` and the overlay base.*
-
-**What it costs.** Genuinely small in code: `pnpmStoreDirForRuntime`
-(`src/server/orchestrator/overlay-session.ts:607`) keys on
-`pnpmStoreHash(overlayRuntimeKey(env))` alone; adding the repo hash is a
-one-function change plus a janitor sweep that now reaps more directories.
-
-**The real cost is disk, and it is the thing the store is for.** pnpm's store
-dedupes content across **versions and repos** — docs/198 Part 2 chose it over
-the overlay for exactly that. Keying per repo throws the cross-repo half away: N
-repos on a host now hold N copies of every shared dependency. docs/198 measured
-464 MB per session for the overlay's per-session copies; this is the same
-category of regression, at per-repo granularity rather than per-session. It also
-brushes req 7 — a new repo no longer starts warm from another repo's store.
-
-**What it closes.** Cross-**repo** reach only.
-
-**What it does not close — and this is the decisive measurement.** `/dep-cache`
-is **already** keyed per repo, and the working install-time RCE was demonstrated
-against it. Per-repo keying is therefore *shown*, not argued, to be
-insufficient: it closes none of H1, H2 or H3. Sessions of the same repo still
-share one store and still poison each other, including the live hardlink path —
-and several sessions on one repo is ShipIt's ordinary workflow, so C leaves the
-common case untouched.
-
-**Verdict.** A real reduction in blast radius, and **not a fix**. The issue
-proposes pricing it first as the cheapest partial step; priced honestly, it is
-cheap in code, not free in disk, and it removes none of the three holes. It
-should be described to users as narrowing reach, never as closing the issue.
-
-## Option D — registry mediation *(priced, and refuted for this threat)*
-
-*Point every package manager at a ShipIt-owned registry endpoint, so ShipIt
-controls and verifies what enters the shared cache. Sessions keep running their
-own `npm install`, satisfying req 9.*
-
-This was priced because it looked strictly better than copies on both axes:
-verify on the way in, and keep `npm install` working. **It is not better. It
-closes none of the three holes**, and the reason is structural rather than a
-matter of implementation quality.
-
-**Why it fails: the attacker never uses the network.** Every hole here is a local
-write to a shared path. Mediation defends the path from the registry to the
-cache. The attack writes to the cache directly and then lets the package manager
-read its own local cache.
-
-Measured, each hole against a mediator that works perfectly:
-
-- **H1** — a poisoned packument in the shared npm cache is served **with the
-  network fully available**: the install completed in ~400 ms, ran the
-  attacker's `postinstall`, and installed attacker content. npm never asked the
-  registry, so it could not have asked a mediator either.
-- **H2** — not a hole; pnpm's own content check handles it, and where it repairs
-  it does so by fetching from the real registry. Nothing for a mediator to add.
-- **H3** — no install occurs at all. Nothing to mediate.
-
-**Forcing revalidation is not a rescue, and this is the sharpest result.**
-`--prefer-online` and `--cache-max=0` *do* make the poisoned-packument attack
-fail closed (`EINTEGRITY`) when the attacker supplies crafted bytes. But an
-attacker who instead repoints `is-odd@3.0.1` at a **genuinely published**
-package's real tarball URL and real integrity defeats both flags: measured,
-`is-even` installed under the name `is-odd`, online, with `--prefer-online` set.
-Publishing a package is trivial, so this raises the bar and does not close it —
-and a mediator is in exactly the same position, because it would be asked for a
-legitimate package with legitimate integrity.
-
-**What defeats it locally is the lockfile, not the network** — but only for the
-packages the lockfile already pins. See
-[Exactly which installs a lockfile protects](#exactly-which-installs-a-lockfile-protects);
-it is a partial mitigation, not a fix, and the fix is the per-session resolution
-cache.
-
-**What it would cost anyway**, for the record:
-
-- *Interception point.* `npm_config_registry` for npm and pnpm, `YARN_REGISTRY`
-  for yarn — ShipIt already sets cache env vars in `buildEnv`, so the hook exists,
-  and env beats a repo's own `.npmrc` in npm's config precedence. It does **not**
-  beat an explicit `--registry=` inside `agent.install`.
-- *Credentials.* Private registries and scoped packages carry their own
-  `_authToken`. A mediator must hold or forward them, concentrating users'
-  registry tokens in the orchestrator — a new credential surface this design
-  would create in order to solve a problem it does not solve.
-- *Availability.* One mediator serving every session is a single point of
-  failure: if it is down, no session can install anything.
-- *Latency.* An extra hop on cold installs. Warm installs are unaffected
-  **because they hit the local cache** — so the fast path is precisely the
-  unprotected path.
-- *Coverage.* npm-ecosystem only. Git and `file:` dependencies, direct tarball
-  URLs, `postinstall` scripts fetching arbitrary URLs, and every non-Node
-  ecosystem sharing `/dep-cache` (pip, uv) all bypass it.
-
-**Verdict.** Refuted for this issue. It is real defence against a *different*
-threat — a compromised upstream registry or a malicious published package — and
-if that threat is ever in scope it should be re-priced on its own terms. It is
-not a candidate here, and it is worse than copies: more mechanism, a new
-credential concentration, a new single point of failure, and zero holes closed.
-
-## Option E — copy-on-write (reflink): the copy variant without the disk cost
-
-*Asked by the requester, 2026-09-17: keep the space saving, lose the interference.*
-
-The copy variant closes H3 by giving each session its **own inode**. Its cost is
-that it also gives each session its own **blocks**. Those are separable: a
-**reflink** copy is a second inode that points at the same extents, copied only
-when written. One copy of the bytes on disk, one owner per session — which is
-exactly the property the question asks for.
-
-**pnpm already implements this.** `package-import-method` takes `clone` (reflink,
-strict) and `clone-or-copy` (reflink where possible, full copy otherwise)
-alongside today's `hardlink`. No new mechanism is needed — it is a config value.
-
-### Measured on this container, 2026-09-17 (pnpm 12.4.2 and 11.22.0, npm 11.12.1)
-
-**The blocker is the filesystem.** `/workspace`, `/dep-cache` and `/persist` are
-all **ext4** on `/dev/sda1` (`/proc/mounts`; `stat -f -c %T`). ext4 has no
-reflink: `FICLONE` returns `ENOTSUP`, and `cp --reflink=always` fails. So today
-`clone` does not degrade — it **fails the install outright**:
-
-```
-failed to import "<store>/v11/files/12/8ac153…" to
-  "node_modules/.pnpm/lodash@4.17.21/node_modules/lodash/_baseIsRegExp.js":
-  Operation not supported (os error 95)
-```
-
-`clone-or-copy` is the safe spelling: it falls back to a full copy, and on ext4 it
-measured **identical to `copy`** in both disk and behaviour.
-
-| import method | inode shared with store | store poisoning reaches installed files | combined disk (dedup) | warm install (mean of 5) |
-|---|---|---|---|---|
-| `hardlink` *(today)* | yes (`links=2`) | **yes — H3 open** | 6 180 KB | 170 ms |
-| `clone` | — | — | **install fails (ENOTSUP)** | — |
-| `clone-or-copy` | no | **no — H3 closed** | 11 160 KB | 173 ms |
-| `copy` | no | **no — H3 closed** | 11 160 KB | 180 ms |
-
-One package (`lodash`), so read the ratios, not the absolutes: closing H3 on ext4
-costs **~1.8× the combined disk**. `du` over `node_modules` alone hides this —
-it counts hardlinked blocks — so the numbers above are a single `du` run across
-store **and** `node_modules`, which dedups by inode.
-
-**The install-time cost is not real.** An earlier draft of this section reported
-`copy` at roughly **2× hardlink** (147 ms vs 308 ms). That was a single-shot
-measurement and it does not reproduce: over five runs each, hardlink averaged
-**170 ms** and copy **180 ms**, a ~6% gap inside the run-to-run spread
-(158–195 ms vs 161–212 ms). Req 7 is therefore **not** in tension with closing
-H3 — only disk is. Recorded rather than silently fixed, because a single
-favourable sample promoted to a stated cost is the same mistake this doc has
-already made twice about pnpm's verification.
-
-**What a reflink filesystem would change.** XFS with `reflink=1` (the mkfs default
-since xfsprogs 5.x) or btrfs would make the third row cost roughly the *first*
-row's disk while keeping the *second* row's isolation. That is the whole proposal.
-
-### Measured on real reflink storage, 2026-09-17 — CONFIRMED
-
-An earlier version of this section said the reflink saving was inferred and had
-to be measured before anyone relied on it. It has now been measured, on a
-loopback **XFS (`reflink=1`)** image, with a freshly formatted filesystem per run
-and `df` read from empty:
-
-| import method | total FS used (store + `node_modules`) | inode shared with store | store poisoning reaches installed files |
+| | session A upper | session B upper | base |
 |---|---|---|---|
-| `hardlink` *(today)* | **91 MB** | yes | **yes — H3 open** |
-| `copy` | **92 MB** | no | **no — H3 closed** |
-| `clone` | **92 MB** | no | **no — H3 closed** |
-
-3 353 files, 86 MB of `node_modules`. **Isolation costs ~1 MB, not ~86 MB** — the
-residue is per-inode metadata, which is the irreducible price of wanting separate
-inodes. Extrapolating by file count, ShipIt's own 32 310-file tree would pay on
-the order of **10 MB per session instead of 557 MB**; that scaling is arithmetic,
-not a measurement.
-
-Extent sharing was confirmed directly rather than inferred from free space:
-`filefrag -v` reports **1 054 of 1 057** files in a `clone`-mode `node_modules`
-carrying the `shared` flag, at the same physical block as the store entry, with a
-**different inode**. Isolation was confirmed the same way as everywhere else in
-this doc — overwrite the backing store entry, re-read the installed file, no
-install in between.
-
-**Two traps, both of which this doc fell into before the numbers above were
-trusted.** They are recorded because either one silently produces a confident
-wrong answer:
-
-1. **`du` is blind to reflinks.** Reflinked files are separate inodes with their
-   own extent maps, so `du` bills each at full size while the filesystem grows by
-   nothing — two reflinked 64 MB files measured as 64 MB each by `du` and **+0 KB**
-   by `df`. `du` *does* see through hardlinks, which is exactly why the ext4-only
-   measurements earlier in this section were sound and the first XFS run was not.
-   One tool, two sharing mechanisms, only one of them visible.
-2. **Plain `cp` on XFS defaults to `--reflink=auto`.** A "full copy" control
-   written as `cp a b` silently reflinks and costs 0 KB. Controls must pass
-   `--reflink=never`.
-
-### The constraint that decides the deployment shape
-
-**Reflink cannot cross a filesystem boundary**, and neither can a hardlink. With
-the store on XFS and the project on ext4, measured: `clone` fails with **`os error
-18` (EXDEV)**, while `hardlink` and `copy` "succeed" by silently making real full
-copies — the same EXDEV degradation docs/198 Part 2 was written to escape.
-
-So the reflink filesystem must hold **both the pnpm store and the session
-workspaces**. ShipIt's state directory already holds both (`pnpmStoreDirForRuntime`
-puts the store under `stateDir`, beside the session dirs), so the unit that moves
-is the state directory — not "the pnpm store" on its own, which would buy nothing.
-
-### ShipIt installs anywhere, so the filesystem is not ShipIt's to choose
-
-An earlier draft of this section proposed a **loopback XFS image** on the ext4
-disk as the deployment shape, on the strength of the measurements above having
-been taken inside one. **That is withdrawn as a default.** ShipIt is installed on
-laptops as well as servers — macOS and Windows via a Docker VM, any Linux distro,
-any filesystem — and a loop-mounted image is none of those things portably:
-
-- **It needs `CAP_SYS_ADMIN`.** `mount` is privileged, and ShipIt's compose grants
-  the orchestrator no `privileged` flag and no `cap_add` (checked). Taking
-  `CAP_SYS_ADMIN` for the orchestrator in order to save disk would be a poor trade
-  in a change whose entire purpose is to *reduce* what one session can do.
-- **It is Linux-only**, and on macOS/Windows the "host disk" is already inside a
-  Docker VM, so the image would nest a filesystem in a filesystem in a VM.
-- **It adds an operator-visible failure mode** — image sizing, loop-device
-  exhaustion, its own fsck — to a component that currently has none.
-
-**The design does not need it.** `package-import-method=copy` requires no mount,
-no privilege and no new storage at all: it produces the isolation on *every*
-filesystem, and it **inherits** the space saving wherever the host filesystem
-happens to support reflink. ShipIt does not manufacture the saving; it gets it for
-free where it exists and pays a real copy where it does not.
-
-Verified on both reflink filesystems, with a multi-megabyte probe file:
-
-| host filesystem | `copy` gives isolation | extents shared | per-session data cost |
-|---|---|---|---|
-| **XFS** (`reflink=1`, the mkfs default) | yes | **yes** | ~free |
-| **btrfs** | yes | **yes** | ~free |
-| **ext4** | yes | no | a real copy |
-
-*(A caution for anyone re-running this: on btrfs a probe file under ~2 KB is
-**inlined into metadata**, so it has no extents and reflink sharing is invisible.
-A 986-byte probe reported btrfs as not sharing at all; a 6 MB probe showed it
-sharing exactly like XFS. Probe with a large file.)*
-
-So the honest position: **the isolation is universal and needs no infrastructure;
-the space saving is a property of the host's filesystem.** Fedora and openSUSE
-default to btrfs and RHEL-family to XFS with reflink on, so a large share of Linux
-hosts already get it. Ubuntu, Debian, and the Docker VMs behind macOS and Windows
-default to ext4 and pay the copy.
-
-What ShipIt should do about that is **detect and report**, not require: probe the
-state directory for reflink support at startup and surface the answer, so an
-operator on ext4 knows why their disk use went up and what would change it. A
-loopback image stays available to a self-hosted Linux operator who wants it, as an
-operator-level choice with the privilege cost stated — never as the default, and
-never as something ShipIt sets up on its own.
-
-### What it closes, and what it does not
-
-**H3** — at ~1% of the disk a full copy costs. It does **not** touch H1, which is
-npm's resolution cache and a different surface entirely. H2 needs nothing: pnpm's
-own content check already covers the install path.
-
-### Set `package-import-method=copy`, not `clone`
-
-Counter-intuitively, `copy` is the right value, and the measurements say so:
-
-- On a reflink filesystem, **`copy` already reflinks.** pnpm's copy path goes
-  through `copy_file_range`, which XFS implements as an extent share — measured,
-  `copy` produced separate inodes with `shared` extents and cost the same 92 MB as
-  `clone`. You do not need `clone` to get copy-on-write.
-- `clone` is the *strict* spelling and **fails the install** where reflink is
-  unavailable: `os error 95` on ext4, `os error 18` across a filesystem boundary.
-- So `copy` is correct on **every** filesystem: full cost on ext4 today, and
-  automatically near-free the day the state directory moves to XFS or btrfs — with
-  no second change and no flag to remember.
-
-That ordering matters for sequencing: the isolation can ship **first**, on the
-storage ShipIt already has, and the storage change later turns its cost into
-rounding error. Neither step blocks the other.
-
-**npm is unaffected either way.** Measured: npm does **not** hardlink `_cacache`
-into `node_modules` — the installed file has `links=1` and shares no inode with
-the cache. npm extracts a private copy already. So **H3 is pnpm-specific**, and
-npm repos are already paying the per-session copy cost that Q1 option (b) is
-priced as introducing.
-
-### Two facts about today's configuration
-
-- ShipIt sets **neither** `package-import-method` **nor** `verify-store-integrity`
-  anywhere in `src/` — both run on pnpm's defaults. Whatever is chosen here is a
-  new explicit setting, not a change to an existing one.
-- **H2 is settled, and it is CLOSED by pnpm's default.** See
-  [the H2 result](#h2-settled-pnpm-does-verify-and-the-hole-was-never-there) below.
-  The apparent "verification cache" that made this look unsettled was a defect in
-  the first harness, not a pnpm behaviour.
-
-## H2 settled: pnpm does verify, and the hole was never there
-
-*Measured 2026-09-17 with [`verify-h2.sh`](./verify-h2.sh) — 24 cells per pnpm
-version, sweeping store-state × network × `verify-store-integrity` × poison-length,
-**every cell paired with a clean negative control**. pnpm **11.22.0 and 12.4.2**
-produced identical results.*
-
-| `verify-store-integrity` | online | offline |
-|---|---|---|
-| unset *(pnpm's default)* / `true` | entry evicted, **re-downloaded**, clean bytes installed | entry evicted, **install fails closed** |
-| `false` | **poisoned bytes installed** | **poisoned bytes installed** |
-
-Store-state (copied aside vs poisoned in place) and poison-length (same-byte-length
-vs shorter) made **no** difference in any cell. Two things follow: the check is on
-the **content hash**, not on size or mtime; and there is **no verification cache**,
-which is what the previous draft of this doc suspected.
-
-**`ERR_PNPM_NO_OFFLINE_TARBALL` is downstream of the check, not instead of it.**
-On the offline cells pnpm reports the entry as repaired — it *evicted* the corrupt
-file and then had nowhere to fetch a replacement. Every earlier reading of that
-error, in this doc and in docs/198, mistook the symptom for the absence of a check.
-
-**So H2 was never a hole.** What it depends on is `verify-store-integrity`
-remaining at its default; setting it false disables the protection completely, in
-every configuration tested. ShipIt sets it nowhere, so this is pnpm's default
-holding rather than anything ShipIt guarantees — worth pinning explicitly if H2 is
-to be relied on.
-
-**H3 is untouched by any of this, and remains the real hole.** No import occurs
-when a store file is mutated under a live `node_modules`, so there is no event for
-a content check to attach to. That is why option E's isolation matters and this
-result does not replace it.
-
-### Why this took three attempts
-
-This claim has now been stated three ways: "pnpm verifies on link" (docs/198,
-original), "pnpm verifies nothing" (2026-08-19), and the table above. The first
-two were each measured without a negative control, so a run that failed for an
-unrelated reason was read as confirming whichever hypothesis was current — and the
-second was additionally confirmed by an independent reviewer working from the same
-uncontrolled evidence. The first version of `verify-h2.sh` reproduced the mistake
-in miniature: it reused one store across trials, so the second poison of each pair
-ran against an entry pnpm had just re-verified and duly came out "safe". Trials
-must not be able to see each other. That is the reason the harness is committed
-alongside the conclusion.
-
-### Verdict on option E
-
-**The right instinct, and the answer to the question as asked — but it is a
-storage decision, not a code decision.** The application change is one config
-value. The thing that makes it worth anything is moving ShipIt's data disk off
-ext4, and that is a host migration with its own risk, downtime and rollback
-story. On ext4 as it stands, "space savings **and** isolation" is not available:
-`clone` fails closed and `clone-or-copy` is just `copy`.
-
-## Option F — overlayfs: copy-on-write on ext4, with no reflink and no privileges
-
-*Asked by the requester, 2026-09-17, after option E was shown to depend on the
-host filesystem: "make savings work in ext4 somehow."*
-
-Option E needs the filesystem to share extents. **overlayfs needs nothing from the
-filesystem at all** — it implements copy-on-write in the VFS layer, so it behaves
-identically on ext4. Each session mounts its own overlay over one shared,
-read-only base: reads come from the base, and the first write to any file copies
-*that file* into the session's private upper layer. The base is never modified,
-and no other session sees the write.
-
-**ShipIt already builds this** — the docs/183 overlay dep store. And it is mounted
-by **Docker, as a volume** (`overlay-volume.ts:196`, `type: "overlay"`), so the
-orchestrator needs no `CAP_SYS_ADMIN` and this works wherever Docker works,
-including the Linux VM behind Docker Desktop on macOS and Windows. That is the
-portability property the loopback image lacked.
-
-### Measured on ext4, 2026-09-17
-
-Two sessions mounted over one shared base of 59 MB / 1 547 files:
-
-| | session A | session B | shared base |
-|---|---|---|---|
-| immediately after mount | **4 KB** | **4 KB** | 59 MB |
-| after reading the whole tree | **4 KB** | **4 KB** | 59 MB |
-| after A overwrites a shared file | 64 KB | **4 KB — unchanged** | **unchanged** |
-| after A poisons a shared **store** entry | — | **unchanged** | **unchanged** |
-| after A adds a dependency | 63 MB | **4 KB — unchanged** | **unchanged** |
-
-So on plain ext4: **two full dependency trees for 4 KB each, and H3 closed.** A
-session's write is real from its own point of view and invisible to everyone else
-— which is exactly the brief.
-
-### The cost, and why docs/198's objection is narrower than it reads
-
-An installing session pays for its own tree — 63 MB above, and docs/198 Part 2
-measured 464 MB at ShipIt's scale, which is why that doc moved pnpm off the
-overlay. That number is real, but it applies **only to sessions that change their
-dependencies**, and such a session no longer has the base's dependency tree. The
-copy is not a tax on sharing; it is the cost of having stopped being the same as
-the base. Sessions that merely *use* the deps — the common case when several
-sessions work on one repo — pay 4 KB and are fully isolated.
-
-### Requirement 11 lands on option F, and F already satisfies it
-
-The requester answered Q5 on 2026-09-17: the agent must be able to **edit files
-inside installed packages**, and the edit must not be visible to another session
-(req 11). Measured under F: a session overwriting a file in its own `node_modules`
-succeeded from its own point of view, cost a **64 KB copy-up**, and left both the
-other session and the shared base byte-identical.
-
-Two consequences worth stating, because they outlive this doc:
-
-- **Req 11 is the requirement a future optimisation would silently break.** Any
-  return to hardlink sharing between sessions re-opens exactly this — the edit
-  would once again be visible everywhere — and it would look like a pure
-  disk-saving win at the time. It needs a regression test, not a comment.
-- It also removes the last reason to prefer a read-only shared tree. Options that
-  work by making installed packages unwritable to the session satisfy req 1 and
-  violate req 11.
-
-### How F and E compose
-
-They solve different halves and are not alternatives:
-
-- **F** shares the *base tree* between sessions and isolates writes to it. Works
-  everywhere, including ext4.
-- **E** governs how the pnpm store materialises into `node_modules` *within* a
-  session. `package-import-method=copy` closes H3 on the store→`node_modules`
-  hardlink, and silently upgrades to reflink on XFS/btrfs, which is what makes an
-  *installing* session cheap too.
-
-Together: base-hit sessions cost ~nothing on any filesystem, installing sessions
-cost a full tree on ext4 and almost nothing on a reflink filesystem.
-
-### What to verify before building on this
-
-Not yet measured, and each could change the picture:
-
-- **Where the pnpm store sits.** In the measurement above the store was *inside*
-  the overlay, which is what let a poisoned store entry stay private. ShipIt today
-  mounts it at `/workspace/.pnpm-store` as a separate read-write bind, **outside**
-  any overlay — so as deployed, F does not cover the store at all and H3 survives
-  there. Moving it inside the overlay is the change, and it is what causes the
-  installing-session copy cost.
-- **Base publication.** A session's improvements land in its own upper and are not
-  shared back; docs/183's publish path with its compare-and-swap is what promotes
-  a tree to a new base, and its ancestry rules are unchanged by any of this.
-- **A recursive `chown` through an overlay mount copies up every file** and
-  destroys the sharing outright — measured accidentally here, turning a 4 KB upper
-  into 110 MB. This is the same hazard CLAUDE.md records for shared git trees
-  (docs/272). Any ownership handoff must act on the base or the upper directly,
-  never through the mount.
-
-## Exactly which installs a lockfile protects
-
-An earlier draft of this plan said lockfile-pinned installs "close H1 outright".
-**That was too strong.** A lockfile answers for the packages it pins; whenever npm
-has to *resolve* — because the name is new, or the range is not pinned — it reads
-the packument again, and the packument is the poisoned surface. Measured, all
-with a valid lockfile present and the network available:
-
-| The agent runs… | Protected? | Measured result |
-|---|---|---|
-| `npm ci` | **Yes** | Resolves only from the lockfile. |
-| `npm install` (lockfile matches `package.json`) | **Yes** | Poisoned packument ignored; correct package installed. |
-| `npm install <new-package>` | **No** | Attacker's `postinstall` ran; attacker's code installed. |
-| `npm install` (lockfile out of sync with `package.json`) | **No** | Same. In the *same run* the pinned package was clean and the unpinned one poisoned. |
-| `npm update`, `npm install <pkg>@latest`, an unpinned range | **No** | Same resolution path as adding. Not separately measured. |
-
-**The un-protected row is the one requirement 9 exists to protect.** The requester
-added req 9 so the agent can run `npm install` to *add* something — which is
-precisely the case a lockfile does not cover. So "make installs lockfile-pinned"
-and "the agent can add packages" do not overlap as neatly as they appear to: the
-second is the hole in the first.
-
-### It also persists into the lockfile
-
-After the poisoned `npm install is-even`, the project's `package-lock.json`
-recorded **the attacker's hash** as the expected integrity for that package
-(verified by comparing the lockfile entry against the attacker's digest). Three
-consequences, and they make this worse than a cache-scoped problem:
-
-- It **outlives the cache**. Wiping or re-keying the shared cache does not undo it.
-- Every later `npm ci` — the protected path — now faithfully reproduces the
-  attacker's package, because the lockfile pins the attacker's hash.
-- **ShipIt commits it.** The post-turn auto-commit picks up the changed
-  `package-lock.json` and pushes it, so a cross-session cache write becomes a
-  committed change to the user's repository, reaching CI and every other clone.
-
-### What closes the remainder, cheaply
-
-The **per-session npm resolution cache** — step 1 of the recommendation, and the
-thing the lockfile was standing in for. Give each session its own
-`_cacache/index-v5` while continuing to share `content-v2`. The poisoned
-packument then simply does not exist in the session that reads it, so *every* row
-in the table above is protected, including adding a package.
-
-It keeps the download saving, because the bytes are in `content-v2`, and tarballs
-are found there **by digest without an index entry** — demonstrated incidentally
-by the H1 exploit itself, which served content placed at its hash with no index
-entry backing it. What remains per-session is one small metadata fetch per
-package, not the tarball.
-
-Still needs a spike to confirm npm tolerates the split cleanly and to measure the
-warm-install cost against req 7 — but it is cheap, and it is the only cheap thing
-that covers the adding case.
-
-## The three options side by side
-
-| | **Copies** (`package-import-method=copy`) | **Registry mediation** | **Narrow the store key** |
-|---|---|---|---|
-| **H1** npm packument RCE | ✗ | ✗ | ✗ |
-| **H2** poisoned store installed | *(not a hole — pnpm verifies)* | — | — |
-| **H3** live hardlink mutation | **✓** | ✗ | ✗ |
-| Cross-repo reach | unchanged | unchanged | **✓ closed** |
-| Cost | ~464 MB per installing session | proxy + credential store + SPOF | disk; loses cross-repo dedup |
-| Compatible with req 9 | ✓ | ✓ | ✓ |
-| New failure modes | none | mediator down ⇒ no installs anywhere | none |
-
-**And the row that is not one of the three:** the **per-session resolution cache**
-closes **H1** — including `npm install <new-package>`, which a lockfile does not
-cover — and it is cheap. Lockfile pinning (Q2) is worth having beside it as
-defence in depth, but on its own it protects only reproducible installs. The
-three options were framed as the menu; the cheapest real win is not on it.
-
-## Recommendation
-
-**Do not start with C.** It is the cheapest to write, but it buys the least: it
-addresses neither demonstrated hole, and per-repo keying is already disproven by
-`/dep-cache`. Sequence by what is actually open instead:
-
-1. **Close H1 first — cheap, and it is a working RCE.** Two parts, neither of
-   which is a new integrity subsystem. **Order matters: the per-session
-   resolution cache is the fix and the lockfile is the supplement, not the other
-   way round** — a lockfile does nothing for `npm install <new-package>`, which
-   is exactly what req 9 protects.
-   - Make ShipIt's installs lockfile-pinned, so npm trusts the lockfile rather
-     than the cached packument (subject to **Q2**). Defence in depth: it covers
-     `npm ci` and in-sync `npm install`, and nothing else.
-   - **Stop sharing the npm resolution cache while continuing to share the
-     content cache.** These live in one directory today but are not equally
-     trustworthy: `content-v2` is self-verifying by construction, whereas
-     `index-v5` is pure trusted metadata. Per-session `index-v5` with a shared
-     `content-v2` keeps essentially all of the download saving — the bytes are
-     in the content half — while removing the only part an attacker can
-     usefully forge. *(This is a mechanism proposed here, not a requirement; it
-     needs a spike to confirm npm tolerates the split.)*
-
-2. **Close H3 with per-session copies** (`package-import-method=copy`).
-   Requirement 9 removed the only other route: the session must keep managing its
-   own packages, so the shared files cannot be taken away from it, and once the
-   session owns them read-only permissions are worthless (measured — see option
-   B). Copying breaks the shared inode instead, which is what H3 actually depends
-   on. The cost is real and is the exact cost docs/198 removed: ~464 MB per
-   session. **Registry mediation was priced as the alternative and refuted** —
-   see option D; it closes nothing here, so copies are not being chosen by
-   default for lack of a costed rival.
-
-3. **H2 needs no work — but it needs pinning.** Measured 2026-09-17: pnpm
-   content-hash-checks store entries on import, evicting and re-downloading
-   online and failing closed offline, identically on 11.22.0 and 12.4.2. An
-   earlier draft of this plan said the opposite and recommended building
-   verification; that recommendation is withdrawn. What remains is small and
-   worth doing: **set `verify-store-integrity=true` explicitly** rather than
-   inheriting it, because `false` disables the protection completely and ShipIt
-   currently asserts nothing either way. Do **not** describe this as ShipIt
-   adding integrity checking — it is pnpm's, and saying otherwise repeats the
-   error `docs/198-dep-cache-content-keying-and-pnpm-store` already made.
-
-4. **Treat C as optional and orthogonal.** Ship it if cross-repo isolation is
-   independently wanted (Q1 answered (a)) and the disk cost is acceptable — not
-   as this issue's fix. Note it stacks badly with step 2: per-repo keying and
-   per-session copies both spend disk, and together they spend it twice.
-
-5. **Hold `docs/266-orchestrator-git-trust-boundary` E4** until at least step 1
-   lands and Q1 is answered (req 8, Q4).
-
-The one-line version: **the cheapest answer really is to stop defeating a check
-that already exists — but that is true of npm only. pnpm has no check to stop
-defeating: it verifies nothing on install, and hardlinks mean there is no read
-to check afterwards.** And after requirement 9, the way to deal with those
-hardlinks is to stop making them, not to take them away from the session.
+| after mount, and after reading the whole tree | 4 KB | 4 KB | unchanged |
+| A overwrites a shared file | 64 KB | 4 KB | unchanged |
+| A poisons a shared store entry (store inside the overlay) | — | unchanged | unchanged |
+| A adds a dependency | 63 MB | 4 KB | unchanged |
+
+The 64 KB row is req 11: a session's edit inside its installed packages is real
+for it and invisible to everyone else. docs/198's 464 MB-per-session objection
+applies only to sessions that change their dependencies; sessions that use the
+base's tree pay 4 KB.
+
+Two constraints for implementation:
+
+- **The pnpm store is outside the overlay as deployed.** It is a separate
+  read-write bind at `/workspace/.pnpm-store`, so overlayfs does not cover it
+  and H3 survives there. Either move the store inside the overlay, or rely on
+  section 2 alone for the store. Decide before building.
+- **Never `chown -R` through an overlay mount.** It copies up every file and
+  destroys the sharing (a 4 KB upper became 110 MB). Act on the base or the
+  upper directly, as docs/272 already requires for shared git trees.
+
+Sections 2 and 3 compose: overlayfs shares the base tree between sessions and
+isolates writes to it on any filesystem; `copy` governs how the store
+materialises into `node_modules` within a session and is near-free on a reflink
+filesystem.
+
+### 4. H2 — pin `verify-store-integrity=true`
+
+No verification needs building. Set the value explicitly so the protection is
+asserted rather than inherited, and describe it in shipit-docs as pnpm's check,
+not ShipIt's.
+
+### Sequencing
+
+1. Section 1 (H1). It is a working RCE and the cheapest fix.
+2. Sections 2 and 4 (pnpm settings). Ship on the storage ShipIt already has.
+3. Section 3 (overlay), including the store-placement decision.
+4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and 2
+   have landed (req 8).
+
+## Rejected
+
+- **A ShipIt-owned writer with the store read-only to sessions.** Ruled out by
+  req 9. Also, permission bits alone do nothing: the session owns the inode and
+  can `chmod` it back through its own `node_modules` path.
+- **Registry mediation.** Closes none of the three holes: every attack is a
+  local write to a shared path, and the package manager serves its local cache
+  without asking the registry. `--prefer-online` makes crafted bytes fail
+  closed, but repointing a name at a genuinely published package's real tarball
+  and integrity installed `is-even` under the name `is-odd` with the flag set.
+  It would also concentrate registry tokens in the orchestrator and add a
+  single point of failure for all installs.
+- **Per-repo pnpm store key.** Narrows cross-repo reach and closes nothing:
+  `/dep-cache` is already per-repo and H1 was demonstrated against it. Optional,
+  at the cost of cross-repo dedup.
+- **Lockfile pinning as the fix.** Covers only `npm ci` and in-sync installs;
+  section 1 covers everything it covers and the adding case too.
+- **Building store verification into ShipIt.** pnpm already does it (H2).
+
+## Measurement notes
+
+For anyone re-running or extending the harnesses:
+
+- `du` is blind to reflinks (separate inodes, shared extents); it does see
+  through hardlinks. Measure disk as a `df` used-space delta.
+- Plain `cp` on XFS defaults to `--reflink=auto`; a copy control must pass
+  `--reflink=never`.
+- btrfs inlines files under ~2 KB into metadata, so a small probe file shows no
+  extent sharing. Probe with a multi-megabyte file.
+- Locate a store entry by inode, never by grepping content.
+- Run every cell with a clean negative control, and rebuild the store per trial.
+  Both harnesses once produced confident wrong answers without these.
 
 ## Key files
 
 | File | Why it matters |
 |---|---|
-| `src/server/orchestrator/overlay-session.ts:607` | `pnpmStoreDirForRuntime` — the runtime-only store key that option C would change. |
-| `src/server/orchestrator/session-worker-uid.ts:381` | `shareOne` — where group write is added to all three shared surfaces (docs/270 req 9). |
-| `src/server/orchestrator/container-lifecycle.ts:242` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, and the store-ownership handoff. |
-| `src/server/orchestrator/session-dir-factory.ts:102` | `createDepCacheDirHelper` — `/dep-cache` keyed per repo, at `{stateDir}/dep-cache/{hash}`. |
-| `src/server/session/install-controller.ts` | The install path any brokered-writer design (option B) has to go through. |
+| `src/server/orchestrator/overlay-session.ts:316` | `pnpmStoreDirForRuntime` — the store lives under `stateDir`, keyed by runtime only. |
+| `src/server/orchestrator/container-lifecycle.ts:143` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the bind outside the overlay. |
+| `src/server/orchestrator/overlay-volume.ts:196` | The Docker `overlay` volume that section 3 reuses. |
+| `src/server/orchestrator/session-worker-uid.ts:124` | `shareOne` — group write on the shared surfaces (docs/270 req 9). |
+| `src/server/orchestrator/session-dir-factory.ts:58` | `createDepCacheDirHelper` — `/dep-cache` keyed per repo. |
+| `src/server/session/install-controller.ts` | The install path where the pnpm settings are applied. |
 
 ## Related
 
 - `docs/075-shared-dependency-cache` — why `/dep-cache` exists and is per-repo.
 - `docs/183-overlay-dep-store` — the overlay dependency base.
-- `docs/198-dep-cache-content-keying-and-pnpm-store` — content keying and the
-  pnpm store. **Its Part 2 "Known caveat" (under "Store lifecycle") contained a
-  claim that measurement refutes**: "the store is also integrity-checked by pnpm
-  on link, so corruption is detected, not silently propagated". pnpm 11.22.0
-  detects nothing and propagates silently, on every configuration tested. That
-  bullet now carries a dated correction note, **corrected in this same PR** — it
-  is a shipped design doc asserting a guarantee the code does not provide, and
-  this work initially inherited the error from it.
-- `docs/270-per-session-worker-uids` — req 9 (sharing must survive) and req 1
-  (the workspace analogue of req 1 here); `plan.md` §4 and `checklist.md` both
-  name this residual.
-- `docs/266-orchestrator-git-trust-boundary` — E4, the sequencing interaction.
+- `docs/198-dep-cache-content-keying-and-pnpm-store` — the pnpm store; its
+  "integrity-checked on link" caveat is corrected in this PR.
+- `docs/270-per-session-worker-uids` — req 9 (sharing must survive).
+- `docs/266-orchestrator-git-trust-boundary` — E4, held by req 8.
