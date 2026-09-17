@@ -189,11 +189,15 @@ FFMPEG=/persist/ffmpeg/bin/ffmpeg bash scripts/demo-video/cut.sh \
 ```
 
 `beats.json` is the driver's beat log, `[{ id, actionAt, readyAt }]` in seconds
-on the driver's clock (`actionAt` is `null` for a beat with no action);
-`storyboard.json` carries each beat's `lead` and `hold`. Per beat the cut keeps
-`[actionAt, actionAt + lead]` then `[readyAt, readyAt + hold]`, merged when they
-overlap; a beat with no action starts where the previous hold ends; everything
-before the first action is dropped. `lead: 0` makes an action look instant.
+on the driver's clock (`actionAt` is `null` for a beat with no action; a `type`
+beat also carries `sentAt`, the send click); `storyboard.json` carries each
+beat's `lead` and `hold`. Per beat the cut keeps a lead — `[actionAt, actionAt +
+lead]` for a click, `[sentAt − lead, sentAt]` for a typed prompt, and from the
+previous hold's end for a beat with no action — then `hold` seconds from the
+later of `readyAt` and the lead's end, merged when they touch; everything before
+the first action is dropped. `lead: 0` makes an action look instant. A typed
+prompt sent sooner after the previous hold than its lead is refused (the driver
+pauses such a prompt before sending, so a real log never is).
 
 The driver's clock is not the video's. `cut.sh` reads `run.json` beside the beat
 log, runs `ffmpeg -vf blackdetect` on the recording to find where the driver's
@@ -202,7 +206,8 @@ edge is its own paint, not the instance's first one — and passes
 `--anchor-wall`/`--anchor-video` (plus the ffprobe duration) to `cut-plan.mjs`,
 which shifts the slices by the difference and clips them to the file.
 `clock-probe.mjs <out-dir>` records a stamped sequence of repaints for checking
-how far the video's clock sits from the driver's (one frame, measured). A `run.json` with an anchor that cannot be found in the file
+how far the video's clock sits from the driver's (measured: a steady 0.1 s,
+varying by one frame). A `run.json` with an anchor that cannot be found in the file
 fails the cut; `CUT_UNANCHORED=1` overrides, falling back to `wallDuration −
 duration` with a warning. `FFPROBE=<path>` overrides the probe (default: beside
 `$FFMPEG`, else on PATH).

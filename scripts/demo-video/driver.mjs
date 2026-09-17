@@ -794,14 +794,12 @@ export async function run(opts) {
   let anchorWallAt = null;
   let wallDuration = null;
   try {
-    // The anchor (plan §4): a black splash, painted and held, then flipped
-    // white by the driver itself and held again before the navigation — the
-    // first non-black frame in the recording is that flip, so the cut step
-    // can put the driver's clock and the video's side by side. The flip is
-    // the driver's own paint: stamping before the goto instead put the
-    // instance's first paint on film as the anchor, 0.4–1.1 s late (the
-    // take-2 cut of 2026-09-17 held on a keystroke that was never meant to be
-    // in it), while a paint the driver owns lands within a frame.
+    // The anchor (plan §4 item 6): a black splash, painted and held, then
+    // flipped white by the driver itself and held again before the
+    // navigation — the first non-black frame is that flip, a paint the driver
+    // owns, so the cut can put the two clocks side by side. Stamping and
+    // navigating without the flip anchors on the instance's first paint,
+    // up to a second late.
     await page.setContent('<body style="margin:0;background:#000"></body>');
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     await page.waitForTimeout(SPLASH_MS);

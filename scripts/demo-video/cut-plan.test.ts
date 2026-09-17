@@ -55,10 +55,9 @@ describe("planSlices", () => {
   });
 
   it("refuses a type beat whose send comes sooner after the previous hold than its lead", () => {
-    // Take 2 of website-hero (2026-09-17): a 77-character prompt typed in 3.8 s
-    // under a 5 s lead put 1.18 s of the lead inside the previous hold, and the
-    // merged cut came out 34.8 s instead of 36. The driver now pauses before
-    // the send; a log without that pause is refused rather than cut short.
+    // A short prompt's lead would reuse the previous hold's footage and the
+    // merged cut would come out short; the driver pauses before the send, and
+    // a log without that pause is refused rather than cut short.
     const story = storyboard([{ id: "work", lead: 6, hold: 6 }, { id: "prompt", type: "Dark mode", lead: 5, hold: 6 }]);
     const early = [
       { id: "work", actionAt: 10, readyAt: 20 },

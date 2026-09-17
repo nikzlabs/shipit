@@ -8,11 +8,11 @@
 //
 //   PLAYWRIGHT_BROWSERS_PATH=… node scripts/demo-video/clock-probe.mjs <out-dir>
 //
-// Measured 2026-09-17 (probe in this session's container): every flip landed
-// 0.09–0.13 s before its stamp on the video's clock — one frame at 25 fps,
+// Measured 2026-09-17: every flip showed 0.09–0.13 s earlier on the video's
+// clock than its stamp — a constant offset, varying by one frame at 25 fps,
 // head, middle and tail alike — and the file ran 1.06 s past the close. So a
-// paint the driver owns anchors within a frame, and the wall − video fallback
-// is off by the tail padding.
+// paint the driver owns anchors the clocks to within a frame; the raw stamps
+// and the wall − video fallback do not (docs/296 plan §4 item 6).
 import { chromium } from "playwright";
 import fs from "node:fs";
 
