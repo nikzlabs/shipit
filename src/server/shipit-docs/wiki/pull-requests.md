@@ -170,8 +170,9 @@ and it is for infrastructure failures, not for rolling dice on a real one.
 
 **Auto-fix** is Settings → Advanced: *"Auto-fix CI when checks fail"*. With it
 on, a failing check on an idle session makes ShipIt fetch the failing jobs' logs
-and annotations into the session and start a turn asking you to fix them. It tries **at most three times per commit**, then stops and
-says "Auto-fix exhausted" rather than looping.
+and annotations into the session and start a turn asking you to fix them. It
+tries **at most three times per commit**, then stops and says "Auto-fix
+exhausted" rather than looping.
 
 Two controls sit either side of that:
 
