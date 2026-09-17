@@ -1,10 +1,10 @@
 # Checklist — shared package cache integrity
 
 Implementation steps for [plan.md](./plan.md). The shape is now settled: Q1 and
-Q3 are closed by requirement 10 (2026-09-17) and Q2 is withdrawn. **Q4 and Q5**
-remain open; Q4 gates only the sequencing guard at the end.
+Q3 are closed by requirement 10, Q2 is withdrawn, and Q4 and Q5 were answered
+2026-09-17. **No open question blocks this list any more.**
 
-## Blocked on the requester
+## Requirement decisions (all settled)
 
 - [x] **Q1 closed** — the requester rejected both options (2026-09-17) and
       restated the requirement as having both. Copy-on-write satisfies it; recorded
@@ -15,14 +15,20 @@ remain open; Q4 gates only the sequencing guard at the end.
       Requirement 5 stands and is satisfied.
 - [x] **Q3 closed** — it asked whether per-session copying was worth its disk;
       copy-on-write removes the disk, so the question no longer arises.
-- [ ] **Q4 answered** — hold `docs/266-orchestrator-git-trust-boundary` E4
-      (req 8)?
-- [ ] **Q5 answered** — must the agent be able to edit files inside installed
-      packages? Promoted from prose under the old Q1 into a numbered question, so
-      it stops riding along in chat. Cheap to grant under options E/F (measured: a
-      64 KB copy-up), so it decides whether that is a requirement or a side effect.
-- [ ] Answers recorded as dated receipts under `## Resolved questions`, with the
+- [x] **Q4 answered (2026-09-17): hold E4.** This does not add a requirement — it
+      **approves requirement 8**, which was agent-supplied and until now unapproved.
+- [x] **Q5 answered (2026-09-17): yes.** Recorded as **requirement 11** — the
+      agent may edit installed packages, and the edit must stay invisible to other
+      sessions. The requester selected (a) while writing words that restate req 9;
+      the receipt states that reading, and names req 11 as the thing to strike if
+      the reading is wrong.
+- [x] Answers recorded as dated receipts under `## Resolved questions`, with the
       open-question bullets removed and any requirement change in the same diff.
+- [ ] Requirement 11 adds a property to verify, not just to allow: an edit inside
+      one session's installed packages MUST stay invisible to other sessions.
+      Measured under option F at a 64 KB copy-up — needs a regression test, and it
+      is the one requirement that a future move back to hardlink sharing would
+      silently break.
 
 ## Step 1 — close H1, the demonstrated npm RCE (reqs 1, 3, 5, 6)
 
@@ -138,4 +144,6 @@ cross-repo blast radius is wanted for its own sake.*
 ## Sequencing guard
 
 - [ ] `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until step 1
-      lands and the H3 item in step 2 ships (req 8).
+      lands and the H3 item in step 2 ships. **Req 8, approved by the requester
+      2026-09-17 (Q4).** No longer an agent-supplied caution: it is a decision, and
+      whoever picks up E4 needs to know it binds them.

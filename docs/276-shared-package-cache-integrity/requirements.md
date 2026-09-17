@@ -6,8 +6,8 @@ description: What must be true so that a session cannot use a shared package cac
 
 # Requirements — shared package cache integrity
 
-Scoping doc for planning#414. The design lives in [plan.md](./plan.md). Two
-questions remain open below, and implementation waits on them.
+Scoping doc for planning#414. The design lives in [plan.md](./plan.md).
+**No open questions remain** — every one has a dated receipt below.
 
 ## Context these requirements are written against
 
@@ -99,9 +99,9 @@ the two directly-writable surfaces unless they name the base.
 8. ShipIt MUST NOT let a project's own git hooks fire on the orchestrator-side
    auto-commit path (`docs/266-orchestrator-git-trust-boundary` E4) while a
    session can still place executable content in another session's dependency
-   directory. *(Supplied — see Provenance and Q4. This is a sequencing
-   constraint between two open items, not a requirement to build E4 or to change
-   it.)*
+   directory. *(Supplied by the agent, and **approved by the requester
+   2026-09-17** in answer to Q4 — see Resolved questions. A sequencing constraint,
+   not a requirement to build E4 or to change it.)*
 
 9. The agent MUST be able to run `npm install` and equivalent package-manager
    commands inside its own session, and they MUST work. *(Stated by the
@@ -115,40 +115,23 @@ the two directly-writable surfaces unless they name the base.
     — see Resolved questions. "Materially" is the requester's standard to set;
     the measured cost of the recommended design is ~1%.)*
 
+11. The agent MUST be able to edit files inside installed packages in its own
+    session — a `patch-package`-style fix, or changing a dependency to debug it —
+    and the edit MUST NOT be visible to any other session. *(Stated by the
+    requester, 2026-09-17, answering Q5 — see Resolved questions for their exact
+    words and how I read them.)*
+
 ## Open questions
 
-**Two are left, and both are yours.** Q1, Q2 and Q3 are settled — see the dated
-receipts under [Resolved questions](#resolved-questions). Their text is not kept
-here: a question that has been answered is a receipt, not a question. Neither of
-the two below may be answered by inference, and both block implementation.
+**None.** Every question this doc raised has been answered or withdrawn, each with
+a dated receipt under [Resolved questions](#resolved-questions). Requirements
+discipline no longer blocks implementation of this feature.
 
-**Q4 — Should we hold the other planned change?**
-A separate planned change (`docs/266-orchestrator-git-trust-boundary` E4) would
-let a project's own scripts run automatically each time ShipIt saves your work.
-Those scripts run programs out of the project's installed packages — exactly the
-files this problem lets another session tamper with. So that change would turn
-"bad code sits on disk" into "bad code runs on a schedule ShipIt chose".
-
-- **(a) Hold it** until the H3 fix ships. **← recommended.**
-- **(b) Ship it with a safeguard** that keeps those programs out of reach. I have
-  not verified this is possible, and common tools depend on that reach.
-- **(c) Ship it unchanged.** Not recommended.
-
-**Q5 — Must the agent be able to edit files inside installed packages?**
-Requirement 9 says the agent must be able to run `npm install`. You said that in
-response to a consequence about **editing a dependency in place** — to debug it,
-or for a `patch-package`-style fix — which is a different capability. I recorded
-only what you actually said, so this half is still unanswered.
-
-It is now cheap to grant: under the recommended design each session holds its own
-copy-on-write view, so such an edit is private to that session and was measured at
-a 64 KB copy-up. The answer therefore no longer constrains the design much — it
-decides whether that property is a **requirement** to preserve or a side effect we
-may trade away later.
-
-- **(a) Yes — the agent must be able to edit installed packages.** **← recommended**,
-  since you raised it and the design already allows it.
-- **(b) No — running install commands is enough.** One less capability to protect.
+That is a statement about *questions*, not about certainty. Two measured gaps are
+recorded in [plan.md](./plan.md) and on the checklist, and neither is a decision
+for the requester: the pnpm store sits outside any overlay as deployed, so option F
+does not cover it yet; and the H1 spike has not measured warm-install time against
+req 7, nor whether a symlinked `content-v2` survives `npm cache verify`.
 
 ## Provenance
 
@@ -156,12 +139,18 @@ Requirements 1–4 and 7 restate the problem or an already-approved requirement.
 Requirements 9 and 10 are the requester's, each with a dated receipt.
 
 Requirements **5, 6 and 8 were supplied by the agent**, and are marked so a
-reviewer can see what a human did not say. They are also why two questions existed:
-req 5 raised Q2 (now withdrawn, having been answered by measurement rather than by
-the requester) and req 8 raises Q4, which is still open. An agent-supplied
-requirement that generates a question for the requester deserves the most
-scepticism in review — it is the shape most likely to be a mechanism I chose
-wearing a requirement's clothes.
+reviewer can see what a human did not say. Two of the three have since been
+settled by the requester rather than by me: req 5 raised Q2, which measurement
+answered and which I then **withdrew myself** — the one place in this doc where a
+question for the requester was closed without the requester closing it — and req 8
+raised Q4, which the requester has now **approved**. Req 6 remains agent-supplied
+and unexamined by anyone but me.
+
+An agent-supplied requirement that generates a question for the requester deserves
+the most scepticism in review: it is the shape most likely to be a mechanism I
+chose wearing a requirement's clothes. Requirements 9, 10 and 11 are the
+requester's own words, each with a dated receipt; **requirement 11 carries a
+reading I had to make**, which its receipt states explicitly.
 
 Requirements 4, 5 and 6 exist because of tests run against this
 container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
@@ -200,6 +189,39 @@ container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
    versions and is corrected in the same PR as this one.*
 
 ## Resolved questions
+
+**2026-09-17 — Q4 answered: hold E4.** Asked whether to hold
+`docs/266-orchestrator-git-trust-boundary` E4 — which would let a project's own git
+hooks run on every ShipIt auto-commit — until the H3 fix ships, the requester chose
+**(a) Hold it**.
+
+This does not add a requirement. It **approves requirement 8**, which the agent had
+supplied and which had been carrying a caveat that it was unapproved. Req 8 is now
+human-approved and binds the sequencing: E4 stays unshipped until a session can no
+longer place executable content in another session's dependency directory.
+
+**2026-09-17 — Q5 answered: yes, and a note on how I read it.** Asked whether the
+agent must be able to edit files inside installed packages, the requester selected
+**(a) Yes**, writing: *"yes, the agent should be able to call `npm install` or
+similar"*.
+
+Recorded as **requirement 11**. The reading needs stating, because their words and
+the option they chose are not word-for-word the same thing, and this exact
+distinction was preserved deliberately on 2026-08-20:
+
+- The **option selected** is the editing capability — that is what Q5 asked and
+  what (a) says.
+- The **words** restate requirement 9, the install-command capability.
+- I read the selection as controlling. Under the other reading the answer would be
+  vacuous: it would restate a requirement recorded a month ago and leave Q5
+  unanswered, which is not what selecting (a) means. "Or similar" also reads
+  naturally as covering ordinary package workflows, of which `patch-package` is
+  one.
+
+**If that reading is wrong, requirement 11 is the thing to strike** — it is the
+only place the editing capability is recorded, and it costs little to drop: under
+the recommended design the property comes free (a measured 64 KB copy-up), so
+removing the requirement changes what we must *preserve*, not what we build.
 
 **2026-09-17 — Q2 withdrawn: the lockfile question was never load-bearing.**
 Asked whether Q2 was relevant at all, the answer is no, and it is withdrawn rather

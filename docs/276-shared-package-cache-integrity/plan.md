@@ -8,11 +8,14 @@ description: Prices the three directions planning#414 sketches, against measured
 
 Implements [requirements.md](./requirements.md). Read it first.
 
-> **⚠️ The design is NOT settled.** Every question under
-> [Open questions](./requirements.md#open-questions) has to be answered by the
-> requester before implementation starts. This document prices the options so
-> that those questions can be answered; it does not choose for them. Q1 in
-> particular decides which option is even viable.
+> **All requirement questions are settled** as of 2026-09-17 — see the dated
+> receipts under [Resolved questions](./requirements.md#resolved-questions).
+> Requirements discipline no longer blocks implementation. This document priced
+> the options so those questions could be answered; **options E and F are the
+> recommendation**, and A–D are kept as the record of what was tried and why it
+> was rejected. Two measured gaps remain, neither of them a decision for the
+> requester: the pnpm store sits outside any overlay as deployed, and the H1 spike
+> has not been timed against req 7.
 
 ## What changed after measuring
 
@@ -28,10 +31,14 @@ to add already exists and already works.**
   and cacache checks it on read. A poisoned tarball is detected, discarded, and
   an offline install fails closed.
 
-**But it is only the npm half.** pnpm's store has **no** integrity check at all:
-a fresh `pnpm install` from a poisoned store silently hardlinks the attacker's
-bytes — online, offline, with `verify-store-integrity=true`, and with
-`package-import-method=copy`. There is no knob that turns this on.
+**This paragraph used to claim the opposite of the truth**, and is corrected in
+place rather than deleted, because the wrong version is what the early options
+were priced against. It said pnpm's store had no integrity check at all. It has
+one: pnpm content-hash-checks on import, evicting and re-downloading online and
+failing closed offline, identically on pnpm 11.22.0 and 12.4.2 — measured with a
+controlled harness, [the H2 result](#h2-settled-pnpm-does-verify-and-the-hole-was-never-there).
+Its single off switch is `verify-store-integrity=false`. So **the install path was
+never the pnpm hole.**
 
 **And the issue understates the pnpm channel.** It describes the risk as content
 "that another session of the same repo/runtime later installs". Because store
@@ -57,8 +64,11 @@ other two, but it does not carry the write this work is about. Ruling it out
 here so no option below is priced for a surface that does not need one.
 
 H1 is protected *incidentally* when the repo has a lockfile pinning `integrity`,
-because then npm trusts the lockfile rather than the cached packument. That is
-the whole of the protection that exists (hence req 5, and Q2).
+because then npm trusts the lockfile rather than the cached packument. That was
+the whole of the protection that existed, which is why req 5 was written. It is no
+longer the plan: a lockfile covers neither `npm install <new-package>` nor a repo
+without one, and the per-session resolution cache covers both — measured, which is
+why the lockfile question (Q2) was withdrawn rather than answered.
 
 ## Option A — integrity rather than isolation
 
@@ -99,9 +109,10 @@ poisoned inode. There is no read ShipIt mediates, no install to hook, and no
 hash to compare against at the moment it matters. **Any design whose answer is
 "check integrity on read" is silently a design that leaves H3 open.**
 
-**What it breaks.** Lockfile-pinned installs break repos with no committed
-lockfile — they would install without the shared cache, or warn. That is a
-product decision (Q2), not a technical one.
+**What it breaks.** Lockfile-pinned installs would break repos with no committed
+lockfile — they would install without the shared cache, or warn. That was Q2, and
+it is **withdrawn**: the per-session resolution cache protects a no-lockfile repo
+unchanged (measured), so nothing needs to break and no policy change is needed.
 
 **Verdict.** Right for H1, and the cheapest thing on the table for it. For pnpm
 it is neither cheap nor sufficient. Its honest description is "stop defeating a
@@ -602,6 +613,24 @@ dependencies**, and such a session no longer has the base's dependency tree. The
 copy is not a tax on sharing; it is the cost of having stopped being the same as
 the base. Sessions that merely *use* the deps — the common case when several
 sessions work on one repo — pay 4 KB and are fully isolated.
+
+### Requirement 11 lands on option F, and F already satisfies it
+
+The requester answered Q5 on 2026-09-17: the agent must be able to **edit files
+inside installed packages**, and the edit must not be visible to another session
+(req 11). Measured under F: a session overwriting a file in its own `node_modules`
+succeeded from its own point of view, cost a **64 KB copy-up**, and left both the
+other session and the shared base byte-identical.
+
+Two consequences worth stating, because they outlive this doc:
+
+- **Req 11 is the requirement a future optimisation would silently break.** Any
+  return to hardlink sharing between sessions re-opens exactly this — the edit
+  would once again be visible everywhere — and it would look like a pure
+  disk-saving win at the time. It needs a regression test, not a comment.
+- It also removes the last reason to prefer a read-only shared tree. Options that
+  work by making installed packages unwritable to the session satisfy req 1 and
+  violate req 11.
 
 ### How F and E compose
 
