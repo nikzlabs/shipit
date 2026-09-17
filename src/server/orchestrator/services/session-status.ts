@@ -226,7 +226,12 @@ export interface TurnStatusFacts {
   statusUpdated: boolean;
   wasInterrupted: boolean;
   receivedResult: boolean;
-  silent: boolean;
+  /**
+   * req 36 — the harness answered this turn by operating on the conversation itself
+   * (compaction), so the turn produced no work of the agent's own: the card cannot
+   * be behind and there is nothing to ask about.
+   */
+  harnessCommand: boolean;
   /** This turn IS a nudge; an ignored one is not nudged again (req 15). */
   statusNudge: boolean;
   /** req 34 — a message reached this turn after it started, so it owes an answer. */
@@ -256,7 +261,7 @@ export function shouldNudgeForStatusCard(
   if (facts.wasInterrupted) return false;
   // A crash has its own recovery; there is no turn to ask.
   if (!facts.receivedResult) return false;
-  if (facts.silent) return false;
+  if (facts.harnessCommand) return false;
   if (facts.statusNudge) return false;
   // A driver owns this turn and the interval around it.
   if (facts.postTurn === "none") return false;

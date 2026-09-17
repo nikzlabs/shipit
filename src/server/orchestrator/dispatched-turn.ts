@@ -82,6 +82,10 @@ async function runDispatchedTurnInner(
 
   const isCompactRequest =
     (getAgentCapabilities(agentId)?.supportsCompaction ?? false) && isCompactCommand(text);
+  // docs/303 req 36 — a compaction only when the text reaches the CLI bare: a
+  // cross-session or agent-interface message wraps it in prose below, so no command runs
+  // and whatever the agent does with it is ordinary work.
+  const harnessCommand = isCompactRequest && !opts.agentInterface && !opts.messageOrigin;
 
   const steer = opts.systemTurn ? undefined : deps.steerInputs?.();
   const useStreaming = steer ? steer.liveSteering && steer.steeringCapable : false;
@@ -355,6 +359,7 @@ async function runDispatchedTurnInner(
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+      ...(harnessCommand ? { harnessCommand: true } : {}),
       ...(opts.statusNudge !== undefined ? { statusNudge: opts.statusNudge } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),

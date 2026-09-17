@@ -400,20 +400,79 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     h.runner.dispose({ force: true });
   });
 
-  // `silent` reaches the executor only because the dispatch forwards it; without that the
-  // compaction turn below would mark the card stale and then ask the agent about it.
-  it("leaves a silent turn — compaction — out of the settlement entirely", async () => {
+  /**
+   * req 36 — the settlement reads what the turn DID, not who started it. ShipIt's own
+   * pre-turn compaction and a compaction the user asked for are the same turn as far as
+   * the card is concerned, and the second one is planning#594: it carries no `silent`,
+   * because the user's own row is in the transcript, so the kind-based exemption missed it.
+   */
+  for (const [label, extra] of [
+    ["ShipIt's own, before a post-merge turn", { systemTurn: true, silent: true }],
+    ["one the user asked for", {}],
+  ] as const) {
+    it(`leaves a compaction out of the settlement entirely — ${label} (req 36)`, async () => {
+      const h = harness({ card: { ...seeded } });
+
+      h.runner.dispatch(testDispatch({ text: "/compact", ...extra }));
+      await waitFor(() => h.agents.length === 1, "compaction started");
+      finishTurn(h.agents[0]!);
+      await waitFor(() => !h.runner.running, "compaction finished");
+      await flush();
+
+      expect(h.agents).toHaveLength(1);
+      expect(h.nudges()).toHaveLength(0);
+      expect(h.card()!.fresh).toBe(true);
+      h.runner.dispose({ force: true });
+    });
+  }
+
+  /**
+   * req 36 — the exemption is the harness running the prompt as a command, and it only
+   * does that when the text reaches it bare. A `/compact` that arrives as a message from
+   * another session is wrapped in provenance prose, so no command runs and whatever the
+   * agent does with it is ordinary work.
+   */
+  it("checks a compaction command that arrives wrapped as another session's message (req 36)", async () => {
     const h = harness({ card: { ...seeded } });
 
-    h.runner.dispatch(testDispatch({ text: "/compact", systemTurn: true, silent: true }));
-    await waitFor(() => h.agents.length === 1, "compaction started");
+    h.runner.dispatch(testDispatch({
+      text: "/compact",
+      messageOrigin: { sessionId: "parent-1", sessionTitle: "Parent session", relation: "parent" },
+    }));
+    await waitFor(() => h.agents.length === 1, "the message turn started");
     finishTurn(h.agents[0]!);
-    await waitFor(() => !h.runner.running, "compaction finished");
-    await flush();
 
-    expect(h.agents).toHaveLength(1);
-    expect(h.nudges()).toHaveLength(0);
-    expect(h.card()!.fresh).toBe(true);
+    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    expect(h.nudges()).toHaveLength(1);
+    expect(h.card()!.fresh).toBe(false);
+
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * The other half of req 36, and the one that keeps the exemption from becoming a
+   * suppression: a turn ShipIt starts of its own that is NOT a harness command — a
+   * merged-PR wake, a delivered result, a child's report all take this shape — leads to
+   * work the user wants on the card, so it is checked exactly as a typed turn is.
+   */
+  it("still checks a ShipIt-started turn that is not a harness command (req 36)", async () => {
+    const h = harness({ card: { ...seeded } });
+
+    h.runner.dispatch(testDispatch({
+      text: "[ShipIt] The pull request for this session was merged.",
+      systemTurn: true,
+    }));
+    await waitFor(() => h.agents.length === 1, "the wake started");
+    finishTurn(h.agents[0]!);
+
+    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    expect(h.nudges()).toHaveLength(1);
+    expect(h.card()!.fresh).toBe(false);
+
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
     h.runner.dispose({ force: true });
   });
 
@@ -559,6 +618,34 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     expect(h.nudges()).toHaveLength(0);
     // The adopted turn produced nothing, so the card no longer speaks for the session.
     expect(h.card()!.fresh).toBe(false);
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * req 36 — the exemption belongs to the turn being settled, not to the executor. A
+   * compaction leaves the CLI resident, and a turn the CLI then starts of its own is real
+   * work: inheriting the compaction's exemption would leave the card reading current when
+   * it is not, which is the suppression req 15 forbids.
+   */
+  it("does not carry a compaction's exemption into a turn the CLI starts next (req 36)", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "/compact" }));
+    await waitFor(() => h.agents.length === 1, "compaction started");
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.runner.running, "the compaction settled");
+    expect(h.card()!.fresh).toBe(true);
+
+    // The CLI starts a turn of its own on the resident process and produces a result of
+    // its own, touching nothing on the card.
+    h.agents[0]!.emit("event", { type: "agent_self_wake" });
+    await flush();
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.card()!.fresh, "the adopted turn marked the card stale");
+    await waitFor(() => h.nudges().length === 1, "the adopted turn was nudged");
+
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
     h.runner.dispose({ force: true });
   });
 
