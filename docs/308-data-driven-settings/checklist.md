@@ -20,6 +20,6 @@ each, and the work is tracked on planning#580.
 - [x] 4 — Voice
 - [x] 5 — Integrations
 - [x] 6a — The list panels on Integrations, Network and Keyboard
-- [ ] 6b — The Roles and Services panels, and `services.nonTurnModel`
+- [x] 6b — The Roles and Services panels, and `services.nonTurnModel`
 - [ ] 7 — Project Settings
 - [ ] 8 — Cleanup: the coverage walk and `data-setting` go

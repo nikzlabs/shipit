@@ -257,6 +257,12 @@ interface SettingsState {
 
   credentialRoutes: CredentialRoute[];
 
+  /**
+   * The pin itself, which is `services.nonTurnModel`'s declared value — so this
+   * field is a view over the record and is written only by `setSettingValue`
+   * (docs/308 slice 6b, inventory.md P1). Its resolution below is not a setting
+   * and keeps a setter of its own.
+   */
   nonTurnModel: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
   /**
    * docs/252 phase 7 (req 9) — what non-turn work resolves to right now, pin or
@@ -365,10 +371,7 @@ interface SettingsState {
   setProviderAccounts: (accounts: CredentialRoute[]) => void;
   setCredentialRoutes: (routes: CredentialRoute[]) => void;
 
-  setNonTurnModel: (
-    pinned: SettingsState["nonTurnModel"],
-    resolved: SettingsState["nonTurnModelResolved"],
-  ) => void;
+  setNonTurnModelResolved: (resolved: SettingsState["nonTurnModelResolved"]) => void;
   setBackgroundWorkModels: (models: EligibleModelOption[]) => void;
   /**
    * docs/261 phase 3 — replace both reviewer slots with the server's answer.
@@ -643,7 +646,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
   setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
-  setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
+  setNonTurnModelResolved: (resolved) => set({ nonTurnModelResolved: resolved }),
   setBackgroundWorkModels: (models) => set({ backgroundWorkModels: models }),
   setReviewers: (reviewers) => set({ reviewers }),
   setRoles: (roles) => set({ roles }),

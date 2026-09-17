@@ -461,6 +461,8 @@ describe("a collection panel", () => {
   it.each([
     ["network", "settings-egress-host-input"],
     ["keyboard", "settings-keybindings"],
+    ["services", "services-panel"],
+    ["roles", "roles-settings"],
   ] as const)("is placed on the %s tab by its declaration", (tab, testId) => {
     render(<DeclaredSettings tab={tab} />);
     expect(screen.getByTestId(testId)).toBeInTheDocument();
@@ -475,5 +477,61 @@ describe("a collection panel", () => {
   it("is a row without being in the value record", () => {
     expect(GENERATED_SETTINGS.map((d) => d.key)).toContain("keyboard.keybindings");
     expect(recordHolds("keyboard.keybindings")).toBe(false);
+  });
+});
+
+/**
+ * The Services tab (slice 6b): the background-work pin, then the panel that five
+ * declarations name.
+ *
+ * **Its order could not be chosen**, and that is requirement 11 rather than a
+ * layout decision. `services.nonTurnModel` is a payload setting in
+ * `global-settings.ts`, the first source in the catalogue registry, so it leads
+ * the tab — above the providers it draws from, where it used to sit beneath them.
+ * Moving the declaration would change the derived `GlobalSettings` payload types,
+ * which is the same trade slices 4 and 5 took.
+ */
+describe("the Services tab's rows", () => {
+  it("leads with the background-work pin and follows with the providers panel", () => {
+    const { container } = render(<DeclaredSettings tab="services" />);
+
+    const rendered = container.querySelector('[data-testid="background-work-section"]')!;
+    const panel = container.querySelector('[data-testid="services-panel"]')!;
+    expect(Boolean(rendered.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING))
+      .toBe(true);
+  });
+
+  /*
+    Every declaration naming this panel is ADDRESSED — the credentials and the
+    routing controls exist per (service, billing mode), the accounts per provider
+    — and none belongs to a collection that would place the panel instead. So
+    each names it and is deduplicated against the first, exactly as
+    `mcp.oauthProvider` is against `mcp.servers`; one render per declaration would
+    be five copies of one credential list.
+  */
+  it("renders one panel however many of its declarations name it", () => {
+    const naming = GENERATED_SETTINGS.filter(
+      (d) => d.tab === "services" && d.component === "services-panel",
+    );
+    expect(naming.length).toBeGreaterThan(1);
+    expect(naming.every((d) => d.address !== undefined)).toBe(true);
+
+    const { container } = render(<DeclaredSettings tab="services" />);
+    expect(container.querySelectorAll('[data-testid="services-panel"]')).toHaveLength(1);
+  });
+});
+
+/**
+ * The Roles tab (slice 6b): one component for two collections, because the roles
+ * list and the reviewer's metadata open the same editor through the same write.
+ */
+describe("the Roles tab's rows", () => {
+  it("renders the roles list and the reviewer slots from one registered component", () => {
+    const naming = GENERATED_SETTINGS.filter((d) => d.tab === "roles" && d.component === "roles");
+    expect(naming.length).toBeGreaterThan(1);
+
+    const { container } = render(<DeclaredSettings tab="roles" />);
+    expect(container.querySelectorAll('[data-testid="roles-settings"]')).toHaveLength(1);
+    expect(screen.getByTestId("reviewer-tab")).toBeInTheDocument();
   });
 });

@@ -270,6 +270,10 @@ export const GLOBAL_SETTINGS = {
   "services.nonTurnModel": defineSetting({
     key: "services.nonTurnModel",
     tab: "services",
+    // The model choice has no options in the declaration, so no control the value
+    // kind alone could carry: which models are offered, what the pin resolves onto
+    // and whether it still runs are all this setting's own (docs/308 slice 6b).
+    component: "background-work",
     scope: "global",
     label: "Background work",
     description:

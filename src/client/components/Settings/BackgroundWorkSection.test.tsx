@@ -2,8 +2,29 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
+import { resetDeclaredSaves } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
+import { initialSettingValues } from "../../stores/setting-values.js";
 import type { AgentOption, EligibleModelOption } from "../../agent-types.js";
+
+const KEY = "services.nonTurnModel" as const;
+type Pin = { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
+type Resolved = ReturnType<typeof useSettingsStore.getState>["nonTurnModelResolved"];
+
+/**
+ * The pin is the declared value and the resolution beside it is not, so they are
+ * seeded through two different doors: the record, and the one setter that is
+ * left (docs/308 slice 6b).
+ */
+function seed(pin: Pin, resolved: Resolved) {
+  useSettingsStore.getState().setSettingValue(KEY, pin);
+  useSettingsStore.getState().setNonTurnModelResolved(resolved);
+}
+
+function renderSection() {
+  return render(<BackgroundWorkSection settingKey={KEY} />);
+}
 
 /**
  * The agent list is here for ONE thing: naming the harness in the derived line.
@@ -67,8 +88,12 @@ function bodyOf(fetchMock: ReturnType<typeof vi.fn>, call = 0): { nonTurnModel: 
 }
 
 beforeEach(() => {
-  useSettingsStore.getState().setNonTurnModel(null, null);
+  useSettingsStore.setState({ settingValues: initialSettingValues(), settingDrafts: {} });
+  resetDeclaredSaves();
+  seed(null, null);
   useSettingsStore.getState().setBackgroundWorkModels(OPTIONS);
+  // The harness names come from the UI store now, not from a prop.
+  useUiStore.setState({ agentList: agents });
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -82,12 +107,12 @@ describe("BackgroundWorkSection", () => {
    */
   it("offers only models, with no row for a default", async () => {
     const user = userEvent.setup();
-    useSettingsStore.getState().setNonTurnModel(
+    seed(
       { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       RESOLVED_FLASH,
     );
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
     await user.click(screen.getByTestId("background-work-model"));
 
     expect(screen.queryByTestId("background-work-model-default")).toBeNull();
@@ -96,12 +121,12 @@ describe("BackgroundWorkSection", () => {
   });
 
   it("describes the work without naming a state or a rule", () => {
-    useSettingsStore.getState().setNonTurnModel(
+    seed(
       { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       RESOLVED_FLASH,
     );
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
     const section = screen.getByTestId("background-work-section");
 
     expect(section.textContent).toContain("such as naming a session");
@@ -121,13 +146,13 @@ describe("BackgroundWorkSection", () => {
    */
   it("offers a model provider no installed harness can reach", async () => {
     const user = userEvent.setup();
-    useSettingsStore.getState().setNonTurnModel(null, {
+    seed(null, {
       ...RESOLVED_FLASH,
       harnessId: undefined,
       execution: "direct",
     });
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
     await user.click(screen.getByTestId("background-work-service-trigger"));
 
     expect(screen.getByTestId("background-work-service-option-deepseek:key")).toBeTruthy();
@@ -139,13 +164,13 @@ describe("BackgroundWorkSection", () => {
    * be read off the absence of the other.
    */
   it("says the work is called directly where no harness runs it", () => {
-    useSettingsStore.getState().setNonTurnModel(null, {
+    seed(null, {
       ...RESOLVED_FLASH,
       harnessId: undefined,
       execution: "direct",
     });
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
 
     expect(screen.getByTestId("background-work-execution").textContent)
       .toBe("Called directly · no harness, no container");
@@ -153,9 +178,9 @@ describe("BackgroundWorkSection", () => {
   });
 
   it("keeps naming the harness where one runs it", () => {
-    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+    seed(null, RESOLVED_FLASH);
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
 
     expect(screen.getByTestId("background-work-execution").textContent).toBe("Runs on Claude Code");
     expect(screen.queryByText(/Called directly/)).toBeNull();
@@ -164,9 +189,9 @@ describe("BackgroundWorkSection", () => {
   // The derivation is stated as a fact, never offered as a control.
   it("shows the derived harness without offering a choice of harness", async () => {
     const user = userEvent.setup();
-    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+    seed(null, RESOLVED_FLASH);
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
 
     expect(screen.getByText(/Runs on Claude Code/)).toBeTruthy();
     expect(screen.queryByTestId("harness-trigger")).toBeNull();
@@ -177,9 +202,9 @@ describe("BackgroundWorkSection", () => {
 
   it("offers the service as its own control, with its billing mode on the row", async () => {
     const user = userEvent.setup();
-    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+    seed(null, RESOLVED_FLASH);
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
     await user.click(screen.getByTestId("background-work-service-trigger"));
 
     expect(screen.getByTestId("background-work-service-option-deepseek:key").textContent)
@@ -190,9 +215,9 @@ describe("BackgroundWorkSection", () => {
 
   it("lists only the chosen service's models", async () => {
     const user = userEvent.setup();
-    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+    seed(null, RESOLVED_FLASH);
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
     await user.click(screen.getByTestId("background-work-model"));
 
     expect(screen.getByTestId("background-work-model-option-deepseek-flash")).toBeTruthy();
@@ -200,26 +225,32 @@ describe("BackgroundWorkSection", () => {
     expect(screen.queryByTestId("background-work-model-option-claude-opus-5")).toBeNull();
   });
 
-  it("sends the whole triple when the user pins a model", async () => {
+  /**
+   * The triple is the unit, and where it goes comes from the declaration
+   * (docs/308 slice 6b): the shared writer builds `PUT /api/settings` with the
+   * declared `wire`, and this component names no path, no method and no field.
+   * The record moves with it, and the named field the rest of the app reads is a
+   * view over the record.
+   */
+  it("sends the whole triple to the declared destination when the user pins a model", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ nonTurnModel: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4" } }),
-    }));
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);
-    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+    seed(null, RESOLVED_FLASH);
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
     await user.click(screen.getByTestId("background-work-model"));
     await user.click(screen.getByTestId("background-work-model-option-deepseek-v4"));
 
     expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe("/api/settings");
+    expect(init.method).toBe("PUT");
 
-    expect(bodyOf(fetchMock).nonTurnModel).toEqual({
-      serviceId: "deepseek",
-      billingMode: "key",
-      modelId: "deepseek-v4",
-    });
+    const pinned = { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4" };
+    expect(bodyOf(fetchMock).nonTurnModel).toEqual(pinned);
+    expect(useSettingsStore.getState().settingValues[KEY]).toEqual(pinned);
+    expect(useSettingsStore.getState().nonTurnModel).toEqual(pinned);
   });
 
   /**
@@ -231,9 +262,9 @@ describe("BackgroundWorkSection", () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);
-    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+    seed(null, RESOLVED_FLASH);
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
     await user.click(screen.getByTestId("background-work-service-trigger"));
     await user.click(screen.getByTestId("background-work-service-option-anthropic:sub"));
 
@@ -248,12 +279,12 @@ describe("BackgroundWorkSection", () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);
-    useSettingsStore.getState().setNonTurnModel(
+    seed(
       { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       RESOLVED_FLASH,
     );
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
     await user.click(screen.getByTestId("background-work-model"));
     await user.click(screen.getByTestId("background-work-model-option-deepseek-v4"));
     await user.click(screen.getByTestId("background-work-service-trigger"));
@@ -264,12 +295,12 @@ describe("BackgroundWorkSection", () => {
   });
 
   it("names a stale pin instead of silently reading as the default", () => {
-    useSettingsStore.getState().setNonTurnModel(
+    seed(
       { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" },
       null,
     );
 
-    render(<BackgroundWorkSection agentList={agents} />);
+    renderSection();
 
     // the model picker has nothing to offer and req 14 removes it. What must not
 
@@ -283,34 +314,51 @@ describe("BackgroundWorkSection", () => {
     expect(screen.queryByTestId("background-work-model-default")).toBeNull();
   });
 
-  it("ignores a stale response that lands after a newer write", async () => {
+  /*
+    The resolution no longer rides the write's own response — it arrives with the
+    next settings refresh — so the controls have to follow the PIN. Reading the
+    resolution first left them showing the model the user had just replaced: for
+    the round trip, and for ever if that refresh failed. Nothing here settles the
+    resolution, which is exactly the window.
+  */
+  it("shows the model just picked, before the resolution catches up", async () => {
     const user = userEvent.setup();
-    let release: (() => void) | undefined;
-    const slow = new Promise<void>((resolve) => { release = resolve; });
-    let call = 0;
-    const fetchMock = vi.fn(async () => {
-      call += 1;
-      if (call === 1) {
-        await slow;
-        return { ok: true, json: async () => ({ nonTurnModel: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" } }) };
-      }
-      return { ok: true, json: async () => ({ nonTurnModel: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4" } }) };
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({}) })));
+    seed(null, RESOLVED_FLASH);
 
-    render(<BackgroundWorkSection agentList={agents} />);
-
+    renderSection();
     await user.click(screen.getByTestId("background-work-service-trigger"));
     await user.click(screen.getByTestId("background-work-service-option-anthropic:sub"));
 
+    expect(screen.getByTestId("background-work-service-trigger").textContent).toContain("Anthropic");
+    expect(screen.getByTestId("background-work-model").textContent).toContain("Opus 5");
+    // The resolution still describes DeepSeek, so it says nothing about how this
+    // selection runs rather than naming the harness of the one it replaced.
+    expect(useSettingsStore.getState().nonTurnModelResolved).toBe(RESOLVED_FLASH);
+    expect(screen.queryByTestId("background-work-execution")).toBeNull();
+  });
+
+  /*
+    Sequencing two overlapping writes and rolling a refused one back to the value
+    the SERVER last accepted belongs to the shared writer, which
+    `declared-setting.test.tsx` covers over the declared booleans. What is left to
+    prove here is that a refusal reaches this control: it holds no copy of the
+    pin, so the record putting the old triple back is the whole of it.
+  */
+  it("shows the stored model again when the write is refused", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const stored = { serviceId: "deepseek", billingMode: "key" as const, modelId: "deepseek-flash" };
+    seed(stored, RESOLVED_FLASH);
+
+    renderSection();
     await user.click(screen.getByTestId("background-work-model"));
     await user.click(screen.getByTestId("background-work-model-option-deepseek-v4"));
-    expect(useSettingsStore.getState().nonTurnModel?.modelId).toBe("deepseek-v4");
 
-    release?.();
-    await slow;
-    // The older answer must not win.
-    expect(useSettingsStore.getState().nonTurnModel?.modelId).toBe("deepseek-v4");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(useSettingsStore.getState().settingValues[KEY]).toEqual(stored);
+    expect(screen.getByTestId("background-work-model").textContent).toContain("V4.1 Flash");
   });
 });

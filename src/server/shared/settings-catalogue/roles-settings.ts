@@ -25,6 +25,7 @@ export const ROLES_SETTINGS = {
   "roles": defineSetting({
     key: "roles",
     tab: "roles",
+    component: "roles",
     scope: "global",
     label: "Roles",
     description:
@@ -147,6 +148,7 @@ export const ROLES_SETTINGS = {
   "reviewers": defineSetting({
     key: "reviewers",
     tab: "roles",
+    component: "roles",
     scope: "global",
     label: "Reviewer candidates",
     description:

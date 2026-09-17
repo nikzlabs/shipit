@@ -18,24 +18,30 @@ collections**. The browser's 14 declarations share **13 storage keys**.
 
 | Outcome | Declarations | What it means |
 |---|---|---|
-| **Generated row** | 24 | A control the renderer produces from the value kind. Nothing hand-written. |
-| **Small component** | 10 | Seven components: the memory budget, the webhook pair, the TTS choices, hands-free, the repository colour, and the two pasted-token credentials. |
+| **Generated row** | 23 | A control the renderer produces from the value kind. Nothing hand-written. |
+| **Small component** | 11 | Eight components: the memory budget, the webhook pair, the TTS choices, hands-free, the repository colour, the two pasted-token credentials, and the background-work model. |
 | **Panel** | 9 | A collection editor with its own operations. |
 | **Repeated by a panel** | 34 | Item fields and per-item settings, addressed by a credential, an account, a host, a server or a repository. |
 
-So **24 of 77 settings stop being hand-written entirely**, 7 components cover 10
+So **23 of 77 settings stop being hand-written entirely**, 8 components cover 11
 more, and 9 panels own the remaining 34 between them. Every one of them —
 generated, component or panel — reads its words from its declaration and writes
 to the declaration's store.
 
-*The credential rows were counted as generated rows here until slice 5 built
-one. They are components, for the reasons `plan.md` → Slices → 5 gives; what
-changed is the count above and the kind below, not what the user gets.*
+*Two settings moved between the first two rows as the slices built them, and for
+the same reason each time: what the renderer can produce from the value kind is
+narrower than it looked. The **credential rows** went in slice 5 (`plan.md` →
+Slices → 5) and **`services.nonTurnModel`** in slice 6b, because `modelSelection`
+declares no options and so has nothing a generic picker could offer. What changed
+is the counts above and the kind below, never the declaration, the destination or
+what the user gets.*
 
 ## Four kinds of control, not two
 
 1. **A value row.** One declaration, one value, one control chosen by value kind:
-   toggle, choice, number, text, git identity, model selection.
+   toggle, choice, text, git identity. *A number and a model selection were on
+   this list until slices 2 and 6b found that each one's only generated consumer
+   needs its own component.*
 2. **A credential row.** A token the browser pastes in, replaces and removes.
    Only two stand alone; the rest of the credentials are addressed and live in
    panels. *Slice 5: a credential row is a **component**, not a control kind —
@@ -61,7 +67,7 @@ that looked necessary.
 | Change | Why it exists | Used by |
 |---|---|---|
 | `section` | Larger tabs have headed groups — Advanced's automation and notifications, Voice's input and playback | rows on the larger tabs; omitted elsewhere |
-| `component` | A setting that needs its own UI (req 3) | 9 panels, 5 components |
+| `component` | A setting that needs its own UI (req 3) | 9 panels, 8 components |
 | `own-route` gains `method`, `path` and `bodyField` | A single-value setting with a route of its own cannot be written from prose (P2) | 5 declarations |
 | `own-route` gains `writeOnly` | A credential the path stores and never answers has no read to pair with the write, so nothing hydrates it and the record must not hold it (slice 5) | 2 declarations |
 
@@ -120,7 +126,7 @@ it:**
 | `instructions.opsInstructions` | instructions | text | prompt file `ops` | value | **generated row** |
 | `instructions.agentInstructionsEnabled` | instructions | bool | credential store `agentSystemInstructionsEnabled` | value | **generated row** |
 | `voice.deliveryMode` | voice | enumOf | credential store `voiceDeliveryMode` | value | **generated row** |
-| `services.nonTurnModel` | services | modelSelection | credential store `nonTurnModel` | value | **generated row** |
+| `services.nonTurnModel` | services | modelSelection | credential store `nonTurnModel` | value | `background-work` component |
 | `network.egressContained` | network | bool | own route `PUT /api/egress/settings` | value | **generated row** |
 
 ### Browser values — `browser-settings.ts` (14)
@@ -283,6 +289,11 @@ row. It is **not** a universal rule — an SSH port saves with its form, and a
 failover cutoff commits on blur — but those live in panels, which keep their own
 behaviour.
 
+*Slice 6b checked the cutoff at the code rather than inheriting the claim:* both
+`services.failoverCutoff.*` declarations are addressed and belong to the
+credentials panel, which holds a draft per field and writes it on blur or on
+Enter, plus a flush at unmount. Registering the panel moved none of that.
+
 **P6 — Optimistic write with rollback exists only for booleans.**
 `src/client/components/Settings/declared-setting.ts` already does the hard part:
 per-field sequencing, and rollback to the last value the **server** confirmed
@@ -297,6 +308,14 @@ The voice shares a component with the provider and the speed it depends on.
 **The agent already reads the live options for all of them** — `LIVE_DETAILS`
 (`src/server/orchestrator/services/settings-read.ts:821`) — so there is no
 agent-side benefit to claim here.
+
+*Slice 6b re-checked the three role enums before registering their editors, and
+it still holds:* `roles[].harness` and `roles[].reasoningEffort` are inside
+`roles/RoleEditor.tsx`, whose lists are re-derived from the draft's model on every
+change, and `reviewers[].reasoningEffort` is inside `tabs/ReviewerSection.tsx`,
+whose list is the levels the slot's RESOLVED selection honours rather than the
+harness's vocabulary. None of the three could be offered by a control that knows
+only the key.
 
 **P8 — Validation already exists and is already the agent's message.** The value
 type's `validate(raw, noun)` returns a `Rendered` refusal. A generated control
@@ -349,6 +368,13 @@ no collection declaration** — the Voice tab repeats it over the providers that
 need a key (`src/client/components/Settings/tabs/VoiceTab.tsx:304`). Its owner is
 that list, which is a component; the renderer must not treat it as a standalone
 row.
+
+*Slice 6b:* the Model-providers tab is that shape five times over. All five of
+`services.credentials`, `services.accountSelectionMode`, the two
+`services.failoverCutoff.*` and `services.providerAccounts` are addressed and
+belong to no collection, so each names the panel and four are deduplicated
+against the first; the item fields beneath them name nothing, because their
+collection places it.
 
 *Slice 4:* naming a component is exactly how an addressed declaration says that.
 The renderer skips an addressed declaration **that names no component**, and the

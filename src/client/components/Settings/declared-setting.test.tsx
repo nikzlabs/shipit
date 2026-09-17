@@ -9,24 +9,21 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, renderHook, screen, cleanup, act } from "@testing-library/react";
+import { render, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DeclaredToggle } from "./declared.js";
 import {
   resetDeclaredSaves,
   saveSetting,
-  useSetting,
   type DeclaredBooleanKey,
 } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { hydrateSettingValues } from "../../stores/setting-hydration.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { recordHolds } from "../../stores/setting-values.js";
 import {
   GLOBAL_SETTINGS,
   findSetting,
   type AnyPayloadDeclaration,
-  type SettingKey,
 } from "../../../server/shared/settings-catalogue/index.js";
 
 /**
@@ -170,41 +167,6 @@ describe("two saves of one setting that overlap", () => {
 
     expect(storeValue(WIRE)).toBe(false);
   });
-});
-
-/**
- * A tab this slice did not convert still holds its value in its named store
- * field, and its own hydration still writes only that field (P1, P18). So a save
- * must not leave a value in the record for it: the reader prefers the record,
- * and nothing would ever correct it again.
- */
-describe("a setting the record does not hold", () => {
-  const OUTSIDE = (Object.values(GLOBAL_SETTINGS) as AnyPayloadDeclaration[]).filter(
-    (d) => !recordHolds(d.key) && d.wire in useSettingsStore.getState(),
-  );
-
-  it("covers the payload settings still reading through their named field", () => {
-    // One left: every other tab joined the record, and the Services tab's model
-    // picker waits for slice 6's panels.
-    expect(OUTSIDE.map((d) => d.key).sort()).toEqual(["services.nonTurnModel"]);
-  });
-
-  for (const declaration of OUTSIDE) {
-    const key = declaration.key as SettingKey;
-
-    it(`shows ${key} as its hydration last left it, not as an earlier save did`, async () => {
-      const saved = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" };
-      await act(async () => { await saveSetting(key, saved); });
-      expect(useSettingsStore.getState().settingValues[key]).toBeUndefined();
-
-      // What a `settings_changed` refetch does: the authoritative value arrives
-      // through this setting's own setter, which writes the named field.
-      act(() => { useSettingsStore.getState().setNonTurnModel(null, null); });
-
-      const { result } = renderHook(() => useSetting(key));
-      expect(result.current.value).toBeNull();
-    });
-  }
 });
 
 describe("a toggle given no wiring is still a working control", () => {

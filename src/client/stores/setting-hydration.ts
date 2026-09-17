@@ -24,15 +24,30 @@ import type {
  *
  * A field the payload omits is left alone rather than reset: the payload omits
  * what it has no value for, and `undefined` is not one.
+ *
+ * **Unless the declaration says the omission IS the value** (slice 6b). A
+ * declaration marked `omitWhenNull` is one whose payload field is dropped rather
+ * than sent as null, so in a WHOLE payload an absent field means null and
+ * nothing else — leaving the record alone would keep showing a background-work
+ * pin the server has stopped holding.
+ *
+ * Which is why {@link partial} exists, for the one caller that is not a whole
+ * payload: a message carrying some of the settings cannot say a value is gone,
+ * only that it does not carry it. Found in review, reproduced — the
+ * `global_settings` message declares no `nonTurnModel` field at all, so reading
+ * its silence as a deletion cleared a pin nobody had touched.
  */
-export function hydrateSettingValues(payload: Readonly<Record<string, unknown>>): void {
+export function hydrateSettingValues(
+  payload: Readonly<Record<string, unknown>>,
+  { partial = false } = {},
+): void {
   const { setSettingValue } = useSettingsStore.getState();
   for (const declaration of GENERATED_SETTINGS) {
     const wire = declaration.wire;
     if (!wire) continue;
     const value = payload[wire];
-    if (value === undefined) continue;
-    setSettingValue(declaration.key as SettingKey, value);
+    if (value === undefined && (partial || !declaration.omitWhenNull)) continue;
+    setSettingValue(declaration.key as SettingKey, value ?? null);
   }
 }
 

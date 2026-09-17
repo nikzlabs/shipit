@@ -194,8 +194,19 @@ forces a migration.
 | `numeric` | number input, with the declared unit |
 | `text` | textarea when the store is `system-prompt-file`; a `text` row over any other store has no control yet, so it is **not generated at all** (slice 3) |
 | `gitIdentity` | the name-and-email pair |
-| `modelSelection` | the model picker |
 | a declaration naming a `component` | that component, rendered **once** however many declarations name it |
+
+A **model picker** was in this table until slice 6b built one, and it is deleted
+for the same reason the credential row was in slice 5: there is nothing a control
+chosen by value kind could render. `modelSelection` declares **no options** — the
+three settings that use it draw theirs from three different places, and an enum
+option source is a field requirement 5 already refused — so a table entry would
+have had to reach into a store field chosen by key, which is what a component is.
+Its one generated consumer is `services.nonTurnModel`, and what it needs beyond a
+menu is derived status no table can hold: which models this install can run in
+the background, what the pin resolves onto, and whether it still runs. The other
+two are addressed and belong to the roles editor. `numeric` is the same shape and
+has no entry either (P4).
 
 A **credential row** — configured or not, replace, remove — was in this table
 until slice 5 built one. It is not a control kind: its write has a client-side
@@ -559,11 +570,83 @@ existing one or renders a row that cannot save.
 
    6b — **Roles and Services.** The roles and reviewers editors, the
    credentials, provider-accounts, account-selection and failover-cutoff panels,
-   and `services.nonTurnModel` as an ordinary generated row. That last one is
-   why the split falls here: it is the first `modelSelection` row, so it needs a
-   control-table entry, a record entry and hydration, and the two tabs need
-   `agentList` read from the store rather than drilled through the dialog — the
-   same move slice 6a made for `hasActiveSession`.
+   and `services.nonTurnModel`. `roles` and `services` join `GENERATED_TABS`,
+   and both tabs read `agentList` from the store rather than taking it through
+   the dialog — the same move 6a made for `hasActiveSession`, and it lets
+   `Settings` drop its last content prop.
+
+   **The background-work model is a component, not the control table's first
+   `modelSelection` entry.** The plan expected a picker chosen by value kind; the
+   build says there is nothing to choose it from — see *The renderer* above. What
+   it keeps is the half that mattered: the pin is in the value record, hydrated
+   from its `wire` and written by `saveSetting`, so `setNonTurnModel` is gone and
+   `nonTurnModel` is a view over the record. Only the resolution beside it keeps a
+   setter, because a resolution is not a setting. Gained with the shared writer: a
+   refused write now rolls back to the value the SERVER last accepted rather than
+   to the one the component last saw (P6). Given up with the hand-written one: the
+   two pickers no longer disable for the round trip — no generated row does — and
+   the failure toast names the declared label.
+
+   **An omitted payload field is a value where the declaration says so.**
+   `services.nonTurnModel` is the one declaration marked `omitWhenNull`: the
+   payload drops the field rather than sending null, so hydration reading silence
+   as "no news" would keep showing a pin the server has stopped holding. The rule
+   is read off the existing field rather than added as a new one (req 5).
+
+   **One component may own two collections.** `roles` and `reviewers` both name
+   the roles editor, because the roles list and the reviewer's metadata open the
+   same editor through the same write — two registered components would be two
+   mount sites for one dialog. That is slice 4's shared-component rule over
+   collections rather than over scalars.
+
+   **An addressed declaration names its panel where no collection would place
+   it** (6a's rule, exercised harder). All five Model-providers declarations that
+   name the panel are addressed, and none belongs to a collection, so each names
+   it and four are deduplicated against the first — `mcp.oauthProvider`'s shape,
+   five times over. The item fields beneath them (`services.credentials[].label`
+   and its siblings, `roles[].*`, `reviewers[].*`) name nothing: their collection
+   places the panel and the renderer skips them (P11).
+
+   Checked rather than built: **P7's three dynamic enums still need nothing** —
+   `roles[].harness`, `roles[].reasoningEffort` and `reviewers[].reasoningEffort`
+   are each inside an editor whose options depend on the draft being edited. And
+   **P5 holds**: a failover cutoff still commits on blur, which is the panel's own
+   behaviour and not a rule about generated rows.
+
+   **Order changed on the Services tab, by the mechanism slices 4 and 5 already
+   met** (req 11). `services.nonTurnModel` is a payload setting in
+   `global-settings.ts`, the first source in the registry, so *Background work*
+   now leads the tab, above the providers it draws from. Moving the declaration
+   would change the derived `GlobalSettings` payload types; requirement 11 takes
+   the order that falls out.
+
+   Knowingly given up: the horizontal rule the tab drew between the providers and
+   the background-work row (both carry no `section`, so they share the tab's one
+   unheaded group), and `ServicesPanel`'s `agentList` prop, which `HarnessOnboardingPanel`
+   passed too. Deliberately NOT taken: the panel's own *Model providers* heading,
+   which stays hand-written — it carries the *Supported models* control and belongs
+   to both hosts, and only one of them has a catalogue around it.
+
+   **Every payload setting is now in the record**, which ended the one test that
+   needed a payload setting outside it. `currentValue`'s fall-back to the named
+   store field is left in place for slice 7 rather than deleted with its last
+   user.
+
+   **What review found, and both of it is the same mistake: reading a value that
+   describes something else as if it described this one.** A **resolution is not
+   a pin** — it is the server's, and it now arrives one settings refresh after a
+   save instead of riding the write's own response, so a control that read it
+   first went on showing the model the user had just replaced, for the round trip
+   and for ever if that refresh failed. The pin leads now, and the resolution is
+   read only where it names the same triple; the execution line says nothing
+   rather than naming the harness of a model that is no longer selected. And a
+   **partial message is not a payload** — the omission rule above says an absent
+   field is a null, which is true of a whole payload and false of the
+   `global_settings` WS message, whose type declares no `nonTurnModel` field at
+   all; reading its silence cleared a pin nobody had touched. `hydrateSettingValues`
+   takes `{ partial: true }` from that one caller. A third, smaller: the
+   empty-state line still said *"add a provider credential above"* after the
+   reorder put it at the top of the tab.
 
    **What 6a found.** *Registering a panel needed no new mechanism at all.* A
    collection declaration names a component, the registry maps the name, and the
@@ -652,6 +735,9 @@ on the same reader while their tabs wait for slices 5 and 3.
 | `src/client/components/Settings/components/VoiceProviderKeys.tsx` | the addressed key list, which keeps its own writer as a panel does (P11) |
 | `src/client/voice/voice-key-status.ts` | which speech providers have a key: one fact, three readers, and a component takes no props to pass it by |
 | `src/client/components/Settings/tabs/UpdatePanel.tsx` | the Software Updates chrome, placed as that section's note (P12) |
+| `src/client/components/Settings/components/RolesSettings.tsx` | the roles list and the reviewer slots: one component for two collections, sharing the editor and the write |
+| `src/client/components/Settings/ServicesPanel.tsx` | the credentials panel, placed by five addressed declarations and deduplicated to one render |
+| `src/client/components/Settings/BackgroundWorkSection.tsx` | the background-work pin: a component because `modelSelection` declares no options, on the shared reader and writer |
 | `src/client/components/Settings/setting-binding.ts` | `data-setting`; deleted in slice 8 |
 | `src/client/components/Settings/settings-coverage.test.tsx` | the walk; deleted in slice 8 (P15) |
 | `src/client/stores/settings-store.ts` | gains the value record and the draft record; the named fields become views over the first |

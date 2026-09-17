@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, within, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CredentialRoute } from "../../../server/shared/types.js";
+import type { AgentOption } from "../../agent-types.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
@@ -59,6 +60,7 @@ beforeEach(() => {
   useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.getState().setProviderAccounts([]);
   useUiStore.getState().setToast(null);
+  useUiStore.setState({ agentList: [] });
 
   useSettingsStore.setState({
     providerAccountNotices: {},
@@ -82,9 +84,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/**
+ * The harnesses come from the UI store, not from a prop: the panel is the
+ * component five Model-providers declarations name, and a registered component
+ * takes the setting's key and nothing else (docs/308 slice 6b).
+ */
+function renderPanel(agents: AgentOption[] = []) {
+  useUiStore.setState({ agentList: agents });
+  return render(<ServicesPanel />);
+}
+
 describe("ServicesPanel", () => {
   it("starts empty — the catalogue lives in the dialog, not on the screen", () => {
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.getByTestId("services-empty")).toBeInTheDocument();
 
     expect(screen.queryByText("OpenRouter")).not.toBeInTheDocument();
@@ -96,7 +108,7 @@ describe("ServicesPanel", () => {
       route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
       route({ id: "cred_3", serviceId: "zai", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.getByTestId("service-card-zai:sub")).toBeInTheDocument();
     expect(screen.getByTestId("service-card-zai:key")).toBeInTheDocument();
 
@@ -112,7 +124,7 @@ describe("ServicesPanel", () => {
       route({ id: "cred_1", serviceId: "zai", billingMode: "key", via: "string", label: "GLM (Z.ai) (ZAI_API_KEY)" }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", label: "GLM (Z.ai) (ZAI_CODING_PLAN_KEY)" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.getByTestId("credential-row-cred_1").querySelector(".truncate")).toBeNull();
     expect(screen.getByTestId("credential-row-cred_2").querySelector(".truncate")).toBeNull();
     expect(screen.getByTestId("service-card-zai:key").querySelector("h3")?.className).not.toContain(
@@ -126,14 +138,14 @@ describe("ServicesPanel", () => {
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string" }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.queryByTestId("service-add-credential-zai:sub")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-add-credential-zai:key")).not.toBeInTheDocument();
     expect(screen.getByTestId("services-add")).toBeInTheDocument();
   });
 
   it("walks service → billing mode → credential, and posts the triple", async () => {
-    render(<ServicesPanel />);
+    renderPanel();
     await userEvent.click(screen.getByTestId("services-add-empty"));
 
     await userEvent.click(screen.getByTestId("add-service-option-zai"));
@@ -152,7 +164,7 @@ describe("ServicesPanel", () => {
 
   describe("step 1's harness support table", () => {
     it("gives every installed harness a column, and says per service which can run it", async () => {
-      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      renderPanel([claudeAgent, codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       expect(screen.getByTestId("add-service-support-head-claude")).toHaveTextContent("Claude");
@@ -172,7 +184,7 @@ describe("ServicesPanel", () => {
 
     it("renders the tri-state cell for a harness that runs only part of a service's modes (docs/268)", async () => {
       const opencodeAgent = { ...codexAgent, id: "opencode", name: "OpenCode" };
-      render(<ServicesPanel agentList={[claudeAgent, codexAgent, opencodeAgent]} />);
+      renderPanel([claudeAgent, codexAgent, opencodeAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       // OpenCode reaches Anthropic's key mode but never its subscription
@@ -194,7 +206,7 @@ describe("ServicesPanel", () => {
 
       // because the cells sit in their own column, away from the service names
       // — "runs" alone would answer a question the listener cannot see.
-      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      renderPanel([claudeAgent, codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       expect(screen.getByTestId("add-service-support-zai-claude")).toHaveTextContent(
@@ -207,7 +219,7 @@ describe("ServicesPanel", () => {
 
     it("keeps the answers OUT of the row the user presses", async () => {
 
-      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      renderPanel([claudeAgent, codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       const row = screen.getByTestId("add-service-option-zai");
@@ -224,7 +236,7 @@ describe("ServicesPanel", () => {
 
       // and jsdom cannot measure either — so both are read off the contract
 
-      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      renderPanel([claudeAgent, codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       const row = screen.getByTestId("add-service-option-zai");
@@ -253,7 +265,7 @@ describe("ServicesPanel", () => {
     it("carries the same vendor mark the card will carry", async () => {
 
       // mark is a second way to recognise it, never the only one.
-      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      renderPanel([claudeAgent, codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       const row = screen.getByTestId("add-service-option-anthropic");
@@ -264,7 +276,7 @@ describe("ServicesPanel", () => {
     });
 
     it("gives a harness the image does not have no column at all", async () => {
-      render(<ServicesPanel agentList={[claudeAgent, { ...codexAgent, installed: false }]} />);
+      renderPanel([claudeAgent, { ...codexAgent, installed: false }]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       // A column the user cannot act on is not information — the same filter
@@ -275,7 +287,7 @@ describe("ServicesPanel", () => {
     });
 
     it("draws no table before the agent list has arrived", async () => {
-      render(<ServicesPanel />);
+      renderPanel();
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       // Nothing known yet must not render as "no harness runs anything".
@@ -285,7 +297,7 @@ describe("ServicesPanel", () => {
 
     it("still lets an unsupported pairing be chosen", async () => {
 
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openrouter"));
       expect(screen.getByTestId("add-service-step-credential")).toBeInTheDocument();
@@ -293,7 +305,7 @@ describe("ServicesPanel", () => {
   });
 
   it("skips the mode step when a service has only one way in", async () => {
-    render(<ServicesPanel />);
+    renderPanel();
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-deepseek"));
 
@@ -322,7 +334,7 @@ describe("ServicesPanel", () => {
     it("lands on the provider's code, with nothing to press in between", async () => {
 
       stubAccountApi();
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -343,7 +355,7 @@ describe("ServicesPanel", () => {
     it("says it is starting, rather than that it stopped, before the code arrives", async () => {
 
       stubAccountApi();
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -362,7 +374,7 @@ describe("ServicesPanel", () => {
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: fresh, accounts: [fresh] }) });
       });
 
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -385,7 +397,7 @@ describe("ServicesPanel", () => {
         return Promise.resolve(answer);
       });
 
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -406,7 +418,7 @@ describe("ServicesPanel", () => {
     it("offers one button while the sign-in runs itself, and it says Cancel", async () => {
 
       stubAccountApi();
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -429,7 +441,7 @@ describe("ServicesPanel", () => {
 
     it("draws the code's own box, at its own size, while it is on its way", async () => {
       stubAccountApi();
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -453,7 +465,7 @@ describe("ServicesPanel", () => {
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
       });
 
-      render(<ServicesPanel agentList={[claudeAgent]} />);
+      renderPanel([claudeAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -517,7 +529,7 @@ describe("ServicesPanel", () => {
         return Promise.resolve(answer);
       });
 
-      render(<ServicesPanel agentList={[claudeAgent]} />);
+      renderPanel([claudeAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -547,7 +559,7 @@ describe("ServicesPanel", () => {
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
       });
 
-      render(<ServicesPanel agentList={[claudeAgent]} />);
+      renderPanel([claudeAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -576,7 +588,7 @@ describe("ServicesPanel", () => {
 
     it("leaves a mode that also takes a key alone — there the sign-in is a choice", async () => {
 
-      render(<ServicesPanel agentList={[claudeAgent]} />);
+      renderPanel([claudeAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -601,7 +613,7 @@ describe("ServicesPanel", () => {
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
       });
 
-      render(<ServicesPanel agentList={[claudeAgent]} />);
+      renderPanel([claudeAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -634,7 +646,7 @@ describe("ServicesPanel", () => {
       // A harness that cannot run the login: the step stays as it was, with the
 
       stubAccountApi();
-      render(<ServicesPanel agentList={[{ ...codexAgent, installed: false }]} />);
+      renderPanel([{ ...codexAgent, installed: false }]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -650,7 +662,7 @@ describe("ServicesPanel", () => {
       useSettingsStore.getState().setProviderAccounts([
         route({ id: "acct-openai-9", serviceId: "openai", billingMode: "sub", via: "account", status: "authenticating", externalId: "ext-9", label: "OpenAI account 9" }),
       ]);
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -664,7 +676,7 @@ describe("ServicesPanel", () => {
 
     // in the browser, the button never becomes enabled; it just looks like a
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     expect(screen.queryByTestId("add-service-save")).not.toBeInTheDocument();
 
@@ -691,7 +703,7 @@ describe("ServicesPanel", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ accounts: [created] }) });
     });
 
-    render(<ServicesPanel agentList={[codexAgent]} />);
+    renderPanel([codexAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -741,7 +753,7 @@ describe("ServicesPanel", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts }) });
     });
 
-    render(<ServicesPanel agentList={[codexAgent]} />);
+    renderPanel([codexAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
 
@@ -774,7 +786,7 @@ describe("ServicesPanel", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts: [created] }) });
     });
 
-    render(<ServicesPanel agentList={[codexAgent]} />);
+    renderPanel([codexAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
 
@@ -805,7 +817,7 @@ describe("ServicesPanel", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts: [created] }) });
     });
 
-    render(<ServicesPanel agentList={[codexAgent]} />);
+    renderPanel([codexAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
 
@@ -844,7 +856,7 @@ describe("ServicesPanel", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ accounts }) });
     });
 
-    render(<ServicesPanel agentList={[codexAgent]} />);
+    renderPanel([codexAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
 
@@ -879,7 +891,7 @@ describe("ServicesPanel", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: created, accounts }) });
     });
 
-    render(<ServicesPanel agentList={[codexAgent]} />);
+    renderPanel([codexAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
 
@@ -919,7 +931,7 @@ describe("ServicesPanel", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: connected, accounts: [connected] }) });
     });
 
-    render(<ServicesPanel agentList={[codexAgent]} />);
+    renderPanel([codexAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-openai"));
 
@@ -940,7 +952,7 @@ describe("ServicesPanel", () => {
 
   it("offers BOTH a sign-in and a token for a mode that accepts both", async () => {
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -950,7 +962,7 @@ describe("ServicesPanel", () => {
 
   it("titles step 3 for the account path and makes signing in the primary button (D4)", async () => {
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -971,7 +983,7 @@ describe("ServicesPanel", () => {
 
   it("hands the emphasis to Save once a token is in the field", async () => {
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -988,7 +1000,7 @@ describe("ServicesPanel", () => {
   });
 
   it("keeps step 3 titled for the key when the mode takes nothing else", async () => {
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-deepseek"));
 
@@ -1004,7 +1016,7 @@ describe("ServicesPanel", () => {
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", priority: 0, isPrimary: true }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     dragRowOnto("cred_2", "cred_1");
     await waitFor(() => {
       const put = fetchCalls.find((c) => c.method === "PUT");
@@ -1018,7 +1030,7 @@ describe("ServicesPanel", () => {
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", priority: 0, isPrimary: true }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     await userEvent.click(screen.getByTestId("credential-selection-mode-zai:sub-balanced"));
     await waitFor(() => {
       const put = fetchCalls.find((c) => c.url === "/api/settings");
@@ -1033,7 +1045,7 @@ describe("ServicesPanel", () => {
       route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.queryByTestId("credential-selection-mode-deepseek:key")).not.toBeInTheDocument();
     expect(screen.queryByTestId("credential-selection-mode-zai:sub")).not.toBeInTheDocument();
   });
@@ -1042,7 +1054,7 @@ describe("ServicesPanel", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.queryByTestId("credential-row-cred_1-grip")).not.toBeInTheDocument();
   });
 
@@ -1050,7 +1062,7 @@ describe("ServicesPanel", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     await openRowMenu("cred_1");
     await userEvent.click(screen.getByTestId("credential-remove-cred_1"));
     await waitFor(() => {
@@ -1066,7 +1078,7 @@ describe("ServicesPanel", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     await openRowMenu("cred_1");
     await userEvent.click(screen.getByTestId("credential-replace-cred_1"));
     await userEvent.type(screen.getByTestId("credential-replace-input-cred_1"), "sk-new");
@@ -1086,7 +1098,7 @@ describe("ServicesPanel", () => {
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     expect(screen.getByTestId("provider-account-rows-claude")).toBeInTheDocument();
 
     // accounts card must not offer a second editor for it.
@@ -1103,7 +1115,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
 
   it("puts the account rows inside the service's card, not beside the list", () => {
     useSettingsStore.getState().setProviderAccounts([anthropicAccount("acct_1", true)]);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     const card = screen.getByTestId("service-card-anthropic:sub");
     expect(within(card).getByTestId("provider-account-rows-claude")).toBeInTheDocument();
@@ -1125,7 +1137,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_env", serviceId: "anthropic", billingMode: "sub", via: "string" }),
     ]);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     const card = screen.getByTestId("service-card-anthropic:sub");
 
@@ -1152,7 +1164,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
       route({ id: "cred_env_a", serviceId: "anthropic", billingMode: "sub", via: "string" }),
       route({ id: "cred_env_b", serviceId: "anthropic", billingMode: "sub", via: "string", priority: 1 }),
     ]);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     expect(screen.queryByTestId("service-routing-service-card-anthropic:sub")).not.toBeInTheDocument();
     expect(screen.queryByTestId("credential-selection-mode-anthropic:sub")).not.toBeInTheDocument();
@@ -1176,7 +1188,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
       anthropicAccount("acct_1", true),
       anthropicAccount("acct_2"),
     ]);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     const band = screen.getByTestId("service-routing-service-card-anthropic:sub");
     expect(within(band).getByRole("radiogroup", { name: "How ShipIt picks between these accounts" }))
@@ -1190,7 +1202,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", isPrimary: true }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
 
     const band = screen.getByTestId("service-routing-service-card-zai:sub");
     expect(within(band).getByRole("radiogroup", { name: "How ShipIt picks between these credentials" }))
@@ -1204,7 +1216,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", isPrimary: true }),
       route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
 
     expect(screen.getByTestId("service-card-zai:sub")).toBeInTheDocument();
     expect(screen.queryByTestId("service-routing-service-card-zai:sub")).not.toBeInTheDocument();
@@ -1217,7 +1229,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", {
       kind: "info", message: "Disconnected.",
     });
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     expect(screen.getByTestId("service-card-anthropic:sub")).toBeInTheDocument();
     expect(screen.queryByTestId("service-routing-service-card-anthropic:sub")).not.toBeInTheDocument();
@@ -1239,7 +1251,7 @@ describe("ServicesPanel credential-row errors (docs/257 req 5)", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     await openRowMenu("cred_1");
     await userEvent.click(screen.getByTestId("credential-remove-cred_1"));
     await waitFor(() => {
@@ -1252,7 +1264,7 @@ describe("ServicesPanel credential-row errors (docs/257 req 5)", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     await openRowMenu("cred_1");
     await userEvent.click(screen.getByTestId("credential-replace-cred_1"));
     await userEvent.type(screen.getByTestId("credential-replace-input-cred_1"), "sk-new");
@@ -1286,7 +1298,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
       }),
     );
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-disconnect-acct_1"));
 
@@ -1310,7 +1322,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
       }),
     );
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-disconnect-acct_1"));
 
@@ -1343,7 +1355,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     it("does not list a row that has never been anything but an attempt", () => {
       for (const status of ["unavailable", "authenticating"] as const) {
         useSettingsStore.getState().setProviderAccounts([account({ status })]);
-        const view = render(<ServicesPanel agentList={[codexAgent]} />);
+        const view = renderPanel([codexAgent]);
         expect(screen.queryByTestId("service-card-openai:sub")).not.toBeInTheDocument();
         view.unmount();
       }
@@ -1352,7 +1364,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     it("lists a connected row that reported no identity", () => {
 
       useSettingsStore.getState().setProviderAccounts([account({ status: "ready" })]);
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       expect(screen.getByTestId("service-card-openai:sub")).toBeInTheDocument();
     });
 
@@ -1363,7 +1375,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
       useSettingsStore.getState().setProviderAccounts([
         account({ status: "unavailable", externalId: "ext-1" }),
       ]);
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       expect(screen.getByTestId("service-card-openai:sub")).toBeInTheDocument();
     });
 
@@ -1377,7 +1389,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ accounts: [] }) });
       });
 
-      render(<ServicesPanel agentList={[codexAgent]} />);
+      renderPanel([codexAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
       await userEvent.click(screen.getByTestId("add-service-option-openai"));
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -1395,9 +1407,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
   describe("installed harnesses", () => {
 
     it("names what can drive the credentials, and says which cannot run yet", () => {
-      render(
-        <ServicesPanel agentList={[{ ...claudeAgent, hasRunnableModels: true }, codexAgent]} />,
-      );
+      renderPanel([{ ...claudeAgent, hasRunnableModels: true }, codexAgent]);
       const block = within(screen.getByTestId("installed-harnesses"));
       expect(block.getByTestId("installed-harness-claude")).toHaveTextContent("Claude");
       expect(block.getByTestId("installed-harness-claude")).not.toHaveTextContent("no model");
@@ -1405,14 +1415,14 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     });
 
     it("lists only installed harnesses, and says so when none is", () => {
-      render(<ServicesPanel agentList={[{ ...codexAgent, installed: false }]} />);
+      renderPanel([{ ...codexAgent, installed: false }]);
       expect(screen.queryByTestId("installed-harness-codex")).toBeNull();
       expect(screen.getByTestId("installed-harnesses")).toHaveTextContent(/None\./);
     });
 
     it("says nothing at all before the agent list has arrived", () => {
 
-      render(<ServicesPanel />);
+      renderPanel();
       expect(screen.queryByTestId("installed-harnesses")).toBeNull();
     });
   });
@@ -1420,7 +1430,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
   it("drops the card again once the notice is dismissed", async () => {
     useSettingsStore.getState().setProviderAccounts([]);
     useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", { kind: "info", message: "Disconnected." });
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     expect(screen.getByTestId("provider-account-rows-claude")).toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId("provider-accounts-notice-claude-dismiss"));
@@ -1456,7 +1466,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
 
   it("mounts exactly one add-service dialog, however it was opened", async () => {
     seedConnected();
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     expect(screen.queryAllByTestId("add-service-dialog")).toHaveLength(0);
 
     await openRowMenu("Work");
@@ -1489,7 +1499,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
     const unidentified = { id: "acct_1", serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, label: "Work", isPrimary: true, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([{ ...unidentified, status: "ready" as const }]);
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
 
@@ -1504,7 +1514,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
 
   it("opens a reconnect on the waiting panel, never on the stalled one", async () => {
     seedConnected();
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
@@ -1521,7 +1531,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
     useSettingsStore.getState().setProviderAccountAuthError(
       "anthropic-oauth", "acct_1", "Your Anthropic session expired.",
     );
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
@@ -1545,7 +1555,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "auth_failed", externalId: "ext-1", createdAt: now, updatedAt: now },
     ]);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
@@ -1563,7 +1573,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
    */
   it("still reaches Try again when the attempt itself fails, and hides it again on the retry", async () => {
     seedConnected();
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
@@ -1621,7 +1631,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
       });
     });
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
 
@@ -1651,7 +1661,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
       });
     });
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
     await userEvent.click(screen.getByText("Cancel"));
@@ -1674,7 +1684,7 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
    */
   it("leaves the account connected and in position when the reconnect is cancelled", async () => {
     seedConnected();
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     await openRowMenu("Work");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
@@ -1767,7 +1777,7 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
 
   it("gives all three steps the one body height", async () => {
     stubAccountApi();
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
 
     const seen: { step: string; anchors: string[]; scrolls: boolean; height: string; title: string[] }[] = [];
@@ -1817,7 +1827,7 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
 
   it("keeps every state of one sign-in inside the same fixed-height box", async () => {
     stubAccountApi();
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -1891,7 +1901,7 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: anthropicAccount, accounts: [anthropicAccount] }) });
     });
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -1911,7 +1921,7 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ routes: [] }) });
     });
 
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     // DeepSeek has one billing mode, so the step answers itself (req 18).
     await userEvent.click(screen.getByTestId("add-service-option-deepseek"));
@@ -1960,7 +1970,7 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
       route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
     ]);
     useSettingsStore.getState().setProviderAccounts([account]);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     await openRowMenu("Anthropic account 1");
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
@@ -1984,7 +1994,7 @@ describe("the compact service card (docs/252 req 19)", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     const card = screen.getByTestId("service-card-deepseek:key");
 
     expect(card).not.toHaveTextContent(/Metered — no quota to report/);
@@ -1995,7 +2005,7 @@ describe("the compact service card (docs/252 req 19)", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     const control = screen.getByTestId("service-models-service-card-deepseek:key");
 
     expect(control).toHaveTextContent(/^\d+ models?$/);
@@ -2009,7 +2019,7 @@ describe("the compact service card (docs/252 req 19)", () => {
 
     // cross-backend review). Asserted on an EMPTY panel, because the whole point
 
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.getByTestId("services-empty")).toBeInTheDocument();
     await userEvent.click(screen.getByTestId("services-supported-models"));
     expect(await screen.findByTestId("supported-models-dialog")).toBeInTheDocument();
@@ -2033,7 +2043,7 @@ describe("the OpenCode Go billing hazard (docs/272 req 6)", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_go", serviceId: "opencode", billingMode: "sub", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     const notice = screen.getByTestId("mode-notice-opencode:sub");
     expect(notice).toHaveTextContent(/no per-key quota API/);
     expect(notice).toHaveTextContent(/Use balance/);
@@ -2045,13 +2055,13 @@ describe("the OpenCode Go billing hazard (docs/272 req 6)", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_zen", serviceId: "opencode", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.getByTestId("service-card-opencode:key")).toBeInTheDocument();
     expect(screen.queryByTestId("mode-notice-opencode:key")).not.toBeInTheDocument();
   });
 
   it("says it before the key is pasted, while the mode can still be refused", async () => {
-    render(<ServicesPanel />);
+    renderPanel();
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-opencode"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -2064,7 +2074,7 @@ describe("the xAI subscription's weekly pool (planning#454)", () => {
     useSettingsStore.getState().setProviderAccounts([
       route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.getByTestId("service-card-xai:sub")).toBeInTheDocument();
     expect(screen.queryByTestId("mode-notice-xai:sub")).not.toBeInTheDocument();
   });
@@ -2073,7 +2083,7 @@ describe("the xAI subscription's weekly pool (planning#454)", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_xai", serviceId: "xai", billingMode: "key", via: "string" }),
     ]);
-    render(<ServicesPanel />);
+    renderPanel();
     expect(screen.getByTestId("service-card-xai:key")).toBeInTheDocument();
     expect(screen.queryByTestId("mode-notice-xai:key")).not.toBeInTheDocument();
   });
@@ -2095,7 +2105,7 @@ describe("the xAI subscription's weekly pool (planning#454)", () => {
         },
       },
     });
-    render(<ServicesPanel />);
+    renderPanel();
     const row = screen.getByTestId("provider-account-row-acct_xai");
     expect(row).toHaveTextContent("nik@x");
     expect(row).toHaveTextContent(/7d\s*10%/);
@@ -2125,7 +2135,7 @@ describe("an account-capable mode holding only supplied credentials (docs/252 re
 
   it("routes between them, naming them credentials rather than accounts", () => {
     twoStrings();
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     expect(screen.getByTestId("service-count-pill-service-card-anthropic:sub"))
       .toHaveTextContent("2 credentials");
@@ -2158,7 +2168,7 @@ describe("an account-capable mode holding only supplied credentials (docs/252 re
         },
       },
     });
-    render(<ServicesPanel />);
+    renderPanel();
 
     const band = screen.getByTestId("service-routing-service-card-zai:sub");
     expect(within(band).getByTestId("credential-selection-mode-zai:sub")).toBeInTheDocument();
@@ -2177,14 +2187,14 @@ describe("an account-capable mode holding only supplied credentials (docs/252 re
         },
       },
     } as never);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     expect(screen.getByTestId("credential-row-cred_1")).toHaveTextContent("5h 42%");
   });
 
   it("lets them be reordered, which is what decides the one delivered", async () => {
     twoStrings();
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     dragRowOnto("claude-env-oauth", "cred_1");
 
@@ -2201,7 +2211,7 @@ describe("an account-capable mode holding only supplied credentials (docs/252 re
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", externalId: "ext-1", createdAt: now, updatedAt: now },
     ]);
-    render(<ServicesPanel agentList={[claudeAgent]} />);
+    renderPanel([claudeAgent]);
 
     expect(screen.queryByTestId("credential-row-cred_1-grip")).not.toBeInTheDocument();
 

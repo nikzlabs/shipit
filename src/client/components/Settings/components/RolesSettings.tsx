@@ -4,7 +4,15 @@
  *
  * Choosing a role's params means choosing among the services, models, harnesses
  * and levels *this install* offers, and the UI is the only surface that can show
- * that set (req 5). So this tab is where roles come from.
+ * that set (req 5). So this is where roles come from.
+ *
+ * **docs/308-data-driven-settings slice 6b made it the component `roles` and
+ * `reviewers` both name**, so the Roles tab is the scroll container and nothing
+ * else. One component for two declarations rather than two: the roles list and
+ * the reviewer's metadata open the same {@link RoleEditor} through the same
+ * write, so a second registered component would be a second mount site for one
+ * dialog. It keeps the writer its operations need — create, rename, remove, pin —
+ * which is what requirement 3 asks of a panel.
  *
  * **Two parts, not one list**, and the split is honest rather than untidy. Every
  * other role is one pinned tuple, while the reviewer's params are docs/261's
@@ -40,9 +48,8 @@ import { BillingModePill } from "../../BillingModePill.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { bindSetting, settingCopy } from "../declared.js";
-import { ReviewerSection } from "./ReviewerSection.js";
+import { ReviewerSection } from "../tabs/ReviewerSection.js";
 import { RoleEditor } from "../roles/RoleEditor.js";
-import type { AgentOption } from "../../../agent-types.js";
 import type { RoleView, RoleWrite } from "../../../../server/shared/types/agent-types.js";
 
 /**
@@ -69,7 +76,10 @@ interface EditorTarget {
   role: RoleView | undefined;
 }
 
-export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
+export function RolesSettings() {
+  // A registered component takes the setting's key and nothing else, so what it
+  // needs beyond that is a read; the children below take it as a prop.
+  const agentList = useUiStore((s) => s.agentList);
   const roles = useSettingsStore((s) => s.roles);
   const [editing, setEditing] = useState<EditorTarget | null>(null);
   const [busy, setBusy] = useState(false);
@@ -109,7 +119,7 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
   };
 
   return (
-    <div className="px-5 py-4 flex flex-col gap-5 overflow-y-auto h-full" data-testid="roles-tab">
+    <div className="flex flex-col gap-5" data-testid="roles-settings">
       <section className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">

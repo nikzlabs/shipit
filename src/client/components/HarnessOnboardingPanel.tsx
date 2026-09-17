@@ -1,6 +1,5 @@
 import { RobotIcon, KeyIcon, ColumnsIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import type { AgentOption } from "../agent-types.js";
 import { Logo } from "./Logo.js";
 import { ServicesPanel } from "./Settings/ServicesPanel.js";
 
@@ -22,7 +21,7 @@ const FEATURES = [
   },
 ];
 
-export function HarnessOnboardingPanel({ agentList }: { agentList: AgentOption[] }) {
+export function HarnessOnboardingPanel() {
   return (
     <div
       className="flex-1 min-h-0 overflow-y-auto"
@@ -58,7 +57,7 @@ export function HarnessOnboardingPanel({ agentList }: { agentList: AgentOption[]
         </div>
 
         <div className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-elevated) px-4 py-3.5">
-          <ServicesPanel agentList={agentList} />
+          <ServicesPanel />
         </div>
       </div>
     </div>
