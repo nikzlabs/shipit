@@ -273,6 +273,28 @@ describe("every generated row has a control", () => {
 });
 
 /**
+ * The Save a draft-holding row needs is the RENDERER's, and no tab file places
+ * one (req 1). Rendering the block ALONE is what says so: there is no tab file
+ * on screen to have supplied it.
+ */
+describe("the Save a tab's drafts need", () => {
+  const commit = () => screen.queryByTestId("declared-commit");
+
+  it.each(["instructions", "git"] as const)("is placed by the renderer on the %s tab", (tab) => {
+    render(<DeclaredSettings tab={tab} />);
+    expect(commit()).toBeInTheDocument();
+  });
+
+  // Advanced has no row the renderer gives a draft-holding control to. It does
+  // have a component with a Save of its own — which is exactly what this must
+  // not count, since that component stores its value itself.
+  it("is absent from a tab with no draft-holding generated row", () => {
+    render(<DeclaredSettings tab="advanced" />);
+    expect(commit()).toBeNull();
+  });
+});
+
+/**
  * The Instructions tab: prose over the one store whose values are prose.
  *
  * **The store is what makes it a textarea** — the design rejected a

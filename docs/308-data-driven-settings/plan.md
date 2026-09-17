@@ -14,17 +14,17 @@ there is no second way to build a standard control. Adding one the control table
 can show is one edit in `settings-catalogue/`: its row, its read, its write,
 where it is stored and where it appears all follow from the declaration. A
 setting that needs its own editing keeps a component, and that component uses the
-same declaration and the same destination as every other row. The eight slices
-below are the record of how it got there, all merged.
+same declaration and the same destination as every other row. The nine slices
+below are the record of how it got there, all merged — the last two are
+follow-ups on shipped code rather than steps on the way.
 
-**Two edges of "one edit" are real and are stated where they arise, not here.**
-A `system-prompt-file` row commits on a **tab's** Save, so moving one to a tab
-with no `DeclaredCommit` renders a box nobody can save — *An explicit commit is a
-tab's* says so, and nothing checks it. And a new **`own-route`** declaration owes
-the AGENT's read an entry in `OWN_ROUTE_READERS`
-(`services/settings-read.ts`) — a compile error rather than a silent gap, and
-docs/299's surface rather than this one, but a second file all the same. Both are
-one declaration shape each, not the general case.
+**One exception to "one edit in one place" remains, and it is a compile error.**
+A new **`own-route`** declaration owes the AGENT's read an entry in
+`OWN_ROUTE_READERS` (`services/settings-read.ts`) — a second file, kept
+deliberately because `npm run typecheck` names the missing key, and because it
+is docs/299's surface rather than this one (slice 9). The other edge, a
+draft-holding row needing a Save placed by hand in its tab file, is closed: the
+renderer places it.
 
 ## The shape
 
@@ -104,12 +104,12 @@ panels, which are unaffected.
 single write, so the button cannot belong to either declaration — and requirement
 3 forbids a custom control from changing where a value goes, which a per-row Save
 would have done. So the edit lives in a **draft record** beside the value record
-(`useSettingDraft`), and `<DeclaredCommit tab="…"/>` in the tab's footer commits
-every edited row on that tab through `commitSettings`, which sends one
-one request to the destination those declarations name — `PUT /api/settings`
-carrying each one's `wire` for the tabs that have one. The button names a tab
-and never a setting, so a third box added to the Instructions tab is committed by
-it with no edit anywhere. `git.identity` is the same button on another tab.
+(`useSettingDraft`), and a `<DeclaredCommit tab="…"/>` commits every edited row
+on that tab through `commitSettings`, which sends one request to the destination
+those declarations name — `PUT /api/settings` carrying each one's `wire` for the
+tabs that have one. The button names a tab and never a setting, so a third box
+added to the Instructions tab is committed by it with no edit anywhere.
+`git.identity` is the same button on another tab.
 
 Three consequences the design had not stated. **The record moves only after the
 server answers, and it takes the value the server ECHOED** — the writers trim, so
@@ -149,10 +149,12 @@ Save saves both halves of one credential to one address, so it belongs to that
 component: a tab-level button would have sat at the foot of the tab, away from
 the boxes it saves. The rule below is for a Save that spans two independent rows.
 
-**A tab that has an explicit-commit row must place a `DeclaredCommit`**, and
-nothing checks that it does: moving a `system-prompt-file` row to a tab without
-one would render a textarea nobody can save. Both tabs that have one place it
-today; a later slice that moves such a row owes the check.
+**The renderer places that button, and no tab file does** (slice 9).
+`DeclaredSettings` is the only component every generated tab has, so it is the
+one place the button can be placed and still be automatic. Which kinds need one
+is a field on the control-table entry (`commitsOnButton`); a declaration naming
+a **component** is excluded from both the placement and what the button
+collects, because such a component owns its own commit.
 
 **A generated row's writer awaits the response and does nothing else** (P3).
 A setting whose write has a client-side effect is not a generated row: hands-free
@@ -311,7 +313,7 @@ colour picker.
 
 ## Slices
 
-All eight shipped; this is the record of what each one decided. Each was one
+All nine shipped; this is the record of what each one decided. Each was one
 pull request, and **a slice named the declarations it generated and the ones it
 left hand-written** (P18) — none converted a whole tab and hoped the rest
 followed, because a control whose support has not landed either duplicates an
@@ -918,6 +920,56 @@ existing one or renders a row that cannot save.
      destination, and an answer that is not the newest moves nothing. The
      value-moved guard stays beside it, because the two catch different things:
      a sequence cannot see a *write*, which is what slice 2 wrote it for.
+9. **The last second edit** (req 1). A `text` row over `system-prompt-file`
+   used to need a `<DeclaredCommit tab="…"/>` in whichever tab file rendered it,
+   and a tab file that had none rendered a textarea nobody could save, with
+   nothing to say so. **`DeclaredSettings` places it now**, and no tab file
+   does. It has to be the renderer: that component is the only thing every
+   generated tab has, so a tab file and `SettingsTabPane` alike are conventions
+   a new tab can skip — and nine tabs of twelve hand-roll their container rather
+   than using the pane. Refusing to render such a row instead would have stopped
+   the silent failure and left the second edit standing.
+
+   **What the tab's Save owns is the same set the renderer counts**, and review
+   found the two disagreeing: `useTabDrafts` collected every draft on the tab,
+   so a prompt row on a tab with the voice webhook would have handed
+   `commitSettings` two destinations — refused by name, with neither row saved.
+   A component that holds drafts owns its own commit (slice 4), so the
+   collection excludes them, exactly as the placement does.
+
+   **The cost is where the button sits**, and it is the trade slice 8 took for
+   the secrets Save: the last thing in the tab's scroll area, sticking to the
+   bottom of it, rather than a pinned footer outside it. The offsets are
+   negative because a sticky `bottom-0` stops at the CONTENT box, which would
+   leave the tab's bottom padding of content showing under the bar. With a short
+   tab (Git) it sits under the fields rather than at the dialog's bottom edge.
+
+   Three consequences, all knowingly taken. The Instructions tab's **Cancel is
+   gone** — a footer holding it alone would have been a second bar under the
+   first, and the dialog's close and Escape do what it did, drafts dropped and
+   all; it was the only Cancel in either dialog. The built-in instructions are
+   the toggle's **`rowNote`** now, so they sit under the control that enables
+   them and above the bar rather than behind it — which is where P12 wanted them
+   and could not put them until slice 4 built the prop. And
+   **`SettingsTabPane`'s `footer` slot is gone** with its only two callers.
+
+   Which kinds need a Save is a field on the **control-table entry**
+   (`commitsOnButton`) rather than a set beside the table, so a kind's control
+   and its commit mode are written in one place. It is not a proof: a new
+   draft-holding control that omits the flag would still render a box nobody can
+   save, and nothing outside that table would say so.
+
+   **Two things were weighed and deliberately not changed.** A new `own-route`
+   declaration still owes the agent's read an entry in `OWN_ROUTE_READERS` — a
+   real second file, and the one exception left to "no second file has to be
+   touched". It stays because it is a **compile error**, reproduced rather than
+   assumed: a probe declaration with no reader fails `npm run typecheck` with
+   `TS2741` at `services/settings-read.ts:312`, naming the missing key. Deriving
+   it would mean a declaration saying how to READ its own route, which is the
+   field slice 2 refused. And the `ownedBy` prose is not reopened: slices 6a and
+   7 each refused to make it machine-readable under requirement 5 — the path
+   needs interpolation, the GET half does not exist, and the value still could
+   not enter the record — and nothing here found anything they had not weighed.
 
 `GENERATED_TABS` in `src/client/stores/setting-values.ts` names the tabs whose
 rows are generated, and so exactly which settings the value record holds. While
@@ -942,8 +994,8 @@ generated rows, none of them in the record.
 | `src/client/components/Settings/declared-setting.ts` | today's boolean reader and writer — generalised into `useSetting` / `saveSetting` |
 | `src/client/components/Settings/declared.tsx` | the low-level controls a generated one is built from |
 | `src/client/components/Settings/declared-controls.tsx` | the control table: what each value kind gets |
-| `src/client/components/Settings/DeclaredSettings.tsx` | the renderer: the section grouping, `notes`, the component lookup |
-| `src/client/components/Settings/DeclaredCommit.tsx` | a tab's Save: every edited row on it, in one write |
+| `src/client/components/Settings/DeclaredSettings.tsx` | the renderer: the section grouping, `notes`, the component lookup, and the tab's Save where a row needs one |
+| `src/client/components/Settings/DeclaredCommit.tsx` | a tab's Save: every edited row on it, in one write — placed by the renderer, never by a tab file |
 | `src/client/stores/setting-values.ts` | which settings the record holds, the browser codec (P17), the named fields each one mirrors (P1), where an own-route row is written and read (P2) |
 | `src/client/stores/setting-hydration.ts` | the payload read and the own-route read, both walking the declarations |
 | `src/client/components/Settings/components/registry.ts` | the components a declaration may name |

@@ -19,6 +19,7 @@ import type {
 } from "../../../server/shared/settings-catalogue/index.js";
 import { GENERATED_SETTINGS } from "../../stores/setting-values.js";
 import { CONTROLS } from "./declared-controls.js";
+import { DeclaredCommit } from "./DeclaredCommit.js";
 import { SETTING_COMPONENTS } from "./components/registry.js";
 
 /**
@@ -41,7 +42,7 @@ import { SETTING_COMPONENTS } from "./components/registry.js";
 export function controlFor(declaration: AnySettingDeclaration): ReactNode {
   const key = declaration.key as SettingKey;
   const name = declaration.component;
-  if (name === undefined) return CONTROLS[declaration.type.kind]?.(key);
+  if (name === undefined) return CONTROLS[declaration.type.kind]?.render(key);
   const Component = SETTING_COMPONENTS[name];
   return Component ? <Component settingKey={key} /> : null;
 }
@@ -49,6 +50,22 @@ export function controlFor(declaration: AnySettingDeclaration): ReactNode {
 interface Group {
   section: string;
   rows: AnySettingDeclaration[];
+}
+
+/**
+ * Whether this tab has a row the tab's Save is the owner of.
+ *
+ * A row naming a component is excluded, whatever its kind — a component that
+ * holds drafts owns its own commit, and `useTabDrafts` leaves those alone for
+ * the same reason.
+ */
+function needsCommit(tab: SettingTab): boolean {
+  return GENERATED_SETTINGS.some(
+    (declaration) =>
+      declaration.tab === tab
+      && declaration.component === undefined
+      && CONTROLS[declaration.type.kind]?.commitsOnButton === true,
+  );
 }
 
 /**
@@ -113,6 +130,16 @@ export function DeclaredSettings({
           </section>
         </Fragment>
       ))}
+      {needsCommit(tab) && (
+        /*
+          The offsets are NEGATIVE so the bar bleeds through the tab's padding
+          and reads as the pinned footer it replaces: a sticky `bottom-0` stops
+          at the content box, leaving that padding of content showing under it.
+        */
+        <div className="sticky -bottom-4 -mx-5 -mb-4 flex items-center justify-end border-t border-(--color-border-secondary) bg-(--color-bg-elevated) px-5 py-3">
+          <DeclaredCommit tab={tab} />
+        </div>
+      )}
     </>
   );
 }

@@ -9,6 +9,9 @@
  * edit here. What it may commit it takes from the drafts; whether it may commit
  * at all it takes from each value type's own `validate()` (inventory.md P8), so
  * the bounds a control used to carry in JSX live in one place.
+ *
+ * `DeclaredSettings` places it and no tab file does, so a row that needs one
+ * cannot be declared without getting one (req 1).
  */
 
 import { useState } from "react";
@@ -56,6 +59,7 @@ export function DeclaredCommit({ tab }: { tab: SettingTab }) {
       onClick={() => { void commit(); }}
       disabled={disabled}
       className="rounded-md"
+      data-testid="declared-commit"
     >
       {saved && pending.length === 0 ? "Saved" : "Save"}
     </Button>

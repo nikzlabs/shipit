@@ -168,9 +168,24 @@ function GeneratedGitIdentity({ settingKey }: { settingKey: SettingKey }) {
   );
 }
 
-export const CONTROLS: Partial<Record<SettingValueKind, (key: SettingKey) => ReactNode>> = {
-  bool: (key) => <GeneratedToggle settingKey={key} />,
-  enum: (key) => <GeneratedEnum settingKey={key} />,
-  text: (key) => <GeneratedTextarea settingKey={key} />,
-  gitIdentity: (key) => <GeneratedGitIdentity settingKey={key} />,
+interface Control {
+  render: (key: SettingKey) => ReactNode;
+  /**
+   * The control holds a draft and is stored by the tab's Save rather than on
+   * change (inventory.md P5) — which is what tells the renderer to place one.
+   * It rides on the entry so that a control and its commit mode are written in
+   * one place; a new draft-holding control that omits it renders a box nobody
+   * can save, and nothing outside this table would say so.
+   */
+  commitsOnButton?: true;
+}
+
+export const CONTROLS: Partial<Record<SettingValueKind, Control>> = {
+  bool: { render: (key) => <GeneratedToggle settingKey={key} /> },
+  enum: { render: (key) => <GeneratedEnum settingKey={key} /> },
+  text: { render: (key) => <GeneratedTextarea settingKey={key} />, commitsOnButton: true },
+  gitIdentity: {
+    render: (key) => <GeneratedGitIdentity settingKey={key} />,
+    commitsOnButton: true,
+  },
 };

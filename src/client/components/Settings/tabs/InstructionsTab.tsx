@@ -1,8 +1,6 @@
 import { useState } from "react";
-import { Button } from "../../ui/button.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { SettingsTabPane } from "../SettingsTabPane.js";
-import { DeclaredCommit } from "../DeclaredCommit.js";
 import { DeclaredSettings } from "../DeclaredSettings.js";
 
 /**
@@ -10,9 +8,9 @@ import { DeclaredSettings } from "../DeclaredSettings.js";
  * rows; what is left here is the chrome around them (inventory.md P12).
  *
  * The built-in text is not a setting — it ships with ShipIt and its one control
- * shows and hides it — so it sits under the toggle that enables it rather than
- * inside the generated block. The CLAUDE.md sentence is likewise not part of
- * any declaration's description, because the agent has no use for it.
+ * shows and hides it — so it is the toggle's own row note, which is what puts it
+ * directly under the control that enables it. The CLAUDE.md sentence is likewise
+ * not part of any declaration's description, because the agent has no use for it.
  */
 function AgentInstructions() {
   const text = useSettingsStore((s) => s.agentSystemInstructions);
@@ -39,26 +37,17 @@ function AgentInstructions() {
   );
 }
 
-export function InstructionsTab({ onClose }: { onClose: () => void }) {
+export function InstructionsTab() {
   return (
-    <SettingsTabPane
-      bodyClassName="gap-3"
-      footer={
-        <>
-          <Button variant="ghost" size="md" onClick={onClose} className="rounded-md">
-            Cancel
-          </Button>
-          <DeclaredCommit tab="instructions" />
-        </>
-      }
-    >
+    <SettingsTabPane bodyClassName="gap-3">
       <p className="text-xs text-(--color-text-secondary)">
         Note: The agent also reads CLAUDE.md from your workspace root automatically.
       </p>
 
-      <DeclaredSettings tab="instructions" />
-
-      <AgentInstructions />
+      <DeclaredSettings
+        tab="instructions"
+        rowNotes={{ "instructions.agentInstructionsEnabled": <AgentInstructions /> }}
+      />
     </SettingsTabPane>
   );
 }

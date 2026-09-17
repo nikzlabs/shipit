@@ -399,6 +399,10 @@ belongs to has to be last. That is why the built-in-instructions toggle is at th
 bottom of the Instructions tab. A second prop for chrome under a section was not
 worth one user.
 
+*Slice 4 built that prop for two other users, and slice 9 moved this one onto
+it:* the disclosure is the toggle's `rowNote`, so it renders directly under the
+control that enables it rather than after the whole block.
+
 **P13 — Two rows become permanently visible, not one.** The voice webhook pair,
 hidden unless delivery is external or both
 (`src/client/components/Settings/tabs/VoiceTab.tsx:528`), and

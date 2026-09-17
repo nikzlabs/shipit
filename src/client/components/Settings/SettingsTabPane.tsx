@@ -1,16 +1,19 @@
 import type { ReactNode } from "react";
 import { cn } from "../../utils/cn.js";
 
+/**
+ * A settings tab's scrolling body.
+ *
+ * It had a `footer` slot for a tab's Save until the renderer took over placing
+ * that (docs/308-data-driven-settings slice 9), and nothing else ever used one;
+ * a prop with no caller is worse than none.
+ */
 export function SettingsTabPane({
   children,
-  footer,
   bodyClassName,
   testId,
 }: {
   children: ReactNode;
-
-  footer?: ReactNode;
-
   bodyClassName?: string;
   testId?: string;
 }) {
@@ -19,11 +22,6 @@ export function SettingsTabPane({
       <div className={cn("flex-1 min-h-0 overflow-y-auto px-5 py-4 flex flex-col gap-4", bodyClassName)}>
         {children}
       </div>
-      {footer && (
-        <div className="shrink-0 flex items-center justify-end gap-2 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) px-5 py-3">
-          {footer}
-        </div>
-      )}
     </div>
   );
 }
