@@ -15,7 +15,6 @@ import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { usePrStore } from "../../../stores/pr-store.js";
 import { GitHubTokenForm } from "../../GitHubTokenForm.js";
-import { bindSetting } from "../setting-binding.js";
 import { ConnectedServiceCard, ConnectionStatus } from "./ConnectedServiceCard.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 
@@ -100,7 +99,6 @@ export function GitHubConnection({ settingKey }: { settingKey: SettingKey }) {
               ? "Disconnecting GitHub"
               : confirmingLogout ? "Click again to disconnect GitHub" : "Disconnect GitHub"
           }
-          {...bindSetting(settingKey)}
         >
           {disconnecting ? "Disconnecting..." : confirmingLogout ? "Click again to disconnect" : "Disconnect"}
         </button>

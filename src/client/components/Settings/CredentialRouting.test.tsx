@@ -16,7 +16,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FailoverCutoffControls, CredentialSelectionModeControl } from "./CredentialRouting.js";
-import { settingCopy, settingOptions } from "./setting-binding.js";
+import { settingCopy, settingOptions } from "./setting-copy.js";
 import { ProviderAccountRows } from "./ProviderAccountRows.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";

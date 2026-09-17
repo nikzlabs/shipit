@@ -31,7 +31,7 @@ import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { ownRouteOf } from "../../../stores/setting-values.js";
 import { commitSettings, useSettingDraft } from "../declared-setting.js";
-import { bindSetting, settingCopy, settingOf } from "../setting-binding.js";
+import { settingCopy, settingOf } from "../setting-copy.js";
 import { inputClass } from "../shared.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 
@@ -61,7 +61,6 @@ function Field({
       <label
         className="block text-xs text-(--color-text-secondary)"
         htmlFor={id}
-        data-setting-label={settingKey}
       >
         {settingCopy(settingKey).label}
       </label>
@@ -73,7 +72,6 @@ function Field({
         placeholder={placeholder}
         className={inputClass}
         data-testid={id}
-        {...bindSetting(settingKey)}
       />
     </div>
   );
@@ -140,10 +138,10 @@ export function VoiceWebhook() {
     <div className="space-y-3 rounded-lg border border-(--color-border-secondary) p-3">
       <div>
         <span className="text-sm text-(--color-text-primary)">Webhook</span>
-        <p className="text-xs text-(--color-text-tertiary) mt-0.5" data-setting-description={URL_KEY}>
+        <p className="text-xs text-(--color-text-tertiary) mt-0.5">
           {settingCopy(URL_KEY).description}
         </p>
-        <p className="text-xs text-(--color-text-tertiary) mt-0.5" data-setting-description={TOKEN_KEY}>
+        <p className="text-xs text-(--color-text-tertiary) mt-0.5">
           {settingCopy(TOKEN_KEY).description}
         </p>
       </div>
@@ -172,7 +170,6 @@ export function VoiceWebhook() {
           disabled={writing || !urlText.trim()}
           onClick={() => { void save(); }}
           data-testid="voice-webhook-save"
-          {...bindSetting(URL_KEY)}
         >
           {writing ? "Saving…" : "Save webhook"}
         </Button>
@@ -184,7 +181,6 @@ export function VoiceWebhook() {
             onClick={() => { void remove(); }}
             data-testid="voice-webhook-clear"
             aria-label="Remove the voice note webhook"
-            {...bindSetting(URL_KEY)}
           >
             Remove
           </Button>

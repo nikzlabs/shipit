@@ -10,7 +10,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { parseRepoName } from "../utils/repo-label.js";
 import { REPO_COLOR_COUNT, REPO_COLOR_NAMES, repoColorVar } from "../../server/shared/repo-colors.js";
-import { bindSetting, settingCopy } from "./Settings/setting-binding.js";
+import { settingCopy } from "./Settings/setting-copy.js";
 import { SettingCopy } from "./Settings/declared.js";
 import { useProjectRepoUrl } from "./Settings/components/project-repo.js";
 
@@ -61,7 +61,6 @@ export function RepoColorPicker() {
               title={label}
               data-taken={users ? "true" : undefined}
               data-testid={`repo-color-${index}`}
-              {...bindSetting("project.colorIndex")}
               onClick={() => { if (repoUrl) void setRepoColorIndex(repoUrl, index); }}
               className={`h-8 rounded-md flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-(--color-border-focus) ${
                 isSelected ? "ring-2 ring-(--color-text-primary) ring-offset-2 ring-offset-(--color-bg-elevated)" : ""

@@ -16,7 +16,7 @@ import { useEffect } from "react";
 import { keyRequiringProviders } from "../../../../server/shared/voice-catalog.js";
 import { useVoiceKeyStatus } from "../../../voice/voice-key-status.js";
 import { ProviderKeyField } from "../ProviderKeyField.js";
-import { settingCopy } from "../setting-binding.js";
+import { settingCopy } from "../setting-copy.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 
 export function VoiceProviderKeys({ settingKey }: { settingKey: SettingKey }) {
@@ -28,7 +28,7 @@ export function VoiceProviderKeys({ settingKey }: { settingKey: SettingKey }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-(--color-text-tertiary)" data-setting-description={settingKey}>
+      <p className="text-xs text-(--color-text-tertiary)">
         {settingCopy(settingKey).description}
       </p>
       {keyRequiringProviders().map((provider) => (

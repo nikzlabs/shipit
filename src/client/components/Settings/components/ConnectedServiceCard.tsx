@@ -16,7 +16,7 @@
 import type { ReactNode } from "react";
 import { StatusDot } from "../../ui/status-dot.js";
 import { ManagedByShipItBadge } from "../../ManagedByShipItBadge.js";
-import { settingCopy } from "../setting-binding.js";
+import { settingCopy } from "../setting-copy.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 
 export function ConnectedServiceCard({
@@ -46,18 +46,12 @@ export function ConnectedServiceCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <h3
-              className="text-sm font-medium text-(--color-text-primary)"
-              data-setting-label={settingKey}
-            >
+            <h3 className="text-sm font-medium text-(--color-text-primary)">
               {label}
             </h3>
             <ManagedByShipItBadge />
           </div>
-          <p
-            className="mt-1 text-xs text-(--color-text-secondary)"
-            data-setting-description={settingKey}
-          >
+          <p className="mt-1 text-xs text-(--color-text-secondary)">
             {description}
           </p>
         </div>

@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { Button } from "../ui/button.js";
 import { useMcpStore } from "../../stores/mcp-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
-import { bindSetting } from "../Settings/setting-binding.js";
 import { SettingCopy } from "../Settings/declared.js";
 import { OAuthProviderCards } from "./OAuthProviderCards.js";
 import { McpServerRow } from "./McpServerRow.js";
@@ -184,7 +183,6 @@ export function McpServerSettings() {
           variant="secondary"
           onClick={startAdd}
           data-testid="mcp-add-server"
-          {...bindSetting("mcp.servers")}
         >
           + Add MCP Server
         </Button>

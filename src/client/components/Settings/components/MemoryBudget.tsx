@@ -12,7 +12,7 @@
 import { useState } from "react";
 import { Button } from "../../ui/button.js";
 import { useUiStore } from "../../../stores/ui-store.js";
-import { SettingCopy, bindSetting } from "../declared.js";
+import { SettingCopy } from "../declared.js";
 import { useSetting } from "../declared-setting.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 
@@ -60,7 +60,6 @@ export function MemoryBudget({ settingKey }: { settingKey: SettingKey }) {
           onChange={(e) => { setDraftGb(e.target.value); setSaved(false); }}
           className="w-36 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
           data-testid="settings-memory-budget"
-          {...bindSetting(settingKey)}
         />
         <span className="text-sm text-(--color-text-secondary)">GB</span>
         <Button
@@ -74,7 +73,6 @@ export function MemoryBudget({ settingKey }: { settingKey: SettingKey }) {
           }}
           className="rounded-md"
           data-testid="settings-memory-budget-save"
-          {...bindSetting(settingKey)}
         >
           {saved ? "Saved" : "Save"}
         </Button>

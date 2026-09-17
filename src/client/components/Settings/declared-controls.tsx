@@ -27,7 +27,7 @@ import {
   DeclaredToggle,
   SettingCopy,
 } from "./declared.js";
-import { bindSetting, settingOf, settingOptions } from "./setting-binding.js";
+import { settingOf, settingOptions } from "./setting-copy.js";
 import { inputClass } from "./shared.js";
 
 function GeneratedToggle({ settingKey }: { settingKey: SettingKey }) {
@@ -132,9 +132,8 @@ function identityOf(value: unknown): { name: string; email: string } {
  * A name and an email, which are one setting because they are written together
  * (inventory.md P9, `value-types.ts` → `gitIdentity`).
  *
- * Two boxes over one declaration is what a composite value IS, so both bind the
- * same key — the coverage walk exempts composite kinds from its one-control
- * rule for exactly this shape.
+ * Two boxes over one declaration is what a composite value IS: they edit two
+ * halves of one draft and are committed by one write.
  */
 function GeneratedGitIdentity({ settingKey }: { settingKey: SettingKey }) {
   const { value, changedElsewhere, set } = useSettingDraft(settingKey);
@@ -155,7 +154,6 @@ function GeneratedGitIdentity({ settingKey }: { settingKey: SettingKey }) {
         value={identity[part]}
         onChange={(e) => { set({ ...identity, [part]: e.target.value }); }}
         className={inputClass}
-        {...bindSetting(settingKey)}
       />
     </div>
   );

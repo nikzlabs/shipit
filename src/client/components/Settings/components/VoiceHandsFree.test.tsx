@@ -15,7 +15,7 @@ import userEvent from "@testing-library/user-event";
 import { VoiceHandsFree } from "./VoiceHandsFree.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { initialSettingValues } from "../../../stores/setting-values.js";
-import { settingCopy } from "../setting-binding.js";
+import { settingCopy } from "../setting-copy.js";
 import { armAutoplay } from "../../../voice/voice-notes.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 

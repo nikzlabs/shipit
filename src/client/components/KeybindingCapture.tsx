@@ -4,7 +4,6 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { KeyboardIcon } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { chordFromEvent, chordToKeys } from "../keybindings/registry.js";
-import { bindSetting } from "./Settings/setting-binding.js";
 
 function KeyTokens({ chord }: { chord: string }) {
   const keys = chordToKeys(chord);
@@ -76,7 +75,6 @@ export function KeybindingCapture({
         size="md"
         onClick={() => setRecording((r) => !r)}
         aria-label={`${recording ? "Stop changing" : "Change"} the shortcut for ${label}`}
-        {...bindSetting("keyboard.keybindings[].chord")}
       >
         {recording ? "Cancel" : "Change"}
       </Button>

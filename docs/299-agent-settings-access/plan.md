@@ -89,8 +89,8 @@ the same guarantee.
 | the **browser store field** a global boolean lives in | detected — it is hand-written and read across the app, so a declaration whose `wire` field or `set<Wire>` setter is missing drops out of `DeclaredBooleanKey`, and binding a control to it without supplying the two props is a compile error naming the setting |
 | a **reader** for a setting a panel of its own owns | detected — a reader is per-owner code and cannot be generated; `BespokeSettingKey` makes a missing one a missing property |
 | a **stored field** nobody declared | detected — `MCP_SERVER_FIELD_SETTINGS`, `ROLE_FIELD_SETTINGS` / `ROLE_PARAMS_FIELD_SETTINGS` |
-| a **control** nobody declared, or one naming another tab's declaration | detected — the coverage walk |
-| a control bound to a **different field's declaration on its own tab** | neither. No guard reading the DOM can decide it, and the walk says so |
+| a **control** nobody declared, or one naming another tab's declaration | was detected by the coverage walk. Since docs/308 slice 8 it is **impossible** for a generated row and **unchecked** for a panel's own controls — see *The residual guard* |
+| a control bound to a **different field's declaration on its own tab** | neither, and never was. No guard reading the DOM could decide it |
 
 A bespoke panel's fields — the role editor, the MCP form, the credential rows —
 are the part that derives least: each needs its declaration, its reader and its
@@ -108,8 +108,8 @@ The role editor, credential routing, the MCP panel and the secrets table keep
 their own components, but **a declaration is per field, not per panel** — and
 each field renders the declaration's **description**, not only its label. A
 bespoke panel that shows a label and writes its own help text beside it is the
-drift req 7 forbids, in the one place the coverage walk's copy comparison has
-nothing to compare: the MCP form's suffixes ("(space-separated)") and the routing
+drift req 7 forbids, and since docs/308 slice 8 nothing checks a panel's copy at
+all: the MCP form's suffixes ("(space-separated)") and the routing
 band's tooltips were both authored twice, and the agent read the copy the user
 could not see. Both now render `settingCopy`, and the band's one licence is to
 swap the collective noun the card shows (docs/252 req 19) and edit nothing else. One
@@ -120,6 +120,19 @@ refusal reason. So each editable field is its own declaration
 has nothing to bind to.
 
 ### The residual guard
+
+> **Deleted, and deliberately not replaced.**
+> `docs/308-data-driven-settings` req 12 removed this walk and the `data-setting`
+> attributes it read, once every row in both dialogs was *generated* from the
+> declarations: a generated row takes its words from the declaration and exists
+> because the declaration exists, so a control nobody declared has nowhere to be.
+> What that gives up is bounded and was accepted on the corrected facts — nothing
+> now checks that a PANEL's copy matches its declaration, or that a
+> panel-owned declaration still has a control. The stored-shape maps
+> (`MCP_SERVER_FIELD_SETTINGS` and its siblings) are unaffected: they run in the
+> opposite direction and are compile errors rather than tests.
+> **The rest of this section describes the guard as it was**, and is kept as the
+> record of what it proved.
 
 Derivation cannot stop someone hand-writing a control that was never declared, so
 one backstop test renders each tab, enumerates its interactive elements and fails
@@ -635,8 +648,8 @@ dialog and per-repository **Project Settings**.
 | Project · Appearance | repository colour | yes | yes |
 
 Five things the dialogs appear to hold and do not, each an exclusion with this
-reason. The inventory is the part of this design most likely to be wrong, which
-is what the coverage walk is for.
+reason. The inventory is the part of this design most likely to be wrong; the
+coverage walk is what checked it, until docs/308 slice 8 deleted the walk.
 
 - **Installed harnesses** — *"a statement, not a control"*; harnesses come from
   the image (`Settings/ServicesPanel.tsx:418`).
@@ -1986,10 +1999,10 @@ derivations, `exclusions.ts`, and `rendered.ts` — the one door a value leaves 
 on its way to a line of the agent's output);
 `shared/settings-proposal-guidance.ts` (the phase
 table the read and the notice share);
-`client/components/Settings/setting-binding.ts`
-(`bindSetting`, `settingCopy`), `declared.tsx` (the standard controls) and
-`declared-setting.ts` (a declared global boolean's read and write);
-`client/components/Settings/settings-coverage.test.tsx` (the residual guard);
+`client/components/Settings/setting-copy.ts`
+(`settingCopy`, `settingOptions` — `setting-binding.ts` until docs/308 slice 8
+deleted the bindings), `declared.tsx` (the standard controls) and
+`declared-setting.ts` (a declared setting's read and write);
 `services/settings-store-readers.ts` (a reader per owner, for the settings a
 panel of its own stores); `services/settings-read.ts` and
 `api-routes-settings-agent.ts` (the two

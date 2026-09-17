@@ -31,7 +31,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { CopyButton } from "./ui/copy-button.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { SettingCopy, bindSetting, settingCopy } from "./Settings/declared.js";
+import { SettingCopy, settingCopy } from "./Settings/declared.js";
 import type { SettingKey } from "../../server/shared/settings-catalogue/index.js";
 import type { SshHostPublic } from "../../server/shared/types.js";
 
@@ -78,13 +78,12 @@ function SshField({
   const describedBy = `${settingKey}-description`;
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs text-(--color-text-secondary)" data-setting-label={settingKey}>
+      <span className="text-xs text-(--color-text-secondary)">
         {label}
       </span>
       <span
         id={describedBy}
         className="text-[11px] text-(--color-text-tertiary)"
-        data-setting-description={settingKey}
       >
         {description}
       </span>
@@ -102,7 +101,6 @@ function SshField({
         */
         aria-label={label}
         aria-describedby={describedBy}
-        {...bindSetting(settingKey)}
       />
     </label>
   );
@@ -315,7 +313,6 @@ export function SshHostsSettings() {
                 disabled={!canSubmit || busy}
                 onClick={() => void save()}
                 data-testid="ssh-host-save"
-                {...bindSetting("integrations.sshHosts")}
               >
                 Save changes
               </Button>
@@ -355,7 +352,6 @@ export function SshHostsSettings() {
                 onClick={() => startEdit(host)}
                 aria-label={`Edit ${host.label}`}
                 data-testid="ssh-host-edit"
-                {...bindSetting("integrations.sshHosts")}
               >
                 <PencilSimpleIcon size={ICON_SIZE.SM} />
               </Button>
@@ -366,7 +362,6 @@ export function SshHostsSettings() {
                 onClick={() => void remove(host)}
                 aria-label={`Remove ${host.label}`}
                 data-testid="ssh-host-remove"
-                {...bindSetting("integrations.sshHosts")}
               >
                 <TrashIcon size={ICON_SIZE.SM} />
               </Button>
@@ -414,7 +409,6 @@ export function SshHostsSettings() {
               disabled={!canSubmit || busy}
               onClick={() => void save()}
               data-testid="ssh-host-save"
-              {...bindSetting("integrations.sshHosts")}
             >
               Add destination
             </Button>
@@ -433,7 +427,6 @@ export function SshHostsSettings() {
               setEditor({ kind: "add" });
             }}
             data-testid="ssh-host-add"
-            {...bindSetting("integrations.sshHosts")}
           >
             <PlusIcon size={ICON_SIZE.SM} />
             Add SSH host

@@ -23,7 +23,7 @@ import {
   type ServiceChoice,
 } from "../../pickers/model-choice.js";
 import { reasoningOptionsFor } from "../../../../server/shared/catalogue/index.js";
-import { bindSetting, settingCopy } from "../declared.js";
+import { settingCopy } from "../declared.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 import type { ModelSelection } from "../../../../server/shared/catalogue/index.js";
 import type { AgentId } from "../../../../server/shared/types.js";
@@ -199,7 +199,6 @@ export function RoleEditor({
                 className={INPUT_CLASS}
                 data-testid="role-editor-name"
                 autoFocus
-                {...bindSetting("roles[].name")}
               />
             </Field>
           )}
@@ -220,7 +219,6 @@ export function RoleEditor({
               aria-label={settingCopy("roles[].description").label}
               className={INPUT_CLASS}
               data-testid="role-editor-description"
-              {...bindSetting("roles[].description")}
             />
           </Field>
 
@@ -233,7 +231,6 @@ export function RoleEditor({
               aria-label={settingCopy("roles[].prompt").label}
               className={`${INPUT_CLASS} resize-y font-mono text-(length:--font-size-code)`}
               data-testid="role-editor-prompt"
-              {...bindSetting("roles[].prompt")}
             />
           </Field>
 
@@ -259,7 +256,6 @@ export function RoleEditor({
                   disabled={busy}
                   idPrefix="role-editor"
                   fallbackLabel={params.serviceId}
-                  settingKey="roles[].model"
                 />
                 <Picker
                   label={modelLabel}
@@ -269,7 +265,6 @@ export function RoleEditor({
                   menuWidth="w-72"
                   disabled={busy}
                   whenEmpty="readout"
-                  settingKey="roles[].model"
                 >
                   {serviceModels.map((model) => (
                     <PickerOption
@@ -318,7 +313,6 @@ export function RoleEditor({
                     menuLabel={harness.reasoning.label}
                     menuWidth="w-48"
                     disabled={busy}
-                    settingKey="roles[].reasoningEffort"
                   >
                     {[{ value: undefined, label: DEFAULT_LEVEL_LABEL }, ...roleLevels]
                       .map((option) => (
@@ -371,7 +365,6 @@ export function RoleEditor({
             onClick={submit}
             data-testid="role-editor-save"
             aria-label={busy ? "Saving role" : "Save role"}
-            {...bindSetting("roles")}
           >
             {busy ? "Saving…" : "Save"}
           </Button>
@@ -413,7 +406,6 @@ function HarnessControl({
         menuLabel="Runs under"
         menuWidth="w-56"
         disabled={busy}
-        settingKey="roles[].harness"
       >
         {harnesses.map((choice) => (
           <PickerOption
@@ -473,10 +465,10 @@ function Field({
   return (
     <div>
       <label className="block text-xs font-medium text-(--color-text-primary) mb-1">
-        <span data-setting-label={settingKey}>{label}</span>
+        {label}
         <span className="ml-1.5 font-normal text-(--color-text-tertiary)">
           {optional && "Optional — "}
-          <span data-setting-description={settingKey}>{description}</span>
+          {description}
         </span>
       </label>
       {children}

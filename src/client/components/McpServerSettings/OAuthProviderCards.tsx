@@ -1,5 +1,4 @@
 import { Button } from "../ui/button.js";
-import { bindSetting } from "../Settings/setting-binding.js";
 import { StatusBadge } from "./McpServerRow.js";
 import { McpTestResult } from "./McpTestResult.js";
 import { isAuthRequired, oauthSourceForServer } from "./utils/auth.js";
@@ -103,7 +102,6 @@ export function OAuthProviderCards({
                         onClick={() => onToggle(managedServer)}
                         disabled={isToggling || inFlight}
                         aria-label={`${managedServer.enabled ? "Disable" : "Enable"} ${managedServer.name}`}
-                        {...bindSetting("mcp.servers[].enabled")}
                       >
                         {isToggling ? "…" : managedServer.enabled ? "Disable" : "Enable"}
                       </Button>
@@ -127,7 +125,6 @@ export function OAuthProviderCards({
                         disabled={inFlight}
                         onClick={() => onConnect(provider.id)}
                         aria-label={`${inFlight ? "Connecting" : "Reconnect"} ${provider.label}`}
-                        {...bindSetting("mcp.oauthProvider")}
                       >
                         {inFlight ? "Connecting…" : "Reconnect"}
                       </Button>
@@ -137,7 +134,6 @@ export function OAuthProviderCards({
                         disabled={inFlight}
                         onClick={() => onDisconnect(provider.id)}
                         aria-label={`Disconnect ${provider.label}`}
-                        {...bindSetting("mcp.oauthProvider")}
                       >
                         Disconnect
                       </Button>
@@ -149,7 +145,6 @@ export function OAuthProviderCards({
                       disabled={inFlight}
                       onClick={() => onDisconnect(provider.id)}
                       aria-label={`Disconnect ${provider.label}`}
-                      {...bindSetting("mcp.oauthProvider")}
                     >
                       {inFlight ? "…" : "Disconnect"}
                     </Button>
@@ -160,7 +155,6 @@ export function OAuthProviderCards({
                       disabled={inFlight}
                       onClick={() => onConnect(provider.id)}
                       aria-label={`${inFlight ? "Connecting" : "Connect"} ${provider.label}`}
-                      {...bindSetting("mcp.oauthProvider")}
                     >
                       {inFlight ? "Connecting…" : `Connect ${provider.label}`}
                     </Button>

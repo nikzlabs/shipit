@@ -9,6 +9,23 @@ description: How the dialogs render and write from the declarations: two optiona
 Implements [requirements.md](requirements.md). The per-setting walk this design
 rests on is [inventory.md](inventory.md); it is cited below as `P1`…`P19`.
 
+**This is shipped.** Every tab of both dialogs renders from the declarations, and
+there is no second way to build a standard control. Adding one the control table
+can show is one edit in `settings-catalogue/`: its row, its read, its write,
+where it is stored and where it appears all follow from the declaration. A
+setting that needs its own editing keeps a component, and that component uses the
+same declaration and the same destination as every other row. The eight slices
+below are the record of how it got there, all merged.
+
+**Two edges of "one edit" are real and are stated where they arise, not here.**
+A `system-prompt-file` row commits on a **tab's** Save, so moving one to a tab
+with no `DeclaredCommit` renders a box nobody can save — *An explicit commit is a
+tab's* says so, and nothing checks it. And a new **`own-route`** declaration owes
+the AGENT's read an entry in `OWN_ROUTE_READERS`
+(`services/settings-read.ts`) — a compile error rather than a silent gap, and
+docs/299's surface rather than this one, but a second file all the same. Both are
+one declaration shape each, not the general case.
+
 ## The shape
 
 ```
@@ -191,7 +208,6 @@ forces a migration.
 |---|---|
 | `bool` | toggle |
 | `enumOf` | a card per option when every option declares a **description**, otherwise a select — the declaration decides, with no new field (slice 4). A card exists to carry an option's sentence; the release channel is the only set that has one |
-| `numeric` | number input, with the declared unit |
 | `text` | textarea when the store is `system-prompt-file`; a `text` row over any other store has no control yet, so it is **not generated at all** (slice 3) |
 | `gitIdentity` | the name-and-email pair |
 | a declaration naming a `component` | that component, rendered **once** however many declarations name it |
@@ -205,8 +221,12 @@ have had to reach into a store field chosen by key, which is what a component is
 Its one generated consumer is `services.nonTurnModel`, and what it needs beyond a
 menu is derived status no table can hold: which models this install can run in
 the background, what the pin resolves onto, and whether it still runs. The other
-two are addressed and belong to the roles editor. `numeric` is the same shape and
-has no entry either (P4).
+two are addressed and belong to the roles editor. **`numeric` had a row in this
+table and has none in the code**, for the same reason: the two that exist — the
+memory budget in MB shown in GB, and the repository colour as a swatch grid —
+each need a unit or a presentation the kind cannot supply, so both are components
+(P4). The row is deleted rather than left as a promise, as the model picker's and
+the credential row's were.
 
 A **credential row** — configured or not, replace, remove — was in this table
 until slice 5 built one. It is not a control kind: its write has a client-side
@@ -278,9 +298,10 @@ colour picker.
 
 ## Slices
 
-Each is one pull request. **A slice names the declarations it generates and the
-ones it leaves hand-written** (P18) — it never converts a whole tab and hopes the
-rest follows, because a control whose support has not landed either duplicates an
+All eight shipped; this is the record of what each one decided. Each was one
+pull request, and **a slice named the declarations it generated and the ones it
+left hand-written** (P18) — none converted a whole tab and hoped the rest
+followed, because a control whose support has not landed either duplicates an
 existing one or renders a row that cannot save.
 
 1. **The spine, on Advanced's toggles.** The value record with its browser codec
@@ -804,27 +825,83 @@ existing one or renders a row that cannot save.
    component named by a non-recorded declaration (`voice.providerKey`, the five
    project ones) ever called `useSetting`. Without it such a call reads
    `undefined`, which is the louder and better failure.
-8. **Cleanup.** Delete `settings-coverage.test.tsx` and the `data-setting`
-   attribute (req 12). The walk proves three things and generation replaces one;
-   the other two are given up knowingly, and the loss is bounded to the 42
-   declarations the panels and components own (P15).
+8. **Cleanup** (req 12). The coverage walk goes — 1634 lines by the time it was
+   deleted, 1617 when `inventory.md` counted it — and with it the
+   `data-setting`, `data-setting-label`, `data-setting-description` and
+   `data-setting-option` attributes across 36 files, `setting-binding.ts`, and
+   the tab lists and exclusion fields that existed only to be walked. The walk
+   proved three things and generation replaces one; the other two are given up
+   knowingly, and the loss is bounded to the 42 declarations the panels and
+   components own (P15).
 
-Until a tab joins `GENERATED_TABS`, its values are read through their named store
-fields and written by those fields' own setters (P18) — hydration walks the
-declarations for the rows the record holds, and reaches nothing else. Slice 1 made that rule explicit rather than
-a convention: `GENERATED_TABS` in `src/client/stores/setting-values.ts` names the
-tabs whose rows are generated, and so exactly which settings the record holds. A
-tab joins that list in the slice that moves its hydration, and a setting the
-record does not hold is still read through its named field — which is what keeps
-`integrations.autoCreatePr` and `instructions.agentInstructionsEnabled` working
-on the same reader while their tabs wait for slices 5 and 3.
+   **What was deleted is scaffolding, not a guarantee moved somewhere else.** No
+   narrower walk replaces it, no copy assertion replaces its copy comparison, and
+   nothing asserts that it stays deleted — a removal has to shrink the suite, and
+   reviews on slices 3 and 5 each asked for one of those and were refused for
+   this reason. The one DOM copy check that survived into this slice went with
+   it: it ran over the Advanced tab's rows, where a generated row's words are the
+   declaration's by construction (`settingCopy` is the only path) and the one
+   component among them is exactly the class req 12 gives up.
 
-**Every tab of both dialogs is on that list since slice 7**, so the second half
-of the rule has no user left: there is no unconverted tab whose values are read
-through a named field. What slice 7 showed is that the list answers a narrower
-question than its name suggests — a tab of generated rows can hold no record
-values at all, because "which settings the record holds" is decided per
-declaration by its store, not by its tab.
+   **`setting-binding.ts` carried two things and only one of them was the
+   binding.** `settingOf`, `settingCopy` and `settingOptions` are how every
+   generated control and every panel reads its declared words, and they are
+   unaffected — the file is `setting-copy.ts` now, holding those three and
+   nothing else. `bindSetting` and `bindSettingOption` are gone, and with them
+   the `settingKey` props that `ToggleSwitch`, `OverflowMenu`, `Picker` and
+   `ServiceSelector` took *only* to produce an attribute; a prop that no longer
+   does anything is worse than the attribute was.
+
+   **The fall-back slice 7 left had no user, and that was verified rather than
+   inherited.** `currentValue` is `state.settingValues[key]` and nothing else.
+   The record is seeded with exactly the recorded keys and `setSettingValue`
+   refuses to write any other, so `key in values` held for every key that reaches
+   it; the eighteen generated rows the record does NOT hold are all components,
+   and none of them — nor any direct `saveSetting` caller — goes through
+   `useSetting`. What the fall-back would have done for such a call is serve a
+   declared default for a value it has no way to read; `undefined` is the louder
+   failure.
+
+   Also deleted, for the same reason: `SETTING_EXCLUSIONS`' `controls`,
+   `wholeTab` and `region` fields (matching hints for a DOM crawl, read by
+   nothing once the crawl is gone — the register itself stays, and
+   `registry.test.ts` still holds every tab to a declaration or a reasoned
+   exclusion), and the `SETTINGS_TABS` / `PROJECT_SETTINGS_TABS` exports, which
+   both said in the code that they were exported for the walk.
+
+   **The whole-feature acceptance review found two runtime defects, neither of
+   them this slice's, and both are open.** They are written down here rather than
+   fixed, because each needs a change outside a cleanup slice.
+
+   - **The memory budget says "Saved" for a write that failed.**
+     `MemoryBudget.tsx` calls the setter and sets its own `saved` flag in the
+     same handler; the setter is fire-and-forget, so an HTTP 500 rolls the record
+     back while the box still shows what was typed and the button still reads
+     Saved. It is not fixable inside the component: `saveSetting` swallows its
+     own failure (it toasts and returns `void`), and the optimistic write means
+     the record equals the sent value from the click onward, so there is nothing
+     to watch. The fix is for `saveSetting` to return an outcome — the feature's
+     most load-bearing file, for one component.
+   - **Two overlapping own-route reads can leave the older answer in the
+     record.** Slice 2 recorded this and slice 4 restated it: the guard compares
+     the value before and after the read rather than ordering the requests, so an
+     older read that lands first changes the value and makes the newer one look
+     superseded. Still true, still known.
+
+`GENERATED_TABS` in `src/client/stores/setting-values.ts` names the tabs whose
+rows are generated, and so exactly which settings the value record holds. While
+the slices ran it also carried a rule: a tab that had not joined it yet had its
+values read through their named store fields and written by those fields' own
+setters (P18), because a half-converted tab either duplicates a control or
+renders a row that cannot save. **Every tab of both dialogs has been on the list
+since slice 7**, so that half of the rule has no user left — there is no
+unconverted tab.
+
+What is left is narrower than the name suggests, and slice 7 is what showed it: a
+tab of generated rows can hold no record values at all, because *which settings
+the record holds* is decided per declaration by its store, not by its tab. The
+list still decides that, and the three `project-*` tabs are the case — five
+generated rows, none of them in the record.
 
 ## Key files
 
@@ -856,8 +933,7 @@ declaration by its store, not by its tab.
 | `src/client/components/AgentPermissions.tsx` | the merge grant: the generated toggle's own row, over a value the repositories store holds |
 | `src/client/components/RepoColorPicker.tsx` | the swatch grid, for a `numeric` the control table has no entry for |
 | `src/client/components/SecretsTab.tsx` | the secrets panel: its own reader and writer, as every registered panel has |
-| `src/client/components/Settings/setting-binding.ts` | `data-setting`; deleted in slice 8 |
-| `src/client/components/Settings/settings-coverage.test.tsx` | the walk; deleted in slice 8 (P15) |
+| `src/client/components/Settings/setting-copy.ts` | a declaration's own words and options, for the control that shows them — what survived `setting-binding.ts` in slice 8 |
 | `src/client/stores/settings-store.ts` | gains the value record and the draft record; the named fields become views over the first |
 | `src/client/utils/local-storage.ts` | loses its 13 accessor pairs for settings; keeps the legacy keybinding fallback (P17) |
 
@@ -865,8 +941,11 @@ declaration by its store, not by its tab.
 
 The agent's half (req 8). `emits`, `propose`, the projection, the refusal
 reasons, `LIVE_DETAILS`, the proposal card and `shipit settings` are untouched —
-this feature is client-side, and the declaration it reads is the same one it
-reads now. The **stored-shape** maps (`MCP_SERVER_FIELD_SETTINGS` and its
-siblings) also stay: they catch a stored field nobody declared, which is the
-opposite direction from the walk, and they are compile errors rather than tests
-(P15).
+this feature is client-side, and the declaration it reads is the same one it read
+before it. The **stored-shape** maps (`MCP_SERVER_FIELD_SETTINGS`,
+`SSH_HOST_FIELD_SETTINGS`, `ROLE_FIELD_SETTINGS` and their siblings) also stay,
+permanently: they catch a stored field nobody declared, which is the opposite
+direction from the walk, and they are compile errors rather than tests (P15).
+`SETTING_EXCLUSIONS` stays too, as the register of what in either dialog is not a
+setting and why (docs/299 req 5) — `registry.test.ts` holds every tab to a
+declaration or a reasoned exclusion.

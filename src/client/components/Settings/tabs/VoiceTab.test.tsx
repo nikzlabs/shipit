@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { VoiceTab } from "./VoiceTab.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
-import { settingCopy, settingOptions } from "../setting-binding.js";
+import { settingCopy, settingOptions } from "../setting-copy.js";
 import { useVoiceKeyStatus } from "../../../voice/voice-key-status.js";
 
 /**

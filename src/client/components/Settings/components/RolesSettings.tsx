@@ -47,7 +47,7 @@ import { Button } from "../../ui/button.js";
 import { BillingModePill } from "../../BillingModePill.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
-import { bindSetting, settingCopy } from "../declared.js";
+import { settingCopy } from "../declared.js";
 import { ReviewerSection } from "../tabs/ReviewerSection.js";
 import { RoleEditor } from "../roles/RoleEditor.js";
 import type { RoleView, RoleWrite } from "../../../../server/shared/types/agent-types.js";
@@ -130,7 +130,6 @@ export function RolesSettings() {
                 meets it with its name — neither half of the rule works alone. */}
             <h3
               className="flex items-center gap-1.5 text-sm font-medium text-(--color-text-primary)"
-              data-setting-label="roles"
             >
               <BaseballCapIcon
                 size={ICON_SIZE.SM}
@@ -139,7 +138,7 @@ export function RolesSettings() {
               />
               {settingCopy("roles").label}
             </h3>
-            <p className="mt-0.5 text-xs text-(--color-text-tertiary)" data-setting-description="roles">
+            <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
               {settingCopy("roles").description}
             </p>
             {/* Not the setting's own words: where the roles are USED, which the
@@ -154,7 +153,6 @@ export function RolesSettings() {
             className="shrink-0"
             onClick={() => { setError(undefined); setEditing({ role: undefined }); }}
             data-testid="role-new"
-            {...bindSetting("roles")}
           >
             <PlusIcon size={ICON_SIZE.XS} />
             New role
@@ -243,7 +241,6 @@ function RoleMetadata({ role, onEdit }: { role: RoleView; onEdit: () => void }) 
         onClick={onEdit}
         data-testid="reviewer-edit"
         aria-label="Edit the reviewer role"
-        {...bindSetting("roles")}
       >
         <PencilSimpleIcon size={ICON_SIZE.XS} />
         Edit
@@ -350,7 +347,6 @@ function RoleRow({
             onClick={onOpen}
             data-testid={`role-open-${role.name}`}
             aria-label={`Edit ${role.name}`}
-            {...bindSetting("roles")}
           >
             <PencilSimpleIcon size={ICON_SIZE.XS} />
             Edit
@@ -363,7 +359,6 @@ function RoleRow({
             aria-label={`Delete ${role.name}`}
             className="text-(--color-error) hover:text-(--color-error)"
             data-testid={`role-delete-${role.name}`}
-            {...bindSetting("roles")}
           >
             <TrashIcon size={ICON_SIZE.XS} />
           </Button>

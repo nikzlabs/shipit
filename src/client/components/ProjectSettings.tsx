@@ -7,11 +7,8 @@ import { parseRepoLabel } from "../utils/repo-label.js";
 
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-/**
- * Every tab this dialog renders, in order. Exported for the same reason as
- * `SETTINGS_TABS`: the coverage guard walks each one.
- */
-export const PROJECT_SETTINGS_TABS = ["secrets", "deployments", "appearance"] as const;
+/** Every tab this dialog renders, in order. */
+const PROJECT_SETTINGS_TABS = ["secrets", "deployments", "appearance"] as const;
 
 type Tab = (typeof PROJECT_SETTINGS_TABS)[number];
 
