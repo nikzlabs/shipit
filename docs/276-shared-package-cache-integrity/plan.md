@@ -9,21 +9,30 @@ description: Closes the two real cross-session holes in the shared package cache
 Implements [requirements.md](./requirements.md). Read it first.
 
 All figures below were measured on npm 11.12.1 and pnpm 11.22.0 / 12.4.2. The
-two harnesses beside this doc, [`verify-h2.sh`](./verify-h2.sh) and
-[`verify-reflink.sh`](./verify-reflink.sh), reproduce the pnpm results.
+harnesses beside this doc reproduce the pnpm results: [`verify-h4.sh`](./verify-h4.sh)
+(the store-index trust, H2/H4), [`verify-h2.sh`](./verify-h2.sh) (content-hash
+behaviour) and [`verify-reflink.sh`](./verify-reflink.sh) (import methods). Note
+`verify-h2.sh` forces re-verification in its setup, so its cells fail closed;
+`verify-h4.sh` shows the warm-store case where pnpm skips the re-check.
 
 ## The holes
 
 | Hole | Surface | Status |
 |---|---|---|
 | **H1** — cached npm *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` `_cacache/index-v5` | **Open.** Install-time RCE: rewrite `dist.integrity` to attacker content placed at its own hash, set `hasInstallScript: true`, and `npm install` runs the attacker's `postinstall`. Works with the network available, because npm serves its local cache without asking the registry. |
-| **H2** — poisoned pnpm store content installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Not a hole.** pnpm content-hash-checks entries on import: online it evicts and re-downloads, offline it fails closed. Only `verify-store-integrity=false` defeats it. |
+| **H2** — poisoned pnpm store *content* (bytes changed in place) installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Conditional, and subsumed by H4.** pnpm re-hashes an entry on import only when `index.db` does not already vouch for it. Measured 2026-09-17: a *warm* store (one pnpm already has a manifest for), poisoned in place, installs the bytes offline with `verify-store-integrity=true` (rc=0); the negative control — same store with `index.db` deleted — fails closed. So `verify-store-integrity=true` is necessary but not sufficient. |
 | **H3** — store file mutated in place under a live `node_modules` | `/workspace/.pnpm-store` | **Open, and unreachable by verification.** Store files are hardlinked into `node_modules` (`links=2`), so a store write changes already-installed files with no install event. Req 4 exists for this. |
+| **H4** — pnpm store *manifest* (`v11/index.db`) rewritten to point a package's file at attacker content placed at its own valid hash | `/workspace/.pnpm-store` | **Open, and `verify-store-integrity` does not close it.** The per-package manifest is trusted layout data, the pnpm analogue of npm's `index-v5`. Verification checks each file against the digest the manifest names, not the manifest against the package's integrity. Measured 2026-09-17: offline, `verify-store-integrity=true`, a rewritten manifest installed attacker bytes (rc=0), and a second repo sharing the store got them too. pnpm's own security policy confirms it: store integrity does not defend an attacker who rewrites both files and their recorded hashes. |
 
 Facts that shape the design:
 
 - npm's `content-v2` is self-verifying (the path is the hash); a poisoned tarball
   is detected and an offline install fails closed. Only `index-v5` is forgeable.
+- pnpm's content blobs are also self-verifying by path, **but pnpm does not
+  re-hash them on every import**: it trusts `v11/index.db`, which records each
+  file's expected hash and a `checkedAt`. That trusted index is the pnpm
+  equivalent of npm's `index-v5`, and it lives in the same shared writable store
+  (H2/H4). Reproduced by [`verify-h4.sh`](./verify-h4.sh).
 - npm does not hardlink `_cacache` into `node_modules` (`links=1`), so H3 is
   pnpm-only.
 - The overlay dependency base (docs/183) is not a hole: it is never mounted into
@@ -120,26 +129,57 @@ isolates writes to it on any filesystem; `copy` governs how the store
 materialises into `node_modules` within a session and is near-free on a reflink
 filesystem.
 
-### 4. H2 — pin `verify-store-integrity=true`
+### 4. H2 — pin `verify-store-integrity=true` (necessary, not sufficient)
 
-No verification needs building. Set the value explicitly so the protection is
-asserted rather than inherited, and describe it in shipit-docs as pnpm's check,
-not ShipIt's.
+Set the value explicitly so the protection is asserted rather than inherited,
+and describe it in shipit-docs as pnpm's check, not ShipIt's. But it does **not**
+make the shared store safe on its own: pnpm skips re-hashing an entry `index.db`
+already vouches for, and `index.db` is attacker-writable. The store is safe only
+once section 5 removes that trust. Ship this alongside section 5, not instead.
+
+### 5. H4 — the pnpm store index is trusted metadata (reqs 1, 3, 6)
+
+`v11/index.db` maps each package to a per-file manifest of expected hashes, and
+pnpm trusts it: it re-hashes content only when the manifest does not already
+vouch for the entry. Two consequences, both measured
+([`verify-h4.sh`](./verify-h4.sh)) and both defeating `verify-store-integrity`:
+
+- **H4** — rewrite the manifest to point a file at attacker content placed at
+  its own valid hash. Installs the attacker's bytes, offline, rc=0.
+- **H2 (warm)** — poison the bytes in place of an entry the manifest already
+  vouches for. Same result, because pnpm does not re-hash it.
+
+This is the pnpm analogue of H1, and worse-scoped: the store is shared
+per-runtime across **repos**, so an untrusted repo poisons a private repo's
+install. The copy fix (section 2) does not help — it copies whatever the
+manifest names.
+
+The fix has H1's shape: do not share the trusted store index across trust
+boundaries. Give each session (or repo) its own `index.db` while sharing the
+content blobs, or verify the manifest against the package integrity the lockfile
+pins. pnpm exposes no documented knob to split the index from the content, so
+**this needs a spike** before it is a committed mechanism — it is the one part
+of the design not yet reduced to a known-good fix, and it is load-bearing.
 
 ### Sequencing
 
 1. Section 1 (H1). It is a working RCE and the cheapest fix.
 2. Sections 2 and 4 (pnpm settings). Ship on the storage ShipIt already has.
+   **On ext4, section 2 alone regresses disk ~1.8× (req 10) until section 3
+   lands**, so on ext4 ship 2 and 3 together, or accept the interim cost
+   deliberately.
 3. Section 3 (overlay), including the store-placement decision.
-4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and 2
-   have landed (req 8).
+4. Section 5 (H4) after its spike; it, not section 2, is what makes the pnpm
+   store safe against a metadata rewrite.
+5. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
+   pnpm store is safe against H3 and H4 (req 8).
 
 ## Rejected
 
 - **A ShipIt-owned writer with the store read-only to sessions.** Ruled out by
   req 9. Also, permission bits alone do nothing: the session owns the inode and
   can `chmod` it back through its own `node_modules` path.
-- **Registry mediation.** Closes none of the three holes: every attack is a
+- **Registry mediation.** Closes none of the holes: every attack is a
   local write to a shared path, and the package manager serves its local cache
   without asking the registry. `--prefer-online` makes crafted bytes fail
   closed, but repointing a name at a genuinely published package's real tarball
@@ -151,7 +191,9 @@ not ShipIt's.
   at the cost of cross-repo dedup.
 - **Lockfile pinning as the fix.** Covers only `npm ci` and in-sync installs;
   section 1 covers everything it covers and the adding case too.
-- **Building store verification into ShipIt.** pnpm already does it (H2).
+- **Relying on `verify-store-integrity` alone for the pnpm store.** It trusts
+  `index.db`, which the attacker can write (H2/H4). Pin it, but do not treat it
+  as the fix.
 
 ## Measurement notes
 
