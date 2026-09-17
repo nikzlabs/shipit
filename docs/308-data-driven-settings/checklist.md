@@ -19,6 +19,7 @@ each, and the work is tracked on planning#580.
 - [x] 3 — Instructions and Git
 - [x] 4 — Voice
 - [x] 5 — Integrations
-- [ ] 6 — Panels
+- [x] 6a — The list panels on Integrations, Network and Keyboard
+- [ ] 6b — The Roles and Services panels, and `services.nonTurnModel`
 - [ ] 7 — Project Settings
 - [ ] 8 — Cleanup: the coverage walk and `data-setting` go

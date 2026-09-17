@@ -11,6 +11,10 @@
 
 import type { ReactNode } from "react";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
+import { KeybindingSettings } from "../../KeybindingSettings.js";
+import { McpServerSettings } from "../../McpServerSettings.js";
+import { SshHostsSettings } from "../../SshHostsSettings.js";
+import { EgressHosts } from "./EgressHosts.js";
 import { GitHubConnection } from "./GitHubConnection.js";
 import { LinearCredential } from "./LinearCredential.js";
 import { MemoryBudget } from "./MemoryBudget.js";
@@ -31,6 +35,11 @@ export const SETTING_COMPONENTS: Readonly<Record<string, SettingComponent>> = {
   "memory-budget": MemoryBudget,
   "github-connection": GitHubConnection,
   "linear-credential": LinearCredential,
+  // The collection panels, which keep the writers their operations need.
+  "ssh-hosts": SshHostsSettings,
+  "mcp-servers": McpServerSettings,
+  "egress-hosts": EgressHosts,
+  "keybindings": KeybindingSettings,
   "voice-provider-keys": VoiceProviderKeys,
   "voice-tts": VoiceTts,
   "voice-hands-free": VoiceHandsFree,

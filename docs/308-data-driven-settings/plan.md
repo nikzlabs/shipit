@@ -546,7 +546,72 @@ existing one or renders a row that cannot save.
    and either credential can be **replaced without disconnecting first**, which
    is the "replace" the control table described and neither card had.
 6. **Panels.** Register the nine as components and bind them to their
-   declarations; they keep their own writers and operations.
+   declarations; they keep their own writers and operations. **Split in two**,
+   because one slice over four tabs and roughly a dozen panels is more than one
+   reviewable pull request. The line between them is the mechanism each half
+   needs: 6a needs none that does not exist, and 6b needs two.
+
+   6a — **The list panels on Integrations, Network and Keyboard.** The MCP
+   servers and SSH destinations on Integrations, the egress allowlist on
+   Network, and the keybindings on Keyboard: four collections whose panels keep
+   their own writers, 20 declarations between them, and `keyboard` joins
+   `GENERATED_TABS`.
+
+   6b — **Roles and Services.** The roles and reviewers editors, the
+   credentials, provider-accounts, account-selection and failover-cutoff panels,
+   and `services.nonTurnModel` as an ordinary generated row. That last one is
+   why the split falls here: it is the first `modelSelection` row, so it needs a
+   control-table entry, a record entry and hydration, and the two tabs need
+   `agentList` read from the store rather than drilled through the dialog — the
+   same move slice 6a made for `hasActiveSession`.
+
+   **What 6a found.** *Registering a panel needed no new mechanism at all.* A
+   collection declaration names a component, the registry maps the name, and the
+   renderer places it: the same three steps a small component takes, with the
+   panel's own writer left alone. Three consequences the design had not stated.
+
+   **A component takes the setting's key and nothing else, so a panel's other
+   inputs have to be reads.** The MCP panel was given `hasActiveSession` by
+   `App.tsx` through `Settings` and `SettingsIntegrations`; it reads
+   `useSessionStore` now, which is what slice 4 did with `voice-key-status.ts`
+   for the same reason. `Settings` lost the prop, and so did the tab.
+
+   **An addressed declaration names its component only when it has no collection
+   of its own.** `mcp.oauthProvider` is addressed by a provider and belongs to no
+   collection — `voice.providerKey`'s shape exactly — so it names the MCP panel
+   and is deduped against `mcp.servers`, which renders it. An item field like
+   `mcp.servers[].name` names nothing: its collection places the panel, and the
+   renderer skips it as a panel-owned declaration (P11).
+
+   **Declaration order had to be chosen, not accepted.** The MCP block was first
+   in `integrations-settings.ts`, so generating it would have put "runs with
+   whatever credentials you provide" above the brokered connections — inverting
+   the trust tiering docs/201 built the tab around. The block moved to the end of
+   the file, which is slice 2's precedent: requirement 11 says order comes from
+   the declaration, and moving the declaration is how order is expressed.
+
+   **A `bespoke` panel's destination stays prose, and that is a real limit**
+   (raised in review). `own-route` is machine-readable because five *single*
+   values needed it (P2); a panel's is not, so changing `ownedBy` would not
+   change where the MCP, SSH or egress panel writes. A `path` on `BespokeStore`
+   would not close it either: the egress panel alone reaches
+   `/api/egress/allowlist` to read, `/api/egress/hosts` to add, remove and edit,
+   and `/api/egress/defaults/restore` to restore, and the SSH panel adds a
+   per-id `PATCH` and `DELETE` — so the field would have to be a route table the
+   day it landed, which requirement 5 refuses. The keybindings are the one panel
+   where a duplicate genuinely existed, because a `browser` store already
+   carries a machine-readable `localStorageKey`, and that one is removed:
+   `local-storage.ts` reads the declaration's own field, typed, so a divergence
+   is a compile error rather than a test (the argument the stored-shape maps
+   already make).
+
+   Knowingly given up: the two hand-written section hints (`· managed by ShipIt`,
+   `· bring your own tools` — a generated heading has no hint slot, as slice 5
+   already found), the horizontal rules the tab drew between its three tiers
+   (SSH and MCP carry no `section`, so they share the tab's unheaded group and
+   each renders its own declared heading), and `McpServerSettings`'s unused
+   non-embedded chrome, which wrote a heading and a paragraph of its own that the
+   declaration now carries.
 7. **Project Settings** (req 10) — the second dialog, its repo-scoped write, the
    colour picker and the secrets panel.
 8. **Cleanup.** Delete `settings-coverage.test.tsx` and the `data-setting`

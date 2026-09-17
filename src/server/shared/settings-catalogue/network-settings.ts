@@ -19,6 +19,7 @@ export const NETWORK_SETTINGS = {
   "network.egress.hosts": defineSetting({
     key: "network.egress.hosts",
     tab: "network",
+    component: "egress-hosts",
     scope: "global",
     label: "Allowlist",
     description:

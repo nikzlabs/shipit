@@ -20,7 +20,6 @@ import type { SettingKey } from "../../../server/shared/settings-catalogue/index
 
 const props: SettingsProps = {
   agentList: [],
-  hasActiveSession: false,
   onClose: vi.fn(),
 };
 

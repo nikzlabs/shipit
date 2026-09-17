@@ -3,6 +3,7 @@ import type { IssueFilters } from "../components/issues-filter.js";
 import { DEFAULT_SORT_PREFS, type GroupKey, type SortDir, type SortKey, type SortPrefs } from "../components/issues-sort.js";
 import type { BillingMode, ModelSelection } from "../../server/shared/catalogue/index.js";
 import { parseSelection, resolveModelSelection, selectionExists, serializeSelection } from "../../server/shared/catalogue/index.js";
+import { BROWSER_SETTINGS } from "../../server/shared/settings-catalogue/browser-settings.js";
 
 export function parseJsonWithFallback<T>(
   raw: string | null,
@@ -356,7 +357,12 @@ export function saveActiveRepo(url: string | undefined): void {
 const VOICE_HOTKEY_MODE_A_KEY = "shipit-voice-hotkey-mode-a";
 const VOICE_HOTKEY_MODE_B_KEY = "shipit-voice-hotkey-mode-b";
 
-const KEYBINDINGS_KEY = "shipit-keybindings";
+/**
+ * The declaration's own field, so this writer holds no second copy of where the
+ * overrides go (docs/308-data-driven-settings req 3, inventory.md P16). Typed
+ * rather than looked up, which makes a divergence a compile error.
+ */
+const KEYBINDINGS_KEY = BROWSER_SETTINGS["keyboard.keybindings"].store.localStorageKey;
 
 export function getSavedKeybindings(): Record<string, string> {
   try {

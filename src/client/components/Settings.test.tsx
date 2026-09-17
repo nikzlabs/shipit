@@ -56,7 +56,6 @@ const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
 
 const defaultProps: SettingsProps = {
   agentList: [claudeAuthed],
-  hasActiveSession: false,
   onClose: vi.fn(),
 };
 

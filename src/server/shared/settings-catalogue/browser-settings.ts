@@ -49,6 +49,7 @@ export const BROWSER_SETTINGS = {
   "keyboard.keybindings": defineSetting({
     key: "keyboard.keybindings",
     tab: "keyboard",
+    component: "keybindings",
     scope: "browser",
     label: "Keyboard shortcuts",
     description:

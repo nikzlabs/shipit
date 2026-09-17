@@ -1752,7 +1752,6 @@ export default function App() {
                 console.error("[settings] Full reset failed:", err);
               }
             }}
-            hasActiveSession={!!sessionId}
             onClose={() => {
               useUiStore.getState().setSettingsOpen(false);
               useUiStore.getState().setSettingsTab(undefined);

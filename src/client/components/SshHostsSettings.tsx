@@ -13,6 +13,8 @@
  * A destination is edited in place (req 14) rather than deleted and re-added,
  * because the grant on each session names the destination's id: re-adding mints
  * a new id and silently revokes it everywhere.
+ *
+ * The component `integrations.sshHosts` names (docs/308-data-driven-settings).
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: load the account-wide registry when this panel mounts (external system sync)
@@ -29,7 +31,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { CopyButton } from "./ui/copy-button.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { bindSetting, settingCopy } from "./Settings/declared.js";
+import { SettingCopy, bindSetting, settingCopy } from "./Settings/declared.js";
 import type { SettingKey } from "../../server/shared/settings-catalogue/index.js";
 import type { SshHostPublic } from "../../server/shared/types.js";
 
@@ -269,6 +271,8 @@ export function SshHostsSettings() {
 
   return (
     <div className="flex flex-col gap-2" data-testid="ssh-hosts-settings">
+      <SettingCopy settingKey="integrations.sshHosts" heading />
+
       {hosts?.length === 0 && editor === null && (
         <p className="text-xs text-(--color-text-tertiary)">
           No destinations yet. ShipIt generates a key per destination; you install its public line on the server.
