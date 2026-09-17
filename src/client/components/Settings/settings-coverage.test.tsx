@@ -656,7 +656,6 @@ const reviewerSlots: ReviewerSlotView[] = [
 ];
 
 const settingsProps: SettingsProps = {
-  agentList: agents,
   onClose: vi.fn(),
 };
 
@@ -670,6 +669,9 @@ function seedStores() {
   // A bound session, so the MCP panel's Test controls are live. Read from the
   // store rather than passed in, since docs/308 slice 6 registered that panel.
   useSessionStore.getState().setSessionId("session-1");
+  // The harnesses, read from the store rather than passed in since docs/308
+  // slice 6b registered the Services and Roles panes as declared components.
+  useUiStore.setState({ agentList: agents });
   useSettingsStore.getState().setCredentialRoutes([
     {
       id: "route-a", serviceId: "anthropic", billingMode: "sub", via: "string",
@@ -785,6 +787,7 @@ afterEach(() => {
   useSettingsStore.getState().setRoles([]);
   useSettingsStore.getState().setReviewers([]);
   useSettingsStore.setState({ keybindings: {}, voiceDeliveryMode: "native" });
+  useUiStore.setState({ agentList: [] });
   useMcpStore.setState({ servers: [], oauthProviders: [] });
   useEgressStore.setState({ entries: [], loaded: false, defaultsCustomized: false });
   usePreviewStore.getState().setSecrets({ declared: [], missingByService: {}, missingRequired: [] });

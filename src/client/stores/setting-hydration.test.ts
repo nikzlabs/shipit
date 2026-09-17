@@ -42,6 +42,8 @@ function storedSample(declaration: AnySettingDeclaration): unknown {
       .find((v) => v !== declaration.type.defaultValue)!;
     case "text": return "what the user typed";
     case "gitIdentity": return { name: "Ada", email: "ada@example.com" };
+    case "modelSelection":
+      return { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" };
     default:
       throw new Error(`no fixture for a ${declaration.type.kind} row (${declaration.key})`);
   }
@@ -104,16 +106,43 @@ describe("a payload's generated rows", () => {
     expect(recorded("advanced.autoFixCi")).toBe(true);
   });
 
-  // The record's membership is fixed to the generated rows, so a payload field
-  // belonging to an unconverted tab cannot seed a value its hydration would
-  // never correct (P18).
-  it("records nothing for a setting the record does not hold", () => {
-    hydrateSettingValues({
-      nonTurnModel: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
+  /*
+    Silence is the value where the declaration says so (slice 6b). A row marked
+    `omitWhenNull` has its field DROPPED from the whole payload rather than sent
+    as null, so leaving the record alone would keep showing a pin the server has
+    stopped holding. Asserted over whatever carries the mark rather than over the
+    one setting that does, since the rule is what a later row inherits.
+
+    **And only for a WHOLE payload.** A message carrying some of the settings
+    cannot say a value is gone, only that it does not carry it — found in review,
+    where the `global_settings` message, which declares no `nonTurnModel` field at
+    all, cleared a pin nobody had touched.
+  */
+  const OMIT_WHEN_NULL = PAYLOAD_ROWS.filter((d) => d.omitWhenNull);
+
+  it("has a row whose omitted field is a null", () => {
+    expect(OMIT_WHEN_NULL.length).toBeGreaterThan(0);
+  });
+
+  for (const declaration of OMIT_WHEN_NULL) {
+    it(`clears ${declaration.key} when a whole payload drops its field`, () => {
+      hydrateSettingValues({ [declaration.wire!]: storedSample(declaration) });
+      expect(recorded(declaration.key)).not.toBeNull();
+
+      hydrateSettingValues({ autoFixCi: true });
+
+      expect(recorded(declaration.key)).toBeNull();
     });
 
-    expect(recorded("services.nonTurnModel")).toBeUndefined();
-  });
+    it(`keeps ${declaration.key} when a partial message does not carry it`, () => {
+      const stored = storedSample(declaration);
+      hydrateSettingValues({ [declaration.wire!]: stored });
+
+      hydrateSettingValues({ autoFixCi: true }, { partial: true });
+
+      expect(recorded(declaration.key)).toEqual(stored);
+    });
+  }
 });
 
 describe("the rows the payload does not carry", () => {

@@ -30,7 +30,7 @@
  *    the wire or here.
  *
  * **docs/264 phase 2 made this a SECTION rather than a tab.** The tab it used to
- * own is now `RolesTab`, which renders this below the list of pinned roles: the
+ * own is now `RolesSettings`, which renders this below the list of pinned roles: the
  * reviewer is one role among many (docs/264-agent-roles req 2), and the only one whose
  * params are two ranked candidates rather than one tuple — which is exactly why
  * it keeps its own cards instead of becoming a row. Nothing below changed;
@@ -135,7 +135,7 @@ export function ReviewerSection({
    * because it describes the reviewer rather than either candidate.
    *
    * A slot rather than state of this file's own: what the reviewer IS lives in
-   * the roles list, and the editor that writes it belongs to `RolesTab`. Passing
+   * the roles list, and the editor that writes it belongs to `RolesSettings`. Passing
    * the node keeps this file about the two ranked candidates, which is the one
    * thing here that is not shaped like every other role.
    */

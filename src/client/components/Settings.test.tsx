@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings, type SettingsProps } from "./Settings.js";
+import type { AgentOption } from "../agent-types.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
@@ -20,6 +21,7 @@ afterEach(() => {
   useSettingsStore.getState().setProviderAccounts([]);
   useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.getState().setGithubStatus({ authenticated: false });
+  useUiStore.setState({ agentList: [] });
   useSettingsStore.setState({
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
@@ -55,9 +57,19 @@ const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, hasRu
 const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
 
 const defaultProps: SettingsProps = {
-  agentList: [claudeAuthed],
   onClose: vi.fn(),
 };
+
+
+/**
+ * The harnesses come from the UI store now, not from a prop: the Services and
+ * Roles panes are components their declarations name, and a registered component
+ * takes the setting's key and nothing else (docs/308 slice 6b).
+ */
+function renderSettings(agents: AgentOption[]) {
+  useUiStore.setState({ agentList: agents });
+  return render(<Settings {...defaultProps} />);
+}
 
 describe("Settings", () => {
   it("renders dialog with correct role and accessible name", () => {
@@ -124,13 +136,13 @@ describe("Settings - Model providers → Anthropic subscription", () => {
   it("lists no card at all for a subscription with no credential (req 17)", () => {
 
     // card exists because a credential does.
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
   });
 
   it("gives a connected card no way of its own to add another (req 17)", () => {
     connectAnthropicSubscription();
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     const card = screen.getByTestId("service-card-anthropic:sub");
     expect(within(card).queryByTestId("provider-account-add-claude")).not.toBeInTheDocument();
     expect(within(card).queryByRole("button", { name: /add/i })).not.toBeInTheDocument();
@@ -153,7 +165,7 @@ describe("Settings - Model providers → Anthropic subscription", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ accounts: [created] }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -180,7 +192,7 @@ describe("Settings - Model providers → Anthropic subscription", () => {
       { ...base, id: "acct-b", label: "Account B", status: "unavailable" as const, externalId: "ext-b" },
     ]);
 
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
 
     await userEvent.click(screen.getByLabelText("Manage Account B"));
 
@@ -227,7 +239,7 @@ describe("Settings - Model providers → Anthropic subscription", () => {
     });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
 
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     await userEvent.click(screen.getByLabelText("Manage Account A"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-a"));
 
@@ -271,7 +283,7 @@ describe("Settings - Model providers → Anthropic subscription", () => {
 
   it("offers no second API-key editor on the subscription card", () => {
     connectAnthropicSubscription();
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     expect(screen.queryByTestId("provider-toggle-api-key-claude")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-api-key-input-claude")).not.toBeInTheDocument();
   });
@@ -342,7 +354,7 @@ describe("Settings - Model providers → Anthropic subscription", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
+    renderSettings([claudeAuthed]);
     await userEvent.click(screen.getByLabelText("Manage Claude account 2"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-secondary"));
 
@@ -556,7 +568,7 @@ describe("Settings - Model providers → OpenAI subscription", () => {
 
   it("renders OpenAI's account rows in the same card component, not a Codex tab", () => {
     connectOpenAiSubscription();
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    renderSettings([claudeAuthed, codexInstalled]);
     const card = screen.getByTestId("service-card-openai:sub");
     expect(within(card).getByTestId("provider-account-rows-codex")).toBeInTheDocument();
     expect(within(card).getByRole("heading", { name: "OpenAI" })).toBeInTheDocument();
@@ -566,7 +578,7 @@ describe("Settings - Model providers → OpenAI subscription", () => {
 
   it("offers no second API-key editor for OpenAI either", () => {
     connectOpenAiSubscription();
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    renderSettings([claudeAuthed, codexInstalled]);
     expect(screen.queryByTestId("provider-toggle-api-key-codex")).not.toBeInTheDocument();
   });
 
@@ -583,7 +595,7 @@ describe("Settings - Model providers → OpenAI subscription", () => {
       updatedAt: now,
     }]);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    renderSettings([claudeAuthed, codexInstalled]);
     await userEvent.click(screen.getByLabelText("Manage Codex account 2"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-codex-2"));
     act(() => {
@@ -617,7 +629,7 @@ describe("Settings - Model providers → OpenAI subscription", () => {
       loginId: "openai-chatgpt", accountId: "acct-b", verificationUri: "https://auth.openai.com/device", userCode: "BBBB-2222",
     });
 
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    renderSettings([claudeAuthed, codexInstalled]);
 
     expect(screen.queryByTestId("provider-account-user-code-acct-a")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-account-user-code-acct-b")).not.toBeInTheDocument();

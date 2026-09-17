@@ -615,14 +615,12 @@ function applyGlobalSettings(settings: BootstrapResponse["settings"]): void {
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   if (data.settings.credentialRoutes) useSettingsStore.getState().setCredentialRoutes(data.settings.credentialRoutes);
 
-  // (never guarded on presence): absent means "no pin" / "nothing runnable",
-
-  useSettingsStore.getState().setNonTurnModel(
-    data.settings.nonTurnModel ?? null,
-    data.settings.nonTurnModelResolved ?? null,
-  );
-
-  // above, because the two cases differ: an absent `nonTurnModel` is the real
+  // Never guarded on presence: absent means "nothing runnable", not "no news".
+  // The pin beside it is a generated row and arrives through `hydrateSettingValues`
+  // above, which reads an omitted `nonTurnModel` as null because the declaration
+  // says the payload omits it rather than sending one (docs/308 slice 6b).
+  useSettingsStore.getState()
+    .setNonTurnModelResolved(data.settings.nonTurnModelResolved ?? null);
 
   if (data.settings.backgroundWorkModels) {
     useSettingsStore.getState().setBackgroundWorkModels(data.settings.backgroundWorkModels);

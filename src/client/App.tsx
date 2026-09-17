@@ -901,10 +901,8 @@ export default function App() {
             useSettingsStore.getState().setAccountSelectionMode(agentId, mode);
           }
         }
-        useSettingsStore.getState().setNonTurnModel(
-          data.settings.nonTurnModel ?? null,
-          data.settings.nonTurnModelResolved ?? null,
-        );
+        useSettingsStore.getState()
+          .setNonTurnModelResolved(data.settings.nonTurnModelResolved ?? null);
         if (data.settings.backgroundWorkModels)
           {useSettingsStore
             .getState()
@@ -1541,7 +1539,7 @@ export default function App() {
         />
       )}
       {showHarnessOnboarding ? (
-        <HarnessOnboardingPanel agentList={agentList} />
+        <HarnessOnboardingPanel />
       ) : showHomeScreen ? (
         <HomeScreen
           onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
@@ -1744,7 +1742,6 @@ export default function App() {
         )}
         {settingsOpen && (
           <Settings
-            agentList={agentList}
             onFullReset={async () => {
               try {
                 await apiPost("/api/reset", {});

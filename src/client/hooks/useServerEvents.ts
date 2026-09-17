@@ -524,11 +524,18 @@ export function useServerEvents(): void {
       if (data.roles) {
         useSettingsStore.getState().setRoles(data.roles);
       }
-      if (data.nonTurnModel !== undefined || data.nonTurnModelResolved !== undefined) {
-        useSettingsStore.getState().setNonTurnModel(
-          data.nonTurnModel ?? null,
-          data.nonTurnModelResolved ?? null,
-        );
+      /*
+        The pin is `services.nonTurnModel`'s declared value, so it goes into the
+        record like any generated row (docs/308 slice 6b). Named here rather than
+        hydrated from the declarations: this is the agent list, not the settings
+        payload, and it carries a handful of derived settings on purpose — so an
+        absent field is "not in this event", never "the value is gone".
+      */
+      if (data.nonTurnModel !== undefined) {
+        useSettingsStore.getState().setSettingValue("services.nonTurnModel", data.nonTurnModel);
+      }
+      if (data.nonTurnModelResolved !== undefined) {
+        useSettingsStore.getState().setNonTurnModelResolved(data.nonTurnModelResolved);
       }
       // req 3 — a credential added while Settings is open has to fill the
       // background-work pickers now, not on the next reload.

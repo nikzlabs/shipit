@@ -18,6 +18,13 @@ import { collection, enumOf, numeric, text } from "./value-types.js";
  *
  * The background-work model pin is not here — it is a single stored value, so it
  * is declared with the other global scalars in `global-settings.ts`.
+ *
+ * **Five of these name the panel, though every one of them is addressed.** An
+ * addressed declaration names its component only where no collection of its own
+ * would place it: `services.credentials[].label` belongs to
+ * `services.credentials`, while the collections themselves, the selection mode
+ * and the two cutoffs belong to nothing — so each names the panel and four are
+ * deduplicated against the first.
  */
 
 const MODE_ADDRESS = itemAddress("a service and billing mode, e.g. anthropic:sub");
@@ -37,6 +44,7 @@ export const SERVICES_SETTINGS = {
   "services.credentials": defineSetting({
     key: "services.credentials",
     tab: "services",
+    component: "services-panel",
     scope: "global",
     address: MODE_ADDRESS,
     label: "Credentials",
@@ -57,6 +65,7 @@ export const SERVICES_SETTINGS = {
   "services.accountSelectionMode": defineSetting({
     key: "services.accountSelectionMode",
     tab: "services",
+    component: "services-panel",
     scope: "global",
     address: MODE_ADDRESS,
     label: "How ShipIt picks between these credentials",
@@ -96,6 +105,7 @@ export const SERVICES_SETTINGS = {
   "services.failoverCutoff.session": defineSetting({
     key: "services.failoverCutoff.session",
     tab: "services",
+    component: "services-panel",
     scope: "global",
     address: MODE_ADDRESS,
     label: "Short window cutoff",
@@ -112,6 +122,7 @@ export const SERVICES_SETTINGS = {
   "services.failoverCutoff.weekly": defineSetting({
     key: "services.failoverCutoff.weekly",
     tab: "services",
+    component: "services-panel",
     scope: "global",
     address: MODE_ADDRESS,
     label: "Weekly cutoff",
@@ -185,6 +196,7 @@ export const SERVICES_SETTINGS = {
   "services.providerAccounts": defineSetting({
     key: "services.providerAccounts",
     tab: "services",
+    component: "services-panel",
     scope: "global",
     address: PROVIDER_ADDRESS,
     label: "Provider accounts",

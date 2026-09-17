@@ -14,10 +14,13 @@ import type { SettingKey } from "../../../../server/shared/settings-catalogue/in
 import { KeybindingSettings } from "../../KeybindingSettings.js";
 import { McpServerSettings } from "../../McpServerSettings.js";
 import { SshHostsSettings } from "../../SshHostsSettings.js";
+import { BackgroundWorkSection } from "../BackgroundWorkSection.js";
+import { ServicesPanel } from "../ServicesPanel.js";
 import { EgressHosts } from "./EgressHosts.js";
 import { GitHubConnection } from "./GitHubConnection.js";
 import { LinearCredential } from "./LinearCredential.js";
 import { MemoryBudget } from "./MemoryBudget.js";
+import { RolesSettings } from "./RolesSettings.js";
 import { VoiceHandsFree } from "./VoiceHandsFree.js";
 import { VoiceProviderKeys } from "./VoiceProviderKeys.js";
 import { VoiceTts } from "./VoiceTts.js";
@@ -40,6 +43,9 @@ export const SETTING_COMPONENTS: Readonly<Record<string, SettingComponent>> = {
   "mcp-servers": McpServerSettings,
   "egress-hosts": EgressHosts,
   "keybindings": KeybindingSettings,
+  "services-panel": ServicesPanel,
+  "roles": RolesSettings,
+  "background-work": BackgroundWorkSection,
   "voice-provider-keys": VoiceProviderKeys,
   "voice-tts": VoiceTts,
   "voice-hands-free": VoiceHandsFree,

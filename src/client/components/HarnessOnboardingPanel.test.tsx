@@ -1,7 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
 import { HarnessOnboardingPanel } from "./HarnessOnboardingPanel.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import { allServices } from "../../server/shared/catalogue/index.js";
 
 afterEach(() => {
@@ -13,9 +14,13 @@ const agentList = [
   { id: "claude" as const, name: "Claude Code", installed: true, hasRunnableModels: false, models: ["sonnet"], supportsReview: true },
 ];
 
+// The panel it hosts reads the harnesses from the store rather than taking them
+// as a prop (docs/308 slice 6b).
+beforeEach(() => { useUiStore.setState({ agentList }); });
+
 describe("HarnessOnboardingPanel (docs/257 reqs 1, 2, 5, 7)", () => {
   it("is not a modal — no fixed overlay, no backdrop", () => {
-    const { container } = render(<HarnessOnboardingPanel agentList={agentList} />);
+    const { container } = render(<HarnessOnboardingPanel />);
     const root = container.firstElementChild!;
     expect(root).not.toHaveClass("fixed");
     expect(container.querySelector(".fixed")).toBeNull();
@@ -23,20 +28,20 @@ describe("HarnessOnboardingPanel (docs/257 reqs 1, 2, 5, 7)", () => {
   });
 
   it("hosts the Settings → Model providers surface rather than its own card list", () => {
-    render(<HarnessOnboardingPanel agentList={agentList} />);
+    render(<HarnessOnboardingPanel />);
     expect(screen.getByTestId("services-panel")).toBeInTheDocument();
     expect(screen.getByTestId("services-empty")).toBeInTheDocument();
   });
 
   it("has no step rail and no completion button", () => {
-    render(<HarnessOnboardingPanel agentList={agentList} />);
+    render(<HarnessOnboardingPanel />);
     expect(screen.queryByTestId("step-dots")).not.toBeInTheDocument();
     expect(screen.queryByTestId("get-started")).not.toBeInTheDocument();
     expect(screen.queryByText(/connect github/i)).not.toBeInTheDocument();
   });
 
   it("opens exactly one dialog — the same 'Add a service' dialog Settings opens", () => {
-    render(<HarnessOnboardingPanel agentList={agentList} />);
+    render(<HarnessOnboardingPanel />);
     fireEvent.click(screen.getByTestId("services-add-empty"));
     const dialogs = screen.getAllByRole("dialog");
     expect(dialogs).toHaveLength(1);
@@ -44,7 +49,7 @@ describe("HarnessOnboardingPanel (docs/257 reqs 1, 2, 5, 7)", () => {
   });
 
   it("carries the launch set inside that dialog, not on the panel", () => {
-    render(<HarnessOnboardingPanel agentList={agentList} />);
+    render(<HarnessOnboardingPanel />);
     expect(screen.queryByTestId("add-service-option-anthropic")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("services-add-empty"));
@@ -56,12 +61,12 @@ describe("HarnessOnboardingPanel (docs/257 reqs 1, 2, 5, 7)", () => {
   });
 
   it("does not ask a first-run user for a background-work model", () => {
-    render(<HarnessOnboardingPanel agentList={agentList} />);
+    render(<HarnessOnboardingPanel />);
     expect(screen.queryByTestId("background-work-section")).not.toBeInTheDocument();
   });
 
   it("tells a first-time user what ShipIt is, and that everything else works", () => {
-    render(<HarnessOnboardingPanel agentList={agentList} />);
+    render(<HarnessOnboardingPanel />);
     expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
     expect(screen.getByText(/the chat is the one thing waiting on this/i)).toBeInTheDocument();
   });

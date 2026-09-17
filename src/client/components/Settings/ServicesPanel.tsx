@@ -33,11 +33,19 @@
  *
  * **Deliberately not welded to Settings' page chrome.** docs/257's onboarding
  * panel hosts this component as-is — same card list, same dialog, same steps —
- * so it takes no props from the Settings route, renders no dialog shell of its
- * own, and brings **no padding and no scroll container**: each host frames it
- * (Settings with the tab padding every other tab uses, onboarding inside its
- * card). Since the per-vendor Claude/Codex tabs were removed, it is also the
- * *only* place a credential of any kind is added, seen or revoked.
+ * so it takes no props at all, renders no dialog shell of its own, and brings
+ * **no padding and no scroll container**: each host frames it (Settings with the
+ * tab padding every other tab uses, onboarding inside its card). Since the
+ * per-vendor Claude/Codex tabs were removed, it is also the *only* place a
+ * credential of any kind is added, seen or revoked.
+ *
+ * **In Settings it is placed by its declaration** (docs/308 slice 6b): five of
+ * the Model-providers declarations name this component, and the renderer puts it
+ * where the first of them is. Its own heading stays hand-written rather than
+ * coming from `services.credentials` — that heading row carries the *Supported
+ * models* control and belongs to both hosts, only one of which has a catalogue
+ * around it. What the panel keeps either way is its writer: add, remove, reorder,
+ * sign in and test are operations a value writer has no shape for.
  *
  * **One dense layout, both hosts.** The heading, the caption and the "Add a
  * service" button share one row, and "no services yet" is that caption rather
@@ -221,7 +229,10 @@ function standDown(
   else void cancelAccountLogin(provider, account.id);
 }
 
-export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] }) {
+export function ServicesPanel() {
+  // A registered component takes the setting's key and nothing else, so what a
+  // panel needs beyond its own value has to be a read.
+  const agentList = useUiStore((s) => s.agentList);
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const notices = useSettingsStore((s) => s.providerAccountNotices);

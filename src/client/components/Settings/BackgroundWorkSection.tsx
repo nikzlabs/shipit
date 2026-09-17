@@ -39,6 +39,15 @@
  * level to set. Adding one would make this file a second source of requirements
  * for a setting docs/252 owns.
  *
+ * **docs/308-data-driven-settings slice 6b made it the component
+ * `services.nonTurnModel` names**, rather than a control its value kind gets.
+ * `modelSelection` carries no options in the declaration, so there is nothing a
+ * generic picker could offer: which models are eligible is this setting's own
+ * (below), and the resolution, the execution line and the stale-pin warning are
+ * derived status no control table can hold. The declaration and the destination
+ * are the shared ones — the pin is in the value record and goes through
+ * `saveSetting` — which is requirement 3 exactly.
+ *
  * **docs/299 phase 2d widened what it offers, and only here.** The options are
  * the server's `backgroundWorkModels`, not `eligibleModelsOf(agentList)`, which
  * is the union over INSTALLED harnesses: background work can run as a direct
@@ -47,7 +56,6 @@
  * name a harness in the derived line, and for nothing else.
  */
 
-import { useRef, useState } from "react";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { Picker, PickerOption } from "../pickers/Picker.js";
@@ -59,8 +67,10 @@ import {
   serviceKeyOf,
   type ServiceChoice,
 } from "../pickers/model-choice.js";
-import type { AgentOption } from "../../agent-types.js";
+
+import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import { SettingCopy } from "./declared.js";
+import { useSetting } from "./declared-setting.js";
 
 interface Pin {
   serviceId: string;
@@ -68,64 +78,47 @@ interface Pin {
   modelId: string;
 }
 
-export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOption[] }) {
-  const pinned = useSettingsStore((s) => s.nonTurnModel);
+function pinOf(value: unknown): Pin | null {
+  const row = value as Partial<Pin> | null | undefined;
+  return row && typeof row.serviceId === "string" && typeof row.modelId === "string"
+    && (row.billingMode === "sub" || row.billingMode === "key")
+    ? { serviceId: row.serviceId, billingMode: row.billingMode, modelId: row.modelId }
+    : null;
+}
+
+export function BackgroundWorkSection({ settingKey }: { settingKey: SettingKey }) {
+  // The pin is the declared value: optimistic, sequenced per setting, and rolled
+  // back to the last value the SERVER accepted rather than the one this component
+  // last saw (inventory.md P6).
+  const { value, set } = useSetting(settingKey);
+  const pinned = pinOf(value);
   const resolved = useSettingsStore((s) => s.nonTurnModelResolved);
   const models = useSettingsStore((s) => s.backgroundWorkModels);
+  const agentList = useUiStore((s) => s.agentList);
   const services = servicesOf(models);
 
-  const latestWrite = useRef(0);
-  const [busy, setBusy] = useState(false);
-
-  // Always a triple, never `null`. Clearing the setting is no longer reachable
-
-  const save = async (next: Pin) => {
-    const write = ++latestWrite.current;
-    setBusy(true);
-    const prev = useSettingsStore.getState();
-    const previousPin = prev.nonTurnModel;
-    const previousResolved = prev.nonTurnModelResolved;
-
-    useSettingsStore.getState().setNonTurnModel(next, previousResolved);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nonTurnModel: next }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const result = (await res.json()) as {
-        nonTurnModel?: Pin;
-        nonTurnModelResolved?: NonNullable<ReturnType<typeof useSettingsStore.getState>["nonTurnModelResolved"]>;
-      };
-      if (write === latestWrite.current) {
-        useSettingsStore.getState().setNonTurnModel(
-          result.nonTurnModel ?? null,
-          result.nonTurnModelResolved ?? null,
-        );
-      }
-    } catch (err) {
-
-      if (write === latestWrite.current) {
-        useSettingsStore.getState().setNonTurnModel(previousPin, previousResolved);
-      }
-      useUiStore.getState().setToast({ message: "Failed to update the background-work model" });
-      console.error("[settings] set nonTurnModel failed:", err);
-    } finally {
-      if (write === latestWrite.current) setBusy(false);
-    }
-  };
-
-  const pinnedIsStale =
-    !!pinned
-    && !models.some(
+  /**
+   * What the controls show: the pin, as one of the models on offer.
+   *
+   * **The pin leads and the resolution follows it.** The resolution is richer —
+   * it carries the service's name and the model's label — but it is the server's
+   * and now arrives one settings refresh after a save, where it used to ride the
+   * write's own response. Reading it first therefore left the controls showing
+   * the model the user had just replaced, for the round trip and for ever if the
+   * refresh failed. So a runnable pin is the selection; the resolution is what
+   * the controls show when there is no pin, or when the pin names nothing this
+   * install can run.
+   */
+  const pinnedOption = pinned
+    && models.find(
       (m) =>
         m.serviceId === pinned.serviceId
         && m.billingMode === pinned.billingMode
         && m.modelId === pinned.modelId,
     );
+  const pinnedIsStale = !!pinned && !pinnedOption;
 
-  const current = resolved ?? (pinnedIsStale ? undefined : pinned ? { ...pinned } : undefined);
+  const current = pinnedOption ?? resolved ?? undefined;
   const serviceModels = modelsOfService(models, current);
 
   const currentModel = serviceModels.find((m) => m.modelId === current?.modelId)
@@ -135,19 +128,25 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
 
   // The one fact the controls cannot state: HOW the work runs, which has no
   // control of its own. One string, not two conditional elements, so the two
-  // states cannot both render.
-  const executionLine = !resolved
+  // states cannot both render. Read from the resolution only while it describes
+  // the selection above: naming a harness for the model the user has just
+  // replaced is the one thing worse than naming none.
+  const resolution = resolved && current && serviceKeyOf(resolved) === serviceKeyOf(current)
+    && resolved.modelId === current.modelId
+    ? resolved
+    : undefined;
+  const executionLine = !resolution
     ? undefined
-    : resolved.execution === "direct"
+    : resolution.execution === "direct"
       ? "Called directly · no harness, no container"
-      : resolved.harnessId
-        ? `Runs on ${agentList.find((a) => a.id === resolved.harnessId)?.name ?? resolved.harnessId}`
+      : resolution.harnessId
+        ? `Runs on ${agentList.find((a) => a.id === resolution.harnessId)?.name ?? resolution.harnessId}`
         : undefined;
 
   const changeService = (service: ServiceChoice) => {
     const next = modelAfterServiceChange(currentModel, modelsOfService(models, service));
     if (!next) return;
-    void save({ serviceId: next.serviceId, billingMode: next.billingMode, modelId: next.modelId });
+    set({ serviceId: next.serviceId, billingMode: next.billingMode, modelId: next.modelId });
   };
 
   return (
@@ -158,7 +157,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             session or writing a pull-request description" is what ShipIt does
             outside a turn today and is not meant as the list.
           */}
-          <SettingCopy settingKey="services.nonTurnModel" heading />
+          <SettingCopy settingKey={settingKey} heading />
           {executionLine && (
             <p
               className="mt-1 text-[11px] text-(--color-text-tertiary)"
@@ -188,7 +187,12 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
           )}
           {!resolved && !pinnedIsStale && (
             <p className="mt-1 text-[11px] text-(--color-text-tertiary)">
-              Nothing to run it on yet — add a provider credential above.
+              {/*
+                No direction: where the provider list sits on this tab comes from
+                the declarations now, so "above" was wrong the moment the
+                background-work row moved to the top of it (req 11).
+              */}
+              Nothing to run it on yet — add a model provider.
             </p>
           )}
         </div>
@@ -203,23 +207,21 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             services={services}
             selected={current}
             onChange={changeService}
-            disabled={busy}
             idPrefix="background-work"
             fallbackLabel={pinnedIsStale && pinned ? pinned.serviceId : "No provider"}
-            settingKey="services.nonTurnModel"
+            settingKey={settingKey}
           />
           {serviceModels.length > 0 && (
             <Picker
               label={
-                resolved ? resolved.label : pinnedIsStale && pinned ? pinned.modelId : "Unavailable"
+                current ? current.label : pinnedIsStale && pinned ? pinned.modelId : "Unavailable"
               }
               ariaLabel="Model for background work"
               triggerTestId="background-work-model"
               menuTestId="background-work-model-menu"
               menuWidth="w-72"
               align="start"
-              disabled={busy}
-              settingKey="services.nonTurnModel"
+              settingKey={settingKey}
             >
               {/*
                 The models, and nothing else. This menu used to open on a
@@ -235,11 +237,11 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
 
                   selected={current?.modelId === model.modelId}
                   onSelect={() =>
-                    void save({
+                    { set({
                       serviceId: model.serviceId,
                       billingMode: model.billingMode,
                       modelId: model.modelId,
-                    })
+                    }); }
                   }
                   testId={`background-work-model-option-${model.modelId}`}
                 />
