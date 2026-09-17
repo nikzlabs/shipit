@@ -1702,22 +1702,26 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
 });
 
 /**
- * docs/252-custom-models req 26 — the dialog does not move, from the first step to
- * the end of the sign-in.
+ * docs/252-custom-models req 26 — the step the user is looking at does not change
+ * height under them.
  *
  * The guarantee is structural, and so is the test: jsdom has no layout engine, so
  * nothing here measures a pixel — and a test that measured the states and compared
  * them would be pinning the states rather than the rule, which is how
  * `ChallengePlaceholder` drifted 20px behind the challenge it stands in for while
  * every test still passed. What is pinned instead is what makes the height a
- * constant in CSS: every step's body is the dialog's one height, everything that
- * changes as a login proceeds is inside ONE box within it, and the only thing
- * below that box is one row of same-size buttons. Within the steps and states it
- * walks, markup that escapes the box — a state's line, the error put back
- * underneath it — fails this without anyone having to notice the jump. What it
- * cannot see is a state it does not reach and a geometry it cannot measure; this
- * repo has no browser-driven suite, and the live measurements are recorded in
- * `docs/252-custom-models/plan.md` instead.
+ * constant in CSS: everything that changes as a login proceeds is inside ONE
+ * fixed-height box, and what is below that box — the model chips, one row of
+ * same-size buttons — is the same in every state. Markup that escapes the box, a
+ * state's line or the error put back underneath it, fails this without anyone
+ * having to notice the jump.
+ *
+ * Steps differing from each other is NOT a violation and is checked the other way
+ * round: only a click moves between them, the dialog already changes width at that
+ * same click, and holding all three to one height left step 2 with 250px of white
+ * space. What this cannot see is a state it does not reach and a geometry it
+ * cannot measure; this repo has no browser-driven suite, and the live measurements
+ * are recorded in `docs/252-custom-models/plan.md` instead.
  */
 describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
   const anthropicAccount = {
@@ -1760,68 +1764,67 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
     );
 
   /**
-   * The classes that make an element's height a constant rather than its
-   * content's: the dialog's body variable, a concrete length, or filling a parent
-   * that already has one. Read as a list so a test can say *which* of them is
-   * holding a given element still, and fail on a height that is merely equal
-   * across states — `h-auto` is equal across states and is the bug itself.
+   * **Every class that takes an element's height out of its content's hands** —
+   * any `h-`/`max-h-`/`min-h-`, at any breakpoint, whatever its value. Matching
+   * the shapes this dialog happens to use today would make the *negative* halves
+   * of these tests vacuous: the independent review put `md:h-(--add-service-body)`
+   * back on steps 2 and 3 and a narrower filter still reported "no height",
+   * passing on the exact regression it exists to catch.
+   *
+   * Read as a list so a test can say *which* class is holding a given element
+   * still, and fail on a height that is merely equal across states — `h-auto` is
+   * equal across states and is the bug itself.
    */
   const heightAnchors = (el: Element): string[] =>
-    el.className.split(/\s+/).filter((c) =>
-      c === "md:h-(--add-service-body)"
-      || c === "md:flex-1"
-      || /^(md:)?h-\[\d+(\.\d+)?(rem|px)\]$/.test(c));
+    el.className.split(/\s+/).filter((c) => /^(\w+:)?(min-|max-)?h-/.test(c));
 
   const bodyHeight = (): string =>
     screen.getByTestId("add-service-dialog").style.getPropertyValue("--add-service-body");
 
-  it("gives all three steps the one body height", async () => {
+  it("sizes each step by its own content, and holds only the provider list still", async () => {
     stubAccountApi();
     renderPanel([claudeAgent]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
 
-    const seen: { step: string; anchors: string[]; scrolls: boolean; height: string; title: string[] }[] = [];
+    const seen: { step: string; anchors: string[]; title: string[] }[] = [];
     const record = (step: string): void => {
-      const el = screen.getByTestId(step);
       seen.push({
         step,
-        anchors: heightAnchors(el),
-        scrolls: el.className.includes("md:overflow-y-auto"),
-        height: bodyHeight(),
-        // The title is the one thing outside the body, and it GAINS the
-        // provider's name at this transition: a name long enough to wrap took the
-        // window from 498 to 518px before it was clamped to its two lines.
+        anchors: heightAnchors(screen.getByTestId(step)),
+        // The title is the one thing outside the box, and it GAINS the provider's
+        // name at step 1 → 2: clamped, so its own height cannot vary with the
+        // name, which took the window from 498 to 518px when it wrapped.
         title: screen.getByTestId("add-service-title").className.split(/\s+/)
           .filter((c) => c === "line-clamp-2" || /^h-\d+$/.test(c)),
       });
     };
 
     record("add-service-step-service");
+    // The height only holds the window still if something under it scrolls.
+    expect(
+      screen.getByTestId("add-service-step-service")
+        .querySelector(".md\\:overflow-y-auto"),
+    ).not.toBeNull();
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     record("add-service-step-mode");
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
     record("add-service-step-credential");
 
-    expect(seen.map((s) => s.step)).toHaveLength(3);
-    // A concrete length, and the SAME one in all three: the provider list, the
-    // billing-mode choice and the sign-in are one window, not three.
-    expect(seen[0].height).toMatch(/^\d+(\.\d+)?(rem|px)$/);
+    expect(seen.map((s) => s.anchors)).toEqual([
+      // Step 1 alone, and a height rather than a cap: its harness table arrives
+      // with the agent list and the list grows with the catalogue, so a cap let
+      // the step grow 493 → 517px under a user already reading it.
+      ["md:h-(--add-service-body)"],
+      // Nothing changes on either of these while they are open, so nothing has to
+      // be held still. They were both held to step 1's height for a day, which is
+      // what left step 2's two rows floating in 250px of white space.
+      [],
+      [],
+    ]);
+    expect(bodyHeight()).toMatch(/^\d+(\.\d+)?(rem|px)$/);
     for (const step of seen) {
-      expect({
-        step: step.step,
-        anchors: step.anchors,
-        scrolls: step.scrolls,
-        height: step.height,
-        title: step.title,
-      }).toEqual({
-        step: step.step,
-        anchors: ["md:h-(--add-service-body)"],
-        // A step with more to show than the height scrolls inside it, which is
-        // what keeps the number from ever being load-bearing.
-        scrolls: true,
-        height: seen[0].height,
-        title: ["h-10", "line-clamp-2"],
-      });
+      expect({ step: step.step, title: step.title })
+        .toEqual({ step: step.step, title: ["h-10", "line-clamp-2"] });
     }
   });
 
@@ -1875,14 +1878,20 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
     record("connected");
 
     expect(seen.map((s) => s.state)).toHaveLength(5);
+    // The model chips say the same thing in every state, so they sit BELOW the
+    // box — which is what lets the box be the height of the tallest sign-in
+    // rather than of that plus a chip row (65px of it, at three wrapped lines).
+    // `outsideTheBox` above is what then holds them still.
+    const chips = screen.getByTestId("add-service-models");
+    expect(stage().contains(chips)).toBe(false);
+    expect(screen.getByTestId("add-service-step-credential").contains(chips)).toBe(true);
     for (const state of seen) {
       // Anchored, not merely equal across the states: `h-auto` is equal across
-      // them and is the resizing bug itself. `md:flex-1` fills the step body,
-      // which the test above pins to the dialog's one height; the concrete length
-      // is what holds the box still in the fullscreen sheet, which has no fixed
-      // body to fill.
+      // them and is the resizing bug itself. A concrete length at BOTH widths,
+      // because the fullscreen sheet needs the box held still just as much and
+      // the same state wraps ~17px taller there.
       expect({ state: state.state, anchors: state.anchors })
-        .toEqual({ state: state.state, anchors: ["md:flex-1", "h-[17rem]"] });
+        .toEqual({ state: state.state, anchors: ["h-[13rem]", "md:h-[12rem]"] });
       expect({ state: state.state, outside: state.outside })
         .toEqual({ state: state.state, outside: seen[0].outside });
       // One row of `md` buttons, whichever buttons this state has.
@@ -1890,6 +1899,60 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
         .toEqual({ state: state.state, footer: ["h-8"] });
       expect(screen.getByTestId("add-service-footer").className).toContain("flex-nowrap");
     }
+  });
+
+  /**
+   * The other half of "the box scrolls rather than grows": a scroll made in one
+   * state outlives it. Found by the independent review in Chromium — a challenge
+   * arriving with the stage at `scrollTop` 109 (the user had opened the CLI log,
+   * 385px of it in a box of 192) put the authentication link and the code field
+   * entirely above the visible area, with nothing moving to say so.
+   *
+   * jsdom has no scrolling, so what is checked is the mechanism that makes the
+   * scroll position fresh: the box is a NEW element for each challenge, and the
+   * same element across everything else.
+   */
+  it("rebuilds the box for a challenge that arrives under a scrolled log", async () => {
+    stubAccountApi();
+    renderPanel([claudeAgent]);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    await waitFor(() => expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument());
+
+    const waiting = stage();
+
+    // A phase message lands while the user reads the log: a re-render is not a
+    // new challenge, and throwing away where they scrolled to would be its own
+    // defect.
+    act(() => {
+      useSettingsStore.getState().setAuthProgress(anthropicAccount.id, {
+        attemptId: "attempt-1", phase: "waiting", message: "Waiting for the provider",
+      } as never);
+    });
+    expect(stage()).toBe(waiting);
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", anthropicAccount.id, {
+        loginId: "anthropic-oauth",
+        accountId: anthropicAccount.id,
+        verificationUri: "https://claude.ai/oauth/authorize",
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId(`provider-account-challenge-${anthropicAccount.id}`)).toBeInTheDocument());
+    const challenge = stage();
+    expect(challenge).not.toBe(waiting);
+
+    // And a second challenge replacing the first, which is the retry path.
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", anthropicAccount.id, {
+        loginId: "anthropic-oauth",
+        accountId: anthropicAccount.id,
+        verificationUri: "https://claude.ai/oauth/authorize?attempt=2",
+      });
+    });
+    expect(stage()).not.toBe(challenge);
   });
 
   it("puts the error line inside the box, where it cannot move the window", async () => {
@@ -1935,18 +1998,15 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
       return clone.innerHTML;
     };
 
-    // Where there is a fixed body the box fills it, exactly as the sign-in's
-    // does; what a key step never gets is the sign-in's own 17rem in the
-    // fullscreen sheet, its natural height varying by service from 98px to 190px.
-    expect(heightAnchors(stage())).toEqual(["md:flex-1"]);
+    // A key field changes nothing on its own clock, so the step is its content's
+    // height and gets no box: what varies by service — 98px for DeepSeek, 190px
+    // for Vercel, 235px for OpenCode's hazard notice — is a difference between
+    // dialogs, never a jump inside one.
+    expect(heightAnchors(stage())).toEqual([]);
     const slot = screen.getByTestId("add-service-error-slot");
     expect(slot.className).toContain("h-8");
     // A slot a longer message can still grow is not reserved.
     expect(slot.className).toContain("overflow-y-auto");
-    // And a scrollable flex child has no automatic minimum, so without this the
-    // slot collapses to 0 in a stage a long chip row has filled — the error in
-    // the DOM, invisible, and not reachable by scrolling either.
-    expect(slot.className).toContain("shrink-0");
     const before = outsideTheSlot();
 
     await userEvent.click(screen.getByTestId("add-service-save"));
@@ -1976,8 +2036,7 @@ describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
     await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
 
     expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
-    expect(heightAnchors(stage())).toEqual(["md:flex-1", "h-[17rem]"]);
-    expect(bodyHeight()).toMatch(/^\d+(\.\d+)?(rem|px)$/);
+    expect(heightAnchors(stage())).toEqual(["h-[13rem]", "md:h-[12rem]"]);
     expect(stage().contains(screen.getByTestId("add-service-signin-starting"))).toBe(true);
 
     const title = screen.getByTestId("add-service-title").textContent;

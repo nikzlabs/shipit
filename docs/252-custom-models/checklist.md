@@ -546,3 +546,32 @@ the first of these. All six are fixed.
       review, reproduced in Chromium and both fixed: the title wrapping when it gains a long
       provider name (498 → 518px — now `h-10 line-clamp-2`), and the key step's reserved error
       line collapsing to 0px as a scrollable flex child (now `shrink-0`).
+- [x] **Req 26 narrowed back to the step, 2026-09-17.** The human looked at the one height and
+      asked for the two shorter steps back — *"a lot of empty space, especially on step 2"*,
+      then *"step 3 is quite high, what is this height needed for?"* — so what must not move is
+      now the step on screen, not the dialog, and the reserve is measured rather than rounded
+      up. The fixed height is on the one thing that changes under the user: the sign-in's box
+      (`SIGN_IN_STAGE_HEIGHT`), and it is the tallest state for **this provider at this width** —
+      13rem / 12rem sheet / window, 15.5 / 14.5 where the provider's challenge carries
+      Antigravity's deadline sentence, read from the same map that prints it. Measured, sheet /
+      window: Anthropic 202 / 185, Antigravity 242 / 225. The model chips moved OUT of that box,
+      being identical in every state and worth up to 65px of it. Step 1 keeps 24rem and steps 2
+      and 3 carry no height class at all. Measured live: step 1 **518px**, step 2 **266**, the
+      Anthropic sign-in **376** (518 before this round), held at top 262 through idle → waiting
+      → challenge; key-only steps are their content (DeepSeek 295, OpenRouter 364, OpenCode sub
+      409) and a refused key still lands in its reserved line without moving the window. On a
+      360px sheet the box holds 208 for a challenge needing 202. The `shrink-0` on the key error
+      slot went with the fixed body that made it necessary; the hazard is recorded at the
+      constant. Guards inverted to match, each proved red on its own defect.
+- [x] **The independent review's three P2s, 2026-09-17, all fixed in the same PR.** (1) A
+      challenge arriving while the box was scrolled — ordinary, once the CLI log is open at
+      385px in a box of 192 — left the authentication link and the code field above the visible
+      area, with nothing moving to say so; the box now carries the challenge's URI as its React
+      `key`, so each challenge is a new element with a fresh scroll position. (2) Step 1 under a
+      `max-h` cap still grew 493 → 517px when the agent list arrived and carried the window's
+      top up 12px: it is a fixed height again, which costs nothing while the catalogue fills it
+      (382 of 384). (3) The guard for "steps 2 and 3 have no height" matched a list of classes,
+      so restoring `md:h-(--add-service-body)` passed it; it now matches any
+      `h-`/`min-h-`/`max-h-` at any breakpoint, and fails on exactly that edit. The review found
+      no escape for missing-harness warnings, blocked sign-ins, server errors, reconnect labels
+      or long provider names, and no regression in the rejected-key path.

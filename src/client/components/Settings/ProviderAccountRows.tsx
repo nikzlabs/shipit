@@ -445,6 +445,17 @@ const CHALLENGE_DEADLINE: Partial<Record<AgentId, string>> = {
 };
 
 /**
+ * **The sentence is two lines, and the box that holds the sign-in still has to
+ * reserve them** (docs/252-custom-models req 26). Asked here rather than
+ * duplicated, so the reserve and the sentence cannot disagree about which
+ * providers have one: adding a deadline to a harness makes its box taller by
+ * itself.
+ */
+export function challengeHasDeadline(provider: AgentId): boolean {
+  return CHALLENGE_DEADLINE[provider] !== undefined;
+}
+
+/**
  * The provider's login challenge — **one implementation, and now one host.**
  *
  * It renders inside `AddServiceDialog` and nowhere else: docs/252 req 19 moved
