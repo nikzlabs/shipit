@@ -241,6 +241,68 @@ their own `sessionId` inside their stores" — true for the per-turn series, and
 true for `contextTokens` (no key) or `currentSessionUsage` (keyed in the object,
 read unconditionally by the dial). Scoping lives in the handlers for that reason.
 
+### The guard covers the load's first suspension point only
+
+Scoping the two WS handlers left the third writer of these fields — the
+rehydration in `loadSessionHistory` — still able to write for a session the user
+has left. The load re-checks `isStillActiveSession()` after its history fetch,
+but the model / context-window / spend writes sat **below `await treePromise`**,
+a second suspension point the check does not cover. By then the load has already
+cleared `inFlightHistoryLoad` (the `finally` around the history fetch), so the
+incoming load's `controller.abort()` finds nothing to abort and the outgoing
+continuation resumes and overwrites whatever the incoming session just seeded.
+
+The file tree is fetched from the session container while history is served from
+the orchestrator's SQLite, so the outgoing tree routinely outlives the incoming
+load — a starting container widens the window to seconds.
+
+The symptom was a dial whose **model name and max context window** belonged to
+the previous session while its **token count** was current — a 480K-token Opus
+session reading `480.0K / 272.0K` against the previous session's GPT model, over
+a spurious "type `/compact`" hint. The split is structural, not luck:
+`ContextDialMount` selects `turnUsage[sessionId]` from the session store, so the
+count and the per-turn bars are keyed by session and cannot go foreign once the
+session has a turn of its own. `modelInfo` is a global the dial reads
+unconditionally, and nothing rewrites it until a turn starts. `currentSessionUsage`
+and the cumulative totals are read unconditionally too, so they went stale in the
+same window without announcing it.
+
+Fix: the usage block moved **above** the tree await, into the synchronous region
+the existing check already protects. Nothing in it depends on the tree, so the
+move is the whole fix — no second guard, and no new ordering to maintain. Guard
+test: "a file tree still in flight cannot let the outgoing session reclaim the
+dial" (`session-data.test.ts`), which gives every moved field a per-session value
+and asserts all of them, so moving any one of them back below the await fails.
+
+### `model_info` carries its session, because socket teardown is not a scope
+
+`model_info` was the one per-session message on the wire with no `sessionId`, on
+the reasoning that a foreign one cannot be delivered: `useWebSocket` nulls
+`ws.onmessage` and clears `messageQueueRef` when the url changes. That protects
+*delivery after teardown* and does not establish *ownership at dispatch*.
+`useMessageHandler` drains the queue into a LOCAL array and dispatches the whole
+batch, and clearing the ref cannot retract that array. A batch carrying
+`session_forked` — which moves the active session mid-loop — followed by the
+parent's `model_info` therefore lands the parent's model on the child.
+
+So the message now carries `sessionId` (set from the turn's captured id at both
+emitters in `agent-listeners.ts`) and `model-info.ts` drops a mismatch, the same
+shape `turn-usage-update.ts` uses. Guard test: `model-info.test.ts`.
+
+### A fork is a session switch, and has to go through the switch path
+
+`handleSessionForked` adopted the child with a bare `setSessionId` and then
+pushed the route. That order is why the reset never ran: `useSessionActivation`
+calls `resumeSessionInternal` only when `urlSessionId !== sessionId`, and the
+store had already been moved to match. The child inherited the parent's whole
+session-scoped UI state — visibly the dial's model, context window and spend,
+which a fresh fork has no usage row to correct.
+
+It now calls `resumeSessionInternal(childSessionId)`, the one path that knows
+what a switch must clear; the route effect still finds the ids equal and does not
+repeat it. Guard test: `session-forked.test.ts` — the hook-level test
+docs/144-rewind-fork-ux planned for D7 and never wrote.
+
 ### `usage_update` no longer writes the reading at all
 
 Scoping fixed *whose* number reached the field; it did not make the number a

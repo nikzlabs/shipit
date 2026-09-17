@@ -464,10 +464,21 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   }
   useGitStore.getState().setCommits(data.commits);
 
-  // for a session the user has already left cannot overwrite the current one.
-  const tree = await treePromise;
-  if (tree && isStillActiveSession()) useFileStore.getState().setTree(tree);
-
+  /**
+   * The context-dial fields are single-slot globals describing the session ON
+   * SCREEN, so they are written here — synchronously, still inside the
+   * `isStillActiveSession()` check above — and never after an `await`.
+   *
+   * They used to sit below `await treePromise`, which is a second suspension
+   * point the guard does not cover: by then the load has already cleared
+   * `inFlightHistoryLoad` (the `finally` above), so a switch that starts in
+   * that window has nothing to abort and the outgoing session's continuation
+   * resumes and overwrites the incoming session's model, context window and
+   * spend. The user-visible symptom was a dial naming the previous session's
+   * model and max context beside the current session's token count — the count
+   * being scoped and self-correcting (`turn_usage_update` carries a
+   * `sessionId`), while the model had no later writer to fix it.
+   */
   const ui = useUiStore.getState();
   if (data.turnUsage) {
     session.setTurnUsageForSession(sessionId, data.turnUsage);
@@ -497,6 +508,10 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     data.cumulativeInputTokens ?? 0,
     data.cumulativeOutputTokens ?? 0,
   );
+
+  // for a session the user has already left cannot overwrite the current one.
+  const tree = await treePromise;
+  if (tree && isStillActiveSession()) useFileStore.getState().setTree(tree);
 
   try {
     const previewRes = await fetch(`/api/sessions/${sessionId}/preview-status`);

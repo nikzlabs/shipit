@@ -530,6 +530,7 @@ export function wireAgentListeners(
         turnModel = event.model;
         emitToViewers({
           type: "model_info",
+          sessionId: turnSessionId,
           model: event.model,
           contextWindowTokens: getContextWindowForModel(event.model),
         });
@@ -695,9 +696,10 @@ export function wireAgentListeners(
 
       const usageSessionId = turnSessionId ?? event.sessionId;
 
-      if (event.contextWindow && turnModel) {
+      if (event.contextWindow && turnModel && turnSessionId) {
         emitToViewers({
           type: "model_info",
+          sessionId: turnSessionId,
           model: turnModel,
           contextWindowTokens: event.contextWindow,
         });
