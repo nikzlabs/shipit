@@ -9,11 +9,16 @@
 # whether the manifest itself is trusted: if so, repointing it at attacker
 # content placed at a valid hash installs the attacker's bytes with the check on.
 #
-# Three cells, all offline with verify-store-integrity=true:
-#   control   no poison                     -> must install clean (proves offline works)
-#   h2        poison bytes in place         -> must fail closed (ERR_PNPM_NO_OFFLINE_TARBALL)
-#   h4        rewrite manifest -> new blob   -> the finding: poison installed or not?
+# Cells, all offline with verify-store-integrity=true:
+#   control   no poison                          -> installs clean (proves offline works)
+#   h2        poison bytes in place, keep mtime  -> poison installs (mtime fast path)
+#   h4        rewrite manifest -> new blob        -> poison installs
 # Plus a cross-session check: a second project shares the h4-poisoned store.
+#
+# pnpm skips re-hashing a store file whose mtime matches index.db's record
+# (second granularity). So h2 preserves mtime; bumping it >=1s fails closed.
+# Deleting index.db is NOT a clean negative control for verification: it also
+# breaks a CLEAN offline install, because the manifest is required to install.
 #
 # Needs bash, node, pnpm, python3, sqlite3, and network for the initial warm.
 # Touches only its own scratch dir. Does not read or write the ShipIt repo.
@@ -54,12 +59,19 @@ rm -rf "$C/proj/node_modules"; offline_install "$C"; crc=$?
 head -c 40 "$C/proj/$PROBE_REL" 2>/dev/null | grep -q . && cbytes=present || cbytes=absent
 echo "control        rc=$crc  probe=$cbytes  (expect rc=0 present)"
 
-# --- h2: poison bytes in place at the same hash path ---
+# --- h2: poison bytes in place, PRESERVING mtime ---
+# pnpm's fast path skips re-hashing when the store file's mtime matches what
+# index.db recorded (second granularity), so the poison must preserve mtime to
+# defeat verify-store-integrity. This is the attacker's real move (touch -r is
+# trivial). A control that bumps mtime by >=1s instead fails closed — so this
+# cell asserts the INSTALLED BYTES, not just rc, and does not assume timing.
 H2="$SCRATCH/h2"; warm "$H2"
 ino=$(stat -c %i "$H2/proj/$PROBE_REL"); e=$(find "$H2/store" -inum "$ino" | head -1); s=$(stat -c %s "$e")
-python3 -c "open('$e','wb').write(b'POISON'+b'x'*($s-6))"
+cp "$e" "$H2/ref"
+python3 -c "open('$e','wb').write(b'POISON'+b'x'*($s-6))"; touch -r "$H2/ref" "$e"
 rm -rf "$H2/proj/node_modules"; offline_install "$H2"; h2rc=$?
-echo "h2 in-place    rc=$h2rc  $(grep -oE 'ERR_PNPM_[A-Z_]+' "$H2/inst.log" | sort -u | head -1)  (expect rc!=0, fail closed)"
+grep -q POISON "$H2/proj/$PROBE_REL" 2>/dev/null && h2poison=INSTALLED || h2poison=absent
+echo "h2 mtime-kept  rc=$h2rc  poison=$h2poison  (mtime preserved -> poison INSTALLED; bump mtime >=1s -> fails closed)"
 
 # --- h4: rewrite the manifest to point at attacker content at a valid hash ---
 H4="$SCRATCH/h4"; warm "$H4"
@@ -92,4 +104,4 @@ grep -q "writeFileSync" "$H4/proj2/$PROBE_REL" 2>/dev/null && xpoison=INSTALLED 
 echo "cross-session  rc=$xrc  poison=$xpoison  (second repo, same store)"
 
 echo
-echo "H4 CONFIRMED if: control present, h2 fails closed, h4 poison=INSTALLED, cross-session poison=INSTALLED."
+echo "CONFIRMED if: control present; h2 (mtime preserved) poison=INSTALLED; h4 poison=INSTALLED; cross-session poison=INSTALLED."

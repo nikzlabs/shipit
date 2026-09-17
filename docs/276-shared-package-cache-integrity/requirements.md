@@ -23,7 +23,7 @@ kept outside `dep-cache` so no session mounts it
 (`src/server/orchestrator/overlay-volume.ts:5`), so "shared package cache"
 below means the first two. Per-session uids
 (docs/270) kept all three group-writable on purpose (`shareOne`,
-`src/server/orchestrator/session-worker-uid.ts:381`), because
+`src/server/orchestrator/session-worker-uid.ts:124`), because
 `docs/270-per-session-worker-uids` req 9 requires sessions to keep sharing them.
 
 The pnpm store is the wider surface: an npm project shares its cache only with

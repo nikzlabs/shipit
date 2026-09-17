@@ -20,7 +20,7 @@ behaviour) and [`verify-reflink.sh`](./verify-reflink.sh) (import methods). Note
 | Hole | Surface | Status |
 |---|---|---|
 | **H1** — cached npm *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` `_cacache/index-v5` | **Open.** Install-time RCE: rewrite `dist.integrity` to attacker content placed at its own hash, set `hasInstallScript: true`, and `npm install` runs the attacker's `postinstall`. Works with the network available, because npm serves its local cache without asking the registry. |
-| **H2** — poisoned pnpm store *content* (bytes changed in place) installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Conditional, and subsumed by H4.** pnpm re-hashes an entry on import only when `index.db` does not already vouch for it. Measured 2026-09-17: a *warm* store (one pnpm already has a manifest for), poisoned in place, installs the bytes offline with `verify-store-integrity=true` (rc=0); the negative control — same store with `index.db` deleted — fails closed. So `verify-store-integrity=true` is necessary but not sufficient. |
+| **H2** — poisoned pnpm store *content* (bytes changed in place) installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Conditional on mtime, and subsumed by H4.** pnpm skips re-hashing a store file whose mtime matches what `index.db` recorded (second granularity). Measured 2026-09-17: an in-place poison that **preserves mtime** (`touch -r`, trivial) installs offline with `verify-store-integrity=true`; the same poison that **bumps mtime ≥1s** fails closed. So the check is a size-and-mtime fast path, not a content re-hash, and `verify-store-integrity=true` is necessary but not sufficient. |
 | **H3** — store file mutated in place under a live `node_modules` | `/workspace/.pnpm-store` | **Open, and unreachable by verification.** Store files are hardlinked into `node_modules` (`links=2`), so a store write changes already-installed files with no install event. Req 4 exists for this. |
 | **H4** — pnpm store *manifest* (`v11/index.db`) rewritten to point a package's file at attacker content placed at its own valid hash | `/workspace/.pnpm-store` | **Open, and `verify-store-integrity` does not close it.** The per-package manifest is trusted layout data, the pnpm analogue of npm's `index-v5`. Verification checks each file against the digest the manifest names, not the manifest against the package's integrity. Measured 2026-09-17: offline, `verify-store-integrity=true`, a rewritten manifest installed attacker bytes (rc=0), and a second repo sharing the store got them too. pnpm's own security policy confirms it: store integrity does not defend an attacker who rewrites both files and their recorded hashes. |
 
@@ -30,9 +30,10 @@ Facts that shape the design:
   is detected and an offline install fails closed. Only `index-v5` is forgeable.
 - pnpm's content blobs are also self-verifying by path, **but pnpm does not
   re-hash them on every import**: it trusts `v11/index.db`, which records each
-  file's expected hash and a `checkedAt`. That trusted index is the pnpm
-  equivalent of npm's `index-v5`, and it lives in the same shared writable store
-  (H2/H4). Reproduced by [`verify-h4.sh`](./verify-h4.sh).
+  file's expected hash, size and mtime, and skips re-hashing a file whose size
+  and mtime still match (pnpm's documented mtime fast path). That trusted index
+  is the pnpm equivalent of npm's `index-v5`, and it lives in the same shared
+  writable store (H2/H4). Reproduced by [`verify-h4.sh`](./verify-h4.sh).
 - npm does not hardlink `_cacache` into `node_modules` (`links=1`), so H3 is
   pnpm-only.
 - The overlay dependency base (docs/183) is not a hole: it is never mounted into
@@ -71,8 +72,12 @@ installed file. Set **`copy`**, not `clone`:
   unavailable: `os error 95` (ENOTSUP) on ext4, `os error 18` (EXDEV) across a
   filesystem boundary.
 - `copy` goes through `copy_file_range`, which XFS and btrfs turn into an
-  extent share. Measured on XFS (`reflink=1`), fresh filesystem per run, `df`
-  from empty, 3 353 files / 86 MB of `node_modules`:
+  extent share. Measured on a **loopback XFS (`reflink=1`)** image, fresh
+  filesystem per run, `df` from empty, 3 353 files / 86 MB of `node_modules`.
+  These XFS figures are **not reproducible on this ext4 container**; the
+  committed `verify-reflink.sh` reproduces only the ext4 direction (copy isolates,
+  clone fails, hardlink propagates). Treat the numbers as measured-once, not
+  independently re-run here:
 
   | import method | filesystem used (store + `node_modules`) | inode shared | store poisoning reaches installed files |
   |---|---|---|---|
@@ -114,12 +119,21 @@ for it and invisible to everyone else. docs/198's 464 MB-per-session objection
 applies only to sessions that change their dependencies; sessions that use the
 base's tree pay 4 KB.
 
+**Caveat on this table.** It is not backed by a committed harness, and the rows
+measure *reading* a base and *adding* a dependency, not a warm pnpm install with
+the store inside the overlay — so it does not establish req 10 for an installing
+session, and the store-poisoning row needs a control proving A changed the
+intended entry and B then consumed that package. Reproduce it with the
+Docker-mounted route in the checklist before relying on it.
+
 Two constraints for implementation:
 
 - **The pnpm store is outside the overlay as deployed.** It is a separate
-  read-write bind at `/workspace/.pnpm-store`, so overlayfs does not cover it
-  and H3 survives there. Either move the store inside the overlay, or rely on
-  section 2 alone for the store. Decide before building.
+  read-write bind at `/workspace/.pnpm-store`, so overlayfs does not cover it and
+  H2/H3/H4 survive there. Section 2 (`copy`) alone does **not** make the store
+  safe — it copies whatever the poisoned manifest names. Making the store safe
+  means moving it inside an overlay (section 5), which is unsolved machinery, not
+  a config flag.
 - **Never `chown -R` through an overlay mount.** It copies up every file and
   destroys the sharing (a 4 KB upper became 110 MB). Act on the base or the
   upper directly, as docs/272 already requires for shared git trees.
@@ -135,8 +149,8 @@ Set the value explicitly so the protection is asserted rather than inherited,
 and describe it in shipit-docs as pnpm's check, not ShipIt's. But it does **not**
 make the shared store safe on its own: pnpm skips re-hashing an entry `index.db`
 already vouches for, and `index.db` is attacker-writable. The store is safe only
-once the store is inside the overlay (section 5 → section 3). Ship this
-alongside that, not instead.
+once the store is inside an overlay (section 5), which is unsolved machinery.
+Pin this value anyway; it is not the fix.
 
 ### 5. H4 — the pnpm store index is trusted metadata (reqs 1, 3, 6)
 
@@ -146,9 +160,11 @@ vouch for the entry. Two consequences, both measured
 ([`verify-h4.sh`](./verify-h4.sh)) and both defeating `verify-store-integrity`:
 
 - **H4** — rewrite the manifest to point a file at attacker content placed at
-  its own valid hash. Installs the attacker's bytes, offline, rc=0.
-- **H2 (warm)** — poison the bytes in place of an entry the manifest already
-  vouches for. Same result, because pnpm does not re-hash it.
+  its own valid hash. Installs the attacker's bytes, offline, rc=0,
+  unconditionally.
+- **H2 (mtime)** — poison the bytes in place and preserve the file's mtime.
+  Same result, because pnpm's fast path skips re-hashing a file whose size and
+  mtime are unchanged. Bumping mtime ≥1s fails closed.
 
 This is the pnpm analogue of H1, and worse-scoped: the store is shared
 per-runtime across **repos**, so an untrusted repo poisons a private repo's
@@ -156,32 +172,49 @@ install. `verify-store-integrity` (section 4) does not close it, and the copy
 fix (section 2) does not help — it copies whatever the manifest names.
 
 The fix is to not share the trusted store index across trust boundaries.
-**Spiked 2026-09-17, and it resolves to section 3, not to a new mechanism:**
+**Spiked 2026-09-17. The direction is an overlay over the store, but it is new
+machinery with an unsolved trusted-base lifecycle — not a reuse of section 3.**
 
 - **A per-session *cold* `index.db` over shared content blobs does not work.**
   Measured: with `files/` symlinked to a shared store and an empty private
   `index.db`, an offline install fails (`snapshot not present in local store`).
-  The manifest lives only in `index.db` (no manifest blob exists under `files/`),
-  it is derived from the tarball, and pnpm cannot reconstruct it from the bare
-  content-addressed blobs. So the index cannot simply be split off cold.
-- **What the index needs is a per-session *trusted copy* that is writable
-  privately while the content blobs stay shared and read-until-written. That is
-  exactly overlayfs (section 3).** Put the whole store — `files/` and `index.db`
-  — inside the overlay, and by overlayfs's copy-on-write guarantee a session's
-  write to `index.db` (H4) or to a blob in place (H2 warm) copies up to that
-  session's private upper and leaves the shared base byte-identical. Section 3's
-  table already measured the store-poisoning row staying private; the guarantee
-  is the kernel's, not pnpm's, so it holds for `index.db` the same as for a blob.
+  The manifest lives only in `index.db` (no manifest blob under `files/`), it is
+  derived from the tarball, and pnpm cannot reconstruct it from the bare
+  content-addressed blobs. So the index cannot be split off cold.
+- **The isolation an overlay would give is sound**, by the kernel's copy-up
+  contract: over an immutable trusted lower layer with private uppers, a
+  session's write to `index.db` (H4) or to a blob (H2) copies up and leaves the
+  base byte-identical. That part is not in doubt.
+- **But the existing overlay machinery cannot be reused, and the hard part is
+  the base, not the isolation.** docs/183's overlay *deliberately excludes pnpm*
+  — `container-overlay-provisioner.ts:79` and `overlay-publish.ts:102` both
+  `return []` for a pnpm repo, because pnpm hardlinks cannot cross an overlayfs
+  boundary (the same EXDEV reason docs/198 moved pnpm to a shared store). Its
+  bases are also keyed **per repo**, while the pnpm store is shared **across
+  repos**. So this is a new overlay, and it needs a defined **trusted-base
+  lifecycle** that does not exist yet:
+  - **Seeding / migration.** The lower layer must be trustworthy. Today's store
+    is already attacker-writable, so reusing it as the base preserves any poison
+    already in it; the base has to be built or re-verified from a trusted source.
+  - **Publication.** New packages a session downloads land in its private upper.
+    Sharing them back to the base needs an authenticated publish path — the
+    docs/183 compare-and-swap orders publications, it does not verify their
+    contents — or they never dedup and req 10 is lost for installing sessions.
+  - **`package-import-method=copy` is entangled with this, not redundant.** With
+    the store in an overlay and `node_modules` outside it, the default hardlink
+    import crosses the overlay boundary and fails (EXDEV, the exact reason the
+    existing overlay skips pnpm). `copy` (section 2) is what makes store-in-overlay
+    viable for pnpm at all.
 
-So H4 is **not** a separate unsolved mechanism: it is closed by the same "move
-the store inside the overlay" decision section 3 already carries, and that one
-move closes H2, H3 and H4 together. Two residuals still to measure before
-building: that pnpm operates correctly with its `index.db` on an overlay (the
-whole SQLite file copies up on first store write, and pnpm's store lock must
-still work), and the fallback for a host where the store cannot be
-overlay-mounted (`--frozen-store` opens the store read-only, but a session must
-still install its own new packages — req 9 — so the writable path needs an
-answer there).
+So H4's *fix direction* is settled, but the fix is **not** reduced to a
+known-good mechanism: the trusted-base lifecycle above is unsolved, and the
+install-time disk/time cost (req 7, req 10) and pnpm-on-overlay behaviour
+(whole-file `index.db` copy-up, store lock) are unmeasured. A concrete test
+route exists but needs Docker-mounted overlays — adapt
+`docs/183-overlay-dep-store/prototype/nested-overlay-spike.sh` — and could not
+be run in this container (no Docker socket, user-namespace creation denied). The
+`--frozen-store` read-only fallback does not by itself satisfy req 9 (a session
+must still install its own packages).
 
 ### Sequencing
 
@@ -190,9 +223,9 @@ answer there).
    **On ext4, section 2 alone regresses disk ~1.8× (req 10) until section 3
    lands**, so on ext4 ship 2 and 3 together, or accept the interim cost
    deliberately.
-3. Section 3 (overlay), **with the pnpm store moved inside the overlay** — that
-   is what closes H2, H3 and H4 together (section 5). This is the load-bearing
-   step for the pnpm store, not section 2.
+3. **The pnpm store inside an overlay (section 5)** — the load-bearing step for
+   H2/H4, and unsolved: it needs the trusted-base lifecycle and the install-cost
+   measurement in section 5 before it can be built, not just a config change.
 4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
    pnpm store is safe against H3 and H4 (req 8).
 

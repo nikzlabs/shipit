@@ -25,18 +25,24 @@ recorded in [requirements.md](./requirements.md); none is open.
 
 ## H2/H4 — the pnpm store index is trusted (reqs 1, 3, 6)
 
-- [x] **Spike the store-index isolation (2026-09-17).** A per-session *cold*
-      `index.db` over shared blobs does **not** work — measured, offline install
-      fails because the manifest lives only in `index.db` and is not
-      reconstructable from the content-addressed blobs. The fix is to put the
-      whole store inside the overlay (plan.md section 5 → section 3): overlayfs
-      copy-up isolates an `index.db` or blob write per session and closes H2, H3
-      and H4 together. Not a separate mechanism.
-- [ ] Move the pnpm store inside the docs/183 overlay (the H3 item below is the
-      same move). Then measure the two residuals: pnpm installs correctly with
-      `index.db` on an overlay (whole-file copy-up, store lock), and the fallback
-      for a host where the store cannot be overlay-mounted (`--frozen-store` is
-      read-only; a session must still install its own packages, req 9).
+- [x] **Spike the store-index isolation (2026-09-17): direction found, fix not
+      solved.** A per-session *cold* `index.db` over shared blobs does not work
+      (measured: offline install fails; the manifest is not reconstructable from
+      the blobs). Overlay copy-up would isolate the writes — sound by the kernel
+      contract — but the existing docs/183 overlay *excludes pnpm* on purpose
+      (hardlinks cannot cross overlayfs), so this is new machinery.
+- [ ] **Solve the trusted-base lifecycle** before building (plan.md section 5):
+      seed/migrate the base from a trusted source (today's store is
+      attacker-writable), an authenticated publish path for newly-downloaded
+      packages (or dedup and req 10 are lost), and the cross-repo store key vs
+      the per-repo overlay base. This is the unsolved part.
+- [ ] Measure store-in-overlay for real via Docker-mounted overlays — adapt
+      `docs/183-overlay-dep-store/prototype/nested-overlay-spike.sh`; run the
+      manifest and blob attacks through session A and an install through B, with
+      a shared-bind attack control. Not runnable in a session container.
+- [ ] Measure the install-time disk and time (req 7, req 10) with the store on
+      an overlay: whole-file `index.db` copy-up, imported package files, store
+      lock. The 4 KB / 63 MB figures are for reading a base, not installing.
 - [ ] Set `verify-store-integrity=true` explicitly (ShipIt sets neither pnpm
       value today), but treat it as necessary, not sufficient — it trusts the
       writable `index.db`.
@@ -47,9 +53,10 @@ recorded in [requirements.md](./requirements.md); none is open.
 
 - [ ] Set `package-import-method=copy` explicitly. Not `clone`: it fails the
       install where reflink is unavailable.
-- [ ] Decide whether the pnpm store moves inside the docs/183 overlay. As
-      deployed it is a separate read-write bind at `/workspace/.pnpm-store`,
-      outside any overlay, so overlayfs does not cover it and H3 survives there.
+- [ ] `copy` alone does not make the shared store safe (H2/H4 survive); the
+      store must also move inside an overlay (the H2/H4 section above). `copy` is
+      also a prerequisite for that move, since a hardlink import cannot cross the
+      overlay boundary.
 - [ ] Regression test for H3: a write to a store file must not change an
       already-installed `node_modules` file in another session.
 - [ ] Regression test for req 11: an edit inside one session's installed
