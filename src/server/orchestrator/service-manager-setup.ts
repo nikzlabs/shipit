@@ -24,6 +24,16 @@ import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 
+/**
+ * Compose creates the session network with the first service, so a project whose services are all
+ * manual has none until one starts. Docker answers the agent's join with a 404 that names either
+ * the network or the container; only the network's absence is expected here.
+ */
+export function sessionNetworkMissing(err: unknown, networkName: string): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes(`network ${networkName} not found`) || /no such network/i.test(msg);
+}
+
 export function handleStackError(
   runner: SessionRunnerInterface,
   err: Error,
@@ -240,7 +250,18 @@ export function adoptExistingServiceManager(
         if (containmentChanged || overlayChanged || wasPreStartedWarm) {
           await serializeStackOp(runner.sessionId, () => mgr.reconcile());
         }
-        await containerManager.connectToNetwork(runner.sessionId, networkName);
+        try {
+          await containerManager.connectToNetwork(runner.sessionId, networkName);
+        } catch (err) {
+          // Every `up` joins again (ServiceManager.joinSessionNetwork), so a network no service has
+          // created yet is not a stack failure — reporting it filled the preview pane of every
+          // all-manual project with a Docker Compose error.
+          if (!sessionNetworkMissing(err, networkName)) throw err;
+          console.log(
+            `[network:${runner.sessionId}] ${networkName} does not exist yet ` +
+              "(no Compose service has started) — joining with the first service",
+          );
+        }
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
