@@ -35,7 +35,10 @@ what you do, ask about that part instead of guessing. Don't remark on the
 transcription quality otherwise.
 </dictated_input>`;
 
-/** Append context for slash invocations: Claude CLI needs the command at the start. */
+/**
+ * docs/299 — a command invocation never reaches here: the caller delivers it
+ * alone, because no ordering of added context makes a CLI read it as a command.
+ */
 export function assembleAgentPrompt(input: {
   userText: string;
   fileContext: string;
@@ -46,12 +49,7 @@ export function assembleAgentPrompt(input: {
 }): string {
   const { userText, fileContext, imageContext, dictated, roleContext } = input;
   const dictationContext = dictated ? DICTATION_CONTEXT : "";
-  const isSlashInvocation = /^\/[a-zA-Z0-9._-]+/.test(userText.trimStart());
-  return (
-    isSlashInvocation
-      ? [userText, fileContext, imageContext, dictationContext, roleContext ?? ""]
-      : [roleContext ?? "", dictationContext, imageContext, fileContext, userText]
-  )
+  return [roleContext ?? "", dictationContext, imageContext, fileContext, userText]
     .filter(Boolean)
     .join("\n\n");
 }
