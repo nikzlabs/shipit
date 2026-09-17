@@ -22,7 +22,11 @@ import {
   settingRequest,
   writeBrowserValue,
 } from "./setting-values.js";
-import { findSetting, type AnySettingDeclaration } from "../../server/shared/settings-catalogue/index.js";
+import {
+  ALL_SETTINGS,
+  findSetting,
+  type AnySettingDeclaration,
+} from "../../server/shared/settings-catalogue/index.js";
 
 afterEach(() => {
   localStorage.clear();
@@ -161,6 +165,9 @@ describe("the record covers the settings the converted tabs generate", () => {
       "voice.providerKey",
       "voice.webhook.url",
       "voice.webhook.token",
+      "project.allowAgentMerge",
+      "project.secrets",
+      "project.colorIndex",
       "keyboard.keybindings",
       "voice.inputEnabled",
       "voice.sttProvider",
@@ -175,6 +182,26 @@ describe("the record covers the settings the converted tabs generate", () => {
       "advanced.notifyOnFinish",
       "advanced.soundOnFinish",
     ]);
+  });
+
+  /*
+    Slice 7 — the three Project Settings tabs are generated, and not one of
+    their rows is in the record. Every declaration on them is addressed by
+    REPOSITORY, and this record is keyed by setting alone: a value in it would
+    be the previous repository's the moment the dialog is opened for another,
+    under a reader that prefers the record to everything else. So each of them
+    reads and writes through the repositories store, as `voice.providerKey`
+    does through the list that owns it.
+  */
+  it("generates every project row and holds a value for none of them", () => {
+    const project = ALL_SETTINGS.filter((d) => d.tab.startsWith("project-"));
+    const rows = project.filter((d) => isGeneratedRow(d)).map((d) => d.key);
+
+    expect(rows).toEqual(["project.allowAgentMerge", "project.secrets", "project.colorIndex"]);
+    const held = Object.keys(initialSettingValues());
+    for (const declaration of project) {
+      expect(held, declaration.key).not.toContain(declaration.key);
+    }
   });
 
   /*

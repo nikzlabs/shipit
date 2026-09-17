@@ -696,7 +696,114 @@ existing one or renders a row that cannot save.
    non-embedded chrome, which wrote a heading and a paragraph of its own that the
    declaration now carries.
 7. **Project Settings** (req 10) — the second dialog, its repo-scoped write, the
-   colour picker and the secrets panel.
+   colour picker and the secrets panel. The three `project-*` tabs join
+   `GENERATED_TABS`, which completes both dialogs.
+
+   **A repository's value is a ROW without being in the record, and that is the
+   whole slice.** The value record is keyed by setting alone; every declaration
+   here is addressed by repository. So a repo-scoped value in it would be the
+   previous repository's the moment the dialog is opened for another, under a
+   reader that prefers the record to everything else — the failure mode is not
+   a stale render but a wrong repository's setting shown as this one's. All five
+   declarations therefore keep a `bespoke` store and stay out of the record;
+   three of them name a component and the two secret item fields name nothing,
+   because their collection places the panel (P11). Each reads and writes where
+   its declaration already said the value lives: the **repositories store** for
+   the merge grant and the colour (a live row per repository — the sidebar
+   renders from it, `repo_list` keeps it current, and `setRepoAllowAgentMerge`
+   carries docs/287's optimistic write, rollback and reconcile), and
+   `GET`/`PUT /api/secrets` for the secrets panel, which keeps its own reader and
+   writer as every registered panel does. `voice.providerKey` established the
+   shape in slice 4: membership of the rows is wider than membership of the
+   record.
+
+   **The address stayed prose, and that is a judgement rather than an
+   impossibility.** `own-route` works because a *fixed* `method path bodyField`
+   says everything: the write is that request, and the read is a GET of that
+   path. A repository setting's path carries the repository — `PATCH
+   /api/repos/:url` — so the field would have to gain interpolation, and that is
+   only the first of three: `GET /api/repos/:url` does not exist (the
+   repositories arrive as a list and over `repo_list`), so the read half needs
+   somewhere else to look; and the value still could not enter the record, so
+   the writer would need the address too. Each is a field that only makes sense
+   with the next one, which is what requirement 5 refuses. So the prose
+   `ownedBy` stays — the same limit 6a recorded for a panel's destination, for
+   the same reason.
+
+   **P11 expected an ordinary row for `project.allowAgentMerge`, and it gets
+   one — as a component.** What a component costs is the presentation, and there
+   is none to lose here: it renders the same `ToggleRow` every generated boolean
+   does, with the declared label, the declared description and the same switch.
+   What the control table could not have supplied is the value, and that is the
+   part above. The alternative — teaching `useSetting`/`saveSetting` to resolve a
+   repository out of the UI store — would have put an ambient dependency in the
+   most load-bearing file of the feature to serve one row, since the colour
+   picker is a component either way (`numeric` has no control-table entry, P4).
+
+   **All three stopped taking their inputs as props**, which is 6a's rule met
+   three times more. The merge toggle and the colour picker took a `repoUrl`;
+   the secrets panel was handed a loader and a saver by `App.tsx` through
+   `ProjectSettings`, and owns both requests now, as every registered panel owns
+   its writer. `ProjectSettings` keeps `initialTab` and `onClose`, and reads the
+   repository for its own title — so the header cannot name a repository its rows
+   are not about.
+
+   Gained rather than given up: a **refused secrets save now reaches the user**.
+   The dialog's saver was fire-and-forget, so a failure and a success looked
+   identical; the panel awaits its own write, says "Saved" on the server's answer
+   and raises a toast on a refusal. The 500 ms confirmation timer, and the unmount
+   cleanup it needed, are gone with it.
+
+   Knowingly given up: the merge toggle's **icon tile and bordered card** (a
+   generated row has neither, and the icon was the only one in either dialog),
+   its hand-written *Agent permissions* heading (the declaration's `section` now,
+   with the sentence under it as that section's `note` — P12), and the secrets
+   panel's *Environment Variables* heading and intro paragraph (it renders the
+   declared label and description, which is what put `project.secrets` in
+   `EXPLAINED_IN_THE_DIALOG`). One sentence from that intro moved into the
+   declared description rather than being dropped — that the agent's container
+   receives a value only where `x-shipit-secrets` marks it `agent: true` — for
+   the reason slice 4 moved the webhook's: the agent reads it too. And the
+   secrets **Save is sticky rather than pinned**: the tab is the scroll container
+   around the generated block now, so the button sticks to the bottom of that
+   area rather than sitting in a footer outside it. It is not the same layout —
+   with a long list it stays in sight exactly as the footer did (checked in the
+   dogfood instance), and with a short one it sits under the content instead of
+   at the dialog's bottom edge.
+
+   **What review found, and all of it is in the secrets panel — the one thing
+   here that is not a value.** Two were the panel's own from the start and are
+   fixed rather than inherited, because both end in *deleted secrets*: the
+   declared names come from the **active session's** compose file, so another
+   repository's declaration hid a stored key from the custom rows, and a hidden
+   key is in neither `set` nor `keep` — the panel now applies them only where the
+   session's repository is the dialog's. And a **failed read looked like a
+   repository with no secrets**, so Save became a delete-everything button; it is
+   an error state with a retry now, and offers no Save at all. Two more were this
+   slice's: awaiting the plugin-snapshot refresh *inside* the save left Save
+   disabled as "Saving…" for as long as the snapshot took, and the new toast let
+   a **superseded** save report — switching tabs unmounts the panel, so a second
+   save can start while the first is out. The panel now keeps a module-level
+   sequence per repository, exactly as `saveSetting` keeps one per setting, and
+   "Saved" is withheld when the boxes were typed in since the write was sent
+   (slices 3 and 4 settled that rule for every other write here).
+
+   Subtraction it asked for and this took: the duplicated "no project value in
+   the record" assertion (the store-level one says it), and the repeated
+   explanations of repo-scoping across the helper, the registry and three
+   components — the invariant lives at the record boundary, and the rest point at
+   it.
+
+   **`currentValue`'s fall-back to the named store field has no user left.**
+   Slice 6b kept it for this slice; nothing here needs it, because no project
+   component goes through `useSetting` at all. Every key that reaches
+   `useSetting` today is in the record — `setSettingValue` already refuses to
+   write one that is not (`recordHolds`), and the record is seeded with exactly
+   those keys — so the fall-back is unreachable. Slice 8 can delete it. One thing
+   to keep when it goes: it is what would quietly serve a declared default if a
+   component named by a non-recorded declaration (`voice.providerKey`, the five
+   project ones) ever called `useSetting`. Without it such a call reads
+   `undefined`, which is the louder and better failure.
 8. **Cleanup.** Delete `settings-coverage.test.tsx` and the `data-setting`
    attribute (req 12). The walk proves three things and generation replaces one;
    the other two are given up knowingly, and the loss is bounded to the 42
@@ -711,6 +818,13 @@ tab joins that list in the slice that moves its hydration, and a setting the
 record does not hold is still read through its named field — which is what keeps
 `integrations.autoCreatePr` and `instructions.agentInstructionsEnabled` working
 on the same reader while their tabs wait for slices 5 and 3.
+
+**Every tab of both dialogs is on that list since slice 7**, so the second half
+of the rule has no user left: there is no unconverted tab whose values are read
+through a named field. What slice 7 showed is that the list answers a narrower
+question than its name suggests — a tab of generated rows can hold no record
+values at all, because "which settings the record holds" is decided per
+declaration by its store, not by its tab.
 
 ## Key files
 
@@ -738,6 +852,10 @@ on the same reader while their tabs wait for slices 5 and 3.
 | `src/client/components/Settings/components/RolesSettings.tsx` | the roles list and the reviewer slots: one component for two collections, sharing the editor and the write |
 | `src/client/components/Settings/ServicesPanel.tsx` | the credentials panel, placed by five addressed declarations and deduplicated to one render |
 | `src/client/components/Settings/BackgroundWorkSection.tsx` | the background-work pin: a component because `modelSelection` declares no options, on the shared reader and writer |
+| `src/client/components/Settings/components/project-repo.ts` | which repository Project Settings is open for: one fact, four readers, and a component takes no prop to pass it by |
+| `src/client/components/AgentPermissions.tsx` | the merge grant: the generated toggle's own row, over a value the repositories store holds |
+| `src/client/components/RepoColorPicker.tsx` | the swatch grid, for a `numeric` the control table has no entry for |
+| `src/client/components/SecretsTab.tsx` | the secrets panel: its own reader and writer, as every registered panel has |
 | `src/client/components/Settings/setting-binding.ts` | `data-setting`; deleted in slice 8 |
 | `src/client/components/Settings/settings-coverage.test.tsx` | the walk; deleted in slice 8 (P15) |
 | `src/client/stores/settings-store.ts` | gains the value record and the draft record; the named fields become views over the first |

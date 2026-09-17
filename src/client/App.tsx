@@ -201,7 +201,7 @@ export default function App() {
     reconnectAttempt,
     reconnect,
   } = useSessionWebSocket(wsSessionId);
-  const { get: apiGet, post: apiPost, put: apiPut } = useApi();
+  const { get: apiGet, post: apiPost } = useApi();
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
   const rewindPreviews = useSessionStore((s) => s.rewindPreviews);
@@ -1757,27 +1757,7 @@ export default function App() {
         )}
         {projectSettingsRepoUrl && (
           <ProjectSettings
-            repoUrl={projectSettingsRepoUrl}
-            repoName={parseRepoLabel(projectSettingsRepoUrl)}
             initialTab={projectSettingsTab}
-            onSecretsLoad={async (repoUrl) => {
-              const data = await apiGet<{ keys: string[] }>(
-                `/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`,
-              );
-              return data.keys;
-            }}
-            onSecretsSave={(repoUrl, payload) => {
-              void (async () => {
-                try {
-                  await apiPut("/api/secrets", { repoUrl, ...payload });
-                } catch {
-                  return;
-                }
-                // Repos without Compose emit no secrets_status event to trigger this refresh.
-                const id = useSessionStore.getState().sessionId;
-                if (id) await usePluginReposStore.getState().fetchSnapshot(id);
-              })();
-            }}
             onClose={() => {
               useUiStore.getState().setProjectSettingsRepoUrl(null);
             }}

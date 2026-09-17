@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
-import { SecretsTab } from "./SecretsTab.js";
-import { RepoColorPicker } from "./RepoColorPicker.js";
-import { AgentPermissions } from "./AgentPermissions.js";
-import type { SecretsSavePayload } from "./SecretsTab.js";
+import { DeclaredSettings } from "./Settings/DeclaredSettings.js";
+import { useProjectRepoUrl } from "./Settings/components/project-repo.js";
+import { parseRepoLabel } from "../utils/repo-label.js";
 
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
@@ -24,24 +23,26 @@ const TAB_LABEL: Record<Tab, string> = {
 
 export interface ProjectSettingsProps {
 
-  repoUrl: string;
-
-  repoName: string;
-
   initialTab?: Tab;
-  onSecretsSave?: (repoUrl: string, payload: SecretsSavePayload) => void;
-  onSecretsLoad?: (repoUrl: string) => Promise<string[]>;
   onClose: () => void;
 }
 
+/**
+ * The second dialog (docs/308-data-driven-settings req 10). Every row on every
+ * tab is generated from the declarations since slice 7, so what is left here is
+ * the chrome: the header, the tab strip, and the deployment guide that is not a
+ * setting at all (inventory.md P12).
+ *
+ * The repository is NOT passed in — every control reads which one this dialog is
+ * open for (`Settings/components/project-repo.ts`), because a generated one takes
+ * the setting's key and nothing else, and the title reads the same one so the
+ * dialog cannot name a repository its rows are not about.
+ */
 export function ProjectSettings({
-  repoUrl,
-  repoName,
   initialTab = "secrets",
-  onSecretsSave,
-  onSecretsLoad,
   onClose,
 }: ProjectSettingsProps) {
+  const repoUrl = useProjectRepoUrl();
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -62,7 +63,9 @@ export function ProjectSettings({
         <div className="flex items-center px-5 py-4 pr-12 border-b border-(--color-border-secondary)">
           <DialogTitle className="text-lg font-semibold truncate">
             Project Settings
-            <span className="ml-2 text-sm font-normal text-(--color-text-tertiary)">{repoName}</span>
+            <span className="ml-2 text-sm font-normal text-(--color-text-tertiary)">
+              {repoUrl ? parseRepoLabel(repoUrl) : ""}
+            </span>
           </DialogTitle>
         </div>
 
@@ -86,8 +89,19 @@ export function ProjectSettings({
               {/* docs/287 — the agent-merge grant. One toggle does not justify a
                   navigation category of its own, and this tab is the one place
                   in the dialog already about what happens to the repo without
-                  the user doing it by hand. */}
-              <AgentPermissions repoUrl={repoUrl} />
+                  the user doing it by hand. Its heading is the declaration's
+                  `section`; the sentence under it is about the section rather
+                  than about the setting, so it stays here (P12). */}
+              <DeclaredSettings
+                tab="project-deployments"
+                notes={{
+                  "Agent permissions": (
+                    <p className="text-xs text-(--color-text-secondary)">
+                      What agents working in this repository may do on their own.
+                    </p>
+                  ),
+                }}
+              />
 
               <div className="space-y-1">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Automatic Deployments</h3>
@@ -128,16 +142,13 @@ export function ProjectSettings({
             </div>
           </TabsContent>
 
-          {/* The tab owns its own scroll container and pinned Save footer
-              (SettingsTabPane) — a long secret list must never push Save out
-              of sight. Its intro copy lives inside the component for the same
-              reason: header, rows and footer are one scroll layout. */}
+          {/* The tab is the scroll container around the panel `project.secrets`
+              names; the panel's own Save sticks to the bottom of it, because a
+              long secret list must never push Save out of sight. */}
           <TabsContent value="secrets">
-            <SecretsTab
-              repoUrl={repoUrl}
-              onSecretsSave={onSecretsSave}
-              onSecretsLoad={onSecretsLoad}
-            />
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
+              <DeclaredSettings tab="project-secrets" />
+            </div>
           </TabsContent>
 
           {/* docs/254 — per-repo appearance. Currently just the sidebar identity
@@ -145,7 +156,7 @@ export function ProjectSettings({
               or Secrets because neither is about how the repo is displayed. */}
           <TabsContent value="appearance">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="appearance-tab">
-              <RepoColorPicker repoUrl={repoUrl} />
+              <DeclaredSettings tab="project-appearance" />
             </div>
           </TabsContent>
         </Tabs>
