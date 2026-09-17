@@ -94,7 +94,8 @@ failed — the button's tooltip says which, and a failed chip offers Retry. The
 third is not about attachments at all — when no model provider can run a turn,
 the whole composer is dead and says so in its placeholder, *"Add a model
 provider to start chatting"*; that is an install with no usable account behind
-it, and the answer is Settings → Integrations, not anything about the message.
+it, and the answer is Settings → Model providers, not anything about the
+message.
 
 Separately, a message carrying an image sent on a model known to be text-only is
 refused outright, naming the model and offering the two ways out: remove the
