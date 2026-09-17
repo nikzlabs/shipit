@@ -3268,8 +3268,7 @@ it did.
 **The fix is a fixed height, not a better pairing** — and it is fixed around the thing that
 actually moves. Everything that varies while the credential step is open — the sign-in panel,
 the token field, the error line — is a child of one box (`add-service-stage`), which a sign-in
-gives a concrete `SIGN_IN_STAGE_HEIGHT` (**16rem**) at every width. Consequences, all of them
-the point:
+gives a concrete `SIGN_IN_STAGE_HEIGHT`. Consequences, all of them the point:
 
 - The height is a constant in **CSS**, so no state can change it. Being wrong about the constant
   costs a scrollbar, never a jump — and the CLI-output disclosure, which grows the content to
@@ -3282,33 +3281,56 @@ the point:
   the box, that the footer is one row of `h-8` buttons and nothing else, and that the dialog's
   markup *outside* the box is byte-identical in every state: the failure the old approach could
   not produce. Another walks the three steps and asserts the opposite of what it used to —
-  that step 1 carries a *cap* and steps 2 and 3 carry no height class at all. Each was proved
-  red on its own defect before being left green. What they cannot see is a state they do not
-  walk and a geometry they cannot measure; this repo has no browser-driven suite, so the live
-  figures here are the record of the geometry, taken by hand.
-- **The number is the tallest state at the narrowest width**, measured in Chromium on
-  2026-09-17: Antigravity's challenge — link, paste field, 60-second deadline sentence over two
-  lines — is 242px in a 328px stage (a 360px sheet), against 225px for the same state at the
-  dialog's 448px width, and Anthropic's is 185px. One value covers both widths; a second scoped
-  to `md` would buy 30px back and cost a second number to keep true.
+  that step 1 carries a height and steps 2 and 3 carry no height class **at all**, which is a
+  claim about every class rather than the four this dialog happens to use: the first cut of
+  that guard matched a list, and the independent review passed it by putting
+  `md:h-(--add-service-body)` back on steps 2 and 3. Each guard was proved red on its own
+  defect before being left green. What they cannot see is a state they do not walk and a
+  geometry they cannot measure; this repo has no browser-driven suite, so the live figures here
+  are the record of the geometry, taken by hand.
+- **The number is the tallest state — this provider's, at this width**, and there are four of
+  them because reserve is the whole cost of the box. The tallest state is always the challenge,
+  and it differs along exactly two axes, both known before it arrives: the provider, since
+  Antigravity's 60-second deadline sentence is two lines nothing else has; and the width, since
+  the same state wraps ~17px taller in a 328px sheet stage than at the dialog's own 414px.
+  Measured in Chromium on 2026-09-17, sheet / window: Anthropic **202 / 185**, Antigravity
+  **242 / 225** — so `13rem / 12rem` plain and `15.5rem / 14.5rem` where there is a deadline,
+  6–7px of headroom each. The provider half is read from `challengeHasDeadline`, the same map
+  that prints the sentence, so the reserve cannot outlive it. A single 16rem covering all four
+  shipped first and left **71px of dead space** under the common sign-in, which is what the user
+  saw and asked about.
 - **The model chips are outside the box.** They say the same thing in every state, so holding
   them inside it made the box the height of the sign-in *plus* a chip row — up to 65px more,
   where a service's ids wrap to three lines. Outside, they follow the box and the box is sized
   by the sign-in alone.
-- **A step is as tall as its content, and only the provider list is capped.** `STEP_1_MAX_BODY`
-  (**24rem**) is `max-h` rather than `h`, so a catalogue that outgrows it scrolls inside the
-  window (with its heads pinned — see the support-table section) and a shorter one does not pay
-  for the room. Step 2 and the credential step carry no height class at all. Below `md`, where
-  the dialog is a fullscreen sheet whose height is the viewport's, even the cap is dropped: step
-  1 needs 562px there (its rows wrap at 390px), and a cap would scroll the one step that fits
-  everywhere else for a window that cannot move anyway. The sign-in's box is the one mechanism
-  that applies at every width, because what moves in a sheet is the content inside it.
+- **A step is as tall as its content, except the provider list, which keeps a height.**
+  `STEP_1_BODY_HEIGHT` (**24rem**) is `h`, not `max-h`: this is the one step whose content does
+  not all arrive at once — the harness table's columns and the caption under it come with the
+  agent list — and under a cap the independent review measured it growing **493 → 517px** with
+  the window's top moving 12px up, by opening the dialog before that list landed. The catalogue
+  grows into it the same way, so past it the list scrolls with its heads pinned (see the
+  support-table section). What a cap saves is white space in a hypothetical short catalogue;
+  what it costs is the guarantee. Step 2 and the credential step carry no height class at all.
+  Below `md`, where the dialog is a fullscreen sheet whose height is the viewport's, even this
+  is dropped: step 1 needs 562px there (its rows wrap at 390px), and fixing it would scroll the
+  one step that fits everywhere else for a window that cannot move anyway. The sign-in's box is
+  the one mechanism that applies at every width, because what moves in a sheet is the content
+  inside it.
+- **A scroll made in one state must not outlive it.** The box scrolling rather than growing is
+  the whole valve, and the CLI-output disclosure makes it ordinary — 385px of log in a box of
+  192. The independent review reproduced a challenge arriving with the stage at `scrollTop` 109:
+  the window held, and the authentication link and code field were nonetheless entirely above
+  the visible area, with nothing moving to say so. The box now carries the challenge's own URI
+  as its React `key`, so each challenge — including a replacement one — gets a new element and a
+  fresh scroll position. A key rather than an effect assigning `scrollTop`, because remounting
+  *is* a fresh scroll position; the disclosure survives it, its open state being held in the
+  store precisely because this subtree is rebuilt mid sign-in.
 - **Measured after, in the dogfood on 2026-09-17.** Step 1 **518px**, step 2 **266**, the
-  Anthropic sign-in **440** — and 440 at top 230 through idle → waiting → challenge, with the
-  CLI-output disclosure opening inside the box (385px of content in 256px) rather than growing
-  it. Key-only steps are their content: DeepSeek **295**, OpenRouter **364**, OpenCode's
-  subscription **409** (its hazard notice is 235px on its own). On a 390px sheet the box holds
-  at 256px and the footer's top does not move through a sign-in.
+  Anthropic sign-in **376** — held at top 262 through idle → waiting → challenge, with the log
+  opened and the box scrolled to 80 on the way, which the arriving challenge resets to 0. Key-
+  only steps are their content: DeepSeek **295**, OpenRouter **364**, OpenCode's subscription
+  **409** (its hazard notice is 235px on its own). On a 360px sheet the box holds at 208px, the
+  challenge needs 202, and the footer's top does not move through a sign-in.
 - **The title is the one thing outside the body, so its height is fixed and its text cannot
   change under the user.** Two ways it moved the window, both found by independent review in
   Chromium rather than by reasoning: a successful login adopts the authenticated email over a
@@ -3332,22 +3354,25 @@ scrolling (reproduced in Chromium by the independent review with a 30-chip fixtu
 `shrink-0` that fixed it is gone with the fixed body it defended against; a stage given a height
 again needs it back.
 
-**What this costs, stated because it is visible.** The sign-in step reserves the tallest state
-for the shortest one, so an idle Anthropic sign-in carries about 70px of slack above the chips,
-and a sheet reserves the 242px case where the window needs 225. That is the price of the step
-not moving while the provider's clock runs, and it is the only place the price is paid. It was
-paid everywhere for one day: steps 1–3 all held to 24rem after the human asked for one height
-across the flow, which they then looked at — *"a lot of empty space, especially on step 2"* —
-and which is why req 26 is now about the step rather than the dialog. The other alternative,
-priced in the dogfood at the time, was unifying on the *shorter* height, which puts the provider
+**What this costs, stated because it is visible.** The sign-in step reserves its provider's
+tallest state, so an idle Anthropic sign-in carries about 7px of slack and a challenge fills the
+box. That is the price of the step not moving while the provider's clock runs, and it is now the
+only place the price is paid — the reserve went 71px → 7 by measuring the four cases instead of
+rounding one number up. It was paid everywhere for one day: steps 1–3 all held to 24rem after
+the human asked for one height across the flow, which they then looked at — *"a lot of empty
+space, especially on step 2"* — and which is why req 26 is now about the step rather than the
+dialog. The other alternative, priced
+in the dogfood at the time, was unifying on the *shorter* height, which puts the provider
 list behind a scroll on the one screen whose whole purpose is comparing the providers against
 each other. (Its mock-up scrolled the table heads away too, which is a separate defect and is
 fixed on its own account — see the support-table section — because the catalogue's tenth service
 will scroll this list whatever height it is given.)
 
-**The width still changes and is meant to.** Step 1 is wider by exactly its harness table and
-the rest go back to `max-w-md`, which was agreed earlier and is the opposite call to this one:
-a wide box around a mode choice wastes half the window, while a tall one merely leaves space.
+**The width still changes and is meant to, and the height now changes with it.** Step 1 is wider
+by exactly its harness table and the rest go back to `max-w-md`. That was agreed first and it is
+what settles the height question too: if a click may change one dimension of the window, it may
+change the other, and both changes say the same thing — this is a different screen. The distinct
+call is *within* a step, where neither dimension moves.
 
 ## The compact card (reqs 19, 20, 21)
 

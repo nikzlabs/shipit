@@ -106,6 +106,7 @@ import {
   ProviderAccountRows,
   abandonAccount,
   cancelAccountLogin,
+  challengeHasDeadline,
   createAccount,
   providerAccountsOf,
   signInBlockedReason,
@@ -945,24 +946,29 @@ function addServiceDialogWidth(step1: boolean, harnessCount: number): string {
 }
 
 /**
- * **A CAP on step 1, not a height every step keeps** (req 26). The requirement is
- * that nothing moves *while a step is open*; a step that is shorter than another
- * is not a jump, since only a click gets you there — and the dialog already
- * changes width at that same click.
- *
- * So this is step 1's own measured height, the point past which its list scrolls
- * inside the window rather than growing it. It was every step's height for a day
+ * **Step 1's height, and step 1's alone** (req 26). It was every step's for a day
  * (2026-09-17), which left step 2 — two rows and a sentence — centred in 384px
- * with roughly 250px of white space. Nothing else uses it.
+ * with roughly 250px of white space; a step that is shorter than another is not a
+ * jump, since only a click gets you there, and the dialog already changes width at
+ * that same click.
+ *
+ * It is step 1's own measured height (382px of content in 384), and it is **fixed
+ * rather than a cap**, because this step's content does not all arrive at once:
+ * the harness table's columns and the caption under it come with the agent list,
+ * which grew the step 493 → 517px and moved the window's top 12px up under a cap
+ * (measured in Chromium by the independent review, opening the dialog before that
+ * list landed). The catalogue grows into it the same way. What a cap saves is
+ * white space in a hypothetical short catalogue; what it costs is the one
+ * guarantee this requirement is about.
  */
-const STEP_1_MAX_BODY = "24rem";
+const STEP_1_BODY_HEIGHT = "24rem";
 
 /**
  * Step 1's body, **only where the dialog is a window.** Below `md` it is a
- * fullscreen sheet whose height is the viewport's, and capping it there would
- * scroll the list (560px at 390px, its rows wrapping) for no gain.
+ * fullscreen sheet whose height is the viewport's, and fixing it there would
+ * scroll the list (562px at 390px, its rows wrapping) for no gain.
  */
-const STEP_1_BODY = "md:max-h-(--add-service-body)";
+const STEP_1_BODY = "md:h-(--add-service-body)";
 
 /**
  * **The sign-in's box — the one fixed height left, and the only one req 26
@@ -970,14 +976,25 @@ const STEP_1_BODY = "md:max-h-(--add-service-body)";
  * (see the stage below), so the states cannot move the panel, the buttons under
  * the user's thumb, or the model chips beneath.
  *
- * The tallest state at the narrowest width, measured 2026-09-17 in Chromium:
- * Antigravity's challenge — link, paste field, the 60-second deadline sentence
- * wrapping to two lines — is 242px at a 328px stage (a 360px sheet). One value
- * for both widths: at `md` the same state is 225px, and a second number scoped to
- * a breakpoint buys 30px of slack back at the cost of a second thing to maintain.
- * Overrunning it scrolls inside the box, which is the intended failure.
+ * **Reserve is the whole cost of this box, so it is measured four ways rather
+ * than rounded up once.** The tallest state is always the challenge, and it
+ * differs along exactly two axes, both known before it arrives:
+ *
+ * - the **provider**, via {@link challengeHasDeadline} — the 60-second sentence
+ *   is two lines nothing else has, and asking the same map that prints it is what
+ *   keeps the reserve from outliving the sentence;
+ * - the **width**, because the same state wraps ~17px taller in a 328px sheet
+ *   stage than at the dialog's own 414px.
+ *
+ * Measured in Chromium on 2026-09-17, sheet / window: Anthropic 202 / 185,
+ * Antigravity 242 / 225. A single 16rem covering all four left 71px of dead space
+ * under the common sign-in, which is what the user saw. Overrunning a value
+ * scrolls inside the box, which is the intended failure.
  */
-const SIGN_IN_STAGE_HEIGHT = "h-[16rem] overflow-y-auto";
+const SIGN_IN_STAGE_HEIGHT = {
+  plain: "h-[13rem] md:h-[12rem] overflow-y-auto",
+  deadline: "h-[15.5rem] md:h-[14.5rem] overflow-y-auto",
+} as const;
 
 /**
  * **A key-only step gets this reserved line rather than a box of its own**, its
@@ -1003,7 +1020,7 @@ const KEY_ERROR_SLOT = "h-8 overflow-y-auto";
  *
  * **Both axes scroll on THIS element, and that is what makes the heads stick.**
  * Sticky resolves against the nearest scrolling ancestor, so with the vertical
- * scroll one level up (req 26 caps the step's body) the heads had nothing
+ * scroll one level up (req 26 gives the step a fixed body) the heads had nothing
  * to stick to and scrolled away with the rows — measured, not reasoned. Moving it
  * here does NOT break the `sticky left-0` column, which an earlier comment warned
  * it would: that warning was about a SECOND scrolling ancestor, and this is one
@@ -1330,6 +1347,23 @@ function AddServiceDialog({
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
 
+  /**
+   * **The box is a new element for each challenge, so a scroll cannot outlive the
+   * state it was made in.** The box holds its height through every state (req 26),
+   * and the price of that is that a state taller than it scrolls — which the
+   * CLI-output disclosure makes ordinary, at 385px of log in a box of 192. The
+   * independent review reproduced a challenge arriving with the stage at
+   * `scrollTop` 109: the authentication link and the code field were then entirely
+   * above the visible area, with nothing moving to say so.
+   *
+   * A key rather than an effect that assigns `scrollTop`, since remounting is what
+   * a fresh scroll position *is*. The disclosure survives it — its open/closed
+   * state is held in the store precisely because this subtree is rebuilt mid
+   * sign-in (see `AuthCliOutput`) — and a challenge that replaces another takes
+   * the typed code with it, which is the same answer.
+   */
+  const challengeUri = pendingAuth?.verificationUri;
+
   if (attemptUnseen && (signInAccount?.status === "authenticating" || pendingAuth || authError)) {
     setAttemptUnseen(false);
   }
@@ -1601,16 +1635,18 @@ function AddServiceDialog({
         each step is as tall as its own content, and what must not move is the
         step you are LOOKING at. Only one step changes while it is open — the
         sign-in, on the provider's clock — and that one alone carries a fixed box
-        ({@link SIGN_IN_STAGE_HEIGHT}). Step 1 is capped rather than fixed
-        ({@link STEP_1_MAX_BODY}), so a long catalogue scrolls instead of growing
-        the window and a short one does not pay for it.
+        ({@link SIGN_IN_STAGE_HEIGHT}, the height that provider's own tallest
+        state needs). Step 1 keeps a height of its own
+        ({@link STEP_1_BODY_HEIGHT}), so a catalogue that grows — or a harness
+        table that arrives a moment after the step does — scrolls inside the
+        window instead of growing it.
       */}
       <DialogContent
         className="rounded-lg border-(--color-border-secondary) p-4 md:w-(--add-service-width) md:max-w-(--add-service-width)"
         style={
           {
             "--add-service-width": addServiceDialogWidth(!service, supportHarnesses.length),
-            "--add-service-body": STEP_1_MAX_BODY,
+            "--add-service-body": STEP_1_BODY_HEIGHT,
           } as CSSProperties
         }
         data-testid="add-service-dialog"
@@ -1684,7 +1720,7 @@ function AddServiceDialog({
                 */}
                 <div className="sticky left-0 z-10 row-span-full grid grid-rows-subgrid gap-y-1 bg-(--color-bg-elevated) pr-1">
                   {/* Both heads are `sticky top-0` because the step's body is
-                      capped (req 26) and the list outgrows the cap as the
+                      fixed (req 26) and the list outgrows it as the
                       catalogue does — one more service and it scrolls. Without
                       this that scroll takes the harness names with it and leaves
                       a grid of ticks above no labels, which would make the body's
@@ -1847,18 +1883,26 @@ function AddServiceDialog({
               the error line included — a line that appeared *below* it would move
               the window exactly as the panel used to. (The one exception is the
               title, which is above it and frozen for the dialog's life — see
-              `openingLabel`.) A sign-in gets {@link SIGN_IN_STAGE_HEIGHT}, at
-              every width, because a sign-in is the only thing here that advances
-              on someone else's clock. A key field changes nothing by itself and
-              is sized by its content, with the one line that *can* arrive — a
-              rejected key — reserved ({@link KEY_ERROR_SLOT}).
+              `openingLabel`.) A sign-in gets {@link SIGN_IN_STAGE_HEIGHT} —
+              this provider's, at this width — because a sign-in is the only thing
+              here that advances on someone else's clock. A key field changes
+              nothing by itself and is sized by its content, with the one line
+              that *can* arrive — a rejected key — reserved
+              ({@link KEY_ERROR_SLOT}).
 
               The model chips are deliberately OUTSIDE it: they are the same in
               every state, so keeping them out is what lets the box be the height
               of the sign-in rather than of the sign-in plus a chip row.
             */}
             <div
-              className={`flex flex-col gap-2 ${acceptsAccount ? SIGN_IN_STAGE_HEIGHT : ""}`}
+              key={challengeUri ?? "no-challenge"}
+              className={`flex flex-col gap-2 ${
+                acceptsAccount
+                  ? SIGN_IN_STAGE_HEIGHT[
+                    signInProvider && challengeHasDeadline(signInProvider) ? "deadline" : "plain"
+                  ]
+                  : ""
+              }`}
               data-testid="add-service-stage"
             >
               {acceptsAccount && (

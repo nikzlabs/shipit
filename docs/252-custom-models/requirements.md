@@ -367,14 +367,18 @@ No open questions remain.
     retry, saying the account is connected, and printing whatever the harness's CLI failed with.
     Those states arrive on the provider's clock rather than the user's, so a window that resizes
     with them moves under someone reading a code off it or reaching for the button beside it.
-    Anything too tall for the window is shown inside it, never by growing it.
+    Anything too tall for the window is shown inside it, never by growing it — and when the next
+    state arrives, what the user has to act on is what they are looking at, not something a
+    scroll made a moment ago has carried off the top.
 
     **Each step is as tall as its own content needs.** Moving between steps happens on the
     user's own click, and the window already changes width at that click, so a shorter step is
     not a jump — it is a screen that fits. A step must not be padded out to match another: the
     billing-mode choice is two rows and a sentence, and holding it to the provider list's height
-    left it floating in white space. The provider list is the one step with more to show as the
-    catalogue grows; past the height it has it scrolls inside the window rather than growing it.
+    left it floating in white space. A step reserves room for the states it can reach and no
+    more. The provider list is the one step with more to show as the catalogue grows — and whose
+    content does not all arrive at once; past the height it has it scrolls inside the window
+    rather than growing it.
 
     Where the window is not a window — the fullscreen sheet a phone gets — its height is the
     screen's and cannot change; what this requires there is that the sign-in's states do not
@@ -397,8 +401,13 @@ _None._
   step you are looking at.** The constraint that survives is the one the original request was
   about — the sign-in advances on the provider's clock and must not move — and a step boundary
   is a click, which the dialog already answers by changing width. Req 26 rewritten around the
-  step rather than the dialog; the height every step shared is now a cap on the provider list
-  alone.
+  step rather than the dialog; the height every step shared is now the provider list's alone.
+  Asked again the same day of the step that was left — *"step 3 is quite high, what is this
+  height needed for?"* — the answer was that it reserved the tallest state of any provider at
+  any width, which under the common sign-in is 71px of nothing. **The reserve is now measured
+  per provider and per width**, so a step reserves what the states it can actually reach need
+  (7px of slack, not 71). The requirement gains a sentence for what that reserve must also do:
+  a state arriving must not leave the thing the user has to act on scrolled off the top.
 
 - 2026-09-17 — **Does "the height never changes" cover the whole dialog, or only the states of
   the sign-in?** The first cut read *"the state the login screen is in"* as the sign-in step's
