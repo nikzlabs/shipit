@@ -77,6 +77,7 @@ import { usePreviewStore } from "../../stores/preview-store.js";
 import { useEgressStore } from "../../stores/egress-store.js";
 import { useRepoStore } from "../../stores/repo-store.js";
 import { useMcpStore } from "../../stores/mcp-store.js";
+import { useSessionStore } from "../../stores/session-store.js";
 import {
   ALL_SETTINGS,
   SETTING_EXCLUSIONS,
@@ -656,7 +657,6 @@ const reviewerSlots: ReviewerSlotView[] = [
 
 const settingsProps: SettingsProps = {
   agentList: agents,
-  hasActiveSession: true,
   onClose: vi.fn(),
 };
 
@@ -667,6 +667,9 @@ function seedStores() {
   // A connected GitHub, so the card's Disconnect is a control to account for.
   // It is read from the store now rather than passed in (docs/308 slice 5).
   useSettingsStore.getState().setGithubStatus({ authenticated: true, username: "nik" });
+  // A bound session, so the MCP panel's Test controls are live. Read from the
+  // store rather than passed in, since docs/308 slice 6 registered that panel.
+  useSessionStore.getState().setSessionId("session-1");
   useSettingsStore.getState().setCredentialRoutes([
     {
       id: "route-a", serviceId: "anthropic", billingMode: "sub", via: "string",
@@ -1552,6 +1555,9 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   // The add-a-destination form's four boxes. They carried a placeholder and an
   // `aria-label` of their own until this slice, and three of them wrote stored
   // values no declaration described at all.
+  // The three panels registered in slice 6. Each wrote its own heading and its
+  // own paragraph in the tab file until then; they render the declaration's.
+  "integrations.sshHosts",
   "integrations.sshHosts[].address",
   "integrations.sshHosts[].label",
   "integrations.sshHosts[].port",
@@ -1561,6 +1567,8 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   // own ("(space-separated)") that the declaration is supposed to hold. Those
   // sentences moved into the declarations and the form renders them, so the
   // drift check above now compares the MCP copy against the catalogue too.
+  "keyboard.keybindings",
+  "mcp.servers",
   "mcp.servers[].args",
   "mcp.servers[].command",
   "mcp.servers[].name",

@@ -23,7 +23,7 @@ import {
  * save (inventory.md P18).
  */
 export const GENERATED_TABS: readonly SettingTab[] =
-  ["advanced", "network", "instructions", "git", "voice", "integrations"];
+  ["advanced", "network", "instructions", "git", "voice", "integrations", "keyboard"];
 
 /**
  * The stores `saveSetting` can write. The three payload stores share

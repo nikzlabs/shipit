@@ -6,7 +6,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs.js";
 import { SettingsIntegrations } from "../SettingsIntegrations.js";
 import { SettingsEgress } from "../SettingsEgress.js";
 import { SkillsTab } from "../SkillsTab.js";
-import { KeybindingSettings } from "../KeybindingSettings.js";
+import { DeclaredSettings } from "./DeclaredSettings.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
@@ -34,14 +34,12 @@ type Tab = (typeof SETTINGS_TABS)[number];
 export interface SettingsProps {
   agentList?: AgentOption[];
   onFullReset?: () => void;
-  hasActiveSession: boolean;
   onClose: () => void;
 }
 
 export function Settings({
   agentList = [],
   onFullReset,
-  hasActiveSession,
   onClose,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "services";
@@ -99,8 +97,12 @@ export function Settings({
             <SkillsTab />
           </TabsContent>
 
+          {/* The chord list is the component `keyboard.keybindings` names
+              (docs/308 slice 6); this tab is the scroll container around it. */}
           <TabsContent value="keyboard">
-            <KeybindingSettings />
+            <div className="px-5 py-4 flex flex-col gap-6 overflow-y-auto h-full">
+              <DeclaredSettings tab="keyboard" />
+            </div>
           </TabsContent>
 
           <TabsContent value="voice">
@@ -136,7 +138,7 @@ export function Settings({
           </TabsContent>
 
           <TabsContent value="integrations">
-            <SettingsIntegrations hasActiveSession={hasActiveSession} />
+            <SettingsIntegrations />
           </TabsContent>
 
           <TabsContent value="git">

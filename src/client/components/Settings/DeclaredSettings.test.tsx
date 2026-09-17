@@ -13,7 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { DeclaredSettings, controlFor } from "./DeclaredSettings.js";
 import { resetDeclaredSaves } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
-import { GENERATED_SETTINGS, initialSettingValues } from "../../stores/setting-values.js";
+import { GENERATED_SETTINGS, initialSettingValues, recordHolds } from "../../stores/setting-values.js";
 import {
   findSetting,
   type AnySettingDeclaration,
@@ -397,7 +397,11 @@ describe("a row stored behind a route of its own", () => {
 
     await userEvent.click(control);
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
+    // The allowlist panel beneath this row reads itself when it mounts, so the
+    // toggle's write is the first call that is not a bare read.
+    const [url, init] = fetchMock.mock.calls.find(
+      ([, options]) => (options as { method?: string } | undefined)?.method !== undefined,
+    ) as [string, { method: string; body: string }];
     expect(url).toBe("/api/egress/settings");
     expect(init.method).toBe("PUT");
     expect(JSON.parse(init.body)).toEqual({ globalEnabled: false });
@@ -419,24 +423,57 @@ describe("a row stored behind a route of its own", () => {
 });
 
 /**
- * The Integrations tab (slice 5): one ordinary row and two credential rows,
- * placed and headed by the catalogue.
+ * The Integrations tab (slices 5 and 6): one ordinary row, two credential rows
+ * and two list panels, all placed and headed by the catalogue.
  *
  * **`integrations.autoCreatePr` leads the tab**, because a payload declaration
  * is in `global-settings.ts` and that is the first source in the catalogue
  * registry — the same thing that put Voice notes at the top of the Voice tab.
  * Requirement 11 takes the order that falls out rather than encoding today's
  * layout.
+ *
+ * The two panels carry no `section`, so they share the tab's unheaded group —
+ * the `null` below — and each renders its own declared label as its heading.
  */
 describe("the Integrations tab's rows", () => {
   it("renders them in declaration order, under their declared sections", () => {
     const { container } = render(<DeclaredSettings tab="integrations" />);
 
     expect([...container.querySelectorAll("section")].map((s) => s.getAttribute("aria-label")))
-      .toEqual(["Pull requests", "Connected services"]);
+      .toEqual(["Pull requests", "Connected services", null]);
     expect(screen.getByRole("switch", { name: findSetting("integrations.autoCreatePr")!.label }))
       .toHaveAttribute("data-setting", "integrations.autoCreatePr");
     expect(screen.getByTestId("settings-github")).toBeInTheDocument();
     expect(screen.getByTestId("settings-trackers")).toBeInTheDocument();
+  });
+});
+
+/**
+ * A panel is a component like any other (slice 6): the renderer places it where
+ * its collection's declaration is, and a declaration a panel repeats per item
+ * stays skipped.
+ *
+ * What makes this worth asserting beyond "every generated row has a control" is
+ * that a panel's own writer is not the shared one, so nothing else here would
+ * notice a collection that stopped being a row at all.
+ */
+describe("a collection panel", () => {
+  it.each([
+    ["network", "settings-egress-host-input"],
+    ["keyboard", "settings-keybindings"],
+  ] as const)("is placed on the %s tab by its declaration", (tab, testId) => {
+    render(<DeclaredSettings tab={tab} />);
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+  });
+
+  /*
+    A collection is a value kind the browser codec cannot spell, so the record
+    must not hold one: nothing would hydrate it, and the reader prefers the
+    record to the named field. It is a ROW because it names a component —
+    membership of the rows is wider than membership of the record (P11, P16).
+  */
+  it("is a row without being in the value record", () => {
+    expect(GENERATED_SETTINGS.map((d) => d.key)).toContain("keyboard.keybindings");
+    expect(recordHolds("keyboard.keybindings")).toBe(false);
   });
 });

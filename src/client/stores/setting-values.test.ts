@@ -146,9 +146,14 @@ describe("the record covers the settings the converted tabs generate", () => {
       "network.egressContained",
       "integrations.github.connection",
       "integrations.linear.credential",
+      "integrations.sshHosts",
+      "mcp.servers",
+      "mcp.oauthProvider",
+      "network.egress.hosts",
       "voice.providerKey",
       "voice.webhook.url",
       "voice.webhook.token",
+      "keyboard.keybindings",
       "voice.inputEnabled",
       "voice.sttProvider",
       "voice.cleanupEnabled",
@@ -181,12 +186,6 @@ describe("the record covers the settings the converted tabs generate", () => {
   /*
     The other half of P11, written against the rule because nothing declares it
     today: an addressed declaration with no component belongs to a panel, which
-    renders it per item. Generating it would put one control on screen for a
-    setting that exists once per provider, per server or per host.
-  */
-  /*
-    The other half of P11, written against the rule because nothing declares it
-    today: an addressed declaration with no component belongs to a panel, which
     renders it per item. The fixture is a row that IS generated — a choice the
     codec can spell, over a store the writer reaches — so the address is the only
     thing left to keep it out. Generating it would put one control on screen for
@@ -212,12 +211,17 @@ describe("the record covers the settings the converted tabs generate", () => {
     expect(GENERATED_SETTINGS).toContain(declaration);
   });
 
-  // The Network tab's panels are slice 6, so its collection and its per-item
-  // field stay hand-written while the one value on it is generated (P18).
-  it("leaves the Network tab's panel declarations out", () => {
+  /*
+    A collection panel, since slice 6: the collection names its component and is
+    a row, while the field the panel repeats per item names none and stays out.
+    Neither enters the RECORD — a bespoke store is one the shared writer cannot
+    reach — so membership of the rows is wider than membership of the record.
+  */
+  it("takes in a collection that names a panel, without holding its value", () => {
     const keys = GENERATED_SETTINGS.map((d) => d.key);
-    expect(keys).not.toContain("network.egress.hosts");
+    expect(keys).toContain("network.egress.hosts");
     expect(keys).not.toContain("network.egress.hosts[].host");
+    expect(Object.keys(initialSettingValues())).not.toContain("network.egress.hosts");
   });
 
   it("seeds a payload setting from its declared default", () => {
