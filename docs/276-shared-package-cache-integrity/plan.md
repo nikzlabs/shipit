@@ -173,6 +173,11 @@ Choosing copy-mode re-buys that cost deliberately. It is worth stating as an
 option because it is the only cheap way to close H3, but it trades directly
 against req 7 and against docs/198's whole rationale.
 
+**That disk cost is separable from the isolation** — see
+[Option E](#option-e--copy-on-write-reflink-the-copy-variant-without-the-disk-cost),
+which keeps the isolation and gives the blocks back, at the price of moving the
+data disk off ext4.
+
 **What it closes.** H1, H2 and H3 — and it is the **only** option that closes
 H3, because it is the only one that removes the session's write to the inode.
 It is also the only option that closes H2 without ShipIt reimplementing pnpm's
@@ -302,6 +307,99 @@ threat — a compromised upstream registry or a malicious published package — 
 if that threat is ever in scope it should be re-priced on its own terms. It is
 not a candidate here, and it is worse than copies: more mechanism, a new
 credential concentration, a new single point of failure, and zero holes closed.
+
+## Option E — copy-on-write (reflink): the copy variant without the disk cost
+
+*Asked by the requester, 2026-09-17: keep the space saving, lose the interference.*
+
+The copy variant closes H3 by giving each session its **own inode**. Its cost is
+that it also gives each session its own **blocks**. Those are separable: a
+**reflink** copy is a second inode that points at the same extents, copied only
+when written. One copy of the bytes on disk, one owner per session — which is
+exactly the property the question asks for.
+
+**pnpm already implements this.** `package-import-method` takes `clone` (reflink,
+strict) and `clone-or-copy` (reflink where possible, full copy otherwise)
+alongside today's `hardlink`. No new mechanism is needed — it is a config value.
+
+### Measured on this container, 2026-09-17 (pnpm 12.4.2 and 11.22.0, npm 11.12.1)
+
+**The blocker is the filesystem.** `/workspace`, `/dep-cache` and `/persist` are
+all **ext4** on `/dev/sda1` (`/proc/mounts`; `stat -f -c %T`). ext4 has no
+reflink: `FICLONE` returns `ENOTSUP`, and `cp --reflink=always` fails. So today
+`clone` does not degrade — it **fails the install outright**:
+
+```
+failed to import "<store>/v11/files/12/8ac153…" to
+  "node_modules/.pnpm/lodash@4.17.21/node_modules/lodash/_baseIsRegExp.js":
+  Operation not supported (os error 95)
+```
+
+`clone-or-copy` is the safe spelling: it falls back to a full copy, and on ext4 it
+measured **identical to `copy`** in both disk and behaviour.
+
+| import method | inode shared with store | store poisoning reaches installed files | combined disk (dedup) | warm install |
+|---|---|---|---|---|
+| `hardlink` *(today)* | yes (`links=2`) | **yes — H3 open** | 6 184 KB | 147 ms |
+| `clone` | — | — | **install fails (ENOTSUP)** | — |
+| `clone-or-copy` | no | **no — H3 closed** | 11 160 KB | 308 ms |
+| `copy` | no | **no — H3 closed** | 11 160 KB | — |
+
+One package (`lodash`), so read the ratios, not the absolutes: closing H3 on ext4
+costs **~1.8× the combined disk and ~2× the warm install**. `du` over
+`node_modules` alone hides this — it counts hardlinked blocks — so the numbers
+above are a single `du` run across store **and** `node_modules`, which dedups by
+inode.
+
+**What a reflink filesystem would change.** XFS with `reflink=1` (the mkfs default
+since xfsprogs 5.x) or btrfs would make the third row cost roughly the *first*
+row's disk while keeping the *second* row's isolation. That is the whole proposal.
+
+**The one link in this chain I could not measure.** This container has no
+effective capabilities (`CapEff: 0000000000000000`), no `mkfs.xfs`/`mkfs.btrfs`,
+and cannot mount, so there is no reflink-capable filesystem here to test on. The
+ext4 failure and the copy costs above are measured; **the reflink saving is
+inferred from the mechanism and is not verified.** It must be measured on an XFS
+host before anyone commits to it — this doc has already had two claims flip under
+measurement, and an unverified benefit is how both started.
+
+### What it closes, and what it does not
+
+**H3 only** — the same coverage as `copy`, at near-zero marginal disk instead of
+full. It does **not** close H2: a reflink of poisoned store content is still
+poisoned content. It does **not** touch H1, which is npm's resolution cache and a
+different surface entirely.
+
+**npm is unaffected either way.** Measured: npm does **not** hardlink `_cacache`
+into `node_modules` — the installed file has `links=1` and shares no inode with
+the cache. npm extracts a private copy already. So **H3 is pnpm-specific**, and
+npm repos are already paying the per-session copy cost that Q1 option (b) is
+priced as introducing.
+
+### Two facts about today's configuration
+
+- ShipIt sets **neither** `package-import-method` **nor** `verify-store-integrity`
+  anywhere in `src/` — both run on pnpm's defaults. Whatever is chosen here is a
+  new explicit setting, not a change to an existing one.
+- `verify-store-integrity` turns out to be load-bearing for H2, and **H2's status
+  is now unsettled rather than settled**. With a store copied aside, a poisoned
+  entry was detected (repaired online, `ERR_PNPM_NO_OFFLINE_TARBALL` offline);
+  with the *same* entry poisoned **in place**, the offline install accepted the
+  poisoned bytes. That difference points at a verification result pnpm caches
+  rather than at the poison, and it is the confound that has made this claim flip
+  twice already. Setting `verify-store-integrity=false` installed poisoned bytes
+  every time, which at least confirms a real check exists. **No H2 conclusion
+  should be drawn from today's runs** — it needs a dedicated harness that controls
+  the verification cache, and until then the safe reading is that H2 is open.
+
+### Verdict
+
+**The right instinct, and the answer to the question as asked — but it is a
+storage decision, not a code decision.** The application change is one config
+value. The thing that makes it worth anything is moving ShipIt's data disk off
+ext4, and that is a host migration with its own risk, downtime and rollback
+story. On ext4 as it stands, "space savings **and** isolation" is not available:
+`clone` fails closed and `clone-or-copy` is just `copy`.
 
 ## Exactly which installs a lockfile protects
 

@@ -125,11 +125,22 @@ repository-backed, is not an Ops session, and is detected as pnpm (a
   exploitable. It leaves the common case open, since several sessions on one
   project is normal use.
 - **(b) Give each session its own copy of installed packages.** Today sessions
-  share the actual files; this would copy them instead. Tampering then cannot
-  reach a session that already installed, and the agent keeps full control of its
-  own packages. **← recommended.** Costs roughly 464 MB per session — a cost
-  docs/198 was made specifically to remove — and it does not stop a session
-  installing *fresh* from being handed a tampered package.
+  share the actual files; this would give each session its own. Tampering then
+  cannot reach a session that already installed, and the agent keeps full control
+  of its own packages. **← recommended.** It does not stop a session installing
+  *fresh* from being handed a tampered package.
+
+  **Its disk cost depends on one thing, and you may get it for nearly free.**
+  Measured 2026-09-17: on the disk ShipIt uses today (ext4) this is a real copy —
+  about **1.8× the disk and 2× the install time**, the cost docs/198 was written
+  to remove. On a filesystem that supports **copy-on-write** (XFS with reflink,
+  or btrfs) the same setting keeps one copy of the bytes on disk and gives each
+  session only its own *reference* — isolation kept, disk given back. pnpm already
+  implements this (`package-import-method=clone`); it is one config value. The
+  catch is that it needs the data disk moved off ext4, which is a host migration,
+  and the saving itself is inferred from the mechanism rather than measured —
+  there is no reflink filesystem on this box to test against. See
+  [plan.md](./plan.md) option E.
 
 Both are compatible with requirement 9. Neither closes everything; what each does
 and does not close is the table in [plan.md](./plan.md).

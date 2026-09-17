@@ -55,9 +55,29 @@ already removed one option — see requirements.md.
 - [ ] H2 (poisoned store content installed normally) has no upstream fix to lean
       on. Decide whether ShipIt verifies store contents itself, or closes the
       write via option B — pricing the verification against req 7 first.
-- [ ] H3 (req 4), if Q1 is answered (b): switch to per-session copies
-      (`package-import-method=copy`), and measure the actual disk cost per
-      session before committing to it — docs/198 measured ~464 MB.
+- [ ] H3 (req 4), if Q1 is answered (b): set `package-import-method`. Prefer
+      `clone-or-copy` over `copy` — same isolation, and it becomes near-free the
+      moment the filesystem supports reflink. Never `clone`: it fails the install
+      outright on ext4 (measured, `os error 95`).
+- [ ] **Measure reflink on a real XFS(reflink=1)/btrfs host before pricing option
+      (b) as cheap.** This is the one unverified link in plan.md option E — this
+      container has no capabilities, no `mkfs.xfs`/`mkfs.btrfs` and cannot mount,
+      so the saving is inferred from the mechanism, not observed. Two claims in
+      this doc have already flipped under measurement.
+- [ ] Decide separately whether ShipIt's data disk moves off ext4. That is a host
+      storage migration with its own risk and rollback story, and it is what makes
+      option (b) cheap rather than a 1.8× disk regression.
+- [ ] **Re-test H2 with a harness that controls pnpm's verification cache.**
+      Today's runs contradicted each other depending on whether the store was
+      copied aside or poisoned in place, so no H2 conclusion may be drawn from
+      them. Also pin down `verify-store-integrity`: setting it false installed
+      poisoned bytes every time, so a real check exists and something is gating it.
+- [ ] Record that ShipIt sets neither `package-import-method` nor
+      `verify-store-integrity` anywhere in `src/` today — both run on pnpm
+      defaults, so either is a new explicit setting rather than a change.
+- [ ] No H3 work is needed for npm repos: npm does not hardlink `_cacache` into
+      `node_modules` (measured, `links=1`), so it already pays the private-copy
+      cost. H3 is pnpm-only.
 - [x] Price **registry mediation** (mediate the fetch so `npm install` still
       works — req 9). Done: plan.md option D. **Refuted** — it closes none of the
       three holes, because the attacker writes the shared files directly and
