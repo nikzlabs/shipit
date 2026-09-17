@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { isReviewCommand, resolveReviewRequest } from "./review-command.js";
+import {
+  isReviewCommand,
+  resolveReviewRequest,
+  REVIEW_NEEDS_SUB_AGENTS,
+} from "./review-command.js";
+import {
+  GLOBAL_SETTINGS,
+  settingPath,
+} from "../../server/shared/settings-catalogue/index.js";
 
 describe("isReviewCommand", () => {
   it("recognizes the bare command and the argument form", () => {
@@ -38,17 +46,23 @@ describe("resolveReviewRequest", () => {
     });
   });
 
-  it("refuses while Multi-agent sessions is off — the review has no other path", () => {
-    expect(resolveReviewRequest({ ...ready, subAgentsEnabled: false })).toEqual({
-      ok: false,
-      message: expect.stringMatching(/Multi-agent sessions in Settings/),
-    });
+  // The refusal tells the user which row to turn on, so it has to name the row
+  // the dialog renders. Asserting against the declaration is what goes red if
+  // anyone writes the words out by hand again (planning#580).
+  const declared = GLOBAL_SETTINGS["advanced.enableSubAgents"];
+
+  it("refuses while sub-agents are off — the review has no other path", () => {
+    const refusal = resolveReviewRequest({ ...ready, subAgentsEnabled: false });
+    if (refusal.ok) throw new Error("expected a refusal");
+
+    expect(refusal.message).toContain(`"${declared.label}"`);
+    expect(refusal.message).toContain(settingPath(declared.tab));
   });
 
   it("names the setting before the missing file, because it blocks every file", () => {
     expect(
       resolveReviewRequest({ ...ready, subAgentsEnabled: false, previewFile: null }),
-    ).toEqual({ ok: false, message: expect.stringMatching(/Multi-agent sessions/) });
+    ).toEqual({ ok: false, message: REVIEW_NEEDS_SUB_AGENTS });
   });
 
   it("refuses with no target file", () => {

@@ -58,7 +58,7 @@ export function composeReviewMessage(filePath: string): string {
     "from stdout and use it only to apply fixes and (optionally) re-review.",
     "",
     "If `shipit agent run` exits non-zero for ANY reason (no configured reviewer can",
-    "run right now, Multi-agent sessions off, the session not pinned/active, or the",
+    "run right now, sub-agents turned off, the session not pinned/active, or the",
     "per-turn spawn cap hit), that is the end of the review: say so in your reply and",
     "quote the reason the command printed, so the user can act on it. Do NOT review",
     "the file yourself and do NOT substitute another reviewer of your own choosing —",

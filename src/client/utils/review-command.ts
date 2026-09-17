@@ -1,4 +1,7 @@
-
+import {
+  GLOBAL_SETTINGS,
+  settingPath,
+} from "../../server/shared/settings-catalogue/index.js";
 
 const REVIEW_COMMAND = /^\/review(?:\s|$)/;
 const REVIEW_ARGUMENT = /^\/review\s+@?(\S+)/;
@@ -8,15 +11,20 @@ export type ReviewRequest =
 
   | { ok: false; message: string };
 
+const SUB_AGENTS_SETTING = GLOBAL_SETTINGS["advanced.enableSubAgents"];
+
 /**
  * A review is brokered to ShipIt's configured reviewer and has no second path —
  * the same-model `Task` fallback is gone (planning#571). `shipit agent run`
- * refuses while Multi-agent sessions is off, so without this the user spends a
- * whole turn to be told that; here they are told before it starts.
+ * refuses while sub-agents are off, so without this the user spends a whole turn
+ * to be told that; here they are told before it starts.
+ *
+ * The setting is named from its declaration so the instruction points at the row
+ * the dialog actually renders (planning#580).
  */
-export const REVIEW_NEEDS_MULTI_AGENT =
+export const REVIEW_NEEDS_SUB_AGENTS =
   "A review asks ShipIt's configured reviewer for a second opinion — turn on "
-  + "Multi-agent sessions in Settings → Advanced.";
+  + `"${SUB_AGENTS_SETTING.label}" in ${settingPath(SUB_AGENTS_SETTING.tab)}.`;
 
 export function isReviewCommand(text: string): boolean {
   return REVIEW_COMMAND.test(text);
@@ -38,7 +46,7 @@ export function resolveReviewRequest(input: {
     return { ok: false, message: "Start a session before running /review." };
   }
   if (!input.subAgentsEnabled) {
-    return { ok: false, message: REVIEW_NEEDS_MULTI_AGENT };
+    return { ok: false, message: REVIEW_NEEDS_SUB_AGENTS };
   }
   if (input.turnRunning) {
     return {

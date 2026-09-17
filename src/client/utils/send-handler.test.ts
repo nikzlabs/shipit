@@ -8,6 +8,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { SendPayload } from "../components/MessageInput/MessageInput.js";
+import { REVIEW_NEEDS_SUB_AGENTS } from "./review-command.js";
 
 function deps(over: Partial<SendDeps> = {}): SendDeps {
   return {
@@ -155,7 +156,7 @@ describe("a refused /review dispatches nothing and says so (docs/293 req 4)", ()
     expect(useUiStore.getState().toast?.message).toMatch(/needs a file/);
   });
 
-  it("refuses while Multi-agent sessions is off (planning#571)", () => {
+  it("refuses while sub-agents are off (planning#571)", () => {
     // The brokered reviewer is the only path left, and `shipit agent run`
     // refuses without this setting — so the turn would fail after spending it.
     useFileStore.setState({ previewFile: "src/a.ts" });
@@ -164,7 +165,7 @@ describe("a refused /review dispatches nothing and says so (docs/293 req 4)", ()
 
     expect(runSend(d, payload({ text: "/review" }))).toBe(false);
     expect(d.send).not.toHaveBeenCalled();
-    expect(useUiStore.getState().toast?.message).toMatch(/Multi-agent sessions/);
+    expect(useUiStore.getState().toast?.message).toBe(REVIEW_NEEDS_SUB_AGENTS);
   });
 
   it("keeps the @-mentioned files a refusal did not send", () => {

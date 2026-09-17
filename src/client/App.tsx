@@ -144,7 +144,7 @@ import { hydrateSettingValues, refreshOwnRouteSettings } from "./stores/setting-
 import { useUiStore, type RightTab } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { composeReviewMessage } from "./utils/compose-review-body.js";
-import { REVIEW_NEEDS_MULTI_AGENT } from "./utils/review-command.js";
+import { REVIEW_NEEDS_SUB_AGENTS } from "./utils/review-command.js";
 import { handleSessionResume } from "./stores/actions/session-actions.js";
 import {
   parseRepoLabel,
@@ -1057,7 +1057,7 @@ export default function App() {
     (reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
       if (!useSettingsStore.getState().enableSubAgents) {
-        useUiStore.getState().setToast({ message: REVIEW_NEEDS_MULTI_AGENT });
+        useUiStore.getState().setToast({ message: REVIEW_NEEDS_SUB_AGENTS });
         return;
       }
       const prompt = composeReviewMessage(reviewFilePath);

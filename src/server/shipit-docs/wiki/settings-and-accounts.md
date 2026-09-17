@@ -259,10 +259,11 @@ and are edited like any other role's.
 **Every review is brokered, so it needs the sub-agent setting on** — Settings →
 Advanced, *"Allow spawning another agent for a sub-task"*
 (`advanced.enableSubAgents`). With it off there is no review: `/review` and
-*Ask agent to review* refuse in the UI, and `shipit agent run --role reviewer`
-refuses too. Nothing substitutes for it — a review written by the model that
-wrote the work is not a second opinion, so when the brokered run cannot happen,
-tell the user why instead of reviewing it yourself.
+*Ask agent to review* refuse in the UI and name that row to turn on, and
+`shipit agent run --role reviewer` refuses the same way. Nothing substitutes for
+it — a review written by the model that wrote the work is not a second opinion,
+so when the brokered run cannot happen, tell the user why instead of reviewing
+it yourself.
 
 ## SSH hosts
 

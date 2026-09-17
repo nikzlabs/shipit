@@ -12,6 +12,7 @@ import {
   HOST_SHUTDOWN_CONSULT_DETAIL,
 } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
+import { GLOBAL_SETTINGS, settingPath } from "../../shared/settings-catalogue/index.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitManager } from "../../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
@@ -247,6 +248,22 @@ describe("runSubAgent — authorization gates", () => {
     const { deps, runner } = makeDeps({ enableSubAgents: false });
     await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 403);
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
+  });
+
+  // The refusal is the user's only instruction, so it has to name the row the
+  // dialog renders. Reading the declaration is what goes red if the words are
+  // ever written out by hand again (planning#580).
+  it("names the declared row and its tab, not a heading of its own", async () => {
+    const declared = GLOBAL_SETTINGS["advanced.enableSubAgents"];
+    const { deps } = makeDeps({ enableSubAgents: false });
+
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+      403,
+    );
+
+    expect(err.message).toContain(`"${declared.label}"`);
+    expect(err.message).toContain(settingPath(declared.tab));
   });
 
   it("rejects an unknown agent (400)", async () => {
