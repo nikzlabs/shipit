@@ -1691,6 +1691,220 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
   });
 });
 
+/**
+ * docs/252-custom-models req 26 — the sign-in window does not move while the user
+ * signs in.
+ *
+ * The guarantee is structural, and so is the test: jsdom has no layout engine, so
+ * nothing here measures a pixel — and a test that measured five states and
+ * compared them would be pinning the states rather than the rule, which is how
+ * `ChallengePlaceholder` drifted 20px behind the challenge it stands in for while
+ * every test still passed. What is pinned instead is what makes the height a
+ * constant in CSS: everything that changes as a login proceeds is inside ONE box
+ * of fixed height, and the only thing below that box is one row of same-size
+ * buttons. Within the states it walks, markup that moves outside the box — a
+ * state's line, the error put back underneath it — fails this without anyone
+ * having to notice the jump. What it cannot see is a state it does not reach and
+ * a geometry it cannot measure; this repo has no browser-driven suite, and the
+ * live measurements are recorded in `docs/252-custom-models/plan.md` instead.
+ */
+describe("the sign-in step holds one height (docs/252-custom-models req 26)", () => {
+  const anthropicAccount = {
+    id: "acct-anthropic-1",
+    serviceId: "anthropic", billingMode: "sub", via: "account",
+    label: "Anthropic account 1", isPrimary: true, status: "authenticating",
+    createdAt: 1, updatedAt: 1,
+  };
+
+  const stubAccountApi = (account: Record<string, unknown> = anthropicAccount): void => {
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
+    });
+  };
+
+  const stage = () => screen.getByTestId("add-service-stage");
+
+  /**
+   * What the dialog draws OUTSIDE the fixed box, with the footer's own contents
+   * blanked — the footer's buttons legitimately change (Cancel becomes Done,
+   * Save and Sign in come and go) and are checked by size instead. `outerHTML`,
+   * so the dialog's own classes and width variable are in the comparison too, and
+   * the box's attributes survive the blanking: its `height` is part of it.
+   */
+  const outsideTheBox = (): string => {
+    const clone = screen.getByTestId("add-service-dialog").cloneNode(true) as HTMLElement;
+    clone.querySelector('[data-testid="add-service-stage"]')?.replaceChildren();
+    clone.querySelector('[data-testid="add-service-footer"]')?.replaceChildren();
+    return clone.outerHTML;
+  };
+
+  /** The size class of each footer child — and `not-a-button` for anything else
+   *  in there, which is the other way a footer grows a second row. */
+  const footerRow = (): string[] =>
+    [...screen.getByTestId("add-service-footer").children].map((el) =>
+      el.tagName === "BUTTON"
+        ? (el.className.split(/\s+/).find((c) => c.startsWith("h-")) ?? "unsized")
+        : "not-a-button",
+    );
+
+  it("keeps every state of one sign-in inside the same fixed-height box", async () => {
+    stubAccountApi();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+    const seen: { state: string; height: string; outside: string; footer: string[] }[] = [];
+    const record = (state: string): void => {
+      seen.push({ state, height: stage().style.height, outside: outsideTheBox(), footer: footerRow() });
+    };
+
+    // Idle: the prose, the token field and its Save — nothing in flight.
+    expect(screen.getByTestId("add-service-secret")).toBeInTheDocument();
+    // The valve the fixed height needs: a state that outgrows the box — the CLI
+    // output buffer is 200px on its own once opened — scrolls inside it, so
+    // being wrong about the constant costs a scrollbar and never a jump.
+    expect(stage().className).toContain("overflow-y-auto");
+    record("idle");
+
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    await waitFor(() => expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument());
+    record("waiting for the code");
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", anthropicAccount.id, {
+        loginId: "anthropic-oauth",
+        accountId: anthropicAccount.id,
+        verificationUri: "https://claude.ai/oauth/authorize",
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId(`provider-account-challenge-${anthropicAccount.id}`)).toBeInTheDocument());
+    record("the challenge");
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", anthropicAccount.id, null);
+      useSettingsStore.getState().setProviderAccountAuthError("anthropic-oauth", anthropicAccount.id, "That code expired.");
+    });
+    await waitFor(() => expect(screen.getByTestId("add-service-signin-stalled")).toBeInTheDocument());
+    record("stalled");
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([
+        { ...anthropicAccount, status: "ready", externalId: "ext-1" } as never,
+      ]);
+    });
+    await waitFor(() => expect(screen.getByTestId("add-service-signed-in")).toBeInTheDocument());
+    record("connected");
+
+    expect(seen.map((s) => s.state)).toHaveLength(5);
+    // A CONCRETE length, not merely "the same in every state": `height: auto` is
+    // stable across the states and is the resizing bug itself.
+    expect(seen[0].height).toMatch(/^\d+(\.\d+)?(rem|px)$/);
+    for (const state of seen) {
+      expect({ state: state.state, height: state.height })
+        .toEqual({ state: state.state, height: seen[0].height });
+      expect({ state: state.state, outside: state.outside })
+        .toEqual({ state: state.state, outside: seen[0].outside });
+      // One row of `md` buttons, whichever buttons this state has.
+      expect({ state: state.state, footer: [...new Set(state.footer)] })
+        .toEqual({ state: state.state, footer: ["h-8"] });
+      expect(screen.getByTestId("add-service-footer").className).toContain("flex-nowrap");
+    }
+  });
+
+  it("puts the error line inside the box, where it cannot move the window", async () => {
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      if (url.endsWith("/login")) {
+        return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: "spawn failed" }) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: anthropicAccount, accounts: [anthropicAccount] }) });
+    });
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+    const error = await screen.findByTestId("add-service-error");
+    expect(error).toHaveTextContent("spawn failed");
+    expect(stage().contains(error)).toBe(true);
+  });
+
+  it("reserves the failure's line on a step that is only a key field", async () => {
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      if (url === "/api/credential-routes") {
+        return Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve({ error: "That key was refused." }) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ routes: [] }) });
+    });
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    // DeepSeek has one billing mode, so the step answers itself (req 18).
+    await userEvent.click(screen.getByTestId("add-service-option-deepseek"));
+    await userEvent.type(screen.getByTestId("add-service-secret"), "sk-deepseek");
+
+    /** The dialog with the slot's contents and the footer's blanked out. */
+    const outsideTheSlot = (): string => {
+      const clone = screen.getByTestId("add-service-dialog").cloneNode(true) as HTMLElement;
+      clone.querySelector('[data-testid="add-service-error-slot"]')?.replaceChildren();
+      clone.querySelector('[data-testid="add-service-footer"]')?.replaceChildren();
+      return clone.innerHTML;
+    };
+
+    // A key step is never given the sign-in's box: it has one state, and its
+    // natural height varies by service from 98px to 190px, so a 272px box would
+    // be a hole under most of them.
+    expect(stage().style.height).toBe("");
+    const slot = screen.getByTestId("add-service-error-slot");
+    expect(slot.className).toContain("h-8");
+    // A slot a longer message can still grow is not reserved.
+    expect(slot.className).toContain("overflow-y-auto");
+    const before = outsideTheSlot();
+
+    await userEvent.click(screen.getByTestId("add-service-save"));
+    await waitFor(() => expect(screen.getByTestId("add-service-error")).toHaveTextContent("That key was refused."));
+
+    expect(slot.contains(screen.getByTestId("add-service-error"))).toBe(true);
+    expect(outsideTheSlot()).toBe(before);
+  });
+
+  /**
+   * The title is the one thing outside the box, and a *successful* login is what
+   * rewrites it: `recordAccountIdentity` adopts the authenticated email over a
+   * generated name, so at a narrow width the title rewraps and the window moves at
+   * the moment the sign-in completes. Found by the independent review, which
+   * traced the rename to the manager rather than inferring it.
+   */
+  it("opens a reconnect in that same box, under a title the sign-in cannot rewrite", async () => {
+    const now = Date.now();
+    const account = { id: "acct_1", serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, label: "Anthropic account 1", isPrimary: true, status: "ready" as const, externalId: "ext-1", createdAt: now, updatedAt: now };
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+    ]);
+    useSettingsStore.getState().setProviderAccounts([account]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Anthropic account 1");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(stage().style.height).toMatch(/^\d+(\.\d+)?(rem|px)$/);
+    expect(stage().contains(screen.getByTestId("add-service-signin-starting"))).toBe(true);
+
+    const title = screen.getByTestId("add-service-title").textContent;
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([{ ...account, label: "someone@example.com" }]);
+    });
+    expect(screen.getByTestId("add-service-title").textContent).toBe(title);
+    expect(title).toContain("Anthropic account 1");
+  });
+});
+
 describe("the compact service card (docs/252 req 19)", () => {
   it("drops the per-card description prose", () => {
     useSettingsStore.getState().setCredentialRoutes([

@@ -3245,9 +3245,65 @@ measure the same, which is why the first bar is `h-8` — the slot it stands in 
 full-width `md` button. (It was `h-4` while that slot held an inline link, whose line box is
 16.) It is keyed off `startingSignIn`, not off the account: keyed off the account it arrived
 one request late, so the dialog opened short on a line of prose and then grew by the height of
-a panel. Measured live against the dogfood instance, the waiting panel and the challenge are
+a panel. Measured live against the dogfood instance, the waiting panel and the challenge were
 **124px** each — the collapsed CLI-output disclosure included, since that slot is reserved from
-the first frame — and step 3 holds one height from the sign-in click to the code landing.
+the first frame.
+
+**That pairing did not hold, and the section below is why it was never going to.**
+
+## One height for the whole sign-in (req 26)
+
+**What was measured on 2026-09-17**, in the dogfood instance, driving one Anthropic sign-in end
+to end at the dialog's 448px width: **302px** idle, **329** once the wizard started, **349**
+when the code landed, and a success screen ~130px shorter again. Antigravity's challenge is
+**389**. The dialog is centred, so every one of those moved the whole window — title, panel and
+buttons — and only the first followed a click of the user's. The 20px between the waiting panel
+and the challenge is exactly the challenge's reserved "Code submitted" line plus its gap, added
+after the placeholder was written; Antigravity's extra 60px is its 60-second deadline sentence,
+added with the harness (docs/301). So the pairing above did not merely drift — **two shapes
+maintained against each other is a mechanism that drifts by construction**, silently, and every
+test still passed while it did.
+
+**The fix is a fixed height, not a better pairing.** Everything that varies while the step is
+open — the sign-in panel, the token field, the error line and the model chips — is a child of
+one box (`add-service-stage`), and on a step that signs the user in that box is
+`SIGN_IN_STAGE_HEIGHT` (**17rem**) with `overflow-y-auto`. Three consequences, all of them the
+point:
+
+- The height is a constant in **CSS**, so no state can change it. Being wrong about the constant
+  costs a scrollbar, never a jump — and the CLI-output disclosure, which grows the content to
+  469px when a user opens it, now scrolls inside the box rather than growing the window by
+  200px.
+- The guarantee is **testable without a layout engine**. The jsdom guard walks one sign-in
+  through all five states and asserts a *concrete* fixed length on the box (`height: auto`
+  would be stable across states and is the bug itself), that the footer is one row of `h-8`
+  buttons and nothing else, and that the dialog's markup *outside* the box is byte-identical in
+  every state — the failure the old approach could not produce. Each was proved red on its own
+  defect before being left green. What it cannot see is a state it does not walk and a geometry
+  it cannot measure; this repo has no browser-driven suite, so the live figures above are the
+  record of the geometry, taken by hand.
+- The number is measured for the narrowest width ShipIt is used at — a fullscreen dialog at
+  360px wraps Antigravity's challenge to 242px, plus the chip row, and 320px still fits — so it
+  is generous of the ~160px an idle Anthropic step needs. That slack sits above the chips,
+  which are the box's last child (`mt-auto`) and stay on its floor.
+- **The title is the one thing outside the box, and it is frozen.** A successful login adopts
+  the authenticated email over a generated account name (`recordAccountIdentity`), so a
+  reconnect's title could rewrap — and move the window — at the moment the sign-in completed.
+  `openingLabel` holds the name the dialog opened on. Found by the independent review, which
+  traced the rename to the manager rather than inferring it from the UI.
+
+**A key-only step gets the reserved line instead of the box.** Nothing there changes as anything
+proceeds — the field, the hint and the mode's hazard notice are the same before and after the
+paste — and the one thing that can arrive is *Save*'s failure, so it gets a two-line
+fixed-height slot (`KEY_ERROR_SLOT`) and the step keeps its natural height. Those steps also
+differ from each other by service (98px for DeepSeek, 190px for Vercel, same day), so one box
+big enough for all of them is a hole under most of them, and the sign-in's 272px box is a hole
+under every one.
+
+**Steps 1 and 2 keep their own heights** (495px and 246px). They are different screens reached
+by a click rather than states of a sign-in — the dialog already changes *width* between step 1
+and the rest, agreed earlier for the same reason — and step 1 is a table of every service, so
+one height across all three would strand a mode choice in a box twice its size.
 
 ## The compact card (reqs 19, 20, 21)
 

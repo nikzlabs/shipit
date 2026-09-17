@@ -512,3 +512,20 @@ the first of these. All six are fixed.
       The identity, vision and price entries went with it. Two of the five records were missed at
       first (Zen and Go kept `retired: []`), which no invariant test could see, since they iterate
       `mode.retired`; the guard added for it names the five pairs by hand.
+- [x] **Req 26: one height for the whole sign-in, 2026-09-17.** One Anthropic sign-in
+      moved the centred window three times unbidden (302 → 329 → 349px, then ~217 on
+      connecting), and Antigravity's challenge is 389 — the placeholder and the challenge
+      were two shapes maintained against each other, and had drifted 20px apart. Everything
+      that varies while the step is open now lives in one box of fixed height
+      (`SIGN_IN_STAGE_HEIGHT`, 17rem, `overflow-y-auto`, chips on its floor); a key-only
+      step keeps its natural height and gets a two-line reserved slot for *Save*'s failure
+      instead. Verified live: on the desktop dialog the window holds 409px across idle,
+      waiting and challenge (it moved 302 → 329 → 349 before), and at 390px and 320px — where
+      the dialog is fullscreen, so what is checked is that its content does not overflow the
+      box — Antigravity's challenge still fits. Opening the CLI-output buffer (469px of
+      content) now scrolls inside the box instead of growing the window by 200px. Guards walk
+      the five states asserting a concrete fixed length on the box, the footer's one row of
+      same-size buttons and byte-identical markup outside the box; each was proved red on its
+      own defect first. The independent review found the remaining hole — a reconnect's title
+      sits outside the box and a successful login renames the account to its email — and the
+      title is frozen for the dialog's life.

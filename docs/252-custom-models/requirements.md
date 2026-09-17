@@ -361,6 +361,16 @@ No open questions remain.
     identifiers, API paths, stored columns and CLI flags are free to keep saying `service`,
     and a user never sees them.
 
+26. **The sign-in window does not move while the user signs in.** The window that connects a
+    subscription holds one height for every state the sign-in passes through — waiting for the
+    provider's code, showing it, reporting a failure, offering a retry, saying the account is
+    connected, and printing whatever the harness's CLI failed with. States arrive on the
+    provider's clock rather than the user's, so a window that resizes with them moves under
+    someone reading a code off it or reaching for the button beside it. A state too tall for
+    the window is shown inside it, never by growing it. This is about the login screen's
+    states; choosing a provider and choosing a billing mode are earlier screens, reached by a
+    click, and keep their own sizes.
+
 ## Open questions
 
 _None._
@@ -1076,6 +1086,17 @@ human, but most of the mechanism did not. What the human actually said, in order
   harness" as it was asked for, and cross-backend review was right to name them — they are here
   because a column the install cannot act on, and a table of dashes meaning "not known yet", both
   say something false.
+- "when logging in with the subscription, with Claude, Antigravity and so on, we show a UI window
+  for that. This window currently sometimes changes height depending on the state the login
+  screen is in. Please make it so the height never changes, and we need some kind of test for
+  that because this is very important for the UX" → req 26. The requirement is the UX statement;
+  which element holds the height, and the reserved line a key-only step gets instead, are the
+  agent's design and live in `plan.md`. **Req 26's last sentence is the agent's reading, not the
+  human's**: "the state the login screen is in" was taken to mean the states of the sign-in
+  step, leaving the provider list and the billing-mode choice — earlier screens, each reached
+  by a click, and already of different *widths* by an earlier decision — at their own heights.
+  Named here because the independent review was right that nobody approved the exclusion; if it
+  is wrong, the fix is one height across all three steps and the requirement says so instead.
 - "I meant leaving the panels with the services as is, with the separate table on the right. You
   extended the panels and included the support inside these panels, which is not what I wanted"
   → req 22's second sentence. The first cut read "table" as a set of columns *within* each row,

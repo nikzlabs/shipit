@@ -934,6 +934,37 @@ function addServiceDialogWidth(step1: boolean, harnessCount: number): string {
 }
 
 /**
+ * **A sign-in happens in one box of one height, whatever state it is in** (req 26).
+ *
+ * The dialog is centred, so a state 20px taller than the one before it moves the
+ * whole window under a user reading a code off it. Pairing the placeholder's shape
+ * against the challenge's is what this replaces, and that mechanism drifts by
+ * construction: it was 20px out, silently, with every test green. A fixed height
+ * plus `overflow-y-auto` makes it a constant in CSS instead — being wrong about
+ * the number costs a scrollbar, never a jump — and that is what a jsdom guard can
+ * pin without a layout engine.
+ *
+ * Measured, not derived, for the tallest state at the narrowest width ShipIt is
+ * used at: a fullscreen dialog at 360px wraps Antigravity's challenge to 242px,
+ * plus the chip row and its gap, and 320px still fits. It is generous of the
+ * ~160px an idle Anthropic step needs, and that slack is the cost of the
+ * guarantee. Full measurements and the scope — steps 1 and 2 keep their own
+ * heights, being screens rather than states — in `docs/252-custom-models/plan.md`.
+ */
+const SIGN_IN_STAGE_HEIGHT = "17rem";
+
+/**
+ * **A step that is only a key field gets the reserved line, not the box.**
+ *
+ * Nothing there changes as anything proceeds; the one thing that can arrive is
+ * *Save*'s failure. And those steps differ from each other by service (98px for
+ * DeepSeek, 190px for Vercel), so one box big enough for all of them is a hole
+ * under most of them. Two lines is what a server's message wraps to at this width,
+ * and the overflow is why the slot stays reserved for a longer one.
+ */
+const KEY_ERROR_SLOT = "h-8 overflow-y-auto";
+
+/**
  * The pair scrolls sideways as ONE unit when the window cannot hold it, with the
  * service names pinned (`sticky left-0` on the list column below). A tick is
  * only information next to the name it is about, so the alternative — dropping
@@ -1189,6 +1220,19 @@ function AddServiceDialog({
   const signInAccount = signInAccountId
     ? accounts.find((a) => a.id === signInAccountId)
     : undefined;
+  /**
+   * **The account's name as the dialog opened on it** (req 26).
+   *
+   * The title is the one part of the dialog outside the fixed box, and the
+   * account's label is the one part of the title that can change while the dialog
+   * is open: a login that succeeds adopts the authenticated email over a
+   * generated name (`recordAccountIdentity`), which at a narrow width rewraps the
+   * title and moves the window at the exact moment the sign-in completes. Frozen
+   * on the first render that has the account — a reconnect is mounted BY that
+   * row's menu, so that is the render the dialog opens on.
+   */
+  const openingLabel = useRef(signInAccount?.label);
+  if (openingLabel.current === undefined && signInAccount) openingLabel.current = signInAccount.label;
 
   if (!reconnectLeftReady && signInAccount && signInAccount.status !== "ready") {
     setReconnectLeftReady(true);
@@ -1540,7 +1584,7 @@ function AddServiceDialog({
         <DialogTitle className="text-sm font-semibold" data-testid="add-service-title">
           {reconnectAccountId === undefined ? "Add a model provider" : "Reconnect"}
           {service ? ` — ${service.name}` : ""}
-          {reconnectAccountId !== undefined && signInAccount ? ` · ${signInAccount.label}` : ""}
+          {reconnectAccountId !== undefined && openingLabel.current ? ` · ${openingLabel.current}` : ""}
         </DialogTitle>
 
         {!service && (
@@ -1729,133 +1773,163 @@ function AddServiceDialog({
             <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
               3 · {acceptsAccount ? "Sign in" : "Paste the key"}
             </p>
-            {acceptsAccount && (
-              <div className="space-y-2" data-testid="add-service-account-only">
-                {signedIn ? (
-                  <p className="text-xs text-(--color-success)" data-testid="add-service-signed-in">
-                    Connected. {service.name} {MODE_LABEL[billingMode].toLowerCase()} is ready —
-                    its models are selectable now.
-                  </p>
-                ) : signInStalled ? (
-
-                  <AuthPanel>
-                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
-                      {authError ?? "The sign-in stopped before the account connected."} Try again
-                      below, or close this to add nothing.
+            {/*
+              **Everything that changes while the step is open is in this box**,
+              the error line included — a line that appeared *below* it would move
+              the window exactly as the panel used to. (The one exception is the
+              title, which is above it and frozen for the dialog's life — see
+              `openingLabel`.) Where the step signs the user in, the box is one
+              fixed height ({@link SIGN_IN_STAGE_HEIGHT}) and the chips are its
+              last child, so its slack sits above a row that is there in every
+              state. Where the step is a key field, nothing varies but the failure
+              from *Save*, which gets the reserved line ({@link KEY_ERROR_SLOT}).
+            */}
+            <div
+              className="flex flex-col gap-2 overflow-y-auto"
+              {...(acceptsAccount ? { style: { height: SIGN_IN_STAGE_HEIGHT } } : {})}
+              data-testid="add-service-stage"
+            >
+              {acceptsAccount && (
+                <div className="space-y-2" data-testid="add-service-account-only">
+                  {signedIn ? (
+                    <p className="text-xs text-(--color-success)" data-testid="add-service-signed-in">
+                      Connected. {service.name} {MODE_LABEL[billingMode].toLowerCase()} is ready —
+                      its models are selectable now.
                     </p>
-                    {signInProvider && signInAccountId && (
-                      <AuthCliOutput provider={signInProvider} accountId={signInAccountId} />
-                    )}
-                  </AuthPanel>
-                ) : signInAccount || startingSignIn ? (
-                  <>
-                    {pendingAuth && signInAccount ? (
+                  ) : signInStalled ? (
 
-                      <AccountChallenge
-                        provider={signInProvider ?? "claude"}
-                        account={signInAccount}
-                        serviceName={service.name}
-                        onError={setError}
-                      />
-                    ) : (
+                    <AuthPanel>
+                      <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
+                        {authError ?? "The sign-in stopped before the account connected."} Try again
+                        below, or close this to add nothing.
+                      </p>
+                      {signInProvider && signInAccountId && (
+                        <AuthCliOutput provider={signInProvider} accountId={signInAccountId} />
+                      )}
+                    </AuthPanel>
+                  ) : signInAccount || startingSignIn ? (
+                    <>
+                      {pendingAuth && signInAccount ? (
 
-                      <ChallengePlaceholder
-                        shape={signInProvider && PASTE_SHAPED_SIGN_INS.has(signInProvider) ? "paste" : "code"}
-                        {...(authStatus ? { status: authStatus } : {})}
-                        testId="add-service-signin-starting"
-                      >
-                        {/* The buffer, collapsed, and in the same place it will
-                            be a moment from now — so the panel is the whole of
-                            the sign-in and the arrival of the field moves
-                            nothing. */}
-                        {signInProvider && (
-                          <AuthCliOutput
-                            provider={signInProvider}
+                        <AccountChallenge
+                          provider={signInProvider ?? "claude"}
+                          account={signInAccount}
+                          serviceName={service.name}
+                          onError={setError}
+                        />
+                      ) : (
 
-                            // because appearing later is what grew the panel.
-                            {...(signInAccountId ? { accountId: signInAccountId } : {})}
-                            evenWhenEmpty
-                          />
-                        )}
-                      </ChallengePlaceholder>
-                    )}
-                    <p className="text-[11px] text-(--color-text-tertiary)">
-                      Keep this open until the account connects — this step will say so.
-                      Closing it, however you close it, calls the sign-in off and adds nothing.
+                        <ChallengePlaceholder
+                          shape={signInProvider && PASTE_SHAPED_SIGN_INS.has(signInProvider) ? "paste" : "code"}
+                          {...(authStatus ? { status: authStatus } : {})}
+                          testId="add-service-signin-starting"
+                        >
+                          {/* The buffer, collapsed, and in the same place it will
+                              be a moment from now — so the panel is the whole of
+                              the sign-in and the arrival of the field moves
+                              nothing. */}
+                          {signInProvider && (
+                            <AuthCliOutput
+                              provider={signInProvider}
+
+                              // because appearing later is what grew the panel.
+                              {...(signInAccountId ? { accountId: signInAccountId } : {})}
+                              evenWhenEmpty
+                            />
+                          )}
+                        </ChallengePlaceholder>
+                      )}
+                      <p className="text-[11px] text-(--color-text-tertiary)">
+                        Keep this open until the account connects — this step will say so.
+                        Closing it, however you close it, calls the sign-in off and adds nothing.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-(--color-text-secondary)">
+                      {service.name}&rsquo;s {MODE_LABEL[billingMode].toLowerCase()} is connected by
+                      signing in, which happens right here — ShipIt never sees your password.
                     </p>
-                  </>
-                ) : (
-                  <p className="text-xs text-(--color-text-secondary)">
-                    {service.name}&rsquo;s {MODE_LABEL[billingMode].toLowerCase()} is connected by
-                    signing in, which happens right here — ShipIt never sees your password.
+                  )}
+                  {!harnessInstalled && (
+                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-harness-missing">
+                      The harness that runs this sign-in is not installed, so this subscription
+                      cannot be connected on this install.
+                    </p>
+                  )}
+                  {!signInAccount && blockedBySignIn && (
+                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-blocked">
+                      {blockedBySignIn}
+                    </p>
+                  )}
+                </div>
+              )}
+              {acceptsString && (!acceptsAccount || signInIdle) && (
+                <>
+                  {acceptsAccount && (
+                    <p
+                      className="pt-1 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)"
+                      data-testid="add-service-string-alternative"
+                    >
+                      Or paste a token
+                    </p>
+                  )}
+                  <input
+
+                    autoFocus={!acceptsAccount}
+                    type="password"
+                    value={secret}
+                    onChange={(e) => { setSecret(e.target.value); setError(""); }}
+                    placeholder="…"
+                    aria-label={`${service.name} credential`}
+                    className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+                    data-testid="add-service-secret"
+                    // The same value the row's Replace secret box writes, at the
+                    // other end of its life (docs/299-agent-settings-access req 7).
+                    {...bindSetting("services.credentials[].secret")}
+                  />
+                  <p className="text-[11px] text-(--color-text-tertiary)">
+                    {modeAllowsMultipleCredentials(billingMode)
+                      ? "ShipIt fails over between the credentials of one subscription when one runs out."
+                      : "One key per provider. Metered — no quota to report, so its card shows no usage."}
                   </p>
-                )}
-                {!harnessInstalled && (
-                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-harness-missing">
-                    The harness that runs this sign-in is not installed, so this subscription
-                    cannot be connected on this install.
-                  </p>
-                )}
-                {!signInAccount && blockedBySignIn && (
-                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-blocked">
-                    {blockedBySignIn}
-                  </p>
-                )}
-              </div>
-            )}
-            {acceptsString && (!acceptsAccount || signInIdle) && (
-              <>
-                {acceptsAccount && (
-                  <p
-                    className="pt-1 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)"
-                    data-testid="add-service-string-alternative"
+                  {/* The same hazard the card will carry, said BEFORE the key is
+                      pasted — the one moment the user can still decide against
+                      the mode. */}
+                  <ModeNotice serviceId={service.id} billingMode={billingMode} />
+                </>
+              )}
+              {acceptsAccount ? (
+                error && (
+                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-error">{error}</p>
+                )
+              ) : (
+                <div className={KEY_ERROR_SLOT} data-testid="add-service-error-slot">
+                  {error && (
+                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-error">{error}</p>
+                  )}
+                </div>
+              )}
+              <div className="mt-auto flex flex-wrap gap-1">
+                {modelIds(service, billingMode).map((id) => (
+                  <span
+                    key={id}
+                    className="rounded bg-(--color-bg-secondary) px-1.5 py-0.5 text-[10px] text-(--color-text-tertiary)"
                   >
-                    Or paste a token
-                  </p>
-                )}
-                <input
-
-                  autoFocus={!acceptsAccount}
-                  type="password"
-                  value={secret}
-                  onChange={(e) => { setSecret(e.target.value); setError(""); }}
-                  placeholder="…"
-                  aria-label={`${service.name} credential`}
-                  className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-                  data-testid="add-service-secret"
-                  // The same value the row's Replace secret box writes, at the
-                  // other end of its life (docs/299-agent-settings-access req 7).
-                  {...bindSetting("services.credentials[].secret")}
-                />
-                <p className="text-[11px] text-(--color-text-tertiary)">
-                  {modeAllowsMultipleCredentials(billingMode)
-                    ? "ShipIt fails over between the credentials of one subscription when one runs out."
-                    : "One key per provider. Metered — no quota to report, so its card shows no usage."}
-                </p>
-                {/* The same hazard the card will carry, said BEFORE the key is
-                    pasted — the one moment the user can still decide against
-                    the mode. */}
-                <ModeNotice serviceId={service.id} billingMode={billingMode} />
-              </>
-            )}
-            <div className="flex flex-wrap gap-1">
-              {modelIds(service, billingMode).map((id) => (
-                <span
-                  key={id}
-                  className="rounded bg-(--color-bg-secondary) px-1.5 py-0.5 text-[10px] text-(--color-text-tertiary)"
-                >
-                  {id}
-                </span>
-              ))}
+                    {id}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         )}
 
-        {error && (
-          <p className="mt-2 text-xs text-(--color-text-error)" data-testid="add-service-error">{error}</p>
-        )}
-
-        <div className="mt-4 flex justify-end gap-2">
+        {/* ONE row of `md` buttons, in every state: which buttons are in it
+            changes as the sign-in proceeds (Cancel becomes Done, Save and Sign
+            in come and go), and its height must not — it is the one thing below
+            the fixed box, so a second row here would move the window as surely
+            as a taller panel. `flex-nowrap` is the default and is written out
+            because it is load-bearing; a guard test pins it and the size. */}
+        <div className="mt-4 flex flex-nowrap justify-end gap-2" data-testid="add-service-footer">
           {/* Once the account is connected there is nothing left to call off,
               so the way out stops being "Cancel" and becomes "Done" — which is
               also the confirmation, since the flow's last screen is the one
