@@ -603,7 +603,6 @@ function applyGlobalSettings(settings: BootstrapResponse["settings"]): void {
     .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
-  if (data.settings.autoCreatePr !== undefined) useSettingsStore.getState().setAutoCreatePr(data.settings.autoCreatePr);
 
   /*
     Every generated row, from its declaration's `wire` — and then the generated

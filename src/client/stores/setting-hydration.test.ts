@@ -18,7 +18,10 @@ import {
   ownRouteOf,
 } from "./setting-values.js";
 import { useSettingsStore } from "./settings-store.js";
-import type { AnySettingDeclaration } from "../../server/shared/settings-catalogue/index.js";
+import {
+  ALL_SETTINGS,
+  type AnySettingDeclaration,
+} from "../../server/shared/settings-catalogue/index.js";
 
 /** Every generated row the settings payload carries, which is every one with a `wire`. */
 const PAYLOAD_ROWS = GENERATED_SETTINGS.filter((d) => d.wire !== undefined);
@@ -105,9 +108,11 @@ describe("a payload's generated rows", () => {
   // belonging to an unconverted tab cannot seed a value its hydration would
   // never correct (P18).
   it("records nothing for a setting the record does not hold", () => {
-    hydrateSettingValues({ autoCreatePr: true });
+    hydrateSettingValues({
+      nonTurnModel: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
+    });
 
-    expect(recorded("integrations.autoCreatePr")).toBeUndefined();
+    expect(recorded("services.nonTurnModel")).toBeUndefined();
   });
 });
 
@@ -183,6 +188,32 @@ describe("the rows the payload does not carry", () => {
     await refreshOwnRouteSettings();
 
     expect(recorded("advanced.releaseChannel")).toBe("edge");
+  });
+
+  /*
+    A `writeOnly` address stores its value and never answers it, so there is no
+    read to pair with the write. Asking anyway would be a 404 on every settings
+    refresh — a request that can only ever fail, for a record entry nothing
+    could ever fill. The rule is asserted, not the two paths: what must never be
+    asked is any address the declarations mark this way.
+  */
+  it("asks nothing of an address that only stores", async () => {
+    const fetchMock = answer({
+      "/api/updates/channel": { channel: "edge" },
+      "/api/egress/settings": { globalEnabled: false },
+      "/api/voice/webhook": { url: "https://hook.example/notes" },
+    });
+
+    await refreshOwnRouteSettings();
+
+    const writeOnly = ALL_SETTINGS.filter((d) => ownRouteOf(d)?.writeOnly);
+    expect(writeOnly.length).toBeGreaterThan(0);
+    const asked = fetchMock.mock.calls.map(([url]) => url);
+    for (const declaration of writeOnly) {
+      expect(asked, `${declaration.key} has no read to make`)
+        .not.toContain(ownRouteOf(declaration)!.path);
+      expect(recorded(declaration.key)).toBeUndefined();
+    }
   });
 
   it("keeps it when the answer has no such field", async () => {

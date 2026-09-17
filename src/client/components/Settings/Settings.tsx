@@ -32,9 +32,6 @@ export const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instr
 type Tab = (typeof SETTINGS_TABS)[number];
 
 export interface SettingsProps {
-  githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
-  onGitHubTokenSubmit: (token: string) => Promise<void> | void;
-  onGitHubLogout: () => void;
   agentList?: AgentOption[];
   onFullReset?: () => void;
   hasActiveSession: boolean;
@@ -42,9 +39,6 @@ export interface SettingsProps {
 }
 
 export function Settings({
-  githubStatus,
-  onGitHubTokenSubmit,
-  onGitHubLogout,
   agentList = [],
   onFullReset,
   hasActiveSession,
@@ -142,12 +136,7 @@ export function Settings({
           </TabsContent>
 
           <TabsContent value="integrations">
-            <SettingsIntegrations
-              githubStatus={githubStatus}
-              onGitHubLogout={onGitHubLogout}
-              onGitHubTokenSubmit={onGitHubTokenSubmit}
-              hasActiveSession={hasActiveSession}
-            />
+            <SettingsIntegrations hasActiveSession={hasActiveSession} />
           </TabsContent>
 
           <TabsContent value="git">

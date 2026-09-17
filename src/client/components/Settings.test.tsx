@@ -19,6 +19,7 @@ afterEach(() => {
   });
   useSettingsStore.getState().setProviderAccounts([]);
   useSettingsStore.getState().setCredentialRoutes([]);
+  useSettingsStore.getState().setGithubStatus({ authenticated: false });
   useSettingsStore.setState({
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
@@ -54,9 +55,6 @@ const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, hasRu
 const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
 
 const defaultProps: SettingsProps = {
-  githubStatus: { authenticated: false },
-  onGitHubTokenSubmit: vi.fn(),
-  onGitHubLogout: vi.fn(),
   agentList: [claudeAuthed],
   hasActiveSession: false,
   onClose: vi.fn(),
@@ -373,52 +371,93 @@ describe("Settings - Model providers → Anthropic subscription", () => {
 });
 
 describe("Settings - Integrations tab (GitHub)", () => {
-  async function renderOnGitHubTab(props: Partial<SettingsProps> = {}) {
-    const result = render(<Settings {...defaultProps} {...props} />);
+  /*
+    The connection is read from the store rather than passed in, because the
+    account is one fact with readers all over the app and a generated component
+    receives only its setting's key (docs/308-data-driven-settings slice 5).
+  */
+  /*
+    Only the GitHub routes: the other panels on this tab fetch on mount, and a
+    stub that answered them all with the token response left the MCP store
+    holding `undefined` where a list belongs. An unstubbed `fetch` rejects,
+    which is what those panels already cope with.
+  */
+  function githubOnlyFetch(body: unknown) {
+    const mock = vi.fn((url: string, _init?: RequestInit) =>
+      url.startsWith("/api/github/")
+        ? Promise.resolve({ ok: true, json: () => Promise.resolve(body) })
+        : Promise.reject(new Error(`no stub for ${url}`)));
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  }
+
+  async function renderOnGitHubTab(status: { authenticated: boolean; username?: string } = { authenticated: false }) {
+    useSettingsStore.getState().setGithubStatus(status);
+    const result = render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
     return result;
   }
 
-  it("shows GitHubTokenForm when not authenticated", async () => {
+  it("offers the token box whether or not a credential is stored", async () => {
     await renderOnGitHubTab();
+    expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
+
+    cleanup();
+    await renderOnGitHubTab({ authenticated: true, username: "octocat" });
     expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
   });
 
-  it("calls onGitHubTokenSubmit with trimmed token", async () => {
-    const onGitHubTokenSubmit = vi.fn();
-    await renderOnGitHubTab({ onGitHubTokenSubmit });
-    fireEvent.change(screen.getByTestId("github-token-input"), { target: { value: "  ghp_test123  " } });
-    await userEvent.click(screen.getByTestId("github-token-submit"));
-    await waitFor(() => expect(onGitHubTokenSubmit).toHaveBeenCalledWith("ghp_test123"));
+  it("posts a trimmed token to the address its declaration names", async () => {
+    const fetchMock = githubOnlyFetch({
+      status: { authenticated: true, username: "octocat" },
+      repos: [],
+    });
+    try {
+      await renderOnGitHubTab();
+      fireEvent.change(screen.getByTestId("github-token-input"), { target: { value: "  ghp_test123  " } });
+      await userEvent.click(screen.getByTestId("github-token-submit"));
+      await waitFor(() => {
+        const call = fetchMock.mock.calls.find(([url]) => url === "/api/github/token");
+        expect(call).toBeDefined();
+        expect(JSON.parse((call![1] as { body: string }).body)).toEqual({ token: "ghp_test123" });
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows connected state with username when authenticated", async () => {
-    await renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
-    expect(screen.getByText("octocat")).toBeInTheDocument();
-    expect(screen.getByText("Connected")).toBeInTheDocument();
+    await renderOnGitHubTab({ authenticated: true, username: "octocat" });
+    expect(screen.getByTestId("settings-github-status")).toHaveTextContent("Connected as octocat");
   });
 
-  it("shows Disconnect button when authenticated", async () => {
-    await renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
+  it("offers Disconnect only once a credential is stored", async () => {
+    await renderOnGitHubTab();
+    expect(screen.queryByTestId("settings-disconnect")).toBeNull();
+
+    cleanup();
+    await renderOnGitHubTab({ authenticated: true, username: "octocat" });
     expect(screen.getByTestId("settings-disconnect")).toHaveTextContent("Disconnect");
   });
 
   it("Disconnect button requires double-click confirmation", async () => {
-    const onGitHubLogout = vi.fn();
-    await renderOnGitHubTab({
-      githubStatus: { authenticated: true, username: "octocat" },
-      onGitHubLogout,
-    });
-    const btn = screen.getByTestId("settings-disconnect");
-    await userEvent.click(btn);
-    expect(onGitHubLogout).not.toHaveBeenCalled();
-    expect(btn).toHaveTextContent("Click again to disconnect");
-    await userEvent.click(btn);
-    expect(onGitHubLogout).toHaveBeenCalledOnce();
+    const fetchMock = githubOnlyFetch({ status: { authenticated: false } });
+    try {
+      await renderOnGitHubTab({ authenticated: true, username: "octocat" });
+      const btn = screen.getByTestId("settings-disconnect");
+      await userEvent.click(btn);
+      expect(fetchMock.mock.calls.some(([url]) => url === "/api/github/logout")).toBe(false);
+      expect(btn).toHaveTextContent("Click again to disconnect");
+      await userEvent.click(btn);
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.some(([url]) => url === "/api/github/logout")).toBe(true));
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("Disconnect confirmation resets on blur", async () => {
-    await renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
+    await renderOnGitHubTab({ authenticated: true, username: "octocat" });
     const btn = screen.getByTestId("settings-disconnect");
     await userEvent.click(btn);
     expect(btn).toHaveTextContent("Click again to disconnect");

@@ -417,3 +417,26 @@ describe("a row stored behind a route of its own", () => {
     expect(JSON.parse(init.body)).toEqual({ channel: "edge" });
   });
 });
+
+/**
+ * The Integrations tab (slice 5): one ordinary row and two credential rows,
+ * placed and headed by the catalogue.
+ *
+ * **`integrations.autoCreatePr` leads the tab**, because a payload declaration
+ * is in `global-settings.ts` and that is the first source in the catalogue
+ * registry — the same thing that put Voice notes at the top of the Voice tab.
+ * Requirement 11 takes the order that falls out rather than encoding today's
+ * layout.
+ */
+describe("the Integrations tab's rows", () => {
+  it("renders them in declaration order, under their declared sections", () => {
+    const { container } = render(<DeclaredSettings tab="integrations" />);
+
+    expect([...container.querySelectorAll("section")].map((s) => s.getAttribute("aria-label")))
+      .toEqual(["Pull requests", "Connected services"]);
+    expect(screen.getByRole("switch", { name: findSetting("integrations.autoCreatePr")!.label }))
+      .toHaveAttribute("data-setting", "integrations.autoCreatePr");
+    expect(screen.getByTestId("settings-github")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-trackers")).toBeInTheDocument();
+  });
+});

@@ -655,9 +655,6 @@ const reviewerSlots: ReviewerSlotView[] = [
 ];
 
 const settingsProps: SettingsProps = {
-  githubStatus: { authenticated: true, username: "nik" },
-  onGitHubTokenSubmit: vi.fn(),
-  onGitHubLogout: vi.fn(),
   agentList: agents,
   hasActiveSession: true,
   onClose: vi.fn(),
@@ -667,6 +664,9 @@ const REPO_URL = "https://github.com/acme/app";
 
 function seedStores() {
   const now = Date.now();
+  // A connected GitHub, so the card's Disconnect is a control to account for.
+  // It is read from the store now rather than passed in (docs/308 slice 5).
+  useSettingsStore.getState().setGithubStatus({ authenticated: true, username: "nik" });
   useSettingsStore.getState().setCredentialRoutes([
     {
       id: "route-a", serviceId: "anthropic", billingMode: "sub", via: "string",
@@ -1545,6 +1545,10 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   "instructions.opsInstructions",
   "instructions.userInstructions",
   "integrations.autoCreatePr",
+  // Generated in slice 5. Both cards wrote their own heading and their own
+  // paragraph about what connecting does; they render the declaration's now.
+  "integrations.github.connection",
+  "integrations.linear.credential",
   // The add-a-destination form's four boxes. They carried a placeholder and an
   // `aria-label` of their own until this slice, and three of them wrote stored
   // values no declaration described at all.

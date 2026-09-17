@@ -12,6 +12,7 @@ import {
   mirrorFieldOf,
   recordHolds,
   sameSettingValue,
+  settingRequest,
   writeBrowserValue,
 } from "./setting-values.js";
 import { findSetting, type SettingKey } from "../../server/shared/settings-catalogue/index.js";
@@ -216,7 +217,6 @@ interface SettingsState {
   voiceDeliveryMode: "native" | "external" | "both";
 
   voiceHandsFree: boolean;
-  autoCreatePr: boolean;
   liveSteering: boolean;
 
   autoResolveConflicts: boolean;
@@ -346,7 +346,6 @@ interface SettingsState {
   setKeybinding: (id: KeybindingId, chord: string) => void;
 
   resetKeybinding: (id: KeybindingId) => void;
-  setAutoCreatePr: (enabled: boolean) => void;
 
   setFailoverCutoffs: (modeKey: string, cutoffs: { session: number; weekly: number }) => void;
   setAccountSelectionMode: (modeKey: string, mode: "strict" | "balanced") => void;
@@ -467,7 +466,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   ttsSpeed: initialNumber("voice.ttsSpeed"),
   voiceDeliveryMode: "native",
   voiceHandsFree: initial("voice.handsFree"),
-  autoCreatePr: false,
   liveSteering: initial("advanced.liveSteering"),
   autoResolveConflicts: initial("advanced.autoResolveConflicts"),
   autoFixCi: initial("advanced.autoFixCi"),
@@ -573,8 +571,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     saveKeybindings(next);
     set({ keybindings: next });
   },
-
-  setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
 
   setFailoverCutoffs: (modeKey, cutoffs) =>
     set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [modeKey]: cutoffs } })),
@@ -711,11 +707,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   reset: () => set({ pendingFiles: [] }),
 
+  /*
+    The address is `integrations.github.connection`'s, so this names neither the
+    path nor the field the token travels in (docs/308-data-driven-settings
+    req 1). It stays a store action because the first-run gate submits the same
+    token as the settings row, and because the answer seeds two things the
+    browser holds: the account, and the repositories the Add Repository dialog
+    lists.
+  */
   submitGitHubToken: async (token) => {
-    const res = await fetch("/api/github/token", {
-      method: "POST",
+    const declaration = findSetting("integrations.github.connection");
+    const request = declaration && settingRequest(declaration, token);
+    if (!request) return null;
+    const res = await fetch(request.path, {
+      method: request.method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify(request.body),
     });
     if (!res.ok) {
       return null;

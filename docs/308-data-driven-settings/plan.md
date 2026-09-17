@@ -59,6 +59,13 @@ than a fourth field naming somewhere else to look. A later own-route setting owe
 its path a GET — that is the contract, and it is what keeps the whole of req 1
 inside the declaration for a setting the settings payload does not carry.
 
+**Unless the path never answers it**, which a credential the user pastes never
+does (slice 5). `writeOnly: true` is the store's fourth fact and the honest half
+of that contract: it says there is no read to make, which is what keeps such a
+setting out of the value record — where it would sit at its declared default for
+ever while `refreshOwnRouteSettings` asked a path with no GET on every settings
+refresh.
+
 It generalises what `src/client/components/Settings/declared-setting.ts` already
 solved for booleans (P6): optimistic write, per-field sequencing, and rollback to
 the last value the **server** confirmed rather than to the value the failed
@@ -188,8 +195,12 @@ forces a migration.
 | `text` | textarea when the store is `system-prompt-file`; a `text` row over any other store has no control yet, so it is **not generated at all** (slice 3) |
 | `gitIdentity` | the name-and-email pair |
 | `modelSelection` | the model picker |
-| `text` whose dialog value is write-only | credential row: configured or not, replace, remove |
 | a declaration naming a `component` | that component, rendered **once** however many declarations name it |
+
+A **credential row** — configured or not, replace, remove — was in this table
+until slice 5 built one. It is not a control kind: its write has a client-side
+effect, its remove is a second address, and what it shows is the connection
+rather than the value. It is a component, and slice 5 says why.
 
 **What the walk skips**: a declaration carrying an `address` and naming no
 `component`, because a panel owns it and renders it per item (P11).
@@ -453,6 +464,87 @@ existing one or renders a row that cannot save.
    value rather than ordering the requests (slice 2).
 5. **Integrations.** The two credential rows over their declared routes (P2, P10)
    and `autoCreatePr` becoming always visible (P13).
+
+   **The control table was wrong about this row, and the build says so.** It
+   promised a generated control for "`text` whose dialog value is write-only".
+   There is none, and neither credential could have used one — three separate
+   reasons, each fatal on its own. **The write has client-side effects** (P3):
+   GitHub's answer carries the account *and* the repositories the Add Repository
+   dialog lists, Linear's carries the teams the token reaches and the reason a
+   refused token was refused, and a generated row's writer awaits the response
+   and does nothing else. **Removing is a second address** —
+   `POST /api/github/logout`, `POST /api/trackers/linear/disconnect` — which no
+   value write expresses, exactly as the webhook's DELETE did not. And **being
+   configured is not the value**: nothing reads either token back, so what the
+   card shows is the CONNECTION, which a generated control has no way to learn.
+   So both are components, and what the slice actually delivers is req 3 — one
+   declaration, one destination, custom presentation. The control table's
+   credential-row entry is deleted rather than left as a promise.
+
+   **`own-route` gained one field, and it is the honest half of the read
+   contract.** "The read is a GET of the same path" holds where a value is read
+   back; a credential the path never answers has no read to make, and saying so
+   is what keeps it out of the value record — where it would otherwise sit at
+   its declared default for ever while `refreshOwnRouteSettings` asked a path
+   with no GET on every settings refresh. `writeOnly: true` is that, with two
+   users, both real (req 5). It is emphatically **not** `emits:
+   configuredOnly()`: that is the agent's projection, and `voice.webhook.url`
+   carries it while being read back in full — which is the distinction
+   `inventory.md` → *Four kinds of control* already drew and the control table
+   had blurred.
+
+   **A component builds its request from the declaration too**, so the request
+   builder moved from the writer into `setting-values.ts` as `settingRequest`.
+   The shared writers discard the response; a connection's card is made of it.
+   That is what lets both components — and `submitGitHubToken`, which the
+   first-run gate shares — name no path, no method and no body field.
+
+   **Order changed, by the same mechanism as the Voice tab's** (req 11).
+   `integrations.autoCreatePr` is a payload setting in `global-settings.ts`, the
+   first source in the registry, so its *Pull requests* section leads the tab —
+   above the *Connected services* section it depends on. Moving that declaration
+   would change the derived `GlobalSettings` payload types, so requirement 11
+   takes the order that falls out.
+
+   What a disconnected GitHub actually gated, checked before moving the row out
+   of it: the connected card's own chrome — the account name and Disconnect,
+   which genuinely need a connection — and `integrations.autoCreatePr`, which
+   did not. Nothing else lived in that branch.
+
+   **What review found, all of it about the credential the row now KEEPS on
+   screen.** The old card swapped the token form for the connected view, so
+   success unmounted the box; a row that can replace a credential keeps the box,
+   and three defects followed from that alone. **A stored token stayed in the
+   password input** — and survived a disconnect — because the form had never had
+   to clear one. **Replace and Disconnect could overlap**, which is two writes
+   over one credential: a validation landing after a logout stores a token the
+   user has just removed, and a connect answering late puts a connection back on
+   screen that the server no longer holds; they are one card's state, so
+   disabling each other is the whole fix. And **a token typed during a save was
+   erased** by the clear that followed it, on both rows — so clearing now takes
+   the value that was SENT, which is the rule slices 3 and 4 already settled for
+   every other write here. One more, inherited rather than introduced: the
+   Linear status read applied its answer unconditionally, so a read that began
+   before a replacement could report the old credential's teams, or "not
+   connected" over a connection that had just succeeded. A write invalidates a
+   read in flight, as slice 2 does for the own-route reads.
+
+   Subtraction it asked for and this took: the two "renders the declaration's own
+   copy" assertions (requirement 12 gives that guarantee up rather than
+   replacing it), the exact three-key roster of the tab's generated rows (a
+   second list to edit, and `setting-values.ts`'s full roster already holds it),
+   the duplicated always-visible assertion, and `service-marks.tsx` — the tile
+   belongs to the card and the logo beside its one consumer.
+
+   Knowingly given up: the *Connected services* header's `· managed by ShipIt`
+   hint (a generated section heading has no hint slot, so the sentence moved
+   into the section's `note`), and both cards' hand-written headings and
+   paragraphs (they render the declared label and description now, which is what
+   put both keys in `EXPLAINED_IN_THE_DIALOG`). Gained rather than given up: a
+   **refused GitHub token now says so in the dialog** — its caller returned
+   `undefined` whatever happened, so only the first-run gate ever reported one —
+   and either credential can be **replaced without disconnecting first**, which
+   is the "replace" the control table described and neither card had.
 6. **Panels.** Register the nine as components and bind them to their
    declarations; they keep their own writers and operations.
 7. **Project Settings** (req 10) — the second dialog, its repo-scoped write, the
@@ -486,6 +578,10 @@ on the same reader while their tabs wait for slices 5 and 3.
 | `src/client/stores/setting-hydration.ts` | the payload read and the own-route read, both walking the declarations |
 | `src/client/components/Settings/components/registry.ts` | the components a declaration may name |
 | `src/client/components/Settings/components/VoiceWebhook.tsx` | the first component two declarations share: one credential, one address, one Save |
+| `src/client/components/Settings/components/GitHubConnection.tsx` | the GitHub credential row: the declared address, the account, and a remove at an address of its own |
+| `src/client/components/Settings/components/LinearCredential.tsx` | the Linear credential row: the same shape, with the teams the token reaches as its status |
+| `src/client/components/Settings/components/ConnectedServiceCard.tsx` | the frame both share — mark, declared words, badge, status |
+| `src/client/stores/setting-values.ts` → `settingRequest` | the request a declaration produces, for the writers AND for a component that needs the answer |
 | `src/client/components/Settings/components/VoiceTts.tsx` | provider, voice and speed together, because changing the first repairs the other two (P3, P7) |
 | `src/client/components/Settings/components/VoiceHandsFree.tsx` | the toggle that arms audio inside the click gesture (P3) |
 | `src/client/components/Settings/components/VoiceProviderKeys.tsx` | the addressed key list, which keeps its own writer as a panel does (P11) |

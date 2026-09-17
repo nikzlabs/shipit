@@ -891,10 +891,6 @@ export default function App() {
           {useSettingsStore
             .getState()
             .setAgentSystemInstructions(data.settings.agentSystemInstructions);}
-        if (data.settings.autoCreatePr !== undefined)
-          {useSettingsStore
-            .getState()
-            .setAutoCreatePr(data.settings.autoCreatePr);}
         if (data.settings.failoverCutoffs !== undefined) {
           for (const [agentId, cutoffs] of Object.entries(data.settings.failoverCutoffs)) {
             useSettingsStore.getState().setFailoverCutoffs(agentId, cutoffs);
@@ -1748,20 +1744,6 @@ export default function App() {
         )}
         {settingsOpen && (
           <Settings
-            githubStatus={githubStatus}
-            onGitHubTokenSubmit={async (token) => {
-              const result = await useSettingsStore
-                .getState()
-                .submitGitHubToken(token);
-              if (result)
-                {usePrStore.getState().setImportSearchResults(result.repos);}
-            }}
-            onGitHubLogout={() =>
-              useSettingsStore
-                .getState()
-                .gitHubLogout()
-                .catch(() => {})
-            }
             agentList={agentList}
             onFullReset={async () => {
               try {

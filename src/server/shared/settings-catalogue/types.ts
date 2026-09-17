@@ -143,6 +143,19 @@ export interface OwnRouteStore {
   readonly method: "POST" | "PUT";
   readonly path: string;
   readonly bodyField: string;
+  /**
+   * The path STORES this value and never answers it, so the read above does not
+   * exist for it. A credential the user pastes is the case: `POST
+   * /api/github/token` takes a token and no GET hands one back.
+   *
+   * It is what keeps such a setting out of the browser's value record — nothing
+   * would hydrate it, and the own-route read would otherwise ask a path with no
+   * GET on every settings refresh. **`emits: configuredOnly()` is not this
+   * fact**: that is the AGENT's projection, and the voice webhook's URL is
+   * `configuredOnly` and read back in full (inventory.md → Four kinds of
+   * control).
+   */
+  readonly writeOnly?: true;
 }
 
 /**

@@ -36,6 +36,9 @@ import { bool, collection, enumOf, numeric, secretBag, text } from "./value-type
 const MCP_ADDRESS = itemAddress("an MCP server name");
 const SSH_HOST_ADDRESS = itemAddress("an SSH destination name");
 
+/** The tab's first section: the credentials ShipIt brokers on the user's behalf. */
+const CONNECTED_SERVICES = "Connected services";
+
 export const INTEGRATIONS_SETTINGS = {
   "mcp.servers": defineSetting({
     key: "mcp.servers",
@@ -231,9 +234,22 @@ export const INTEGRATIONS_SETTINGS = {
     propose: { kind: "no", reason: "external_flow" },
   }),
 
+  /**
+   * The two pasted-token connections are **generated credential rows**
+   * (docs/308-data-driven-settings inventory.md P2, P10): each names a
+   * component and carries the address that stores it, so the dialog builds
+   * neither the request nor the payload field.
+   *
+   * `writeOnly`, because the path takes a token and answers no GET — which is
+   * also why neither enters the browser's value record. What the card shows
+   * instead is the CONNECTION: the account for GitHub, the reachable teams for
+   * Linear, both derived from the credential rather than being it.
+   */
   "integrations.github.connection": defineSetting({
     key: "integrations.github.connection",
     tab: "integrations",
+    section: CONNECTED_SERVICES,
+    component: "github-connection",
     scope: "global",
     label: "GitHub",
     description:
@@ -241,7 +257,10 @@ export const INTEGRATIONS_SETTINGS = {
       + "the user creates on GitHub and pastes in, so ShipIt reports the account and whether it is "
       + "connected, never the token.",
     type: text({ maxLength: 500, noun: "GitHub token" }),
-    store: { kind: "bespoke", ownedBy: "the GitHub credential (POST /api/github/token)" },
+    store: {
+      kind: "own-route", method: "POST", path: "/api/github/token",
+      bodyField: "token", writeOnly: true,
+    },
     emits: configuredOnly(),
     // A pasted classic token, not a sign-in ShipIt can send the user through:
     // `GitHubTokenForm` takes the token itself, so this is `secret`.
@@ -433,6 +452,8 @@ export const INTEGRATIONS_SETTINGS = {
   "integrations.linear.credential": defineSetting({
     key: "integrations.linear.credential",
     tab: "integrations",
+    section: CONNECTED_SERVICES,
+    component: "linear-credential",
     scope: "global",
     label: "Linear",
     description:
@@ -440,7 +461,10 @@ export const INTEGRATIONS_SETTINGS = {
       + "them. Which team a repository's Issues tab shows is that repository's own declaration, "
       + "not a setting here.",
     type: text({ maxLength: 500, noun: "Linear API token" }),
-    store: { kind: "bespoke", ownedBy: "the Linear credential (POST /api/trackers/linear/token)" },
+    store: {
+      kind: "own-route", method: "POST", path: "/api/trackers/linear/token",
+      bodyField: "token", writeOnly: true,
+    },
     emits: configuredOnly(),
     propose: { kind: "no", reason: "secret" },
   }),

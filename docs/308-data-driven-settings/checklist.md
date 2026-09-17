@@ -18,7 +18,7 @@ each, and the work is tracked on planning#580.
 - [x] 2 — Routes and the rest of Advanced
 - [x] 3 — Instructions and Git
 - [x] 4 — Voice
-- [ ] 5 — Integrations
+- [x] 5 — Integrations
 - [ ] 6 — Panels
 - [ ] 7 — Project Settings
 - [ ] 8 — Cleanup: the coverage walk and `data-setting` go

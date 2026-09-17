@@ -15,9 +15,11 @@ import {
   GENERATED_SETTINGS,
   isGeneratedRow,
   OWN_ROUTE_SETTINGS,
+  SETTINGS_PATH,
   initialSettingValues,
   ownRouteOf,
   readBrowserValue,
+  settingRequest,
   writeBrowserValue,
 } from "./setting-values.js";
 import { findSetting, type AnySettingDeclaration } from "../../server/shared/settings-catalogue/index.js";
@@ -135,12 +137,15 @@ describe("the record covers the settings the converted tabs generate", () => {
       "advanced.autoResolveConflicts",
       "advanced.autoResetMergedBranch",
       "advanced.memoryBudgetMb",
+      "integrations.autoCreatePr",
       "git.identity",
       "instructions.userInstructions",
       "instructions.opsInstructions",
       "instructions.agentInstructionsEnabled",
       "voice.deliveryMode",
       "network.egressContained",
+      "integrations.github.connection",
+      "integrations.linear.credential",
       "voice.providerKey",
       "voice.webhook.url",
       "voice.webhook.token",
@@ -218,6 +223,83 @@ describe("the record covers the settings the converted tabs generate", () => {
   it("seeds a payload setting from its declared default", () => {
     expect(initialSettingValues()["advanced.liveSteering"]).toBe(true);
     expect(initialSettingValues()["advanced.autoFixCi"]).toBe(false);
+  });
+});
+
+/**
+ * The request a declaration produces (P2), asked of a SYNTHETIC one.
+ *
+ * Every other test of this goes through a control and compares the request
+ * against the real catalogue, which the same literals hard-coded would also
+ * satisfy. This is the claim itself: change the declaration and the request
+ * changes with it, because nothing else decides it.
+ */
+describe("the request a declaration names", () => {
+  it("takes the method, the path and the body field from the store", () => {
+    const moved = {
+      ...declarationOf("network.egressContained"),
+      store: { kind: "own-route", method: "POST", path: "/api/somewhere-else", bodyField: "thing" },
+    } as AnySettingDeclaration;
+
+    expect(settingRequest(moved, true))
+      .toEqual({ method: "POST", path: "/api/somewhere-else", body: { thing: true } });
+  });
+
+  it("takes the payload's one address and the declaration's wire", () => {
+    const payload = declarationOf("advanced.autoFixCi");
+
+    expect(settingRequest(payload, true))
+      .toEqual({ method: "PUT", path: SETTINGS_PATH, body: { [payload.wire!]: true } });
+  });
+
+  // A panel owns its own write, so there is no request to build for one.
+  it("has none for a store the shared writer cannot reach", () => {
+    expect(settingRequest(declarationOf("mcp.servers[].name"), "x")).toBeNull();
+  });
+});
+
+/**
+ * A credential the dialog writes and never reads back (slice 5).
+ *
+ * Its address STORES the value and answers no GET, so the record has nothing to
+ * hold for it: a value seeded there would be the declared default for ever,
+ * preferred by the reader over the named field, while `refreshOwnRouteSettings`
+ * asked a path that can only 404 — on every settings refresh, not once. It is
+ * still a ROW, because its declaration names a component, which is the same
+ * split `voice.providerKey` has: membership of the record is narrower than
+ * membership of the rows.
+ *
+ * **`emits: configuredOnly()` is not what says this.** That is the agent's
+ * projection, and `voice.webhook.url` carries it while being read back in full.
+ */
+describe("an address that only stores", () => {
+  const WRITE_ONLY = GENERATED_SETTINGS.filter((d) => ownRouteOf(d)?.writeOnly);
+
+  it("covers the credentials declared this way", () => {
+    expect(WRITE_ONLY.map((d) => d.key).sort())
+      .toEqual(["integrations.github.connection", "integrations.linear.credential"]);
+  });
+
+  for (const declaration of WRITE_ONLY) {
+    it(`renders ${declaration.key} as a row, and holds no value for it`, () => {
+      expect(GENERATED_SETTINGS).toContain(declaration);
+      expect(Object.keys(initialSettingValues())).not.toContain(declaration.key);
+      expect(OWN_ROUTE_SETTINGS).not.toContain(declaration);
+    });
+  }
+
+  /*
+    What keeps them out is the flag and not the store kind, the component or the
+    `emits`: an own-route row without it is recorded and read, and one of those
+    is `configuredOnly` too.
+  */
+  it("still holds an own-route value the path does answer", () => {
+    const webhook = declarationOf("voice.webhook.url");
+
+    expect(webhook.emits.kind).toBe("configured_only");
+    expect(ownRouteOf(webhook)?.writeOnly).toBeUndefined();
+    expect(Object.keys(initialSettingValues())).toContain("voice.webhook.url");
+    expect(OWN_ROUTE_SETTINGS).toContain(webhook);
   });
 });
 
