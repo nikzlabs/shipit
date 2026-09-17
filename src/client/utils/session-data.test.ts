@@ -218,11 +218,24 @@ describe("loadSessionHistory — modelInfo seeding", () => {
    * session the user has since switched to.
    */
   it("a file tree still in flight cannot let the outgoing session reclaim the dial", async () => {
-    let resolveOutgoingTree!: (value: { ok: boolean; status: number }) => void;
-    const outgoingTree = new Promise<{ ok: boolean; status: number }>((resolve) => {
+    // Every moved field differs per session and is asserted, so moving any one
+    // of them back below the await fails this test rather than a subset.
+    const usageFor = (sessionId: string, costUsd: number) => ({
+      sessionId,
+      totalDurationMs: 1000,
+      turnCount: 1,
+      totals: {
+        meteredCostUsd: costUsd, meteredTurns: 1, meteredTokens: 10,
+        atApiRatesUsd: costUsd, includedTurns: 0, includedTokens: 0,
+        legacyCostUsd: 0, legacyTurns: 0, legacyTokens: 0,
+      },
+    });
+    let resolveOutgoingTree!: (value: unknown) => void;
+    const outgoingTree = new Promise<unknown>((resolve) => {
       resolveOutgoingTree = resolve;
     });
     fetchSpy.mockImplementation((url: string) => {
+      const outgoing = url.includes("sess-outgoing");
       if (url.includes("/history")) {
         return Promise.resolve({
           ok: true,
@@ -234,20 +247,22 @@ describe("loadSessionHistory — modelInfo seeding", () => {
               agentRunning: false,
               turnUsage: [
                 {
-                  inputTokens: url.includes("sess-outgoing") ? 100 : 400,
+                  inputTokens: outgoing ? 100 : 400,
                   outputTokens: 50,
                   costUsd: 0.001,
                   timestamp: "2026-09-17T00:00:00Z",
-                  model: url.includes("sess-outgoing") ? "claude-opus-4-8" : "claude-sonnet-4-20250514",
+                  model: outgoing ? "claude-opus-4-8" : "claude-sonnet-4-20250514",
                 },
               ],
-              sessionUsage: null,
-              cumulativeInputTokens: 100,
-              cumulativeOutputTokens: 50,
+              sessionUsage: usageFor(outgoing ? "sess-outgoing" : "sess-incoming", outgoing ? 9 : 1),
+              cumulativeInputTokens: outgoing ? 9000 : 1000,
+              cumulativeOutputTokens: outgoing ? 900 : 100,
             }),
         });
       }
-      if (url.includes("sess-outgoing") && url.includes("/files")) return outgoingTree;
+      // The outgoing tree resolves late AND successfully, so a write confined
+      // to the success branch is covered too.
+      if (outgoing && url.includes("/files")) return outgoingTree;
       return Promise.resolve({ ok: false, status: 404 });
     });
 
@@ -268,14 +283,23 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     await loadSessionHistory("sess-incoming");
     expect(useUiStore.getState().modelInfo?.model).toBe("claude-sonnet-4-20250514");
 
-    resolveOutgoingTree({ ok: false, status: 404 });
+    resolveOutgoingTree({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ tree: [{ name: "stale.ts", path: "stale.ts", type: "file" }] }),
+    });
     await outgoing;
 
-    expect(useUiStore.getState().modelInfo).toEqual({
+    const ui = useUiStore.getState();
+    expect(ui.modelInfo).toEqual({
       model: "claude-sonnet-4-20250514",
       contextWindowTokens: 200_000,
     });
-    expect(useUiStore.getState().contextTokens).toBe(400);
+    expect(ui.contextTokens).toBe(400);
+    expect(ui.currentSessionUsage?.sessionId).toBe("sess-incoming");
+    expect(ui.cumulativeInputTokens).toBe(1000);
+    expect(ui.cumulativeOutputTokens).toBe(100);
+    expect(useFileStore.getState().tree).toEqual([]);
   });
 
   it("rehydrates the permission store from a persisted card on reload", async () => {

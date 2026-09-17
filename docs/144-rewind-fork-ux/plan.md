@@ -585,6 +585,17 @@ Landing 3 has no Landing-1 or Landing-2 hard dependencies — its items (U8 rich
 - `src/server/orchestrator/integration_tests/rewind-fork.test.ts`
 - `src/client/components/MessageList.test.tsx` — rewind gap coverage
 
+**Refinement — D7's auto-switch goes through the switch path.** `handleSessionForked`
+adopted the child with a bare `setSessionId` before pushing the route, which is
+precisely why the switch reset never ran: `useSessionActivation` calls
+`resumeSessionInternal` only when `urlSessionId !== sessionId`, and the store had
+already been moved to match. The child inherited the parent's session-scoped UI
+state — the context dial's model, window and spend were the visible part, since a
+fresh fork has no usage row to correct them. It now calls `resumeSessionInternal`
+and lets the route effect find the ids equal. Test: `session-forked.test.ts` (the
+hook-level test this doc planned for D7). Full write-up:
+`docs/105-context-window-display/plan.md`.
+
 **Related docs**
 - `docs/007-threads-checkpoints/plan.md` — original rollback design (superseded by gap-based rewind here).
 - `docs/095-runner-ctx-simplification/plan.md` — capture-at-entry pattern used in B4.
