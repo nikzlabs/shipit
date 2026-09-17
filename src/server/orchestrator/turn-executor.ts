@@ -732,6 +732,13 @@ export async function executeAgentTurn(
       receivedResult: sawOwnResult,
       silent: input.silent === true,
       statusNudge: input.statusNudge === true,
+      // Taken here, with the rest, because a drained successor resets both
+      // (`resetRunnerTurnState`, and this executor's own re-arm) — read live at the
+      // decision they can describe some later turn instead of the one being judged.
+      // Any steer counts, answered or not: whether the agent answered it is not
+      // knowable here (docs/303 plan.md → Turn settlement).
+      steered: (runner?.steeredMessages.length ?? 0) > 0,
+      promptQueued: ownTurn === "queued",
       postTurn,
       writeSeq: 0,
     };
@@ -753,16 +760,28 @@ export async function executeAgentTurn(
   let nudgeDecided = false;
   let nudgePending = false;
   let nudgeDispatched = false;
+  /**
+   * req 34 (planning#589) — a message that reached the agent mid-turn is owed an answer,
+   * and `promptQueued` is owed one exactly once. The prompt lifecycle deliberately never
+   * moves a queued prompt on (it is undecidable which result answered it), so reading the
+   * state itself would defer every later turn this resident settles.
+   */
+  let queuedPromptDeferralSpent = false;
   // Decided on the snapshot alone, after idle; dispatched separately, because a system
   // turn still holds systemTurnInProgress here and would only queue the nudge behind it.
   const decideStatusNudge = (): void => {
     if (nudgeDecided) return;
     nudgeDecided = true;
     if (!statusCardOn() || !runner) return;
+    const facts = settleTurnFacts();
+    const deferForQueuedPrompt = facts.promptQueued && !queuedPromptDeferralSpent;
+    if (deferForQueuedPrompt) queuedPromptDeferralSpent = true;
     nudgePending = shouldNudgeForStatusCard(
-      settleTurnFacts(),
+      facts,
       storedStatus(),
-      runner.running || runner.queueLength > 0,
+      // The live two say a successor has already taken the session; the two from the
+      // snapshot say this turn left a message unanswered, which neither can see.
+      runner.running || runner.queueLength > 0 || facts.steered || deferForQueuedPrompt,
     );
   };
 
@@ -774,6 +793,8 @@ export async function executeAgentTurn(
     // Re-checked here, not only at the decision: the deferral is about the session's
     // state when the nudge would start, and that turn is checked afresh when it ends.
     if (runner.running || runner.systemTurnInProgress || runner.mergeHold) return;
+    // Live state only: the snapshot's own reasons to defer were settled at the decision,
+    // and re-reading them here would read a successor's state instead of this turn's.
     if (runner.queueLength > 0) {
       nudgePending = false;
       return;

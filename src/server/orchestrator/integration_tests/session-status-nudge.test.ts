@@ -295,6 +295,14 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     client.close();
   });
 
+  /**
+   * These two tests stand behind two complete turn set-ups before the step they are
+   * really about, and the default 5s proved too tight for that on a loaded CI run
+   * (one flake per full suite). The waits are on conditions, not on the clock, so a
+   * longer deadline costs nothing when the box is quick.
+   */
+  const SLOW_CI_MS = 20_000;
+
   describe("on the streaming path", () => {
     beforeEach(() => {
       credentialStore.setLiveSteering(true);
@@ -366,6 +374,102 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
       stop();
       client.close();
     });
+
+    /**
+     * req 34 / planning#589 — Nik steered an agent that was waiting on background work and
+     * got a nudge turn instead of his message. A steer goes straight to the CLI, so it is
+     * neither running nor queued at settlement. Nudging there does not merely ask
+     * needlessly: the nudge is a system turn, so it retires the resident process and the
+     * message the user just sent is never answered.
+     *
+     * Both orderings, because a rule that reads the transcript to tell an answered steer
+     * from a pending one passes the first and fails the second — the turn's own closing
+     * text lands before the CLI acknowledges the message.
+     */
+    for (const closingText of [false, true]) {
+      const label = closingText
+        ? "even when the turn's own last text lands before the acknowledgement"
+        : "when nothing in the turn follows the steer";
+      it(`does not nudge a turn the user steered into, ${label} (req 34)`, async () => {
+        const client = await TestClient.connect(port);
+        const { seen, stop } = pump(client);
+
+        client.send({ type: "send_message", text: "Do the billing routes" });
+        const resident = await waitForClaude(() => lastClaude);
+        resident.initSession("resident-turn");
+        expect((await callTool(client.sessionId, { status: "Billing done." })).statusCode).toBe(200);
+        resident.emit("event", { type: "result", subtype: "success", session_id: "resident-turn" });
+        await waitFor(() => runnerFor(client.sessionId)?.running === false, "the first turn settled");
+
+        // A turn that launches background work and never touches the card. Waiting for the
+        // resident to have the prompt, not merely for `running`: under load the send can
+        // still be in its async setup, and the message after it would then start a turn of
+        // its own rather than steer this one.
+        const beforeSecond = resident.stdinData.length;
+        client.send({ type: "send_message", text: "Kick off the tests" });
+        await waitFor(
+          () => resident.stdinData.length > beforeSecond
+            && runnerFor(client.sessionId)?.running === true,
+          "the resident took the second turn",
+          SLOW_CI_MS,
+        );
+        runnerFor(client.sessionId)?.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+
+        // Nik steers it. The CLI replays the message, which is how ShipIt learns it was taken.
+        // Only what the session says from here on: an earlier message may legitimately
+        // have been queued, and that is not this assertion's business.
+        const beforeSteer = seen.length;
+        const answeredSteer = () =>
+          seen.slice(beforeSteer).filter((m) => m.type === "message_steered" || m.type === "message_queued");
+        client.send({ type: "send_message", text: "Actually, also check the linter" });
+        // The server says which path it took, so a message that was queued instead of
+        // steered fails as that fact rather than as a bare timeout on the state below.
+        await waitFor(() => answeredSteer().length > 0, "the session answered the steer", SLOW_CI_MS);
+        expect(answeredSteer()[0]?.type).toBe("message_steered");
+        await waitFor(
+          () => (runnerFor(client.sessionId)?.steeredMessages.length ?? 0) > 0,
+          "the steer was recorded",
+          SLOW_CI_MS,
+        );
+        if (closingText) {
+          resident.emit("event", {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Tests are running in the background." }] },
+          });
+          await waitFor(
+            () => (runnerFor(client.sessionId)?.chatMessageGroups.length ?? 0) > 0,
+            "the turn's closing text was accumulated",
+          );
+        }
+        resident.emit("event", { type: "agent_user_replay", text: "Actually, also check the linter" });
+        await waitFor(
+          () => runnerFor(client.sessionId)?.steeredMessages[0]?.delivered === true,
+          "the CLI acknowledged the steer",
+        );
+
+        // The last background task finishes and the turn the steer landed in ends.
+        runnerFor(client.sessionId)?.setBackgroundTasks([]);
+        resident.emit("event", { type: "result", subtype: "success", session_id: "resident-turn" });
+
+        await waitFor(() => card(client.sessionId)?.fresh === false, "card marked stale");
+        // Not `postTurnSettled`: a nudge that DOES go out keeps the runner busy, and the
+        // failure this guards must be the follow-up below, not a timeout on the barrier.
+        await waitFor(() => {
+          const runner = runnerFor(client.sessionId);
+          return followUps().length > 0
+            || (runner !== undefined && !runner.running && !runner.agentBusy);
+        }, "the settlement finished, or spawned a follow-up turn");
+
+        expect(followUps()).toHaveLength(0);
+        expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
+        // The process that holds the steered message is still the one on the session.
+        expect(resident.killed).toBe(false);
+        expect(runnerFor(client.sessionId)?.getAgent()).toBe(resident);
+
+        stop();
+        client.close();
+      });
+    }
 
     it("retires a resident spawned across a toggle and respawns it with the other prompt (req 21)", async () => {
       const client = await TestClient.connect(port);

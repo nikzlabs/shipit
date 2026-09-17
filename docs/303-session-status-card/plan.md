@@ -240,8 +240,59 @@ alone. It says **no** when: `statusUpdated`; `wasInterrupted` (question,
 plan approval, user stop); no `agent_result` (a crash has its own recovery);
 `silent` (compaction); the turn was itself a nudge; `postTurn: "none"` (a
 driver-owned turn); the record's `writeSeq` moved past the snapshot's; or a
-successor is running or queued (a deferral, not an exemption — the check
-repeats when that turn ends). Otherwise it dispatches the nudge.
+successor is pending (a deferral, not an exemption — the check repeats when
+that turn ends). Otherwise it dispatches the nudge.
+
+**A pending successor is four things, not two** (req 34, planning#589), and the
+last two are read from the turn's own snapshot rather than live. A turn
+`running` and a message queued are the obvious two, and they are properties of
+the session *now* — they say a successor has already taken it. The other two say
+this turn left a message unanswered, which nothing live can see:
+
+- **`steered`** — a message went into the turn while it ran. A steer goes
+  straight to the CLI, so it is neither running nor queued. This is the shape
+  the report named: steering an agent that was waiting on background work
+  produced a nudge instead of the message, and not merely a needless question,
+  because the nudge is a system turn that retires the resident process holding
+  it. `recordSteeredMessage` is also how an agent-interface message and a
+  cross-session message arrive, and the nudge would destroy those too, so req 34
+  covers them by name.
+- **`promptQueued`** — this turn's *own* prompt went in behind a turn the CLI
+  had already started, so the `agent_result` that arrives ends the CLI's turn
+  and not ours (`ownTurn`, docs/299-agent-settings-access req 8). Every live
+  signal reads idle and the prompt is still unread. The prompt lifecycle
+  deliberately never moves a queued prompt on — which result answered it is
+  undecidable — so the deferral is spent **once** per executor
+  (`queuedPromptDeferralSpent`); reading the state itself would defer every
+  later turn this resident settles.
+
+**Both are taken in `settleTurnFacts`, with the rest.** Read live at the
+decision they describe whichever turn owns the runner by then, not the one being
+judged: a successor's `resetRunnerTurnState` clears the steered set, and so does
+this executor's own re-arm. That is the same reason `wasInterrupted` and the
+accumulator are snapshotted there. The dispatch re-check therefore re-reads only
+the live pair; re-reading the snapshot's reasons there would reintroduce exactly
+that confusion.
+
+**Why the whole turn, rather than only an unanswered message.** The narrower
+rule is the one to want and the orchestrator cannot express it. The only
+positional information it holds is `SteeredMessage.afterGroupIndex` — the
+transcript-group count when the message was **sent** — and comparing that with
+the count at settlement is wrong in both directions: the turn's own closing text
+can land before the CLI acknowledges the steer, which makes a pending steer look
+answered, and an answer appends to the *existing* group unless a boundary
+happens to be armed (`accumulateAssistantGroups`), which makes an answered steer
+look pending. Note this also means `requeueUndeliveredSteers` does **not**
+guarantee that every un-acked steer has become a queued message by settlement —
+it re-queues only those with no output after them — which is a further reason
+not to treat the remaining entries as "acked, therefore taken". The cost of the
+whole-turn rule is one skipped nudge on a turn a message reached and the agent
+then answered without touching the card; the card is still marked stale, which
+is req 14's answer, and req 34 records the trade.
+
+The deferral cannot outlive its turn: `resetRunnerTurnState` clears the steered
+set at the start of every ordinary turn and of every adopted CLI-started turn
+(`agent-listeners.ts`), and the queued-prompt deferral is one-shot.
 
 **Dispatch.** Not during the post-turn hold: a completed system turn keeps
 `systemTurnInProgress` until `finishTurn` (`turn-executor.ts`), and a
@@ -251,9 +302,10 @@ step after `idle` records the decision and tries the dispatch, and `finishTurn`
 tries it again once it has cleared the hold. Both are needed — a system turn's
 hold is still on at the first, and an ordinary streaming turn whose CLI stays
 resident never reaches the second, because `finishTurn` runs only when the
-process exits. The dispatch re-checks there that the runner is free — a
-successor that started meanwhile defers the nudge rather than queueing behind
-it, and that turn is checked afresh when it ends — and then goes through
+process exits. The dispatch re-checks there that the runner is free, on the same
+three-part successor test — a successor that appeared meanwhile defers the nudge
+rather than queueing behind it, and that turn is checked afresh when it ends —
+and then goes through
 `runner.dispatch`, not an enqueue plus a drain entry: only that path owns
 recovery when turn setup rejects, and without it a user message that queued
 during setup is left with nothing to start it. Two gates are pre-checked

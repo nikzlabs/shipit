@@ -229,6 +229,10 @@ export interface TurnStatusFacts {
   silent: boolean;
   /** This turn IS a nudge; an ignored one is not nudged again (req 15). */
   statusNudge: boolean;
+  /** req 34 — a message reached this turn after it started, so it owes an answer. */
+  steered: boolean;
+  /** req 34 — this turn's own prompt went in behind a turn of the CLI's own. */
+  promptQueued: boolean;
   postTurn: "commit-push" | "none";
   /** The record as the turn saw it, so a predecessor can tell its own state from a later write. */
   writeSeq: number;

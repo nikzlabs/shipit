@@ -11,6 +11,7 @@ interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
+  sendUserMessage: ReturnType<typeof vi.fn>;
 }
 
 function makeFakeAgent(): FakeAgent {
@@ -18,6 +19,7 @@ function makeFakeAgent(): FakeAgent {
   agent.run = vi.fn();
   agent.kill = vi.fn();
   agent.setPermissionMode = vi.fn();
+  agent.sendUserMessage = vi.fn();
   return agent;
 }
 
@@ -46,6 +48,7 @@ function harness(opts: {
   if (opts.card) cards.set("s1", opts.card);
   const state = { readThrows: false, commits: 0, entered: [] as number[], preTurnResets: 0 };
   let preTurnReset: ((call: number) => Promise<{ agentPrefix: string }>) | null = null;
+  let prepareEnv: (() => Promise<void>) | null = null;
   const gates = new Map<number, { parked: Promise<void>; release: () => void }>();
   const gateFor = (index: number) => {
     let release = (): void => {};
@@ -104,6 +107,12 @@ function harness(opts: {
       return null;
     },
     scheduleAutoPush: vi.fn(),
+    // The window the executor is already listening in: its agent listeners are wired
+    // before this runs, so a turn the CLI starts here is one the prompt goes in behind.
+    prepareAgentEnv: (async () => {
+      if (prepareEnv) await prepareEnv();
+      return undefined;
+    }) as never,
     preTurnReset: async () => {
       state.preTurnResets += 1;
       return preTurnReset ? await preTurnReset(state.preTurnResets) : { agentPrefix: "" };
@@ -155,6 +164,7 @@ function harness(opts: {
     rows,
     state,
     setPreTurnReset: (fn: (call: number) => Promise<{ agentPrefix: string }>) => { preTurnReset = fn; },
+    setPrepareEnv: (fn: () => Promise<void>) => { prepareEnv = fn; },
     parkedOn: (index: number) => state.entered.includes(index) && state.commits === index,
     releaseCommit: (index = 0) => gateFor(index).release(),
     card: () => cards.get("s1"),
@@ -316,6 +326,62 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     expect(h.nudges()).toHaveLength(1);
     finishTurn(h.agents[1]!);
     await waitFor(() => !h.runner.running, "the nudge turn finished");
+    h.runner.dispose({ force: true });
+  });
+
+  /*
+    req 34 (planning#589) — the other way a user message reaches a resident CLI and is
+    not answered by the turn that ends next: it is submitted while a turn of the CLI's
+    own is already pending, so the prompt lifecycle records it as `queued`. The result
+    that arrives ends the WOKEN turn, and every live signal reads idle — no running
+    turn, an empty queue, no steer. Nudging there retires the process holding the
+    prompt, so the message is never answered.
+  */
+  it("does not nudge past a prompt the CLI put behind a turn of its own (req 34)", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "first" }));
+    await waitFor(() => h.agents.length === 1, "turn 1 started");
+    await h.agentWritesCard("Routes done.");
+    // A result with no exit: the process stays resident for the next turn.
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.runner.running, "turn 1 settled with the process resident");
+    expect(h.nudges()).toHaveLength(0);
+
+    // The next message is dispatched, and parks in env preparation before submission.
+    let releasePrep = (): void => {};
+    const prepEntered = { yes: false };
+    // One-shot: a later turn must run its preparation through, or a nudge would park
+    // here and the assertions below could not tell it apart from one never sent.
+    h.setPrepareEnv(async () => {
+      if (prepEntered.yes) return;
+      prepEntered.yes = true;
+      await new Promise<void>((resolve) => { releasePrep = resolve; });
+    });
+    h.runner.dispatch(testDispatch({ text: "and now the webhook" }));
+    await waitFor(() => prepEntered.yes, "the turn reached its pre-turn hook");
+
+    // Background work finishes inside that window and the CLI resumes on its own turn.
+    h.agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    releasePrep();
+    await waitFor(
+      () => h.agents[0]!.sendUserMessage.mock.calls.length > 0,
+      "the prompt reached the resident CLI",
+    );
+
+    // This result ends the woken turn; the prompt has been submitted but not read.
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    // Settle far enough that a nudge would have recorded its prompt, not just spawned
+    // its process — otherwise the first assertion below passes on a timing gap.
+    await waitFor(() => h.nudges().length > 0, "a nudge, if one is coming", 300)
+      .catch(() => undefined);
+
+    expect(h.nudges()).toHaveLength(0);
+    // The process holding the unread prompt was not replaced by a system turn.
+    expect(h.agents).toHaveLength(1);
+    expect(h.agents[0]!.kill).not.toHaveBeenCalled();
+    expect(h.card()?.fresh).toBe(false);
+
     h.runner.dispose({ force: true });
   });
 
