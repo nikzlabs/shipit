@@ -52,9 +52,14 @@ already removed one option — see requirements.md.
       note on the "Known caveat" bullet, since a shipped doc asserting a
       guarantee the code does not provide is how this work inherited the error
       in the first place. Not gated on the open questions: it is a factual fix.
-- [ ] H2 (poisoned store content installed normally) has no upstream fix to lean
-      on. Decide whether ShipIt verifies store contents itself, or closes the
-      write via option B — pricing the verification against req 7 first.
+- [x] H2 (poisoned store content installed normally) — **settled: not a hole.**
+      Measured with `verify-h2.sh`, pnpm content-hash-checks on import (evicts and
+      re-downloads online, fails closed offline), identically on 11.22.0 and
+      12.4.2. ShipIt does not need to build verification; the earlier plan to do
+      so is withdrawn.
+- [ ] Set `verify-store-integrity=true` **explicitly** rather than inheriting the
+      default — `false` disables the check completely and ShipIt currently asserts
+      neither value. Small, and the only H2 work left.
 - [ ] H3 (req 4), if Q1 is answered (b): set `package-import-method`. Prefer
       `clone-or-copy` over `copy` — same isolation, and it becomes near-free the
       moment the filesystem supports reflink. Never `clone`: it fails the install
@@ -67,11 +72,11 @@ already removed one option — see requirements.md.
 - [ ] Decide separately whether ShipIt's data disk moves off ext4. That is a host
       storage migration with its own risk and rollback story, and it is what makes
       option (b) cheap rather than a 1.8× disk regression.
-- [ ] **Re-test H2 with a harness that controls pnpm's verification cache.**
-      Today's runs contradicted each other depending on whether the store was
-      copied aside or poisoned in place, so no H2 conclusion may be drawn from
-      them. Also pin down `verify-store-integrity`: setting it false installed
-      poisoned bytes every time, so a real check exists and something is gating it.
+- [x] **Re-test H2 with a controlled harness.** Done — `verify-h2.sh`, committed
+      beside this checklist. The apparent copied-vs-in-place difference that made
+      H2 look unsettled was a defect in the first harness (one store reused across
+      trials, so each poison ran against an entry pnpm had just re-verified), not
+      a pnpm behaviour. Store-state and poison-length both turned out irrelevant.
 - [ ] Record that ShipIt sets neither `package-import-method` nor
       `verify-store-integrity` anywhere in `src/` today — both run on pnpm
       defaults, so either is a new explicit setting rather than a change.
@@ -82,9 +87,9 @@ already removed one option — see requirements.md.
       works — req 9). Done: plan.md option D. **Refuted** — it closes none of the
       three holes, because the attacker writes the shared files directly and
       never asks the registry. Do not build it for this issue.
-- [ ] Record the residual explicitly in `requirements.md` and in shipit-docs
-      whenever H2 is left open, so "integrity checking" is not read as covering
-      the store.
+- [ ] In shipit-docs, describe store verification as **pnpm's**, not ShipIt's, and
+      name `verify-store-integrity` as the thing it depends on. The residual to
+      record is H3, which no content check can reach.
 
 ## Step 3 — optional, orthogonal (Q1 answered (a))
 

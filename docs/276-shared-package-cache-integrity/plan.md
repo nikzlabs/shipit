@@ -46,7 +46,7 @@ content cache is genuinely safe. It is these three:
 | Hole | Surface | Protected today? |
 |---|---|---|
 | **H1** — cached *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` npm `_cacache/index-v5` | **No.** Demonstrated install-time RCE, offline, no warning. |
-| **H2** — poisoned store content installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **No.** pnpm performs no store-content verification, and no setting enables one. |
+| **H2** — poisoned store content installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Not a hole.** pnpm content-hash-checks on import: it evicts and re-downloads online, and fails closed offline. Measured 2026-09-17 — [see the result](#h2-settled-pnpm-does-verify-and-the-hole-was-never-there). Depends on `verify-store-integrity` staying at its default. |
 | **H3** — store file mutated in place, changing already-linked `node_modules` files | `/workspace/.pnpm-store` | **No**, and unfixable by verification: there is no install event to check at. |
 
 **The overlay dependency base is not a third hole.** It is never mounted into a
@@ -263,8 +263,8 @@ Measured, each hole against a mediator that works perfectly:
   network fully available**: the install completed in ~400 ms, ran the
   attacker's `postinstall`, and installed attacker content. npm never asked the
   registry, so it could not have asked a mediator either.
-- **H2** — a package already present in the pnpm store is never fetched. A fresh
-  online install links the poisoned bytes without a request. Nothing to mediate.
+- **H2** — not a hole; pnpm's own content check handles it, and where it repairs
+  it does so by fetching from the real registry. Nothing for a mediator to add.
 - **H3** — no install occurs at all. Nothing to mediate.
 
 **Forcing revalidation is not a rescue, and this is the sharpest result.**
@@ -389,18 +389,58 @@ priced as introducing.
 - ShipIt sets **neither** `package-import-method` **nor** `verify-store-integrity`
   anywhere in `src/` — both run on pnpm's defaults. Whatever is chosen here is a
   new explicit setting, not a change to an existing one.
-- `verify-store-integrity` turns out to be load-bearing for H2, and **H2's status
-  is now unsettled rather than settled**. With a store copied aside, a poisoned
-  entry was detected (repaired online, `ERR_PNPM_NO_OFFLINE_TARBALL` offline);
-  with the *same* entry poisoned **in place**, the offline install accepted the
-  poisoned bytes. That difference points at a verification result pnpm caches
-  rather than at the poison, and it is the confound that has made this claim flip
-  twice already. Setting `verify-store-integrity=false` installed poisoned bytes
-  every time, which at least confirms a real check exists. **No H2 conclusion
-  should be drawn from today's runs** — it needs a dedicated harness that controls
-  the verification cache, and until then the safe reading is that H2 is open.
+- **H2 is settled, and it is CLOSED by pnpm's default.** See
+  [the H2 result](#h2-settled-pnpm-does-verify-and-the-hole-was-never-there) below.
+  The apparent "verification cache" that made this look unsettled was a defect in
+  the first harness, not a pnpm behaviour.
 
-### Verdict
+## H2 settled: pnpm does verify, and the hole was never there
+
+*Measured 2026-09-17 with [`verify-h2.sh`](./verify-h2.sh) — 24 cells per pnpm
+version, sweeping store-state × network × `verify-store-integrity` × poison-length,
+**every cell paired with a clean negative control**. pnpm **11.22.0 and 12.4.2**
+produced identical results.*
+
+| `verify-store-integrity` | online | offline |
+|---|---|---|
+| unset *(pnpm's default)* / `true` | entry evicted, **re-downloaded**, clean bytes installed | entry evicted, **install fails closed** |
+| `false` | **poisoned bytes installed** | **poisoned bytes installed** |
+
+Store-state (copied aside vs poisoned in place) and poison-length (same-byte-length
+vs shorter) made **no** difference in any cell. Two things follow: the check is on
+the **content hash**, not on size or mtime; and there is **no verification cache**,
+which is what the previous draft of this doc suspected.
+
+**`ERR_PNPM_NO_OFFLINE_TARBALL` is downstream of the check, not instead of it.**
+On the offline cells pnpm reports the entry as repaired — it *evicted* the corrupt
+file and then had nowhere to fetch a replacement. Every earlier reading of that
+error, in this doc and in docs/198, mistook the symptom for the absence of a check.
+
+**So H2 was never a hole.** What it depends on is `verify-store-integrity`
+remaining at its default; setting it false disables the protection completely, in
+every configuration tested. ShipIt sets it nowhere, so this is pnpm's default
+holding rather than anything ShipIt guarantees — worth pinning explicitly if H2 is
+to be relied on.
+
+**H3 is untouched by any of this, and remains the real hole.** No import occurs
+when a store file is mutated under a live `node_modules`, so there is no event for
+a content check to attach to. That is why option E's isolation matters and this
+result does not replace it.
+
+### Why this took three attempts
+
+This claim has now been stated three ways: "pnpm verifies on link" (docs/198,
+original), "pnpm verifies nothing" (2026-08-19), and the table above. The first
+two were each measured without a negative control, so a run that failed for an
+unrelated reason was read as confirming whichever hypothesis was current — and the
+second was additionally confirmed by an independent reviewer working from the same
+uncontrolled evidence. The first version of `verify-h2.sh` reproduced the mistake
+in miniature: it reused one store across trials, so the second poison of each pair
+ran against an entry pnpm had just re-verified and duly came out "safe". Trials
+must not be able to see each other. That is the reason the harness is committed
+alongside the conclusion.
+
+### Verdict on option E
 
 **The right instinct, and the answer to the question as asked — but it is a
 storage decision, not a code decision.** The application change is one config
@@ -468,7 +508,7 @@ that covers the adding case.
 | | **Copies** (`package-import-method=copy`) | **Registry mediation** | **Narrow the store key** |
 |---|---|---|---|
 | **H1** npm packument RCE | ✗ | ✗ | ✗ |
-| **H2** poisoned store installed | ✗ | ✗ | ✗ (same-repo only) |
+| **H2** poisoned store installed | *(not a hole — pnpm verifies)* | — | — |
 | **H3** live hardlink mutation | **✓** | ✗ | ✗ |
 | Cross-repo reach | unchanged | unchanged | **✓ closed** |
 | Cost | ~464 MB per installing session | proxy + credential store + SPOF | disk; loses cross-repo dedup |
@@ -514,12 +554,15 @@ addresses neither demonstrated hole, and per-repo keying is already disproven by
    see option D; it closes nothing here, so copies are not being chosen by
    default for lack of a costed rival.
 
-3. **H2 has no cheap answer, and that must be said plainly.** With copies in
-   place a fresh install can still be handed tampered bytes, and pnpm verifies
-   nothing. Closing it means either ShipIt verifying store contents itself
-   (priced against req 7) or Reshaped B. If neither is taken, record the residual
-   in the requirements and in shipit-docs — otherwise "we added integrity
-   checking" will read as though the store were covered, which is exactly the
+3. **H2 needs no work — but it needs pinning.** Measured 2026-09-17: pnpm
+   content-hash-checks store entries on import, evicting and re-downloading
+   online and failing closed offline, identically on 11.22.0 and 12.4.2. An
+   earlier draft of this plan said the opposite and recommended building
+   verification; that recommendation is withdrawn. What remains is small and
+   worth doing: **set `verify-store-integrity=true` explicitly** rather than
+   inheriting it, because `false` disables the protection completely and ShipIt
+   currently asserts nothing either way. Do **not** describe this as ShipIt
+   adding integrity checking — it is pnpm's, and saying otherwise repeats the
    error `docs/198-dep-cache-content-keying-and-pnpm-store` already made.
 
 4. **Treat C as optional and orthogonal.** Ship it if cross-repo isolation is

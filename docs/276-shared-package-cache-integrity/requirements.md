@@ -220,21 +220,26 @@ container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
 3. **pnpm store files are hardlinked into `node_modules`** (link count 2,
    confirmed by inode). Writing to the store file changed the already-installed
    victim file immediately, and the poisoned code then executed — no reinstall.
-4. **pnpm does not verify store content on install either.** A *fresh* install
-   (`node_modules` deleted entirely) from a poisoned store silently hardlinks
-   the poisoned bytes: online, offline, with `verify-store-integrity=true`, and
-   with `package-import-method=copy`. All four installed the attacker's content
-   with no warning and no re-download. So the pnpm store has **no** integrity
-   check on either path — req 3 is unmet there today, and req 4 is not merely
-   "the case without an install".
+4. **pnpm DOES verify store content when it installs — but nothing is installed
+   in case 3.** Measured 2026-09-17 with a controlled harness
+   ([`verify-h2.sh`](./verify-h2.sh), 24 cells per version, each with a clean
+   negative control, identical on pnpm 11.22.0 and 12.4.2): a fresh install from
+   a poisoned store evicts the bad entry and re-downloads it online, and **fails
+   closed** offline. The check is on the content hash. Its one off switch is
+   `verify-store-integrity=false`, which disables it completely.
 
-   *An earlier draft of this doc claimed the opposite, on the strength of one
-   offline run that failed with `ERR_PNPM_NO_OFFLINE_TARBALL`. That was a
-   package-**presence** failure in a store that had never held the metadata, not
-   an integrity check. The independent reviewer caught it; it is recorded rather
-   than quietly fixed because* `docs/198-dep-cache-content-keying-and-pnpm-store`
-   *carried the same wrong claim and the design leaned on it. That doc's "Known
-   caveat" bullet is corrected in the same PR as this one.*
+   This is what makes **req 4 the requirement that matters**: the protection is
+   real on the install path and irrelevant on the path in case 3, where no
+   install happens at all and so no check can fire.
+
+   *This point has been stated three ways in three weeks — "verified on link",
+   then "not verified at all", now the above. The first two were each measured
+   without a negative control, so a run that failed for an unrelated reason read
+   as confirmation; the "not verified" version was additionally agreed with by an
+   independent reviewer working from the same uncontrolled evidence. The harness
+   is committed beside this doc so the claim need not be taken on trust.*
+   `docs/198-dep-cache-content-keying-and-pnpm-store` *carried the first two
+   versions and is corrected in the same PR as this one.*
 
 ## Resolved questions
 

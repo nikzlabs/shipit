@@ -199,31 +199,49 @@ skip and the store mount derive from one decision.
   (patch-package style) — pnpm's own ecosystem answer (copy-on-patch via
   `pnpm patch`) applies.
 
-  > **Correction (2026-08-19, docs/276-shared-package-cache-integrity).** This bullet
-  > used to continue: "the store is also integrity-checked by pnpm on link, so
-  > corruption is detected, not silently propagated." **That is false, and nothing in
-  > this design ever relied on it being true — but later work did.**
+  > **Correction (2026-08-19, superseded 2026-09-17 — read the second note below
+  > before relying on this one).** This bullet used to continue: "the store is also
+  > integrity-checked by pnpm on link, so corruption is detected, not silently
+  > propagated." That wording is misleading, because the path that matters performs
+  > no link at all — see below. The 2026-08-19 correction replaced it with the claim
+  > that **pnpm performs no store-content verification whatsoever**. That went too
+  > far and is itself withdrawn.
+
+  > **Correction (2026-09-17, docs/276-shared-package-cache-integrity).** Measured
+  > with a controlled harness — `docs/276-shared-package-cache-integrity/verify-h2.sh`,
+  > 24 cells per version, each with a passing clean control, on pnpm **11.22.0 and
+  > 12.4.2**, which behave identically. Two separate facts, previously conflated:
   >
-  > **pnpm performs no store-content verification.** Measured against pnpm 11.22.0:
-  > populate a store, overwrite the store file that is hardlinked into `node_modules`
-  > (locate it with `stat -c %i` on the `node_modules` file, then
-  > `find <store> -inum <inode>`), delete `node_modules` entirely, and reinstall — the
-  > poisoned bytes are silently hardlinked back in. This holds **online, offline, with
-  > `verify-store-integrity=true`, and with `package-import-method=copy`**. There is no
-  > setting that turns a check on.
+  > **1. pnpm DOES verify store content on import, and it is a content-hash check.**
+  > Poison a store entry, delete `node_modules`, reinstall: online, pnpm evicts the
+  > bad entry and re-downloads; offline, it evicts it and then **fails closed** for
+  > want of a replacement. Poison length makes no difference, so the check is on the
+  > hash, not on size or mtime. The `ERR_PNPM_NO_OFFLINE_TARBALL` that the 2026-08-19
+  > note read as "no check happened" is in fact *downstream* of the check — the
+  > tarball is unavailable **because pnpm had just evicted the corrupt one**.
   >
-  > **And no reinstall is needed to reach an existing session.** Store entries are
-  > hardlinked into `node_modules`, so writing a store file changes the contents of
-  > every already-installed `node_modules` file that links it, immediately, with no
-  > install event anywhere. "Corruption" here therefore covers deliberate poisoning by
-  > anything that can write the store, not just accidental damage.
+  > The check has a single off switch: **`verify-store-integrity=false` disables it
+  > completely**, and poisoned bytes then install in every configuration tested,
+  > online and offline. It is worth knowing that ShipIt sets this value nowhere, so
+  > the protection is pnpm's default rather than anything ShipIt asserts.
   >
-  > `docs/276-shared-package-cache-integrity` prices the consequences: the shared store
-  > is writable by every session of a repo, so this is a cross-session code-execution
-  > channel. Its `plan.md` treats the install path and the hardlink path as two
-  > separate holes precisely because neither has an upstream check to lean on. That doc
-  > initially inherited the wrong claim from this bullet before an independent review
-  > refuted it — which is the reason for correcting it here rather than only there.
+  > **2. No import happens on the path that actually matters, so no check can fire.**
+  > Store entries are **hardlinked** into `node_modules`. Writing a store file changes
+  > every already-installed `node_modules` file that links it — immediately, with no
+  > install event anywhere for a check to attach to. This is unaffected by
+  > `verify-store-integrity`, and it is the real hazard: "corruption" here covers
+  > deliberate poisoning by anything that can write the store, not just accidental
+  > damage. The original "integrity-checked on link" phrasing is wrong about this
+  > path not because the check is absent but because **nothing links**.
+  >
+  > `docs/276-shared-package-cache-integrity` prices the consequences — the shared
+  > store is writable by every session of a repo, so this is a cross-session
+  > code-execution channel — and its option E prices copy-on-write imports as the fix.
+  >
+  > *This claim has now been stated three ways in three weeks. Each earlier version
+  > was measured without a negative control, so a run that failed for an unrelated
+  > reason was read as confirming whichever hypothesis was current. The harness above
+  > exists so the next person does not have to take any of this on trust.*
 
 ## Shelf (explicitly not scheduled): content-addressed multi-base store
 
