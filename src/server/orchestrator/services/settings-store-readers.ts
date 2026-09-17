@@ -775,11 +775,6 @@ export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
     );
   },
 
-  // The two pasted-token integrations.
-  "integrations.github.connection": (ctx) => {
-    const missing = needsCredentialStore(ctx);
-    return missing ?? value(ctx.deps.credentialStore?.getGithubToken() ?? null);
-  },
   // docs/305 — the grant, not the registry; see `sessionSshHosts`.
   "integrations.sshHosts": (ctx) => {
     const missing = needsCredentialStore(ctx);
@@ -789,10 +784,6 @@ export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
   "integrations.sshHosts[].address": (ctx) => sshItems(ctx, (host) => host.address),
   "integrations.sshHosts[].user": (ctx) => sshItems(ctx, (host) => host.user),
   "integrations.sshHosts[].port": (ctx) => sshItems(ctx, (host) => host.port),
-  "integrations.linear.credential": (ctx) => {
-    const missing = needsCredentialStore(ctx);
-    return missing ?? value(ctx.deps.credentialStore?.getLinearToken() ?? null);
-  },
 
   // The global egress allowlist.
   "network.egress.hosts": (ctx, cache) =>

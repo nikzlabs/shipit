@@ -15,7 +15,7 @@ import { DeclaredToggle } from "./declared.js";
 import {
   resetDeclaredSaves,
   saveSetting,
-  useDeclaredBoolean,
+  useSetting,
   type DeclaredBooleanKey,
 } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -26,6 +26,7 @@ import {
   GLOBAL_SETTINGS,
   findSetting,
   type AnyPayloadDeclaration,
+  type SettingKey,
 } from "../../../server/shared/settings-catalogue/index.js";
 
 /**
@@ -179,32 +180,29 @@ describe("two saves of one setting that overlap", () => {
  */
 describe("a setting the record does not hold", () => {
   const OUTSIDE = (Object.values(GLOBAL_SETTINGS) as AnyPayloadDeclaration[]).filter(
-    (d) => d.store.kind === "credential-store" && d.type.kind === "bool" && !recordHolds(d.key),
+    (d) => !recordHolds(d.key) && d.wire in useSettingsStore.getState(),
   );
 
-  it("covers the settings still reading through their named field", () => {
-    // One left: the Instructions tab joined the record in slice 3, and the
-    // Integrations tab follows in slice 5.
-    expect(OUTSIDE.map((d) => d.key).sort()).toEqual(["integrations.autoCreatePr"]);
+  it("covers the payload settings still reading through their named field", () => {
+    // One left: every other tab joined the record, and the Services tab's model
+    // picker waits for slice 6's panels.
+    expect(OUTSIDE.map((d) => d.key).sort()).toEqual(["services.nonTurnModel"]);
   });
 
   for (const declaration of OUTSIDE) {
-    const key = declaration.key as DeclaredBooleanKey;
+    const key = declaration.key as SettingKey;
 
     it(`shows ${key} as its hydration last left it, not as an earlier save did`, async () => {
-      await act(async () => { await saveSetting(key, true); });
-      expect(storeValue(declaration.wire)).toBe(true);
+      const saved = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" };
+      await act(async () => { await saveSetting(key, saved); });
+      expect(useSettingsStore.getState().settingValues[key]).toBeUndefined();
 
       // What a `settings_changed` refetch does: the authoritative value arrives
       // through this setting's own setter, which writes the named field.
-      act(() => {
-        (useSettingsStore.getState() as unknown as Record<string, (v: boolean) => void>)[
-          `set${declaration.wire.charAt(0).toUpperCase()}${declaration.wire.slice(1)}`
-        ](false);
-      });
+      act(() => { useSettingsStore.getState().setNonTurnModel(null, null); });
 
-      const { result } = renderHook(() => useDeclaredBoolean(key));
-      expect(result.current.value).toBe(false);
+      const { result } = renderHook(() => useSetting(key));
+      expect(result.current.value).toBeNull();
     });
   }
 });

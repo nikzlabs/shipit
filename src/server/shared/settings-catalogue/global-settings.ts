@@ -174,6 +174,7 @@ export const GLOBAL_SETTINGS = {
   "integrations.autoCreatePr": defineSetting({
     key: "integrations.autoCreatePr",
     tab: "integrations",
+    section: "Pull requests",
     scope: "global",
     label: "Auto-create PR after every meaningful turn",
     description:

@@ -19,22 +19,28 @@ collections**. The browser's 14 declarations share **13 storage keys**.
 | Outcome | Declarations | What it means |
 |---|---|---|
 | **Generated row** | 24 | A control the renderer produces from the value kind. Nothing hand-written. |
-| **Generated credential row** | 2 | A token the user pastes and can disconnect: GitHub and Linear. |
-| **Small component** | 8 | Five components: the memory budget, the webhook pair, the TTS choices, hands-free, the repository colour. |
+| **Small component** | 10 | Seven components: the memory budget, the webhook pair, the TTS choices, hands-free, the repository colour, and the two pasted-token credentials. |
 | **Panel** | 9 | A collection editor with its own operations. |
 | **Repeated by a panel** | 34 | Item fields and per-item settings, addressed by a credential, an account, a host, a server or a repository. |
 
-So **26 of 77 settings stop being hand-written entirely**, 5 components cover 8
+So **24 of 77 settings stop being hand-written entirely**, 7 components cover 10
 more, and 9 panels own the remaining 34 between them. Every one of them —
 generated, component or panel — reads its words from its declaration and writes
 to the declaration's store.
+
+*The credential rows were counted as generated rows here until slice 5 built
+one. They are components, for the reasons `plan.md` → Slices → 5 gives; what
+changed is the count above and the kind below, not what the user gets.*
 
 ## Four kinds of control, not two
 
 1. **A value row.** One declaration, one value, one control chosen by value kind:
    toggle, choice, number, text, git identity, model selection.
-2. **A credential row.** A token the browser pastes in and can remove. Only two
-   stand alone; the rest of the credentials are addressed and live in panels.
+2. **A credential row.** A token the browser pastes in, replaces and removes.
+   Only two stand alone; the rest of the credentials are addressed and live in
+   panels. *Slice 5: a credential row is a **component**, not a control kind —
+   the write's answer is used, removing is a second address, and what it shows
+   is the connection rather than the value.*
 3. **A panel.** A collection with operations — add, remove, reorder, test, sign
    in. Nine of these.
 4. **A repeated field.** A declaration a panel renders once per item, addressed
@@ -57,6 +63,7 @@ that looked necessary.
 | `section` | Larger tabs have headed groups — Advanced's automation and notifications, Voice's input and playback | rows on the larger tabs; omitted elsewhere |
 | `component` | A setting that needs its own UI (req 3) | 9 panels, 5 components |
 | `own-route` gains `method`, `path` and `bodyField` | A single-value setting with a route of its own cannot be written from prose (P2) | 5 declarations |
+| `own-route` gains `writeOnly` | A credential the path stores and never answers has no read to pair with the write, so nothing hydrates it and the record must not hold it (slice 5) | 2 declarations |
 
 ```ts
 // A row: nothing new at all.
@@ -204,13 +211,13 @@ it:**
 | `mcp.servers[].env` | integrations | secretBag | panel | configured? | repeated by its panel |
 | `mcp.servers[].headers` | integrations | secretBag | panel | configured? | repeated by its panel |
 | `mcp.oauthProvider` | integrations | text | panel | configured? | repeated by its panel |
-| `integrations.github.connection` | integrations | text | panel | configured? | **generated credential row** |
+| `integrations.github.connection` | integrations | text | own route `POST /api/github/token` (write-only) | configured? | `github-connection` component |
 | `integrations.sshHosts` | integrations | collection | panel | derived | **panel** |
 | `integrations.sshHosts[].label` | integrations | text | panel | value | repeated by its panel |
 | `integrations.sshHosts[].address` | integrations | text | panel | derived | repeated by its panel |
 | `integrations.sshHosts[].user` | integrations | text | panel | derived | repeated by its panel |
 | `integrations.sshHosts[].port` | integrations | numeric | panel | value | repeated by its panel |
-| `integrations.linear.credential` | integrations | text | panel | configured? | **generated credential row** |
+| `integrations.linear.credential` | integrations | text | own route `POST /api/trackers/linear/token` (write-only) | configured? | `linear-credential` component |
 
 ## Problems and dependencies
 
@@ -317,8 +324,17 @@ setting, and nothing answers the token.
 **P10 — The credentials are not one shape.** Of the 14 `configuredOnly`
 declarations, `integrations.github.connection` is a **personal access token
 form** (`src/client/components/GitHubTokenForm.tsx`) and
-`integrations.linear.credential` is the same shape; those two are generated
-credential rows once their route is declared (P2). `mcp.oauthProvider` and
+`integrations.linear.credential` is the same shape; those two become rows once
+their route is declared (P2).
+
+*Slice 5 built both, and they are **components**.* Each keeps the declared
+address — `own-route`, plus `writeOnly` because the path stores the token and
+answers no GET — so neither names a path or a body field. What a generated
+control could not have carried: the write's ANSWER is the card (the account, the
+teams a token reaches, the reason a refusal was refused), removing is a second
+address, and being configured is not the value. A generic credential control
+would have needed adapters and extra metadata for two consumers, which
+requirement 5 refuses. `mcp.oauthProvider` and
 `voice.providerKey` are addressed and repeat per provider; the rest sit inside
 panels with sign-in and replace operations.
 
@@ -366,7 +382,10 @@ while GitHub is disconnected. Requirement 4 accepts both.
 
 *Slice 4 made the first permanent.* The pair renders whatever the delivery mode
 is, which is the honest order: the webhook has to be configured before either
-mode that uses it does anything. `integrations.autoCreatePr` is slice 5.
+mode that uses it does anything. *Slice 5 made the second permanent.* `integrations.autoCreatePr` renders whether
+or not GitHub is connected. What that branch also held was the connected card's
+own chrome — the account name and Disconnect — which genuinely needs a
+connection; nothing else lived there.
 
 **P14 — The instruction boxes write to files and detect outside edits.** Both
 `system-prompt-file` settings carry a conflict notice when the file changed while

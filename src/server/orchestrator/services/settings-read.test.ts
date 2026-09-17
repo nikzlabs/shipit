@@ -15,7 +15,7 @@ import {
   isPayloadDeclaration,
 } from "../../shared/settings-catalogue/index.js";
 
-/** The two own-route settings this read has a reader for. */
+/** The own-route settings whose reader answers from this test's default deps. */
 const OWN_ROUTE_READ_KEYS = ["advanced.releaseChannel", "network.egressContained"];
 import {
   getSettingForAgent,

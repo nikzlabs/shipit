@@ -7,6 +7,7 @@
 
 import {
   ALL_SETTINGS,
+  isPayloadDeclaration,
   type AnySettingDeclaration,
   type OwnRouteStore,
   type SettingTab,
@@ -22,7 +23,7 @@ import {
  * save (inventory.md P18).
  */
 export const GENERATED_TABS: readonly SettingTab[] =
-  ["advanced", "network", "instructions", "git", "voice"];
+  ["advanced", "network", "instructions", "git", "voice", "integrations"];
 
 /**
  * The stores `saveSetting` can write. The three payload stores share
@@ -128,15 +129,22 @@ function sharedValue(declaration: AnySettingDeclaration): boolean {
 }
 
 /**
- * A browser value needs a codec for its kind, and the rest need nothing.
+ * Whether the record has anything to hold for this setting.
  *
- * Without this a browser ENUM would render, change on screen and write nothing
- * at all — `writeBrowserValue` has no codec to encode it with, and the next
- * reload would answer the default. `localStorage` holds strings, so a store
- * that cannot spell a kind cannot hold it (P17).
+ * Two stores answer no. A **browser** value needs a codec for its kind: without
+ * one a browser enum would render, change on screen and write nothing at all —
+ * `writeBrowserValue` has no codec to encode it with, and the next reload would
+ * answer the default (P17). And a **write-only own route** stores its value
+ * without ever answering it, so there is no read to pair with the write: the
+ * record would hold the declared default for ever while
+ * `refreshOwnRouteSettings` asked a path with no GET on every settings refresh.
+ * A credential the user pastes is that shape, and what its component shows is
+ * the connection rather than the value (slice 5).
  */
 function storable(declaration: AnySettingDeclaration): boolean {
-  return declaration.store.kind !== "browser" || declaration.type.kind in BROWSER_CODECS;
+  const { store } = declaration;
+  if (store.kind === "own-route" && store.writeOnly) return false;
+  return store.kind !== "browser" || declaration.type.kind in BROWSER_CODECS;
 }
 
 /** Every generated row, in declaration order — which is the order they render in. */
@@ -153,8 +161,9 @@ const RECORDED_SETTINGS: readonly AnySettingDeclaration[] =
  * A setting outside it is read through its named store field, and that field is
  * what its own hydration still writes — so recording a value for it on a save
  * would leave the record holding a value the next hydration never corrects, and
- * the reader preferring it (P1, P18). `integrations.autoCreatePr` is the one
- * that reaches this writer today; its tab converts in slice 5.
+ * the reader preferring it (P1, P18). It is also narrower than the ROWS: a
+ * component may own a declaration the shared value machinery cannot hold, and a
+ * per-provider key or a write-only credential must not enter the record.
  */
 const RECORD_KEYS: ReadonlySet<string> = new Set(RECORDED_SETTINGS.map((d) => d.key));
 
@@ -180,6 +189,37 @@ export function sameSettingValue(a: unknown, b: unknown): boolean {
 /** Where a generated own-route row is written, and read back from (P2). */
 export function ownRouteOf(declaration: AnySettingDeclaration): OwnRouteStore | undefined {
   return declaration.store.kind === "own-route" ? declaration.store : undefined;
+}
+
+/** The one write every payload setting shares, whichever of the three stores holds it. */
+export const SETTINGS_PATH = "/api/settings";
+
+/**
+ * The request that stores one setting's value, built from its declaration alone.
+ *
+ * The settings payload takes every value it carries under the declaration's
+ * `wire` — the credential store, an instructions file and the git config all
+ * reach it through the same PUT. A setting the payload does not carry takes the
+ * method, the path and the body field its own store names (P2): the declarations
+ * that use it post different body shapes, so a route string could not have
+ * produced any of their payloads.
+ *
+ * It lives here rather than beside the writer because a **component** builds one
+ * too. The shared writers discard the response, and a connection's answer is
+ * exactly what its card has to show — the GitHub account, the teams a Linear
+ * token reaches. What such a component must still not do is name the path.
+ */
+export function settingRequest(
+  declaration: AnySettingDeclaration,
+  value: unknown,
+): { path: string; method: string; body: Record<string, unknown> } | null {
+  if (isPayloadDeclaration(declaration)) {
+    return { path: SETTINGS_PATH, method: "PUT", body: { [declaration.wire]: value } };
+  }
+  const route = ownRouteOf(declaration);
+  return route
+    ? { path: route.path, method: route.method, body: { [route.bodyField]: value } }
+    : null;
 }
 
 /** Every generated row the settings payload does not carry, so it is read on its own. */

@@ -21,7 +21,13 @@
 
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { GENERATED_SETTINGS, mirrorFieldOf, sameSettingValue } from "../../stores/setting-values.js";
+import {
+  GENERATED_SETTINGS,
+  SETTINGS_PATH,
+  mirrorFieldOf,
+  sameSettingValue,
+  settingRequest,
+} from "../../stores/setting-values.js";
 import { settingOf } from "./setting-binding.js";
 import {
   isPayloadDeclaration,
@@ -108,33 +114,6 @@ interface SaveState {
 
 const SAVES = new Map<string, SaveState>();
 
-const SETTINGS_PATH = "/api/settings";
-
-/**
- * The request that stores one setting's value.
- *
- * The settings payload takes every value it carries under the declaration's
- * `wire`, whichever of the three stores holds it — the credential store, an
- * instructions file or the git config all reach it through the same PUT, and
- * the declaration's `wire` is the only thing that differs. A setting the
- * payload does not carry takes the method, the path and the body field its own
- * store names (inventory.md P2) — the two that use it post different body
- * shapes, so a route string could not have produced either payload.
- */
-function requestFor(
-  declaration: AnySettingDeclaration,
-  value: unknown,
-): { path: string; method: string; body: Record<string, unknown> } | null {
-  const { store } = declaration;
-  if (isPayloadDeclaration(declaration)) {
-    return { path: SETTINGS_PATH, method: "PUT", body: { [declaration.wire]: value } };
-  }
-  if (store.kind === "own-route") {
-    return { path: store.path, method: store.method, body: { [store.bodyField]: value } };
-  }
-  return null;
-}
-
 /**
  * Put a value where its declaration says it lives.
  *
@@ -151,7 +130,7 @@ export async function saveSetting(key: SettingKey, value: unknown): Promise<void
     apply(value);
     return;
   }
-  const request = requestFor(declaration, value);
+  const request = settingRequest(declaration, value);
   if (!request) {
     throw new Error(`Cannot save "${key}": nothing writes a ${declaration.store.kind} store yet`);
   }

@@ -11,6 +11,8 @@
 
 import type { ReactNode } from "react";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
+import { GitHubConnection } from "./GitHubConnection.js";
+import { LinearCredential } from "./LinearCredential.js";
 import { MemoryBudget } from "./MemoryBudget.js";
 import { VoiceHandsFree } from "./VoiceHandsFree.js";
 import { VoiceProviderKeys } from "./VoiceProviderKeys.js";
@@ -27,6 +29,8 @@ export type SettingComponent = (props: { settingKey: SettingKey }) => ReactNode;
 
 export const SETTING_COMPONENTS: Readonly<Record<string, SettingComponent>> = {
   "memory-budget": MemoryBudget,
+  "github-connection": GitHubConnection,
+  "linear-credential": LinearCredential,
   "voice-provider-keys": VoiceProviderKeys,
   "voice-tts": VoiceTts,
   "voice-hands-free": VoiceHandsFree,

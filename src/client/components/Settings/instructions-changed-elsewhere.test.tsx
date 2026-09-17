@@ -19,9 +19,6 @@ import type { SettingKey } from "../../../server/shared/settings-catalogue/index
  */
 
 const props: SettingsProps = {
-  githubStatus: { authenticated: false },
-  onGitHubTokenSubmit: vi.fn(),
-  onGitHubLogout: vi.fn(),
   agentList: [],
   hasActiveSession: false,
   onClose: vi.fn(),
