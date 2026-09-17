@@ -231,12 +231,21 @@ async function runDispatchedTurnInner(
     ? null
     : deps.settingsOutcomeNotice?.(runner.sessionId) ?? null;
 
+  // docs/303 req 35 — read, never consumed: the card is standing state, so it rides
+  // every turn. Not on the nudge, whose own prompt carries the same block, and not on
+  // a driver-owned turn, which is never checked for an update either.
+  const statusContext =
+    opts.postTurn !== "none" && !isCompactRequest && !opts.statusNudge
+      ? deps.sessionStatusContext?.(runner.sessionId) ?? ""
+      : "";
+
   const agentPrefix = [
     pendingNotice,
     bugOutcomeNotice,
     settingsOutcome?.notice,
     reset?.agentPrefix,
     isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
+    statusContext,
   ]
     .filter(Boolean)
     .join("\n\n");

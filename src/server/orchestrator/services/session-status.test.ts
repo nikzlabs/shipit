@@ -1,15 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   clearConversationThread,
+  formatSessionStatusContext,
+  MAX_STATUS_CONTEXT_CHARS,
   markAllSessionStatusesStale,
   markSessionStatusStale,
   recordSessionStatus,
   runStatusExclusive,
+  sessionStatusTurnContext,
   shouldNudgeForStatusCard,
   statusNudgePrompt,
   takeOfferedActions,
 } from "./session-status.js";
 import type { SessionStatusDeps, TurnStatusFacts } from "./session-status.js";
+import type { SessionManager } from "../sessions.js";
 import type { SessionStatus } from "../../shared/types.js";
 
 /** Stores what it is given, so reconciliation runs against a real previous card. */
@@ -483,14 +487,120 @@ describe("statusNudgePrompt", () => {
     expect(prompt).toContain("no arguments");
   });
 
-  it("lists the offers with their taken state, so the agent can keep or replace them knowingly", async () => {
+  it("carries the whole card and asks for a reconciliation, not just a call (req 35)", async () => {
     const { d } = await seededCard();
     const stored = d.sessionManager.get("s1")!.sessionStatus!;
     await takeOfferedActions(d, "s1", [stored.actions[0]!.offerId]);
 
     const prompt = statusNudgePrompt(d.sessionManager.get("s1")!.sessionStatus);
-    expect(prompt).toContain("- Wire the webhook (already taken)");
-    expect(prompt).toContain("- Add a README section");
-    expect(prompt).not.toContain("- Add a README section (already taken)");
+    expect(prompt).toContain(formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus));
+    expect(prompt).toContain("Routes done.");
+    expect(prompt).toContain("Add the webhook route.");
+    expect(prompt).toContain("ALREADY SENT");
+  });
+});
+
+describe("formatSessionStatusContext (docs/303 req 35)", () => {
+  it("is empty for a session with no card, so a new session carries nothing", () => {
+    expect(formatSessionStatusContext(undefined)).toBe("");
+  });
+
+  it("carries the status, the manual steps and every offer with its payload and sent state", async () => {
+    const { d } = await seededCard();
+    await recordSessionStatus(d, "s1", { needsYou: ["Paste the Stripe key."] });
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+    await takeOfferedActions(d, "s1", [stored.actions[0]!.offerId]);
+
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(block).toContain("<session_status_card>");
+    expect(block).toContain("Routes done.");
+    expect(block).toContain("- Paste the Stripe key.");
+    expect(block).toContain("id: webhook — ALREADY SENT to you");
+    expect(block).toContain("payload: Add the webhook route.");
+    expect(block).toContain("id: readme");
+    expect(block).not.toContain("readme — ALREADY SENT");
+    expect(block.endsWith("</session_status_card>")).toBe(true);
+  });
+
+  it("leaves out the last-turn line, which every write rewrites or clears (req 31)", async () => {
+    const { d } = await seededCard();
+    await recordSessionStatus(d, "s1", { lastTurn: "Wired the webhook route." });
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(block).not.toContain("Wired the webhook route.");
+  });
+
+  it("stays within the cap by withholding payloads, and still lists every offer", async () => {
+    const { d } = await seededCard();
+    const bulky = Array.from({ length: 12 }, (_, i) =>
+      item({ id: `big-${i}`, label: `Offer ${i}`, payload: "x".repeat(1500) }),
+    );
+    await recordSessionStatus(d, "s1", { actions: bulky, replaceActions: true });
+
+    const card = d.sessionManager.get("s1")!.sessionStatus!;
+    const block = formatSessionStatusContext(card);
+    expect(block.length).toBeLessThanOrEqual(MAX_STATUS_CONTEXT_CHARS);
+    // req 35 asks that the agent see each offer, so the cap falls on the payloads.
+    for (const offer of card.actions) expect(block).toContain(`- id: ${offer.id}`);
+    // And it says so, because a replacement it cannot copy exactly would drop them.
+    expect(block).toContain("Do NOT use `replaceActions` this turn");
+    // Never half a payload: a truncated one is echoed back as a changed offer.
+    const printed = block.split("\n").filter((line) => line.startsWith("  payload: "));
+    for (const line of printed) {
+      expect(line === "  payload: (not printed this turn — too long)"
+        || line === `  payload: ${"x".repeat(1500)}`).toBe(true);
+    }
+  });
+
+  it("shrinks the listing itself only when the ids alone do not fit, and warns then too", async () => {
+    const { d } = await seededCard();
+    const many = Array.from({ length: 40 }, (_, i) =>
+      item({ id: `o-${i}`.padEnd(60, "z"), label: `Offer ${i}`.padEnd(118, "y"), payload: "p" }),
+    );
+    await recordSessionStatus(d, "s1", { actions: many, replaceActions: true });
+
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(block.length).toBeLessThanOrEqual(MAX_STATUS_CONTEXT_CHARS);
+    expect(block).toContain("further offer(s) are on the card, not listed here.");
+    expect(block).toContain("Do NOT use `replaceActions` this turn");
+  });
+
+  it("prints every payload and no warning on an ordinary card", async () => {
+    const { d } = await seededCard();
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(block).not.toContain("not printed this turn");
+    expect(block).not.toContain("replaceActions");
+  });
+});
+
+describe("sessionStatusTurnContext (docs/303 req 21, 35)", () => {
+  const sessionManager = {
+    get: (id: string) =>
+      id === "s1"
+        ? { id, sessionStatus: { status: "Billing service.", actions: [], fresh: true, writeSeq: 1 } }
+        : undefined,
+  } as unknown as SessionManager;
+
+  it("sends nothing while the setting is off", () => {
+    const ctx = sessionStatusTurnContext(
+      { sessionManager, credentialStore: { getSessionStatusCard: () => false } },
+      "s1",
+    );
+    expect(ctx).toBe("");
+  });
+
+  it("sends nothing for a session with no stored card", () => {
+    const ctx = sessionStatusTurnContext(
+      { sessionManager, credentialStore: { getSessionStatusCard: () => true } },
+      "other",
+    );
+    expect(ctx).toBe("");
+  });
+
+  it("renders the stored card while the setting is on", () => {
+    const ctx = sessionStatusTurnContext(
+      { sessionManager, credentialStore: { getSessionStatusCard: () => true } },
+      "s1",
+    );
+    expect(ctx).toContain("Billing service.");
   });
 });

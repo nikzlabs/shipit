@@ -471,6 +471,12 @@ export interface SystemTurnDeps {
   steerInputs?: () => { liveSteering: boolean; steeringCapable: boolean };
   /** docs/303 req 21 — with the setting off, the freshness mark and the nudge do not run. */
   statusCardEnabled?: () => boolean;
+  /**
+   * docs/303 req 35 — the stored card, rendered for the turn's prompt, or "" when the
+   * setting is off or no card is stored. The gate and the read live in the wiring, so a
+   * dispatched turn needs neither the session manager nor the credential store.
+   */
+  sessionStatusContext?: (sessionId: string) => string;
 }
 
 export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
