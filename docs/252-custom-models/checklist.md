@@ -512,3 +512,37 @@ the first of these. All six are fixed.
       The identity, vision and price entries went with it. Two of the five records were missed at
       first (Zen and Go kept `retired: []`), which no invariant test could see, since they iterate
       `mode.retired`; the guard added for it names the five pairs by hand.
+- [x] **Req 26: one height for the whole sign-in, 2026-09-17.** One Anthropic sign-in
+      moved the centred window three times unbidden (302 → 329 → 349px, then ~217 on
+      connecting), and Antigravity's challenge is 389 — the placeholder and the challenge
+      were two shapes maintained against each other, and had drifted 20px apart. Everything
+      that varies while the step is open now lives in one box of fixed height
+      (`SIGN_IN_STAGE_HEIGHT`, 17rem, `overflow-y-auto`, chips on its floor); a key-only
+      step keeps its natural height and gets a two-line reserved slot for *Save*'s failure
+      instead. Verified live: on the desktop dialog the window holds 409px across idle,
+      waiting and challenge (it moved 302 → 329 → 349 before), and at 390px and 320px — where
+      the dialog is fullscreen, so what is checked is that its content does not overflow the
+      box — Antigravity's challenge still fits. Opening the CLI-output buffer (469px of
+      content) now scrolls inside the box instead of growing the window by 200px. Guards walk
+      the five states asserting a concrete fixed length on the box, the footer's one row of
+      same-size buttons and byte-identical markup outside the box; each was proved red on its
+      own defect first. The independent review found the remaining hole — a reconnect's title
+      sits outside the box and a successful login renames the account to its email — and the
+      title is frozen for the dialog's life.
+- [x] **Req 26 extended to the whole dialog, 2026-09-17.** The first cut held the sign-in's
+      states still and left the provider list (496px) and the billing-mode choice (246px) at
+      their own heights, on the agent's reading of "the login screen"; the human took the
+      follow-up and asked for one height across the flow. Every step's body is now
+      `DIALOG_BODY_HEIGHT` (24rem = step 1's own height, the tallest, so the one screen with
+      something to lose loses nothing), the sign-in's box fills it, and step 2 centres its two
+      rows in the slack. Verified live: **498px at every step and every sign-in state**, top
+      unmoved, step 1 still whole with no scroll. Below `md` the sheet is unchanged — its
+      height is the viewport's — and the sign-in keeps its own 17rem box there, verified by
+      the footer's top not moving through a sign-in at 390px. Both alternatives were mocked up
+      in the dogfood first: unifying on the *shorter* height puts the provider list behind a
+      scroll on the one screen meant for comparing providers, so white space won. Step 1's
+      heads are now `sticky top-0` regardless, since the catalogue's tenth service will scroll
+      that list whatever height it is given. Two further holes came from the independent
+      review, reproduced in Chromium and both fixed: the title wrapping when it gains a long
+      provider name (498 → 518px — now `h-10 line-clamp-2`), and the key step's reserved error
+      line collapsing to 0px as a scrollable flex child (now `shrink-0`).

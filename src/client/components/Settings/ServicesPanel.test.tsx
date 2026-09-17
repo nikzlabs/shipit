@@ -1691,6 +1691,294 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
   });
 });
 
+/**
+ * docs/252-custom-models req 26 — the dialog does not move, from the first step to
+ * the end of the sign-in.
+ *
+ * The guarantee is structural, and so is the test: jsdom has no layout engine, so
+ * nothing here measures a pixel — and a test that measured the states and compared
+ * them would be pinning the states rather than the rule, which is how
+ * `ChallengePlaceholder` drifted 20px behind the challenge it stands in for while
+ * every test still passed. What is pinned instead is what makes the height a
+ * constant in CSS: every step's body is the dialog's one height, everything that
+ * changes as a login proceeds is inside ONE box within it, and the only thing
+ * below that box is one row of same-size buttons. Within the steps and states it
+ * walks, markup that escapes the box — a state's line, the error put back
+ * underneath it — fails this without anyone having to notice the jump. What it
+ * cannot see is a state it does not reach and a geometry it cannot measure; this
+ * repo has no browser-driven suite, and the live measurements are recorded in
+ * `docs/252-custom-models/plan.md` instead.
+ */
+describe("the dialog holds one height (docs/252-custom-models req 26)", () => {
+  const anthropicAccount = {
+    id: "acct-anthropic-1",
+    serviceId: "anthropic", billingMode: "sub", via: "account",
+    label: "Anthropic account 1", isPrimary: true, status: "authenticating",
+    createdAt: 1, updatedAt: 1,
+  };
+
+  const stubAccountApi = (account: Record<string, unknown> = anthropicAccount): void => {
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
+    });
+  };
+
+  const stage = () => screen.getByTestId("add-service-stage");
+
+  /**
+   * What the dialog draws OUTSIDE the fixed box, with the footer's own contents
+   * blanked — the footer's buttons legitimately change (Cancel becomes Done,
+   * Save and Sign in come and go) and are checked by size instead. `outerHTML`,
+   * so the dialog's own classes and width variable are in the comparison too, and
+   * the box's attributes survive the blanking: its `height` is part of it.
+   */
+  const outsideTheBox = (): string => {
+    const clone = screen.getByTestId("add-service-dialog").cloneNode(true) as HTMLElement;
+    clone.querySelector('[data-testid="add-service-stage"]')?.replaceChildren();
+    clone.querySelector('[data-testid="add-service-footer"]')?.replaceChildren();
+    return clone.outerHTML;
+  };
+
+  /** The size class of each footer child — and `not-a-button` for anything else
+   *  in there, which is the other way a footer grows a second row. */
+  const footerRow = (): string[] =>
+    [...screen.getByTestId("add-service-footer").children].map((el) =>
+      el.tagName === "BUTTON"
+        ? (el.className.split(/\s+/).find((c) => c.startsWith("h-")) ?? "unsized")
+        : "not-a-button",
+    );
+
+  /**
+   * The classes that make an element's height a constant rather than its
+   * content's: the dialog's body variable, a concrete length, or filling a parent
+   * that already has one. Read as a list so a test can say *which* of them is
+   * holding a given element still, and fail on a height that is merely equal
+   * across states — `h-auto` is equal across states and is the bug itself.
+   */
+  const heightAnchors = (el: Element): string[] =>
+    el.className.split(/\s+/).filter((c) =>
+      c === "md:h-(--add-service-body)"
+      || c === "md:flex-1"
+      || /^(md:)?h-\[\d+(\.\d+)?(rem|px)\]$/.test(c));
+
+  const bodyHeight = (): string =>
+    screen.getByTestId("add-service-dialog").style.getPropertyValue("--add-service-body");
+
+  it("gives all three steps the one body height", async () => {
+    stubAccountApi();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+
+    const seen: { step: string; anchors: string[]; scrolls: boolean; height: string; title: string[] }[] = [];
+    const record = (step: string): void => {
+      const el = screen.getByTestId(step);
+      seen.push({
+        step,
+        anchors: heightAnchors(el),
+        scrolls: el.className.includes("md:overflow-y-auto"),
+        height: bodyHeight(),
+        // The title is the one thing outside the body, and it GAINS the
+        // provider's name at this transition: a name long enough to wrap took the
+        // window from 498 to 518px before it was clamped to its two lines.
+        title: screen.getByTestId("add-service-title").className.split(/\s+/)
+          .filter((c) => c === "line-clamp-2" || /^h-\d+$/.test(c)),
+      });
+    };
+
+    record("add-service-step-service");
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    record("add-service-step-mode");
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    record("add-service-step-credential");
+
+    expect(seen.map((s) => s.step)).toHaveLength(3);
+    // A concrete length, and the SAME one in all three: the provider list, the
+    // billing-mode choice and the sign-in are one window, not three.
+    expect(seen[0].height).toMatch(/^\d+(\.\d+)?(rem|px)$/);
+    for (const step of seen) {
+      expect({
+        step: step.step,
+        anchors: step.anchors,
+        scrolls: step.scrolls,
+        height: step.height,
+        title: step.title,
+      }).toEqual({
+        step: step.step,
+        anchors: ["md:h-(--add-service-body)"],
+        // A step with more to show than the height scrolls inside it, which is
+        // what keeps the number from ever being load-bearing.
+        scrolls: true,
+        height: seen[0].height,
+        title: ["h-10", "line-clamp-2"],
+      });
+    }
+  });
+
+  it("keeps every state of one sign-in inside the same fixed-height box", async () => {
+    stubAccountApi();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+
+    const seen: { state: string; anchors: string[]; outside: string; footer: string[] }[] = [];
+    const record = (state: string): void => {
+      seen.push({ state, anchors: heightAnchors(stage()), outside: outsideTheBox(), footer: footerRow() });
+    };
+
+    // Idle: the prose, the token field and its Save — nothing in flight.
+    expect(screen.getByTestId("add-service-secret")).toBeInTheDocument();
+    // The valve the fixed height needs: a state that outgrows the box — the CLI
+    // output buffer is 200px on its own once opened — scrolls inside it, so
+    // being wrong about the constant costs a scrollbar and never a jump.
+    expect(stage().className).toContain("overflow-y-auto");
+    record("idle");
+
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    await waitFor(() => expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument());
+    record("waiting for the code");
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", anthropicAccount.id, {
+        loginId: "anthropic-oauth",
+        accountId: anthropicAccount.id,
+        verificationUri: "https://claude.ai/oauth/authorize",
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId(`provider-account-challenge-${anthropicAccount.id}`)).toBeInTheDocument());
+    record("the challenge");
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", anthropicAccount.id, null);
+      useSettingsStore.getState().setProviderAccountAuthError("anthropic-oauth", anthropicAccount.id, "That code expired.");
+    });
+    await waitFor(() => expect(screen.getByTestId("add-service-signin-stalled")).toBeInTheDocument());
+    record("stalled");
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([
+        { ...anthropicAccount, status: "ready", externalId: "ext-1" } as never,
+      ]);
+    });
+    await waitFor(() => expect(screen.getByTestId("add-service-signed-in")).toBeInTheDocument());
+    record("connected");
+
+    expect(seen.map((s) => s.state)).toHaveLength(5);
+    for (const state of seen) {
+      // Anchored, not merely equal across the states: `h-auto` is equal across
+      // them and is the resizing bug itself. `md:flex-1` fills the step body,
+      // which the test above pins to the dialog's one height; the concrete length
+      // is what holds the box still in the fullscreen sheet, which has no fixed
+      // body to fill.
+      expect({ state: state.state, anchors: state.anchors })
+        .toEqual({ state: state.state, anchors: ["md:flex-1", "h-[17rem]"] });
+      expect({ state: state.state, outside: state.outside })
+        .toEqual({ state: state.state, outside: seen[0].outside });
+      // One row of `md` buttons, whichever buttons this state has.
+      expect({ state: state.state, footer: [...new Set(state.footer)] })
+        .toEqual({ state: state.state, footer: ["h-8"] });
+      expect(screen.getByTestId("add-service-footer").className).toContain("flex-nowrap");
+    }
+  });
+
+  it("puts the error line inside the box, where it cannot move the window", async () => {
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      if (url.endsWith("/login")) {
+        return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: "spawn failed" }) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account: anthropicAccount, accounts: [anthropicAccount] }) });
+    });
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+    const error = await screen.findByTestId("add-service-error");
+    expect(error).toHaveTextContent("spawn failed");
+    expect(stage().contains(error)).toBe(true);
+  });
+
+  it("reserves the failure's line on a step that is only a key field", async () => {
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      if (url === "/api/credential-routes") {
+        return Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve({ error: "That key was refused." }) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ routes: [] }) });
+    });
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    // DeepSeek has one billing mode, so the step answers itself (req 18).
+    await userEvent.click(screen.getByTestId("add-service-option-deepseek"));
+    await userEvent.type(screen.getByTestId("add-service-secret"), "sk-deepseek");
+
+    /** The dialog with the slot's contents and the footer's blanked out. */
+    const outsideTheSlot = (): string => {
+      const clone = screen.getByTestId("add-service-dialog").cloneNode(true) as HTMLElement;
+      clone.querySelector('[data-testid="add-service-error-slot"]')?.replaceChildren();
+      clone.querySelector('[data-testid="add-service-footer"]')?.replaceChildren();
+      return clone.innerHTML;
+    };
+
+    // Where there is a fixed body the box fills it, exactly as the sign-in's
+    // does; what a key step never gets is the sign-in's own 17rem in the
+    // fullscreen sheet, its natural height varying by service from 98px to 190px.
+    expect(heightAnchors(stage())).toEqual(["md:flex-1"]);
+    const slot = screen.getByTestId("add-service-error-slot");
+    expect(slot.className).toContain("h-8");
+    // A slot a longer message can still grow is not reserved.
+    expect(slot.className).toContain("overflow-y-auto");
+    // And a scrollable flex child has no automatic minimum, so without this the
+    // slot collapses to 0 in a stage a long chip row has filled — the error in
+    // the DOM, invisible, and not reachable by scrolling either.
+    expect(slot.className).toContain("shrink-0");
+    const before = outsideTheSlot();
+
+    await userEvent.click(screen.getByTestId("add-service-save"));
+    await waitFor(() => expect(screen.getByTestId("add-service-error")).toHaveTextContent("That key was refused."));
+
+    expect(slot.contains(screen.getByTestId("add-service-error"))).toBe(true);
+    expect(outsideTheSlot()).toBe(before);
+  });
+
+  /**
+   * The title is the one thing outside the box, and a *successful* login is what
+   * rewrites it: `recordAccountIdentity` adopts the authenticated email over a
+   * generated name, so at a narrow width the title rewraps and the window moves at
+   * the moment the sign-in completes. Found by the independent review, which
+   * traced the rename to the manager rather than inferring it.
+   */
+  it("opens a reconnect in that same box, under a title the sign-in cannot rewrite", async () => {
+    const now = Date.now();
+    const account = { id: "acct_1", serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, label: "Anthropic account 1", isPrimary: true, status: "ready" as const, externalId: "ext-1", createdAt: now, updatedAt: now };
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+    ]);
+    useSettingsStore.getState().setProviderAccounts([account]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Anthropic account 1");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(heightAnchors(stage())).toEqual(["md:flex-1", "h-[17rem]"]);
+    expect(bodyHeight()).toMatch(/^\d+(\.\d+)?(rem|px)$/);
+    expect(stage().contains(screen.getByTestId("add-service-signin-starting"))).toBe(true);
+
+    const title = screen.getByTestId("add-service-title").textContent;
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([{ ...account, label: "someone@example.com" }]);
+    });
+    expect(screen.getByTestId("add-service-title").textContent).toBe(title);
+    expect(title).toContain("Anthropic account 1");
+  });
+});
+
 describe("the compact service card (docs/252 req 19)", () => {
   it("drops the per-card description prose", () => {
     useSettingsStore.getState().setCredentialRoutes([
