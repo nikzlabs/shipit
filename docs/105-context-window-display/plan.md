@@ -241,6 +241,34 @@ their own `sessionId` inside their stores" — true for the per-turn series, and
 true for `contextTokens` (no key) or `currentSessionUsage` (keyed in the object,
 read unconditionally by the dial). Scoping lives in the handlers for that reason.
 
+### The guard covers the load's first suspension point only
+
+Scoping the two WS handlers left the third writer of these fields — the
+rehydration in `loadSessionHistory` — still able to write for a session the user
+has left. The load re-checks `isStillActiveSession()` after its history fetch,
+but the model / context-window / spend writes sat **below `await treePromise`**,
+a second suspension point the check does not cover. By then the load has already
+cleared `inFlightHistoryLoad` (the `finally` around the history fetch), so the
+incoming load's `controller.abort()` finds nothing to abort and the outgoing
+continuation resumes and overwrites whatever the incoming session just seeded.
+
+The file tree is fetched from the session container while history is served from
+the orchestrator's SQLite, so the outgoing tree routinely outlives the incoming
+load — a starting container widens the window to seconds.
+
+The symptom was a dial whose **model name and max context window** belonged to
+the previous session while its **token count** was current: the count is scoped
+and self-correcting, because the next `turn_usage_update` (which carries a
+`sessionId`) rewrites it, while `modelInfo` has no later writer unless a turn
+starts. A 480K-token Opus session read `480.0K / 272.0K` against the previous
+session's GPT model, over a spurious "type `/compact`" hint.
+
+Fix: the usage block moved **above** the tree await, into the synchronous region
+the existing check already protects. Nothing in it depends on the tree, so the
+move is the whole fix — no second guard, and no new ordering to maintain. Guard
+test: "a file tree still in flight cannot let the outgoing session reclaim the
+dial" (`session-data.test.ts`).
+
 ### `usage_update` no longer writes the reading at all
 
 Scoping fixed *whose* number reached the field; it did not make the number a
