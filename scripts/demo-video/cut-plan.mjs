@@ -148,9 +148,10 @@ export function keptSeconds(slices) {
  * The driver stamps beats on its own wall clock, which starts before
  * Playwright's first frame; the video has its own zero. The anchor is one
  * moment seen on both clocks: the driver shows a black splash, notes
- * `anchorWall` immediately before navigating to the instance, and the first
- * non-black frame after the splash (`anchorVideo`, from ffmpeg's blackdetect)
- * is the same moment on the video's clock. `wallDuration − videoDuration` is
+ * `anchorWall` and flips the splash white itself before navigating anywhere,
+ * and the first non-black frame (`anchorVideo`, from ffmpeg's blackdetect) is
+ * that flip on the video's clock. It must be the driver's own paint: the
+ * instance's first paint lands up to a second later (docs/296 plan §4 item 6). `wallDuration − videoDuration` is
  * the fallback only: Playwright ends the file `max(time since the last frame,
  * 1 s)` after the last frame (`videoRecorder.ts` `_stop()`), so a blinking
  * caret makes the tail up to a second long and the difference off by as much.
