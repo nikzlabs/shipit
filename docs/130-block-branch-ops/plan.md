@@ -143,6 +143,38 @@ same reason. The match itself runs under a 100 ms `vm.runInNewContext` deadline
 it is allowed to lose — `a(a+)+$` backtracks for seconds and a `try` cannot
 interrupt it, and a hook that stalls is the failure this rule exists to prevent.
 
+**What the tokenizer has to get right, each found by a review hunting for false
+refusals.** Leaving the loop condition exposed four ways to refuse correct work,
+because a loop condition is a small, tidy region and the whole command is not:
+
+- **Command position.** `echo pgrep -f x` prints a word; it runs no `pgrep`.
+  Tokens now carry whether they are the command of a simple command, which an
+  env assignment (`VAR=v pgrep …`) and a reserved word (`until`, `!`, `then`, …)
+  preserve and an ordinary word ends.
+- **Redirections do not end the arguments.** `pgrep -f x >/dev/null -A` passes
+  `-A` to `pgrep`, and stopping the scan at the redirection read it as a plain
+  `-f` and refused the very escape the message recommends. The scan steps over
+  a redirection and its operand and keeps reading. Relatedly `2>&1` is one
+  redirection word: reading its `&` as a control operator left a stray `1` that
+  looked like a second pattern, which declined to judge `… >/dev/null 2>&1` —
+  the commonest shape there is.
+- **A newline ends a command.** Treated as plain whitespace, one line's
+  arguments ran into the next, read as a second operand, and declined. Multi-line
+  commands are most of what an agent writes.
+- **A line continuation is removed, not turned into a newline.** Seeding a word
+  with it hid the `#` on the next line from the comment test, so
+  `echo one \` + `# note ; pgrep -f x` — which bash only echoes — was refused.
+- **`pgrep` compiles POSIX ERE; this compiles a JS `RegExp`.** They disagree:
+  ERE's `[[:digit:]]+` wants digits, JS reads it as a set of `[:digt` plus `]+`
+  and matches the pattern's own text. Bracket expressions and letter escapes are
+  declined rather than judged. Which letter escapes actually agree is a libc
+  detail — measured here, glibc's ERE does support `\w` — so the class is
+  declined whole and only misses are paid.
+- **A pipe means someone else reads the result.** `pgrep -af x | grep -v '[p]grep'`
+  filters the wrapper back out and is correct; no reading of the filter is
+  anything but a guess. Every shape that caused an incident — a bare check, a
+  count, `$(…)`, a kill — reaches no pipe.
+
 **Why it is not scoped to wait loops.** It first shipped judging only `until` /
 `while` conditions, after a loop ran 36 minutes against a test run that had
 already finished. The one-shot form was left alone on the reasoning that

@@ -203,8 +203,21 @@ function tokenize(text) {
   let value = null;
   let quoted = false;
   let quote = null;
+  // Whether the next word would be the COMMAND of a simple command rather than
+  // an argument to one. `echo pgrep -f x` prints; it does not run pgrep, and
+  // reading the two the same way refuses ordinary work.
+  let atCommandStart = true;
   const push = () => {
-    if (value !== null) tokens.push({ value, quoted });
+    if (value !== null) {
+      tokens.push({ value, quoted, command: atCommandStart });
+      // An env assignment and a reserved word both leave the next word in
+      // command position; anything else is a command, and what follows is its
+      // arguments. A redirection is neither, and keeps nothing.
+      atCommandStart =
+        !quoted &&
+        (/^[A-Za-z_][A-Za-z0-9_]*=/.test(value) ||
+          ["!", "{", "time", "until", "while", "if", "then", "elif", "else", "do"].includes(value));
+    }
     value = null;
     quoted = false;
   };
@@ -218,23 +231,35 @@ function tokenize(text) {
       continue;
     }
     if (ch === "'" || ch === '"') { quote = ch; value ??= ""; quoted = true; continue; }
+    // A backslash-newline is a line continuation: bash removes it entirely, so
+    // it must not seed a word. Seeding one hid the `#` below from the comment
+    // test on the line after a continuation.
+    if (ch === "\\" && text[i + 1] === "\n") { i++; continue; }
     // Bash starts a comment at a `#` that begins a word, and `value === null`
     // is exactly that position. Only the tokens are dropped: the comment text
     // is still in the process's command line, so it stays matchable below.
     if (ch === "#" && value === null) {
       const nl = text.indexOf("\n", i);
       if (nl === -1) break;
-      i = nl;
+      i = nl - 1;
       continue;
     }
-    if (/\s/.test(ch)) { push(); continue; }
-    if (";|&()".includes(ch)) {
+    // `2>&1` and `>&2` are one redirection word. Reading that `&` as a control
+    // operator split the word and left a stray `1` looking like a second
+    // pattern, which declined to judge the commonest shape there is.
+    if (ch === "&" && value !== null && /[<>]$/.test(value)) { value += ch; continue; }
+    // A newline ends a command as surely as `;`. Treating it as plain
+    // whitespace ran one command's arguments into the next, which read as a
+    // second operand and silently declined to judge anything multi-line.
+    if (ch === "\n" || ";|&()".includes(ch)) {
       push();
       const doubled = (ch === "&" || ch === "|") && text[i + 1] === ch;
       if (doubled) i++;
-      tokens.push({ value: doubled ? ch + ch : ch, quoted: false, operator: true });
+      tokens.push({ value: doubled ? ch + ch : ch === "\n" ? ";" : ch, quoted: false, operator: true });
+      atCommandStart = true;
       continue;
     }
+    if (/\s/.test(ch)) { push(); continue; }
     if (ch === "\\" && i + 1 < text.length) { value = (value ?? "") + text[++i]; continue; }
     value = (value ?? "") + ch;
   }
@@ -242,9 +267,9 @@ function tokenize(text) {
   return quote ? null : tokens;
 }
 
-/** Where this invocation's arguments stop: an operator, or a redirection. */
-function endsArguments(token) {
-  return token.operator === true || (!token.quoted && /^\d*[<>]/.test(token.value));
+/** A redirection word — `>`, `2>`, `>>/dev/null`. Not an argument, not a command. */
+function isRedirection(token) {
+  return !token.quoted && /^\d*[<>]/.test(token.value);
 }
 
 /**
@@ -306,13 +331,29 @@ function fullCommandLinePattern(args, program) {
 function fullMatchInvocations(tokens) {
   const found = [];
   for (let i = 0; i < tokens.length; i++) {
-    // An absolute path still names the program, and so does a quoted one:
-    // quoting stops `while` being a keyword, and does not stop `pgrep` being
-    // a command.
+    // An absolute path still names the program, and a quoted one still runs.
+    // Command POSITION is the real test: `echo pgrep -f x` prints a word.
+    if (tokens[i].command !== true) continue;
     const program = /^(?:.*\/)?(pgrep|pkill)$/.exec(tokens[i].value)?.[1];
     if (!program) continue;
     const args = [];
-    for (let j = i + 1; j < tokens.length && !endsArguments(tokens[j]); j++) args.push(tokens[j].value);
+    let j = i + 1;
+    for (; j < tokens.length && tokens[j].operator !== true; j++) {
+      // Step over a redirection, and over its operand when it has one. Stopping
+      // here instead hid every option written after it — `pgrep -f x >/dev/null
+      // -A` is a caller-excluding command bash accepts, and it read as a plain
+      // `-f`.
+      if (isRedirection(tokens[j])) {
+        if (/^\d*[<>]+$/.test(tokens[j].value)) j++;
+        continue;
+      }
+      args.push(tokens[j].value);
+    }
+    // Piped into something, the consumer decides what a match means — filtering
+    // the wrapper out with `grep -v` is a correct way to write this, and there
+    // is no reading the filter that is not a guess. The shapes that caused the
+    // incidents (a bare check, a count, `$(…)`, a kill) reach no pipe.
+    if (tokens[j]?.value === "|") continue;
     const pattern = fullCommandLinePattern(args, program);
     if (pattern !== null) found.push({ program, pattern });
   }
@@ -332,8 +373,25 @@ const MATCH_TIMEOUT_MS = 100;
  * matches only the wrapper around it — `bash`, say — is missed, and a miss
  * costs nothing a refusal would have saved.
  */
+/**
+ * Constructs the two regex engines do not read alike. `pgrep` compiles POSIX
+ * ERE; this compiles a JS `RegExp`. A bracket expression is the measured case:
+ * ERE's `[[:digit:]]+` wants digits, while JS reads it as a character set of
+ * `[:digt` followed by `]+` and matches the pattern's own text — so the hook
+ * saw a self-match that the real `pgrep` would not have made.
+ *
+ * Letter escapes are declined as a class rather than enumerated. Measured
+ * against the real `pgrep` here, glibc's ERE does support `\w`, so that one
+ * agrees; `\d` is a JS extension. Which letters agree is a libc detail this
+ * hook should not encode, and declining the lot only costs misses.
+ */
+function readsDifferentlyAsEre(pattern) {
+  return /\[\[:[a-z]+:\]\]/.test(pattern) || /\\[A-Za-z]/.test(pattern);
+}
+
 function matchesOwnCommand(pattern, line) {
   if (!pattern) return false;
+  if (readsDifferentlyAsEre(pattern)) return false;
   try {
     return runInNewContext("new RegExp(p).test(s)", { p: pattern, s: line }, {
       timeout: MATCH_TIMEOUT_MS,

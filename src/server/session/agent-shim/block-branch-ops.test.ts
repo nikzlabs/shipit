@@ -279,6 +279,12 @@ describe("block-branch-ops.mjs", () => {
       `N=$(pgrep -fc ${JOB}); echo $N`,
       // Killing what you cannot exclude: this signals the shell running it.
       `pkill -f "${JOB}"`,
+      // A newline ends a command, so the check is read rather than run into the
+      // next line's words and dismissed as a second operand.
+      `pgrep -f ${JOB}\nprintf 'rc=%s\\n' "$?"`,
+      // A redirection is not the end of the arguments, but it is not an escape
+      // either: there is still no option here that excludes the caller.
+      `pgrep -f ${JOB} >/dev/null 2>&1`,
     ];
     for (const command of blocked) {
       it(`blocks: ${command.slice(0, 58)}`, () => {
@@ -369,6 +375,26 @@ describe("block-branch-ops.mjs", () => {
       // A `#` comment is not code. Reading it as code would refuse this the
       // moment the scan stopped being scoped to loop conditions.
       "npm test # if it hangs, check with pgrep -f myjob",
+      // A comment after a line continuation is still a comment. Verified
+      // against bash: it removes the `\<newline>`, so the `#` begins a comment
+      // that swallows the `;` too, and the whole line only echoes. Reading the
+      // continuation as a literal newline left that `;` as a real separator,
+      // which put the `pgrep` in command position and refused an echo.
+      `echo one \\\n# note ; pgrep -f ${JOB}`,
+      // Command POSITION is what makes a word a command. These print text.
+      `echo pgrep -f ${JOB}`,
+      `printf '%s\\n' 'pgrep' '-f' '${JOB}'`,
+      // A redirection does not hide the option after it. bash passes `-A` to
+      // pgrep, and `-A` is the caller-excluding fix the refusal recommends.
+      `pgrep -f ${JOB} >/dev/null -A`,
+      // Piped onward, the consumer decides what a match means — and filtering
+      // the wrapper back out is a correct way to write this.
+      `pgrep -af ${JOB} | grep -v '[p]grep'`,
+      // pgrep compiles POSIX ERE and this hook compiles a JS RegExp. Reading
+      // `[[:digit:]]+` as JS does finds a match the real pgrep never makes, and
+      // a letter escape is declined as a class rather than enumerated.
+      "pgrep -f '[[:digit:]]+'",
+      "pgrep -f '\\w+'",
       // The shape the refusal recommends instead.
       "until grep -qE '^(PASS|FAIL)' /tmp/out.log; do sleep 5; done",
       "until [ -f /tmp/done ]; do sleep 1; done",
