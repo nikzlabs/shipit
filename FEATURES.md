@@ -50,10 +50,10 @@ start at the [README](README.md).
 
 ## Choose your agent
 
-- **Four agent harnesses** — Claude Code, Codex, OpenCode, and Grok Build all run as first-class
-  backends: the same transcript, tool rendering, skills, sub-agent view, reviews, and compaction
-  whichever one is driving, with each harness's own capabilities — permission modes, image input,
-  mid-turn steering — declared per harness rather than assumed
+- **Five agent harnesses** — Claude Code, Codex, OpenCode, Grok Build, and Antigravity all run as
+  first-class backends: the same transcript, tool rendering, skills, sub-agent view, reviews, and
+  compaction whichever one is driving, with each harness's own capabilities — permission modes,
+  image input, mid-turn steering — declared per harness rather than assumed
 - **Your model, on your harness** — the harness and the model it runs are separate choices. Configure
   a service once, by subscription or by API key, and every model that service and harness can both
   speak becomes selectable in the composer, so a DeepSeek or GLM key can drive the Claude Code
