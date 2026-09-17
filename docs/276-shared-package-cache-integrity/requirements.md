@@ -64,12 +64,13 @@ the two directly-writable surfaces unless they name the base.
 
 5. Requirement 1 MUST hold for a repo that has no lockfile, or whose lockfile
    does not pin an integrity hash for every dependency. *(Supplied — see
-   Provenance and Q2. Today the protection that exists is exactly the protection
-   a lockfile provides, so a repo without one has none.)*
+   Provenance. When written, the only protection that existed was the protection a
+   lockfile provides, so a repo without one had none. **Satisfied** by the
+   per-session resolution cache, measured 2026-09-17 — see Resolved questions.)*
 
 6. Requirement 1 MUST hold against writes to cached **resolution data** (what
    version and what bytes a dependency name resolves to), not only against
-   writes to cached package content. *(Supplied — see Provenance and Q2. Stated
+   writes to cached package content. *(Supplied — see Provenance. Stated
    separately because the content half is already safe and the resolution half
    is the demonstrated hole; a requirement naming only "the cache" would be read
    as satisfied by the half that already works.)*
@@ -100,9 +101,10 @@ the two directly-writable surfaces unless they name the base.
 
 ## Open questions
 
-Four decisions, and they are yours. The reasoning and the costs are in
-[plan.md](./plan.md); this section keeps only what you need in order to choose.
-Each blocks implementation. None may be answered by inference.
+**One decision is left: Q4.** Q1 and Q3 were closed by requirement 10, and Q2 is
+withdrawn — all three have dated receipts under Resolved questions. The reasoning
+and costs are in [plan.md](./plan.md). Q4 blocks implementation and may not be
+answered by inference.
 
 **The problem in one paragraph.** To keep installs fast, sessions share one copy
 of downloaded packages on disk. They share the *actual files*, not copies. So a
@@ -111,7 +113,7 @@ because the files are shared rather than copied, this also hits sessions that
 **already** installed, without them installing again. Running several sessions
 on one project is normal ShipIt use, and those sessions share the most.
 
-**How far does it reach today?** Not equally, and the difference matters for Q1:
+**How far does it reach today?** Not equally:
 
 | Project type | What it shares | Who can affect it |
 |---|---|---|
@@ -172,22 +174,11 @@ capabilities. If the agent must also be able to edit a dependency in place — t
 debug it, or for `patch-package`-style fixes — say so, because it further
 constrains the answer. I have not assumed it.
 
-**Q2 — May we require projects to pin their dependency versions?**
-A "lockfile" records exactly which package versions a project uses. Most projects
-have one, and it is standard practice.
-
-Worth having, but **defence in depth, not the fix** — an earlier draft of this
-doc overstated it. Measured: a lockfile protects the packages it already pins,
-and nothing it has to resolve. `npm install <new-package>` ran the attacker's
-code anyway, and so did a plain `npm install` when `package.json` had drifted
-ahead of the lockfile. The real fix for that path costs nothing to decide and is
-not a question for you — it is step 1 of the plan.
-
-- **(a) Yes, require it.** A project without one installs without the shared copy,
-  or gets a warning. **← recommended** — the protection is then maintained by the
-  package manager rather than by us.
-- **(b) No.** We build and maintain the protection for those projects. More work,
-  ongoing.
+**Q2 is withdrawn — it should not have been asked.** It offered a lockfile
+requirement as protection for repos the real fix might not cover. Measured
+2026-09-17: the real fix covers them, including a repo with **no lockfile at all**,
+so the question buys nothing and would have cost a user-facing policy change. See
+the receipt under Resolved questions. **Do not answer it.**
 
 **Q3 is closed** by the same receipt — it existed only to ask whether per-session
 copying was worth its disk, and copy-on-write removes the disk. Kept for
@@ -259,6 +250,28 @@ container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
    versions and is corrected in the same PR as this one.*
 
 ## Resolved questions
+
+**2026-09-17 — Q2 withdrawn: the lockfile question was never load-bearing.**
+Asked whether Q2 was relevant at all, the answer is no, and it is withdrawn rather
+than left for the requester to answer.
+
+Q2 asked whether ShipIt may require projects to pin dependency versions. It existed
+because requirement 5 demands that requirement 1 hold for a repo with **no
+lockfile**, and at the time a lockfile looked like the only available protection.
+Two measurements removed its reason to exist:
+
+- A lockfile **does not** close the hole: it covers `npm ci` and an in-sync
+  `npm install`, but not `npm install <new-package>` nor an out-of-sync lockfile.
+- The per-session npm **resolution cache** does close it, including for a repo with
+  no lockfile at all. Measured: with a private `index-v5` and a shared, symlinked
+  `content-v2`, an offline install succeeds, and an attacker's write to the shared
+  `index-v5` has **no effect** on the victim — where the same write against today's
+  shared cache breaks the victim's install outright. The private half is **64 KB**
+  against **688 KB** shared, so it costs almost nothing.
+
+Requiring a lockfile would therefore have been a user-facing policy change that
+bought nothing the fix does not already provide. Requirement 5 stands and is
+satisfied; no requirement is added.
 
 **2026-09-17 — both Q1 options rejected; the requirement is to have both.**
 Presented with Q1's two options — project-key the store, or give each session its

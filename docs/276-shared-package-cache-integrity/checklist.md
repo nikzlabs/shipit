@@ -1,17 +1,18 @@
 # Checklist — shared package cache integrity
 
 Implementation steps for [plan.md](./plan.md). The shape is now settled: Q1 and
-Q3 are closed by requirement 10 (2026-09-17), which requires isolation **and** the
-storage saving rather than a choice between them. Q2 and Q4 remain open but gate
-only their own items, not this list.
+Q3 are closed by requirement 10 (2026-09-17) and Q2 is withdrawn. Only **Q4**
+remains open, and it gates only the sequencing guard at the end.
 
 ## Blocked on the requester
 
 - [x] **Q1 closed** — the requester rejected both options (2026-09-17) and
       restated the requirement as having both. Copy-on-write satisfies it; recorded
       as requirement 10 with a dated receipt.
-- [ ] **Q2 answered** — may we require projects to pin dependency versions?
-      *(Defence in depth, not the fix — measured. Not urgent.)*
+- [x] **Q2 withdrawn** — the lockfile question was never load-bearing. Measured
+      2026-09-17: the per-session resolution cache covers a repo with no lockfile,
+      so requiring one would have been a user-facing policy change buying nothing.
+      Requirement 5 stands and is satisfied.
 - [x] **Q3 closed** — it asked whether per-session copying was worth its disk;
       copy-on-write removes the disk, so the question no longer arises.
 - [ ] **Q4 answered** — hold `docs/266-orchestrator-git-trust-boundary` E4
@@ -21,23 +22,26 @@ only their own items, not this list.
 
 ## Step 1 — close H1, the demonstrated npm RCE (reqs 1, 3, 5, 6)
 
-- [ ] Spike: confirm npm tolerates a per-session `_cacache/index-v5` with a
-      shared `content-v2`, and measure what warm-install time it actually costs
-      (req 7). If it does not, this step needs a different mechanism. **This is
-      the fix, not the lockfile** — it is the only cheap thing that also covers
-      `npm install <new-package>`.
-- [ ] Make ShipIt's install path lockfile-pinned (`npm ci` semantics), subject
-      to Q2's answer. Defence in depth only: measured to cover `npm ci` and
-      in-sync `npm install`, and **not** adding a package or an out-of-sync
-      lockfile.
+- [x] Spike: confirm npm tolerates a per-session `_cacache/index-v5` with a shared
+      `content-v2`. **Done 2026-09-17: it does.** Private `index-v5` plus a
+      symlinked shared `content-v2` installs offline (1 055 files), and the symlink
+      survives the install. Split is **64 KB private / 688 KB shared**. An
+      attacker's write to the shared `index-v5` had no effect on the victim, where
+      the same write against today's shared cache broke the victim's install.
+- [ ] Still to measure for this step: warm-install time against req 7, and whether
+      the symlinked `content-v2` survives `npm cache verify` / npm's own GC.
+- [ ] Do **not** make the install path lockfile-pinned as a security measure
+      (Q2, withdrawn). Measured: it covers `npm ci` and an in-sync `npm install`,
+      and **not** adding a package or an out-of-sync lockfile — while the
+      per-session resolution cache covers all of those plus the no-lockfile repo.
 - [ ] Regression test for the **adding** case specifically: with a valid lockfile
       present, `npm install <new-package>` against a poisoned packument must not
       execute the attacker's `postinstall`.
 - [ ] Check whether a poisoned integrity can still reach `package-lock.json`, and
       therefore ShipIt's auto-commit. Measured today: it can, which turns a cache
       write into a committed change to the user's repository.
-- [ ] Decide and implement the no-lockfile behaviour Q2 selects (install without
-      the shared cache, or warn).
+- [ ] No special no-lockfile behaviour is needed (Q2 withdrawn): measured, the
+      per-session resolution cache protects a repo with no lockfile unchanged.
 - [ ] Regression test that reproduces the packument-poisoning RCE and asserts it
       now fails closed — the test must poison `dist.integrity` **and**
       `hasInstallScript`, since the second is what makes it execute at install.
