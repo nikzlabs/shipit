@@ -358,7 +358,37 @@ describe("OpencodeAdapter", () => {
     adapter.on("error", (e) => errors.push(e));
     adapter.run({
       ...RUN_PARAMS,
-      model: "gpt-5.5",
+      model: "gemini-3-pro",
+      serviceRouting: {
+        serviceId: "google",
+        serviceName: "Google",
+        billingMode: "key",
+        style: "gemini-generate-content",
+        baseUrl: "https://generativelanguage.googleapis.com",
+        credentialSourceEnv: "GEMINI_API_KEY",
+        credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+      },
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain("gemini-generate-content");
+    expect(events).toHaveLength(0);
+  });
+
+  it("shapes an openai-responses routing onto the Responses provider rather than refusing it (docs/310 req 1)", () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-openai-secret");
+    let spawnEnv: Record<string, string> = {};
+    const child = new FakeChild();
+    const adapter = new OpencodeAdapter({
+      spawnFn: (_cmd, _args, opts) => {
+        spawnEnv = (opts?.env ?? {}) as Record<string, string>;
+        return child as unknown as ChildProcess;
+      },
+    });
+    const errors: Error[] = [];
+    adapter.on("error", (e) => errors.push(e));
+    adapter.run({
+      ...RUN_PARAMS,
+      model: "gpt-6-astra",
       serviceRouting: {
         serviceId: "openai",
         serviceName: "OpenAI",
@@ -369,9 +399,12 @@ describe("OpencodeAdapter", () => {
         credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
       },
     });
-    expect(errors).toHaveLength(1);
-    expect(errors[0].message).toContain("openai-responses");
-    expect(events).toHaveLength(0);
+    expect(errors).toEqual([]);
+    expect(spawnEnv.OPENCODE_PROVIDER_API_KEY).toBe("sk-openai-secret");
+    // @ai-sdk/openai-compatible would post to /chat/completions instead.
+    expect(JSON.parse(fs.readFileSync(spawnEnv.OPENCODE_CONFIG, "utf8"))).toMatchObject({
+      provider: { shipit: { npm: "@ai-sdk/openai", options: { baseURL: "https://api.openai.com/v1" } } },
+    });
   });
 });
 

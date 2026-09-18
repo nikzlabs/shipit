@@ -1435,9 +1435,19 @@ describe("per-model image input (planning#460)", () => {
 });
 
 
-it("offers only the checked OpenCode ChatGPT model and keeps Responses account-only", () => {
-  const entries = catalogueEntriesForHarness("opencode").filter(e => e.service.id === "openai" && e.mode.kind === "sub");
-  expect(entries.map(e => e.model.id)).toEqual(["gpt-5.5"]);
-  expect(resolveStyle("opencode", getModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.5" })!, "string")).toBe("openai-chat-completions");
+// Which ChatGPT models OpenCode may carry is pinned to OpenCode's own filter
+// in opencode-subscription-models.test.ts; this covers the style it picks.
+it("prefers Responses over Chat Completions for OpenCode wherever both are offered", () => {
+  const dualShape = catalogueEntriesForHarness("opencode").filter(
+    e => e.model.styles.includes("openai-responses") && e.model.styles.includes("openai-chat-completions"),
+  );
+  expect(dualShape.length).toBeGreaterThan(0);
+  for (const entry of dualShape) {
+    const via = entry.mode.credentials[0]?.via;
+    expect([entry.model.id, resolveStyle("opencode", entry.model, via)]).toEqual([
+      entry.model.id,
+      "openai-responses",
+    ]);
+  }
   expect(harnessCanCarry("opencode", { serviceId: "anthropic", billingMode: "sub", via: "account" })).toBe(false);
 });

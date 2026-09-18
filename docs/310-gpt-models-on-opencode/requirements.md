@@ -24,25 +24,34 @@ requirement and belongs in `plan.md`.
 2. GPT-6 Astra can run on OpenCode. This is the case that started the report.
 3. Where more than one harness can run the selected model, the harness control
    offers that choice rather than reading as fixed text.
-4. A combination is offered only after it is verified to work, so the picker
-   never offers a pairing that then fails when a turn starts. This restates
-   `docs/295-opencode-chatgpt` req 9 for the wider set.
-5. Combinations that work today keep working and keep their current behavior:
-   every model Codex runs now, the Claude models on OpenCode Zen, and GPT-5.5
-   on the ChatGPT subscription.
-6. Where a model is offered on a harness that cannot reach it, ShipIt says so
-   with a reason rather than silently omitting it.
+4. Every GPT model on the OpenAI subscription can be selected with OpenCode,
+   including ones nobody has run a live turn against. Verification gates what
+   we have *checked*, not what we *offer*. This deliberately relaxes
+   `docs/295-opencode-chatgpt` req 9 for this set.
+5. GPT-6 Astra on the OpenAI subscription is confirmed working on OpenCode by
+   a real turn before this ships.
+6. Combinations that work today keep working: every model Codex runs now, the
+   Claude models on OpenCode Zen, and GPT-5.5 on the ChatGPT subscription.
+7. Where a GPT model genuinely cannot run on OpenCode, ShipIt does not offer
+   it, and the reason is recorded.
+8. On OpenCode, a GPT model reachable by more than one request shape uses the
+   same shape Codex uses, rather than the older one.
 
 ## Open questions
 
-- Verifying a combination end-to-end means running a real turn against a paid
-  route, which spends the user's own ChatGPT / OpenCode Go quota. Is that
-  authorized, and for how many combinations?
-- On the OpenAI API-key route, several GPT models can be reached by two
-  different request shapes. OpenCode uses the lower-fidelity one today and
-  works. Should it switch to the same shape Codex uses, which is what OpenAI
-  recommends for reasoning models but changes an already-working path?
+- (none)
 
 ## Resolved questions
 
-- (none yet)
+- 2026-09-18 — How much live paid verification gates offering a combination?
+  The user: "need to make sure that gpt-6 via OpenAI-subscription works via
+  opencode. But all gpt models from the sub should be possible to use in
+  opencode, even those that won't be checked." So one confirmed case gates the
+  change, and breadth is not gated on per-model checks. Carries the constraint
+  that req 4 now overrides `docs/295-opencode-chatgpt` req 9 for the OpenAI
+  subscription GPT rows; that doc's rule still governs its own scope.
+- 2026-09-18 — Should OpenCode switch from Chat Completions to Responses for
+  GPT models that offer both? The user: "Switch to Responses". Carries the
+  constraint that an already-working path changes shape, so the existing
+  OpenAI API-key GPT combinations need re-checking rather than being assumed
+  unaffected.

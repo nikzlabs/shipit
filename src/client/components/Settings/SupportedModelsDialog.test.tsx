@@ -118,6 +118,12 @@ describe("SupportedModelsDialog", () => {
     expect(answers("openai:sub", "gpt-5.6-sol")).toEqual({
       claude: "no",
       codex: "yes",
+      opencode: "yes",
+    });
+    // OpenCode's own filter refuses this id, so the dialog must still say no.
+    expect(answers("openai:sub", "gpt-5.2")).toEqual({
+      claude: "no",
+      codex: "yes",
       opencode: "no",
     });
     expect(answers("zai:sub", "glm-5.2[1m]")).toEqual({
