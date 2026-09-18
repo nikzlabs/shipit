@@ -51,7 +51,9 @@ project on the instance.
    install event — see plan.md, H3.)*
 
 5. Requirement 1 MUST hold for a repo that has no lockfile, or whose lockfile
-   does not pin an integrity hash for every dependency. *(Agent-supplied.)*
+   does not pin an integrity hash for every dependency. *(Agent-supplied;
+   confirmed by the requester 2026-09-18 in answer to Q2 — see Resolved
+   questions.)*
 
 6. Requirement 1 MUST hold against writes to cached **resolution data** (what
    version and what bytes a dependency name resolves to), not only against
@@ -93,10 +95,13 @@ None.
   sessions to affect each other."* Recorded as req 10. Q3 (does a per-session
   copy conflict with docs/270 req 9) is closed by the same answer, since
   copy-on-write removes the disk cost the conflict was about.
-- 2026-09-17 — Q2 (may ShipIt require projects to pin dependencies) withdrawn
-  by the agent, not answered: a lockfile does not cover `npm install <new-package>`,
-  and the per-session resolution cache covers a repo with no lockfile, so the
-  question was not load-bearing. Req 5 stands and is satisfied by the design.
+- 2026-09-18 — Q2 (may ShipIt require projects to have a lockfile with
+  integrity hashes, as a security measure): **no, do not require one.** The
+  agent had withdrawn the question on 2026-09-17 on measurement alone (a
+  lockfile does not cover `npm install <new-package>`, and the per-session
+  resolution cache covers a repo with no lockfile); the requester confirmed
+  that answer. Repos without a lockfile keep working unchanged. Req 5 stands
+  and is human-confirmed.
 - 2026-09-17 — Q4 (hold `docs/266-orchestrator-git-trust-boundary` E4 until the
   H3 fix ships): **(a) hold**. Approves req 8.
 - 2026-09-17 — Q5 (must the agent be able to edit files inside installed
