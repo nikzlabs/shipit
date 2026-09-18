@@ -33,7 +33,7 @@ function makeGit(over: GitOverrides = {}) {
     merge: vi.fn(async () => ({ success: true })),
     mergeOverride: vi.fn(async () => {}),
     createBranchFrom: vi.fn(async () => {}),
-    commitPaths: vi.fn(async () => "deadbeefcafe"),
+    commitPaths: vi.fn(async (_paths: string[], _message: string): Promise<string | null> => "deadbeefcafe"),
     forcePush: vi.fn(async () => ""),
     push: vi.fn(async () => ""),
     fetch: vi.fn(async () => {}),
@@ -513,5 +513,52 @@ describe("buildPlanProposeInput (docs/214 — plan-route propose options)", () =
     const input = buildPlanProposeInput({ ...basePlan, bumpType: "explicit" }, "release-branch");
     expect(input).not.toHaveProperty("bumpType");
     expect(input.mechanism).toBe("release-branch");
+  });
+});
+
+describe("prepareRelease — authored release notes (docs/309)", () => {
+  const draft = () => path.join(dir, "RELEASE_NOTES.draft.md");
+  const published = () => path.join(dir, ".release-notes", "v0.2.1.md");
+
+  it("commits the user's draft as the tag's notes file and removes the draft", async () => {
+    fs.writeFileSync(draft(), "## Highlights\n\nPreviews reconnect on their own.\n");
+    const { git, calls } = makeGit({ diffFiles: 4 });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(fs.readFileSync(published(), "utf-8")).toBe("## Highlights\n\nPreviews reconnect on their own.\n");
+    expect(calls.commitPaths.mock.calls[0]![0]).toContain(path.join(".release-notes", "v0.2.1.md"));
+    expect(fs.existsSync(draft())).toBe(false);
+  });
+
+  it("commits only the version source when there is no draft", async () => {
+    const { git, calls } = makeGit({ diffFiles: 4 });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(calls.commitPaths.mock.calls[0]![0]).toEqual(["package.json", "package-lock.json"]);
+    expect(fs.existsSync(path.join(dir, ".release-notes"))).toBe(false);
+  });
+
+  it("treats a whitespace-only draft as no draft", async () => {
+    fs.writeFileSync(draft(), "   \n\n");
+    const { git, calls } = makeGit({ diffFiles: 4 });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(calls.commitPaths.mock.calls[0]![0]).toEqual(["package.json", "package-lock.json"]);
+    expect(fs.existsSync(published())).toBe(false);
+  });
+
+  it("keeps the draft when the commit does not land, so the user's text is not lost", async () => {
+    fs.writeFileSync(draft(), "## Highlights\n");
+    const { git, calls } = makeGit({ diffFiles: 4 });
+    calls.commitPaths.mockResolvedValue(null);
+
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
+    ).rejects.toMatchObject({ statusCode: 500 });
+
+    expect(fs.existsSync(draft())).toBe(true);
   });
 });

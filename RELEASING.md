@@ -69,10 +69,32 @@ CI on PRs into `stable` (`ci.yml` now triggers on PRs into `main` **and**
 `stable`) gives reviewers a green check before merge — a recommended quality gate,
 but no longer load-bearing for safety (tag-resolution owns that).
 
+## Release notes
+
+A release publishes **authored notes when it carries them, generated notes
+otherwise** (docs/309-agent-authored-release-notes):
+
+- In the propose turn the agent writes a compact summary of
+  `git log origin/stable..origin/main` to **`RELEASE_NOTES.draft.md`** at the
+  repo root. It is gitignored — edit it freely; the edit cannot dirty the tree
+  `shipit release prepare` refuses to run against.
+- `prepare` commits the draft as **`.release-notes/v<version>.md`** beside the
+  version bump, so the notes are reviewable in the same PR you merge, and
+  deletes the draft.
+- On merge `release.yml` publishes that file verbatim with `--notes-file`,
+  appending the `**Full Changelog**` compare link itself (GitHub adds one only
+  for `--generate-notes`). No file on the commit ⇒ the label-grouped generated
+  notes below, unchanged.
+- Settings → Update reads the same committed file back (`git show
+  <tag>:.release-notes/<tag>.md`) as the changelog for a pending stable update.
+
+An rc cut through the tag path carries no notes file, so it publishes generated
+notes.
+
 ## Labels
 
-The auto-generated GitHub Release notes are **grouped into sections by PR label**
-(`.github/release.yml`):
+The **generated** Release notes — the fallback above — are **grouped into
+sections by PR label** (`.github/release.yml`):
 
 | Section | Labels |
 |---|---|

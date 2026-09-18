@@ -124,6 +124,12 @@ Moving from edge to a stable release that is *behind* the running code is a
 downgrade, and ShipIt warns before applying it, because older code may not read
 newer on-disk data cleanly.
 
+**What the panel shows about the pending version.** For a stable update it shows
+the release's own notes when that release shipped with any — a written summary,
+not a commit list. Releases cut without notes, and every edge update, still show
+the commit subjects instead; that is the fallback, not a fault. Either way the
+overflow link beside it opens the full Release on GitHub.
+
 **"Will updating interrupt what I'm working on?"** Not immediately. A deploy
 deliberately does not kill running session containers — they keep the image they
 started on until they go idle, and new sessions get the new one right away. The

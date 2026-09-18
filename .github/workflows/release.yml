@@ -186,6 +186,30 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then
             PRERELEASE_FLAG="--prerelease"
           fi
+
+          # Agent-authored notes (docs/309) when the release carries them, else
+          # GitHub's per-PR list. A supplied body is published verbatim, so the
+          # compare link --generate-notes would have added is appended here.
+          NOTES_FILE=".release-notes/${TAG}.md"
+          if [ -s "$NOTES_FILE" ]; then
+            BODY_FILE="$(mktemp)"
+            cat "$NOTES_FILE" > "$BODY_FILE"
+            # Final tags only: -v:refname sorts v1.2.3-rc.1 ahead of v1.2.3.
+            PREV="$(git tag --list 'v*' --sort=-v:refname --merged "${TAG}^" | grep -v -- '-' | head -n 1 || true)"
+            if [ -n "$PREV" ]; then
+              printf '\n**Full Changelog**: %s/%s/compare/%s...%s\n' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$PREV" "$TAG" >> "$BODY_FILE"
+            fi
+            echo "Publishing $TAG with authored notes from $NOTES_FILE."
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file "$BODY_FILE" \
+              --verify-tag \
+              $PRERELEASE_FLAG
+            exit 0
+          fi
+
+          echo "No $NOTES_FILE on this commit — falling back to generated notes."
           gh release create "$TAG" \
             --title "$TAG" \
             --generate-notes \

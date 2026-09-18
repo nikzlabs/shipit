@@ -1,4 +1,5 @@
 import path from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { GitManager } from "../../shared/git.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -23,6 +24,10 @@ import {
 } from "../release-version.js";
 
 const BUMP_TRAILER = "Shipit-Release-Version";
+
+/** Gitignored (docs/309-agent-authored-release-notes): a tracked draft would trip the clean-tree check the user's edit lands in front of, and would not survive the checkout onto the release branch. */
+export const NOTES_DRAFT_FILE = "RELEASE_NOTES.draft.md";
+export const NOTES_DIR = ".release-notes";
 
 const BUMP_TYPES: ReadonlySet<string> = new Set(["major", "minor", "patch", "prerelease"]);
 
@@ -364,11 +369,16 @@ async function prepareFinalRelease(
   writeVersionToSource(detected, version);
   const relPath = path.relative(args.dir, detected.path!);
   const lockRel = detected.source === "package.json" ? path.join(path.dirname(relPath), "package-lock.json") : null;
+  const notesRel = await stageDraftNotes(args.dir, tag);
   const message = `Release ${tag}\n\n${BUMP_TRAILER}: ${version}`;
-  const commitHash = await git.commitPaths(lockRel ? [relPath, lockRel] : [relPath], message);
+  const commitHash = await git.commitPaths(
+    [relPath, ...(lockRel ? [lockRel] : []), ...(notesRel ? [notesRel] : [])],
+    message,
+  );
   if (!commitHash) {
     throw new ServiceError(500, "Version bump produced no commit (the version may already be set).");
   }
+  if (notesRel) await rm(path.join(args.dir, NOTES_DRAFT_FILE), { force: true });
 
   await git.forcePush("origin", headBranch);
 
@@ -489,6 +499,21 @@ function deadReleasePrMessage(
     `The branch "${headBranch}" already has ${state}. The version bump was pushed to "${headBranch}" but has ` +
     `no pull request to carry it, so nothing would publish. ${remedy}`
   );
+}
+
+/** Copies the user-edited draft to the tag's notes file. The draft is deleted by the caller only once the commit lands, so a failed release leaves the text where the user wrote it. */
+async function stageDraftNotes(dir: string, tag: string): Promise<string | null> {
+  let body: string;
+  try {
+    body = await readFile(path.join(dir, NOTES_DRAFT_FILE), "utf-8");
+  } catch {
+    return null;
+  }
+  if (!body.trim()) return null;
+  await mkdir(path.join(dir, NOTES_DIR), { recursive: true });
+  const rel = path.join(NOTES_DIR, `${tag}.md`);
+  await writeFile(path.join(dir, rel), `${body.trimEnd()}\n`, "utf-8");
+  return rel;
 }
 
 function buildPrBody(version: string, tag: string, releaseBranch: string, notes?: string): string {
