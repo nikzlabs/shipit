@@ -31,11 +31,7 @@ export interface ReleaseConfig {
   /** Repo-relative location; versionSource selects the parser. */
   versionSourcePath?: string;
   branch?: string;
-  tagPattern?: string;
-  prereleasePattern?: string;
-  gate?: string;
   mechanism?: ReleaseMechanism;
-  workflow?: string;
 }
 
 /** Container creation must also require server-side kind === "ops". */
@@ -472,11 +468,7 @@ const KNOWN_RELEASE_KEYS = new Set([
   "version-source",
   "version-source-path",
   "branch",
-  "tag-pattern",
-  "prerelease-pattern",
-  "gate",
   "mechanism",
-  "workflow",
 ]);
 const RELEASE_VERSION_SOURCES: ReadonlySet<string> = new Set([
   "package.json",
@@ -528,30 +520,6 @@ function parseReleaseConfig(raw: unknown, warnings: string[]): ReleaseConfig | u
     result.branch = b.trim();
   }
 
-  if ("tag-pattern" in obj) {
-    const tp = obj["tag-pattern"];
-    if (typeof tp !== "string" || !tp.includes("{version}")) {
-      throw new ShipitConfigError("`release.tag-pattern` must be a string containing `{version}`");
-    }
-    result.tagPattern = tp;
-  }
-
-  if ("prerelease-pattern" in obj) {
-    const pp = obj["prerelease-pattern"];
-    if (typeof pp !== "string") {
-      throw new ShipitConfigError("`release.prerelease-pattern` must be a string");
-    }
-    result.prereleasePattern = pp;
-  }
-
-  if ("gate" in obj) {
-    const g = obj.gate;
-    if (typeof g !== "string") {
-      throw new ShipitConfigError("`release.gate` must be a string");
-    }
-    result.gate = g;
-  }
-
   if ("mechanism" in obj) {
     const m = obj.mechanism;
     if (typeof m !== "string" || !RELEASE_MECHANISMS.has(m)) {
@@ -559,14 +527,6 @@ function parseReleaseConfig(raw: unknown, warnings: string[]): ReleaseConfig | u
       throw new ShipitConfigError(`\`release.mechanism\` must be one of: ${allowed}`);
     }
     result.mechanism = m as ReleaseMechanism;
-  }
-
-  if ("workflow" in obj) {
-    const w = obj.workflow;
-    if (typeof w !== "string") {
-      throw new ShipitConfigError("`release.workflow` must be a string");
-    }
-    result.workflow = w;
   }
 
   if (result.mechanism === "release-branch" && result.versionSource === "tag") {

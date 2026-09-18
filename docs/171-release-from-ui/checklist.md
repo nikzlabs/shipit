@@ -82,7 +82,10 @@ parses it (`release-markers.ts`) and drives the poller via
       `KNOWN_TOP_LEVEL_KEYS`; parser + validation in `shipit-config.ts`.
       → `ReleaseConfig`, `ReleaseVersionSource`, `ReleaseMechanism`,
       `parseReleaseConfig` in `shipit-config.ts`.
-- [ ] `prerelease-pattern` / `-rc.N` auto-increment from highest existing rc tag.
+- [x] `-rc.N` auto-increment from highest existing rc tag.
+      → `release-prepare.ts:128`. The form is fixed at `vX.Y.Z-rc.N`;
+      `prerelease-pattern` was dropped from the config schema with the other
+      unread release keys.
 - [x] Agent-guided clarification for monorepo / ambiguous version sources; offer
       to persist the resolved choice into `shipit.yaml`.
       → `agent-instructions.ts` + `shipit-docs/release.md` updated.

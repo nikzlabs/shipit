@@ -150,9 +150,12 @@ exception to "write nothing"), `prompts/releases.md`, `RELEASING.md`.
 ## Not in scope
 
 `release.notes` in `shipit.yaml` has since been **removed** rather than wired up:
-it was validated and read by nothing, and the values it advertised
-(`github-generated`) named the behaviour this feature took away. An unknown
-`release.*` key is a warning, not an error, so a config still carrying it keeps
+it was validated and read by nothing, and the value it advertised
+(`github-generated`) named the behaviour this feature took away. The same pass
+removed the other four unread release keys — `tag-pattern`,
+`prerelease-pattern`, `gate`, `workflow` — leaving `version-source`,
+`version-source-path`, `branch` and `mechanism` as the whole schema. An unknown
+`release.*` key is a warning, not an error, so a config still carrying one keeps
 parsing.
 
 The `tag-triggered` mechanism and other repos keep generated notes (req 9) —
