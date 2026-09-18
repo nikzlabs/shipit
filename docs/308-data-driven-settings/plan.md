@@ -280,6 +280,47 @@ it is deliberately **not** part of the setting's description, because it is abou
 the browser rather than about what the setting does and the agent has no use for
 it.
 
+### Placement
+
+A row's place is its declaration's place, and a section's is its first row's
+(req 11). `placedOnTab` (`registry.ts`) is the one function that answers it, so
+the dialog and anything else asking have one answer.
+
+**One optional field steers it: `order`.** Lower first, unset meaning 0,
+declaration order deciding within a rank — VS Code's own field, taken at last
+after `inventory.md` skipped it. Moving the declaration is still how order is
+expressed wherever that works (slice 2's release channel, slice 6a's MCP block),
+and it is what requirement 5 prefers; `order` is for where it cannot.
+
+**It cannot, for every payload scalar, and that is structural.** A declaration
+moves only inside its own file. `GLOBAL_SETTINGS` is the registry's first source
+and holds every payload scalar, because `StoredGlobalSettings` derives from
+`typeof GLOBAL_SETTINGS` (`global-settings.ts:306`) — so a row there cannot be
+moved below one declared anywhere else, and cannot leave without dropping out of
+the derived payload types. Slices 4, 5 and 6b each met this and each took the
+order that fell out. Three tabs then shipped led by a row that cannot lead:
+*Background work* above the providers it draws from, *Voice notes* above the
+Provider API keys every other section needs, and auto-create-PR above the GitHub
+connection it depends on. The user rejected all three (requirements.md,
+2026-09-18), which is the named evidence requirement 5 asks of a new field.
+
+The ranks that exist, and nothing more:
+
+| Row | Rank | Says |
+|---|---|---|
+| `services.nonTurnModel` | 1 | Beneath the Model providers panel: pick the model after the accounts that can run it |
+| The four **Voice notes** declarations | `VOICE_NOTES_ORDER` | That section goes last, so Provider API keys leads. It takes all four because a section is placed by the first of its rows and they are spread over three files; `voice.deliveryMode` leads them, because delivery is what the webhook and hands-free answer to |
+
+Each is load-bearing and each has a test that goes red when it alone is removed
+(`registry.test.ts`, `VoiceTab.test.tsx`, `DeclaredSettings.test.tsx`).
+
+**Auto-create-PR is not one of them.** Its fix is a `tab`: it left Integrations
+for Advanced → **Automation**, beside `autoFixCi`, `autoResolveConflicts` and
+`autoResetMergedBranch` — every row in that group is ShipIt acting on a pull
+request unasked — and it leads the group, which now reads in the order a PR
+lives. Its key keeps the `integrations.` prefix: that is the name the agent
+addresses it by, and req 8 holds the agent's view still.
+
 ## 5. Components
 
 ```ts
@@ -452,14 +493,16 @@ existing one or renders a row that cannot save.
    in the tab file.
 
    **Order changed, and one part of it could not be chosen** (req 11). The tab
-   reads Voice notes → Provider API keys → Voice input (dictation) → Voice
-   playback. A section is placed where its first declaration is, and
+   shipped reading Voice notes → Provider API keys → Voice input (dictation) →
+   Voice playback. A section is placed where its first declaration is, and
    `voice.deliveryMode` is a payload setting in `GLOBAL_SETTINGS`, which is the
-   first source in the registry — so the Voice notes section leads whatever the
-   other files say. Moving the declaration across files would have changed the
+   first source in the registry — so the Voice notes section led whatever the
+   other files said. Moving the declaration across files would have changed the
    derived `GlobalSettings` payload types, and reordering the registry's sources
-   would have moved rows on other tabs and in `shipit settings list`. Neither is
-   worth it: requirement 11 accepts the order that falls out.
+   would have moved rows on other tabs and in `shipit settings list`.
+   **Overturned 2026-09-18**: Provider API keys is what every other section on
+   the tab needs first, and the four Voice-notes declarations now state an
+   `order` that puts them last — see *Placement*.
 
    **A commit is sequenced by the writer, not by the button** (found in review).
    Slice 3's rule was that `DeclaredCommit` is disabled while its write is in
@@ -549,15 +592,18 @@ existing one or renders a row that cannot save.
 
    **Order changed, by the same mechanism as the Voice tab's** (req 11).
    `integrations.autoCreatePr` is a payload setting in `global-settings.ts`, the
-   first source in the registry, so its *Pull requests* section leads the tab —
-   above the *Connected services* section it depends on. Moving that declaration
-   would change the derived `GlobalSettings` payload types, so requirement 11
-   takes the order that falls out.
+   first source in the registry, so its *Pull requests* section led the tab —
+   above the *Connected services* section it depends on. **Overturned
+   2026-09-18, and not by an `order`**: the row is on Advanced → Automation now,
+   with the other three things ShipIt does to a pull request unasked, and the
+   Integrations tab has no *Pull requests* section at all. See *Placement*.
 
    What a disconnected GitHub actually gated, checked before moving the row out
    of it: the connected card's own chrome — the account name and Disconnect,
    which genuinely need a connection — and `integrations.autoCreatePr`, which
-   did not. Nothing else lived in that branch.
+   did not. Nothing else lived in that branch. Requirement 4's "shown whether or
+   not GitHub is connected" survives the move to Advanced, where nothing is
+   behind a connection at all.
 
    **What review found, all of it about the credential the row now KEEPS on
    screen.** The old card swapped the token form for the connected view, so
@@ -653,9 +699,11 @@ existing one or renders a row that cannot save.
    **Order changed on the Services tab, by the mechanism slices 4 and 5 already
    met** (req 11). `services.nonTurnModel` is a payload setting in
    `global-settings.ts`, the first source in the registry, so *Background work*
-   now leads the tab, above the providers it draws from. Moving the declaration
-   would change the derived `GlobalSettings` payload types; requirement 11 takes
-   the order that falls out.
+   shipped leading the tab, above the providers it draws from. Moving the
+   declaration would change the derived `GlobalSettings` payload types.
+   **Overturned 2026-09-18**: the row states an `order` and sits beneath the
+   panel again — see *Placement*. The horizontal rule it used to be separated by
+   is still given up, below.
 
    Knowingly given up: the horizontal rule the tab drew between the providers and
    the background-work row (both carry no `section`, so they share the tab's one

@@ -224,6 +224,20 @@ interface SettingDeclarationBase<T> {
    */
   readonly section?: string;
   /**
+   * Where this row sits on its tab when declaration order alone cannot say:
+   * lower first, unset meaning 0, and declaration order deciding within a rank
+   * (VS Code's `order`, taken at last after being skipped — see
+   * docs/308-data-driven-settings plan.md → Placement).
+   *
+   * It exists because three rows led tabs they cannot lead, and the free fix
+   * does not reach them: a group's place is its first declaration's place, but
+   * a declaration can only MOVE inside its own file, and `GLOBAL_SETTINGS` is
+   * the registry's first source. Every payload scalar therefore leads its tab,
+   * and a payload scalar cannot leave `global-settings.ts` without dropping out
+   * of the derived `GlobalSettings` types (`global-settings.ts:306`).
+   */
+  readonly order?: number;
+  /**
    * The component that renders this setting, for one whose editing needs its own
    * logic (docs/308-data-driven-settings req 3). Custom is what it LOOKS like:
    * the declaration and the store are the ones every generated row uses. One

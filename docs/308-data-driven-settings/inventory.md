@@ -96,12 +96,12 @@ defineSetting({
 ```
 
 **Five things deliberately NOT added, each because a real setting stopped needing
-it:**
+it — one of which a real setting later did need:**
 
 | Rejected | Why it is not needed |
 |---|---|
 | Conditional visibility | Requirement 4 removed it. Two rows are conditional today (P13) |
-| `order` | Declaration order is the order. No setting needs a rank independent of it, and requirement 11 accepts what that produces |
+| `order` | ~~Declaration order is the order. No setting needs a rank independent of it, and requirement 11 accepts what that produces~~ — **taken 2026-09-18**, after what that produced put three rows at the top of tabs they cannot lead. A declaration moves only inside its own file, and every payload scalar is in `GLOBAL_SETTINGS`, the registry's first source (plan.md → Placement) |
 | `presentation: "multiline"` | Its only consumers are the two instruction boxes, and both are the only `system-prompt-file` settings. That store *is* the signal — and in slice 3 it became the **gate**: a `text` row over any other store has no control yet, so it is not generated at all |
 | An enum option source | Its only generated consumers were the TTS provider, voice and speed, which depend on each other and share one component. The other dynamic enums are already inside custom editors |
 | A numeric display unit | Its only consumer is the memory budget, which stores MB, shows GB, has an explicit Save and a saved state — a component, not a field on the type |
@@ -120,7 +120,7 @@ it:**
 | `advanced.autoResetMergedBranch` | advanced | bool | credential store `autoResetMergedBranch` | value | **generated row** |
 | `advanced.memoryBudgetMb` | advanced | numeric | credential store `memoryBudgetMb` | value | memory-budget component |
 | `advanced.releaseChannel` | advanced | enumOf | own route `POST /api/updates/channel` | value | **generated row** |
-| `integrations.autoCreatePr` | integrations | bool | credential store `autoCreatePr` | value | **generated row** |
+| `integrations.autoCreatePr` | advanced | bool | credential store `autoCreatePr` | value | **generated row** |
 | `git.identity` | git | gitIdentity | git config | value | **generated row** |
 | `instructions.userInstructions` | instructions | text | prompt file `standard` | value | **generated row** |
 | `instructions.opsInstructions` | instructions | text | prompt file `ops` | value | **generated row** |
@@ -414,7 +414,8 @@ is, which is the honest order: the webhook has to be configured before either
 mode that uses it does anything. *Slice 5 made the second permanent.* `integrations.autoCreatePr` renders whether
 or not GitHub is connected. What that branch also held was the connected card's
 own chrome — the account name and Disconnect — which genuinely needs a
-connection; nothing else lived there.
+connection; nothing else lived there. *2026-09-18 put that row on Advanced →
+Automation*, where there is no connection branch for it to fall back into.
 
 **P14 — The instruction boxes write to files and detect outside edits.** Both
 `system-prompt-file` settings carry a conflict notice when the file changed while
@@ -517,7 +518,7 @@ Read from `code.visualstudio.com/api/references/contribution-points` and
 | One schema entry per setting: key, type, default, description | **Have it already** — that is what docs/299 built |
 | The widget is chosen by value type alone (`getTemplateId`) | **Adopt.** 13 templates cover everything they render |
 | One write path: `updateValue(key, value, target)`; the control fires `{key, value, scope}` and never names a field | **Adopt for generated rows.** This is the whole point — it makes docs/299 req 7 a mechanism instead of an assertion |
-| `order` places a setting | **Skip.** Declaration order is the order (req 11) |
+| `order` places a setting | **Adopt** (2026-09-18, after shipping without it). Declaration order is still the order, and moving the declaration is still the first answer — but it cannot reach a payload scalar, which is stuck in the registry's first source (plan.md → Placement) |
 | `enumDescriptions` / `enumItemLabels` | **Have it already** — declared options carry a label and a description |
 | `editPresentation: multilineText` | **Skip.** The `system-prompt-file` store already identifies both consumers |
 | What it cannot render, it declines to render, and says *"Edit in settings.json"* | **Adopt the honesty, not the outcome.** A declaration names a component instead. We keep the UI; they drop it |

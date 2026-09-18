@@ -2,6 +2,7 @@ import type { VoiceDeliveryMode } from "../types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../types/voice-note-types.js";
 import { bool, enumOf, gitIdentity, modelSelection, numeric, text } from "./value-types.js";
 import { defineSetting, isPayloadDeclaration, plain, userText } from "./types.js";
+import { VOICE_NOTES_ORDER } from "./voice-settings.js";
 import type {
   AnyPayloadDeclaration,
   AnySettingDeclaration,
@@ -79,6 +80,34 @@ export const GLOBAL_SETTINGS = {
     type: bool({ default: true }),
     store: { kind: "credential-store", field: "liveSteering" },
     wire: "liveSteering",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
+  /*
+    On Advanced rather than Integrations, and inside Automation rather than
+    beside it: every row in that group is ShipIt acting on a pull request
+    without being asked, which is exactly what this one is. It leads the group
+    because the group reads in the order a PR lives — opened, checks fixed,
+    conflicts resolved, branch reset after the merge.
+
+    The key keeps its `integrations.` prefix. It is the name the agent addresses
+    the setting by (`shipit settings get integrations.autoCreatePr`), and req 8
+    holds the agent's view still; a key names a domain, and moving a row between
+    tabs is a dialog fact.
+  */
+  "integrations.autoCreatePr": defineSetting({
+    key: "integrations.autoCreatePr",
+    tab: "advanced",
+    section: "Automation",
+    scope: "global",
+    label: "Auto-create PR after every meaningful turn",
+    description:
+      "When the agent finishes a turn that changes files, ShipIt opens a pull request "
+      + "automatically.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "autoCreatePr" },
+    wire: "autoCreatePr",
     emits: plain(),
     propose: { kind: "yes" },
   }),
@@ -171,22 +200,6 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "integrations.autoCreatePr": defineSetting({
-    key: "integrations.autoCreatePr",
-    tab: "integrations",
-    section: "Pull requests",
-    scope: "global",
-    label: "Auto-create PR after every meaningful turn",
-    description:
-      "When the agent finishes a turn that changes files, ShipIt opens a pull request "
-      + "automatically.",
-    type: bool({ default: false }),
-    store: { kind: "credential-store", field: "autoCreatePr" },
-    wire: "autoCreatePr",
-    emits: plain(),
-    propose: { kind: "yes" },
-  }),
-
   "git.identity": defineSetting({
     key: "git.identity",
     tab: "git",
@@ -250,6 +263,9 @@ export const GLOBAL_SETTINGS = {
     key: "voice.deliveryMode",
     tab: "voice",
     section: "Voice notes",
+    // Leads the section its three siblings share the rank of, because delivery
+    // is the choice the webhook and hands-free answer to.
+    order: VOICE_NOTES_ORDER,
     scope: "global",
     label: "Delivery",
     description: "Where a voice note goes when the agent records one.",
@@ -274,6 +290,9 @@ export const GLOBAL_SETTINGS = {
     // kind alone could carry: which models are offered, what the pin resolves onto
     // and whether it still runs are all this setting's own (docs/308 slice 6b).
     component: "background-work",
+    // Beneath the Model providers panel, because it draws on the credentials
+    // that panel holds: pick the model after the accounts that can run it.
+    order: 1,
     scope: "global",
     label: "Background work",
     description:

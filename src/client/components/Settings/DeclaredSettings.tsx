@@ -12,10 +12,11 @@
  */
 
 import { Fragment, type ReactNode } from "react";
-import type {
-  AnySettingDeclaration,
-  SettingKey,
-  SettingTab,
+import {
+  placedOnTab,
+  type AnySettingDeclaration,
+  type SettingKey,
+  type SettingTab,
 } from "../../../server/shared/settings-catalogue/index.js";
 import { GENERATED_SETTINGS } from "../../stores/setting-values.js";
 import { CONTROLS } from "./declared-controls.js";
@@ -68,12 +69,14 @@ function needsCommit(tab: SettingTab): boolean {
 /**
  * Rows grouped by `section`, each group placed where its first declaration is —
  * with a shared component appearing only at the first declaration that names it.
+ *
+ * "First" is `placedOnTab`'s order, not the registry's: a row that states an
+ * `order` is placed by it, and a section moves with the first of its rows.
  */
 function groupsOf(tab: SettingTab): Group[] {
   const groups: Group[] = [];
   const rendered = new Set<string>();
-  for (const declaration of GENERATED_SETTINGS) {
-    if (declaration.tab !== tab) continue;
+  for (const declaration of placedOnTab(tab, GENERATED_SETTINGS)) {
     if (declaration.component !== undefined) {
       if (rendered.has(declaration.component)) continue;
       rendered.add(declaration.component);

@@ -60,14 +60,14 @@ not "Services" — that is only its internal id.
 |---|---|
 | **Model providers** | Credentials — the subscriptions and API keys ShipIt bills models to. Also the installed-harness read-out, and the background-work model |
 | **Roles** | Named roles the user creates, and the two reviewer candidate slots |
-| **Integrations** | GitHub, Linear, SSH hosts, MCP servers, and auto-create-PR |
+| **Integrations** | GitHub, Linear, SSH hosts, and MCP servers |
 | **Git** | The name and email on ShipIt's automatic commits |
 | **Instructions** | Custom instructions sent with every message, a separate set for Ops sessions, and a switch for ShipIt's own built-in agent context |
 | **Skills** | Browse the skill catalogue and install one into a repository |
 | **Keyboard** | Rebind shortcuts |
 | **Voice** | Dictation and spoken voice notes — providers, keys, language, voice, speed, delivery |
 | **Network** | The workspace default for outbound network access, and the host allowlist |
-| **Advanced** | Updates and release channel, live steering, PR automations, multi-agent sessions, compacted turns, notifications, the memory budget, and a full reset |
+| **Advanced** | Updates and release channel, live steering, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, compacted turns, notifications, the memory budget, and a full reset |
 
 Several of those are covered in depth elsewhere: Skills and MCP servers in
 `/shipit-docs/skills.md` and `/shipit-docs/plugins.md`, Voice in

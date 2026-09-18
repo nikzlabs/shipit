@@ -104,11 +104,10 @@ export function Settings({
               them. docs/257's onboarding hosts `ServicesPanel` the same way,
               which is why the panel brings no chrome of its own.
 
-              The background-work model renders ABOVE the providers it draws
-              from, where today it sat beneath them: its declaration is a payload
-              setting in `global-settings.ts`, the first source in the catalogue
-              registry, and requirement 11 takes the order that falls out of the
-              declarations rather than encoding the old layout. */}
+              The background-work model renders BENEATH the providers it draws
+              from, which its declaration's `order` is what states: it is a
+              payload setting in `global-settings.ts`, the registry's first
+              source, so declaration order alone puts every such row first. */}
           <TabsContent value="services">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               <DeclaredSettings tab="services" />

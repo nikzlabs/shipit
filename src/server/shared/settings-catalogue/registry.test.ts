@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SETTING_EXCLUSIONS } from "./exclusions.js";
 import { projectSetting } from "./projection.js";
-import { ALL_SETTINGS, collectionKeyOf, findSetting } from "./registry.js";
+import { ALL_SETTINGS, collectionKeyOf, findSetting, placedOnTab } from "./registry.js";
 import { addressesARepository, isPayloadDeclaration } from "./types.js";
 import type { SettingTab } from "./types.js";
 
@@ -158,6 +158,45 @@ describe("the settings registry", () => {
       expect(exclusion.why.length, exclusion.id).toBeGreaterThan(20);
       expect(findSetting(exclusion.id), exclusion.id).toBeUndefined();
     }
+  });
+
+  /*
+    `order` exists because three rows led tabs they cannot lead, and moving the
+    declaration — the free fix, and the one requirement 5 prefers — does not
+    reach them: a declaration moves only inside its own file, and every payload
+    scalar is in `GLOBAL_SETTINGS`, the registry's first source. So the ranks
+    below are the whole of what the field buys, and each one is load-bearing.
+  */
+  it("places the Voice tab's sections so the provider keys every other one needs lead", () => {
+    const sections = [...new Set(placedOnTab("voice").map((d) => d.section))];
+
+    expect(sections).toEqual([
+      "Provider API keys", "Voice input (dictation)", "Voice playback", "Voice notes",
+    ]);
+  });
+
+  it("opens Voice notes with the delivery choice the other three rows answer to", () => {
+    const rows = placedOnTab("voice").filter((d) => d.section === "Voice notes");
+
+    expect(rows.map((d) => d.key)).toEqual([
+      "voice.deliveryMode", "voice.webhook.url", "voice.webhook.token", "voice.handsFree",
+    ]);
+  });
+
+  it("places the background-work pin below the providers it draws from", () => {
+    const keys = placedOnTab("services").map((d) => d.key);
+
+    expect(keys.at(-1)).toBe("services.nonTurnModel");
+    expect(keys.length).toBeGreaterThan(1);
+  });
+
+  // The rank is what a row states when its file's position cannot state it, so
+  // a tab where nothing states one must read exactly as the catalogue does.
+  it("leaves a tab whose rows state no rank in declaration order", () => {
+    const declared = ALL_SETTINGS.filter((d) => d.tab === "integrations");
+
+    expect(declared.every((d) => d.order === undefined)).toBe(true);
+    expect(placedOnTab("integrations")).toEqual(declared);
   });
 
   it("covers every tab of both dialogs, as a declaration or as a reasoned exclusion", () => {

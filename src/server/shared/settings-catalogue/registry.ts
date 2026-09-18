@@ -6,7 +6,7 @@ import { PROJECT_SETTINGS } from "./project-settings.js";
 import { ROLES_SETTINGS } from "./roles-settings.js";
 import { SERVICES_SETTINGS } from "./services-settings.js";
 import { VOICE_SETTINGS } from "./voice-settings.js";
-import type { AnySettingDeclaration } from "./types.js";
+import type { AnySettingDeclaration, SettingTab } from "./types.js";
 
 /**
  * Every setting either settings dialog shows (docs/299-agent-settings-access
@@ -80,6 +80,24 @@ type KeysStoredBy<Kind extends string> = {
  */
 export type BespokeSettingKey = KeysStoredBy<"bespoke">;
 export type OwnRouteSettingKey = KeysStoredBy<"own-route">;
+
+/**
+ * One tab's declarations, in the order the tab places them: `order` first, and
+ * declaration order within one rank.
+ *
+ * The sort is stable, so a tab whose declarations all leave `order` unset reads
+ * exactly as it did — the rank is what a row states when its file's position
+ * cannot state it (`types.ts` → `order`). `from` narrows the pool because the
+ * dialog places only the rows it generates; the whole registry is the default.
+ */
+export function placedOnTab(
+  tab: SettingTab,
+  from: readonly AnySettingDeclaration[] = ALL_SETTINGS,
+): AnySettingDeclaration[] {
+  return from
+    .filter((declaration) => declaration.tab === tab)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
 
 const BY_KEY = new Map(ALL_SETTINGS.map((declaration) => [declaration.key, declaration]));
 

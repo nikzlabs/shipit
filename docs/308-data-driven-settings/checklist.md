@@ -28,3 +28,6 @@ each, and the work is tracked on planning#580.
 - [x] 9 — The last second edit against requirement 1: the renderer places the
       tab's Save, and the `OWN_ROUTE_READERS` entry and the `ownedBy` prose are
       decided rather than changed
+- [x] 10 — The three placements the shipped order got wrong: `order` on the
+      declaration for Background work and the Voice-notes section, and
+      auto-create-PR onto Advanced → Automation

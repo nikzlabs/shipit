@@ -52,7 +52,7 @@ describe("SettingsIntegrations (docs/201)", () => {
     // words: the section headings from `section`, the four below them from the
     // label of the setting that names each component.
     expect(headings).toEqual([
-      "Pull requests", "Connected services", "GitHub", "Linear", "SSH hosts", "MCP servers",
+      "Connected services", "GitHub", "Linear", "SSH hosts", "MCP servers",
     ]);
 
     await waitFor(() => expect(screen.getByTestId("settings-trackers")).toBeInTheDocument());
@@ -76,15 +76,14 @@ describe("SettingsIntegrations (docs/201)", () => {
   });
 
   /*
-    inventory.md P13, requirement 4. The row used to be rendered inside the
-    authenticated branch of the GitHub card, so a disconnected install could not
-    see the setting at all — and connecting GitHub is exactly when somebody
-    wants to decide it.
+    It led this tab for one release, above the GitHub connection it depends on.
+    It is on Advanced → Automation now, and its req 4 visibility — the row is
+    shown whether or not GitHub is connected — is asserted where it renders.
   */
-  it("shows the auto-create-PR row while GitHub is disconnected", () => {
+  it("does not carry the auto-create-PR row, which moved to Advanced", () => {
     render(<SettingsIntegrations />);
-    expect(screen.getByRole("switch", {
+    expect(screen.queryByRole("switch", {
       name: GLOBAL_SETTINGS["integrations.autoCreatePr"].label,
-    })).toBeInTheDocument();
+    })).toBeNull();
   });
 });

@@ -77,6 +77,23 @@ None.
 
 ## Resolved questions
 
+- 2026-09-18 — *The order that fell out is right in general and wrong in three
+  named places. What changes?* The user named three outcomes they reject, having
+  used the shipped dialog: **Background work** must sit below the Model providers
+  panel, **Provider API keys** must lead the Voice tab, and
+  `integrations.autoCreatePr` must be on **Advanced**. Requirement 11 is
+  unchanged, and so is the 2026-09-16 answer below that the visible order may
+  move — these are three outcomes, not a withdrawal. What changed is the
+  mechanism: the declaration gains an optional `order`, reversing
+  `inventory.md`'s *"Skip. Declaration order is the order"*, because the free fix
+  cannot reach any of the three. A declaration moves only inside its own file,
+  and both offending rows are payload scalars that cannot leave
+  `global-settings.ts` without dropping out of the derived `GlobalSettings`
+  types — so every payload scalar leads its tab. That is three named settings
+  needing the field, which is what requirement 5 asks for. The third is not an
+  order change at all: it is a `tab`, and auto-create-PR joins Advanced's
+  **Automation** group, where the other three things ShipIt does to a pull
+  request unasked already live.
 - 2026-09-16 — *The walk proves three things, not one, and generation replaces
   only the first. Delete it anyway, replace the other two guarantees first, or
   keep a small walk over the panels?* **Delete it anyway.** The user reaffirmed

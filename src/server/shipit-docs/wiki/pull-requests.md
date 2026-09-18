@@ -77,9 +77,10 @@ Two things can start that without the user asking you in words:
 
 - **Create PR** on the card sends you a message asking for one, so a pull
   request always arrives through a normal turn you can see in the transcript.
-- Settings → Integrations carries **"Auto-create PR after every meaningful
-  turn"**. With it on, ShipIt opens the pull request itself after any turn that
-  changed files, writing the title and body from the conversation.
+- Settings → Advanced, under **Automation**, carries **"Auto-create PR after
+  every meaningful turn"**. With it on, ShipIt opens the pull request itself
+  after any turn that changed files, writing the title and body from the
+  conversation.
 
 If creation fails, the card says why and offers **Retry**. An expired or missing
 GitHub token is the common cause, and the card offers the sign-in button for it.
