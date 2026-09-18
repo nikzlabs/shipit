@@ -37,10 +37,11 @@ recorded in [requirements.md](./requirements.md); none is open.
       manifest re-derivable from the tarball — both measured). Sessions install
       into private uppers; publish = verify-and-admit; start the base empty
       rather than promote today's writable store; per-runtime key stays.
-- [ ] Decide the publish trigger for the tree base (after each session install,
-      as docs/183 does) and what a verification failure does: leave the package
-      out of the base, keep it private to the session, and surface it — never
-      fail the session's own install (req 9).
+- [x] Publish trigger decided (2026-09-18): after a successful declared
+      install, where docs/183 publishes; a verification failure skips the
+      publish (`skipped-unverified`, first failing package named), the session
+      keeps its private tree, its install is never failed (req 9). A post-turn
+      publish for mid-session `pnpm add` is a follow-up.
 - [x] Measure the store-in-overlay attack ISOLATION via Docker-mounted overlays
       (`store-overlay-spike.sh`, [FINDINGS.md](./FINDINGS.md), services host
       2026-09-18, PASS=13). H4 and H2 each in its own cell through session A
@@ -76,9 +77,27 @@ recorded in [requirements.md](./requirements.md); none is open.
       (`.modules.yaml` `storeDir`), and pnpm 12 exits 1 on an "Ignored build
       scripts" notice even for a no-op install (pnpm's default, the project's
       `approve-builds` concern).
-- [ ] Rework verify-and-admit for the tree: every file under
-      `node_modules/.pnpm/<pkg>/` hashes to the package's manifest digest before
-      admission (the planning#599 shape). The store-entry version is superseded.
+- [x] Design verify-and-admit for the tree (2026-09-18, plan.md section 5,
+      "The lifecycle"): verification inserted between the snapshot pull and
+      `publishBase`; per package, registry `dist.integrity` is the authority
+      for the lockfile's integrity (req 6), the tarball's manifest must match
+      the package directory exactly, links must resolve to verified packages,
+      `.modules.yaml`'s `allowBuilds`/`pendingBuilds` are reset; all-or-nothing
+      admission, `skipped-unverified` outcome, session install never failed.
+      Store private per session at the same container path. No shared
+      metadata cache.
+- [ ] Spike `.bin/` shims: does a no-op `pnpm install` over a base that omits
+      `node_modules/.bin` and `.pnpm/<id>/node_modules/.bin` regenerate them?
+      If not, the verifier must check each shim against pnpm's template.
+- [ ] Spike carried state files: a `.pnpm/lock.yaml` or
+      `.pnpm-workspace-state-v1.json` that disagrees with the tree must make the
+      next session's install reinstall into its upper (a base miss), never skip
+      a package or trust a path. Confirm pnpm cross-checks against the
+      workspace `pnpm-lock.yaml`.
+- [ ] Map pnpm dep-path directory ids (peer suffixes, scoped names) back to
+      `<name>@<version>` for the registry lookup.
+- [ ] Later refinement: admit a verified subset instead of all-or-nothing, so a
+      git/`file:`/private-registry dependency does not block the whole publish.
 - [ ] Record the metadata-cache dependency in the wiring: an offline install
       needs resolution metadata (`XDG_CACHE_HOME/pnpm`, separate from the store)
       — a shared or privately-seeded cache, a lockfile carrying the resolution,
