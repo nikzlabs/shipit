@@ -268,12 +268,10 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     function rewindPastRespread(colors: number[]): (number | null)[] {
       const urls = colors.map((_, i) => `r${i}`);
       const m = new DatabaseManager(file);
-      const version = m.db.pragma("user_version", { simple: true }) as number;
       colors.forEach((c, i) => {
         seedRepo(m.db, urls[i], i);
         m.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(c, urls[i]);
       });
-      void version;
       m.db.pragma(`user_version = ${COLOR_BACKFILL_MIGRATION + 1}`);
       m.close();
       return colorsAfterMigration(urls);

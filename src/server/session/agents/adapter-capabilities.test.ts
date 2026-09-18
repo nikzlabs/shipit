@@ -40,7 +40,6 @@ type BooleanCapabilityKeys = {
 }[keyof AgentCapabilities];
 type Unchecked = Exclude<BooleanCapabilityKeys, (typeof FLAGS)[number] | "startsOwnTurns">;
 const _everyBooleanCapabilityIsChecked: Unchecked extends never ? true : Unchecked = true;
-void _everyBooleanCapabilityIsChecked;
 
 const ADAPTERS: Record<AgentId, () => { capabilities: AgentCapabilities }> = {
   claude: () => new ClaudeAdapter(),

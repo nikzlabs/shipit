@@ -109,15 +109,6 @@ const _effectFieldsAreRendered: AssertPlainFields<SettingEffect, never> = true;
 const _proposeFieldsAreRendered: AssertPlainFields<SettingProposeView, never> = true;
 const _addressFieldsAreRendered: AssertPlainFields<SettingAddressView, never> = true;
 const _proposalFieldsAreRendered: AssertPlainFields<SettingProposalSummary, never> = true;
-void [
-  _indexFieldsAreRendered,
-  _detailFieldsAreRendered,
-  _itemFieldsAreRendered,
-  _effectFieldsAreRendered,
-  _proposeFieldsAreRendered,
-  _addressFieldsAreRendered,
-  _proposalFieldsAreRendered,
-];
 
 let tmpDir: string;
 let credentialStore: CredentialStore;

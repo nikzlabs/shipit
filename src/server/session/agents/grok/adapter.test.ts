@@ -632,10 +632,8 @@ describe("GrokAdapter — the per-spawn config root", () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  const start = (adapter: GrokAdapter, child: FakeChild, captured: { env: Record<string, string> }): void => {
+  const start = (adapter: GrokAdapter, _child: FakeChild, _captured: { env: Record<string, string> }): void => {
     adapter.run({ prompt: "p", cwd: "/workspace" });
-    void child;
-    void captured;
   };
 
   function build(): {

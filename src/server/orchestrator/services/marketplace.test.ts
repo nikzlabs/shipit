@@ -397,7 +397,7 @@ describe("services/marketplace (docs/149)", () => {
   describe("withWorkspaceLock", () => {
     it("serializes concurrent installs on the same workspace", async () => {
       const workspace = path.join(tmp, "ws-mutex");
-      const git = await initRepo(workspace);
+      await initRepo(workspace);
       const order: string[] = [];
       const slowOp = async (label: string): Promise<void> => {
         order.push(`${label}-start`);
@@ -409,7 +409,6 @@ describe("services/marketplace (docs/149)", () => {
         withWorkspaceLock(workspace, () => slowOp("b")),
       ]);
       expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
-      void git;
     });
   });
 

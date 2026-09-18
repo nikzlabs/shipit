@@ -90,8 +90,7 @@ function makeStubContainerManager(opts: {
   };
 
   return {
-    get: (sid: string) => {
-      void sid;
+    get: (_sid: string) => {
       return existing as never;
     },
     destroy,

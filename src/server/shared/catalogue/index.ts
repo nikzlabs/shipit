@@ -26,7 +26,6 @@ export { HARNESSES } from "./harnesses.js";
 export { SERVICES, type ServiceId } from "./services.js";
 
 const _SERVICE_IDS_ARE_LITERAL: readonly ServiceId[] = SERVICES.map((s) => s.id);
-void _SERVICE_IDS_ARE_LITERAL;
 
 // Catalogue order determines defaults.
 export function allServices(): readonly ServiceDef[] {

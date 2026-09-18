@@ -576,7 +576,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const sid = state.sessionId;
         if (!sid || !(sid in state.rewindRecoveries)) return state;
         const { [sid]: _omit, ...rest } = state.rewindRecoveries;
-        void _omit;
         return { rewindRecoveries: rest };
       }
       return {
@@ -676,7 +675,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
 
       const { [sessionId]: _omit, ...rest } = state.turnUsage;
-      void _omit;
       return {
         sessions: result.sessions,
         allSessions: state.allSessions.map((s) =>
