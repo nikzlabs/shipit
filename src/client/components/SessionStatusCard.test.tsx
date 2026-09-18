@@ -418,4 +418,224 @@ describe("SessionStatusCard", () => {
     }
     expect(screen.getByRole("button", { name: /submit/i })).toBeEnabled();
   });
+
+  // req 37 — a note per manual step: "done, but I named it billing-prod", and
+  // the half the card could not say at all, "no — use SQLite".
+  describe("a note per manual step (req 37)", () => {
+    const stepCard = (steps: string[] = ["Add the Stripe test key."]) =>
+      card({ needsYou: steps });
+
+    function openNoteFor(name: string) {
+      fireEvent.click(screen.getByRole("button", { name: `Add a note: ${name}` }));
+      return screen.getByRole("textbox", { name: `Note: ${name}` });
+    }
+
+    it("hides the field behind a control, so an unannotated card is today's card", () => {
+      render(<SessionStatusCard status={stepCard()} />);
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Add a note: Add the Stripe test key." }),
+      ).toBeInTheDocument();
+    });
+
+    it("opens the field without ticking the step", () => {
+      render(<SessionStatusCard status={stepCard()} />);
+      openNoteFor("Add the Stripe test key.");
+      expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+      expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
+    });
+
+    it("sends a note on an unticked step as an answer, not as work reported done", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard(["Use Postgres for the queue."])} onSubmit={onSubmit} />);
+      const field = openNoteFor("Use Postgres for the queue.");
+      fireEvent.change(field, { target: { value: "no — use SQLite." } });
+
+      expect(screen.getByText("ANSWERED")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      const [text] = onSubmit.mock.calls[0] as unknown as [string];
+      expect(text).toContain("I answered this manual step without doing it:");
+      expect(text).toContain("- Use Postgres for the queue.\n  Note: no — use SQLite.");
+      expect(text).not.toContain("I have done");
+    });
+
+    it("sends a note on a ticked step as a detail of the work reported done", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard()} onSubmit={onSubmit} />);
+      const field = openNoteFor("Add the Stripe test key.");
+      fireEvent.change(field, { target: { value: "named it billing-prod." } });
+      // Ticked is not "answered": the mark is for the rows a tick does not
+      // already explain. Asserted BEFORE the submit, which clears every note
+      // and would make it absent whatever the rule is.
+      expect(screen.getByText("ANSWERED")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("checkbox"));
+      expect(screen.queryByText("ANSWERED")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      const [text] = onSubmit.mock.calls[0] as unknown as [string];
+      expect(text).toContain("I have done this manual step:");
+      expect(text).toContain("- Add the Stripe test key.\n  Note: named it billing-prod.");
+      expect(text).not.toContain("without doing");
+    });
+
+    it("keeps each note under its own step when several are submitted at once", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard(["Add the key.", "Use Postgres."])} onSubmit={onSubmit} />);
+      fireEvent.change(openNoteFor("Add the key."), { target: { value: "called it billing-prod." } });
+      fireEvent.click(screen.getAllByRole("checkbox")[0]);
+      fireEvent.change(openNoteFor("Use Postgres."), { target: { value: "no — SQLite." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      const [text] = onSubmit.mock.calls[0] as unknown as [string];
+      expect(text).toContain("I have done this manual step:\n- Add the key.\n  Note: called it billing-prod.");
+      expect(text).toContain(
+        "I answered this manual step without doing it:\n- Use Postgres.\n  Note: no — SQLite.",
+      );
+    });
+
+    it("greys an answered step as a reported one, and clears its note", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard()} onSubmit={onSubmit} />);
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "blocked." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      expect(screen.getByText("SENT")).toBeInTheDocument();
+      // The note is in the transcript now; the card does not keep a second copy.
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^submit$/i })).toBeDisabled();
+    });
+
+    it("retries the whole of a refused submission when Submit is pressed again", () => {
+      const onSubmit = vi.fn(() => false);
+      render(<SessionStatusCard status={stepCard()} onSubmit={onSubmit} />);
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "blocked." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      expect(screen.getByRole("textbox")).toHaveValue("blocked.");
+      expect(screen.getByRole("status")).toHaveTextContent(/couldn.t send/i);
+      expect(screen.queryByText("SENT")).not.toBeInTheDocument();
+
+      // The retry carries the same message, not a reduced one.
+      onSubmit.mockReturnValue(true);
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      expect(onSubmit).toHaveBeenCalledTimes(2);
+      const [first] = onSubmit.mock.calls[0] as unknown as [string];
+      const [second] = onSubmit.mock.calls[1] as unknown as [string];
+      expect(second).toBe(first);
+      expect(second).toContain("Note: blocked.");
+      expect(screen.getByText("SENT")).toBeInTheDocument();
+    });
+
+    // The field is never closed by a blur. Closing on blur removes it on
+    // mousedown, which shifts everything below up before mouseup lands, so the
+    // click that caused it is swallowed — pressing Submit with an empty note
+    // open submitted nothing.
+    it("keeps the field open when focus leaves it, empty or not", () => {
+      render(<SessionStatusCard status={stepCard()} />);
+      const field = openNoteFor("Add the Stripe test key.");
+      fireEvent.blur(field);
+      expect(screen.getByRole("textbox")).toBeInTheDocument();
+    });
+
+    it("submits with an empty note field open, rather than swallowing the press", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard()} onSubmit={onSubmit} />);
+      fireEvent.click(screen.getByRole("checkbox"));
+      const field = openNoteFor("Add the Stripe test key.");
+      fireEvent.blur(field);
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      const [text] = onSubmit.mock.calls[0] as unknown as [string];
+      expect(text).toContain("I have done this manual step:");
+      expect(text).not.toContain("Note:");
+    });
+
+    it("closes the field and drops the note when the control is pressed again", () => {
+      render(<SessionStatusCard status={stepCard()} />);
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "blocked." } });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Remove note: Add the Stripe test key." }),
+      );
+
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.queryByText("ANSWERED")).not.toBeInTheDocument();
+      // Nothing is left to send: a removed note is not a hidden one.
+      expect(screen.getByRole("button", { name: /^submit$/i })).toBeDisabled();
+    });
+
+    it("treats a note of whitespace as no note, on the row and in the submission", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard()} onSubmit={onSubmit} />);
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "   \n " } });
+
+      expect(screen.queryByText("ANSWERED")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^submit$/i })).toBeDisabled();
+    });
+
+    it("marks a row ANSWERED again when a new note follows one already sent", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard()} onSubmit={onSubmit} />);
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "blocked." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      expect(screen.getByText("SENT")).toBeInTheDocument();
+
+      // A second answer is pending, and SENT alone would deny it.
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "unblocked." } });
+      expect(screen.getByText("ANSWERED")).toBeInTheDocument();
+      expect(screen.getByText("SENT")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^submit$/i })).toBeEnabled();
+    });
+
+    it("carries the notes into the composer on Add comment", () => {
+      render(<SessionStatusCard status={stepCard()} />);
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "blocked." } });
+      fireEvent.click(screen.getByRole("button", { name: /add comment/i }));
+
+      const prefill = useSessionStore.getState().prefillText;
+      expect(prefill).toContain("Add the Stripe test key.");
+      expect(prefill).toContain("Note: blocked.");
+    });
+
+    it("keeps two identical steps apart, each with its own note", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard status={stepCard(["Approve it.", "Approve it."])} onSubmit={onSubmit} />,
+      );
+      const buttons = screen.getAllByRole("button", { name: "Add a note: Approve it." });
+      expect(buttons).toHaveLength(2);
+
+      fireEvent.click(buttons[0]);
+      expect(screen.getAllByRole("textbox")).toHaveLength(1);
+      fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "the staging one." } });
+      fireEvent.click(screen.getAllByRole("button", { name: "Add a note: Approve it." })[0]);
+      fireEvent.change(screen.getAllByRole("textbox")[1], { target: { value: "the prod one." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      const [text] = onSubmit.mock.calls[0] as unknown as [string];
+      expect(text).toContain("- Approve it.\n  Note: the staging one.");
+      expect(text).toContain("- Approve it.\n  Note: the prod one.");
+    });
+
+    // A button inside the row's <label> activates the checkbox as well as
+    // itself, so pressing "Add a note" would report the step done. jsdom does
+    // not forward a label activation, so this is asserted on the DOM: the only
+    // place the browser's rule can be seen from a test.
+    it("keeps the note control out of the step's label, so pressing it cannot tick the step", () => {
+      render(<SessionStatusCard status={stepCard()} />);
+      const control = screen.getByRole("button", { name: "Add a note: Add the Stripe test key." });
+      expect(control.closest("label")).toBeNull();
+
+      const field = openNoteFor("Add the Stripe test key.");
+      expect(field.closest("label")).toBeNull();
+      expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+    });
+
+    it("gives the offers no note control: an offer is the agent's work, not the user's", () => {
+      render(<SessionStatusCard status={card({ actions: [offer({ offerId: "o1", label: "Wire it" })] })} />);
+      expect(screen.queryByRole("button", { name: /add a note/i })).not.toBeInTheDocument();
+    });
+  });
 });

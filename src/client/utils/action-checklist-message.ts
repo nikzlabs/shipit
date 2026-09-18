@@ -40,16 +40,46 @@ function offerProvenance(offer: OfferedAction): string {
   return s;
 }
 
+/**
+ * One manual step the user is submitting (docs/303 req 37). `done` is the
+ * "I've done this" toggle; `note` is what they typed for that step. A step with
+ * a note and no tick is an ANSWER — a refusal, a qualification, a blocker — and
+ * must not read to the agent as one reported done.
+ */
+export interface ReportedStep {
+  text: string;
+  done: boolean;
+  note?: string;
+}
+
+/**
+ * The message is text an agent parses, so a step and its note must each stay
+ * one item of it. A step's own text is folded onto one line, and every line of
+ * a note is indented, not just the first — the field is a textarea, and an
+ * unindented later line reading "- …" or a heading of its own would arrive as
+ * another step rather than as more of this one.
+ */
+function oneLine(text: string): string {
+  return text.split("\n").join(" ").trim();
+}
+
+/** The note rides under its own step, which is the whole point of the field. */
+function stepLine(step: ReportedStep): string {
+  const text = oneLine(step.text);
+  if (!step.note) return `- ${text}`;
+  return `- ${text}\n  Note: ${step.note.split("\n").join("\n  ")}`;
+}
+
 export function formatOfferedActionsMessage(
   selected: readonly OfferedAction[],
-  doneSteps: readonly string[] = [],
+  steps: readonly ReportedStep[] = [],
 ): string {
   const parts: string[] = [];
   if (selected.length > 0) {
     const lead =
       selected.length === 1
-        ? `${CARD_MARKER} I approved this action.`
-        : `${CARD_MARKER} I approved these ${selected.length} actions.`;
+        ? "I approved this action."
+        : `I approved these ${selected.length} actions.`;
     const body = selected
       .map((offer, i) => `${i + 1}. ${offer.payload}\n   (${offerProvenance(offer)})`)
       .join("\n");
@@ -57,24 +87,40 @@ export function formatOfferedActionsMessage(
   }
   // docs/303 req 29 — what the user did by hand rides the same message, so the
   // agent learns it at the moment it is told to act.
-  if (doneSteps.length > 0) {
-    const lead = selected.length > 0 ? "" : `${CARD_MARKER} `;
-    const heading = doneSteps.length === 1
-      ? `${lead}I have done this manual step:`
-      : `${lead}I have done these manual steps:`;
-    parts.push(`${heading}\n${doneSteps.map((step) => `- ${step}`).join("\n")}`);
+  const done = steps.filter((step) => step.done);
+  if (done.length > 0) {
+    const heading =
+      done.length === 1 ? "I have done this manual step:" : "I have done these manual steps:";
+    parts.push(`${heading}\n${done.map(stepLine).join("\n")}`);
   }
-  return parts.join("\n\n");
+  // docs/303 req 37 — a step answered without being done gets its own heading,
+  // because "I will not do this, use SQLite" is not a report of work finished.
+  const answered = steps.filter((step) => !step.done && step.note);
+  if (answered.length > 0) {
+    const heading =
+      answered.length === 1
+        ? "I answered this manual step without doing it:"
+        : "I answered these manual steps without doing them:";
+    parts.push(`${heading}\n${answered.map(stepLine).join("\n")}`);
+  }
+  if (parts.length === 0) return "";
+  return [`${CARD_MARKER} ${parts[0]}`, ...parts.slice(1)].join("\n\n");
 }
 
 /** The status card's "Add comment…", the transcript card's snapshot per offer. */
 export function formatOfferedActionsComment(
   selected: readonly OfferedAction[],
-  doneSteps: readonly string[] = [],
+  steps: readonly ReportedStep[] = [],
 ): string {
   const lines = [
     ...selected.map((offer) => `- ${offer.payload} (${offerProvenance(offer)})`),
-    ...doneSteps.map((step) => `- done by hand: ${step}`),
+    // Same boundaries as the submitted message: the user edits this in the
+    // composer, and a note that breaks out of its step there is the same bug.
+    ...steps.map((step) => {
+      const prefix = step.done ? "done by hand" : "on this step";
+      const line = `- ${prefix}: ${oneLine(step.text)}`;
+      return step.note ? `${line}\n  Note: ${step.note.split("\n").join("\n  ")}` : line;
+    }),
   ];
   return `Re: offered actions\n${lines.join("\n")}\n\n`;
 }

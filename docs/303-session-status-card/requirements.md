@@ -232,11 +232,60 @@ taken inside one session, without building an agent that talks to many.
     any list. This does not loosen req 15: a turn that did the session's work and
     did not update the card is still marked stale and still gets its one nudge.
 
+37. A manual step can be answered, not only ticked. Each step carries a note of
+    its own — one line the user writes against that step — so that a report can
+    carry the detail the agent needs to carry on correctly ("done, but I named
+    it `billing-prod`"), and so that a step can be refused, qualified or
+    declared blocked ("no — use SQLite", "GitHub will not let me"), which the
+    card cannot say at all while a step can only be ticked. A note can be sent
+    without ticking the step: the row is then answered, not reported done, and
+    the agent is told which of the two it is. The note belongs to its step in
+    what the agent receives, however many steps are submitted at once. The
+    field is not on the row until the user asks for it, so a card nobody
+    annotates is the card of req 2.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-18 — Nik: "manual steps sometimes require the user to enter something,
+  or the user wants to leave a comment per step." Five options were drawn in
+  `look-step-comment.html`, in the card's real place and in four themes,
+  including the two cheap ones so the comparison was honest: **A** nothing, and
+  the detail typed in the composer; **B** the card's existing "Add comment…",
+  which rides the same Submit; **C** a note per step, revealed by a control on
+  the row; **D** a field under every step, always; **E** the agent declaring
+  which step needs a value and naming the field.
+
+  The thing put to him to judge was **attribution**, not typing convenience:
+  ticking a step and typing the detail in the composer already works and costs
+  the same one turn, so a per-step field earns its place only if it keeps the
+  sentence attached to its step. A and B lose that — B's prefill attributes one
+  ticked step by accident and nothing once two are ticked, and it cannot carry a
+  note for a step the user is *not* reporting done, so the refusal half is
+  unreachable there. D buys the same contract as C for about a row per step on
+  every card. E was drawn although it was not recommended, and the drawing is
+  what makes the case: the agent writes a step before the user has hit the thing
+  that needs naming, and a step it did not mark cannot be answered at all, so C
+  has to exist underneath it. He chose **C**. → req 37.
+
+  Asked separately whether a note should be sendable on a step that is *not*
+  ticked, he chose **yes**: the toggle becomes not done · done · answered, and
+  that is the half the card could not express. → req 37's third sentence, and
+  the second heading in the submit message.
+
+  Decided here and not by him: the note is client-side only and nothing stores
+  it — it rides one message and is gone, as the "SENT" grey does — so no
+  identity is added to `needsYou`, which stays a list of strings; an answered
+  step greys as a reported one, because the agent has been told either way; and
+  the control is a toggle, where an earlier cut closed an empty field on blur.
+  That was withdrawn on review evidence rather than by preference: closing on
+  blur removes the field on *mousedown*, which lifts everything under it before
+  mouseup lands, so pressing Submit with an empty note open submitted nothing —
+  reproduced in a real browser, and invisible to a test that dispatches blur and
+  click separately.
 
 - 2026-09-17 — Nik, on the shipped card: "'Context compacted' event shouldn't
   require a nudge, and any similar case" (planning#594). Reproduced before

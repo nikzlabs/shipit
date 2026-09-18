@@ -57,7 +57,9 @@ const inputSchema = {
       maxItems: MAX_NEEDS_YOU_ITEMS,
       description:
         "The things only the user can do by hand, one self-contained step per entry — the card "
-        + "shows each with its own \"I've done this\" toggle. Omit it to leave the list unchanged; "
+        + "shows each with its own \"I've done this\" toggle and a note field. A step can come "
+        + "back with a `Note:` line under it, or answered rather than done — a refusal or a "
+        + "blocker — so read what comes back per step. Omit it to leave the list unchanged; "
         + "pass [] to clear it.",
       items: {
         type: "string",
