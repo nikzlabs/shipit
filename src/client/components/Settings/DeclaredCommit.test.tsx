@@ -9,10 +9,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { GitTab } from "./tabs/GitTab.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
+import { commitSettings, useTabDrafts } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { initialSettingValues } from "../../stores/setting-values.js";
@@ -21,6 +22,7 @@ import type { SettingKey } from "../../../server/shared/settings-catalogue/index
 const USER = "instructions.userInstructions" as SettingKey;
 const OPS = "instructions.opsInstructions" as SettingKey;
 const IDENTITY = "git.identity" as SettingKey;
+const WEBHOOK_URL = "voice.webhook.url" as SettingKey;
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -61,14 +63,14 @@ const bodyOf = (call: number) =>
 describe("the Instructions tab's Save", () => {
   it("is disabled while nothing has been edited", () => {
     seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     expect(save()).toBeDisabled();
   });
 
   it("commits every edited box on the tab in one write", async () => {
     seed({ [USER]: "Be brief.", [OPS]: "Report a timeline." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "Be brief. Always." } });
     fireEvent.change(box("Ops Session Instructions"), { target: { value: "Name the evidence." } });
@@ -86,7 +88,7 @@ describe("the Instructions tab's Save", () => {
 
   it("sends only what was edited, leaving the other box's field out", async () => {
     seed({ [USER]: "Be brief.", [OPS]: "Report a timeline." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Ops Session Instructions"), { target: { value: "Name the evidence." } });
     await userEvent.click(save());
@@ -99,7 +101,7 @@ describe("the Instructions tab's Save", () => {
   it("records the value the server stored, not the one that was sent", async () => {
     answersWith({ systemPrompt: "Be brief." });
     seed({ [USER]: "" });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "Be brief.\n\n" } });
     await userEvent.click(save());
@@ -113,7 +115,7 @@ describe("the Instructions tab's Save", () => {
   it("keeps the draft and says so when the write does not land", async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
     seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "Be brief. Always." } });
     await userEvent.click(save());
@@ -134,7 +136,7 @@ describe("the Instructions tab's Save", () => {
       answer = () => { resolve({ ok: true, json: () => Promise.resolve({ systemPrompt: "Be brief. Always." }) }); };
     }));
     seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "Be brief. Always." } });
     await userEvent.click(save());
@@ -159,7 +161,7 @@ describe("the Instructions tab's Save", () => {
       answer = () => { resolve({ ok: true, json: () => Promise.resolve({ systemPrompt: "Be brief. Always." }) }); };
     }));
     seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "Be brief. Always." } });
     await userEvent.click(save());
@@ -184,7 +186,7 @@ describe("the Instructions tab's Save", () => {
       answer = () => { resolve({ ok: true, json: () => Promise.resolve({ systemPrompt: "one" }) }); };
     }));
     seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "one" } });
     await userEvent.click(save());
@@ -200,7 +202,7 @@ describe("the Instructions tab's Save", () => {
 
   it("says Saved until the next edit", async () => {
     seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "Be brief. Always." } });
     await userEvent.click(save());
@@ -212,7 +214,7 @@ describe("the Instructions tab's Save", () => {
 
   it("commits on Ctrl+Enter too", async () => {
     seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "Be brief. Always." } });
     fireEvent.keyDown(document, { key: "Enter", ctrlKey: true });
@@ -225,24 +227,12 @@ describe("the Instructions tab's Save", () => {
   // different limit from the button (inventory.md P8).
   it("refuses a draft the value type refuses, from either path", async () => {
     seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={vi.fn()} />);
+    render(<InstructionsTab />);
 
     fireEvent.change(box("Your Instructions"), { target: { value: "x".repeat(50_001) } });
 
     expect(save()).toBeDisabled();
     fireEvent.keyDown(document, { key: "Enter", ctrlKey: true });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("closes the dialog on Cancel, without writing anything", async () => {
-    const onClose = vi.fn();
-    seed({ [USER]: "Be brief." });
-    render(<InstructionsTab onClose={onClose} />);
-
-    fireEvent.change(box("Your Instructions"), { target: { value: "Be brief. Always." } });
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-
-    expect(onClose).toHaveBeenCalledOnce();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -273,5 +263,73 @@ describe("the Git tab's Save", () => {
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "" } });
 
     expect(screen.getByRole("button", { name: /^Save/ })).toBeDisabled();
+  });
+});
+
+/**
+ * `commitSettings` takes its **destination from the declarations**, and every
+ * entry has to share it (plan.md → Slices → 4). That is what lets the voice
+ * webhook's two halves be one write to their shared address while the two
+ * instruction boxes stay one write to the settings payload — a caller names keys
+ * and never a path.
+ */
+describe("a commit whose destination is not the settings payload", () => {
+  const WEBHOOK_TOKEN = "voice.webhook.token" as SettingKey;
+
+  it("sends one request to the address both declarations name", async () => {
+    await commitSettings([[WEBHOOK_URL, "https://hook.example/notes"], [WEBHOOK_TOKEN, "s3cret"]]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string }];
+    expect(url).toBe("/api/voice/webhook");
+    expect(init.method).toBe("POST");
+    expect(bodyOf(0)).toEqual({ url: "https://hook.example/notes", token: "s3cret" });
+  });
+
+  /*
+    Nothing commits across two destinations today, so nothing fans out — a caller
+    that mixes them is a mistake, and saying so by name beats splitting the write
+    silently or posting one setting to the other's route.
+  */
+  it("refuses to commit settings stored in two different places", async () => {
+    await expect(commitSettings([[USER, "Be brief."], [WEBHOOK_URL, "https://hook.example/notes"]]))
+      .rejects.toThrow(/different destinations/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /*
+    The webhook token is write-only: `configuredOnly` says so, and the route that
+    stored it answers the url alone. A record that took `undefined` for the
+    missing field would be inventing a value for a secret the browser may not
+    read back.
+  */
+  it("leaves a write-only half out of the record while the echoed half moves", async () => {
+    answersWith({ url: "https://hook.example/notes" });
+
+    await commitSettings([[WEBHOOK_URL, "https://hook.example/notes"], [WEBHOOK_TOKEN, "s3cret"]]);
+
+    const values = useSettingsStore.getState().settingValues;
+    expect(values[WEBHOOK_URL]).toBe("https://hook.example/notes");
+    expect(values[WEBHOOK_TOKEN]).toBe("");
+  });
+});
+
+/**
+ * What a tab's Save owns, which is narrower than "every draft on the tab".
+ *
+ * A component that holds drafts saves them itself, at its own address — so
+ * collecting them here would hand `commitSettings` two destinations, which it
+ * refuses by name, and the tab's own row would stop saving the moment a
+ * component beside it had been typed in.
+ */
+describe("what a tab's Save collects", () => {
+  it("takes the tab's own rows and leaves a component's drafts alone", () => {
+    const { setSettingDraft } = useSettingsStore.getState();
+    setSettingDraft(WEBHOOK_URL, "https://hooks.example", "");
+    setSettingDraft(USER, "Be brief.", "");
+
+    expect(renderHook(() => useTabDrafts("voice")).result.current).toEqual([]);
+    expect(renderHook(() => useTabDrafts("instructions")).result.current.map((p) => p.key))
+      .toEqual([USER]);
   });
 });

@@ -3,8 +3,7 @@
  * half of `GlobalSettings`, the `PUT /api/settings` body and `CredentialStore`'s
  * read/write all derive from it, so an undeclared setting has no payload field
  * and cannot be saved. The dialog renders from the same declaration — its label
- * and description are these two fields — and `settings-coverage.test.tsx` fails
- * on a control that is neither bound to one nor named in `exclusions.ts`.
+ * and description are these two fields.
  */
 
 import type { Rendered } from "./rendered.js";
@@ -143,6 +142,19 @@ export interface OwnRouteStore {
   readonly method: "POST" | "PUT";
   readonly path: string;
   readonly bodyField: string;
+  /**
+   * The path STORES this value and never answers it, so the read above does not
+   * exist for it. A credential the user pastes is the case: `POST
+   * /api/github/token` takes a token and no GET hands one back.
+   *
+   * It is what keeps such a setting out of the browser's value record — nothing
+   * would hydrate it, and the own-route read would otherwise ask a path with no
+   * GET on every settings refresh. **`emits: configuredOnly()` is not this
+   * fact**: that is the AGENT's projection, and the voice webhook's URL is
+   * `configuredOnly` and read back in full (inventory.md → Four kinds of
+   * control).
+   */
+  readonly writeOnly?: true;
 }
 
 /**
@@ -211,6 +223,18 @@ interface SettingDeclarationBase<T> {
    * both come from the catalogue (docs/308-data-driven-settings req 11).
    */
   readonly section?: string;
+  /**
+   * Where this row sits on its tab when declaration order alone cannot say:
+   * lower first, unset meaning 0, declaration order deciding within a rank
+   * (docs/308-data-driven-settings plan.md → Placement).
+   *
+   * **Move the declaration first; this is for where that cannot reach.** It
+   * only moves inside its own file, and every payload scalar is in
+   * `GLOBAL_SETTINGS` — the registry's first source, and the one it cannot
+   * leave without dropping out of the derived `GlobalSettings` types
+   * (`global-settings.ts:306`) — so a payload scalar leads its tab otherwise.
+   */
+  readonly order?: number;
   /**
    * The component that renders this setting, for one whose editing needs its own
    * logic (docs/308-data-driven-settings req 3). Custom is what it LOOKS like:

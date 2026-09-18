@@ -144,7 +144,7 @@ import { hydrateSettingValues, refreshOwnRouteSettings } from "./stores/setting-
 import { useUiStore, type RightTab } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { composeReviewMessage } from "./utils/compose-review-body.js";
-import { REVIEW_NEEDS_MULTI_AGENT } from "./utils/review-command.js";
+import { REVIEW_NEEDS_SUB_AGENTS } from "./utils/review-command.js";
 import { handleSessionResume } from "./stores/actions/session-actions.js";
 import {
   parseRepoLabel,
@@ -201,7 +201,7 @@ export default function App() {
     reconnectAttempt,
     reconnect,
   } = useSessionWebSocket(wsSessionId);
-  const { get: apiGet, post: apiPost, put: apiPut } = useApi();
+  const { get: apiGet, post: apiPost } = useApi();
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
   const rewindPreviews = useSessionStore((s) => s.rewindPreviews);
@@ -855,8 +855,6 @@ export default function App() {
             autoResetMergedBranch?: boolean;
             enableSubAgents?: boolean;
             sessionStatusCard?: boolean;
-            voiceDeliveryMode?: "native" | "external" | "both";
-            voiceWebhookConfigured?: boolean;
             providerAccounts?: CredentialRoute[];
             failoverCutoffs?: Record<string, { session: number; weekly: number }>;
             accountSelectionMode?: Record<string, "strict" | "balanced">;
@@ -893,10 +891,6 @@ export default function App() {
           {useSettingsStore
             .getState()
             .setAgentSystemInstructions(data.settings.agentSystemInstructions);}
-        if (data.settings.autoCreatePr !== undefined)
-          {useSettingsStore
-            .getState()
-            .setAutoCreatePr(data.settings.autoCreatePr);}
         if (data.settings.failoverCutoffs !== undefined) {
           for (const [agentId, cutoffs] of Object.entries(data.settings.failoverCutoffs)) {
             useSettingsStore.getState().setFailoverCutoffs(agentId, cutoffs);
@@ -907,18 +901,8 @@ export default function App() {
             useSettingsStore.getState().setAccountSelectionMode(agentId, mode);
           }
         }
-        if (data.settings.voiceDeliveryMode !== undefined)
-          {useSettingsStore
-            .getState()
-            .setVoiceDeliveryMode(data.settings.voiceDeliveryMode);}
-        if (data.settings.voiceWebhookConfigured !== undefined)
-          {useSettingsStore
-            .getState()
-            .setVoiceWebhookConfigured(data.settings.voiceWebhookConfigured);}
-        useSettingsStore.getState().setNonTurnModel(
-          data.settings.nonTurnModel ?? null,
-          data.settings.nonTurnModelResolved ?? null,
-        );
+        useSettingsStore.getState()
+          .setNonTurnModelResolved(data.settings.nonTurnModelResolved ?? null);
         if (data.settings.backgroundWorkModels)
           {useSettingsStore
             .getState()
@@ -1073,7 +1057,7 @@ export default function App() {
     (reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
       if (!useSettingsStore.getState().enableSubAgents) {
-        useUiStore.getState().setToast({ message: REVIEW_NEEDS_MULTI_AGENT });
+        useUiStore.getState().setToast({ message: REVIEW_NEEDS_SUB_AGENTS });
         return;
       }
       const prompt = composeReviewMessage(reviewFilePath);
@@ -1555,7 +1539,7 @@ export default function App() {
         />
       )}
       {showHarnessOnboarding ? (
-        <HarnessOnboardingPanel agentList={agentList} />
+        <HarnessOnboardingPanel />
       ) : showHomeScreen ? (
         <HomeScreen
           onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
@@ -1758,21 +1742,6 @@ export default function App() {
         )}
         {settingsOpen && (
           <Settings
-            githubStatus={githubStatus}
-            onGitHubTokenSubmit={async (token) => {
-              const result = await useSettingsStore
-                .getState()
-                .submitGitHubToken(token);
-              if (result)
-                {usePrStore.getState().setImportSearchResults(result.repos);}
-            }}
-            onGitHubLogout={() =>
-              useSettingsStore
-                .getState()
-                .gitHubLogout()
-                .catch(() => {})
-            }
-            agentList={agentList}
             onFullReset={async () => {
               try {
                 await apiPost("/api/reset", {});
@@ -1780,7 +1749,6 @@ export default function App() {
                 console.error("[settings] Full reset failed:", err);
               }
             }}
-            hasActiveSession={!!sessionId}
             onClose={() => {
               useUiStore.getState().setSettingsOpen(false);
               useUiStore.getState().setSettingsTab(undefined);
@@ -1789,27 +1757,7 @@ export default function App() {
         )}
         {projectSettingsRepoUrl && (
           <ProjectSettings
-            repoUrl={projectSettingsRepoUrl}
-            repoName={parseRepoLabel(projectSettingsRepoUrl)}
             initialTab={projectSettingsTab}
-            onSecretsLoad={async (repoUrl) => {
-              const data = await apiGet<{ keys: string[] }>(
-                `/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`,
-              );
-              return data.keys;
-            }}
-            onSecretsSave={(repoUrl, payload) => {
-              void (async () => {
-                try {
-                  await apiPut("/api/secrets", { repoUrl, ...payload });
-                } catch {
-                  return;
-                }
-                // Repos without Compose emit no secrets_status event to trigger this refresh.
-                const id = useSessionStore.getState().sessionId;
-                if (id) await usePluginReposStore.getState().fetchSnapshot(id);
-              })();
-            }}
             onClose={() => {
               useUiStore.getState().setProjectSettingsRepoUrl(null);
             }}

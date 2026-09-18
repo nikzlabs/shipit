@@ -370,29 +370,23 @@ describe("parseShipitConfig", () => {
       const config = parseShipitConfig({
         release: {
           "version-source": "Cargo.toml",
-          "tag-pattern": "v{version}",
-          "prerelease-pattern": "v{version}-rc.{n}",
-          notes: "github-generated",
-          gate: "cargo test",
+          "version-source-path": "crates/api/Cargo.toml",
+          branch: "stable",
           mechanism: "tag-triggered",
-          workflow: ".github/workflows/release.yml",
         },
       });
       expect(config.release).toEqual({
         versionSource: "Cargo.toml",
-        tagPattern: "v{version}",
-        prereleasePattern: "v{version}-rc.{n}",
-        notes: "github-generated",
-        gate: "cargo test",
+        versionSourcePath: "crates/api/Cargo.toml",
+        branch: "stable",
         mechanism: "tag-triggered",
-        workflow: ".github/workflows/release.yml",
       });
     });
 
     it("accepts a partial release block (only version-source)", () => {
       const config = parseShipitConfig({ release: { "version-source": "VERSION" } });
       expect(config.release?.versionSource).toBe("VERSION");
-      expect(config.release?.tagPattern).toBeUndefined();
+      expect(config.release?.branch).toBeUndefined();
     });
 
     it("throws for non-object release block", () => {
@@ -401,10 +395,6 @@ describe("parseShipitConfig", () => {
 
     it("throws for unknown version-source value", () => {
       expect(() => parseShipitConfig({ release: { "version-source": "lerna.json" } })).toThrow(ShipitConfigError);
-    });
-
-    it("throws for tag-pattern without {version}", () => {
-      expect(() => parseShipitConfig({ release: { "tag-pattern": "release-{tag}" } })).toThrow(ShipitConfigError);
     });
 
     it("throws for unknown mechanism", () => {

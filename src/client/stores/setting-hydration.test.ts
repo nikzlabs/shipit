@@ -18,7 +18,10 @@ import {
   ownRouteOf,
 } from "./setting-values.js";
 import { useSettingsStore } from "./settings-store.js";
-import type { AnySettingDeclaration } from "../../server/shared/settings-catalogue/index.js";
+import {
+  ALL_SETTINGS,
+  type AnySettingDeclaration,
+} from "../../server/shared/settings-catalogue/index.js";
 
 /** Every generated row the settings payload carries, which is every one with a `wire`. */
 const PAYLOAD_ROWS = GENERATED_SETTINGS.filter((d) => d.wire !== undefined);
@@ -32,8 +35,15 @@ function storedSample(declaration: AnySettingDeclaration): unknown {
   switch (declaration.type.kind) {
     case "bool": return declaration.type.defaultValue !== true;
     case "number": return 4096;
+    // Any declared option but the default, so a hydration that quietly answered
+    // the default would not pass.
+    case "enum": return (declaration.type.shape as { options: { value: string }[] }).options
+      .map((o) => o.value)
+      .find((v) => v !== declaration.type.defaultValue)!;
     case "text": return "what the user typed";
     case "gitIdentity": return { name: "Ada", email: "ada@example.com" };
+    case "modelSelection":
+      return { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" };
     default:
       throw new Error(`no fixture for a ${declaration.type.kind} row (${declaration.key})`);
   }
@@ -96,14 +106,43 @@ describe("a payload's generated rows", () => {
     expect(recorded("advanced.autoFixCi")).toBe(true);
   });
 
-  // The record's membership is fixed to the generated rows, so a payload field
-  // belonging to an unconverted tab cannot seed a value its hydration would
-  // never correct (P18).
-  it("records nothing for a setting the record does not hold", () => {
-    hydrateSettingValues({ autoCreatePr: true });
+  /*
+    Silence is the value where the declaration says so (slice 6b). A row marked
+    `omitWhenNull` has its field DROPPED from the whole payload rather than sent
+    as null, so leaving the record alone would keep showing a pin the server has
+    stopped holding. Asserted over whatever carries the mark rather than over the
+    one setting that does, since the rule is what a later row inherits.
 
-    expect(recorded("integrations.autoCreatePr")).toBeUndefined();
+    **And only for a WHOLE payload.** A message carrying some of the settings
+    cannot say a value is gone, only that it does not carry it — found in review,
+    where the `global_settings` message, which declares no `nonTurnModel` field at
+    all, cleared a pin nobody had touched.
+  */
+  const OMIT_WHEN_NULL = PAYLOAD_ROWS.filter((d) => d.omitWhenNull);
+
+  it("has a row whose omitted field is a null", () => {
+    expect(OMIT_WHEN_NULL.length).toBeGreaterThan(0);
   });
+
+  for (const declaration of OMIT_WHEN_NULL) {
+    it(`clears ${declaration.key} when a whole payload drops its field`, () => {
+      hydrateSettingValues({ [declaration.wire!]: storedSample(declaration) });
+      expect(recorded(declaration.key)).not.toBeNull();
+
+      hydrateSettingValues({ autoFixCi: true });
+
+      expect(recorded(declaration.key)).toBeNull();
+    });
+
+    it(`keeps ${declaration.key} when a partial message does not carry it`, () => {
+      const stored = storedSample(declaration);
+      hydrateSettingValues({ [declaration.wire!]: stored });
+
+      hydrateSettingValues({ autoFixCi: true }, { partial: true });
+
+      expect(recorded(declaration.key)).toEqual(stored);
+    });
+  }
 });
 
 describe("the rows the payload does not carry", () => {
@@ -121,14 +160,20 @@ describe("the rows the payload does not carry", () => {
     const fetchMock = answer({
       "/api/updates/channel": { channel: "edge" },
       "/api/egress/settings": { globalEnabled: false, enforcementActive: true },
+      "/api/voice/webhook": { url: "https://hook.example/notes" },
     });
 
     await refreshOwnRouteSettings();
 
+    // One read per ADDRESS, not per setting: the two webhook halves share a
+    // path, and one answer carries a field each.
     expect(fetchMock.mock.calls.map(([url]) => url).sort())
-      .toEqual(OWN_ROUTE_SETTINGS.map((d) => ownRouteOf(d)!.path).sort());
+      .toEqual([...new Set(OWN_ROUTE_SETTINGS.map((d) => ownRouteOf(d)!.path))].sort());
     expect(recorded("advanced.releaseChannel")).toBe("edge");
     expect(recorded("network.egressContained")).toBe(false);
+    expect(recorded("voice.webhook.url")).toBe("https://hook.example/notes");
+    // Nothing answers the token, so the record keeps the value it had.
+    expect(recorded("voice.webhook.token")).toBe("");
   });
 
   /*
@@ -158,6 +203,41 @@ describe("the rows the payload does not carry", () => {
   });
 
   /*
+    Every settings refresh starts a read of each address, so two of them overlap
+    whenever a `settings_changed` broadcast arrives while one is out. The older
+    answer describes the state the address was in first — and left unordered it
+    wins twice: it writes the stale value, and that write then makes the newer
+    read's own answer look superseded by the moved-underneath guard.
+  */
+  it("keeps the newer read's answer when an older read lands first", async () => {
+    const WEBHOOK = "/api/voice/webhook";
+    useSettingsStore.getState().setSettingValue("voice.webhook.url", "https://a.example");
+    const pending: { url: string; settle: (body: Record<string, unknown>) => void }[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => new Promise((resolve) => {
+      pending.push({
+        url,
+        settle: (body) => {
+          resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+        },
+      });
+    })));
+
+    const older = refreshOwnRouteSettings();
+    const newer = refreshOwnRouteSettings();
+    const webhookReads = pending.filter((p) => p.url === WEBHOOK);
+    expect(webhookReads).toHaveLength(2);
+
+    // What the address held when the first read was served, answering after the
+    // second read has already been issued.
+    webhookReads[0]!.settle({ url: "https://b.example" });
+    webhookReads[1]!.settle({ url: "https://c.example" });
+    for (const p of pending) p.settle({});
+    await Promise.all([older, newer]);
+
+    expect(recorded("voice.webhook.url")).toBe("https://c.example");
+  });
+
+  /*
     A failed read keeps the last value ShipIt knew. Answering the declared
     default instead would tell an install tracking `stable` that it is on
     `stable` — a real channel, and possibly the wrong one — which is the same
@@ -172,6 +252,32 @@ describe("the rows the payload does not carry", () => {
     await refreshOwnRouteSettings();
 
     expect(recorded("advanced.releaseChannel")).toBe("edge");
+  });
+
+  /*
+    A `writeOnly` address stores its value and never answers it, so there is no
+    read to pair with the write. Asking anyway would be a 404 on every settings
+    refresh — a request that can only ever fail, for a record entry nothing
+    could ever fill. The rule is asserted, not the two paths: what must never be
+    asked is any address the declarations mark this way.
+  */
+  it("asks nothing of an address that only stores", async () => {
+    const fetchMock = answer({
+      "/api/updates/channel": { channel: "edge" },
+      "/api/egress/settings": { globalEnabled: false },
+      "/api/voice/webhook": { url: "https://hook.example/notes" },
+    });
+
+    await refreshOwnRouteSettings();
+
+    const writeOnly = ALL_SETTINGS.filter((d) => ownRouteOf(d)?.writeOnly);
+    expect(writeOnly.length).toBeGreaterThan(0);
+    const asked = fetchMock.mock.calls.map(([url]) => url);
+    for (const declaration of writeOnly) {
+      expect(asked, `${declaration.key} has no read to make`)
+        .not.toContain(ownRouteOf(declaration)!.path);
+      expect(recorded(declaration.key)).toBeUndefined();
+    }
   });
 
   it("keeps it when the answer has no such field", async () => {

@@ -138,4 +138,72 @@ describe("ActionChecklist", () => {
     fireEvent.click(screen.getAllByRole("checkbox")[0]);
     expect(screen.getByTestId("selected")).toHaveTextContent("a");
   });
+
+  // planning#592 — jsdom computes no layout, so the focus scroll that blanked
+  // the pane is unassertable; the row containing its own `sr-only` box is the
+  // invariant that prevents it.
+  it("keeps every row a containing block for its own hidden checkbox", () => {
+    render(<Harness items={[item({ key: "a" }), item({ key: "b" })]} />);
+    for (const box of screen.getAllByRole("checkbox")) {
+      fireEvent.click(box);
+      expect(box.className).toContain("sr-only");
+      expect(box.closest("label")?.className.split(/\s+/)).toContain("relative");
+    }
+  });
+
+  // docs/303 req 37 — the status card's per-step note needs a control beside
+  // the row and a field under it, both outside the label.
+  it("renders a trailing control outside the row's label", () => {
+    render(
+      <ActionChecklist
+        items={[item({ key: "a", label: "Add the key" })]}
+        selected={new Set()}
+        onToggle={() => {}}
+        ariaLabel="Offers"
+        renderTrailing={(i) => <button type="button">note {i.key}</button>}
+      />,
+    );
+    const control = screen.getByRole("button", { name: "note a" });
+    expect(control.closest("label")).toBeNull();
+  });
+
+  it("renders content below the row, outside the label and inside the row", () => {
+    render(
+      <ActionChecklist
+        items={[item({ key: "a" })]}
+        selected={new Set(["a"])}
+        onToggle={() => {}}
+        ariaLabel="Offers"
+        renderBelow={(i) => <textarea aria-label={`note ${i.key}`} />}
+      />,
+    );
+    const field = screen.getByRole("textbox", { name: "note a" });
+    expect(field.closest("label")).toBeNull();
+    // Inside the ticked row's tint, so the note reads as part of the row.
+    const row = screen.getByRole("checkbox").closest("label")!.parentElement!.parentElement!;
+    expect(row.className).toContain("bg-(--color-accent-subtle)");
+    expect(row.contains(field)).toBe(true);
+  });
+
+  it("renders neither when the caller supplies neither", () => {
+    render(<Harness items={[item({ key: "a" })]} />);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("shows an item's tag beside its label, on a taken row as well", () => {
+    const { rerender } = render(<Harness items={[item({ key: "a", tag: "ANSWERED" })]} />);
+    expect(screen.getByText("ANSWERED")).toBeInTheDocument();
+    expect(screen.queryByText("SENT")).not.toBeInTheDocument();
+
+    // A row sent earlier that carries a NEW tag is pending; SENT alone denies it.
+    rerender(<Harness items={[item({ key: "a", tag: "ANSWERED", taken: true })]} />);
+    expect(screen.getByText("ANSWERED")).toBeInTheDocument();
+    expect(screen.getByText("SENT")).toBeInTheDocument();
+  });
+
+  it("shows no tag when the item carries none", () => {
+    render(<Harness items={[item({ key: "a" })]} />);
+    expect(screen.queryByText("ANSWERED")).not.toBeInTheDocument();
+  });
 });

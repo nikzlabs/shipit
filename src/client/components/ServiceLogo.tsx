@@ -10,7 +10,7 @@
  * be recognised without reading, which is the whole job of an avatar.
  *
  * **A brand glyph is the sanctioned exception to "no hardcoded SVG"** — the same
- * exception `SettingsIntegrations.tsx`'s `LinearLogo` takes, and for the same
+ * exception `Settings/components/LinearCredential.tsx`'s `LinearLogo` takes, and for the same
  * reason: Phosphor is a set of generic UI symbols and has no vendor logos. The
  * design language's rule is about *icons* — anything labelling an action, a
  * status or a row — and a logo is neither drawn nor chosen; it is quoted.

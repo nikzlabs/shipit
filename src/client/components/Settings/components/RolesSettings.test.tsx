@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { RolesTab } from "./RolesTab.js";
+import { RolesSettings } from "./RolesSettings.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
+import { useUiStore } from "../../../stores/ui-store.js";
 import type { AgentOption } from "../../../agent-types.js";
 import type { RoleView } from "../../../../server/shared/types/agent-types.js";
 
@@ -143,14 +144,17 @@ function writtenRole(fetchMock: ReturnType<typeof vi.fn>, call = 0) {
 beforeEach(() => {
   useSettingsStore.getState().setReviewers([]);
   useSettingsStore.getState().setRoles([REVIEWER]);
+  // Read from the store since docs/308 slice 6b registered this as the component
+  // `roles` and `reviewers` name; a registered component takes no other props.
+  useUiStore.setState({ agentList: agents });
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-describe("RolesTab — the list", () => {
+describe("RolesSettings — the list", () => {
   it("keeps the reviewer out of the role list and gives it no rename or delete (req 2)", () => {
     useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     expect(screen.queryByTestId("role-row-reviewer")).toBeNull();
     expect(screen.queryByTestId("role-delete-reviewer")).toBeNull();
@@ -161,7 +165,7 @@ describe("RolesTab — the list", () => {
 
   it("renders a role as a SUMMARY — name, description, what it resolves to (req 17)", () => {
     useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     const row = screen.getByTestId("role-row-deep-dive");
     expect(row.textContent).toContain("deep-dive");
@@ -198,7 +202,7 @@ describe("RolesTab — the list", () => {
    */
   it("states a pinned role's harness flat — it is stored, not derived", () => {
     useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     const resolution = screen.getByTestId("role-resolution-deep-dive").textContent ?? "";
 
@@ -208,7 +212,7 @@ describe("RolesTab — the list", () => {
   });
 
   it("says the install has no roles yet without hiding the reviewer", () => {
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
     expect(screen.getByTestId("roles-empty")).toBeTruthy();
     expect(screen.getByTestId("reviewer-metadata")).toBeTruthy();
   });
@@ -217,7 +221,7 @@ describe("RolesTab — the list", () => {
     const fetchMock = okFetch([REVIEWER]);
     vi.stubGlobal("fetch", fetchMock);
     useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     await userEvent.click(screen.getByTestId("role-delete-deep-dive"));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -228,7 +232,7 @@ describe("RolesTab — the list", () => {
   });
 });
 
-describe("RolesTab — a failed write is ambiguous, so the list is re-read", () => {
+describe("RolesSettings — a failed write is ambiguous, so the list is re-read", () => {
   it("re-reads the roles from the server after a refused write", async () => {
 
     const renamed: RoleView = { ...pinnedRole(), name: "deeper-dive" };
@@ -239,7 +243,7 @@ describe("RolesTab — a failed write is ambiguous, so the list is re-read", () 
     );
     vi.stubGlobal("fetch", fetchMock);
     useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     await userEvent.click(screen.getByTestId("role-open-deep-dive"));
     await userEvent.clear(screen.getByTestId("role-editor-name"));
@@ -256,7 +260,7 @@ describe("RolesTab — a failed write is ambiguous, so the list is re-read", () 
   });
 });
 
-describe("RolesTab — a role that cannot run stays visible and editable", () => {
+describe("RolesSettings — a role that cannot run stays visible and editable", () => {
   const stranded = pinnedRole({
     name: "gone",
     resolved: undefined,
@@ -274,7 +278,7 @@ describe("RolesTab — a role that cannot run stays visible and editable", () =>
 
   it("renders the RAW stored tuple, names the invalid field, and keeps both controls", () => {
     useSettingsStore.getState().setRoles([REVIEWER, stranded]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     const resolution = screen.getByTestId("role-resolution-gone").textContent ?? "";
     expect(resolution).toContain("retired-service");
@@ -286,7 +290,7 @@ describe("RolesTab — a role that cannot run stays visible and editable", () =>
 
   it("opens the editor on the stored tuple rather than the first available option", async () => {
     useSettingsStore.getState().setRoles([REVIEWER, stranded]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     await userEvent.click(screen.getByTestId("role-open-gone"));
 
@@ -301,7 +305,7 @@ describe("RolesTab — a role that cannot run stays visible and editable", () =>
       REVIEWER,
       pinnedRole({ name: "quiet", resolved: undefined, unavailableReason: "disconnected" }),
     ]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     const detail = screen.getByTestId("role-unavailable-quiet").textContent ?? "";
     expect(detail).toContain("reconnect");
@@ -313,7 +317,7 @@ describe("RolesTab — a role that cannot run stays visible and editable", () =>
       REVIEWER,
       pinnedRole({ name: "spent", resolved: undefined, unavailableReason: "quota_exhausted" }),
     ]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
     expect(screen.getByTestId("role-unavailable-spent").textContent).toContain("Nothing to fix");
   });
 });
@@ -322,7 +326,7 @@ describe("RoleEditor — one place editing the whole role (req 17)", () => {
   it("creates a role with its name, description, instructions and params in one write", async () => {
     const fetchMock = okFetch([REVIEWER]);
     vi.stubGlobal("fetch", fetchMock);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     await userEvent.click(screen.getByTestId("role-new"));
     await userEvent.type(screen.getByTestId("role-editor-name"), "deep dive");
@@ -347,7 +351,7 @@ describe("RoleEditor — one place editing the whole role (req 17)", () => {
     const fetchMock = okFetch([REVIEWER]);
     vi.stubGlobal("fetch", fetchMock);
     useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     await userEvent.click(screen.getByTestId("role-open-deep-dive"));
     await userEvent.clear(screen.getByTestId("role-editor-name"));
@@ -363,7 +367,7 @@ describe("RoleEditor — one place editing the whole role (req 17)", () => {
   it("keeps the server's refusal beside the controls, and the editor open", async () => {
     const fetchMock = refusingFetch('The role "deep dive" cannot run: "minimal" is not a level Claude Code offers.');
     vi.stubGlobal("fetch", fetchMock);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     await userEvent.click(screen.getByTestId("role-new"));
     await userEvent.type(screen.getByTestId("role-editor-name"), "deep dive");
@@ -377,7 +381,7 @@ describe("RoleEditor — one place editing the whole role (req 17)", () => {
 
 });
 
-describe("RolesTab — the harness the user picked is what gets written", () => {
+describe("RolesSettings — the harness the user picked is what gets written", () => {
   it("writes the chosen harness, with a level that harness declares", async () => {
     const fetchMock = okFetch([REVIEWER]);
     vi.stubGlobal("fetch", fetchMock);
@@ -394,7 +398,7 @@ describe("RolesTab — the harness the user picked is what gets written", () => 
         },
       }),
     ]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     await userEvent.click(screen.getByTestId("role-open-deep-dive"));
     await userEvent.click(screen.getByTestId("role-editor-harness-trigger"));
@@ -414,7 +418,7 @@ describe("RoleEditor — the reviewer", () => {
   it("edits its description and standing instructions and nothing else", async () => {
     const fetchMock = okFetch([REVIEWER]);
     vi.stubGlobal("fetch", fetchMock);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
 
     await userEvent.click(screen.getByTestId("reviewer-edit"));
 
@@ -440,7 +444,7 @@ describe("RoleEditor — the reviewer", () => {
     useSettingsStore.getState().setRoles([
       { ...REVIEWER, description: "Second opinion", prompt: "Review only; do not edit" },
     ]);
-    render(<RolesTab agentList={agents} />);
+    render(<RolesSettings />);
     expect(screen.getByTestId("reviewer-description").textContent).toBe("Second opinion");
     expect(screen.getByTestId("reviewer-prompt").textContent).toBe("Review only; do not edit");
   });

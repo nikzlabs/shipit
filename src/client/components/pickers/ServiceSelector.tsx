@@ -20,7 +20,6 @@ import { BillingModePill } from "../BillingModePill.js";
 import { ServiceLogo } from "../ServiceLogo.js";
 import { Picker, PickerOption } from "./Picker.js";
 import { serviceKeyOf, type ServiceChoice } from "./model-choice.js";
-import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 
 export function ServiceSelector({
   services,
@@ -29,7 +28,6 @@ export function ServiceSelector({
   disabled,
   idPrefix,
   fallbackLabel = "No provider",
-  settingKey,
 }: {
   services: ServiceChoice[];
 
@@ -40,8 +38,6 @@ export function ServiceSelector({
   idPrefix: string;
 
   fallbackLabel?: string;
-  /** The declaration this control writes part of, where it is one (docs/299 req 7). */
-  settingKey?: SettingKey;
 }) {
   const selectedKey = selected ? serviceKeyOf(selected) : undefined;
   const current = services.find((s) => serviceKeyOf(s) === selectedKey);
@@ -59,7 +55,6 @@ export function ServiceSelector({
       triggerTestId={`${idPrefix}-service-trigger`}
       menuTestId={`${idPrefix}-service-menu`}
       menuWidth="w-64"
-      {...(settingKey ? { settingKey } : {})}
       disabled={disabled}
     >
       {services.map((service) => {

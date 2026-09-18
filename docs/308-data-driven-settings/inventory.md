@@ -18,23 +18,35 @@ collections**. The browser's 14 declarations share **13 storage keys**.
 
 | Outcome | Declarations | What it means |
 |---|---|---|
-| **Generated row** | 24 | A control the renderer produces from the value kind. Nothing hand-written. |
-| **Generated credential row** | 2 | A token the user pastes and can disconnect: GitHub and Linear. |
-| **Small component** | 8 | Five components: the memory budget, the webhook pair, the TTS choices, hands-free, the repository colour. |
+| **Generated row** | 23 | A control the renderer produces from the value kind. Nothing hand-written. |
+| **Small component** | 11 | Eight components: the memory budget, the webhook pair, the TTS choices, hands-free, the repository colour, the two pasted-token credentials, and the background-work model. |
 | **Panel** | 9 | A collection editor with its own operations. |
 | **Repeated by a panel** | 34 | Item fields and per-item settings, addressed by a credential, an account, a host, a server or a repository. |
 
-So **26 of 77 settings stop being hand-written entirely**, 5 components cover 8
+So **23 of 77 settings stop being hand-written entirely**, 8 components cover 11
 more, and 9 panels own the remaining 34 between them. Every one of them —
 generated, component or panel — reads its words from its declaration and writes
 to the declaration's store.
 
+*Two settings moved between the first two rows as the slices built them, and for
+the same reason each time: what the renderer can produce from the value kind is
+narrower than it looked. The **credential rows** went in slice 5 (`plan.md` →
+Slices → 5) and **`services.nonTurnModel`** in slice 6b, because `modelSelection`
+declares no options and so has nothing a generic picker could offer. What changed
+is the counts above and the kind below, never the declaration, the destination or
+what the user gets.*
+
 ## Four kinds of control, not two
 
 1. **A value row.** One declaration, one value, one control chosen by value kind:
-   toggle, choice, number, text, git identity, model selection.
-2. **A credential row.** A token the browser pastes in and can remove. Only two
-   stand alone; the rest of the credentials are addressed and live in panels.
+   toggle, choice, text, git identity. *A number and a model selection were on
+   this list until slices 2 and 6b found that each one's only generated consumer
+   needs its own component.*
+2. **A credential row.** A token the browser pastes in, replaces and removes.
+   Only two stand alone; the rest of the credentials are addressed and live in
+   panels. *Slice 5: a credential row is a **component**, not a control kind —
+   the write's answer is used, removing is a second address, and what it shows
+   is the connection rather than the value.*
 3. **A panel.** A collection with operations — add, remove, reorder, test, sign
    in. Nine of these.
 4. **A repeated field.** A declaration a panel renders once per item, addressed
@@ -55,8 +67,9 @@ that looked necessary.
 | Change | Why it exists | Used by |
 |---|---|---|
 | `section` | Larger tabs have headed groups — Advanced's automation and notifications, Voice's input and playback | rows on the larger tabs; omitted elsewhere |
-| `component` | A setting that needs its own UI (req 3) | 9 panels, 5 components |
+| `component` | A setting that needs its own UI (req 3) | 9 panels, 8 components |
 | `own-route` gains `method`, `path` and `bodyField` | A single-value setting with a route of its own cannot be written from prose (P2) | 5 declarations |
+| `own-route` gains `writeOnly` | A credential the path stores and never answers has no read to pair with the write, so nothing hydrates it and the record must not hold it (slice 5) | 2 declarations |
 
 ```ts
 // A row: nothing new at all.
@@ -83,12 +96,12 @@ defineSetting({
 ```
 
 **Five things deliberately NOT added, each because a real setting stopped needing
-it:**
+it — one of which a real setting later did need:**
 
 | Rejected | Why it is not needed |
 |---|---|
 | Conditional visibility | Requirement 4 removed it. Two rows are conditional today (P13) |
-| `order` | Declaration order is the order. No setting needs a rank independent of it, and requirement 11 accepts what that produces |
+| `order` | ~~Declaration order is the order. No setting needs a rank independent of it, and requirement 11 accepts what that produces~~ — **taken 2026-09-18**, after what that produced put three rows at the top of tabs they cannot lead. A declaration moves only inside its own file, and every payload scalar is in `GLOBAL_SETTINGS`, the registry's first source (plan.md → Placement) |
 | `presentation: "multiline"` | Its only consumers are the two instruction boxes, and both are the only `system-prompt-file` settings. That store *is* the signal — and in slice 3 it became the **gate**: a `text` row over any other store has no control yet, so it is not generated at all |
 | An enum option source | Its only generated consumers were the TTS provider, voice and speed, which depend on each other and share one component. The other dynamic enums are already inside custom editors |
 | A numeric display unit | Its only consumer is the memory budget, which stores MB, shows GB, has an explicit Save and a saved state — a component, not a field on the type |
@@ -107,13 +120,13 @@ it:**
 | `advanced.autoResetMergedBranch` | advanced | bool | credential store `autoResetMergedBranch` | value | **generated row** |
 | `advanced.memoryBudgetMb` | advanced | numeric | credential store `memoryBudgetMb` | value | memory-budget component |
 | `advanced.releaseChannel` | advanced | enumOf | own route `POST /api/updates/channel` | value | **generated row** |
-| `integrations.autoCreatePr` | integrations | bool | credential store `autoCreatePr` | value | **generated row** |
+| `integrations.autoCreatePr` | advanced | bool | credential store `autoCreatePr` | value | **generated row** |
 | `git.identity` | git | gitIdentity | git config | value | **generated row** |
 | `instructions.userInstructions` | instructions | text | prompt file `standard` | value | **generated row** |
 | `instructions.opsInstructions` | instructions | text | prompt file `ops` | value | **generated row** |
 | `instructions.agentInstructionsEnabled` | instructions | bool | credential store `agentSystemInstructionsEnabled` | value | **generated row** |
 | `voice.deliveryMode` | voice | enumOf | credential store `voiceDeliveryMode` | value | **generated row** |
-| `services.nonTurnModel` | services | modelSelection | credential store `nonTurnModel` | value | **generated row** |
+| `services.nonTurnModel` | services | modelSelection | credential store `nonTurnModel` | value | `background-work` component |
 | `network.egressContained` | network | bool | own route `PUT /api/egress/settings` | value | **generated row** |
 
 ### Browser values — `browser-settings.ts` (14)
@@ -127,10 +140,10 @@ it:**
 | `voice.cleanupEnabled` | voice | bool | localStorage `shipit-voice-cleanup-enabled` | named only | **generated row** |
 | `voice.language` | voice | enumOf | localStorage `shipit-voice-language` | named only | **generated row** |
 | `voice.playbackEnabled` | voice | bool | localStorage `shipit-voice-playback-enabled` | named only | **generated row** |
-| `voice.ttsProvider` | voice | enumOf | localStorage `shipit-tts-provider` | named only | tts-choices component |
-| `voice.ttsVoice` | voice | text | localStorage `shipit-tts-voice` | named only | tts-choices component |
-| `voice.ttsSpeed` | voice | numeric | localStorage `shipit-tts-speed` | named only | tts-choices component |
-| `voice.handsFree` | voice | bool | localStorage `shipit-voice-hands-free` | named only | hands-free component |
+| `voice.ttsProvider` | voice | enumOf | localStorage `shipit-tts-provider` | named only | `voice-tts` component |
+| `voice.ttsVoice` | voice | text | localStorage `shipit-tts-voice` | named only | `voice-tts` component |
+| `voice.ttsSpeed` | voice | numeric | localStorage `shipit-tts-speed` | named only | `voice-tts` component |
+| `voice.handsFree` | voice | bool | localStorage `shipit-voice-hands-free` | named only | `voice-hands-free` component |
 | `advanced.compactConversation` | advanced | bool | localStorage `shipit-compact-conversation` | named only | **generated row** |
 | `advanced.notifyOnFinish` | advanced | bool | localStorage `shipit-notify-on-finish` | named only | **generated row** |
 | `advanced.soundOnFinish` | advanced | bool | localStorage `shipit-sound-on-finish` | named only | **generated row** |
@@ -139,9 +152,9 @@ it:**
 
 | Setting | Tab | Type | Stored in | Agent reads | Becomes |
 |---|---|---|---|---|---|
-| `voice.providerKey` | voice | text | panel | configured? | repeated by its panel |
-| `voice.webhook.url` | voice | text | panel | configured? | webhook-pair component |
-| `voice.webhook.token` | voice | text | panel | configured? | webhook-pair component |
+| `voice.providerKey` | voice | text | panel | configured? | `voice-provider-keys` component |
+| `voice.webhook.url` | voice | text | own route `POST /api/voice/webhook` → `url` | configured? | `voice-webhook` component |
+| `voice.webhook.token` | voice | text | own route `POST /api/voice/webhook` → `token` | configured? | `voice-webhook` component |
 
 ### Network — `network-settings.ts` (2)
 
@@ -204,13 +217,13 @@ it:**
 | `mcp.servers[].env` | integrations | secretBag | panel | configured? | repeated by its panel |
 | `mcp.servers[].headers` | integrations | secretBag | panel | configured? | repeated by its panel |
 | `mcp.oauthProvider` | integrations | text | panel | configured? | repeated by its panel |
-| `integrations.github.connection` | integrations | text | panel | configured? | **generated credential row** |
+| `integrations.github.connection` | integrations | text | own route `POST /api/github/token` (write-only) | configured? | `github-connection` component |
 | `integrations.sshHosts` | integrations | collection | panel | derived | **panel** |
 | `integrations.sshHosts[].label` | integrations | text | panel | value | repeated by its panel |
 | `integrations.sshHosts[].address` | integrations | text | panel | derived | repeated by its panel |
 | `integrations.sshHosts[].user` | integrations | text | panel | derived | repeated by its panel |
 | `integrations.sshHosts[].port` | integrations | numeric | panel | value | repeated by its panel |
-| `integrations.linear.credential` | integrations | text | panel | configured? | **generated credential row** |
+| `integrations.linear.credential` | integrations | text | own route `POST /api/trackers/linear/token` (write-only) | configured? | `linear-credential` component |
 
 ## Problems and dependencies
 
@@ -276,6 +289,11 @@ row. It is **not** a universal rule — an SSH port saves with its form, and a
 failover cutoff commits on blur — but those live in panels, which keep their own
 behaviour.
 
+*Slice 6b checked the cutoff at the code rather than inheriting the claim:* both
+`services.failoverCutoff.*` declarations are addressed and belong to the
+credentials panel, which holds a draft per field and writes it on blur or on
+Enter, plus a flush at unmount. Registering the panel moved none of that.
+
 **P6 — Optimistic write with rollback exists only for booleans.**
 `src/client/components/Settings/declared-setting.ts` already does the hard part:
 per-field sequencing, and rollback to the last value the **server** confirmed
@@ -291,6 +309,14 @@ The voice shares a component with the provider and the speed it depends on.
 (`src/server/orchestrator/services/settings-read.ts:821`) — so there is no
 agent-side benefit to claim here.
 
+*Slice 6b re-checked the three role enums before registering their editors, and
+it still holds:* `roles[].harness` and `roles[].reasoningEffort` are inside
+`roles/RoleEditor.tsx`, whose lists are re-derived from the draft's model on every
+change, and `reviewers[].reasoningEffort` is inside `tabs/ReviewerSection.tsx`,
+whose list is the levels the slot's RESOLVED selection honours rather than the
+harness's vocabulary. None of the three could be offered by a control that knows
+only the key.
+
 **P8 — Validation already exists and is already the agent's message.** The value
 type's `validate(raw, noun)` returns a `Rendered` refusal. A generated control
 shows that message rather than inventing a second phrasing, and number inputs
@@ -305,11 +331,29 @@ entry, two boxes over one declaration, and it needed nothing the kind does not
 already carry — the coverage walk's one-control rule already exempts composite
 kinds for exactly this shape, and its Save is the tab's rather than the row's.
 
+*Slice 4 settled the second half.* The webhook is a component, and what it cost
+was **an address and a grouping**: both declarations carry the same `own-route`
+`path` and `method` and differ only in `bodyField`, and `commitSettings` sends
+one request per destination rather than one per setting. So the component's Save
+names two keys and no path — the whole of requirement 3 — and the shared-component
+dedup slice 2 deleted came back, because two renders of one credential would be
+two Saves. The read follows the same address: one GET per path, a field per
+setting, and nothing answers the token.
+
 **P10 — The credentials are not one shape.** Of the 14 `configuredOnly`
 declarations, `integrations.github.connection` is a **personal access token
 form** (`src/client/components/GitHubTokenForm.tsx`) and
-`integrations.linear.credential` is the same shape; those two are generated
-credential rows once their route is declared (P2). `mcp.oauthProvider` and
+`integrations.linear.credential` is the same shape; those two become rows once
+their route is declared (P2).
+
+*Slice 5 built both, and they are **components**.* Each keeps the declared
+address — `own-route`, plus `writeOnly` because the path stores the token and
+answers no GET — so neither names a path or a body field. What a generated
+control could not have carried: the write's ANSWER is the card (the account, the
+teams a token reaches, the reason a refusal was refused), removing is a second
+address, and being configured is not the value. A generic credential control
+would have needed adapters and extra metadata for two consumers, which
+requirement 5 refuses. `mcp.oauthProvider` and
 `voice.providerKey` are addressed and repeat per provider; the rest sit inside
 panels with sign-in and replace operations.
 
@@ -324,6 +368,20 @@ no collection declaration** — the Voice tab repeats it over the providers that
 need a key (`src/client/components/Settings/tabs/VoiceTab.tsx:304`). Its owner is
 that list, which is a component; the renderer must not treat it as a standalone
 row.
+
+*Slice 6b:* the Model-providers tab is that shape five times over. All five of
+`services.credentials`, `services.accountSelectionMode`, the two
+`services.failoverCutoff.*` and `services.providerAccounts` are addressed and
+belong to no collection, so each names the panel and four are deduplicated
+against the first; the item fields beneath them name nothing, because their
+collection places it.
+
+*Slice 4:* naming a component is exactly how an addressed declaration says that.
+The renderer skips an addressed declaration **that names no component**, and the
+key list keeps its own writer as a panel does — the write is addressed and
+carries a second body field, which no value writer has a shape for. It is a row
+without being in the value record: nothing would ever hydrate a per-provider key,
+and the reader prefers the record to the named field.
 
 **P12 — Tabs hold content that is not a setting, and it stays hand-placed.** The
 update panel, the egress enforcement warning, the built-in agent instructions and
@@ -341,12 +399,23 @@ belongs to has to be last. That is why the built-in-instructions toggle is at th
 bottom of the Instructions tab. A second prop for chrome under a section was not
 worth one user.
 
+*Slice 4 built that prop, and the disclosure uses it:* it is the toggle's
+`rowNote`, so it renders directly under the control that shows it.
+
 **P13 — Two rows become permanently visible, not one.** The voice webhook pair,
 hidden unless delivery is external or both
 (`src/client/components/Settings/tabs/VoiceTab.tsx:528`), and
 `integrations.autoCreatePr`, which sits in the authenticated branch of the GitHub
 card (`src/client/components/SettingsIntegrations.tsx:131`) and so disappears
 while GitHub is disconnected. Requirement 4 accepts both.
+
+*Slice 4 made the first permanent.* The pair renders whatever the delivery mode
+is, which is the honest order: the webhook has to be configured before either
+mode that uses it does anything. *Slice 5 made the second permanent.* `integrations.autoCreatePr` renders whether
+or not GitHub is connected. What that branch also held was the connected card's
+own chrome — the account name and Disconnect — which genuinely needs a
+connection; nothing else lived there. *2026-09-18 put that row on Advanced →
+Automation*, where there is no connection branch for it to fall back into.
 
 **P14 — The instruction boxes write to files and detect outside edits.** Both
 `system-prompt-file` settings carry a conflict notice when the file changed while
@@ -410,6 +479,17 @@ value kind for the browser store**, plus that legacy fallback kept, plus fixture
 written in today's on-disk formats. Keeping the storage key is necessary and not
 sufficient.
 
+*Slice 4 added three kinds and found a second half to the problem.* A choice and
+a line of text are stored as themselves, so the codec hands the raw string to the
+value type's own `read`; a speed is stored as `String(value)` and has to be
+parsed first, because `numeric.read` answers its default for a string. Going
+*through* `read` rather than past it is what the accessors it replaces did not
+do: `getSavedString` returned any stored text, so a provider the catalogue no
+longer offers reached a `<select>` with no such option and rendered blank, and
+the speed accessor accepted any number above zero, including one outside the
+declared range. A collection is still a kind the codec cannot spell, which is
+what keeps the keybindings on the reader they have (P16).
+
 **P18 — The slices need coexistence rules, not just an order.** A tab converted
 to a generated block while some of its controls are not yet supported will
 either duplicate them or render a row that cannot save:
@@ -438,7 +518,7 @@ Read from `code.visualstudio.com/api/references/contribution-points` and
 | One schema entry per setting: key, type, default, description | **Have it already** — that is what docs/299 built |
 | The widget is chosen by value type alone (`getTemplateId`) | **Adopt.** 13 templates cover everything they render |
 | One write path: `updateValue(key, value, target)`; the control fires `{key, value, scope}` and never names a field | **Adopt for generated rows.** This is the whole point — it makes docs/299 req 7 a mechanism instead of an assertion |
-| `order` places a setting | **Skip.** Declaration order is the order (req 11) |
+| `order` places a setting | **Adopt** (2026-09-18, after shipping without it). Declaration order is still the order, and moving the declaration is still the first answer — but it cannot reach a payload scalar, which is stuck in the registry's first source (plan.md → Placement) |
 | `enumDescriptions` / `enumItemLabels` | **Have it already** — declared options carry a label and a description |
 | `editPresentation: multilineText` | **Skip.** The `system-prompt-file` store already identifies both consumers |
 | What it cannot render, it declines to render, and says *"Edit in settings.json"* | **Adopt the honesty, not the outcome.** A declaration names a component instead. We keep the UI; they drop it |

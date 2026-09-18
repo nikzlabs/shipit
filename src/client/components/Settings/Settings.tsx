@@ -1,53 +1,35 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: the dialog's own teardown, dropping uncommitted drafts
 import { useEffect } from "react";
-import type { AgentOption } from "../../agent-types.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs.js";
 import { SettingsIntegrations } from "../SettingsIntegrations.js";
 import { SettingsEgress } from "../SettingsEgress.js";
 import { SkillsTab } from "../SkillsTab.js";
-import { KeybindingSettings } from "../KeybindingSettings.js";
+import { DeclaredSettings } from "./DeclaredSettings.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { ServicesPanel } from "./ServicesPanel.js";
-import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
-import { RolesTab } from "./tabs/RolesTab.js";
 // One map for the dialog's own tab strip and for anything else that names where
 // a setting lives, so the two cannot say different words for the same tab.
 import { SETTING_TAB_LABELS } from "../../../server/shared/settings-catalogue/index.js";
 
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-/**
- * Every tab this dialog renders, in order. Exported because
- * `settings-coverage.test.tsx` walks each one: a tab added here but not there
- * would be a pane the coverage guard never sees.
- */
-export const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
+/** Every tab this dialog renders, in order. */
+const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
 type Tab = (typeof SETTINGS_TABS)[number];
 
 export interface SettingsProps {
-  githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
-  onGitHubTokenSubmit: (token: string) => Promise<void> | void;
-  onGitHubLogout: () => void;
-  agentList?: AgentOption[];
   onFullReset?: () => void;
-  hasActiveSession: boolean;
   onClose: () => void;
 }
 
 export function Settings({
-  githubStatus,
-  onGitHubTokenSubmit,
-  onGitHubLogout,
-  agentList = [],
   onFullReset,
-  hasActiveSession,
   onClose,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "services";
@@ -98,56 +80,47 @@ export function Settings({
 
           {/* Right content area */}
           <TabsContent value="instructions">
-            <InstructionsTab onClose={onClose} />
+            <InstructionsTab />
           </TabsContent>
 
           <TabsContent value="skills">
             <SkillsTab />
           </TabsContent>
 
+          {/* The chord list is the component `keyboard.keybindings` names
+              (docs/308 slice 6); this tab is the scroll container around it. */}
           <TabsContent value="keyboard">
-            <KeybindingSettings />
+            <div className="px-5 py-4 flex flex-col gap-6 overflow-y-auto h-full">
+              <DeclaredSettings tab="keyboard" />
+            </div>
           </TabsContent>
 
           <TabsContent value="voice">
             <VoiceTab />
           </TabsContent>
 
-          {/* docs/252 phase 2 — the one place credentials live. The panel takes
-              no Settings props and brings no chrome, because docs/257's
-              onboarding hosts the same component; the tab supplies the padding
-              and the scroll container every other tab here supplies.
+          {/* Both panes are the components their declarations name (docs/308
+              slice 6b); each tab is the padding and the scroll container around
+              them. docs/257's onboarding hosts `ServicesPanel` the same way,
+              which is why the panel brings no chrome of its own.
 
-              docs/252 phase 7 (req 9) — the background-work model sits under the
-              services it draws from: it is a `(service, billing mode, model)`
-              choice like any other, and the list it offers is exactly what the
-              cards above made eligible. It lives at this level rather than
-              inside the panel so that onboarding, which hosts the panel, does
-              not ask a first-run user to pick one — the setting defaults to
-              whatever the install can run. */}
+              The background-work model renders BENEATH the providers it draws
+              from, which its declaration's `order` states — declaration order
+              alone puts a payload setting first (plan.md → Placement). */}
           <TabsContent value="services">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
-              <ServicesPanel agentList={agentList} />
-              <div className="border-t border-(--color-border-secondary) pt-4">
-                <BackgroundWorkSection agentList={agentList} />
-              </div>
+              <DeclaredSettings tab="services" />
             </div>
           </TabsContent>
 
-          {/* docs/264 phase 2 (reqs 5, 17) — every agent role: the reviewer with
-              its two ranked candidate slots (docs/261 phase 3, reqs 1, 5, 8),
-              then the list of pinned roles, each edited in the role editor. */}
           <TabsContent value="roles">
-            <RolesTab agentList={agentList} />
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
+              <DeclaredSettings tab="roles" />
+            </div>
           </TabsContent>
 
           <TabsContent value="integrations">
-            <SettingsIntegrations
-              githubStatus={githubStatus}
-              onGitHubLogout={onGitHubLogout}
-              onGitHubTokenSubmit={onGitHubTokenSubmit}
-              hasActiveSession={hasActiveSession}
-            />
+            <SettingsIntegrations />
           </TabsContent>
 
           <TabsContent value="git">

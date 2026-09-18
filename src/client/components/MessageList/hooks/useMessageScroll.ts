@@ -106,6 +106,7 @@ export function useMessageScroll(
   messages: ChatMessage[],
   isLoading: boolean,
   currentMatch: SearchMatch | undefined,
+  sessionId: string | null,
 ): {
   containerRef: React.RefObject<HTMLDivElement | null>;
   contentRef: React.RefObject<HTMLDivElement | null>;
@@ -125,6 +126,8 @@ export function useMessageScroll(
 
   const touchDraggingRef = useRef(false);
   const lastGestureAtRef = useRef(-Infinity);
+
+  const shownSessionRef = useRef<string | null>(sessionId);
 
   // scroll take authoritative control — we must never fight a user's scroll.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
@@ -192,6 +195,46 @@ export function useMessageScroll(
   }, []);
 
   useLayoutEffect(() => {
+    /**
+     * planning#595 — a session that opens lands at the end of its conversation,
+     * whatever the reader had done to the PREVIOUS one.
+     *
+     * These refs describe one reader in one transcript, and the hook is never
+     * remounted across a switch. Left alone they carry the outgoing reader's
+     * position in: `autoScrollRef` false makes this effect bail AND the
+     * observer decline, so nothing pins the incoming transcript. The clamp that
+     * used to repair that by accident needs a scroll position to clamp from,
+     * and the status card is content the transcript's clearing does not remove
+     * — it renders from the session record — so the loading view stays
+     * scrollable as far as the card is tall and no clamp happens. Measured both
+     * ways; docs/303-session-status-card/plan.md has the numbers.
+     *
+     * Keyed on the session's identity rather than on observing the switch, so a
+     * viewer that misses an intermediate render still resets (docs/095) — and
+     * done HERE rather than during render, because a deferred render can be
+     * abandoned: these refs drive listeners that are live on the transcript
+     * still displayed, and writing them from a render that never commits pins
+     * the OUTGOING session to its bottom under a reader who did not ask for it.
+     */
+    if (shownSessionRef.current !== sessionId) {
+      shownSessionRef.current = sessionId;
+      autoScrollRef.current = true;
+      touchDraggingRef.current = false;
+      lastGestureAtRef.current = -Infinity;
+      previousMessageCountRef.current = 0;
+      // And the reader's SELECTION, which every pinning path stands down for.
+      // Clearing the transcript does not end one: the card keeps its DOM across
+      // the switch, so a selection made inside it is still inside the container
+      // afterwards and would hold the incoming conversation off its end for as
+      // long as it lasts. A click normally collapses a selection, which is why
+      // this only shows up when the session is opened without one — the back
+      // button, a keyboard switch, a link. It belongs to a conversation that is
+      // no longer on screen either way.
+      if (hasActiveSelectionInside(containerRef.current)) {
+        window.getSelection()?.removeAllRanges();
+      }
+    }
+
     const previousMessageCount = previousMessageCountRef.current;
     previousMessageCountRef.current = messages.length;
     const latestMessage = messages[messages.length - 1];
@@ -222,7 +265,7 @@ export function useMessageScroll(
       cancel();
       if (cancelSettleRef.current === cancel) cancelSettleRef.current = null;
     };
-  }, [messages, isLoading]);
+  }, [messages, isLoading, sessionId]);
 
   // auto` sits on GROUPS of 20 rows, and a group that has never been on screen
 

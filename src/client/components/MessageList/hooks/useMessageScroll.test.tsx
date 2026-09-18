@@ -44,7 +44,7 @@ function user(text: string): ChatMessage {
 }
 
 function Harness({ messages }: { messages: ChatMessage[] }) {
-  const { containerRef, contentRef } = useMessageScroll(messages, false, undefined);
+  const { containerRef, contentRef } = useMessageScroll(messages, false, undefined, "s1");
   return (
     <div ref={containerRef} data-testid="scroller">
       <div ref={contentRef} data-testid="content" />
@@ -53,7 +53,7 @@ function Harness({ messages }: { messages: ChatMessage[] }) {
 }
 
 function MatchHarness({ match }: { match: SearchMatch | undefined }) {
-  const { containerRef, contentRef, currentMatchRef } = useMessageScroll([], false, match);
+  const { containerRef, contentRef, currentMatchRef } = useMessageScroll([], false, match, "s1");
   return (
     <div ref={containerRef} data-testid="scroller">
       <div ref={contentRef} data-testid="content">
@@ -562,7 +562,7 @@ describe("useMessageScroll — the status card's move", () => {
 
   function CardHarness({ messages, report }: { messages: ChatMessage[]; report: (g: Guards) => void }) {
     const { containerRef, contentRef, canPreserveAcrossCardMove, canRestoreReadingAnchor } =
-      useMessageScroll(messages, false, undefined);
+      useMessageScroll(messages, false, undefined, "s1");
     report({ preserve: canPreserveAcrossCardMove, restore: canRestoreReadingAnchor });
     return (
       <div ref={containerRef} data-testid="scroller">

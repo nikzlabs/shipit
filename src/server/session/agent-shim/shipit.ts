@@ -279,8 +279,9 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   second-opinion review or a bounded delegation: put ALL context the sub-agent
   needs into the prompt (the task, any \`git diff\`, file references, focus
   hints). The spawned agent runs full-capability in this same workspace and its
-  work is committed under your session's agent. Requires the "Multi-agent
-  sessions" setting to be enabled. Blocks until the sub-agent finishes: a real
+  work is committed under your session's agent. Requires the
+  'advanced.enableSubAgents' setting to be on — read it with 'shipit settings
+  get advanced.enableSubAgents'. Blocks until the sub-agent finishes: a real
   consult routinely runs for many minutes, up to a 30-minute cap, so run it in
   the BACKGROUND — most shell tools cap foreground commands well below that. A
   killed 'run' does not stop the spawn; recover it with 'result'. Never pipe it

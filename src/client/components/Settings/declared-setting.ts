@@ -21,13 +21,19 @@
 
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { GENERATED_SETTINGS, mirrorFieldOf, sameSettingValue } from "../../stores/setting-values.js";
-import { settingOf } from "./setting-binding.js";
+import {
+  GENERATED_SETTINGS,
+  SETTINGS_PATH,
+  sameSettingValue,
+  settingRequest,
+} from "../../stores/setting-values.js";
+import { settingOf } from "./setting-copy.js";
 import {
   isPayloadDeclaration,
   type AnySettingDeclaration,
   type GlobalSettingKey,
   type GlobalSettingsCatalogue,
+  type OwnRouteStore,
   type SettingKey,
   type SettingTab,
   type SettingValue,
@@ -42,10 +48,10 @@ type WireOf<K extends GlobalSettingKey> =
 /**
  * A declared boolean the browser store already holds under its wire name.
  *
- * Both clauses have to hold, because the value is read back through that field
- * wherever the record does not yet carry the setting. It used to demand a
- * `set<Wire>` setter beside it as well; that was a proxy for "something hydrates
- * this field", and hydration now walks the declarations
+ * Both clauses have to hold, because the rest of the app still reads the value
+ * through that field — it is a view over the record (inventory.md P1). It used
+ * to demand a `set<Wire>` setter beside it as well; that was a proxy for
+ * "something hydrates this field", and hydration now walks the declarations
  * (`stores/setting-hydration.ts`) rather than calling a setter per setting.
  */
 type DerivableBoolean<K extends GlobalSettingKey> =
@@ -65,19 +71,17 @@ export type DeclaredBooleanKey = {
 }[GlobalSettingKey];
 
 /**
- * A setting's current value.
+ * A setting's current value: the record, and nothing else.
  *
- * The record is the source where it carries the setting; where it does not yet,
- * the named store field the declaration's `wire` names still is — which is how a
- * tab whose hydration has not moved keeps working (inventory.md P1, P18).
+ * The fall-back to the named store field is gone with the last unconverted tab
+ * (slice 8). Every key that reaches here is one the record holds — it is seeded
+ * with exactly those and `setSettingValue` refuses any other — so what a
+ * fall-back would serve now is a declared default for a component named by a
+ * declaration the record deliberately does NOT hold (`voice.providerKey`, the
+ * five repository settings). `undefined` is the louder failure for that call.
  */
 function currentValue(state: Settings, key: SettingKey): unknown {
-  const values = state.settingValues;
-  if (key in values) return values[key];
-  const declaration = settingOf(key);
-  const field = mirrorFieldOf(declaration);
-  if (field && field in state) return (state as unknown as Record<string, unknown>)[field];
-  return declaration.type.defaultValue;
+  return state.settingValues[key];
 }
 
 /**
@@ -107,50 +111,28 @@ interface SaveState {
 
 const SAVES = new Map<string, SaveState>();
 
-const SETTINGS_PATH = "/api/settings";
-
 /**
- * The request that stores one setting's value.
- *
- * The settings payload takes every value it carries under the declaration's
- * `wire`, whichever of the three stores holds it — the credential store, an
- * instructions file or the git config all reach it through the same PUT, and
- * the declaration's `wire` is the only thing that differs. A setting the
- * payload does not carry takes the method, the path and the body field its own
- * store names (inventory.md P2) — the two that use it post different body
- * shapes, so a route string could not have produced either payload.
- */
-function requestFor(
-  declaration: AnySettingDeclaration,
-  value: unknown,
-): { path: string; method: string; body: Record<string, unknown> } | null {
-  const { store } = declaration;
-  if (isPayloadDeclaration(declaration)) {
-    return { path: SETTINGS_PATH, method: "PUT", body: { [declaration.wire]: value } };
-  }
-  if (store.kind === "own-route") {
-    return { path: store.path, method: store.method, body: { [store.bodyField]: value } };
-  }
-  return null;
-}
-
-/**
- * Put a value where its declaration says it lives.
+ * Put a value where its declaration says it lives, and answer whether it landed.
  *
  * A browser value is already there once the record has it, so there is nothing
  * to await and no refusal to roll back from. A stored value is written
  * optimistically and then durably, and the server's own value goes back when the
  * save does not land, so a control never shows a state the server refused.
+ *
+ * It answers `true` once the value is stored and `false` when the server refused
+ * it — for a control that reports its own save, since the rollback is invisible
+ * to one holding its own draft. A store nothing writes still THROWS: that is a
+ * declaration nobody could have saved, not a refusal the user can retry.
  */
-export async function saveSetting(key: SettingKey, value: unknown): Promise<void> {
+export async function saveSetting(key: SettingKey, value: unknown): Promise<boolean> {
   const declaration = settingOf(key);
   const apply = (next: unknown) => { useSettingsStore.getState().setSettingValue(key, next); };
 
   if (declaration.store.kind === "browser") {
     apply(value);
-    return;
+    return true;
   }
-  const request = requestFor(declaration, value);
+  const request = settingRequest(declaration, value);
   if (!request) {
     throw new Error(`Cannot save "${key}": nothing writes a ${declaration.store.kind} store yet`);
   }
@@ -179,24 +161,31 @@ export async function saveSetting(key: SettingKey, value: unknown): Promise<void
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.confirmed = value;
+    return true;
   } catch (err) {
     if (state.seq === mine) apply(state.confirmed);
     // The declaration's own label, so the toast names the control the user just
     // used rather than a second phrasing of it written beside the fetch.
     useUiStore.getState().setToast({ message: `Failed to update ${declaration.label}` });
     console.error(`[settings] saving ${key} failed:`, err);
+    return false;
   } finally {
     state.pending -= 1;
   }
 }
 
-/** A declared setting's current value and the only write it needs. */
+/**
+ * A declared setting's current value and the only write it needs.
+ *
+ * `set` hands back {@link saveSetting}'s outcome rather than swallowing it, so
+ * there is one place to read whether a write landed rather than two.
+ */
 export function useSetting(key: SettingKey): {
   value: unknown;
-  set: (next: unknown) => void;
+  set: (next: unknown) => Promise<boolean>;
 } {
   const value = useSettingsStore((state) => currentValue(state, key));
-  return { value, set: (next) => { void saveSetting(key, next); } };
+  return { value, set: (next) => saveSetting(key, next) };
 }
 
 export interface SettingDraftView {
@@ -238,33 +227,70 @@ export interface PendingEdit {
   value: unknown;
 }
 
-/** Every uncommitted edit on one tab, in declaration order. */
+/**
+ * Every uncommitted edit on one tab that the tab's Save owns, in declaration
+ * order.
+ *
+ * A row naming a COMPONENT is not one: that component saves its own drafts, at
+ * its own address, so collecting them here would hand `commitSettings` two
+ * destinations and it refuses those by name.
+ */
 export function useTabDrafts(tab: SettingTab): readonly PendingEdit[] {
   const drafts = useSettingsStore((state) => state.settingDrafts);
   return GENERATED_SETTINGS.flatMap((declaration) => {
     const draft = drafts[declaration.key];
-    if (declaration.tab !== tab || !draft) return [];
+    if (declaration.tab !== tab || declaration.component !== undefined || !draft) return [];
     return [{ declaration, key: declaration.key as SettingKey, value: draft.value }];
   });
 }
 
+/** Where a value is stored, as the one string that says two settings share a write. */
+function destinationOf(declaration: AnySettingDeclaration): { method: string; path: string } {
+  if (isPayloadDeclaration(declaration)) return { method: "PUT", path: SETTINGS_PATH };
+  if (declaration.store.kind === "own-route") {
+    return { method: declaration.store.method, path: declaration.store.path };
+  }
+  throw new Error(
+    `Cannot commit "${declaration.key}": ${declaration.store.kind} has no shared write`,
+  );
+}
+
+/** The field this setting occupies in the request body, and answers under. */
+function fieldOf(declaration: AnySettingDeclaration): string {
+  return declaration.wire ?? (declaration.store as OwnRouteStore).bodyField;
+}
+
+/** Monotonic per commit destination; only the newest response may move the record. */
+const COMMITS = new Map<string, number>();
+
 /**
  * Store several settings in ONE write, and tell the caller whether it landed.
  *
- * This is what an explicit Save is: the settings payload takes every field at
- * once, so a button committing two boxes sends one request rather than two —
- * which is what the catalogue's `instructions.commit` exclusion describes, and
- * what a per-row Save would have changed.
+ * The destination comes from the declarations, and **every entry must share it**:
+ * the settings payload takes each of its fields at once, which is what the
+ * catalogue's `instructions.commit` exclusion describes, and the voice webhook's
+ * URL and token are one credential at one address, so they are one request too
+ * (plan.md → Slices → 4). Nothing today commits across two destinations, so
+ * nothing here fans out — a caller that mixes them is a mistake, and it is
+ * refused by name rather than silently split.
  *
  * **No optimistic write and no rollback** (plan.md → One writer, for the
  * scalars). A row that commits on a button has its edit in the draft, where the
  * user can still see it; the record moves only once the server has answered, and
  * it moves to the value the server ECHOED — the writers trim, so the stored
- * value is not always the one that was sent. A refused write moves nothing and
- * keeps every draft, because that is the user's unsaved work.
+ * value is not always the one that was sent. A field the answer omits leaves the
+ * record alone, which is how a write-only half is stored without being read back:
+ * nothing echoes the webhook token, and inventing a value for it would be the one
+ * place the browser held a secret it may not see. A refused write moves nothing
+ * and keeps every draft, because that is the user's unsaved work.
  *
- * **Nothing here sequences two overlapping commits**, and the one caller does not
- * produce them: `DeclaredCommit` is disabled while its write is in flight.
+ * **Two commits of one destination are sequenced HERE, not by the button.** A
+ * Save is disabled while its own write is in flight, and that was the whole of
+ * it until review found the hole: the button's state is a component's, so
+ * switching tabs re-mounts it enabled while the first request is still out, and
+ * the older of two responses could then put the older value in the record with
+ * the server holding the newer. This map is module-level and outlives every
+ * control, exactly as {@link saveSetting}'s does.
  */
 export async function commitSettings(
   entries: readonly (readonly [SettingKey, unknown])[],
@@ -272,23 +298,35 @@ export async function commitSettings(
   if (entries.length === 0) return true;
   const pending = entries.map(([key, value]) => {
     const declaration = settingOf(key);
-    if (!isPayloadDeclaration(declaration)) {
-      throw new Error(`Cannot commit "${key}": ${declaration.store.kind} has no shared write`);
-    }
-    return { key, value, declaration };
+    return { key, value, declaration, field: fieldOf(declaration) };
   });
-  const body = Object.fromEntries(pending.map((p) => [p.declaration.wire, p.value]));
+  const first = pending[0];
+  if (!first) return true;
+  const { method, path } = destinationOf(first.declaration);
+  const elsewhere = pending.find((p) => destinationOf(p.declaration).path !== path);
+  if (elsewhere) {
+    throw new Error(
+      `Cannot commit "${elsewhere.key}" with "${first.key}": different destinations`,
+    );
+  }
 
+  const mine = (COMMITS.get(path) ?? 0) + 1;
+  COMMITS.set(path, mine);
   try {
-    const res = await fetch(SETTINGS_PATH, {
-      method: "PUT",
+    const res = await fetch(path, {
+      method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(Object.fromEntries(pending.map((p) => [p.field, p.value]))),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const stored = await res.json() as Record<string, unknown>;
+    // An older write's answer describes a state nobody is in any more: the newer
+    // one is what the server holds, and the drafts belong to whatever is newest.
+    if (COMMITS.get(path) !== mine) return true;
     const { setSettingValue, settleSettingDrafts } = useSettingsStore.getState();
-    for (const { key, declaration } of pending) setSettingValue(key, stored[declaration.wire]);
+    for (const { key, field } of pending) {
+      if (stored[field] !== undefined) setSettingValue(key, stored[field]);
+    }
     settleSettingDrafts(pending.map(({ key, value }) => ({ key, value })));
     return true;
   } catch (err) {
@@ -303,7 +341,7 @@ export async function commitSettings(
 /** {@link useSetting} for a control that is a switch, so the value is a boolean. */
 export function useDeclaredBoolean(key: DeclaredBooleanKey): {
   value: boolean;
-  set: (next: boolean) => void;
+  set: (next: boolean) => Promise<boolean>;
 } {
   const { value, set } = useSetting(key);
   return { value: value === true, set };
@@ -312,4 +350,5 @@ export function useDeclaredBoolean(key: DeclaredBooleanKey): {
 /** Test seam: the in-flight bookkeeping is process-wide and outlives a render. */
 export function resetDeclaredSaves(): void {
   SAVES.clear();
+  COMMITS.clear();
 }

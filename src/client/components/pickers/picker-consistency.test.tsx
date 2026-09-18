@@ -81,7 +81,7 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
   found["reviewer reasoning"] = screen.getByTestId("reviewer-reasoning-trigger-first") as HTMLButtonElement;
   cleanup();
 
-  useSettingsStore.getState().setNonTurnModel(null, {
+  useSettingsStore.getState().setNonTurnModelResolved({
     serviceId: "anthropic",
     billingMode: "sub",
     modelId: "claude-opus-5",
@@ -93,7 +93,7 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
   });
   // Background work takes its options from the server, not from `agents`.
   useSettingsStore.getState().setBackgroundWorkModels(agents[0]!.eligibleModels!);
-  render(<BackgroundWorkSection agentList={agents} />);
+  render(<BackgroundWorkSection settingKey="services.nonTurnModel" />);
   found["background service"] = screen.getByTestId("background-work-service-trigger") as HTMLButtonElement;
   found["background model"] = screen.getByTestId("background-work-model") as HTMLButtonElement;
   cleanup();
@@ -103,7 +103,7 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
 
 beforeEach(() => {
   useSettingsStore.getState().setReviewers([]);
-  useSettingsStore.getState().setNonTurnModel(null, null);
+  useSettingsStore.getState().setNonTurnModelResolved(null);
   useSettingsStore.getState().setBackgroundWorkModels([]);
 });
 
@@ -131,7 +131,7 @@ describe("picker consistency (req 13)", () => {
     expect(reviewer.querySelectorAll("select")).toHaveLength(0);
     cleanup();
 
-    const { container: background } = render(<BackgroundWorkSection agentList={agents} />);
+    const { container: background } = render(<BackgroundWorkSection settingKey="services.nonTurnModel" />);
     expect(background.querySelectorAll("select")).toHaveLength(0);
   });
 
@@ -188,7 +188,7 @@ describe("picker consistency (req 13)", () => {
     expect(screen.getAllByText(/Nothing to review with yet/)).toHaveLength(2);
     cleanup();
 
-    const { container: background } = render(<BackgroundWorkSection agentList={none} />);
+    const { container: background } = render(<BackgroundWorkSection settingKey="services.nonTurnModel" />);
     expect(background.querySelectorAll("button[aria-label^='Model provider for']")).toHaveLength(0);
     expect(background.querySelectorAll("button[aria-label='Model for background work']")).toHaveLength(0);
     expect(screen.getByText(/Nothing to run it on yet/)).toBeTruthy();

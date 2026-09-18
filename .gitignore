@@ -51,3 +51,8 @@ android-overlay-test/.idea/
 
 test-plugin/.install-stamp.json
 test-plugin/.probe-write-test
+
+# Release-notes draft: the agent writes it, the user edits it, `shipit release
+# prepare` commits it as .release-notes/<tag>.md (docs/309). Untracked so the
+# user's edit can't trip prepare's clean-tree check.
+RELEASE_NOTES.draft.md

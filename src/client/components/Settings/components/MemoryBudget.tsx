@@ -9,10 +9,10 @@
  * through the same writer every generated row uses.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "../../ui/button.js";
 import { useUiStore } from "../../../stores/ui-store.js";
-import { SettingCopy, bindSetting } from "../declared.js";
+import { SettingCopy } from "../declared.js";
 import { useSetting } from "../declared-setting.js";
 import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 
@@ -27,6 +27,9 @@ export function MemoryBudget({ settingKey }: { settingKey: SettingKey }) {
   const storedMb = typeof value === "number" ? value : null;
   const [draftGb, setDraftGb] = useState(() => toGb(storedMb));
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  /** Typed since the write in flight was sent, so its "Saved" is not this box's. */
+  const editedSinceSend = useRef(false);
 
   // docs/284 req 13 — the default differs by deployment, so the field cannot
   // show it as its own value; what the install is actually following is said
@@ -35,6 +38,18 @@ export function MemoryBudget({ settingKey }: { settingKey: SettingKey }) {
   const effectiveGb = storedMb === null && dockerMemory?.budgetBytes
     ? Math.round((dockerMemory.budgetBytes / 1024 ** 3) * 10) / 10
     : null;
+
+  // "Saved" is the server's answer rather than the click's, and it is about the
+  // value that was SENT: a refusal rolls the record back while this box keeps
+  // what was typed, so the button is the only thing that can report either.
+  const save = async () => {
+    const gb = Number(draftGb);
+    editedSinceSend.current = false;
+    setSaving(true);
+    const stored = await set(draftGb.trim() === "" || !(gb > 0) ? null : Math.round(gb * MB_PER_GB));
+    setSaving(false);
+    setSaved(stored && !editedSinceSend.current);
+  };
 
   return (
     <div className="space-y-3">
@@ -57,26 +72,25 @@ export function MemoryBudget({ settingKey }: { settingKey: SettingKey }) {
           placeholder="whole machine"
           aria-label="Memory budget"
           value={draftGb}
-          onChange={(e) => { setDraftGb(e.target.value); setSaved(false); }}
+          onChange={(e) => {
+            setDraftGb(e.target.value);
+            setSaved(false);
+            editedSinceSend.current = true;
+          }}
           className="w-36 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
           data-testid="settings-memory-budget"
-          {...bindSetting(settingKey)}
         />
         <span className="text-sm text-(--color-text-secondary)">GB</span>
         <Button
           variant="primary"
           size="md"
-          aria-label={saved ? "Memory budget saved" : "Save memory budget"}
-          onClick={() => {
-            const gb = Number(draftGb);
-            set(draftGb.trim() === "" || !(gb > 0) ? null : Math.round(gb * MB_PER_GB));
-            setSaved(true);
-          }}
+          disabled={saving}
+          aria-label={saving ? "Saving memory budget" : saved ? "Memory budget saved" : "Save memory budget"}
+          onClick={() => { void save(); }}
           className="rounded-md"
           data-testid="settings-memory-budget-save"
-          {...bindSetting(settingKey)}
         >
-          {saved ? "Saved" : "Save"}
+          {saving ? "Saving…" : saved ? "Saved" : "Save"}
         </Button>
       </div>
     </div>

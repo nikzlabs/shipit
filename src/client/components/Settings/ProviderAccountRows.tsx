@@ -8,7 +8,6 @@ import { getService, loginIntegrationForService, modeReportsQuota, nativeService
 import { Button, buttonVariants } from "../ui/button.js";
 import { cn } from "../../utils/cn.js";
 import { DropdownMenuItem } from "../ui/dropdown-menu.js";
-import { bindSetting } from "./setting-binding.js";
 import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { ProviderAccountNotice } from "../../stores/settings-store.js";
@@ -445,6 +444,17 @@ const CHALLENGE_DEADLINE: Partial<Record<AgentId, string>> = {
 };
 
 /**
+ * **The sentence is two lines, and the box that holds the sign-in still has to
+ * reserve them** (docs/252-custom-models req 26). Asked here rather than
+ * duplicated, so the reserve and the sentence cannot disagree about which
+ * providers have one: adding a deadline to a harness makes its box taller by
+ * itself.
+ */
+export function challengeHasDeadline(provider: AgentId): boolean {
+  return CHALLENGE_DEADLINE[provider] !== undefined;
+}
+
+/**
  * The provider's login challenge — **one implementation, and now one host.**
  *
  * It renders inside `AddServiceDialog` and nowhere else: docs/252 req 19 moved
@@ -547,14 +557,12 @@ export function AccountChallenge({
               placeholder="Paste authorization code"
               aria-label={`Authorization code for ${account.label}`}
               className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-              {...bindSetting("services.providerAccounts[].connection")}
             />
             <Button
               variant="primary"
               size="md"
               disabled={busy || !code.trim() || alreadySent}
               onClick={() => void submit()}
-              {...bindSetting("services.providerAccounts[].connection")}
             >
               Submit code
             </Button>
@@ -887,7 +895,6 @@ export function ProviderAccountRows({
                     className="mt-1 w-full rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
                     aria-label={`${serviceName} account label`}
                     data-testid={`provider-account-rename-input-${account.id}`}
-                    {...bindSetting("services.providerAccounts[].label")}
                   />
                 )}
               </CredentialRowShell>
@@ -964,7 +971,6 @@ function ClearStoredCredentials({
         disabled={clearing}
         className="mt-0.5 text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent) disabled:cursor-not-allowed disabled:opacity-50"
         data-testid={`provider-clear-credentials-${provider}`}
-        {...bindSetting("services.providerAccounts")}
       >
         {clearing ? "Clearing..." : `Clear every stored ${serviceName} credential`}
       </button>

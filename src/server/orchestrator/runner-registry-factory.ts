@@ -55,6 +55,7 @@ import { getErrorMessage } from "../shared/utils.js";
 import { goalAgentFor, refreshAgentGoalAfterTurn } from "./services/agent-goal.js";
 import { residentRouteNeedsRelease} from "./service-routing.js";
 import type { GenerateText } from "./non-turn-model.js";
+import { sessionStatusTurnContext } from "./services/session-status.js";
 
 export interface RunnerRegistryDeps {
   effectiveRunnerFactory: SessionRunnerFactory | undefined;
@@ -385,6 +386,10 @@ export function createRunnerRegistry(
             },
           ),
         statusCardEnabled: () => credentialStore?.getSessionStatusCard() ?? false,
+        sessionStatusContext: (sessionId) =>
+          credentialStore
+            ? sessionStatusTurnContext({ sessionManager, credentialStore }, sessionId)
+            : "",
         steerInputs: () => ({
           liveSteering: credentialStore?.getLiveSteering() ?? false,
           steeringCapable: getAgentCapabilities(runner.agentId)?.supportsSteering ?? false,

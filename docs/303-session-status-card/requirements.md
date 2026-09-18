@@ -79,8 +79,9 @@ taken inside one session, without building an agent that talks to many.
     offered actions still hold, the agent says so without rewriting them,
     and the card is current. When the last finished turn neither updated
     nor confirmed it, whatever the reason, the card is visibly marked as
-    possibly stale, in one visual language for every cause, so it is always
-    clear to the user. Freshness is judged when a turn ends. No title text
+    possibly stale — except a turn that could not have changed what the card
+    says, which leaves it exactly as it was (req 36) — in one visual language
+    for every cause, so it is always clear to the user. Freshness is judged when a turn ends. No title text
     is spent on it: a current card carries no mark at all; a stale one
     carries a small "Stale" label at the right-hand end of the Status cap
     (req 33), which covers the whole stack and is read first.
@@ -196,11 +197,174 @@ taken inside one session, without building an agent that talks to many.
     one Submit they share (req 29). The accent therefore means "the session,
     and what to do about it".
 
+34. A turn that a message reached after it started is complete without a card
+    update. When a message arrives into a turn already under way — the user
+    steering it, a message from an agent interface or from another session, or
+    a message a resident agent puts behind a turn of its own — answering that
+    message is what ShipIt owes next, and it never sends the nudge instead. The
+    card then shows that it may be behind (req 14), and the next turn is checked
+    afresh, as after any nudge ShipIt did not send (req 15).
+
+35. The card the agent is asked to keep current is in front of it every turn it
+    could be asked to update: what the status says, each manual step, and each
+    offered action with whether it has been sent. Reconciling the card is then
+    reading, not remembering — a step the user has done or an offer no longer
+    worth offering can be dropped because the agent can see that it is there.
+    This holds on every harness and for an agent that stays running between
+    turns. A session with no card yet carries nothing. The turn ShipIt sends
+    when an update is missing (req 12) carries the same contents and asks the
+    agent to go through the card line by line, rather than only asking for a
+    call. The agent is never asked to reconcile the card without having been
+    shown it: where it cannot be put in front of the agent during a turn, the
+    turn that does the asking carries it.
+
+36. ShipIt asks about the card only after a turn that could have changed what the
+    card says. A turn the harness answers by operating on the conversation itself
+    — compacting it — does nothing to the session: it produces no work of the
+    agent's own, so there is nothing to report, the card is not behind, and
+    ShipIt neither asks for an update after it nor marks the card stale. Every
+    other turn ShipIt starts of its own is checked exactly as a turn the user
+    typed is — a merged-PR wake, a result delivered from another agent, a message
+    from a child session, a continuation after a quota refusal or a rebase, a CI
+    fix — because each of them leads to work of the agent's own that the user
+    wants on the card. The test is what the turn does, never which kind of turn
+    it is or who started it, so a kind added later is covered without an entry on
+    any list. This does not loosen req 15: a turn that did the session's work and
+    did not update the card is still marked stale and still gets its one nudge.
+
+37. A manual step can be answered, not only ticked. Each step carries a note of
+    its own — one line the user writes against that step — so that a report can
+    carry the detail the agent needs to carry on correctly ("done, but I named
+    it `billing-prod`"), and so that a step can be refused, qualified or
+    declared blocked ("no — use SQLite", "GitHub will not let me"), which the
+    card cannot say at all while a step can only be ticked. A note can be sent
+    without ticking the step: the row is then answered, not reported done, and
+    the agent is told which of the two it is. The note belongs to its step in
+    what the agent receives, however many steps are submitted at once. The
+    field is not on the row until the user asks for it, so a card nobody
+    annotates is the card of req 2.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-18 — Nik: "manual steps sometimes require the user to enter something,
+  or the user wants to leave a comment per step." Five options were drawn in
+  `look-step-comment.html`, in the card's real place and in four themes,
+  including the two cheap ones so the comparison was honest: **A** nothing, and
+  the detail typed in the composer; **B** the card's existing "Add comment…",
+  which rides the same Submit; **C** a note per step, revealed by a control on
+  the row; **D** a field under every step, always; **E** the agent declaring
+  which step needs a value and naming the field.
+
+  The thing put to him to judge was **attribution**, not typing convenience:
+  ticking a step and typing the detail in the composer already works and costs
+  the same one turn, so a per-step field earns its place only if it keeps the
+  sentence attached to its step. A and B lose that — B's prefill attributes one
+  ticked step by accident and nothing once two are ticked, and it cannot carry a
+  note for a step the user is *not* reporting done, so the refusal half is
+  unreachable there. D buys the same contract as C for about a row per step on
+  every card. E was drawn although it was not recommended, and the drawing is
+  what makes the case: the agent writes a step before the user has hit the thing
+  that needs naming, and a step it did not mark cannot be answered at all, so C
+  has to exist underneath it. He chose **C**. → req 37.
+
+  Asked separately whether a note should be sendable on a step that is *not*
+  ticked, he chose **yes**: the toggle becomes not done · done · answered, and
+  that is the half the card could not express. → req 37's third sentence, and
+  the second heading in the submit message.
+
+  Decided here and not by him: the note is client-side only and nothing stores
+  it — it rides one message and is gone, as the "SENT" grey does — so no
+  identity is added to `needsYou`, which stays a list of strings; an answered
+  step greys as a reported one, because the agent has been told either way; and
+  the control is a toggle, where an earlier cut closed an empty field on blur.
+  That was withdrawn on review evidence rather than by preference: closing on
+  blur removes the field on *mousedown*, which lifts everything under it before
+  mouseup lands, so pressing Submit with an empty note open submitted nothing —
+  reproduced in a real browser, and invisible to a test that dispatches blur and
+  click separately.
+
+- 2026-09-17 — Nik, on the shipped card: "'Context compacted' event shouldn't
+  require a nudge, and any similar case" (planning#594). Reproduced before
+  changing anything, because the design already exempted a `silent` turn and
+  ShipIt's own pre-turn compaction dispatches with `silent: true`: that half does
+  work, and what is nudged is a compaction the **user** asks for. A user-typed
+  `/compact` is an ordinary interactive turn — not silent, since the user's own
+  row is in the transcript — so the card was marked stale and one `[ShipIt]`
+  follow-up turn went out beside the "Context compacted" card. The third
+  candidate, a stale mark landing where the nudge does not, was not what
+  happened: both fired together.
+
+  The second half of his report is answered by → req 36, which replaces the
+  `silent` entry on the exemption list rather than adding a second one beside it.
+  `silent` named a kind of turn (ShipIt's own, no user row) and named it wrongly;
+  req 36 names the property underneath (the turn produced no work of the agent's
+  own, so the card cannot be behind), which covers both compactions and separates
+  them from every other ShipIt-started turn. Those stay checked: each was walked
+  against the rule and tabulated in `plan.md`.
+
+  The stale **mark** follows the rule with the nudge. His words were about the
+  nudge, so he was asked: should a compaction still mark the card stale, for one
+  visual language with no exceptions, or leave it reading current because a
+  compaction cannot put the card behind? He chose the second. The argument put to
+  him was that the mark is inside his report rather than beside it — its own third
+  candidate named a mark landing around a compaction as a defect shape — and that
+  req 14's purpose, never presenting the card as current when it may be behind, is
+  preserved rather than weakened, since a compaction cannot put it behind. A
+  driver-owned turn keeps its existing split (not nudged, because a git driver
+  owns the interval, but still marked, because work did happen). → req 14 amended
+  to name the exception.
+
+  Considered and rejected while writing the rule: treating a `/goal` command as
+  the same class. It is delivered verbatim for the same reason a compaction is,
+  which made it look identical — but the harness answers it by *starting work*
+  (Grok's `set` and `resume` re-enter its planner and verifier,
+  `agents/grok/grok-goal.ts`), so exempting it would let the card read current
+  while the session moved on. "Delivered verbatim" and "produced no work" are two
+  properties, and only the second is req 36's.
+
+- 2026-09-17 — Nik, after several days of the shipped card: "the agent very
+  frequently forgets to update the card — every turn, I would say... what often
+  happens is that the agent may not update it fully, but would just say 'Okay,
+  everything is good', or update only one field. The card would contain stale
+  manual steps or stale follow-ups" (planning#591). The cause was found by
+  reading the code rather than inferred from the symptom: the card's contents
+  reach the agent nowhere — not in the injected prompt, which uses the setting
+  only to choose a section, not in the turn, and not in the nudge, which carries
+  the offer labels and their taken state and nothing else. So a bare confirming
+  call is the only honest call an agent that cannot see the card can make, and a
+  finished offer or a done manual step can never be dropped by an agent that has
+  forgotten it exists. → req 35. Asked whether ShipIt should also refuse a bare
+  confirmation while the card still has open manual steps or offers, he chose
+  not to: that forces the symptom rather than removing the cause, and is worth
+  doing only if the card still goes stale once it is visible.
+
+- 2026-09-16 — Nik, on the shipped card: "Some weird behavior when steering the
+  agent that is waiting for background tasks. ShipIt immediately nudges about
+  the card update when I send a message." (planning#589). Reproduced: the user
+  steers a running turn, the CLI acknowledges the message, the turn ends, and
+  the nudge goes out — a system turn, so it retires the resident process that
+  holds what he just sent. A first fix tried to nudge only when the steer was
+  still *unanswered*, and an independent review showed the orchestrator cannot
+  tell: the transcript-group count it inferred that from both misses a pending
+  steer (the turn's own last text arrives before the acknowledgement) and hides
+  an answered one (an answer appends to the existing group). → req 34 added:
+  the whole turn is complete without an update, which is the plain reading of
+  his report and needs no such inference. Cost, accepted: a turn a message
+  reached and the agent then answered without touching the card is not nudged
+  either; the card is marked stale and the next turn is checked afresh, exactly
+  as for a nudge ShipIt was unable to send.
+
+  Two widenings beyond his words, decided rather than asked, because stopping at
+  them would leave the same harm reachable and req 34 would then not describe
+  the code. A steer is recorded identically for a message from an agent
+  interface or from another session, and the nudge destroys those just as
+  surely. And a message submitted to a *resident* agent that puts it behind a
+  turn of its own reaches the user the same way — he sent a message, the turn
+  that ended next was not his, and the nudge retired the process holding it.
 
 - 2026-09-16 — Nik, fifth round: "Can we use some other color for 'Last turn'?
   What tokens do we have available?" Only five tokens exist in all 20 themes

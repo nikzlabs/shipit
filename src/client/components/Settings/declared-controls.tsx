@@ -22,11 +22,12 @@ import type {
 import { useSetting, useSettingDraft } from "./declared-setting.js";
 import {
   DeclaredEnumCards,
+  DeclaredSelect,
   DeclaredTextarea,
   DeclaredToggle,
   SettingCopy,
 } from "./declared.js";
-import { bindSetting, settingOf } from "./setting-binding.js";
+import { settingOf, settingOptions } from "./setting-copy.js";
 import { inputClass } from "./shared.js";
 
 function GeneratedToggle({ settingKey }: { settingKey: SettingKey }) {
@@ -35,20 +36,30 @@ function GeneratedToggle({ settingKey }: { settingKey: SettingKey }) {
 }
 
 /**
- * A choice as a row of cards, each carrying its own declared description.
+ * A choice: a row of cards, or a `<select>`.
  *
- * The plan's control table also names a `<select>`, for an enum whose options
- * are many or produced by the install rather than written down. Nothing on the
- * tabs generated so far is one — the release channel is two options with a
- * sentence each — so the select arrives with the settings that need it, in
- * slice 4.
+ * **What decides it is already in the declaration** (req 5): a card exists to
+ * carry an option's own sentence, so an option set that declares descriptions
+ * gets cards and one that does not gets a select. The release channel is the
+ * first — two choices whose consequences need a sentence each — and the voice
+ * enums are the second: a dozen dictation languages and two provider lists the
+ * install produces, none of which has anything to put on a card. VS Code makes
+ * every enum a dropdown and hangs `enumDescriptions` beside it (req 6); the
+ * cards are the one place we spend more room than that, and only where there is
+ * something to spend it on.
  */
-function GeneratedEnumCards({ settingKey }: { settingKey: SettingKey }) {
+function GeneratedEnum({ settingKey }: { settingKey: SettingKey }) {
   const { value, set } = useSetting(settingKey);
+  const selected = typeof value === "string" ? value : "";
+  const options = settingOptions(settingKey);
+  if (options.length > 0 && options.every((option) => option.description)) {
+    return <DeclaredEnumCards settingKey={settingKey} value={selected} onChange={set} />;
+  }
   return (
-    <DeclaredEnumCards
+    <DeclaredSelect
       settingKey={settingKey}
-      value={typeof value === "string" ? value : ""}
+      id={`setting-${settingKey}`}
+      value={selected}
       onChange={set}
     />
   );
@@ -121,9 +132,8 @@ function identityOf(value: unknown): { name: string; email: string } {
  * A name and an email, which are one setting because they are written together
  * (inventory.md P9, `value-types.ts` → `gitIdentity`).
  *
- * Two boxes over one declaration is what a composite value IS, so both bind the
- * same key — the coverage walk exempts composite kinds from its one-control
- * rule for exactly this shape.
+ * Two boxes over one declaration is what a composite value IS: they edit two
+ * halves of one draft and are committed by one write.
  */
 function GeneratedGitIdentity({ settingKey }: { settingKey: SettingKey }) {
   const { value, changedElsewhere, set } = useSettingDraft(settingKey);
@@ -144,7 +154,6 @@ function GeneratedGitIdentity({ settingKey }: { settingKey: SettingKey }) {
         value={identity[part]}
         onChange={(e) => { set({ ...identity, [part]: e.target.value }); }}
         className={inputClass}
-        {...bindSetting(settingKey)}
       />
     </div>
   );
@@ -159,9 +168,21 @@ function GeneratedGitIdentity({ settingKey }: { settingKey: SettingKey }) {
   );
 }
 
-export const CONTROLS: Partial<Record<SettingValueKind, (key: SettingKey) => ReactNode>> = {
-  bool: (key) => <GeneratedToggle settingKey={key} />,
-  enum: (key) => <GeneratedEnumCards settingKey={key} />,
-  text: (key) => <GeneratedTextarea settingKey={key} />,
-  gitIdentity: (key) => <GeneratedGitIdentity settingKey={key} />,
+interface Control {
+  render: (key: SettingKey) => ReactNode;
+  /**
+   * The control holds a draft and is stored by the tab's Save rather than on
+   * change (inventory.md P5), which is what tells the renderer to place one.
+   */
+  commitsOnButton?: true;
+}
+
+export const CONTROLS: Partial<Record<SettingValueKind, Control>> = {
+  bool: { render: (key) => <GeneratedToggle settingKey={key} /> },
+  enum: { render: (key) => <GeneratedEnum settingKey={key} /> },
+  text: { render: (key) => <GeneratedTextarea settingKey={key} />, commitsOnButton: true },
+  gitIdentity: {
+    render: (key) => <GeneratedGitIdentity settingKey={key} />,
+    commitsOnButton: true,
+  },
 };

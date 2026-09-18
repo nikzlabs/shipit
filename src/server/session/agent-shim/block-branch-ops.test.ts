@@ -241,11 +241,11 @@ describe("block-branch-ops.mjs", () => {
   });
 
   /**
-   * A wait loop whose own `pgrep -f` test can only be true. The Bash tool runs
-   * a command as `bash -c '<the whole command>'`, so the pattern is part of the
-   * command line the test is searching.
+   * A `pgrep -f` test that can only be true. The Bash tool runs a command as
+   * `bash -c '<the whole command>'`, so the pattern is part of the command line
+   * the test is searching.
    */
-  describe("refuses a wait loop whose process test matches its own command line", () => {
+  describe("refuses a process test that matches its own command line", () => {
     const JOB = "some_job_name";
     const blocked = [
       // The incident, verbatim.
@@ -258,12 +258,39 @@ describe("block-branch-ops.mjs", () => {
       `until ! pgrep --full "${JOB}"; do sleep 1; done`,
       `(until ! pgrep -f ${JOB}; do sleep 1; done) && echo ok`,
       `echo "x"; until ! pgrep -f ${JOB}; do sleep 1; done`,
-      // A quoted operand is an operand: a pattern opening with `(` is not the
-      // shell's subshell syntax, and reading it as such let a real one through.
-      `while pgrep -f '(${JOB}|second_job)' >/dev/null; do sleep 1; done`,
       // Quoting a command NAME does not stop it running — bash runs `"echo" x`
       // — even though quoting a keyword does stop it being one.
       `until ! "pgrep" -f ${JOB}; do sleep 1; done`,
+      // A one-shot liveness check, the shape this guard first let through. Each
+      // of these answers "is it still running?" with yes, whatever is running:
+      // `-a` prints this shell's own command line, `-c` counts it, and a bare
+      // `pgrep -f` exits 0 on the strength of it.
+      `pgrep -fa "${JOB}"`,
+      `pgrep -fc '${JOB}'`,
+      `pgrep -f ${JOB} && echo "still running"`,
+      `if pgrep -f ${JOB}; then echo busy; else echo idle; fi`,
+      // A command substitution carries the same text onward. Measured here the
+      // count is 1, not the 2 a persistent subshell would add — either way it
+      // is not the 0 the agent is asking for. Inside double quotes the same
+      // substitution reads as data here and is missed; that is the standing
+      // trade — a miss costs nothing a refusal would have saved.
+      `N=$(pgrep -fc ${JOB}); echo $N`,
+      // Killing what you cannot exclude: this signals the shell running it.
+      `pkill -f "${JOB}"`,
+      // A newline ends a command, so the check is read rather than run into the
+      // next line's words and dismissed as a second operand.
+      `pgrep -f ${JOB}\nprintf 'rc=%s\\n' "$?"`,
+      // A redirection is not the end of the arguments, but it is not an escape
+      // either: there is still no option here that excludes the caller.
+      `pgrep -f ${JOB} >/dev/null 2>&1`,
+      `pgrep -f ${JOB} &>/dev/null`,
+      // An assignment whose value is quoted is still an assignment, so the word
+      // after it is still the command.
+      `VAR="x" pgrep -fc ${JOB}`,
+      // A pipe is not an escape for a kill: the signal is sent before anything
+      // downstream sees a byte. Measured — `pkill -f <self-match> | cat` kills
+      // the shell, and `cat` prints nothing.
+      `pkill -f ${JOB} | cat`,
     ];
     for (const command of blocked) {
       it(`blocks: ${command.slice(0, 58)}`, () => {
@@ -294,6 +321,22 @@ describe("block-branch-ops.mjs", () => {
       expect(r.stderr).toContain("[v]itest");
     });
 
+    it("tells a one-shot check what it got wrong, which is the answer and not a hang", () => {
+      const r = runHook(bash('pgrep -fa "my-job"'));
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("`my-job`");
+      expect(r.stderr).toContain("has already finished");
+      expect(r.stderr).toContain("[v]itest");
+    });
+
+    it("tells pkill it signals its own shell, not that it waits too long", () => {
+      const r = runHook(bash('pkill -f "my-job"'));
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("signals your own");
+      // The pgrep advice is about waiting, and none of it applies to a kill.
+      expect(r.stderr).not.toContain("Wait on the artifact");
+    });
+
     it("applies to a sandbox session, whose branch exemption is not about this", () => {
       // docs/211 exempts a sandbox because it owns its branch. A loop whose
       // test cannot change hangs a sandbox session exactly as it hangs any other.
@@ -321,6 +364,24 @@ describe("block-branch-ops.mjs", () => {
       `echo "until ! pgrep -f ${JOB}; do sleep 1; done"`,
       `cat <<'EOF'\nwhile pgrep -f ${JOB}; do sleep 1; done\nEOF`,
       `python3 - <<'PY'\nprint("while pgrep -f ${JOB}; do sleep 1; done")\nPY`,
+      // A heredoc body is data whatever its delimiter's quoting — bash never
+      // runs it, and only parameter expansion differs. Written bare so nothing
+      // but the heredoc stripping keeps this allowed.
+      `cat <<EOF\npgrep -f ${JOB}\nEOF`,
+      // Delimiters the opener has to read: quoted with a character an
+      // identifier cannot carry, backslash-escaped, and two on one line.
+      `cat <<"END-TEXT"\npgrep -f ${JOB}\nEND-TEXT`,
+      `cat <<\\EOF\npgrep -f ${JOB}\nEOF`,
+      `cat <<A <<B\npgrep -f ${JOB}\nA\npgrep -f ${JOB}\nB`,
+      // `<<<` is a herestring and opens no body. The `pgrep` on the next line
+      // is what makes this load-bearing: reading the last two `<` as a heredoc
+      // opener swallowed that line, so the case passed while inspecting nothing.
+      `grep -q x <<<"${JOB}" && echo hit\npgrep -f '[${JOB[0]}]${JOB.slice(1)}'`,
+      // A numeric delimiter is a delimiter, and `<<-` strips leading TABS only —
+      // an indented `EOF` is data. Both misreadings ended a body early and let
+      // a `cat`'s data be scanned as commands.
+      `cat <<123\npgrep -f ${JOB}\n123`,
+      `cat <<EOF\n  EOF\npgrep -f ${JOB}\nEOF`,
       // The other fix the refusal recommends: a pattern that cannot match its
       // own literal. The check is a regex and not a substring test precisely so
       // this works.
@@ -331,9 +392,60 @@ describe("block-branch-ops.mjs", () => {
       'until ! pgrep -f "npm (run|test)"; do sleep 1; done',
       // Nothing literal to match: the pattern is not known until it runs.
       `PAT=vitest; until ! pgrep -f "$PAT"; do sleep 1; done`,
-      // Listing processes to read them is not a loop, and matching itself there
-      // costs one extra line of output.
-      'pgrep -af "vitest|tsc --noEmit|eslint"',
+      // An alternation is still a pattern that does not match its own literal,
+      // so this listing reads real processes and only real ones. The one-shot
+      // `pgrep -af` that DOES match itself is in the blocked set above.
+      'pgrep -af "(vitest|eslint) --fix-nothing"',
+      // A `#` comment is not code. The `;` inside it is what makes this test
+      // load-bearing: read as code, that separator would put the `pgrep` in
+      // command position and refuse an `npm test`.
+      `npm test # if it hangs ; pgrep -f ${JOB}`,
+      // A comment after a line continuation is still a comment. Verified
+      // against bash: it removes the `\<newline>`, so the `#` begins a comment
+      // that swallows the `;` too, and the whole line only echoes. Reading the
+      // continuation as a literal newline left that `;` as a real separator,
+      // which put the `pgrep` in command position and refused an echo.
+      `echo one \\\n# note ; pgrep -f ${JOB}`,
+      // Command POSITION is what makes a word a command. These print text.
+      `echo pgrep -f ${JOB}`,
+      `printf '%s\\n' 'pgrep' '-f' '${JOB}'`,
+      // An assignment or a reserved word can PRESERVE command position but
+      // never create one, so these are three words after an `echo`.
+      `echo time pgrep -f ${JOB}`,
+      `echo VAR=x pgrep -f ${JOB}`,
+      // Inside double quotes bash keeps a backslash before `.`, so the pattern
+      // pgrep receives has a literal dot and does not match the `X` below.
+      `pgrep -f "${JOB}\\.js"; : ${JOB}Xjs`,
+      // Only a pattern with no metacharacter is judged, and then by substring.
+      // An anchor in either spelling, a group, a class and an escape all mean
+      // the pattern is not its own characters, so none of them is judged.
+      `pgrep -f '^pgrep.*${JOB}'`,
+      `pgrep -fc '(^pgrep.*${JOB})'`,
+      `pgrep -fc '${JOB}$'`,
+      // An array is data, not a subshell: these words are never run.
+      `args=(pgrep -f ${JOB}); printf '%s\\n' "\${args[@]}"`,
+      // A backtick substitution is not known until it runs.
+      "pgrep -fc `hostname`",
+      // `-o` / `-n` select ONE process, which is a way to exclude the caller:
+      // measured, `pgrep -of` returned an older target and `pkill -of` killed
+      // it while this shell lived.
+      `pgrep -of ${JOB}`,
+      `pkill -of ${JOB}`,
+      // Process substitution: bash passes the `-A` written after it.
+      `pgrep -fc ${JOB} > >(cat) -A`,
+      // A redirection does not hide the option after it. bash passes `-A` to
+      // pgrep, and `-A` is the caller-excluding fix the refusal recommends.
+      // `&>` is the same word, and reading its `&` as a separator hid it too.
+      `pgrep -f ${JOB} >/dev/null -A`,
+      `pgrep -f ${JOB} &>/dev/null -A`,
+      // Piped onward, the consumer decides what a match means — and filtering
+      // the wrapper back out is a correct way to write this.
+      `pgrep -af ${JOB} | grep -v '[p]grep'`,
+      // pgrep compiles POSIX ERE and this hook compiles a JS RegExp. Reading
+      // `[[:digit:]]+` as JS does finds a match the real pgrep never makes, and
+      // a letter escape is declined as a class rather than enumerated.
+      "pgrep -f '[[:digit:]]+'",
+      "pgrep -f '\\w+'",
       // The shape the refusal recommends instead.
       "until grep -qE '^(PASS|FAIL)' /tmp/out.log; do sleep 5; done",
       "until [ -f /tmp/done ]; do sleep 1; done",
@@ -344,9 +456,6 @@ describe("block-branch-ops.mjs", () => {
       // pgrep takes exactly one pattern. Two operands is a command it would
       // reject itself, and picking one of them would be a guess.
       `until ! pgrep -f ${JOB} second_operand; do sleep 1; done`,
-      // A quoted keyword is not a keyword: bash refuses `wh"ile" x; do y; done`
-      // outright, so this is not a loop and nothing here judges it as one.
-      `wh"ile" pgrep -f ${JOB}; do sleep 1; done`,
       // Shapes this cannot read, where a guess would refuse correct work: an
       // option it does not know, quoting that never closes, and a pattern the
       // runtime does not read as a regex.
@@ -362,11 +471,12 @@ describe("block-branch-ops.mjs", () => {
       });
     }
 
-    it("gives up on a pattern that backtracks, instead of stalling the hook", () => {
-      // `a(a+)+$` over 26 characters takes seconds in this runtime and a `try`
-      // cannot interrupt it. A hook that stalls is the failure this one exists
-      // to prevent, so the match runs under a deadline it is allowed to lose.
-      const command = `until ! pgrep -f "a(a+)+$"; do sleep 1; done # ${"a".repeat(26)}!`;
+    it("cannot be stalled by a pattern, because it compiles none", () => {
+      // `a(a+)+$` backtracks for seconds once compiled, which used to need a
+      // `vm.runInNewContext` deadline. A pattern carrying metacharacters is no
+      // longer judged at all, so the pathological case is answered by the same
+      // rule as every other non-literal and there is no deadline to lose.
+      const command = `until ! pgrep -f "a(a+)+$"; do sleep 1; done ${"a".repeat(26)}`;
       const started = Date.now();
       const r = runHook(bash(command));
       expect(Date.now() - started).toBeLessThan(2_000);

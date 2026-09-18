@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Button } from "../ui/button.js";
 import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
-import { bindSetting, settingCopy } from "../Settings/setting-binding.js";
+import { settingCopy } from "../Settings/setting-copy.js";
 import { inputClass } from "./shared.js";
 import { McpTypeSelector } from "./McpTypeSelector.js";
 import { KvEditor } from "./KvEditor.js";
@@ -19,10 +19,7 @@ import type { FormState } from "./utils/payload.js";
  * labels used to carry hand-written suffixes — "(space-separated)", "(optional —
  * installed at session start)" — which is a second authorship of exactly the
  * thing the declaration exists to hold; those sentences moved into the
- * declarations. The copy is marked with `data-setting-label` /
- * `data-setting-description`, so `settings-coverage.test.tsx` compares what is
- * on screen against the catalogue and a box that starts writing its own words
- * fails.
+ * declarations.
  */
 function McpField({
   settingKey,
@@ -34,13 +31,10 @@ function McpField({
   const { label, description } = settingCopy(settingKey);
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs text-(--color-text-secondary)" data-setting-label={settingKey}>
+      <span className="text-xs text-(--color-text-secondary)">
         {label}
       </span>
-      <span
-        className="text-[11px] text-(--color-text-tertiary)"
-        data-setting-description={settingKey}
-      >
+      <span className="text-[11px] text-(--color-text-tertiary)">
         {description}
       </span>
       {children}
@@ -77,7 +71,6 @@ export function McpServerForm({
           value={form.name}
           placeholder="sentry"
           onChange={(e) => onUpdate({ name: e.target.value })}
-          {...bindSetting("mcp.servers[].name")}
         />
       </McpField>
 
@@ -91,7 +84,6 @@ export function McpServerForm({
               value={form.command}
               placeholder="npx"
               onChange={(e) => onUpdate({ command: e.target.value })}
-              {...bindSetting("mcp.servers[].command")}
             />
           </McpField>
           <McpField settingKey="mcp.servers[].args">
@@ -100,7 +92,6 @@ export function McpServerForm({
               value={form.args}
               placeholder="-y @sentry/mcp-server"
               onChange={(e) => onUpdate({ args: e.target.value })}
-              {...bindSetting("mcp.servers[].args")}
             />
           </McpField>
           <McpField settingKey="mcp.servers[].npmPackage">
@@ -109,7 +100,6 @@ export function McpServerForm({
               value={form.npmPackage}
               placeholder="@sentry/mcp-server"
               onChange={(e) => onUpdate({ npmPackage: e.target.value })}
-              {...bindSetting("mcp.servers[].npmPackage")}
             />
           </McpField>
         </>
@@ -120,7 +110,6 @@ export function McpServerForm({
             value={form.url}
             placeholder="https://mcp.sentry.dev/mcp"
             onChange={(e) => onUpdate({ url: e.target.value })}
-            {...bindSetting("mcp.servers[].url")}
           />
         </McpField>
       )}
@@ -143,7 +132,6 @@ export function McpServerForm({
           onClick={onSave}
           disabled={saving}
           aria-label={saving ? "Saving MCP server" : "Save MCP server"}
-          {...bindSetting("mcp.servers")}
         >
           {saving ? "Saving…" : "Save"}
         </Button>

@@ -17,8 +17,18 @@ each, and the work is tracked on planning#580.
 - [x] 1 — The spine, on Advanced's nine toggles
 - [x] 2 — Routes and the rest of Advanced
 - [x] 3 — Instructions and Git
-- [ ] 4 — Voice
-- [ ] 5 — Integrations
-- [ ] 6 — Panels
-- [ ] 7 — Project Settings
-- [ ] 8 — Cleanup: the coverage walk and `data-setting` go
+- [x] 4 — Voice
+- [x] 5 — Integrations
+- [x] 6a — The list panels on Integrations, Network and Keyboard
+- [x] 6b — The Roles and Services panels, and `services.nonTurnModel`
+- [x] 7 — Project Settings
+- [x] 8 — Cleanup: the coverage walk and `data-setting` go
+- [x] The two runtime defects slice 8 recorded: `saveSetting` answers whether the
+      write landed, and the own-route reads are ordered per address
+- [x] 9 — The last second edit against requirement 1: the renderer places the
+      tab's Save, and the `OWN_ROUTE_READERS` entry and the `ownedBy` prose are
+      decided rather than changed
+- [x] 10 — The five placements the shipped order got wrong (req 13): `order` on
+      the declaration for Background work, the Voice-notes section and the memory
+      budget; auto-create-PR onto Advanced → Automation; and the
+      built-in-instructions toggle back to the top of its own tab

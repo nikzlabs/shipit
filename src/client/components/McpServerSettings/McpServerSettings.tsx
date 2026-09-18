@@ -2,7 +2,8 @@
 import { useEffect, useState } from "react";
 import { Button } from "../ui/button.js";
 import { useMcpStore } from "../../stores/mcp-store.js";
-import { bindSetting } from "../Settings/setting-binding.js";
+import { useSessionStore } from "../../stores/session-store.js";
+import { SettingCopy } from "../Settings/declared.js";
 import { OAuthProviderCards } from "./OAuthProviderCards.js";
 import { McpServerRow } from "./McpServerRow.js";
 import { McpServerForm } from "./McpServerForm.js";
@@ -11,13 +12,16 @@ import { useMcpOAuthFlow } from "./hooks/useMcpOAuthFlow.js";
 import { oauthSourceForServer } from "./utils/auth.js";
 import type { McpServerConfig, McpTestResult } from "../../../server/shared/types.js";
 
-export function McpServerSettings({
-  hasActiveSession,
-  embedded = false,
-}: {
-  hasActiveSession: boolean;
-  embedded?: boolean;
-}) {
+/**
+ * The panel `mcp.servers` and `mcp.oauthProvider` name
+ * (docs/308-data-driven-settings).
+ *
+ * A registered component takes the setting's key and nothing else, so whether a
+ * session is running — which decides whether there is anywhere to run a test —
+ * is read here rather than drilled in from `App.tsx`.
+ */
+export function McpServerSettings() {
+  const hasActiveSession = useSessionStore((s) => s.sessionId !== undefined);
   const servers = useMcpStore((s) => s.servers);
   const loading = useMcpStore((s) => s.loading);
   const error = useMcpStore((s) => s.error);
@@ -89,19 +93,8 @@ export function McpServerSettings({
   }
 
   return (
-    <div
-      className={embedded ? "flex flex-col gap-4" : "px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full"}
-      data-testid="mcp-settings"
-    >
-      {!embedded && (
-        <div>
-          <h3 className="text-sm font-medium text-(--color-text-primary)">MCP Servers</h3>
-          <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-            Connect your own Model Context Protocol servers (Sentry, Notion, …) so the
-            agent can use their tools. Configured once per account — available in every session.
-          </p>
-        </div>
-      )}
+    <div className="flex flex-col gap-4" data-testid="mcp-settings">
+      <SettingCopy settingKey="mcp.servers" heading />
 
       {error && (
         <div className="rounded-md border border-(--color-error) bg-(--color-bg-secondary) px-3 py-2 text-xs text-(--color-error)">
@@ -190,7 +183,6 @@ export function McpServerSettings({
           variant="secondary"
           onClick={startAdd}
           data-testid="mcp-add-server"
-          {...bindSetting("mcp.servers")}
         >
           + Add MCP Server
         </Button>

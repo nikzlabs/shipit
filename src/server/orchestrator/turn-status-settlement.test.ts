@@ -11,6 +11,7 @@ interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
+  sendUserMessage: ReturnType<typeof vi.fn>;
 }
 
 function makeFakeAgent(): FakeAgent {
@@ -18,6 +19,7 @@ function makeFakeAgent(): FakeAgent {
   agent.run = vi.fn();
   agent.kill = vi.fn();
   agent.setPermissionMode = vi.fn();
+  agent.sendUserMessage = vi.fn();
   return agent;
 }
 
@@ -46,6 +48,7 @@ function harness(opts: {
   if (opts.card) cards.set("s1", opts.card);
   const state = { readThrows: false, commits: 0, entered: [] as number[], preTurnResets: 0 };
   let preTurnReset: ((call: number) => Promise<{ agentPrefix: string }>) | null = null;
+  let prepareEnv: (() => Promise<void>) | null = null;
   const gates = new Map<number, { parked: Promise<void>; release: () => void }>();
   const gateFor = (index: number) => {
     let release = (): void => {};
@@ -104,6 +107,12 @@ function harness(opts: {
       return null;
     },
     scheduleAutoPush: vi.fn(),
+    // The window the executor is already listening in: its agent listeners are wired
+    // before this runs, so a turn the CLI starts here is one the prompt goes in behind.
+    prepareAgentEnv: (async () => {
+      if (prepareEnv) await prepareEnv();
+      return undefined;
+    }) as never,
     preTurnReset: async () => {
       state.preTurnResets += 1;
       return preTurnReset ? await preTurnReset(state.preTurnResets) : { agentPrefix: "" };
@@ -155,6 +164,7 @@ function harness(opts: {
     rows,
     state,
     setPreTurnReset: (fn: (call: number) => Promise<{ agentPrefix: string }>) => { preTurnReset = fn; },
+    setPrepareEnv: (fn: () => Promise<void>) => { prepareEnv = fn; },
     parkedOn: (index: number) => state.entered.includes(index) && state.commits === index,
     releaseCommit: (index = 0) => gateFor(index).release(),
     card: () => cards.get("s1"),
@@ -319,6 +329,102 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     h.runner.dispose({ force: true });
   });
 
+  /*
+    req 34 (planning#589) — the other way a user message reaches a resident CLI and is
+    not answered by the turn that ends next: it is submitted while a turn of the CLI's
+    own is already pending, so the prompt lifecycle records it as `queued`. The result
+    that arrives ends the WOKEN turn, and every live signal reads idle — no running
+    turn, an empty queue, no steer. Nudging there retires the process holding the
+    prompt, so the message is never answered.
+  */
+  it("does not nudge past a prompt the CLI put behind a turn of its own (req 34)", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "first" }));
+    await waitFor(() => h.agents.length === 1, "turn 1 started");
+    await h.agentWritesCard("Routes done.");
+    // A result with no exit: the process stays resident for the next turn.
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.runner.running, "turn 1 settled with the process resident");
+    expect(h.nudges()).toHaveLength(0);
+
+    // The next message is dispatched, and parks in env preparation before submission.
+    let releasePrep = (): void => {};
+    const prepEntered = { yes: false };
+    // One-shot: a later turn must run its preparation through, or a nudge would park
+    // here and the assertions below could not tell it apart from one never sent.
+    h.setPrepareEnv(async () => {
+      if (prepEntered.yes) return;
+      prepEntered.yes = true;
+      await new Promise<void>((resolve) => { releasePrep = resolve; });
+    });
+    h.runner.dispatch(testDispatch({ text: "and now the webhook" }));
+    await waitFor(() => prepEntered.yes, "the turn reached its pre-turn hook");
+
+    // Background work finishes inside that window and the CLI resumes on its own turn.
+    h.agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    releasePrep();
+    await waitFor(
+      () => h.agents[0]!.sendUserMessage.mock.calls.length > 0,
+      "the prompt reached the resident CLI",
+    );
+
+    // This result ends the woken turn; the prompt has been submitted but not read.
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    // Settle far enough that a nudge would have recorded its prompt, not just spawned
+    // its process — otherwise the first assertion below passes on a timing gap.
+    await waitFor(() => h.nudges().length > 0, "a nudge, if one is coming", 300)
+      .catch(() => undefined);
+
+    expect(h.nudges()).toHaveLength(0);
+    // The process holding the unread prompt was not replaced by a system turn.
+    expect(h.agents).toHaveLength(1);
+    expect(h.agents[0]!.kill).not.toHaveBeenCalled();
+    expect(h.card()?.fresh).toBe(false);
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * req 36 — the same shape as the test above, with `/compact` as the prompt. The result
+   * that arrives ends the CLI's OWN turn, so it is real work and the card is behind;
+   * granting the compaction's exemption to it would leave the card reading current.
+   */
+  it("does not exempt a result that ended the CLI's own turn ahead of a compaction (req 36)", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "first" }));
+    await waitFor(() => h.agents.length === 1, "turn 1 started");
+    await h.agentWritesCard("Routes done.");
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.runner.running, "turn 1 settled with the process resident");
+    expect(h.card()!.fresh).toBe(true);
+
+    let releasePrep = (): void => {};
+    const prepEntered = { yes: false };
+    h.setPrepareEnv(async () => {
+      if (prepEntered.yes) return;
+      prepEntered.yes = true;
+      await new Promise<void>((resolve) => { releasePrep = resolve; });
+    });
+    h.runner.dispatch(testDispatch({ text: "/compact" }));
+    await waitFor(() => prepEntered.yes, "the compaction reached its pre-turn hook");
+
+    h.agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    releasePrep();
+    await waitFor(
+      () => h.agents[0]!.sendUserMessage.mock.calls.length > 0,
+      "the command reached the resident CLI",
+    );
+
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.card()!.fresh, "the CLI's own turn marked the card stale");
+    // The nudge is deferred, not sent, because the command is still unread (req 34).
+    expect(h.nudges()).toHaveLength(0);
+
+    h.runner.dispose({ force: true });
+  });
+
   it("with the setting off, nothing is marked and nothing is dispatched", async () => {
     const h = harness({ statusCardEnabled: false, card: { ...seeded } });
 
@@ -334,20 +440,79 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     h.runner.dispose({ force: true });
   });
 
-  // `silent` reaches the executor only because the dispatch forwards it; without that the
-  // compaction turn below would mark the card stale and then ask the agent about it.
-  it("leaves a silent turn — compaction — out of the settlement entirely", async () => {
+  /**
+   * req 36 — the settlement reads what the turn DID, not who started it. ShipIt's own
+   * pre-turn compaction and a compaction the user asked for are the same turn as far as
+   * the card is concerned, and the second one is planning#594: it carries no `silent`,
+   * because the user's own row is in the transcript, so the kind-based exemption missed it.
+   */
+  for (const [label, extra] of [
+    ["ShipIt's own, before a post-merge turn", { systemTurn: true, silent: true }],
+    ["one the user asked for", {}],
+  ] as const) {
+    it(`leaves a compaction out of the settlement entirely — ${label} (req 36)`, async () => {
+      const h = harness({ card: { ...seeded } });
+
+      h.runner.dispatch(testDispatch({ text: "/compact", ...extra }));
+      await waitFor(() => h.agents.length === 1, "compaction started");
+      finishTurn(h.agents[0]!);
+      await waitFor(() => !h.runner.running, "compaction finished");
+      await flush();
+
+      expect(h.agents).toHaveLength(1);
+      expect(h.nudges()).toHaveLength(0);
+      expect(h.card()!.fresh).toBe(true);
+      h.runner.dispose({ force: true });
+    });
+  }
+
+  /**
+   * req 36 — the exemption is withheld when provenance wraps the text, because the
+   * harnesses disagree about what happens then (Claude reads prose and works; Codex and
+   * OpenCode still compact). Checking costs a needless nudge on two of them; exempting
+   * would hide a real stale card on the third, which is the failure req 15 forbids.
+   */
+  it("checks a compaction command that arrives wrapped as another session's message (req 36)", async () => {
     const h = harness({ card: { ...seeded } });
 
-    h.runner.dispatch(testDispatch({ text: "/compact", systemTurn: true, silent: true }));
-    await waitFor(() => h.agents.length === 1, "compaction started");
+    h.runner.dispatch(testDispatch({
+      text: "/compact",
+      messageOrigin: { sessionId: "parent-1", sessionTitle: "Parent session", relation: "parent" },
+    }));
+    await waitFor(() => h.agents.length === 1, "the message turn started");
     finishTurn(h.agents[0]!);
-    await waitFor(() => !h.runner.running, "compaction finished");
-    await flush();
 
-    expect(h.agents).toHaveLength(1);
-    expect(h.nudges()).toHaveLength(0);
-    expect(h.card()!.fresh).toBe(true);
+    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    expect(h.nudges()).toHaveLength(1);
+    expect(h.card()!.fresh).toBe(false);
+
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * The other half of req 36, and the one that keeps the exemption from becoming a
+   * suppression: a turn ShipIt starts of its own that is NOT a harness command — a
+   * merged-PR wake, a delivered result, a child's report all take this shape — leads to
+   * work the user wants on the card, so it is checked exactly as a typed turn is.
+   */
+  it("still checks a ShipIt-started turn that is not a harness command (req 36)", async () => {
+    const h = harness({ card: { ...seeded } });
+
+    h.runner.dispatch(testDispatch({
+      text: "[ShipIt] The pull request for this session was merged.",
+      systemTurn: true,
+    }));
+    await waitFor(() => h.agents.length === 1, "the wake started");
+    finishTurn(h.agents[0]!);
+
+    await waitFor(() => h.agents.length === 2, "the nudge turn started");
+    expect(h.nudges()).toHaveLength(1);
+    expect(h.card()!.fresh).toBe(false);
+
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
     h.runner.dispose({ force: true });
   });
 
@@ -493,6 +658,34 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     expect(h.nudges()).toHaveLength(0);
     // The adopted turn produced nothing, so the card no longer speaks for the session.
     expect(h.card()!.fresh).toBe(false);
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * req 36 — the exemption belongs to the turn being settled, not to the executor. A
+   * compaction leaves the CLI resident, and a turn the CLI then starts of its own is real
+   * work: inheriting the compaction's exemption would leave the card reading current when
+   * it is not, which is the suppression req 15 forbids.
+   */
+  it("does not carry a compaction's exemption into a turn the CLI starts next (req 36)", async () => {
+    const h = harness({ card: { ...seeded }, streaming: true });
+
+    h.runner.dispatch(testDispatch({ text: "/compact" }));
+    await waitFor(() => h.agents.length === 1, "compaction started");
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.runner.running, "the compaction settled");
+    expect(h.card()!.fresh).toBe(true);
+
+    // The CLI starts a turn of its own on the resident process and produces a result of
+    // its own, touching nothing on the card.
+    h.agents[0]!.emit("event", { type: "agent_self_wake" });
+    await flush();
+    h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => !h.card()!.fresh, "the adopted turn marked the card stale");
+    await waitFor(() => h.nudges().length === 1, "the adopted turn was nudged");
+
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "the nudge turn finished");
     h.runner.dispose({ force: true });
   });
 

@@ -1,4 +1,4 @@
-import { bindSetting, settingCopy, settingOptions } from "../Settings/setting-binding.js";
+import { settingCopy, settingOptions } from "../Settings/setting-copy.js";
 import { inputClass } from "./shared.js";
 
 export function McpTypeSelector({
@@ -17,7 +17,6 @@ export function McpTypeSelector({
         className={inputClass}
         value={value}
         onChange={(e) => onChange(e.target.value as "stdio" | "http")}
-        {...bindSetting("mcp.servers[].type")}
       >
         {settingOptions("mcp.servers[].type").map((option) => (
           <option key={option.value} value={option.value}>

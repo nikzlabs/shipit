@@ -11,12 +11,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DeclaredSettings, controlFor } from "./DeclaredSettings.js";
+import { CONTROLS } from "./declared-controls.js";
 import { resetDeclaredSaves } from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
-import { GENERATED_SETTINGS, initialSettingValues } from "../../stores/setting-values.js";
-import { findSetting, type SettingKey } from "../../../server/shared/settings-catalogue/index.js";
+import { useRepoStore } from "../../stores/repo-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
+import { GENERATED_SETTINGS, initialSettingValues, recordHolds } from "../../stores/setting-values.js";
+import {
+  findSetting,
+  type AnySettingDeclaration,
+  type SettingKey,
+} from "../../../server/shared/settings-catalogue/index.js";
 
 const ROWS = GENERATED_SETTINGS.filter((d) => d.tab === "advanced");
+
+/** A declared enum's options, as the control that offers them reads them. */
+function optionsOf(declaration: AnySettingDeclaration): { value: string; label: string; description?: string }[] {
+  const { options } = declaration.type.shape as {
+    options?: { value: string; label: string; description?: string }[];
+  };
+  return options ?? [];
+}
 /** The rows a value kind's own control renders — everything but the components. */
 const TOGGLES = ROWS.filter((d) => d.type.kind === "bool" && !d.component);
 
@@ -46,9 +61,9 @@ describe("the Advanced tab's rows come from the declarations", () => {
     render(<DeclaredSettings tab="advanced" />);
 
     expect(screen.getAllByRole("switch")).toHaveLength(TOGGLES.length);
+    // Found by the DECLARED label: one writing words of its own would not be found.
     for (const declaration of TOGGLES) {
-      const control = screen.getByRole("switch", { name: declaration.label });
-      expect(control).toHaveAttribute("data-setting", declaration.key);
+      expect(screen.getByRole("switch", { name: declaration.label })).toBeInTheDocument();
     }
   });
 
@@ -59,34 +74,24 @@ describe("the Advanced tab's rows come from the declarations", () => {
 
     const declaration = findSetting("advanced.releaseChannel")!;
     for (const option of (declaration.type.shape as { options: { label: string; description: string }[] }).options) {
-      const card = screen.getByRole("button", { name: option.label });
-      expect(card).toHaveAttribute("data-setting", declaration.key);
-      expect(card).toHaveTextContent(option.description);
+      expect(screen.getByRole("button", { name: option.label }))
+        .toHaveTextContent(option.description);
     }
   });
 
   // req 3 — a setting whose editing needs its own logic is still a declared row:
-  // the block renders the component the declaration names, in its place.
+  // the block renders the component the declaration names, in its place. Its
+  // place is last: the memory budget is a payload scalar, so declaration order
+  // alone put it above the browser-stored rows below (see its `order`).
   it("renders a declaration's component in place of a generated control", () => {
-    render(<DeclaredSettings tab="advanced" />);
-
-    expect(screen.getByTestId("settings-memory-budget")).toHaveAttribute(
-      "data-setting",
-      "advanced.memoryBudgetMb",
-    );
-  });
-
-  it("shows each row's declared label and description, and nothing of its own", () => {
     const { container } = render(<DeclaredSettings tab="advanced" />);
+    const budget = screen.getByTestId("settings-memory-budget");
+    const notifications = screen.getByRole("region", { name: "Notifications" });
 
-    for (const declaration of ROWS) {
-      expect(
-        container.querySelector(`[data-setting-label="${declaration.key}"]`),
-      ).toHaveTextContent(declaration.label);
-      expect(
-        container.querySelector(`[data-setting-description="${declaration.key}"]`),
-      ).toHaveTextContent(declaration.description);
-    }
+    expect(budget).toBeInTheDocument();
+    expect(Boolean(notifications.compareDocumentPosition(budget) & Node.DOCUMENT_POSITION_FOLLOWING))
+      .toBe(true);
+    expect([...container.querySelectorAll("section")].at(-1)).toContainElement(budget);
   });
 
   it("groups rows under their declared section, in declaration order", () => {
@@ -107,6 +112,26 @@ describe("the Advanced tab's rows come from the declarations", () => {
     }
   });
 
+  /*
+    It sat on Integrations, inside the GitHub card, and then led that tab. It is
+    Automation's first row now: everything in that group is ShipIt acting on a
+    pull request unasked, and the group reads in the order a PR lives — opened,
+    checks fixed, conflicts resolved, branch reset after the merge. Its req 4
+    visibility comes with the move: nothing on this tab is behind a connection.
+  */
+  it("opens Automation with auto-create-PR, which the Integrations tab used to carry", () => {
+    render(<DeclaredSettings tab="advanced" />);
+    const group = screen.getByRole("region", { name: "Automation" });
+
+    expect(within(group).queryAllByRole("switch").map((el) => el.getAttribute("aria-label")))
+      .toEqual([
+        findSetting("integrations.autoCreatePr")!.label,
+        findSetting("advanced.autoFixCi")!.label,
+        findSetting("advanced.autoResolveConflicts")!.label,
+        findSetting("advanced.autoResetMergedBranch")!.label,
+      ]);
+  });
+
   it("places a section's own prose inside that section", () => {
     render(
       <DeclaredSettings tab="advanced" notes={{ Notifications: <p>Only when you are away.</p> }} />,
@@ -114,6 +139,103 @@ describe("the Advanced tab's rows come from the declarations", () => {
 
     const group = screen.getByRole("region", { name: "Notifications" });
     expect(within(group).getByText("Only when you are away.")).toBeInTheDocument();
+  });
+
+  /*
+    Derived status belonging to ONE row, which a section note cannot carry
+    because it renders above the rows (inventory.md P12, found with one user in
+    slice 3 and two more here). What it must land beneath is the row it is about.
+  */
+  it("places a row's own status after that row, where a section's prose goes before it", () => {
+    const declaration = findSetting("advanced.autoFixCi")!;
+    render(
+      <DeclaredSettings
+        tab="advanced"
+        notes={{ [declaration.section!]: <p>About this whole group.</p> }}
+        rowNotes={{ "advanced.autoFixCi": <p>Nothing to fix right now.</p> }}
+      />,
+    );
+
+    const row = screen.getByRole("switch", { name: declaration.label });
+    const sectionNote = screen.getByText("About this whole group.");
+    const rowNote = screen.getByText("Nothing to fix right now.");
+    const follows = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    expect(follows(sectionNote, row)).toBe(true);
+    expect(follows(row, rowNote)).toBe(true);
+  });
+});
+
+/**
+ * Which control a choice gets, decided by the declaration alone (req 5).
+ *
+ * A card carries an option's own sentence, so an option set that declares
+ * descriptions gets cards and one that does not gets a select. Written against
+ * the rule rather than against the two settings that happen to exemplify it
+ * today: the branch is what a new enum inherits.
+ */
+describe("a choice is cards or a select, by what its options declare", () => {
+  const ENUMS = GENERATED_SETTINGS.filter((d) => d.type.kind === "enum" && !d.component);
+
+  it("covers both shapes with what is declared today", () => {
+    const described = ENUMS.filter((d) => optionsOf(d).every((o) => o.description));
+    expect(described.map((d) => d.key)).toEqual(["advanced.releaseChannel"]);
+    expect(ENUMS.length).toBeGreaterThan(described.length);
+  });
+
+  for (const declaration of ENUMS) {
+    const described = optionsOf(declaration).every((o) => o.description);
+    it(`renders ${declaration.key} as ${described ? "cards" : "a select"}`, () => {
+      render(<DeclaredSettings tab={declaration.tab} />);
+
+      const select = screen.queryByRole("combobox", { name: declaration.label });
+      if (described) {
+        expect(select).toBeNull();
+        for (const option of optionsOf(declaration)) {
+          expect(screen.getByRole("button", { name: option.label })).toBeInTheDocument();
+        }
+        return;
+      }
+      expect([...(select as HTMLSelectElement).options].map((o) => o.value))
+        .toEqual(optionsOf(declaration).map((o) => o.value));
+    });
+  }
+
+  it("writes the chosen option to the declaration's store", () => {
+    render(<DeclaredSettings tab="voice" />);
+    const declaration = findSetting("voice.language")!;
+
+    fireEvent.change(
+      screen.getByRole("combobox", { name: declaration.label }),
+      { target: { value: "fr" } },
+    );
+
+    expect(settingValue("voice.language")).toBe("fr");
+    expect(localStorage.getItem("shipit-voice-language")).toBe("fr");
+  });
+});
+
+/**
+ * A component named by several declarations renders once, at the first of them
+ * (plan.md → Slices → 4). Two renders would be two Saves over one credential and
+ * two provider pickers that disagree.
+ */
+describe("a component several declarations name", () => {
+  it("renders once however many name it", () => {
+    render(<DeclaredSettings tab="voice" />);
+
+    const shared = new Map<string, number>();
+    for (const declaration of GENERATED_SETTINGS) {
+      if (declaration.tab !== "voice" || !declaration.component) continue;
+      shared.set(declaration.component, (shared.get(declaration.component) ?? 0) + 1);
+    }
+    // The two the Voice tab has: three declarations for the TTS trio, two for
+    // the webhook pair.
+    expect([...shared.values()].filter((n) => n > 1).sort()).toEqual([2, 3]);
+
+    expect(screen.getAllByRole("button", { name: "Save webhook" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Test playback" })).toHaveLength(1);
   });
 });
 
@@ -131,10 +253,13 @@ describe("a generated row writes where its declaration says", () => {
       expect(init.method).toBe("PUT");
       expect(JSON.parse(init.body)).toEqual({ [declaration.wire!]: next });
       expect(settingValue(declaration.key)).toBe(next);
-      // The named field the rest of the app reads is a view over the record.
-      expect(
-        (useSettingsStore.getState() as unknown as Record<string, unknown>)[declaration.wire!],
-      ).toBe(next);
+      // Where the app still reads a setting by its own name, that field is a
+      // view over the record. The set is partial on purpose (plan.md P1): a
+      // named selector is a compatible read path for callers that had one, not
+      // a registration step, so a setting nothing reads by name has no field.
+      const named = useSettingsStore.getState() as unknown as Record<string, unknown>;
+      const field = declaration.wire!;
+      if (field in named) expect(named[field]).toBe(next);
     });
   }
 
@@ -179,6 +304,45 @@ describe("every generated row has a control", () => {
 });
 
 /**
+ * The Save a draft-holding row needs is the RENDERER's, and no tab file places
+ * one (req 1). Rendering the block ALONE is what says so: there is no tab file
+ * on screen to have supplied it, and the tabs are taken from the catalogue
+ * rather than named here, so a prompt row declared on a third tab tomorrow is
+ * checked the day it is declared. What that cannot distinguish is a renderer
+ * that hard-codes today's two tabs, since the derived list IS those two: the
+ * dogfood run in the pull request, which declared a prompt row on Advanced and
+ * watched the Save appear, is the evidence for that half.
+ */
+describe("the Save a tab's drafts need", () => {
+  const commit = () => screen.queryByRole("button", { name: "Save" });
+  const OWN_ROWS = GENERATED_SETTINGS.filter(
+    (d) => d.component === undefined && CONTROLS[d.type.kind]?.commitsOnButton === true,
+  );
+
+  it.each([...new Set(OWN_ROWS.map((d) => d.tab))])("is placed on the %s tab", (tab) => {
+    render(<DeclaredSettings tab={tab} />);
+    expect(commit()).toBeInTheDocument();
+  });
+
+  /*
+    Voice is the negative case worth having. Its webhook rows are `text` — the
+    kind that DOES commit on a button — and they name a component, which saves
+    them itself at its own address. So a tab Save here would both be pointless
+    and, once it collected those drafts, refuse its own write for naming two
+    destinations.
+  */
+  it("is absent from a tab whose only draft-holding rows name a component", () => {
+    expect(GENERATED_SETTINGS.some(
+      (d) => d.tab === "voice" && d.component !== undefined
+        && CONTROLS[d.type.kind]?.commitsOnButton === true,
+    )).toBe(true);
+
+    render(<DeclaredSettings tab="voice" />);
+    expect(commit()).toBeNull();
+  });
+});
+
+/**
  * The Instructions tab: prose over the one store whose values are prose.
  *
  * **The store is what makes it a textarea** — the design rejected a
@@ -193,9 +357,7 @@ describe("the instruction boxes", () => {
 
     for (const key of BOXES) {
       const declaration = findSetting(key)!;
-      const box = screen.getByRole("textbox", { name: declaration.label });
-      expect(box.tagName).toBe("TEXTAREA");
-      expect(box).toHaveAttribute("data-setting", key);
+      expect(screen.getByRole("textbox", { name: declaration.label }).tagName).toBe("TEXTAREA");
     }
   });
 
@@ -218,14 +380,21 @@ describe("the instruction boxes", () => {
     expect(screen.getByText("System prompt is too long (max 50,000 characters)")).toBeInTheDocument();
   });
 
-  // The toggle beside them is an ordinary declared boolean, so it needs nothing
-  // of its own — but the tab has to actually render it.
-  it("renders the built-in instructions toggle as a plain declared switch", () => {
+  /*
+    The toggle beside them is an ordinary declared boolean, so it needs nothing
+    of its own — but the tab has to actually render it, and above both boxes.
+    Slice 3 put it last because its disclosure was a section note, which renders
+    above its rows; the disclosure is a `rowNote` now and follows the row.
+  */
+  it("leads the tab with the built-in instructions toggle, above both boxes", () => {
     render(<DeclaredSettings tab="instructions" />);
 
     const declaration = findSetting("instructions.agentInstructionsEnabled")!;
-    expect(screen.getByRole("switch", { name: declaration.label }))
-      .toHaveAttribute("data-setting", declaration.key);
+    const toggle = screen.getByRole("switch", { name: declaration.label });
+    for (const box of screen.getAllByRole("textbox")) {
+      expect(Boolean(toggle.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING))
+        .toBe(true);
+    }
   });
 });
 
@@ -247,7 +416,9 @@ describe("the git identity", () => {
 
     expect(screen.getByLabelText("Name")).toHaveValue("Ada");
     expect(screen.getByLabelText("Email")).toHaveValue("ada@example.com");
-    expect(container.querySelectorAll('[data-setting="git.identity"]')).toHaveLength(2);
+    // Two boxes over ONE declaration: the tab has no second row they could be.
+    expect(GENERATED_SETTINGS.filter((d) => d.tab === "git").map((d) => d.key)).toEqual([KEY]);
+    expect(container.querySelectorAll("input")).toHaveLength(2);
   });
 
   it("edits one half without discarding the other", () => {
@@ -286,7 +457,11 @@ describe("a row stored behind a route of its own", () => {
 
     await userEvent.click(control);
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
+    // The allowlist panel beneath this row reads itself when it mounts, so the
+    // toggle's write is the first call that is not a bare read.
+    const [url, init] = fetchMock.mock.calls.find(
+      ([, options]) => (options as { method?: string } | undefined)?.method !== undefined,
+    ) as [string, { method: string; body: string }];
     expect(url).toBe("/api/egress/settings");
     expect(init.method).toBe("PUT");
     expect(JSON.parse(init.body)).toEqual({ globalEnabled: false });
@@ -304,5 +479,167 @@ describe("a row stored behind a route of its own", () => {
     expect(url).toBe("/api/updates/channel");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ channel: "edge" });
+  });
+});
+
+/**
+ * The Integrations tab (slices 5 and 6): two credential rows and two list
+ * panels, all placed and headed by the catalogue.
+ *
+ * The two panels carry no `section`, so they share the tab's unheaded group —
+ * the `null` below — and each renders its own declared label as its heading.
+ */
+describe("the Integrations tab's rows", () => {
+  it("renders them in declaration order, under their declared sections", () => {
+    const { container } = render(<DeclaredSettings tab="integrations" />);
+
+    expect([...container.querySelectorAll("section")].map((s) => s.getAttribute("aria-label")))
+      .toEqual(["Connected services", null]);
+    expect(screen.getByTestId("settings-github")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-trackers")).toBeInTheDocument();
+  });
+});
+
+/**
+ * A panel is a component like any other (slice 6): the renderer places it where
+ * its collection's declaration is, and a declaration a panel repeats per item
+ * stays skipped.
+ *
+ * What makes this worth asserting beyond "every generated row has a control" is
+ * that a panel's own writer is not the shared one, so nothing else here would
+ * notice a collection that stopped being a row at all.
+ */
+describe("a collection panel", () => {
+  it.each([
+    ["network", "settings-egress-host-input"],
+    ["keyboard", "settings-keybindings"],
+    ["services", "services-panel"],
+    ["roles", "roles-settings"],
+  ] as const)("is placed on the %s tab by its declaration", (tab, testId) => {
+    render(<DeclaredSettings tab={tab} />);
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+  });
+
+  /*
+    A collection is a value kind the browser codec cannot spell, so the record
+    must not hold one: nothing would hydrate it, and the reader prefers the
+    record to the named field. It is a ROW because it names a component —
+    membership of the rows is wider than membership of the record (P11, P16).
+  */
+  it("is a row without being in the value record", () => {
+    expect(GENERATED_SETTINGS.map((d) => d.key)).toContain("keyboard.keybindings");
+    expect(recordHolds("keyboard.keybindings")).toBe(false);
+  });
+});
+
+/**
+ * The Services tab (slice 6b): the panel that five declarations name, then the
+ * background-work pin.
+ *
+ * **That order is stated, not inherited.** `services.nonTurnModel` is a payload
+ * setting in `global-settings.ts`, the registry's first source, so declaration
+ * order alone puts it above the providers it draws from — which is the defect
+ * the `order` on it corrects. Remove that one field and this test fails.
+ */
+describe("the Services tab's rows", () => {
+  it("leads with the providers panel and follows with the background-work pin", () => {
+    const { container } = render(<DeclaredSettings tab="services" />);
+
+    const rendered = container.querySelector('[data-testid="background-work-section"]')!;
+    const panel = container.querySelector('[data-testid="services-panel"]')!;
+    expect(Boolean(panel.compareDocumentPosition(rendered) & Node.DOCUMENT_POSITION_FOLLOWING))
+      .toBe(true);
+  });
+
+  /*
+    Every declaration naming this panel is ADDRESSED — the credentials and the
+    routing controls exist per (service, billing mode), the accounts per provider
+    — and none belongs to a collection that would place the panel instead. So
+    each names it and is deduplicated against the first, exactly as
+    `mcp.oauthProvider` is against `mcp.servers`; one render per declaration would
+    be five copies of one credential list.
+  */
+  it("renders one panel however many of its declarations name it", () => {
+    const naming = GENERATED_SETTINGS.filter(
+      (d) => d.tab === "services" && d.component === "services-panel",
+    );
+    expect(naming.length).toBeGreaterThan(1);
+    expect(naming.every((d) => d.address !== undefined)).toBe(true);
+
+    const { container } = render(<DeclaredSettings tab="services" />);
+    expect(container.querySelectorAll('[data-testid="services-panel"]')).toHaveLength(1);
+  });
+});
+
+/**
+ * Project Settings (slice 7, req 10) — the second dialog, and the one place
+ * where "a generated row" and "a value the record holds" come apart for every
+ * row on a tab.
+ *
+ * All five declarations are addressed by REPOSITORY, so each names a component
+ * and none of them is written by the shared writer: the record is keyed by
+ * setting alone, and a repo-scoped value in it would be the previous
+ * repository's the moment the dialog is opened for another one.
+ */
+describe("Project Settings' rows", () => {
+  beforeEach(() => {
+    // The secrets panel reads its stored names before it renders a row, and a
+    // read it cannot make is an error state rather than an empty repository.
+    fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({ keys: [] }) });
+    useUiStore.getState().setProjectSettingsRepoUrl("https://github.com/acme/app");
+    useRepoStore.setState({
+      repos: [{ url: "https://github.com/acme/app", colorIndex: 2, allowAgentMerge: false }],
+    } as never);
+  });
+
+  afterEach(() => {
+    useUiStore.getState().setProjectSettingsRepoUrl(null);
+    useRepoStore.setState({ repos: [] } as never);
+  });
+
+  it("places the agent-merge row under its declared section", () => {
+    render(<DeclaredSettings tab="project-deployments" />);
+    const section = screen.getByRole("region", { name: "Agent permissions" });
+    expect(within(section).getByTestId("allow-agent-merge-toggle")).toBeInTheDocument();
+  });
+
+  it("places the colour picker on the Appearance tab", () => {
+    render(<DeclaredSettings tab="project-appearance" />);
+    expect(screen.getByTestId("repo-color-picker")).toBeInTheDocument();
+  });
+
+  it("places the secrets panel on the Secrets tab", async () => {
+    render(<DeclaredSettings tab="project-secrets" />);
+    expect(await screen.findByTestId("secrets-tab")).toBeInTheDocument();
+  });
+
+  /*
+    The tab's one row is the collection. Its two item fields name no component,
+    because the collection is what places the panel and the renderer skips an
+    addressed declaration that names none (P11) — naming one on an item field
+    would claim a second row for a panel that renders once.
+  */
+  it("renders a row for the collection and none for its item fields", async () => {
+    render(<DeclaredSettings tab="project-secrets" />);
+    await screen.findByTestId("secrets-tab");
+
+    const rows = GENERATED_SETTINGS.filter((d) => d.tab === "project-secrets").map((d) => d.key);
+    expect(rows).toEqual(["project.secrets"]);
+    expect(document.querySelectorAll('[data-testid="secrets-tab"]')).toHaveLength(1);
+  });
+});
+
+/**
+ * The Roles tab (slice 6b): one component for two collections, because the roles
+ * list and the reviewer's metadata open the same editor through the same write.
+ */
+describe("the Roles tab's rows", () => {
+  it("renders the roles list and the reviewer slots from one registered component", () => {
+    const naming = GENERATED_SETTINGS.filter((d) => d.tab === "roles" && d.component === "roles");
+    expect(naming.length).toBeGreaterThan(1);
+
+    const { container } = render(<DeclaredSettings tab="roles" />);
+    expect(container.querySelectorAll('[data-testid="roles-settings"]')).toHaveLength(1);
+    expect(screen.getByTestId("reviewer-tab")).toBeInTheDocument();
   });
 });

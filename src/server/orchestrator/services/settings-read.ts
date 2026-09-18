@@ -334,7 +334,58 @@ export const OWN_ROUTE_READERS: Record<OwnRouteSettingKey, OwnRouteReader> = {
           reason: "read_failed",
           note: renderOwn("This install has no egress allowlist store, so the containment setting cannot be read."),
         },
+  /*
+    The two webhook halves moved here from `BESPOKE_READERS` when their store
+    became an address the dialog can write through
+    (docs/308-data-driven-settings). The read is the same one it always was —
+    the stored url and token, straight from the credential store — because
+    requirement 8 holds the agent's view unchanged: `configured_only` is what
+    reduces either to whether it is set.
+  */
+  "voice.webhook.url": (deps) => voiceWebhook(deps, (webhook) => webhook?.url ?? null),
+  "voice.webhook.token": (deps) => voiceWebhook(deps, (webhook) => webhook?.token ?? null),
+  /*
+    The two pasted-token connections moved here from `BESPOKE_READERS` when
+    their store became the address that writes them (docs/308 slice 5). The
+    read is the same one it always was — the stored token, straight from the
+    credential store — because requirement 8 holds the agent's view unchanged:
+    `configured_only` is what reduces either to whether it is set. Their paths
+    are `writeOnly`, which is about the BROWSER's read and says nothing here.
+  */
+  "integrations.github.connection": (deps) =>
+    storedCredential(deps, (store) => store.getGithubToken()),
+  "integrations.linear.credential": (deps) =>
+    storedCredential(deps, (store) => store.getLinearToken()),
 };
+
+/** A credential read straight off the store, for a setting no payload carries. */
+function storedCredential(
+  deps: SettingsReadDeps,
+  pick: (store: NonNullable<SettingsReadDeps["credentialStore"]>) => string | null | undefined,
+): ReadOutcome {
+  if (!deps.credentialStore) {
+    return {
+      ok: false,
+      reason: "read_failed",
+      note: renderOwn("This install has no credential store, so ShipIt cannot read this value."),
+    };
+  }
+  return { ok: true, kind: "value", value: pick(deps.credentialStore) ?? null };
+}
+
+function voiceWebhook(
+  deps: SettingsReadDeps,
+  pick: (webhook: { url: string; token: string } | null) => string | null,
+): ReadOutcome {
+  if (!deps.credentialStore) {
+    return {
+      ok: false,
+      reason: "read_failed",
+      note: renderOwn("This install has no credential store, so ShipIt cannot read this value."),
+    };
+  }
+  return { ok: true, kind: "value", value: pick(deps.credentialStore.getVoiceWebhook() ?? null) };
+}
 
 /** The reader for a key held as a plain string; present for every own-route one. */
 function ownRouteReader(key: string): OwnRouteReader | undefined {

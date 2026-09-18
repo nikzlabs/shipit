@@ -69,10 +69,41 @@ CI on PRs into `stable` (`ci.yml` now triggers on PRs into `main` **and**
 `stable`) gives reviewers a green check before merge — a recommended quality gate,
 but no longer load-bearing for safety (tag-resolution owns that).
 
+## Release notes
+
+A final release publishes **authored notes, or it does not publish**
+(docs/309-agent-authored-release-notes). GitHub's generated per-PR list is never
+the body of a final release — `shipit release prepare` refuses a release with no
+notes, and the publish job fails if the tag carries none. Release candidates are
+the sole exception: an rc tags an existing commit, so it cannot carry a notes
+file, and it reaches no install automatically.
+
+- In the propose turn the agent writes a compact summary of
+  `git log origin/stable..origin/main` to **`RELEASE_NOTES.draft.md`** at the
+  repo root. It is gitignored — edit it freely; the edit cannot dirty the tree
+  `shipit release prepare` refuses to run against.
+- `prepare` commits the draft as **`.release-notes/v<version>.md`** beside the
+  version bump, so the notes are reviewable in the same PR you merge. The draft
+  is deleted only once the PR exists, and a re-run for the same version recovers
+  the notes already on the pushed release branch — the branch is rebuilt from
+  `stable` each time, so without that a retry would ship a release with none.
+- On merge `release.yml` publishes that file **read from the tag** verbatim with
+  `--notes-file`, appending the `**Full Changelog**` link itself (GitHub adds one
+  only for `--generate-notes`; a first release links `commits/<tag>` instead of a
+  compare range). Reading from the tag rather than the checkout matters on the
+  repair path, where the tag is older than the commit CI is running on. No file
+  at the tag on a **final** release ⇒ the publish job fails with an error naming
+  the missing path; a **hand-pushed final tag must therefore carry that file on
+  its commit**, including the one-time cold-start tag described below.
+- Settings → Update reads the same committed file back (`git show
+  <tag>:.release-notes/<tag>.md`) as the changelog for a pending stable update.
+
 ## Labels
 
-The auto-generated GitHub Release notes are **grouped into sections by PR label**
-(`.github/release.yml`):
+The label-grouped generated notes below now apply **only to release candidates**
+(`.github/release.yml`) — a final release publishes authored notes. Labels still
+matter for every other reason they always did, and this section is what an rc's
+body looks like:
 
 | Section | Labels |
 |---|---|
@@ -168,9 +199,14 @@ git tag -a v0.3.0-rc.1 -m "Release v0.3.0-rc.1" <commit>
 git push origin v0.3.0-rc.1
 ```
 
-The release workflow's tag path publishes it as a **GitHub prerelease**. Testers
+The release workflow's tag path publishes it as a **GitHub prerelease** with
+GitHub's generated per-PR notes — an rc tags an existing commit, so it has no
+commit of its own to carry a notes file, and it is the one release kind exempt
+from the authored-notes rule above. It reaches no install automatically (the
+stable channel resolves the latest **final** tag; edge tracks `main`), so testers
 point at the specific tag. When it looks good, fold the work into a `stable` bump
-PR and cut the final `v0.3.0` the normal (merge-triggered) way.
+PR and cut the final `v0.3.0` the normal (merge-triggered) way — that one does
+need authored notes.
 
 ## Patch / hotfix releases
 

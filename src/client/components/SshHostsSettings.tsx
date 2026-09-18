@@ -13,6 +13,8 @@
  * A destination is edited in place (req 14) rather than deleted and re-added,
  * because the grant on each session names the destination's id: re-adding mints
  * a new id and silently revokes it everywhere.
+ *
+ * The component `integrations.sshHosts` names (docs/308-data-driven-settings).
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: load the account-wide registry when this panel mounts (external system sync)
@@ -29,7 +31,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { CopyButton } from "./ui/copy-button.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { bindSetting, settingCopy } from "./Settings/declared.js";
+import { SettingCopy, settingCopy } from "./Settings/declared.js";
 import type { SettingKey } from "../../server/shared/settings-catalogue/index.js";
 import type { SshHostPublic } from "../../server/shared/types.js";
 
@@ -76,13 +78,12 @@ function SshField({
   const describedBy = `${settingKey}-description`;
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs text-(--color-text-secondary)" data-setting-label={settingKey}>
+      <span className="text-xs text-(--color-text-secondary)">
         {label}
       </span>
       <span
         id={describedBy}
         className="text-[11px] text-(--color-text-tertiary)"
-        data-setting-description={settingKey}
       >
         {description}
       </span>
@@ -100,7 +101,6 @@ function SshField({
         */
         aria-label={label}
         aria-describedby={describedBy}
-        {...bindSetting(settingKey)}
       />
     </label>
   );
@@ -269,6 +269,8 @@ export function SshHostsSettings() {
 
   return (
     <div className="flex flex-col gap-2" data-testid="ssh-hosts-settings">
+      <SettingCopy settingKey="integrations.sshHosts" heading />
+
       {hosts?.length === 0 && editor === null && (
         <p className="text-xs text-(--color-text-tertiary)">
           No destinations yet. ShipIt generates a key per destination; you install its public line on the server.
@@ -311,7 +313,6 @@ export function SshHostsSettings() {
                 disabled={!canSubmit || busy}
                 onClick={() => void save()}
                 data-testid="ssh-host-save"
-                {...bindSetting("integrations.sshHosts")}
               >
                 Save changes
               </Button>
@@ -351,7 +352,6 @@ export function SshHostsSettings() {
                 onClick={() => startEdit(host)}
                 aria-label={`Edit ${host.label}`}
                 data-testid="ssh-host-edit"
-                {...bindSetting("integrations.sshHosts")}
               >
                 <PencilSimpleIcon size={ICON_SIZE.SM} />
               </Button>
@@ -362,7 +362,6 @@ export function SshHostsSettings() {
                 onClick={() => void remove(host)}
                 aria-label={`Remove ${host.label}`}
                 data-testid="ssh-host-remove"
-                {...bindSetting("integrations.sshHosts")}
               >
                 <TrashIcon size={ICON_SIZE.SM} />
               </Button>
@@ -410,7 +409,6 @@ export function SshHostsSettings() {
               disabled={!canSubmit || busy}
               onClick={() => void save()}
               data-testid="ssh-host-save"
-              {...bindSetting("integrations.sshHosts")}
             >
               Add destination
             </Button>
@@ -429,7 +427,6 @@ export function SshHostsSettings() {
               setEditor({ kind: "add" });
             }}
             data-testid="ssh-host-add"
-            {...bindSetting("integrations.sshHosts")}
           >
             <PlusIcon size={ICON_SIZE.SM} />
             Add SSH host

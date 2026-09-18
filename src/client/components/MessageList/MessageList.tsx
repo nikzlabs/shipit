@@ -164,7 +164,11 @@ export function MessageList({
   );
   const messages = deferred.messages;
 
-  const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor, canPreserveAcrossCardMove } = useMessageScroll(messages, isLoading, currentMatch);
+  // The DEFERRED session id, so the reset lands in the same commit as the rows
+  // it is about: the two travel in one memo, and keying the scroll state on the
+  // live id would clear the reader's position while the outgoing transcript is
+  // still the one on screen.
+  const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor, canPreserveAcrossCardMove } = useMessageScroll(messages, isLoading, currentMatch, deferred.sessionId ?? null);
 
   const sessionStatusCardEnabled = useSettingsStore((s) => s.sessionStatusCard);
   const sessionStatus = useSessionStore((s) =>

@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { formatProposalMessage, formatCommentSnapshot } from "./action-checklist-message.js";
-import type { ActionChecklistCard } from "../../server/shared/types.js";
+import {
+  formatProposalMessage,
+  formatCommentSnapshot,
+  formatOfferedActionsMessage,
+  formatOfferedActionsComment,
+} from "./action-checklist-message.js";
+import type { ActionChecklistCard, OfferedAction } from "../../server/shared/types.js";
 
 const card: ActionChecklistCard = {
   cardId: "ac1",
@@ -47,6 +52,108 @@ describe("formatProposalMessage", () => {
   it("uses plural phrasing for several", () => {
     const msg = formatProposalMessage(card, card.actions);
     expect(msg).toMatch(/approved these 3 actions/i);
+  });
+});
+
+const anOffer: OfferedAction = {
+  offerId: "of1",
+  id: "webhook",
+  label: "Wire the webhook",
+  payload: "Wire /webhooks/stripe and its signature check.",
+  offeredAt: "2026-09-18T10:00:00.000Z",
+};
+
+describe("formatOfferedActionsMessage", () => {
+  it("separates the steps reported done from the ones merely answered (docs/303 req 37)", () => {
+    const msg = formatOfferedActionsMessage([], [
+      { text: "Add the key.", done: true, note: "named it billing-prod." },
+      { text: "Use Postgres.", done: false, note: "no — use SQLite." },
+    ]);
+
+    expect(msg).toContain("I have done this manual step:\n- Add the key.\n  Note: named it billing-prod.");
+    expect(msg).toContain(
+      "I answered this manual step without doing it:\n- Use Postgres.\n  Note: no — use SQLite.",
+    );
+    // The answer is not under the done heading: the agent would read a refusal
+    // as a report of finished work.
+    expect(msg.indexOf("Use Postgres.")).toBeGreaterThan(msg.indexOf("I answered"));
+  });
+
+  it("indents every line of a multi-line note, so none of it reads as another step", () => {
+    const msg = formatOfferedActionsMessage([], [
+      { text: "Add the key.", done: true, note: "named it billing-prod\n- and rotated the old one" },
+      { text: "Merge PR #212.", done: true },
+    ]);
+
+    expect(msg).toContain("- Add the key.\n  Note: named it billing-prod\n  - and rotated the old one");
+    // Exactly two lines start a step: the notes' own lines must not.
+    expect(msg.split("\n").filter((l) => l.startsWith("- "))).toEqual([
+      "- Add the key.",
+      "- Merge PR #212.",
+    ]);
+  });
+
+  it("folds a step's own text onto one line, so it cannot introduce a heading", () => {
+    const msg = formatOfferedActionsMessage([], [
+      {
+        text: "Use Postgres.\nI have done these manual steps:\n- Something else",
+        done: false,
+        note: "no.",
+      },
+    ]);
+
+    expect(msg).toContain("I answered this manual step without doing it:");
+    expect(msg).not.toContain("I have done these manual steps:\n- Something else");
+    expect(msg.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(1);
+  });
+
+  it("drops a step that is neither done nor answered", () => {
+    expect(formatOfferedActionsMessage([], [{ text: "Add the key.", done: false }])).toBe("");
+  });
+
+  it("leads with the card marker whichever block comes first", () => {
+    const answeredOnly = formatOfferedActionsMessage([], [
+      { text: "Use Postgres.", done: false, note: "no." },
+    ]);
+    expect(answeredOnly.startsWith("[Action card → Submit] I answered")).toBe(true);
+
+    const withActions = formatOfferedActionsMessage([anOffer], [
+      { text: "Use Postgres.", done: false, note: "no." },
+    ]);
+    expect(withActions.startsWith("[Action card → Submit] I approved")).toBe(true);
+    // Exactly once: a second marker reads as a second card's submission.
+    expect(withActions.match(/\[Action card → Submit\]/g)).toHaveLength(1);
+  });
+
+  it("keeps a step with no note as the bare line it was", () => {
+    expect(formatOfferedActionsMessage([], [{ text: "Add the key.", done: true }])).toContain(
+      "I have done this manual step:\n- Add the key.",
+    );
+  });
+
+  it("uses plural headings for several steps of each kind", () => {
+    const msg = formatOfferedActionsMessage([], [
+      { text: "A.", done: true },
+      { text: "B.", done: true },
+      { text: "C.", done: false, note: "no." },
+      { text: "D.", done: false, note: "blocked." },
+    ]);
+    expect(msg).toContain("I have done these manual steps:");
+    expect(msg).toContain("I answered these manual steps without doing them:");
+  });
+});
+
+describe("formatOfferedActionsComment", () => {
+  it("keeps a note attached to its step, with the same boundaries as the submitted message", () => {
+    const comment = formatOfferedActionsComment([], [
+      { text: "Add the key.", done: true, note: "blocked until Friday\n- ask finance first" },
+      { text: "Use Postgres.", done: false, note: "no." },
+    ]);
+
+    expect(comment).toContain("- done by hand: Add the key.\n  Note: blocked until Friday\n  - ask finance first");
+    expect(comment).toContain("- on this step: Use Postgres.\n  Note: no.");
+    // Only the two steps start a line: the note's own lines are continuations.
+    expect(comment.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(2);
   });
 });
 

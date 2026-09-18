@@ -37,6 +37,8 @@ export interface WsSubagentReportUpdate {
 
 export interface WsModelInfo {
   type: "model_info";
+  /** The session this reading describes; the client drops a foreign one. */
+  sessionId: string;
   model: string;
   contextWindowTokens: number;
 }

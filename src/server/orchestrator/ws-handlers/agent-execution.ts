@@ -39,6 +39,7 @@ import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-rout
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 import { takeRoleStandingInstructions } from "../services/session-role.js";
 import { dependencyGapAgentPrefix } from "../dependency-staleness.js";
+import { sessionStatusTurnContext } from "../services/session-status.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
 export { selectAgentEnvForPush };
@@ -393,6 +394,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const ridesTurnAsCommand =
     !opts.compact && (opts.verbatim ?? ridesTurnGoalCommand(userText, agentInfo?.capabilities));
 
+  // docs/303 req 36 — the harness answers this turn by compacting the conversation, so it
+  // produces no work of the agent's own. A verbatim `/goal` is deliberately not one: it is
+  // delivered whole for the same reason, but the harness answers it by starting work.
+  const harnessCommand = opts.compact === true;
+
   // Compaction must neither move the branch nor receive instructions to resume work.
   let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
   if (capturedSessionId && capturedSessionDir && runner && !opts.compact && !ridesTurnAsCommand) {
@@ -451,19 +457,27 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const imageContext =
     images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
   const dependencyPrefix = opts.compact ? "" : dependencyGapAgentPrefix(runner?.dependencyGap);
+  // docs/303 req 35 — read, never consumed: the card is standing state, so it rides
+  // every turn. Last in the prefix, so the one-shot notices keep the top.
+  const statusContext =
+    capturedSessionId && !opts.compact && !ridesTurnAsCommand
+      ? sessionStatusTurnContext(
+          { sessionManager: ctx.sessionManager, credentialStore: ctx.credentialStore },
+          capturedSessionId,
+        )
+      : "";
   const agentPrefix = [
     pendingAgentNotice,
     bugOutcomeNotice,
     settingsOutcome?.notice,
     resetAgentPrefix,
     dependencyPrefix,
+    statusContext,
   ]
     .filter(Boolean)
     .join("\n\n");
   // takeRoleStandingInstructions is a take: reading it on a verbatim turn, which
   // cannot carry it, would destroy the role's brief for good.
-  // takeRoleStandingInstructions is a take, so reading it on a turn that cannot
-  // carry it would destroy the role's brief for good.
   const roleContext = capturedSessionId && !ridesTurnAsCommand
     ? takeRoleStandingInstructions(capturedSessionId, {
         sessionManager: ctx.sessionManager,
@@ -517,6 +531,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     },
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     statusCardEnabled: () => ctx.credentialStore.getSessionStatusCard(),
+    sessionStatusContext: (sessionId) =>
+      sessionStatusTurnContext(
+        { sessionManager: ctx.sessionManager, credentialStore: ctx.credentialStore },
+        sessionId,
+      ),
     listenerDeps,
     buildRunParams: async (sessionId, id, p, turnRoute) => {
       // Env preparation can replace agentSessionId; read it again.
@@ -687,6 +706,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
       ...(opts.systemTurn ? { systemTurn: true } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+      ...(harnessCommand ? { harnessCommand: true } : {}),
       emitUserEcho: userEcho !== undefined,
       ...(userEcho ? { userEcho } : {}),
       persistUserMessage,

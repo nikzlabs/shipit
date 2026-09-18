@@ -7,6 +7,7 @@
 
 import {
   ALL_SETTINGS,
+  isPayloadDeclaration,
   type AnySettingDeclaration,
   type OwnRouteStore,
   type SettingTab,
@@ -20,8 +21,18 @@ import {
  * its values stay with the named store fields and their own setters, because a
  * half-converted tab either duplicates a control or renders a row that cannot
  * save (inventory.md P18).
+ *
+ * **Generated is not the same as recorded, and the three `project-*` tabs are
+ * where the two come apart** (slice 7). Every Project Settings value belongs to
+ * one repository rather than to the install, and this record is keyed by setting
+ * alone — so a repo-scoped value in it would be the previous repository's the
+ * moment the dialog is opened for another. All five are `bespoke` and so fail
+ * {@link sharedValue}: they are rows, read and written through the repository
+ * store, and none of them enters the record.
  */
-export const GENERATED_TABS: readonly SettingTab[] = ["advanced", "network", "instructions", "git"];
+export const GENERATED_TABS: readonly SettingTab[] =
+  ["advanced", "network", "instructions", "git", "voice", "integrations", "keyboard",
+   "services", "roles", "project-deployments", "project-secrets", "project-appearance"];
 
 /**
  * The stores `saveSetting` can write. The three payload stores share
@@ -55,7 +66,6 @@ const GENERATED_KINDS: ReadonlySet<SettingValueKind> = new Set<SettingValueKind>
  * a branch nothing runs.
  */
 function hasControl(declaration: AnySettingDeclaration): boolean {
-  if (declaration.component !== undefined) return true;
   if (declaration.type.kind === "text") return declaration.store.kind === "system-prompt-file";
   return GENERATED_KINDS.has(declaration.type.kind);
 }
@@ -82,42 +92,77 @@ const BROWSER_CODECS: Partial<Record<SettingValueKind, BrowserCodec>> = {
       raw === "true" ? true : raw === "false" ? false : declaration.type.defaultValue,
     encode: (value) => String(value),
   },
+  // A choice and a line of text are stored as themselves, so `read` is already
+  // the right reader: it answers the declared default for a stored option the
+  // catalogue no longer offers, which is the one thing `getSavedString` did not
+  // do — a select whose value is not among its options renders blank.
+  enum: { decode: (raw, declaration) => declaration.type.read(raw), encode: String },
+  text: { decode: (raw, declaration) => declaration.type.read(raw), encode: String },
+  // `String(value)` is the form the speed is already stored in, and the parse has
+  // to happen here: `numeric.read` answers its default for a string, so handing
+  // it the stored text would reset every saved speed to 1 (P17).
+  number: {
+    decode: (raw, declaration) => declaration.type.read(Number(raw)),
+    encode: String,
+  },
 };
 
 /**
  * A declaration the renderer produces a row for.
  *
- * A declaration naming a `component` qualifies whatever its value kind, because
- * what the control table has no control for is exactly what a component is for
- * (req 3) — the store still has to be one the writer can reach, since a
- * component saves through the same writer every row uses.
- *
- * An addressed declaration is excluded because it describes one item of a
- * collection, which a panel renders per item rather than once (P11).
+ * A declaration naming a `component` qualifies whatever its value kind, its
+ * address and its store: what the control table has no control for is exactly
+ * what a component is for (req 3), and a component that owns an addressed
+ * declaration renders it per item rather than as a row (P11) — which is the
+ * whole of "the renderer must not treat an addressed declaration as a standalone
+ * row". Without a component, an addressed declaration belongs to a panel and is
+ * skipped here.
  */
 export function isGeneratedRow(declaration: AnySettingDeclaration): boolean {
-  return !declaration.address
-    && GENERATED_TABS.includes(declaration.tab)
-    && hasControl(declaration)
-    && WRITABLE_STORES.has(declaration.store.kind)
-    && storable(declaration);
+  if (!GENERATED_TABS.includes(declaration.tab)) return false;
+  if (declaration.component !== undefined) return true;
+  return !declaration.address && hasControl(declaration) && sharedValue(declaration);
 }
 
 /**
- * A browser value needs a codec for its kind, and the rest need nothing.
+ * Whether the shared reader and writer can hold this setting's value.
  *
- * Without this a browser ENUM would render, change on screen and write nothing
- * at all — `writeBrowserValue` has no codec to encode it with, and the next
- * reload would answer the default. `localStorage` holds strings, so a store
- * that cannot spell a kind cannot hold it (P17).
+ * A component may be named by a declaration they cannot — `voice.providerKey` is
+ * addressed by a provider and its write carries a second body field, so the list
+ * that owns it writes its own request, as a panel does (plan.md → The shape).
+ * What that must not do is put a value in the record: nothing would ever hydrate
+ * it, and the reader prefers the record over the named field (P1, P18).
+ */
+function sharedValue(declaration: AnySettingDeclaration): boolean {
+  return WRITABLE_STORES.has(declaration.store.kind) && storable(declaration);
+}
+
+/**
+ * Whether the record has anything to hold for this setting.
+ *
+ * Two stores answer no. A **browser** value needs a codec for its kind: without
+ * one a browser enum would render, change on screen and write nothing at all —
+ * `writeBrowserValue` has no codec to encode it with, and the next reload would
+ * answer the default (P17). And a **write-only own route** stores its value
+ * without ever answering it, so there is no read to pair with the write: the
+ * record would hold the declared default for ever while
+ * `refreshOwnRouteSettings` asked a path with no GET on every settings refresh.
+ * A credential the user pastes is that shape, and what its component shows is
+ * the connection rather than the value (slice 5).
  */
 function storable(declaration: AnySettingDeclaration): boolean {
-  return declaration.store.kind !== "browser" || declaration.type.kind in BROWSER_CODECS;
+  const { store } = declaration;
+  if (store.kind === "own-route" && store.writeOnly) return false;
+  return store.kind !== "browser" || declaration.type.kind in BROWSER_CODECS;
 }
 
 /** Every generated row, in declaration order — which is the order they render in. */
 export const GENERATED_SETTINGS: readonly AnySettingDeclaration[] =
   ALL_SETTINGS.filter(isGeneratedRow);
+
+/** The generated rows whose value the shared reader and writer carry. */
+const RECORDED_SETTINGS: readonly AnySettingDeclaration[] =
+  GENERATED_SETTINGS.filter(sharedValue);
 
 /**
  * What the record holds, fixed rather than grown on first write.
@@ -125,10 +170,11 @@ export const GENERATED_SETTINGS: readonly AnySettingDeclaration[] =
  * A setting outside it is read through its named store field, and that field is
  * what its own hydration still writes — so recording a value for it on a save
  * would leave the record holding a value the next hydration never corrects, and
- * the reader preferring it (P1, P18). `integrations.autoCreatePr` is the one
- * that reaches this writer today; its tab converts in slice 5.
+ * the reader preferring it (P1, P18). It is also narrower than the ROWS: a
+ * component may own a declaration the shared value machinery cannot hold, and a
+ * per-provider key or a write-only credential must not enter the record.
  */
-const RECORD_KEYS: ReadonlySet<string> = new Set(GENERATED_SETTINGS.map((d) => d.key));
+const RECORD_KEYS: ReadonlySet<string> = new Set(RECORDED_SETTINGS.map((d) => d.key));
 
 export function recordHolds(key: string): boolean {
   return RECORD_KEYS.has(key);
@@ -154,9 +200,40 @@ export function ownRouteOf(declaration: AnySettingDeclaration): OwnRouteStore | 
   return declaration.store.kind === "own-route" ? declaration.store : undefined;
 }
 
+/** The one write every payload setting shares, whichever of the three stores holds it. */
+export const SETTINGS_PATH = "/api/settings";
+
+/**
+ * The request that stores one setting's value, built from its declaration alone.
+ *
+ * The settings payload takes every value it carries under the declaration's
+ * `wire` — the credential store, an instructions file and the git config all
+ * reach it through the same PUT. A setting the payload does not carry takes the
+ * method, the path and the body field its own store names (P2): the declarations
+ * that use it post different body shapes, so a route string could not have
+ * produced any of their payloads.
+ *
+ * It lives here rather than beside the writer because a **component** builds one
+ * too. The shared writers discard the response, and a connection's answer is
+ * exactly what its card has to show — the GitHub account, the teams a Linear
+ * token reaches. What such a component must still not do is name the path.
+ */
+export function settingRequest(
+  declaration: AnySettingDeclaration,
+  value: unknown,
+): { path: string; method: string; body: Record<string, unknown> } | null {
+  if (isPayloadDeclaration(declaration)) {
+    return { path: SETTINGS_PATH, method: "PUT", body: { [declaration.wire]: value } };
+  }
+  const route = ownRouteOf(declaration);
+  return route
+    ? { path: route.path, method: route.method, body: { [route.bodyField]: value } }
+    : null;
+}
+
 /** Every generated row the settings payload does not carry, so it is read on its own. */
 export const OWN_ROUTE_SETTINGS: readonly AnySettingDeclaration[] =
-  GENERATED_SETTINGS.filter((d) => d.store.kind === "own-route");
+  RECORDED_SETTINGS.filter((d) => d.store.kind === "own-route");
 
 function storageKeyOf(declaration: AnySettingDeclaration): string {
   return (declaration.store as { localStorageKey: string }).localStorageKey;
@@ -195,6 +272,15 @@ const BROWSER_MIRRORS: Record<string, string> = {
   "advanced.compactConversation": "compactConversation",
   "advanced.notifyOnFinish": "notifyOnFinish",
   "advanced.soundOnFinish": "soundOnFinish",
+  "voice.inputEnabled": "voiceInputEnabled",
+  "voice.sttProvider": "sttProvider",
+  "voice.cleanupEnabled": "cleanupEnabled",
+  "voice.language": "voiceLanguage",
+  "voice.playbackEnabled": "voicePlaybackEnabled",
+  "voice.ttsProvider": "ttsProvider",
+  "voice.ttsVoice": "ttsVoice",
+  "voice.ttsSpeed": "ttsSpeed",
+  "voice.handsFree": "voiceHandsFree",
 };
 
 export function mirrorFieldOf(declaration: AnySettingDeclaration): string | undefined {
@@ -204,7 +290,7 @@ export function mirrorFieldOf(declaration: AnySettingDeclaration): string | unde
 /** The record as the page loads: the browser's own values, and the declared defaults. */
 export function initialSettingValues(): Record<string, unknown> {
   const values: Record<string, unknown> = {};
-  for (const declaration of GENERATED_SETTINGS) {
+  for (const declaration of RECORDED_SETTINGS) {
     values[declaration.key] = declaration.store.kind === "browser"
       ? readBrowserValue(declaration)
       : declaration.type.defaultValue;

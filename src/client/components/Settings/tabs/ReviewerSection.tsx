@@ -30,7 +30,7 @@
  *    the wire or here.
  *
  * **docs/264 phase 2 made this a SECTION rather than a tab.** The tab it used to
- * own is now `RolesTab`, which renders this below the list of pinned roles: the
+ * own is now `RolesSettings`, which renders this below the list of pinned roles: the
  * reviewer is one role among many (docs/264-agent-roles req 2), and the only one whose
  * params are two ranked candidates rather than one tuple — which is exactly why
  * it keeps its own cards instead of becoming a row. Nothing below changed;
@@ -65,7 +65,7 @@ import { BillingModePill } from "../../BillingModePill.js";
 import { reasoningOptionsFor } from "../../../../server/shared/catalogue/index.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
-import { bindSetting, settingCopy } from "../declared.js";
+import { settingCopy } from "../declared.js";
 import type { AgentOption, EligibleModelOption } from "../../../agent-types.js";
 import type {
   ReviewerPinPatch,
@@ -135,7 +135,7 @@ export function ReviewerSection({
    * because it describes the reviewer rather than either candidate.
    *
    * A slot rather than state of this file's own: what the reviewer IS lives in
-   * the roles list, and the editor that writes it belongs to `RolesTab`. Passing
+   * the roles list, and the editor that writes it belongs to `RolesSettings`. Passing
    * the node keeps this file about the two ranked candidates, which is the one
    * thing here that is not shaped like every other role.
    */
@@ -205,10 +205,10 @@ export function ReviewerSection({
   return (
     <div className="flex flex-col gap-4" data-testid="reviewer-tab">
       <div>
-        <h3 className="text-sm font-medium text-(--color-text-primary)" data-setting-label="reviewers">
+        <h3 className="text-sm font-medium text-(--color-text-primary)">
           {settingCopy("reviewers").label}
         </h3>
-        <p className="mt-0.5 text-xs text-(--color-text-tertiary)" data-setting-description="reviewers">
+        <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
           {settingCopy("reviewers").description}
         </p>
         {/* Not the setting's own words: how ShipIt ranks the two, which is a
@@ -449,7 +449,6 @@ function ReviewerSlotCard({
             onChange={changeService}
             disabled={busy}
             idPrefix={`reviewer-${view.slot}`}
-            settingKey="reviewers[].model"
           />
           {/*
             req 14 — no models, no control. The auto row alone is not a choice:
@@ -513,7 +512,6 @@ function ReviewerSlotCard({
               onClick={() => onSave(null)}
               data-testid={`reviewer-reset-${view.slot}`}
               aria-label={`Reset ${SLOT_TITLE[view.slot] ?? view.slot} to auto`}
-              {...bindSetting("reviewers")}
             >
               <ArrowCounterClockwiseIcon size={ICON_SIZE.XS} />
               Reset to auto
@@ -576,7 +574,6 @@ function ModelMenu({
       menuTestId={`reviewer-model-menu-${slot}`}
       menuWidth="w-72"
       disabled={disabled}
-      settingKey="reviewers[].model"
     >
       {/*
         The derived default as a LABELLED option (req 8), always first and never
@@ -632,7 +629,6 @@ function ReasoningMenu({
       menuLabel={label}
       menuWidth="w-48"
       disabled={disabled}
-      settingKey="reviewers[].reasoningEffort"
     >
       {options.map((option) => (
         <PickerOption

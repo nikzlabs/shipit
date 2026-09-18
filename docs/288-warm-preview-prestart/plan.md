@@ -197,6 +197,16 @@ have to be true, and both need checking rather than assuming:
   on exactly the services we pre-started. The adopt path must skip the re-hold
   when the install is a marker-skip. This is the one place the design can
   silently undo itself, and it is where the tests should be sharpest.
+- **Adoption must tolerate a session network that does not exist yet.** Found in
+  production after this shipped: Compose creates `shipit-session-<id>` with the
+  first service, so a project whose services are all manual — this repository —
+  has none. `adoptExistingServiceManager` joins the agent to that network
+  unconditionally and used to report Docker's 404 as a stack error, which the
+  preview pane renders as a Docker Compose error banner. Before pre-start, a new
+  session reached the join only through `ServiceManager.joinSessionNetwork`,
+  which has always swallowed it; pre-start routed new sessions down the adopt
+  path, where the same 404 was fatal. The join is now skipped, not reported,
+  when the network is absent — every `up` joins again.
 
 ## The claim's rebase (req 5)
 

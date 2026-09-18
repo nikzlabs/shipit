@@ -18,6 +18,7 @@ import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
+import { GLOBAL_SETTINGS, settingPath } from "../../shared/settings-catalogue/index.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { accountServiceForHarness } from "../provider-account-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -129,6 +130,13 @@ export const HOST_SHUTDOWN_CONSULT_DETAIL =
   + "consult finished, so its result was lost. Re-run the consult if you still "
   + "need it.";
 
+const SUB_AGENTS_SETTING = GLOBAL_SETTINGS["advanced.enableSubAgents"];
+
+/** Named from the declaration: a hand-quoted label goes stale on the next reword (planning#580). */
+const SUB_AGENTS_DISABLED =
+  `Sub-agents are disabled. Turn on "${SUB_AGENTS_SETTING.label}" in `
+  + `${settingPath(SUB_AGENTS_SETTING.tab)}.`;
+
 export const UNATTRIBUTED_CONSULT_DETAIL =
   "This consult was cancelled before it finished, and ShipIt could not "
   + "determine what ended it. Re-run the consult if you still need it.";
@@ -150,8 +158,7 @@ export async function runSubAgent(
   if (!session) throw rejectSpawn(sessionId, requested, 404, "session_not_found", "Session not found");
 
   if (!deps.credentialStore.getEnableSubAgents()) {
-    throw rejectSpawn(sessionId, requested, 403, "sub_agents_disabled",
-      "Sub-agents are disabled. Enable them in Settings → Advanced, under \"Multi-agent sessions\".");
+    throw rejectSpawn(sessionId, requested, 403, "sub_agents_disabled", SUB_AGENTS_DISABLED);
   }
 
   if (typeof prompt !== "string" || prompt.trim().length === 0) {

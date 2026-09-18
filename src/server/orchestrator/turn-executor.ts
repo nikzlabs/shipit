@@ -114,6 +114,8 @@ export interface TurnInput {
   compact?: boolean;
   /** ShipIt's own turn, with no user row of its own: today, compaction. */
   silent?: boolean;
+  /** docs/303 req 36 — the harness answers this turn by compacting the conversation. */
+  harnessCommand?: boolean;
   /** docs/303 req 15 — this turn IS the status nudge, so it is never nudged again. */
   statusNudge?: boolean;
 }
@@ -699,6 +701,10 @@ export async function executeAgentTurn(
     return true;
   };
 
+  // Held rather than read from `input` at settlement: a CLI-started turn adopted here is
+  // the agent's own work, and `servingAdoptedTurn` is false again by the time it settles.
+  let harnessCommandTurn = input.harnessCommand === true;
+
   let receivedResult = false;
   // Distinct from `receivedResult`, which adoption retains from the predecessor so its
   // recovery semantics hold: this says THIS turn produced a result of its own.
@@ -730,8 +736,17 @@ export async function executeAgentTurn(
       // Not `receivedResult`: adoption keeps that from the predecessor on purpose, and a
       // crashed adopted turn produced no result of its own to judge.
       receivedResult: sawOwnResult,
-      silent: input.silent === true,
+      // Only when the result is this prompt's: a resident CLI can start a turn of its
+      // own before the command is submitted, and that turn is work the card must report.
+      harnessCommand: harnessCommandTurn && ownTurn !== "queued",
       statusNudge: input.statusNudge === true,
+      // Taken here, with the rest, because a drained successor resets both
+      // (`resetRunnerTurnState`, and this executor's own re-arm) — read live at the
+      // decision they can describe some later turn instead of the one being judged.
+      // Any steer counts, answered or not: whether the agent answered it is not
+      // knowable here (docs/303 plan.md → Turn settlement).
+      steered: (runner?.steeredMessages.length ?? 0) > 0,
+      promptQueued: ownTurn === "queued",
       postTurn,
       writeSeq: 0,
     };
@@ -742,7 +757,7 @@ export async function executeAgentTurn(
       console.error(`[turn] reading the status card for ${sessionId} failed:`, err);
     }
     turnFacts = facts;
-    if (cardOn && !facts.silent && !facts.statusUpdated) {
+    if (cardOn && !facts.harnessCommand && !facts.statusUpdated) {
       void markSessionStatusStale(statusDeps, sessionId, facts.writeSeq).catch((err: unknown) => {
         console.error(`[turn] marking the status card stale for ${sessionId} failed:`, err);
       });
@@ -753,16 +768,28 @@ export async function executeAgentTurn(
   let nudgeDecided = false;
   let nudgePending = false;
   let nudgeDispatched = false;
+  /**
+   * req 34 (planning#589) — a message that reached the agent mid-turn is owed an answer,
+   * and `promptQueued` is owed one exactly once. The prompt lifecycle deliberately never
+   * moves a queued prompt on (it is undecidable which result answered it), so reading the
+   * state itself would defer every later turn this resident settles.
+   */
+  let queuedPromptDeferralSpent = false;
   // Decided on the snapshot alone, after idle; dispatched separately, because a system
   // turn still holds systemTurnInProgress here and would only queue the nudge behind it.
   const decideStatusNudge = (): void => {
     if (nudgeDecided) return;
     nudgeDecided = true;
     if (!statusCardOn() || !runner) return;
+    const facts = settleTurnFacts();
+    const deferForQueuedPrompt = facts.promptQueued && !queuedPromptDeferralSpent;
+    if (deferForQueuedPrompt) queuedPromptDeferralSpent = true;
     nudgePending = shouldNudgeForStatusCard(
-      settleTurnFacts(),
+      facts,
       storedStatus(),
-      runner.running || runner.queueLength > 0,
+      // The live two say a successor has already taken the session; the two from the
+      // snapshot say this turn left a message unanswered, which neither can see.
+      runner.running || runner.queueLength > 0 || facts.steered || deferForQueuedPrompt,
     );
   };
 
@@ -774,6 +801,8 @@ export async function executeAgentTurn(
     // Re-checked here, not only at the decision: the deferral is about the session's
     // state when the nudge would start, and that turn is checked afresh when it ends.
     if (runner.running || runner.systemTurnInProgress || runner.mergeHold) return;
+    // Live state only: the snapshot's own reasons to defer were settled at the decision,
+    // and re-reading them here would read a successor's state instead of this turn's.
     if (runner.queueLength > 0) {
       nudgePending = false;
       return;
@@ -1117,6 +1146,7 @@ export async function executeAgentTurn(
     // The adopted turn is a turn of its own: it settles its own facts and is decided afresh.
     turnFacts = null;
     sawOwnResult = false;
+    harnessCommandTurn = false;
     nudgeDecided = false;
     nudgePending = false;
     nudgeDispatched = false;

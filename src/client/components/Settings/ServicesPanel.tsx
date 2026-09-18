@@ -33,11 +33,19 @@
  *
  * **Deliberately not welded to Settings' page chrome.** docs/257's onboarding
  * panel hosts this component as-is — same card list, same dialog, same steps —
- * so it takes no props from the Settings route, renders no dialog shell of its
- * own, and brings **no padding and no scroll container**: each host frames it
- * (Settings with the tab padding every other tab uses, onboarding inside its
- * card). Since the per-vendor Claude/Codex tabs were removed, it is also the
- * *only* place a credential of any kind is added, seen or revoked.
+ * so it takes no props at all, renders no dialog shell of its own, and brings
+ * **no padding and no scroll container**: each host frames it (Settings with the
+ * tab padding every other tab uses, onboarding inside its card). Since the
+ * per-vendor Claude/Codex tabs were removed, it is also the *only* place a
+ * credential of any kind is added, seen or revoked.
+ *
+ * **In Settings it is placed by its declaration** (docs/308 slice 6b): five of
+ * the Model-providers declarations name this component, and the renderer puts it
+ * where the first of them is. Its own heading stays hand-written rather than
+ * coming from `services.credentials` — that heading row carries the *Supported
+ * models* control and belongs to both hosts, only one of which has a catalogue
+ * around it. What the panel keeps either way is its writer: add, remove, reorder,
+ * sign in and test are operations a value writer has no shape for.
  *
  * **One dense layout, both hosts.** The heading, the caption and the "Add a
  * service" button share one row, and "no services yet" is that caption rather
@@ -98,6 +106,7 @@ import {
   ProviderAccountRows,
   abandonAccount,
   cancelAccountLogin,
+  challengeHasDeadline,
   createAccount,
   providerAccountsOf,
   signInBlockedReason,
@@ -108,7 +117,6 @@ import {
 import { MODE_LABEL, ServiceCard } from "./ServiceCard.js";
 import { SupportedModelsDialog } from "./SupportedModelsDialog.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
-import { bindSetting } from "./setting-binding.js";
 
 /**
  * Sign-ins whose CLI prints a URL and then reads a pasted authorization code,
@@ -221,7 +229,10 @@ function standDown(
   else void cancelAccountLogin(provider, account.id);
 }
 
-export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] }) {
+export function ServicesPanel() {
+  // A registered component takes the setting's key and nothing else, so what a
+  // panel needs beyond its own value has to be a read.
+  const agentList = useUiStore((s) => s.agentList);
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const notices = useSettingsStore((s) => s.providerAccountNotices);
@@ -371,7 +382,6 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
           className="rounded-md"
           onClick={() => setDialog({})}
           data-testid={empty ? "services-add-empty" : "services-add"}
-          {...bindSetting("services.credentials")}
         >
           <PlusIcon size={ICON_SIZE.XS} /> Add a model provider
         </Button>
@@ -858,7 +868,6 @@ function StringCredentialRow({
           aria-label={`Name for ${route.label}`}
           className="mt-1 w-full rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
           data-testid={`credential-rename-input-${route.id}`}
-          {...bindSetting("services.credentials[].label")}
         />
       )}
       {replacing && (
@@ -873,7 +882,6 @@ function StringCredentialRow({
             aria-label={`New credential for ${route.label}`}
             className="min-w-0 flex-1 rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
             data-testid={`credential-replace-input-${route.id}`}
-            {...bindSetting("services.credentials[].secret")}
           />
           <Button
             variant="secondary"
@@ -883,7 +891,6 @@ function StringCredentialRow({
             onClick={() => void patch({ secret: value })}
             data-testid={`credential-replace-submit-${route.id}`}
             aria-label={`Save the new credential for ${route.label}`}
-            {...bindSetting("services.credentials[].secret")}
           >
             Save
           </Button>
@@ -934,20 +941,89 @@ function addServiceDialogWidth(step1: boolean, harnessCount: number): string {
 }
 
 /**
- * The pair scrolls sideways as ONE unit when the window cannot hold it, with the
- * service names pinned (`sticky left-0` on the list column below). A tick is
- * only information next to the name it is about, so the alternative — dropping
- * the table on a narrow screen, or letting a column crush — loses either the
- * answer or the question.
+ * **Step 1's height, and step 1's alone** (req 26). It was every step's for a day
+ * (2026-09-17), which left step 2 — two rows and a sentence — centred in 384px
+ * with roughly 250px of white space; a step that is shorter than another is not a
+ * jump, since only a click gets you there, and the dialog already changes width at
+ * that same click.
  *
- * **`overflow-x` only, and it must stay that way.** The vertical scroll belongs
- * to the dialog, one level up. Adding `overflow-y` here — or a child that scrolls
- * vertically — puts the sticky column inside two scrolling ancestors, which is
- * the Chromium configuration where `position: sticky` quietly stops sticking:
- * the names would scroll away under the ticks with nothing in the layout to say
- * why.
+ * It is step 1's own measured height (382px of content in 384), and it is **fixed
+ * rather than a cap**, because this step's content does not all arrive at once:
+ * the harness table's columns and the caption under it come with the agent list,
+ * which grew the step 493 → 517px and moved the window's top 12px up under a cap
+ * (measured in Chromium by the independent review, opening the dialog before that
+ * list landed). The catalogue grows into it the same way. What a cap saves is
+ * white space in a hypothetical short catalogue; what it costs is the one
+ * guarantee this requirement is about.
  */
-const STEP_1_SCROLLER = "overflow-x-auto";
+const STEP_1_BODY_HEIGHT = "24rem";
+
+/**
+ * Step 1's body, **only where the dialog is a window.** Below `md` it is a
+ * fullscreen sheet whose height is the viewport's, and fixing it there would
+ * scroll the list (562px at 390px, its rows wrapping) for no gain.
+ */
+const STEP_1_BODY = "md:h-(--add-service-body)";
+
+/**
+ * **The sign-in's box — the one fixed height left, and the only one req 26
+ * actually needs.** Everything that changes while the step is open is inside it
+ * (see the stage below), so the states cannot move the panel, the buttons under
+ * the user's thumb, or the model chips beneath.
+ *
+ * **Reserve is the whole cost of this box, so it is measured four ways rather
+ * than rounded up once.** The tallest state is always the challenge, and it
+ * differs along exactly two axes, both known before it arrives:
+ *
+ * - the **provider**, via {@link challengeHasDeadline} — the 60-second sentence
+ *   is two lines nothing else has, and asking the same map that prints it is what
+ *   keeps the reserve from outliving the sentence;
+ * - the **width**, because the same state wraps ~17px taller in a 328px sheet
+ *   stage than at the dialog's own 414px.
+ *
+ * Measured in Chromium on 2026-09-17, sheet / window: Anthropic 202 / 185,
+ * Antigravity 242 / 225. A single 16rem covering all four left 71px of dead space
+ * under the common sign-in, which is what the user saw. Overrunning a value
+ * scrolls inside the box, which is the intended failure.
+ */
+const SIGN_IN_STAGE_HEIGHT = {
+  plain: "h-[13rem] md:h-[12rem] overflow-y-auto",
+  deadline: "h-[15.5rem] md:h-[14.5rem] overflow-y-auto",
+} as const;
+
+/**
+ * **A key-only step gets this reserved line rather than a box of its own**, its
+ * natural height differing by service (98px for DeepSeek, 190px for Vercel) by
+ * more than one box could sit above. Nothing there changes as anything proceeds
+ * except *Save*'s failure, and two lines is what a server's message wraps to.
+ *
+ * It holds its line only because the stage around it is sized by its content. In
+ * a stage with a height of its own it is a scrollable flex child, which has no
+ * automatic minimum: it shrank to 0 while the fixed body existed, leaving the
+ * error in the DOM, invisible, and not reachable by scrolling either. Give that
+ * stage a height again and this needs `shrink-0` back.
+ */
+const KEY_ERROR_SLOT = "h-8 overflow-y-auto";
+
+/**
+ * The pair scrolls as ONE unit when the window cannot hold it, with the service
+ * names pinned (`sticky left-0` on the list column below) and the heads pinned
+ * (`sticky top-0` on both head cells). A tick is only information next to the
+ * name it is about and under the harness it is about, so the alternative —
+ * dropping the table on a narrow screen, or letting a column crush — loses either
+ * the answer or the question.
+ *
+ * **Both axes scroll on THIS element, and that is what makes the heads stick.**
+ * Sticky resolves against the nearest scrolling ancestor, so with the vertical
+ * scroll one level up (req 26 gives the step a fixed body) the heads had nothing
+ * to stick to and scrolled away with the rows — measured, not reasoned. Moving it
+ * here does NOT break the `sticky left-0` column, which an earlier comment warned
+ * it would: that warning was about a SECOND scrolling ancestor, and this is one
+ * element scrolling both ways. Verified in Chromium on 2026-09-17 with the
+ * scroller at 480 × 240: scrolled 147px right and 120px down, the names hold at
+ * left 0 and the heads at top 0, simultaneously.
+ */
+const STEP_1_SCROLLER = "overflow-x-auto md:min-h-0 md:flex-1 md:overflow-y-auto";
 
 /**
  * **Can this harness run this service?** — asked of the catalogue, before the
@@ -1189,6 +1265,19 @@ function AddServiceDialog({
   const signInAccount = signInAccountId
     ? accounts.find((a) => a.id === signInAccountId)
     : undefined;
+  /**
+   * **The account's name as the dialog opened on it** (req 26).
+   *
+   * The title is the one part of the dialog outside the fixed box, and the
+   * account's label is the one part of the title that can change while the dialog
+   * is open: a login that succeeds adopts the authenticated email over a
+   * generated name (`recordAccountIdentity`), which at a narrow width rewraps the
+   * title and moves the window at the exact moment the sign-in completes. Frozen
+   * on the first render that has the account — a reconnect is mounted BY that
+   * row's menu, so that is the render the dialog opens on.
+   */
+  const openingLabel = useRef(signInAccount?.label);
+  if (openingLabel.current === undefined && signInAccount) openingLabel.current = signInAccount.label;
 
   if (!reconnectLeftReady && signInAccount && signInAccount.status !== "ready") {
     setReconnectLeftReady(true);
@@ -1252,6 +1341,23 @@ function AddServiceDialog({
   const authStatus = useAuthStatus(signInProvider === "claude" ? signInAccountId : undefined);
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
+
+  /**
+   * **The box is a new element for each challenge, so a scroll cannot outlive the
+   * state it was made in.** The box holds its height through every state (req 26),
+   * and the price of that is that a state taller than it scrolls — which the
+   * CLI-output disclosure makes ordinary, at 385px of log in a box of 192. The
+   * independent review reproduced a challenge arriving with the stage at
+   * `scrollTop` 109: the authentication link and the code field were then entirely
+   * above the visible area, with nothing moving to say so.
+   *
+   * A key rather than an effect that assigns `scrollTop`, since remounting is what
+   * a fresh scroll position *is*. The disclosure survives it — its open/closed
+   * state is held in the store precisely because this subtree is rebuilt mid
+   * sign-in (see `AuthCliOutput`) — and a challenge that replaces another takes
+   * the typed code with it, which is the same answer.
+   */
+  const challengeUri = pendingAuth?.verificationUri;
 
   if (attemptUnseen && (signInAccount?.status === "authenticating" || pendingAuth || authError)) {
     setAttemptUnseen(false);
@@ -1519,12 +1625,23 @@ function AddServiceDialog({
         once, when a service is picked, and that is the better of the two costs:
         the alternative strands a mode choice and a sign-in panel — a sentence
         and a code — in a box nearly half as wide again as their content.
+
+        The HEIGHT follows the same call, and req 26 is what it has to satisfy:
+        each step is as tall as its own content, and what must not move is the
+        step you are LOOKING at. Only one step changes while it is open — the
+        sign-in, on the provider's clock — and that one alone carries a fixed box
+        ({@link SIGN_IN_STAGE_HEIGHT}, the height that provider's own tallest
+        state needs). Step 1 keeps a height of its own
+        ({@link STEP_1_BODY_HEIGHT}), so a catalogue that grows — or a harness
+        table that arrives a moment after the step does — scrolls inside the
+        window instead of growing it.
       */}
       <DialogContent
         className="rounded-lg border-(--color-border-secondary) p-4 md:w-(--add-service-width) md:max-w-(--add-service-width)"
         style={
           {
             "--add-service-width": addServiceDialogWidth(!service, supportHarnesses.length),
+            "--add-service-body": STEP_1_BODY_HEIGHT,
           } as CSSProperties
         }
         data-testid="add-service-dialog"
@@ -1537,14 +1654,30 @@ function AddServiceDialog({
           nothing about which of two accounts the user is re-authenticating.
           A prop on one component, not a second dialog.
         */}
-        <DialogTitle className="text-sm font-semibold" data-testid="add-service-title">
+        {/*
+          Two lines' worth, always, and clamped to it: the title is the one thing
+          outside the body, it GAINS the provider's name at step 1 → 2, and a name
+          long enough to wrap took the window from 498 to 518px and moved its top
+          10px (measured by the independent review, in Chromium, with a longer
+          name than today's catalogue has). Clamped rather than truncated to one
+          line, because what a long title ends with is the part that identifies it
+          — `· someone@example.com` on a reconnect — and `pr-7` keeps it out from
+          under the close button, which one line of it would otherwise run beneath.
+        */}
+        <DialogTitle
+          className="h-10 line-clamp-2 pr-7 text-sm font-semibold"
+          data-testid="add-service-title"
+        >
           {reconnectAccountId === undefined ? "Add a model provider" : "Reconnect"}
           {service ? ` — ${service.name}` : ""}
-          {reconnectAccountId !== undefined && signInAccount ? ` · ${signInAccount.label}` : ""}
+          {reconnectAccountId !== undefined && openingLabel.current ? ` · ${openingLabel.current}` : ""}
         </DialogTitle>
 
         {!service && (
-          <div className="mt-3" data-testid="add-service-step-service">
+          /* A flex column so the list takes the body's height and the caption
+             under it stays put: the list is the part that grows with the
+             catalogue, and it is the part that should scroll. */
+          <div className={`mt-3 md:flex md:flex-col ${STEP_1_BODY}`} data-testid="add-service-step-service">
             {/*
               **One grid, two columns of content, shared row tracks.** The list
               and the table are still two separate containers — the answers stay
@@ -1581,28 +1714,21 @@ function AddServiceDialog({
                   about, so the names are the one thing that must never leave.
                 */}
                 <div className="sticky left-0 z-10 row-span-full grid grid-rows-subgrid gap-y-1 bg-(--color-bg-elevated) pr-1">
-                  <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
+                  {/* Both heads are `sticky top-0` because the step's body is
+                      fixed (req 26) and the list outgrows it as the
+                      catalogue does — one more service and it scrolls. Without
+                      this that scroll takes the harness names with it and leaves
+                      a grid of ticks above no labels, which would make the body's
+                      height load-bearing for whether the table can be read. */}
+                  <p className="sticky top-0 z-10 bg-(--color-bg-elevated) pb-0.5 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
                     1 · Which provider
                   </p>
                   {allServices().map((s) => (
                     <button
                       key={s.id}
                       onClick={() => pickService(s)}
-
-                      // between them the service name is never cut, at any width.
-
-                      // second line under the name — because they are a fact
-
                       className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-0.5 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                       data-testid={`add-service-option-${s.id}`}
-                      /*
-                        Step 1 of the collection's `add`, which is what
-                        `services.credentials` calls it: the service and the
-                        billing mode "are the address, not fields … chosen when
-                        a credential is added". So it binds the collection and
-                        not a field — there is no field here to store.
-                      */
-                      {...bindSetting("services.credentials")}
                     >
                       {/*
                         The same mark the card will carry once the service is
@@ -1650,7 +1776,9 @@ function AddServiceDialog({
                     className="row-span-full grid grid-rows-subgrid gap-y-1"
                     data-testid="add-service-support-table"
                   >
-                    <div className="flex items-end gap-1">
+                    {/* Sticky for the same reason as the list's head beside it:
+                        a tick means nothing under a name that has scrolled off. */}
+                    <div className="sticky top-0 z-10 flex items-end gap-1 bg-(--color-bg-elevated) pb-0.5">
                       {supportHarnesses.map((harness) => (
                         <span
                           key={harness.id}
@@ -1682,6 +1810,9 @@ function AddServiceDialog({
         )}
 
         {service && !billingMode && (
+          /* Two rows and a sentence, and nothing here changes while the step is
+             open — so it is exactly that tall. Held to step 1's height it was
+             250px of white space with the rows floating in the middle of it. */
           <div className="mt-3 space-y-1" data-testid="add-service-step-mode">
             <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
               2 · How do you pay for it
@@ -1692,10 +1823,6 @@ function AddServiceDialog({
                 onClick={() => pickMode(service, m.kind)}
                 className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 data-testid={`add-service-mode-${m.kind}`}
-                // The other half of that address, and the step that decides
-                // whether the add ends as a key on this collection or as a
-                // sign-in on `services.providerAccounts`.
-                {...bindSetting("services.credentials")}
               >
                 {/* Wraps, like the service names one step earlier: the label is
                     what the button is, and the count beside it is `shrink-0`. */}
@@ -1729,116 +1856,152 @@ function AddServiceDialog({
             <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
               3 · {acceptsAccount ? "Sign in" : "Paste the key"}
             </p>
-            {acceptsAccount && (
-              <div className="space-y-2" data-testid="add-service-account-only">
-                {signedIn ? (
-                  <p className="text-xs text-(--color-success)" data-testid="add-service-signed-in">
-                    Connected. {service.name} {MODE_LABEL[billingMode].toLowerCase()} is ready —
-                    its models are selectable now.
-                  </p>
-                ) : signInStalled ? (
+            {/*
+              **Everything that changes while the step is open is in this box**,
+              the error line included — a line that appeared *below* it would move
+              the window exactly as the panel used to. (The one exception is the
+              title, which is above it and frozen for the dialog's life — see
+              `openingLabel`.) A sign-in gets {@link SIGN_IN_STAGE_HEIGHT} —
+              this provider's, at this width — because a sign-in is the only thing
+              here that advances on someone else's clock. A key field changes
+              nothing by itself and is sized by its content, with the one line
+              that *can* arrive — a rejected key — reserved
+              ({@link KEY_ERROR_SLOT}).
 
-                  <AuthPanel>
-                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
-                      {authError ?? "The sign-in stopped before the account connected."} Try again
-                      below, or close this to add nothing.
+              The model chips are deliberately OUTSIDE it: they are the same in
+              every state, so keeping them out is what lets the box be the height
+              of the sign-in rather than of the sign-in plus a chip row.
+            */}
+            <div
+              key={challengeUri ?? "no-challenge"}
+              className={`flex flex-col gap-2 ${
+                acceptsAccount
+                  ? SIGN_IN_STAGE_HEIGHT[
+                    signInProvider && challengeHasDeadline(signInProvider) ? "deadline" : "plain"
+                  ]
+                  : ""
+              }`}
+              data-testid="add-service-stage"
+            >
+              {acceptsAccount && (
+                <div className="space-y-2" data-testid="add-service-account-only">
+                  {signedIn ? (
+                    <p className="text-xs text-(--color-success)" data-testid="add-service-signed-in">
+                      Connected. {service.name} {MODE_LABEL[billingMode].toLowerCase()} is ready —
+                      its models are selectable now.
                     </p>
-                    {signInProvider && signInAccountId && (
-                      <AuthCliOutput provider={signInProvider} accountId={signInAccountId} />
-                    )}
-                  </AuthPanel>
-                ) : signInAccount || startingSignIn ? (
-                  <>
-                    {pendingAuth && signInAccount ? (
+                  ) : signInStalled ? (
 
-                      <AccountChallenge
-                        provider={signInProvider ?? "claude"}
-                        account={signInAccount}
-                        serviceName={service.name}
-                        onError={setError}
-                      />
-                    ) : (
+                    <AuthPanel>
+                      <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
+                        {authError ?? "The sign-in stopped before the account connected."} Try again
+                        below, or close this to add nothing.
+                      </p>
+                      {signInProvider && signInAccountId && (
+                        <AuthCliOutput provider={signInProvider} accountId={signInAccountId} />
+                      )}
+                    </AuthPanel>
+                  ) : signInAccount || startingSignIn ? (
+                    <>
+                      {pendingAuth && signInAccount ? (
 
-                      <ChallengePlaceholder
-                        shape={signInProvider && PASTE_SHAPED_SIGN_INS.has(signInProvider) ? "paste" : "code"}
-                        {...(authStatus ? { status: authStatus } : {})}
-                        testId="add-service-signin-starting"
-                      >
-                        {/* The buffer, collapsed, and in the same place it will
-                            be a moment from now — so the panel is the whole of
-                            the sign-in and the arrival of the field moves
-                            nothing. */}
-                        {signInProvider && (
-                          <AuthCliOutput
-                            provider={signInProvider}
+                        <AccountChallenge
+                          provider={signInProvider ?? "claude"}
+                          account={signInAccount}
+                          serviceName={service.name}
+                          onError={setError}
+                        />
+                      ) : (
 
-                            // because appearing later is what grew the panel.
-                            {...(signInAccountId ? { accountId: signInAccountId } : {})}
-                            evenWhenEmpty
-                          />
-                        )}
-                      </ChallengePlaceholder>
-                    )}
-                    <p className="text-[11px] text-(--color-text-tertiary)">
-                      Keep this open until the account connects — this step will say so.
-                      Closing it, however you close it, calls the sign-in off and adds nothing.
+                        <ChallengePlaceholder
+                          shape={signInProvider && PASTE_SHAPED_SIGN_INS.has(signInProvider) ? "paste" : "code"}
+                          {...(authStatus ? { status: authStatus } : {})}
+                          testId="add-service-signin-starting"
+                        >
+                          {/* The buffer, collapsed, and in the same place it will
+                              be a moment from now — so the panel is the whole of
+                              the sign-in and the arrival of the field moves
+                              nothing. */}
+                          {signInProvider && (
+                            <AuthCliOutput
+                              provider={signInProvider}
+
+                              // because appearing later is what grew the panel.
+                              {...(signInAccountId ? { accountId: signInAccountId } : {})}
+                              evenWhenEmpty
+                            />
+                          )}
+                        </ChallengePlaceholder>
+                      )}
+                      <p className="text-[11px] text-(--color-text-tertiary)">
+                        Keep this open until the account connects — this step will say so.
+                        Closing it, however you close it, calls the sign-in off and adds nothing.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-(--color-text-secondary)">
+                      {service.name}&rsquo;s {MODE_LABEL[billingMode].toLowerCase()} is connected by
+                      signing in, which happens right here — ShipIt never sees your password.
                     </p>
-                  </>
-                ) : (
-                  <p className="text-xs text-(--color-text-secondary)">
-                    {service.name}&rsquo;s {MODE_LABEL[billingMode].toLowerCase()} is connected by
-                    signing in, which happens right here — ShipIt never sees your password.
-                  </p>
-                )}
-                {!harnessInstalled && (
-                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-harness-missing">
-                    The harness that runs this sign-in is not installed, so this subscription
-                    cannot be connected on this install.
-                  </p>
-                )}
-                {!signInAccount && blockedBySignIn && (
-                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-blocked">
-                    {blockedBySignIn}
-                  </p>
-                )}
-              </div>
-            )}
-            {acceptsString && (!acceptsAccount || signInIdle) && (
-              <>
-                {acceptsAccount && (
-                  <p
-                    className="pt-1 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)"
-                    data-testid="add-service-string-alternative"
-                  >
-                    Or paste a token
-                  </p>
-                )}
-                <input
+                  )}
+                  {!harnessInstalled && (
+                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-harness-missing">
+                      The harness that runs this sign-in is not installed, so this subscription
+                      cannot be connected on this install.
+                    </p>
+                  )}
+                  {!signInAccount && blockedBySignIn && (
+                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-blocked">
+                      {blockedBySignIn}
+                    </p>
+                  )}
+                </div>
+              )}
+              {acceptsString && (!acceptsAccount || signInIdle) && (
+                <>
+                  {acceptsAccount && (
+                    <p
+                      className="pt-1 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)"
+                      data-testid="add-service-string-alternative"
+                    >
+                      Or paste a token
+                    </p>
+                  )}
+                  <input
 
-                  autoFocus={!acceptsAccount}
-                  type="password"
-                  value={secret}
-                  onChange={(e) => { setSecret(e.target.value); setError(""); }}
-                  placeholder="…"
-                  aria-label={`${service.name} credential`}
-                  className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-                  data-testid="add-service-secret"
-                  // The same value the row's Replace secret box writes, at the
-                  // other end of its life (docs/299-agent-settings-access req 7).
-                  {...bindSetting("services.credentials[].secret")}
-                />
-                <p className="text-[11px] text-(--color-text-tertiary)">
-                  {modeAllowsMultipleCredentials(billingMode)
-                    ? "ShipIt fails over between the credentials of one subscription when one runs out."
-                    : "One key per provider. Metered — no quota to report, so its card shows no usage."}
-                </p>
-                {/* The same hazard the card will carry, said BEFORE the key is
-                    pasted — the one moment the user can still decide against
-                    the mode. */}
-                <ModeNotice serviceId={service.id} billingMode={billingMode} />
-              </>
-            )}
-            <div className="flex flex-wrap gap-1">
+                    autoFocus={!acceptsAccount}
+                    type="password"
+                    value={secret}
+                    onChange={(e) => { setSecret(e.target.value); setError(""); }}
+                    placeholder="…"
+                    aria-label={`${service.name} credential`}
+                    className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+                    data-testid="add-service-secret"
+                  />
+                  <p className="text-[11px] text-(--color-text-tertiary)">
+                    {modeAllowsMultipleCredentials(billingMode)
+                      ? "ShipIt fails over between the credentials of one subscription when one runs out."
+                      : "One key per provider. Metered — no quota to report, so its card shows no usage."}
+                  </p>
+                  {/* The same hazard the card will carry, said BEFORE the key is
+                      pasted — the one moment the user can still decide against
+                      the mode. */}
+                  <ModeNotice serviceId={service.id} billingMode={billingMode} />
+                </>
+              )}
+              {acceptsAccount ? (
+                error && (
+                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-error">{error}</p>
+                )
+              ) : (
+                <div className={KEY_ERROR_SLOT} data-testid="add-service-error-slot">
+                  {error && (
+                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-error">{error}</p>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1" data-testid="add-service-models">
               {modelIds(service, billingMode).map((id) => (
                 <span
                   key={id}
@@ -1851,11 +2014,13 @@ function AddServiceDialog({
           </div>
         )}
 
-        {error && (
-          <p className="mt-2 text-xs text-(--color-text-error)" data-testid="add-service-error">{error}</p>
-        )}
-
-        <div className="mt-4 flex justify-end gap-2">
+        {/* ONE row of `md` buttons, in every state: which buttons are in it
+            changes as the sign-in proceeds (Cancel becomes Done, Save and Sign
+            in come and go), and its height must not — it sits below the fixed
+            box, so a second row here would move the window as surely as a taller
+            panel would. `flex-nowrap` is the default and is written out
+            because it is load-bearing; a guard test pins it and the size. */}
+        <div className="mt-4 flex flex-nowrap justify-end gap-2" data-testid="add-service-footer">
           {/* Once the account is connected there is nothing left to call off,
               so the way out stops being "Cancel" and becomes "Done" — which is
               also the confirmation, since the flow's last screen is the one
@@ -1901,8 +2066,6 @@ function AddServiceDialog({
               disabled={!service || !billingMode || !secret.trim() || saving}
               onClick={() => void save()}
               data-testid="add-service-save"
-              // The collection's `add`, like the MCP form's Save.
-              {...bindSetting("services.credentials")}
             >
               {saving ? "Saving..." : "Save"}
             </Button>
@@ -1941,9 +2104,6 @@ function AddServiceDialog({
               disabled={!harnessInstalled || !!blockedBySignIn}
               onClick={() => void startSignIn()}
               data-testid="add-service-sign-in"
-              // Starts the provider's own login, which is the whole of what
-              // this declaration is: the connection, never its tokens.
-              {...bindSetting("services.providerAccounts[].connection")}
             >
               {signInStalled ? "Try again" : `Sign in to ${service?.name ?? "the provider"}`}
             </Button>

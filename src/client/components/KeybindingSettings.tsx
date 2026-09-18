@@ -12,7 +12,7 @@ import {
   type KeybindingGroup,
 } from "../keybindings/registry.js";
 import { KeybindingCapture } from "./KeybindingCapture.js";
-import { bindSetting, settingCopy } from "./Settings/setting-binding.js";
+import { SettingCopy } from "./Settings/declared.js";
 
 const GROUP_ORDER: KeybindingGroup[] = ["General", "Sessions", "Chat", "Search", "Voice"];
 
@@ -33,6 +33,11 @@ function FixedRow({ def }: { def: KeybindingDef }) {
   );
 }
 
+/**
+ * The panel `keyboard.keybindings` names: rows over a fixed command registry, a
+ * chord capture rather than a value kind, and a conflict decided across every
+ * editable binding at once (docs/308-data-driven-settings inventory.md P16).
+ */
 export function KeybindingSettings() {
   const keybindings = useSettingsStore((s) => s.keybindings);
   const setKeybinding = useSettingsStore((s) => s.setKeybinding);
@@ -69,14 +74,17 @@ export function KeybindingSettings() {
   })).filter((g) => g.defs.length > 0);
 
   return (
-    <div className="px-5 py-4 flex flex-col gap-6 overflow-y-auto h-full">
-      <p className="text-sm text-(--color-text-secondary)" data-setting-description="keyboard.keybindings">
-        {settingCopy("keyboard.keybindings").description}
-      </p>
-      {/* Not the setting's own words: how to operate the control. */}
-      <p className="text-sm text-(--color-text-secondary)">
-        Click <span className="text-(--color-text-primary)">Change</span> and press the keys you want.
-      </p>
+    <div className="flex flex-col gap-6" data-testid="settings-keybindings">
+      <SettingCopy
+        settingKey="keyboard.keybindings"
+        heading
+        /* Not the setting's own words: how to operate the control. */
+        detail={
+          <p className="mt-1 text-sm text-(--color-text-secondary)">
+            Click <span className="text-(--color-text-primary)">Change</span> and press the keys you want.
+          </p>
+        }
+      />
 
       {grouped.map(({ group, defs }) => (
         <div key={group} className="space-y-1">
@@ -101,7 +109,6 @@ export function KeybindingSettings() {
                           className="h-7 w-7 p-0"
                           aria-label={`Reset ${def.label} to default`}
                           title={`Reset to ${getKeybindingDef(def.id).defaultBinding}`}
-                          {...bindSetting("keyboard.keybindings")}
                           onClick={() => {
                             setErrors((e) => {
                               const next = { ...e };

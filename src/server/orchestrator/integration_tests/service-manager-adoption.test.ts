@@ -81,13 +81,14 @@ function makeStubServiceManager(): StubServiceManager {
   return mgr as unknown as StubServiceManager;
 }
 
-function buildContainerManager(): SessionContainerManager & {
+function buildContainerManager(connectError?: Error): SessionContainerManager & {
   _connectCalls: { sessionId: string; network: string; at: number }[];
 } {
   const calls: { sessionId: string; network: string; at: number }[] = [];
   const cm = {
     connectToNetwork: async (sessionId: string, network: string) => {
       calls.push({ sessionId, network, at: Date.now() });
+      if (connectError) throw connectError;
     },
     _connectCalls: calls,
   };
@@ -157,6 +158,44 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     });
 
     runner.dispose({ force: true });
+  });
+
+  describe("joining a session network no service has created yet", () => {
+    async function adoptWithConnectError(err: Error): Promise<Error[]> {
+      const runner = makeRunner("s1");
+      const mgr = makeStubServiceManager();
+      const reported: Error[] = [];
+      mgr.on("stack_error", (e: Error) => reported.push(e));
+
+      adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+        serviceManagers: new Map(),
+        composeStopPromises: new Map(),
+        containerManager: buildContainerManager(err),
+        installPromise: null,
+      });
+
+      runner.setWorkerUrl("http://10.0.0.42:4000");
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      runner.dispose({ force: true });
+      return reported;
+    }
+
+    it("reports no stack error when the network does not exist yet", async () => {
+      const reported = await adoptWithConnectError(new Error(
+        "(HTTP code 404) network or container is not found - network shipit-session-s1 not found ",
+      ));
+
+      expect(reported).toEqual([]);
+    });
+
+    it("still reports a join that failed for any other reason", async () => {
+      const reported = await adoptWithConnectError(new Error(
+        "(HTTP code 404) network or container is not found - container 9f3a1b2c is not running ",
+      ));
+
+      expect(reported).toHaveLength(1);
+      expect(reported[0]?.message).toContain("container 9f3a1b2c");
+    });
   });
 
   it("stops the old-policy stack before waiting for worker readiness", async () => {

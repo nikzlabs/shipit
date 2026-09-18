@@ -105,6 +105,14 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
   const runnerFor = (sessionId: string) => app.runnerRegistry.get(sessionId);
 
   /**
+   * Some tests stand behind two complete turn set-ups before the step they are really
+   * about, and the default 5s proved too tight for that on a loaded CI run (one flake per
+   * full suite). The waits are on conditions, not on the clock, so a longer deadline costs
+   * nothing when the box is quick.
+   */
+  const SLOW_CI_MS = 20_000;
+
+  /**
    * The boundary a negative assertion needs: `running` alone clears at the drain, with the
    * commit, the nudge decision and the dispatch still to come. `agentBusy` covers the whole
    * post-turn sequence, because the nudge takes the same lease as the work around it.
@@ -211,6 +219,37 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
     stop();
     client.close();
   });
+
+  /**
+   * planning#594 — Nik: "'Context compacted' event shouldn't require a nudge". Reproduced
+   * here before the fix: a `/compact` the user types is an ordinary interactive turn, so
+   * the `silent` exemption (which covers only ShipIt's own pre-turn compaction) missed it
+   * and the card was both marked stale and asked about, beside the "Context compacted"
+   * card. req 36 replaces that exemption with what the turn did.
+   */
+  it("neither nudges nor marks stale after a compaction the user asked for (req 36)", async () => {
+    const client = await TestClient.connect(port);
+    const { stop } = pump(client);
+
+    await turnThatWritesTheCard(client, "Do the billing routes");
+    const writer = lastClaude;
+
+    client.send({ type: "send_message", text: "/compact" });
+    const compactor = await waitForClaude(() => lastClaude, writer);
+    compactor.initSession("compaction-turn");
+    compactor.finish("compaction-turn");
+
+    await postTurnSettled(client.sessionId);
+    expect(followUps()).toHaveLength(0);
+    expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
+    // The card is untouched, not merely un-asked-about: a compaction changed nothing
+    // about the session, so presenting the card as current is honest (req 14, 36).
+    expect(card(client.sessionId)?.fresh).toBe(true);
+    expect(card(client.sessionId)?.status).toContain("Billing routes done");
+
+    stop();
+    client.close();
+  }, SLOW_CI_MS);
 
   it("does not follow up a turn that ended with a question (req 13)", async () => {
     const client = await TestClient.connect(port);
@@ -367,6 +406,102 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
       client.close();
     });
 
+    /**
+     * req 34 / planning#589 — Nik steered an agent that was waiting on background work and
+     * got a nudge turn instead of his message. A steer goes straight to the CLI, so it is
+     * neither running nor queued at settlement. Nudging there does not merely ask
+     * needlessly: the nudge is a system turn, so it retires the resident process and the
+     * message the user just sent is never answered.
+     *
+     * Both orderings, because a rule that reads the transcript to tell an answered steer
+     * from a pending one passes the first and fails the second — the turn's own closing
+     * text lands before the CLI acknowledges the message.
+     */
+    for (const closingText of [false, true]) {
+      const label = closingText
+        ? "even when the turn's own last text lands before the acknowledgement"
+        : "when nothing in the turn follows the steer";
+      it(`does not nudge a turn the user steered into, ${label} (req 34)`, async () => {
+        const client = await TestClient.connect(port);
+        const { seen, stop } = pump(client);
+
+        client.send({ type: "send_message", text: "Do the billing routes" });
+        const resident = await waitForClaude(() => lastClaude);
+        resident.initSession("resident-turn");
+        expect((await callTool(client.sessionId, { status: "Billing done." })).statusCode).toBe(200);
+        resident.emit("event", { type: "result", subtype: "success", session_id: "resident-turn" });
+        await waitFor(() => runnerFor(client.sessionId)?.running === false, "the first turn settled");
+
+        // A turn that launches background work and never touches the card. Waiting for the
+        // resident to have the prompt, not merely for `running`: under load the send can
+        // still be in its async setup, and the message after it would then start a turn of
+        // its own rather than steer this one.
+        const beforeSecond = resident.stdinData.length;
+        client.send({ type: "send_message", text: "Kick off the tests" });
+        await waitFor(
+          () => resident.stdinData.length > beforeSecond
+            && runnerFor(client.sessionId)?.running === true,
+          "the resident took the second turn",
+          SLOW_CI_MS,
+        );
+        runnerFor(client.sessionId)?.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+
+        // Nik steers it. The CLI replays the message, which is how ShipIt learns it was taken.
+        // Only what the session says from here on: an earlier message may legitimately
+        // have been queued, and that is not this assertion's business.
+        const beforeSteer = seen.length;
+        const answeredSteer = () =>
+          seen.slice(beforeSteer).filter((m) => m.type === "message_steered" || m.type === "message_queued");
+        client.send({ type: "send_message", text: "Actually, also check the linter" });
+        // The server says which path it took, so a message that was queued instead of
+        // steered fails as that fact rather than as a bare timeout on the state below.
+        await waitFor(() => answeredSteer().length > 0, "the session answered the steer", SLOW_CI_MS);
+        expect(answeredSteer()[0]?.type).toBe("message_steered");
+        await waitFor(
+          () => (runnerFor(client.sessionId)?.steeredMessages.length ?? 0) > 0,
+          "the steer was recorded",
+          SLOW_CI_MS,
+        );
+        if (closingText) {
+          resident.emit("event", {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Tests are running in the background." }] },
+          });
+          await waitFor(
+            () => (runnerFor(client.sessionId)?.chatMessageGroups.length ?? 0) > 0,
+            "the turn's closing text was accumulated",
+          );
+        }
+        resident.emit("event", { type: "agent_user_replay", text: "Actually, also check the linter" });
+        await waitFor(
+          () => runnerFor(client.sessionId)?.steeredMessages[0]?.delivered === true,
+          "the CLI acknowledged the steer",
+        );
+
+        // The last background task finishes and the turn the steer landed in ends.
+        runnerFor(client.sessionId)?.setBackgroundTasks([]);
+        resident.emit("event", { type: "result", subtype: "success", session_id: "resident-turn" });
+
+        await waitFor(() => card(client.sessionId)?.fresh === false, "card marked stale");
+        // Not `postTurnSettled`: a nudge that DOES go out keeps the runner busy, and the
+        // failure this guards must be the follow-up below, not a timeout on the barrier.
+        await waitFor(() => {
+          const runner = runnerFor(client.sessionId);
+          return followUps().length > 0
+            || (runner !== undefined && !runner.running && !runner.agentBusy);
+        }, "the settlement finished, or spawned a follow-up turn");
+
+        expect(followUps()).toHaveLength(0);
+        expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
+        // The process that holds the steered message is still the one on the session.
+        expect(resident.killed).toBe(false);
+        expect(runnerFor(client.sessionId)?.getAgent()).toBe(resident);
+
+        stop();
+        client.close();
+      });
+    }
+
     it("retires a resident spawned across a toggle and respawns it with the other prompt (req 21)", async () => {
       const client = await TestClient.connect(port);
       const { stop } = pump(client);
@@ -461,8 +596,108 @@ describe("Integration: the status-card settlement and its follow-up turn (docs/3
 
       // Off changes nothing stored: the settlement does not even read the card.
       expect(card(client.sessionId)).toEqual(before);
+      // req 35 — and the stored card reaches no turn while the setting is off.
+      expect(skipper.lastPrompt).not.toContain("<session_status_card>");
       expect(followUps()).toHaveLength(0);
       expect(runnerFor(client.sessionId)?.queueLength).toBe(0);
+
+      stop();
+      client.close();
+    });
+  });
+
+  /**
+   * req 35 — the card is in the turn's prompt, which is what a resident process and every
+   * harness alike receive. Without it the agent is asked to reconcile state it cannot read.
+   */
+  describe("the card reaches the turn (req 35)", () => {
+    it("carries nothing on the first turn, when no card is stored yet (req 22)", async () => {
+      const client = await TestClient.connect(port);
+      const { stop } = pump(client);
+
+      client.send({ type: "send_message", text: "Do the billing routes" });
+      const agent = await waitForClaude(() => lastClaude);
+      expect(agent.lastPrompt).not.toContain("<session_status_card>");
+      expect(agent.lastPrompt).toContain("Do the billing routes");
+
+      stop();
+      client.close();
+    });
+
+    it("puts the stored card, its manual steps and its offers into the next turn's prompt", async () => {
+      const client = await TestClient.connect(port);
+      const { stop } = pump(client);
+
+      await turnThatWritesTheCard(client, "Do the billing routes");
+      const writer = lastClaude;
+      expect(
+        (await callTool(client.sessionId, {
+          needsYou: ["Paste the Stripe test key."],
+          actions: [{
+            id: "webhook",
+            label: "Wire the Stripe webhook",
+            description: "Adds the route and its signature check.",
+            payload: "Add /webhooks/stripe and verify the signature.",
+          }],
+        })).statusCode,
+      ).toBe(200);
+
+      client.send({ type: "send_message", text: "Now the webhook" });
+      const next = await waitForClaude(() => lastClaude, writer);
+
+      expect(next.lastPrompt).toContain("<session_status_card>");
+      expect(next.lastPrompt).toContain("Billing routes done");
+      expect(next.lastPrompt).toContain("- Paste the Stripe test key.");
+      expect(next.lastPrompt).toContain("id: webhook");
+      expect(next.lastPrompt).toContain("Add /webhooks/stripe and verify the signature.");
+      // The user's own message is still last, after the standing context.
+      expect(next.lastPrompt.indexOf("</session_status_card>"))
+        .toBeLessThan(next.lastPrompt.indexOf("Now the webhook"));
+
+      stop();
+      client.close();
+    });
+
+    it("carries it on a message that waited in the queue behind a running turn", async () => {
+      const client = await TestClient.connect(port);
+      const { stop } = pump(client);
+
+      await turnThatWritesTheCard(client, "Do the billing routes");
+      const writer = lastClaude;
+
+      client.send({ type: "send_message", text: "Now the webhook" });
+      const running = await waitForClaude(() => lastClaude, writer);
+      running.initSession("running-turn");
+      // Queued, so it is composed when the queue drains rather than when the user sent it.
+      client.send({ type: "send_message", text: "Then the README" });
+      await waitFor(() => (runnerFor(client.sessionId)?.queueLength ?? 0) > 0, "message queued");
+      running.finish("running-turn");
+
+      const drained = await waitForClaude(() => lastClaude, running);
+      expect(drained.lastPrompt).toContain("Then the README");
+      expect(drained.lastPrompt).toContain("<session_status_card>");
+      expect(drained.lastPrompt).toContain("Billing routes done");
+
+      stop();
+      client.close();
+    });
+
+    it("prints the card exactly once on the nudge turn, whose own prompt carries it", async () => {
+      const client = await TestClient.connect(port);
+      const { stop } = pump(client);
+
+      await turnThatWritesTheCard(client, "Do the billing routes");
+      const writer = lastClaude;
+
+      client.send({ type: "send_message", text: "Now the webhook" });
+      const skipper = await waitForClaude(() => lastClaude, writer);
+      skipper.initSession("skipping-turn");
+      skipper.finish("skipping-turn");
+
+      const nudge = await waitForClaude(() => lastClaude, skipper);
+      const printed = nudge.lastPrompt.split("<session_status_card>").length - 1;
+      expect(printed).toBe(1);
+      expect(nudge.lastPrompt).toContain("Billing routes done");
 
       stop();
       client.close();

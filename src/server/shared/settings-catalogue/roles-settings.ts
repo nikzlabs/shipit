@@ -25,6 +25,7 @@ export const ROLES_SETTINGS = {
   "roles": defineSetting({
     key: "roles",
     tab: "roles",
+    component: "roles",
     scope: "global",
     label: "Roles",
     description:
@@ -147,6 +148,7 @@ export const ROLES_SETTINGS = {
   "reviewers": defineSetting({
     key: "reviewers",
     tab: "roles",
+    component: "roles",
     scope: "global",
     label: "Reviewer candidates",
     description:
@@ -270,21 +272,9 @@ export type RoleFieldMapping = PartOfRoleSetting | NestedRoleFields | NotARoleSe
  * (docs/299-agent-settings-access req 7: no way to ship a setting the agent
  * cannot see).
  *
- * The same guard `MCP_SERVER_FIELD_SETTINGS` makes over an MCP server, in the
- * direction the coverage walk cannot see. The walk reads rendered DOM, so it can
- * establish that a control names *a* declaration and never that the declaration
- * is the one whose property the handler saves — a new box in the role editor
- * bound to `roles[].description` while writing something else passes it. The
- * stored TYPE can say what the DOM cannot: keyed by `keyof AgentRole`, a field
- * added to `agent-types.ts` is a compile error here until it is declared or
- * explained.
- *
- * The walk's own half is narrower than it was: a control may now only bind a
- * declaration **from its own tab**, so a role field bound to
- * `advanced.liveSteering` fails there. Between the two, the loophole that
- * remains is a role-editor box bound to a *different role field's* declaration —
- * which no guard reading the DOM can decide, and which
- * `settings-coverage.test.tsx` names as such.
+ * The same guard `MCP_SERVER_FIELD_SETTINGS` makes over an MCP server: keyed by
+ * `keyof AgentRole`, a field added to `agent-types.ts` is a compile error here
+ * until it is declared or explained.
  */
 export const ROLE_FIELD_SETTINGS: {
   [F in keyof Required<AgentRole>]: DeclarationForRoleField<F & string> | RoleFieldMapping;

@@ -12,6 +12,7 @@ import {
   HOST_SHUTDOWN_CONSULT_DETAIL,
 } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
+import { GLOBAL_SETTINGS, settingPath } from "../../shared/settings-catalogue/index.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitManager } from "../../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
@@ -243,9 +244,19 @@ async function expectServiceError(p: Promise<unknown>, status: number): Promise<
 }
 
 describe("runSubAgent — authorization gates", () => {
-  it("rejects when the setting is off (403) and never spawns", async () => {
+  // The refusal is read against the declaration, not a literal, so a reworded
+  // label shows up here rather than in the user's face (planning#580).
+  it("rejects when the setting is off (403), names the declared row, and never spawns", async () => {
+    const declared = GLOBAL_SETTINGS["advanced.enableSubAgents"];
     const { deps, runner } = makeDeps({ enableSubAgents: false });
-    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 403);
+
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+      403,
+    );
+
+    expect(err.message).toContain(`"${declared.label}"`);
+    expect(err.message).toContain(settingPath(declared.tab));
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 

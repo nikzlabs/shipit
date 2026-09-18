@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { McpServerSettings } from "./McpServerSettings.js";
 import { useMcpStore } from "../stores/mcp-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { McpServerConfig } from "../../server/shared/types.js";
 
 const stdioConfig: McpServerConfig = {
@@ -50,13 +51,25 @@ class FakeFetch {
   }
 }
 
+/**
+ * Whether a session is running is the panel's own read now, not a prop the
+ * dialog drills into it — the component a declaration names takes the setting's
+ * key and nothing else (docs/308-data-driven-settings slice 6).
+ */
+function renderPanel({ activeSession = false } = {}) {
+  useSessionStore.getState().setSessionId(activeSession ? "session-1" : undefined);
+  render(<McpServerSettings />);
+}
+
 describe("McpServerSettings (docs/088)", () => {
   beforeEach(() => {
     useMcpStore.getState().reset();
+    useSessionStore.getState().setSessionId(undefined);
   });
 
   afterEach(() => {
     cleanup();
+    useSessionStore.getState().setSessionId(undefined);
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
   });
@@ -67,7 +80,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByText(/No MCP servers configured/)).toBeInTheDocument();
     });
@@ -79,7 +92,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -92,7 +105,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -110,7 +123,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -124,7 +137,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-add-server")).toBeInTheDocument();
     });
@@ -139,7 +152,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-add-server")).toBeInTheDocument();
     });
@@ -163,7 +176,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     fireEvent.click(await screen.findByTestId("mcp-add-server"));
 
     fireEvent.change(screen.getByPlaceholderText("sentry"), {
@@ -190,7 +203,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
 
     await waitFor(() => {
       expect(screen.getByText("backend unavailable")).toBeInTheDocument();
@@ -203,7 +216,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -226,7 +239,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: stdioConfig }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -265,7 +278,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("PUT", /\/api\/mcp-servers\/sentry$/, () => ({ server: sentry }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-sentry")).toBeInTheDocument();
     });
@@ -304,7 +317,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: aliased }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -342,7 +355,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: renamedRow }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -386,7 +399,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: repeated }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -422,7 +435,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("PUT", /\/api\/mcp-servers\/notion$/, () => ({ server: notion }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
     });
@@ -449,7 +462,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: stdioConfig }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -498,7 +511,7 @@ describe("McpServerSettings (docs/088)", () => {
     }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-oauth-notion_oauth")).toBeInTheDocument();
     });
@@ -536,7 +549,7 @@ describe("McpServerSettings (docs/088)", () => {
     }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-oauth-notion_oauth")).toBeInTheDocument();
     });
@@ -587,7 +600,7 @@ describe("McpServerSettings (docs/088)", () => {
     }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
     });

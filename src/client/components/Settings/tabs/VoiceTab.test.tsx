@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { VoiceTab } from "./VoiceTab.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
-import { settingOptions } from "../setting-binding.js";
+import { settingCopy, settingOptions } from "../setting-copy.js";
+import { useVoiceKeyStatus } from "../../../voice/voice-key-status.js";
 
 /**
  * The cleanup status line and the voice-key adoption offer
@@ -24,6 +25,8 @@ interface CleanupModel {
 let cleanupBody: { model: CleanupModel | null; adoptableVoiceKey: unknown };
 let fetchCalls: { url: string; method: string; body: unknown }[] = [];
 let adoptResponse: { ok: boolean; status: number; body: unknown } = { ok: true, status: 200, body: {} };
+/** Which providers have a key stored, as the key list reads it on mount. */
+let configuredKeys: string[] = [];
 
 const OFFER = { providerId: "openai", providerLabel: "OpenAI", serviceName: "OpenAI" };
 
@@ -36,6 +39,9 @@ function stubFetch() {
     });
     if (url === "/api/voice/cleanup/status") {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(cleanupBody) });
+    }
+    if (url === "/api/voice/credentials/status") {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ configured: configuredKeys }) });
     }
     if (url === "/api/credential-routes/adopt-voice-key") {
       return Promise.resolve({
@@ -59,9 +65,10 @@ async function renderTab() {
 
 beforeEach(() => {
   fetchCalls = [];
+  configuredKeys = [];
   cleanupBody = { model: null, adoptableVoiceKey: null };
   adoptResponse = { ok: true, status: 200, body: {} };
-  useSettingsStore.getState().setCleanupEnabled(true);
+  useSettingsStore.getState().setSettingValue("voice.cleanupEnabled", true);
   useUiStore.getState().setToast(null);
   useUiStore.getState().setSettingsTab("voice");
   stubFetch();
@@ -70,6 +77,48 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  useVoiceKeyStatus.setState({ configured: [] });
+});
+
+/**
+ * Where the tab's four sections sit.
+ *
+ * **Provider API keys leads, and that is stated rather than inherited.** Every
+ * other section needs a key first, but `voice.deliveryMode` is a payload scalar
+ * in `global-settings.ts` — the registry's first source — so declaration order
+ * alone put its *Voice notes* section at the top. The four Voice-notes
+ * declarations carry `VOICE_NOTES_ORDER` to say otherwise; drop it from any one
+ * of them and this test fails, because a section is placed by the first of its
+ * rows.
+ */
+describe("VoiceTab section order", () => {
+  it("leads with Provider API keys and closes with Voice notes", async () => {
+    await renderTab();
+
+    expect(screen.getAllByRole("region").map((el) => el.getAttribute("aria-label")))
+      .toEqual(["Provider API keys", "Voice input (dictation)", "Voice playback", "Voice notes"]);
+  });
+
+  // Delivery decides whether the webhook is used at all, so it leads the
+  // section the other three share a rank with. The exact row sequence is
+  // asserted over the catalogue in `registry.test.ts`; this is that the
+  // renderer follows it — against BOTH the rows below it, because comparing
+  // Delivery to hands-free alone passes with the webhook rendered first.
+  it("opens Voice notes with the delivery choice", async () => {
+    await renderTab();
+    const section = screen.getByRole("region", { name: "Voice notes" });
+    const delivery = within(section).getAllByRole("combobox")[0]!;
+    const below = [
+      within(section).getByTestId("voice-webhook-url"),
+      within(section).getByRole("switch"),
+    ];
+
+    expect(delivery).toHaveAccessibleName(settingCopy("voice.deliveryMode").label);
+    for (const row of below) {
+      expect(Boolean(delivery.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING))
+        .toBe(true);
+    }
+  });
 });
 
 describe("VoiceTab cleanup status", () => {
@@ -134,7 +183,9 @@ describe("VoiceTab dictation languages", () => {
   it("offers exactly the declared options", async () => {
     await renderTab();
 
-    const select = screen.getByTestId("voice-language") as HTMLSelectElement;
+    const select = screen.getByRole("combobox", {
+      name: settingCopy("voice.language").label,
+    }) as HTMLSelectElement;
     const rendered = [...select.options].map((o) => ({ value: o.value, label: o.textContent }));
 
     expect(rendered).toEqual(
@@ -204,5 +255,41 @@ describe("VoiceTab voice-key adoption offer", () => {
       expect(useUiStore.getState().toast?.message).toContain("no OpenAI voice key left");
     });
     expect(screen.getByTestId("voice-key-adoption-offer")).toBeTruthy();
+  });
+});
+
+/**
+ * Status a row carries rather than the tab (inventory.md P12). Both lines report
+ * on the row above them, which a section note cannot do — it renders above the
+ * whole group.
+ */
+describe("VoiceTab row status", () => {
+  it("says which key the chosen dictation provider still needs", async () => {
+    useSettingsStore.getState().setSettingValue("voice.sttProvider", "deepgram");
+    await renderTab();
+
+    expect(screen.getByText(/Add a Deepgram key above/)).toBeTruthy();
+  });
+
+  it("drops that line once the key is stored", async () => {
+    useSettingsStore.getState().setSettingValue("voice.sttProvider", "deepgram");
+    configuredKeys = ["deepgram"];
+    await renderTab();
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Add a Deepgram key above/)).toBeNull();
+    });
+  });
+
+  it("puts the cleanup status under the cleanup toggle", async () => {
+    cleanupBody = {
+      model: { serviceName: "Anthropic", modelId: "haiku", modelLabel: "Haiku 4.5", execution: "direct" },
+      adoptableVoiceKey: null,
+    };
+    await renderTab();
+
+    const toggle = screen.getByRole("switch", { name: settingCopy("voice.cleanupEnabled").label });
+    const status = screen.getByTestId("voice-cleanup-status");
+    expect(toggle.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

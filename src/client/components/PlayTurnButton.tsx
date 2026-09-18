@@ -6,13 +6,13 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { useVoicePlayback } from "../voice/use-voice-playback.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { saveSetting } from "./Settings/declared-setting.js";
 
 const SPEEDS = [1, 1.25, 1.5, 2] as const;
 
 export function PlayTurnButton({ turnId, text }: { turnId: string; text: string }) {
   const playback = useVoicePlayback();
   const ttsSpeed = useSettingsStore((s) => s.ttsSpeed);
-  const setTtsSpeed = useSettingsStore((s) => s.setTtsSpeed);
 
   const isActive = playback.playingTurnId === turnId;
   const state = isActive ? playback.state : "idle";
@@ -88,7 +88,7 @@ export function PlayTurnButton({ turnId, text }: { turnId: string; text: string 
       {/* Speed — persisted; applied to the next synthesis. */}
       <select
         value={ttsSpeed}
-        onChange={(e) => setTtsSpeed(Number(e.target.value))}
+        onChange={(e) => { void saveSetting("voice.ttsSpeed", Number(e.target.value)); }}
         className="bg-transparent text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) rounded px-1 py-0.5 cursor-pointer focus:outline-none"
         aria-label="Playback speed"
         data-testid="play-turn-speed"

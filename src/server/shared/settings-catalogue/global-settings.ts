@@ -2,6 +2,7 @@ import type { VoiceDeliveryMode } from "../types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../types/voice-note-types.js";
 import { bool, enumOf, gitIdentity, modelSelection, numeric, text } from "./value-types.js";
 import { defineSetting, isPayloadDeclaration, plain, userText } from "./types.js";
+import { VOICE_NOTES_ORDER } from "./voice-settings.js";
 import type {
   AnyPayloadDeclaration,
   AnySettingDeclaration,
@@ -83,6 +84,30 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  /*
+    Inside Automation, and leading it: every row in that group is ShipIt acting
+    on a pull request without being asked, and the group reads in the order a PR
+    lives — opened, checks fixed, conflicts resolved, branch reset after merge.
+
+    The key keeps its `integrations.` prefix, which is the name the agent
+    addresses the setting by; req 8 holds the agent's view still.
+  */
+  "integrations.autoCreatePr": defineSetting({
+    key: "integrations.autoCreatePr",
+    tab: "advanced",
+    section: "Automation",
+    scope: "global",
+    label: "Auto-create PR after every meaningful turn",
+    description:
+      "When the agent finishes a turn that changes files, ShipIt opens a pull request "
+      + "automatically.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "autoCreatePr" },
+    wire: "autoCreatePr",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "advanced.autoFixCi": defineSetting({
     key: "advanced.autoFixCi",
     tab: "advanced",
@@ -153,6 +178,9 @@ export const GLOBAL_SETTINGS = {
   "advanced.memoryBudgetMb": defineSetting({
     key: "advanced.memoryBudgetMb",
     tab: "advanced",
+    // Last on the tab, before the hand-placed Reset Container: it is the one
+    // row about the install rather than about a session's agent.
+    order: 1,
     // Stored in MB and shown in GB, with an explicit Save (inventory.md P4).
     component: "memory-budget",
     scope: "global",
@@ -171,21 +199,6 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "integrations.autoCreatePr": defineSetting({
-    key: "integrations.autoCreatePr",
-    tab: "integrations",
-    scope: "global",
-    label: "Auto-create PR after every meaningful turn",
-    description:
-      "When the agent finishes a turn that changes files, ShipIt opens a pull request "
-      + "automatically.",
-    type: bool({ default: false }),
-    store: { kind: "credential-store", field: "autoCreatePr" },
-    wire: "autoCreatePr",
-    emits: plain(),
-    propose: { kind: "yes" },
-  }),
-
   "git.identity": defineSetting({
     key: "git.identity",
     tab: "git",
@@ -196,6 +209,27 @@ export const GLOBAL_SETTINGS = {
     store: { kind: "git-config" },
     wire: "gitIdentity",
     emits: userText("The name and email the user chose for their own commits."),
+    propose: { kind: "yes" },
+  }),
+
+  /*
+    Leads the Instructions tab, above the two boxes. Its own disclosure — the
+    built-in text, which is not a setting — is a `rowNote` and so renders
+    beneath it wherever it sits; slice 3 put the toggle last only because
+    `rowNotes` did not exist yet and a section note renders above its rows.
+  */
+  "instructions.agentInstructionsEnabled": defineSetting({
+    key: "instructions.agentInstructionsEnabled",
+    tab: "instructions",
+    scope: "global",
+    label: "ShipIt Agent Instructions",
+    description:
+      "Built-in context sent with every message to help the agent understand the ShipIt "
+      + "environment.",
+    type: bool({ default: true }),
+    store: { kind: "credential-store", field: "agentSystemInstructionsEnabled" },
+    wire: "agentSystemInstructionsEnabled",
+    emits: plain(),
     propose: { kind: "yes" },
   }),
 
@@ -230,24 +264,13 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "instructions.agentInstructionsEnabled": defineSetting({
-    key: "instructions.agentInstructionsEnabled",
-    tab: "instructions",
-    scope: "global",
-    label: "ShipIt Agent Instructions",
-    description:
-      "Built-in context sent with every message to help the agent understand the ShipIt "
-      + "environment.",
-    type: bool({ default: true }),
-    store: { kind: "credential-store", field: "agentSystemInstructionsEnabled" },
-    wire: "agentSystemInstructionsEnabled",
-    emits: plain(),
-    propose: { kind: "yes" },
-  }),
-
   "voice.deliveryMode": defineSetting({
     key: "voice.deliveryMode",
     tab: "voice",
+    section: "Voice notes",
+    // Leads the section its three siblings share the rank of: delivery is the
+    // choice the webhook and hands-free answer to.
+    order: VOICE_NOTES_ORDER,
     scope: "global",
     label: "Delivery",
     description: "Where a voice note goes when the agent records one.",
@@ -268,6 +291,13 @@ export const GLOBAL_SETTINGS = {
   "services.nonTurnModel": defineSetting({
     key: "services.nonTurnModel",
     tab: "services",
+    // The model choice has no options in the declaration, so no control the value
+    // kind alone could carry: which models are offered, what the pin resolves onto
+    // and whether it still runs are all this setting's own (docs/308 slice 6b).
+    component: "background-work",
+    // Beneath the Model providers panel, because it draws on the credentials
+    // that panel holds: pick the model after the accounts that can run it.
+    order: 1,
     scope: "global",
     label: "Background work",
     description:

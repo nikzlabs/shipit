@@ -1,6 +1,5 @@
 import { Button } from "../ui/button.js";
 import { useMcpStore } from "../../stores/mcp-store.js";
-import { bindSetting } from "../Settings/setting-binding.js";
 import { McpTestResult } from "./McpTestResult.js";
 import type { McpServerConfig, McpTestResult as McpTestResultData } from "../../../server/shared/types.js";
 
@@ -78,7 +77,6 @@ export function McpServerRow({
             onClick={onToggle}
             disabled={isToggling || isDeleting}
             aria-label={`${server.enabled ? "Disable" : "Enable"} ${server.name}`}
-            {...bindSetting("mcp.servers[].enabled")}
           >
             {isToggling ? "…" : server.enabled ? "Disable" : "Enable"}
           </Button>
@@ -100,7 +98,6 @@ export function McpServerRow({
               onClick={onEdit}
               disabled={isDeleting}
               aria-label={`Edit ${server.name}`}
-              {...bindSetting("mcp.servers")}
             >
               Edit
             </Button>
@@ -111,7 +108,6 @@ export function McpServerRow({
             onClick={onDelete}
             disabled={isDeleting}
             aria-label={`${isDeleting ? "Deleting" : "Delete"} ${server.name}`}
-            {...bindSetting("mcp.servers")}
           >
             {isDeleting ? "Deleting…" : "Delete"}
           </Button>

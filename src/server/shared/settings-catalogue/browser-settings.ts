@@ -2,6 +2,7 @@ import { sttProviders, ttsProviders } from "../voice-catalog.js";
 import { defineSetting, itemAddress, withheld } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
 import { bool, collection, enumOf, numeric, text } from "./value-types.js";
+import { VOICE_NOTES_ORDER } from "./voice-settings.js";
 
 /**
  * The part of both dialogs that lives in `localStorage`
@@ -49,6 +50,7 @@ export const BROWSER_SETTINGS = {
   "keyboard.keybindings": defineSetting({
     key: "keyboard.keybindings",
     tab: "keyboard",
+    component: "keybindings",
     scope: "browser",
     label: "Keyboard shortcuts",
     description:
@@ -78,6 +80,7 @@ export const BROWSER_SETTINGS = {
   "voice.inputEnabled": defineSetting({
     key: "voice.inputEnabled",
     tab: "voice",
+    section: "Voice input (dictation)",
     scope: "browser",
     label: "Enable voice input",
     description: "Show the mic button and enable push-to-talk dictation.",
@@ -90,6 +93,7 @@ export const BROWSER_SETTINGS = {
   "voice.sttProvider": defineSetting({
     key: "voice.sttProvider",
     tab: "voice",
+    section: "Voice input (dictation)",
     scope: "browser",
     label: "Speech-to-text provider",
     description:
@@ -107,6 +111,7 @@ export const BROWSER_SETTINGS = {
   "voice.cleanupEnabled": defineSetting({
     key: "voice.cleanupEnabled",
     tab: "voice",
+    section: "Voice input (dictation)",
     scope: "browser",
     label: "Clean up transcripts with an LLM",
     description: "Fixes mis-hearings, fillers, and casing before the text lands in the box.",
@@ -119,6 +124,7 @@ export const BROWSER_SETTINGS = {
   "voice.language": defineSetting({
     key: "voice.language",
     tab: "voice",
+    section: "Voice input (dictation)",
     scope: "browser",
     label: "Language",
     description:
@@ -133,6 +139,7 @@ export const BROWSER_SETTINGS = {
   "voice.playbackEnabled": defineSetting({
     key: "voice.playbackEnabled",
     tab: "voice",
+    section: "Voice playback",
     scope: "browser",
     label: "Enable voice playback",
     description: "Show a Play button on each completed assistant turn.",
@@ -145,6 +152,8 @@ export const BROWSER_SETTINGS = {
   "voice.ttsProvider": defineSetting({
     key: "voice.ttsProvider",
     tab: "voice",
+    section: "Voice playback",
+    component: "voice-tts",
     scope: "browser",
     label: "Text-to-speech provider",
     description: "Which provider speaks a voice note. It needs a key of its own.",
@@ -160,6 +169,8 @@ export const BROWSER_SETTINGS = {
   "voice.ttsVoice": defineSetting({
     key: "voice.ttsVoice",
     tab: "voice",
+    section: "Voice playback",
+    component: "voice-tts",
     scope: "browser",
     label: "Voice",
     description:
@@ -174,6 +185,8 @@ export const BROWSER_SETTINGS = {
   "voice.ttsSpeed": defineSetting({
     key: "voice.ttsSpeed",
     tab: "voice",
+    section: "Voice playback",
+    component: "voice-tts",
     scope: "browser",
     label: "Playback speed",
     description: "How fast a voice note is spoken. The offered speeds come from the provider.",
@@ -186,6 +199,9 @@ export const BROWSER_SETTINGS = {
   "voice.handsFree": defineSetting({
     key: "voice.handsFree",
     tab: "voice",
+    section: "Voice notes",
+    order: VOICE_NOTES_ORDER,
+    component: "voice-hands-free",
     scope: "browser",
     label: "Hands-free",
     description:
