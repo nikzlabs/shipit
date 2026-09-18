@@ -79,12 +79,16 @@ otherwise** (docs/309-agent-authored-release-notes):
   repo root. It is gitignored — edit it freely; the edit cannot dirty the tree
   `shipit release prepare` refuses to run against.
 - `prepare` commits the draft as **`.release-notes/v<version>.md`** beside the
-  version bump, so the notes are reviewable in the same PR you merge, and
-  deletes the draft.
-- On merge `release.yml` publishes that file verbatim with `--notes-file`,
-  appending the `**Full Changelog**` compare link itself (GitHub adds one only
-  for `--generate-notes`). No file on the commit ⇒ the label-grouped generated
-  notes below, unchanged.
+  version bump, so the notes are reviewable in the same PR you merge. The draft
+  is deleted only once the PR exists, and a re-run for the same version recovers
+  the notes already on the pushed release branch — the branch is rebuilt from
+  `stable` each time, so without that a retry would ship a release with none.
+- On merge `release.yml` publishes that file **read from the tag** verbatim with
+  `--notes-file`, appending the `**Full Changelog**` link itself (GitHub adds one
+  only for `--generate-notes`; a first release links `commits/<tag>` instead of a
+  compare range). Reading from the tag rather than the checkout matters on the
+  repair path, where the tag is older than the commit CI is running on. No file
+  at the tag ⇒ the label-grouped generated notes below, unchanged.
 - Settings → Update reads the same committed file back (`git show
   <tag>:.release-notes/<tag>.md`) as the changelog for a pending stable update.
 

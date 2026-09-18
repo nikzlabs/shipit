@@ -30,6 +30,12 @@ beforeAll(() => {
   git("add", "-A");
   git("commit", "-qm", "Release v1.2.0");
   git("tag", "v1.2.0");
+
+  // Resolvable as a ref and readable as a file, so the version-format guard is
+  // the only thing that can keep a branch label out of the lookup.
+  fs.writeFileSync(path.join(dir, ".release-notes", "main.md"), "branch tip, not a release\n");
+  git("add", "-A");
+  git("commit", "-qm", "post-release work");
 });
 
 afterAll(() => {
@@ -51,7 +57,11 @@ describe("resolveReleaseNotes (docs/309)", () => {
     await expect(resolveReleaseNotes("v1.2.0", "edge", gitOpts)).resolves.toBeUndefined();
   });
 
-  it("returns undefined for a commit label rather than a version tag", async () => {
+  it("returns undefined for a branch label, even when that ref has a readable notes file", async () => {
+    await expect(resolveReleaseNotes("main", "stable", gitOpts)).resolves.toBeUndefined();
+  });
+
+  it("returns undefined for the 'main @ sha' label describeRef falls back to", async () => {
     await expect(resolveReleaseNotes("main @ abc1234", "stable", gitOpts)).resolves.toBeUndefined();
   });
 

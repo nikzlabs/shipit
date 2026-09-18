@@ -23,6 +23,7 @@ interface GitOverrides {
   diffFiles?: number;
   isClean?: boolean;
   stableVersion?: string | null;
+  remoteNotes?: string | null;
 }
 
 function makeGit(over: GitOverrides = {}) {
@@ -44,9 +45,12 @@ function makeGit(over: GitOverrides = {}) {
     tipCommitMessage: vi.fn(async () => null),
     createAndPushTag: vi.fn(async () => {}),
     getHeadHash: vi.fn(async () => "abc123def456"),
-    showFileAtRef: vi.fn(async (_ref: string, _file: string) =>
-      over.stableVersion ? JSON.stringify({ name: "x", version: over.stableVersion }) : null,
-    ),
+    // Version lookup and notes recovery both land here; a fake that answered
+    // both with the same value could not fail on reading the wrong one.
+    showFileAtRef: vi.fn(async (_ref: string, file: string) => {
+      if (file.startsWith(".release-notes/")) return over.remoteNotes ?? null;
+      return over.stableVersion ? JSON.stringify({ name: "x", version: over.stableVersion }) : null;
+    }),
   };
   return { git: calls as unknown as GitManager, calls };
 }
@@ -559,6 +563,38 @@ describe("prepareRelease — authored release notes (docs/309)", () => {
       prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
     ).rejects.toMatchObject({ statusCode: 500 });
 
+    expect(calls.commitPaths.mock.calls[0]![0]).toContain(path.join(".release-notes", "v0.2.1.md"));
     expect(fs.existsSync(draft())).toBe(true);
+  });
+
+  it("keeps the draft when the push fails, so a retry still has the text", async () => {
+    fs.writeFileSync(draft(), "## Highlights\n");
+    const { git, calls } = makeGit({ diffFiles: 4 });
+    calls.forcePush.mockRejectedValue(new Error("network"));
+
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
+    ).rejects.toThrow(/network/);
+
+    expect(fs.existsSync(draft())).toBe(true);
+  });
+
+  it("recovers the notes already on the release branch when re-run without a draft", async () => {
+    const { git, calls } = makeGit({ diffFiles: 4, remoteNotes: "## Highlights\n\nFrom the first run.\n" });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/release/0.2.1", path.join(".release-notes", "v0.2.1.md"));
+    expect(fs.readFileSync(published(), "utf-8")).toBe("## Highlights\n\nFrom the first run.\n");
+    expect(calls.commitPaths.mock.calls[0]![0]).toContain(path.join(".release-notes", "v0.2.1.md"));
+  });
+
+  it("prefers a fresh draft over the notes already on the release branch", async () => {
+    fs.writeFileSync(draft(), "## Rewritten\n");
+    const { git } = makeGit({ diffFiles: 4, remoteNotes: "## Stale\n" });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(fs.readFileSync(published(), "utf-8")).toBe("## Rewritten\n");
   });
 });

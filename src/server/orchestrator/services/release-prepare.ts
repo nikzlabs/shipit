@@ -282,6 +282,7 @@ async function prepareFinalRelease(
   if ((args.pick?.length ?? 0) > 0 && args.from) {
     throw new ServiceError(400, "Pass either --pick (cherry-pick) or --from (merge), not both.");
   }
+  const draftNotes = await readDraftNotes(args.dir);
   if (!(await git.isClean())) {
     throw new ServiceError(409, "The working tree has uncommitted changes — commit or discard them first.");
   }
@@ -369,7 +370,15 @@ async function prepareFinalRelease(
   writeVersionToSource(detected, version);
   const relPath = path.relative(args.dir, detected.path!);
   const lockRel = detected.source === "package.json" ? path.join(path.dirname(relPath), "package-lock.json") : null;
-  const notesRel = await stageDraftNotes(args.dir, tag);
+  /*
+    Re-running prepare for the same version resets this branch to the release
+    branch and rebuilds it, and the draft is gone once a previous run consumed
+    it — so without recovering the notes already on the pushed branch, the retry
+    would replace an accepted release with one that has none.
+  */
+  const notesBody = draftNotes ?? (await git.showFileAtRef(`origin/${headBranch}`, notesRelPath(tag)));
+  const notesRel = notesBody?.trim() ? await writeNotesFile(args.dir, tag, notesBody) : null;
+
   const message = `Release ${tag}\n\n${BUMP_TRAILER}: ${version}`;
   const commitHash = await git.commitPaths(
     [relPath, ...(lockRel ? [lockRel] : []), ...(notesRel ? [notesRel] : [])],
@@ -378,7 +387,6 @@ async function prepareFinalRelease(
   if (!commitHash) {
     throw new ServiceError(500, "Version bump produced no commit (the version may already be set).");
   }
-  if (notesRel) await rm(path.join(args.dir, NOTES_DRAFT_FILE), { force: true });
 
   await git.forcePush("origin", headBranch);
 
@@ -404,6 +412,10 @@ async function prepareFinalRelease(
   if (pr.baseBranch !== releaseBranch) {
     throw new ServiceError(409, wrongBasePrMessage(headBranch, releaseBranch, pr.number, pr.baseBranch, true));
   }
+
+  // Last: until the notes are on a pushed branch carrying a live PR, the draft
+  // is the only copy, and every path above can still fail.
+  if (draftNotes) await rm(path.join(args.dir, NOTES_DRAFT_FILE), { force: true });
 
   return {
     kind: "pr-opened",
@@ -501,17 +513,23 @@ function deadReleasePrMessage(
   );
 }
 
-/** Copies the user-edited draft to the tag's notes file. The draft is deleted by the caller only once the commit lands, so a failed release leaves the text where the user wrote it. */
-async function stageDraftNotes(dir: string, tag: string): Promise<string | null> {
-  let body: string;
+function notesRelPath(tag: string): string {
+  return path.join(NOTES_DIR, `${tag}.md`);
+}
+
+/** Read before any branch work: a checkout must never be what decides whether the user's text survives. */
+async function readDraftNotes(dir: string): Promise<string | null> {
   try {
-    body = await readFile(path.join(dir, NOTES_DRAFT_FILE), "utf-8");
+    const body = await readFile(path.join(dir, NOTES_DRAFT_FILE), "utf-8");
+    return body.trim() ? body : null;
   } catch {
     return null;
   }
-  if (!body.trim()) return null;
+}
+
+async function writeNotesFile(dir: string, tag: string, body: string): Promise<string> {
+  const rel = notesRelPath(tag);
   await mkdir(path.join(dir, NOTES_DIR), { recursive: true });
-  const rel = path.join(NOTES_DIR, `${tag}.md`);
   await writeFile(path.join(dir, rel), `${body.trimEnd()}\n`, "utf-8");
   return rel;
 }

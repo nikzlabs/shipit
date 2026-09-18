@@ -32,6 +32,17 @@ consults `.gitignore`** — `file-tree.ts:19` skips only `WORKSPACE_SKIP_DIRS`
 (`fs-constants.ts:15-26`), and `FileEditModal.tsx` opens any workspace path with
 Monaco, `.md` included.
 
+**The ignore rule is branch content, so it protects only while it is checked
+out.** It covers the two moments that matter — the clean-tree check and the
+post-turn auto-commit both happen on the session branch, whose tree comes from
+`main`. It does *not* cover the window after `prepare` checks out the release
+branch, whose `.gitignore` comes from `stable` and will not carry the rule until
+a release ships it. That is why the draft is read into memory up front: the
+mechanism does not depend on the file surviving a checkout, so the worst case in
+that window is a stray untracked file, not lost text. The agent is also told to
+verify the ignore rule exists before drafting at all, which is what keeps this
+from reaching a repo that never adopted the flow.
+
 The committed file is **version-stamped**, not a single rolling
 `RELEASE_NOTES.md`. A rolling file lets CI publish the *previous* release's notes
 whenever a release is cut without drafting any; stamping makes that impossible —
@@ -59,19 +70,34 @@ doc rather than left for the agent to infer.
 
 ## Changes
 
-**`src/server/orchestrator/services/release-prepare.ts`** — after the version
-bump and before `commitPaths`: if `RELEASE_NOTES.draft.md` exists and is
-non-empty, write it to `.release-notes/<tag>.md`, add that path to the commit,
-and unlink the draft. No draft ⇒ nothing committed, no behaviour change.
+**`src/server/orchestrator/services/release-prepare.ts`** — the draft is read
+into memory **before any branch work**, written to `.release-notes/<tag>.md`
+after the bump, added to the commit, and unlinked **only once the PR exists**.
+Three failure cases drove that ordering, all raised by review:
 
-**`.github/workflows/release.yml`** (publish step) — if
-`.release-notes/<TAG>.md` exists at the checked-out commit, publish with
-`--notes-file`; otherwise keep `--generate-notes`. CI appends the
-`**Full Changelog**: …/compare/<prev>...<tag>` line itself (req 5) because a
-supplied body is published verbatim — GitHub appends that link only for
-`--generate-notes`. CI is also where the previous tag is reliably resolvable
-(`fetch-depth: 0` plus the existing `git fetch origin --tags --force`); the
-orchestrator's session clone carries no such guarantee.
+- *Retry.* `prepare` is documented to "open **or update**" the PR, and an update
+  resets `release/<version>` to the release branch and rebuilds it. With the
+  draft already consumed by the first run, a second run would force-push a
+  release carrying no notes at all. So when there is no draft, the notes are
+  recovered from `origin/release/<version>` (`git.showFileAtRef`) before the
+  commit — req 5 has to hold on the second run, not just the first.
+- *Commit or push fails.* Deleting the draft at commit time lost the user's text
+  whenever the push or the PR call failed afterwards. It is now the last act.
+- *Checkout.* Reading before the branch work means no checkout can decide
+  whether the text survives, which also contains the gap below.
+
+**`.github/workflows/release.yml`** (publish step) — publish with `--notes-file`
+when `.release-notes/<TAG>.md` exists **at the tag**; otherwise keep
+`--generate-notes`. Reading from the tag rather than the checkout is what the
+**repair path** needs: it republishes an older tag while the checkout is a later
+`stable` commit that can carry different notes for the same version, and
+`resolveReleaseNotes` reads the tag — so a checkout-sourced body would make reqs
+5 and 8 disagree about the same release. CI appends the `**Full Changelog**` link
+itself (req 5) because a supplied body is published verbatim; a first release,
+having no previous final tag, links `commits/<tag>` instead of a compare range.
+CI is also where the previous tag is reliably resolvable (`fetch-depth: 0` plus
+the existing `git fetch origin --tags --force`); the orchestrator's session clone
+carries no such guarantee.
 
 **`src/server/orchestrator/services/updates.ts`** — new optional
 `releaseNotes?: string` on `UpdateStatus`, read with

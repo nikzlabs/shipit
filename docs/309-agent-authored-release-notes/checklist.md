@@ -13,4 +13,14 @@
 - [x] `RELEASING.md` — the notes step
 - [x] `wiki/installing-and-updating.md` — what the update panel now shows
 - [x] `lint:dev` + `typecheck` clean
-- [ ] Independent review via `shipit agent run --role reviewer`
+- [x] Independent review via `shipit agent run --role reviewer` (Codex)
+- [x] Review fix — retry recovers notes from the pushed release branch
+- [x] Review fix — draft deleted only once the PR exists
+- [x] Review fix — CI reads the notes from the tag, not the checkout (repair path)
+- [x] Review fix — first release links `commits/<tag>` when no previous final tag exists
+- [x] Review fix — drafting scoped to repos whose workflow and `.gitignore` support it
+- [x] Review fix — strengthen the two tests that could not fail
+- [ ] **Open with the user:** req 4's distinct acceptance act, and req 8's downgrade case
+- [ ] Known gap: `checkForUpdates()`'s `releaseNotes` wiring is uncovered — it reads the
+      fixed `HOST_REPO_DIR` (`/opt/shipit`), which no test can supply. `resolveReleaseNotes`
+      is tested directly instead.

@@ -263,7 +263,13 @@ rendered chat — they drive the card.
 By default the published GitHub Release body is whatever `gh release create
 --generate-notes` produces: one line per merged pull request since the previous
 tag. To publish something shorter, **write the notes yourself and let the user
-edit them** (docs/309-agent-authored-release-notes):
+edit them** (docs/309-agent-authored-release-notes).
+
+**First check the repo supports it** — two greps, not assumptions: the release
+workflow must publish `.release-notes/<tag>.md`, and `RELEASE_NOTES.draft.md`
+must be in `.gitignore`. Where either is missing, skip this entirely: a draft the
+workflow ignores is a stray file, and one the ignore rule doesn't cover is
+auto-committed onto the release PR. ShipIt's own repo satisfies both. Then:
 
 1. **In the propose turn**, read what the release contains —
    `git log <release-branch>..<source-branch>`, e.g.
@@ -276,10 +282,13 @@ edit them** (docs/309-agent-authored-release-notes):
    cannot dirty the working tree `prepare` refuses to run against, and it
    survives the checkout onto the release branch.
 3. `shipit release prepare` commits it as **`.release-notes/<tag>.md`** beside
-   the version bump and deletes the draft — so the notes are part of the diff
-   the user merges.
-4. On merge, CI publishes that file verbatim with `--notes-file`, appending the
-   `**Full Changelog**` compare link (a supplied body gets no link of its own).
+   the version bump — so the notes are part of the diff the user merges — and
+   deletes the draft only once the PR exists. Re-running `prepare` for the same
+   version rebuilds the branch from scratch; it recovers the notes already on
+   the pushed release branch, so a retry never silently drops them.
+4. On merge, CI publishes that file **as it exists at the tag** verbatim with
+   `--notes-file`, appending the `**Full Changelog**` link (a supplied body gets
+   no link of its own).
 
 No draft ⇒ the release publishes with the generated per-PR list. That is a
 fallback, not a failure: never block a release on notes. The file is
