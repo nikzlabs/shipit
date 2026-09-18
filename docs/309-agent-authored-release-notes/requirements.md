@@ -47,8 +47,8 @@ requirement is a candidate: it can be struck without argument.
      automatically, so it is never the notes anyone reads to decide whether to
      update. Every **final** release is covered with no exception, including a
      hand-pushed final tag. The user's answer named release candidates, which is
-     the prerelease form this repo cuts (`prerelease-pattern` defaults to
-     `v{version}-rc.{n}`); the gap is stated as *prerelease* because that is the
+     the prerelease form this repo cuts (`vX.Y.Z-rc.N`); the gap is stated as
+     *prerelease* because that is the
      classification the workflow actually branches on — any `vX.Y.Z-<suffix>`
      tag — and a narrower wording would describe something the code does not do.
    - 6b. *[agent]* A repo whose release workflow does **not** publish authored

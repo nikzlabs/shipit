@@ -322,15 +322,16 @@ release:
   branch: stable
   version-source: package.json   # package.json | Cargo.toml | pyproject.toml | VERSION | tag
   version-source-path: packages/api/package.json
-  tag-pattern: "v{version}"      # must contain {version}; default: "v{version}"
-  prerelease-pattern: "v{version}-rc.{n}"  # {n} auto-increments; default shown
-  notes: github-generated        # accepted and validated, but not yet read by anything
-  gate: "npm test"
-  workflow: .github/workflows/release.yml
 ```
 
-All fields are optional. `release-branch` requires a file-backed `version-source`
-(not `tag`) — a branch push has no tag to read the version from.
+Those four keys are the whole schema, and all of them are optional.
+`release-branch` requires a file-backed `version-source` (not `tag`) — a branch
+push has no tag to read the version from.
+
+Some fixed values are **not** configurable, so do not look for a key that sets
+them: the tag is always `v<version>`, a release candidate is always
+`v<version>-rc.<n>`, and the release workflow is always
+`.github/workflows/release.yml`.
 
 ## Monorepo disambiguation
 
@@ -347,14 +348,14 @@ On resolution, offer to write the `release:` block (`version-source` +
 If the repo has **no release workflow**, you can scaffold one and open a PR — CI
 still does the publish, so the repo gets the same hands-off auto-publish flow
 without anyone leaving ShipIt. Use this when the user asks to "set up releases",
-or when a release request hits a repo whose `.github/workflows/release.yml` (or
-the path in `release.workflow`) is absent.
+or when a release request hits a repo whose `.github/workflows/release.yml` is
+absent.
 
 ### Detect → offer → write → PR
 
 1. **Detect.** Check whether a release workflow already exists at
-   `.github/workflows/release.yml` (or `release.workflow` from `shipit.yaml`). If
-   one is present, don't scaffold — use the normal release flow above.
+   `.github/workflows/release.yml`. If one is present, don't scaffold — use the
+   normal release flow above.
 2. **Offer.** Tell the user you can scaffold a merge-triggered auto-publish
    workflow, and confirm the parameters before writing:
    - **version source** — auto-detect (`package.json` / `Cargo.toml` /
@@ -365,7 +366,8 @@ the path in `release.workflow`) is absent.
    - **release branch** — the long-lived maintenance branch a release is cut by
      merging into (default `stable`).
    - **gate** (optional) — a command to run before tag + publish (e.g.
-     `npm test`).
+     `npm test`). It is written into the workflow you scaffold, not into
+     `shipit.yaml`.
    - **prerelease** — whether to also accept `vX.Y.Z-rc.N` tags for release
      candidates.
 3. **Write** these four files into the workspace:
