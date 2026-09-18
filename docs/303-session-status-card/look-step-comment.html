@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>A comment per manual step — options (docs/303)</title>
+<style>
+  :root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; padding: 24px; background: #e5e7eb; color: #111827; }
+  h1 { font-size: 17px; margin: 0 0 6px; }
+  p.lead { font-size: 13px; line-height: 1.55; color: #374151; margin: 0 0 10px; max-width: 1020px; }
+  p.lead b { color: #111827; }
+  .legend { font-size: 12px; line-height: 1.55; color: #374151; max-width: 1020px; margin: 0 0 22px; }
+  .legend li { margin-bottom: 5px; }
+  .optname { font-size: 13px; font-weight: 700; margin: 30px 0 4px; color: #111827; }
+  .optname span { font-weight: 400; color: #4b5563; }
+  .verdict { font-size: 12px; line-height: 1.5; color: #374151; margin: 0 0 9px; max-width: 1020px; }
+  .verdict b.no { color: #b91c1c; }
+  .verdict b.yes { color: #15803d; }
+  .boards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  .theme { border-radius: 12px; padding: 14px 14px 16px; background: var(--color-bg-primary); color: var(--color-text-primary); }
+  .theme h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; margin: 0 0 10px; color: var(--color-text-tertiary); }
+
+  .claude-light {
+    --color-bg-primary:#faf5ef; --color-bg-secondary:#f0e8de; --color-bg-tertiary:#e6dcd0;
+    --color-bg-hover:rgba(180,100,60,.06);
+    --color-text-primary:#2a2018; --color-text-secondary:#5c5040; --color-text-tertiary:#9a8c78;
+    --color-text-link:#c06040; --color-border-primary:#decfbc; --color-border-secondary:#d0c0ac;
+    --color-accent:#d97757; --color-accent-text:#ffffff; --color-accent-subtle:rgba(217,119,87,.12);
+  }
+  .dark {
+    --color-bg-primary:#030712; --color-bg-secondary:#111827; --color-bg-tertiary:#1f2937;
+    --color-bg-hover:rgba(255,255,255,.05);
+    --color-text-primary:#f3f4f6; --color-text-secondary:#9ca3af; --color-text-tertiary:#6b7280;
+    --color-text-link:#60a5fa; --color-border-primary:#212c3b; --color-border-secondary:#374151;
+    --color-accent:#3b82f6; --color-accent-text:#ffffff; --color-accent-subtle:rgba(59,130,246,.15);
+  }
+  .light {
+    --color-bg-primary:#ffffff; --color-bg-secondary:#f9fafb; --color-bg-tertiary:#f3f4f6;
+    --color-bg-hover:rgba(0,0,0,.04);
+    --color-text-primary:#111827; --color-text-secondary:#4b5563; --color-text-tertiary:#9ca3af;
+    --color-text-link:#2563eb; --color-border-primary:#dfe1e6; --color-border-secondary:#d1d5db;
+    --color-accent:#2563eb; --color-accent-text:#ffffff; --color-accent-subtle:rgba(37,99,235,.1);
+  }
+  .claude {
+    --color-bg-primary:#1a1410; --color-bg-secondary:#231c16; --color-bg-tertiary:#2e2519;
+    --color-bg-hover:rgba(217,119,87,.08);
+    --color-text-primary:#e8e0d8; --color-text-secondary:#a89a8c; --color-text-tertiary:#7a6e62;
+    --color-text-link:#e09070; --color-border-primary:#382d1e; --color-border-secondary:#43382c;
+    --color-accent:#d97757; --color-accent-text:#ffffff; --color-accent-subtle:rgba(217,119,87,.15);
+  }
+
+  .tail { font-size: 13px; line-height: 1.5; color: var(--color-text-primary); margin: 0 0 12px; padding: 0 2px; }
+  .tail p { margin: 0 0 6px; }
+  .tail .tool { font-size: 12px; color: var(--color-text-tertiary); }
+  .composer { margin-top: 12px; min-height: 38px; border-radius: 10px; border: 1px solid var(--color-border-secondary);
+              background: var(--color-bg-primary); color: var(--color-text-tertiary); font-size: 12px;
+              display: flex; align-items: center; padding: 8px 12px; line-height: 1.5; white-space: pre-line; }
+  .composer.filled { color: var(--color-text-primary); align-items: flex-start; }
+
+  /* ---- the stack of capped cards, as shipped ---- */
+  .stack { display: flex; flex-direction: column; gap: 8px; }
+  .kard { position: relative; border-radius: 8px; overflow: hidden; border: 1px solid var(--color-accent);
+          font-size: 12px; line-height: 1.45; }
+  .cap { display: flex; align-items: center; gap: 7px; padding: 5px 12px; font-size: 12px; font-weight: 600; }
+  .cap svg { flex: none; }
+  .body { padding: 8px 12px; }
+  .s-filled .cap { background: var(--color-accent); color: var(--color-accent-text); }
+  .s-filled .body { background: var(--color-accent-subtle); }
+  .s-neutral .cap { background: var(--color-bg-tertiary); color: var(--color-text-primary);
+                    border-bottom: 1px solid var(--color-border-secondary); }
+  .s-neutral .cap svg { color: var(--color-text-secondary); }
+  .s-neutral .body { background: var(--color-bg-secondary); }
+  .s-neutral { border-color: var(--color-border-secondary); }
+  .s-soft .cap { background: var(--color-accent-subtle); color: var(--color-text-primary);
+                 border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent); }
+  .s-soft .cap svg { color: var(--color-accent); }
+  .s-soft .body { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+  .s-soft { border-color: color-mix(in srgb, var(--color-accent) 45%, transparent); }
+
+  .prose { color: var(--color-text-primary); }
+  .prose ul { margin: 4px 0 0; padding-left: 18px; }
+  .prose li { margin-bottom: 2px; }
+  .sub { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .sub svg { flex: none; color: var(--color-accent); }
+  .sub b { font-size: 12px; font-weight: 600; color: var(--color-text-primary); }
+  .inner + .inner { margin-top: 10px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--color-accent) 25%, transparent); }
+
+  .rows { display: flex; flex-direction: column; gap: 2px; }
+  .r { display: flex; gap: 10px; align-items: flex-start; border-radius: 6px; padding: 5px 8px; }
+  .r.on { background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
+  .box { flex: none; margin-top: 1px; width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--color-border-secondary);
+         display: inline-flex; align-items: center; justify-content: center; color: transparent; background: var(--color-bg-primary); }
+  .r.on .box { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-text); }
+  .mid { min-width: 0; flex: 1; }
+  .lbl { font-weight: 500; color: var(--color-text-primary); }
+  .r.taken .lbl, .r.taken .desc, .r.taken .note-read { color: var(--color-text-tertiary); }
+  .desc { display: block; margin-top: 1px; color: var(--color-text-secondary); }
+  .tag { display: inline-block; vertical-align: middle; margin-left: 6px; font-size: 10px; font-weight: 600;
+         letter-spacing: .04em; border-radius: 999px; padding: 1px 6px; }
+  .tag.rec { color: var(--color-text-link); background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
+  .tag.sent { color: var(--color-text-tertiary); background: color-mix(in srgb, var(--color-text-tertiary) 18%, transparent); }
+  .tag.ans { color: var(--color-text-link); background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
+
+  /* the per-step note control and field (option C) */
+  .noteBtn { flex: none; margin-top: 0; display: inline-flex; align-items: center; justify-content: center;
+             width: 22px; height: 22px; border-radius: 6px; color: var(--color-text-tertiary); background: transparent; }
+  .noteBtn.has { color: var(--color-accent); }
+  .noteField { margin-top: 5px; border-radius: 6px; border: 1px solid var(--color-border-secondary);
+               background: var(--color-bg-primary); color: var(--color-text-primary);
+               padding: 5px 8px; font-size: 12px; line-height: 1.45; }
+  .noteField.ph { color: var(--color-text-tertiary); }
+  .noteField.focus { border-color: var(--color-accent); }
+  .note-read { display: block; margin-top: 3px; padding-left: 8px; border-left: 2px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+               color: var(--color-text-secondary); }
+
+  /* option E — the agent-declared value field */
+  .valLbl { display: block; margin-top: 5px; font-size: 11px; font-weight: 600; color: var(--color-text-secondary); }
+
+  .foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .btn { font-size: 12px; font-weight: 500; border-radius: 6px; padding: 5px 11px; border: 1px solid transparent;
+         display: inline-flex; align-items: center; gap: 6px; }
+  .btn.primary { background: var(--color-accent); color: var(--color-accent-text); }
+  .btn.ghost { background: transparent; color: var(--color-text-secondary); }
+
+  @media (max-width: 900px) { .boards { grid-template-columns: 1fr; } .phones { grid-template-columns: 1fr !important; } }
+
+  /* The phone comparison: two 390px columns, clipped at a phone's visible height. */
+  .phones { display: grid; grid-template-columns: 390px 390px; gap: 16px; align-items: start; }
+  .phone { width: 390px; }
+  .phone .theme { border-radius: 0; height: 640px; overflow: hidden; padding: 12px; }
+  .phone h3 { font-size: 12px; margin: 0 0 6px; color: #111827; }
+  .phone .cut { font-size: 11px; color: #4b5563; margin: 4px 0 0; }
+
+  .msgwrap { margin-top: 26px; }
+  .msg { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.6;
+         white-space: pre-wrap; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 14px 16px; max-width: 1020px; }
+  .msg .hl { color: #93c5fd; }
+</style>
+</head>
+<body>
+<h1>A comment per manual step — five options</h1>
+<p class="lead">
+  Nik, 2026-09-18: <b>“manual steps sometimes require the user to enter something, or the user wants to leave a
+  comment per step.”</b> Two needs hide in that. One is <b>reporting with a value</b> — “done, but I named it
+  <code>billing-prod</code>” — where the agent needs the detail to carry on correctly and today gets one bit. The other
+  is <b>qualifying or refusing</b> — “no, use SQLite”, “blocked, GitHub will not let me” — which the card cannot
+  express at all, because a step can only be ticked, never answered.
+</p>
+<p class="lead">
+  The thing to judge is <b>attribution</b>, not typing convenience. Ticking a step and typing the detail in the
+  composer already works and costs the same one turn — so a per-step field earns its place only if it keeps the link
+  between the sentence and the step, the way an offer's payload keeps its provenance. Each option below says what the
+  agent receives.
+</p>
+<ul class="legend">
+  <li>Drawn in the card's real place: agent prose above, the composer below. Semantic tokens only, four themes.</li>
+  <li>The manual steps in every board are the same four, so the options differ only in what the row can do.</li>
+  <li><b>Not drawn:</b> a “Done / Won't do” button pair with no free text. It answers the refusal half without a
+    keyboard, and cannot carry a value at all — and Nik's words name a <em>comment</em>. It would also be a second
+    control beside the toggle on every row, which req 2 (no padding) does not pay for.</li>
+</ul>
+
+<div id="out"></div>
+
+<div class="optname">C against D on a phone <span>— 390px wide, clipped where a phone's keyboard would start, both drawn at C's worst case (two notes open). D adds a row to every step whether or not it is used, so it loses two more rows here — and when the notes are closed, C is back to today's height while D is not.</span></div>
+<div class="phones" id="phones"></div>
+
+<div class="msgwrap">
+  <div class="optname">What the agent receives — option C <span>— the contract half: a note must be unambiguous when several steps are submitted at once, and a step answered without being ticked must not read as done</span></div>
+  <div class="msg">[Action card → Submit] I have done these manual steps:
+- Add the Stripe test key in Settings → Secrets.
+  <span class="hl">Note: named it billing-prod, not billing — billing was taken.</span>
+
+I answered these manual steps without doing them:
+- Use Postgres for the job queue.
+  <span class="hl">Note: no — use SQLite. I don't want another service to run.</span></div>
+</div>
+
+<script>
+const icon = (d, size = 16) => `<svg width="${size}" height="${size}" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">${d}</svg>`;
+const I = {
+  clock: `<path d="M136 80v43.47l36.12 21.67a8 8 0 0 1-8.24 13.72l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Zm-8-48A95.44 95.44 0 0 0 60.08 60.15C52.81 67.51 46.35 74.59 40 82V64a8 8 0 0 0-16 0v40a8 8 0 0 0 8 8h40a8 8 0 0 0 0-16H49.8c7-8.22 14.21-16.26 22.6-24.73a80 80 0 1 1 1.66 114.48 8 8 0 1 0-11 11.64A96 96 0 1 0 128 32Z"/>`,
+  gauge: `<path d="M207.06 72.67A111.24 111.24 0 0 0 128 40h-.4C66.07 40.21 16 91 16 153.13V184a16 16 0 0 0 16 16h192a16 16 0 0 0 16-16v-32c0-29.79-11.66-57.85-32.94-79.33ZM224 184H32v-30.87a95.4 95.4 0 0 1 28.32-67.8A15.9 15.9 0 0 1 60 88h.1a96 96 0 0 1 163.9 64Zm-45.66-89.66a8 8 0 0 1 0 11.32l-33.68 33.67a24 24 0 1 1-11.32-11.31l33.68-33.68a8 8 0 0 1 11.32 0Z"/>`,
+  clip: `<path d="M200 32h-36.26a47.92 47.92 0 0 0-71.48 0H56a16 16 0 0 0-16 16v168a16 16 0 0 0 16 16h144a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16Zm-72 0a32 32 0 0 1 32 32H96a32 32 0 0 1 32-32Zm72 184H56V48h26.75A47.93 47.93 0 0 0 80 64v8a8 8 0 0 0 8 8h80a8 8 0 0 0 8-8v-8a47.93 47.93 0 0 0-2.75-16H200Zm-40-72a8 8 0 0 1-8 8h-48a8 8 0 0 1 0-16h48a8 8 0 0 1 8 8Zm0 32a8 8 0 0 1-8 8h-48a8 8 0 0 1 0-16h48a8 8 0 0 1 8 8Z"/>`,
+  checks: `<path d="M104 104h64a8 8 0 0 0 0-16h-64a8 8 0 0 0 0 16Zm64 32h-64a8 8 0 0 0 0 16h64a8 8 0 0 0 0-16Zm0 48h-64a8 8 0 0 0 0 16h64a8 8 0 0 0 0-16ZM81.66 67.66 56 93.31 42.34 79.66a8 8 0 0 0-11.32 11.31l19.32 19.32a8 8 0 0 0 11.32 0l31.31-31.32a8 8 0 0 0-11.31-11.31Zm0 64L56 157.31l-13.66-13.65a8 8 0 0 0-11.32 11.31l19.32 19.32a8 8 0 0 0 11.32 0l31.31-31.32a8 8 0 0 0-11.31-11.31Zm0 64L56 221.31l-13.66-13.65a8 8 0 0 0-11.32 11.31l19.32 19.32a8 8 0 0 0 11.32 0l31.31-31.32a8 8 0 0 0-11.31-11.31Z"/>`,
+  check: `<path d="m229.66 77.66-128 128a8 8 0 0 1-11.32 0l-56-56a8 8 0 0 1 11.32-11.32L96 188.69 218.34 66.34a8 8 0 0 1 11.32 11.32Z"/>`,
+  arrow: `<path d="m221.66 133.66-72 72a8 8 0 0 1-11.32-11.32L196.69 136H40a8 8 0 0 1 0-16h156.69l-58.35-58.34a8 8 0 0 1 11.32-11.32l72 72a8 8 0 0 1 0 11.32Z"/>`,
+  chat: `<path d="M128 24a104 104 0 0 0-91.8 152.88l-11.35 34.05A16 16 0 0 0 45 231.16l34.05-11.35A104 104 0 1 0 128 24Zm-40 96a12 12 0 1 1 12-12 12 12 0 0 1-12 12Zm40 0a12 12 0 1 1 12-12 12 12 0 0 1-12 12Zm40 0a12 12 0 1 1 12-12 12 12 0 0 1-12 12Z"/>`,
+  note: `<path d="M216 48h-40v-8a24 24 0 0 0-48 0v8H88a24 24 0 0 0-24 24v8H40a16 16 0 0 0-16 16v120a16 16 0 0 0 16 16h176a16 16 0 0 0 16-16V64a16 16 0 0 0-16-16Zm-72-8a8 8 0 0 1 16 0v8h-16Zm72 176H40V96h24v96a16 16 0 0 0 16 16h136Zm0-32H80V72a8 8 0 0 1 8-8h40v8a16 16 0 0 0 16 16h16a16 16 0 0 0 16-16v-8h40Z"/>`,
+};
+
+const TAIL = `
+  <p>Wired <code>/webhooks/stripe</code> and its signature check, then ran the billing suite — all 41 green,
+  including the four new signature cases.</p>
+  <p class="tool">Edit src/server/billing/webhook.ts · Bash npx vitest run billing</p>`;
+
+const STATUS_BODY = `
+  <div class="prose">
+    Billing service — the Stripe integration end to end.
+    <ul>
+      <li>Routes and tests done; <b>PR #212 ready to merge</b>.</li>
+      <li>Webhook delivery retries not started.</li>
+    </ul>
+  </div>`;
+
+const LAST_TURN_BODY = `
+  <div class="prose">Wired the webhook route and its signature check; the billing suite is green and PR #212 is up.</div>`;
+
+const FOLLOWUP_ROWS = `
+  <div class="rows">
+    <div class="r on"><span class="box">${icon(I.check, 12)}</span><span class="mid"><span class="lbl">Add retry on 5xx from Stripe<span class="tag rec">RECOMMENDED</span></span><span class="desc">Three attempts with backoff, then a dead-letter row.</span></span></div>
+    <div class="r taken"><span class="box">${icon(I.check, 12)}</span><span class="mid"><span class="lbl">Add a README section on billing<span class="tag sent">SENT</span></span><span class="desc">What the service does and how to run it locally.</span></span></div>
+  </div>`;
+
+/** The four manual steps every board shows, so only the row's abilities differ. */
+const STEPS = [
+  { label: "Add the Stripe test key in Settings → Secrets.", ticked: true,
+    note: "named it billing-prod, not billing — billing was taken." },
+  { label: "Use Postgres for the job queue.", ticked: false,
+    note: "no — use SQLite. I don't want another service to run." },
+  { label: "Approve the webhook endpoint in the Stripe dashboard.", ticked: false, note: "" },
+  { label: "Grant the repo push rights to the deploy key.", ticked: false, taken: true, note: "" },
+];
+
+const box = `<span class="box">${icon(I.check, 12)}</span>`;
+const noteBtn = (has) => `<span class="noteBtn ${has ? "has" : ""}">${icon(I.chat, 15)}</span>`;
+
+/** A, B — today's row: a toggle and nothing else. */
+function rowsPlain() {
+  return `<div class="rows">${STEPS.map((s) => `
+    <div class="r ${s.ticked ? "on" : ""} ${s.taken ? "taken" : ""}">${box}<span class="mid"><span class="lbl">${s.label}${s.taken ? `<span class="tag sent">SENT</span>` : ""}</span></span></div>`).join("")}</div>`;
+}
+
+/** C — a quiet note control per row; the field appears once it is pressed. */
+function rowsReveal() {
+  return `<div class="rows">
+    <div class="r on">${box}<span class="mid"><span class="lbl">${STEPS[0].label}</span>
+      <div class="noteField">${STEPS[0].note}</div></span>${noteBtn(true)}</div>
+    <div class="r">${box}<span class="mid"><span class="lbl">${STEPS[1].label}<span class="tag ans">ANSWERED</span></span>
+      <div class="noteField focus">${STEPS[1].note}</div></span>${noteBtn(true)}</div>
+    <div class="r">${box}<span class="mid"><span class="lbl">${STEPS[2].label}</span></span>${noteBtn(false)}</div>
+    <div class="r taken">${box}<span class="mid"><span class="lbl">${STEPS[3].label}<span class="tag sent">SENT</span></span></span>${noteBtn(false)}</div>
+  </div>`;
+}
+
+/** D — a field under every step, always. */
+function rowsAlways() {
+  return `<div class="rows">${STEPS.map((s, i) => `
+    <div class="r ${s.ticked ? "on" : ""} ${s.taken ? "taken" : ""}">${box}<span class="mid"><span class="lbl">${s.label}${s.taken ? `<span class="tag sent">SENT</span>` : ""}</span>
+      <div class="noteField ${s.note ? "" : "ph"}">${s.note || "Add a note for the agent…"}</div></span></div>`).join("")}</div>`;
+}
+
+/** E — the agent declares which step needs a value, and names it. */
+function rowsDeclared() {
+  return `<div class="rows">
+    <div class="r on">${box}<span class="mid"><span class="lbl">${STEPS[0].label}</span>
+      <span class="valLbl">Secret name</span>
+      <div class="noteField">billing-prod</div></span></div>
+    <div class="r">${box}<span class="mid"><span class="lbl">${STEPS[1].label}</span></span></div>
+    <div class="r">${box}<span class="mid"><span class="lbl">${STEPS[2].label}</span></span></div>
+    <div class="r taken">${box}<span class="mid"><span class="lbl">${STEPS[3].label}<span class="tag sent">SENT</span></span></span></div>
+  </div>`;
+}
+
+const FOOT = `
+  <div class="foot">
+    <button class="btn primary">${icon(I.arrow)}Submit</button>
+    <button class="btn ghost">${icon(I.chat)}Add comment…</button>
+  </div>`;
+
+function kard(skin, capIcon, capTitle, body) {
+  return `<div class="kard ${skin}">
+    <div class="cap">${icon(capIcon)}${capTitle}</div>
+    <div class="body">${body}</div>
+  </div>`;
+}
+
+function stack(stepRows) {
+  return `<div class="stack">
+    ${kard("s-soft", I.gauge, "Status", STATUS_BODY)}
+    ${kard("s-neutral", I.clock, "Last turn", LAST_TURN_BODY)}
+    ${kard("s-filled", I.checks, "Next steps", `
+      <div class="inner"><div class="sub">${icon(I.clip)}<b>Manual steps</b></div>${stepRows}</div>
+      <div class="inner"><div class="sub">${icon(I.checks)}<b>Follow-ups</b></div>${FOLLOWUP_ROWS}</div>
+      ${FOOT}`)}
+  </div>`;
+}
+
+const COMPOSER_EMPTY = `<div class="composer">Message the agent…</div>`;
+const COMPOSER_FILLED = `<div class="composer filled">Re: offered actions
+- done by hand: Add the Stripe test key in Settings → Secrets.
+- done by hand: Use Postgres for the job queue.
+
+I named the key billing-prod, and for the queue use SQLite instead…</div>`;
+
+const OPTIONS = [
+  ["A — Nothing", "the card as it ships. The detail goes in the composer as a free sentence.",
+   `<b class="no">Loses attribution.</b> “I named it billing-prod” arrives as prose beside a card with four steps;
+    the agent has to guess which one it answers, and with two steps ticked it often guesses. Costs nothing,
+    and this is the baseline every option below has to beat.`,
+   rowsPlain, COMPOSER_EMPTY],
+
+  ["B — The card's existing “Add comment…”", "already built: it prefills the composer with the ticked rows and the user types under them.",
+   `<b class="yes">Cheap</b> — it exists, and the prefill does list the steps, so one ticked step is attributed by
+    accident. <b class="no">It cannot say which step a sentence means</b> once two are ticked, and it cannot carry a
+    note for a step the user is <em>not</em> reporting done, because an unticked step never enters the prefill. The
+    refusal half of Nik's request is unreachable here.`,
+   rowsPlain, COMPOSER_FILLED],
+
+  ["C — A note per step, revealed by a control on the row", "recommended. A quiet note button at the row's right end opens a field under that step. Usable without ticking.",
+   `<b class="yes">Keeps attribution</b>: the note travels under its own step, as an offer's payload keeps its
+    provenance. <b class="yes">Turns the toggle into three states</b> — not done · done · answered — so “no, use
+    SQLite” and “blocked” become sayable, which is the half the card cannot express today. <b class="yes">Costs no
+    height</b> on a card nobody annotates: the closed row is today's row plus a 22px glyph. Cost: one more control
+    per row, and a second thing the Submit carries.`,
+   rowsReveal, COMPOSER_EMPTY],
+
+  ["D — A field under every step, always", "no control to find; the box is simply there.",
+   `<b class="yes">Most discoverable.</b> <b class="no">Pays ~30px per step on every card, most of which nobody
+    will type into</b> — req 2 is “no padding, nothing the user does not need” — and it turns the card into a form.
+    At 390px that is the follow-ups pushed two further rows down, every turn, on a card nobody is annotating; see the
+    phone comparison below. Same contract as C, worse card.`,
+   rowsAlways, COMPOSER_EMPTY],
+
+  ["E — The agent declares which step needs a value", "the agent marks a step and names the field: “Secret name”.",
+   `<b class="yes">Reads beautifully</b> when the agent gets it right. <b class="no">The agent usually cannot know</b>
+    — it writes the step before the user has hit the thing that needs naming — and a step it did not mark cannot be
+    answered at all, so the refusal half stays unreachable unless C is built underneath it anyway. It is an addition
+    to C, not an alternative, and one worth having only once C has shown what people actually type.`,
+   rowsDeclared, COMPOSER_EMPTY],
+];
+
+const THEMES = [["claude-light", "claude-light"], ["dark", "dark"], ["light", "light"], ["claude", "claude"]];
+
+const out = document.getElementById("out");
+for (const [title, note, verdict, rows, composer] of OPTIONS) {
+  const h = document.createElement("div");
+  h.className = "optname";
+  h.innerHTML = `${title} <span>— ${note}</span>`;
+  out.appendChild(h);
+  const v = document.createElement("p");
+  v.className = "verdict";
+  v.innerHTML = verdict;
+  out.appendChild(v);
+  const boards = document.createElement("div");
+  boards.className = "boards";
+  for (const [tk, tn] of THEMES) {
+    const sec = document.createElement("section");
+    sec.className = `theme ${tk}`;
+    sec.innerHTML = `<h2>${tn}</h2><div class="tail">${TAIL}</div>${stack(rows())}${composer}`;
+    boards.appendChild(sec);
+  }
+  out.appendChild(boards);
+}
+
+const phones = document.getElementById("phones");
+for (const [name, rows] of [["C — revealed", rowsReveal], ["D — always there", rowsAlways]]) {
+  const wrap = document.createElement("div");
+  wrap.className = "phone";
+  wrap.innerHTML = `<h3>${name}</h3><section class="theme dark">${stack(rows())}</section>
+    <p class="cut">Cut off at the top of the phone's keyboard.</p>`;
+  phones.appendChild(wrap);
+}
+</script>
+</body>
+</html>
