@@ -931,6 +931,22 @@ describe("SessionSidebar", () => {
       expect(screen.queryByTitle(/CI failed/)).toBeNull();
     });
 
+    it("animates the auto-fix indicator, so it reads as in-flight", () => {
+
+      const card: PrCardState = {
+        ...failingChecks,
+        autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
+      };
+      usePrStore.setState({ cardBySession: { "s1": card } });
+      useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+
+      const sessions = [baseSession({ id: "s1", title: "Auto-fixing session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      const glyph = screen.getByTitle("Auto-fix running").querySelector("svg");
+      expect(glyph?.getAttribute("class")).toContain("animate-pulse");
+    });
+
     const mergedPr = {
       number: 42,
       title: "Shipped",

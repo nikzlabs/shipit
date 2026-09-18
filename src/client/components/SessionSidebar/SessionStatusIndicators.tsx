@@ -16,9 +16,12 @@ export function SessionStatusDot({ sessionId }: { sessionId: string }) {
   const ci = useCiDisplay(card?.checks);
   const autoFix = card?.autoFix;
 
-  // is the "running" signal and the rotation was never carrying it.
+  // The wrench keeps its glyph — a generic spinner here would be
+  // indistinguishable from the CI one below at this size — but it must still
+  // read as in-flight, so it pulses. `animate-pulse` is opacity-only, which is
+  // what the docs/265 rule allows; the rotation it replaces was a transform.
   if (autoFix?.status === "running") {
-    return <span className="shrink-0 text-(--color-autofix) flex" title="Auto-fix running"><WrenchIcon size={ICON_SIZE.XS} /></span>;
+    return <span className="shrink-0 text-(--color-autofix) flex" title="Auto-fix running"><WrenchIcon size={ICON_SIZE.XS} className="animate-pulse" /></span>;
   }
 
   if (isAgentRunning) {
