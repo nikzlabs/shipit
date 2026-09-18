@@ -70,8 +70,8 @@ function needsCommit(tab: SettingTab): boolean {
  * Rows grouped by `section`, each group placed where its first declaration is —
  * with a shared component appearing only at the first declaration that names it.
  *
- * "First" is `placedOnTab`'s order, not the registry's: a row that states an
- * `order` is placed by it, and a section moves with the first of its rows.
+ * "First" is `placedOnTab`'s order, not the registry's: a row may state an
+ * `order`, and a section moves with the first of its rows.
  */
 function groupsOf(tab: SettingTab): Group[] {
   const groups: Group[] = [];

@@ -86,9 +86,8 @@ export type OwnRouteSettingKey = KeysStoredBy<"own-route">;
  * declaration order within one rank.
  *
  * The sort is stable, so a tab whose declarations all leave `order` unset reads
- * exactly as it did — the rank is what a row states when its file's position
- * cannot state it (`types.ts` → `order`). `from` narrows the pool because the
- * dialog places only the rows it generates; the whole registry is the default.
+ * exactly as it did. `from` narrows the pool because the dialog places only the
+ * rows it generates; the whole registry is the default.
  */
 export function placedOnTab(
   tab: SettingTab,

@@ -70,6 +70,13 @@ they stand are not a requirement; they are how the code grew.
     deleted rather than narrowed, and the two guarantees generation does not
     replace — that a panel's copy matches its declaration, and that a
     panel-owned declaration has a control at all — are given up knowingly.
+13. Five placements the user named, having read the shipped dialog. **Background
+    work** sits below the Model providers panel. **Provider API keys** leads the
+    Voice tab. Auto-create-PR is on the **Advanced** tab. The
+    built-in-instructions toggle leads the **Instructions** tab, above both
+    boxes. The **memory budget** is the last row on Advanced. Requirement 11
+    still holds over all five — where each appears comes from its declaration —
+    and these say which answers the declarations must give.
 
 ## Open questions
 
@@ -77,23 +84,26 @@ None.
 
 ## Resolved questions
 
-- 2026-09-18 — *The order that fell out is right in general and wrong in three
-  named places. What changes?* The user named three outcomes they reject, having
-  used the shipped dialog: **Background work** must sit below the Model providers
-  panel, **Provider API keys** must lead the Voice tab, and
-  `integrations.autoCreatePr` must be on **Advanced**. Requirement 11 is
-  unchanged, and so is the 2026-09-16 answer below that the visible order may
-  move — these are three outcomes, not a withdrawal. What changed is the
-  mechanism: the declaration gains an optional `order`, reversing
-  `inventory.md`'s *"Skip. Declaration order is the order"*, because the free fix
-  cannot reach any of the three. A declaration moves only inside its own file,
-  and both offending rows are payload scalars that cannot leave
+- 2026-09-18 — *The order that fell out is right in general and wrong in five
+  named places. What changes?* The user, having read the shipped dialog, named
+  five placements they reject; an audit of every tab found the last two.
+  → **requirement 13**, which is the list.
+
+  Requirement 11 is unchanged, and so is the 2026-09-16 answer below that the
+  visible order may move: these are outcomes the declarations must produce, not a
+  withdrawal of where order comes from.
+
+  What changed is the mechanism, for three of the five. The declaration gains an
+  optional `order`, reversing `inventory.md`'s *"Skip. Declaration order is the
+  order"*. The free fix — moving the declaration inside its own file — reaches
+  the Instructions toggle and nothing else, because a payload scalar cannot leave
   `global-settings.ts` without dropping out of the derived `GlobalSettings`
-  types — so every payload scalar leads its tab. That is three named settings
-  needing the field, which is what requirement 5 asks for. The third is not an
-  order change at all: it is a `tab`, and auto-create-PR joins Advanced's
-  **Automation** group, where the other three things ShipIt does to a pull
-  request unasked already live.
+  types, and that file is the registry's first source, so every payload scalar
+  leads its tab. Background work, the Voice notes section and the memory budget
+  are all payload scalars: three named settings needing the field, which is what
+  requirement 5 asks for. Auto-create-PR needed neither — its fix is a `tab`, and
+  it joins Advanced's **Automation** group, where the other three things ShipIt
+  does to a pull request unasked already live.
 - 2026-09-16 — *The walk proves three things, not one, and generation replaces
   only the first. Delete it anyway, replace the other two guarantees first, or
   keep a small walk over the panels?* **Delete it anyway.** The user reaffirmed

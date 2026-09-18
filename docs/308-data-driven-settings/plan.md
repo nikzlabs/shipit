@@ -283,8 +283,11 @@ it.
 ### Placement
 
 A row's place is its declaration's place, and a section's is its first row's
-(req 11). `placedOnTab` (`registry.ts`) is the one function that answers it, so
-the dialog and anything else asking have one answer.
+(req 11). `placedOnTab` (`registry.ts`) answers it, and the **dialog** is its one
+caller: placement is a layout fact, and `shipit settings list` renders an index
+rather than a tab, so it walks the registry in declaration order and always did
+(`services/settings-read.ts`). docs/299 promises the agent a setting's `tab`, not
+its row order.
 
 **One optional field steers it: `order`.** Lower first, unset meaning 0,
 declaration order deciding within a rank — VS Code's own field, taken at last
@@ -298,28 +301,46 @@ and holds every payload scalar, because `StoredGlobalSettings` derives from
 `typeof GLOBAL_SETTINGS` (`global-settings.ts:306`) — so a row there cannot be
 moved below one declared anywhere else, and cannot leave without dropping out of
 the derived payload types. Slices 4, 5 and 6b each met this and each took the
-order that fell out. Three tabs then shipped led by a row that cannot lead:
-*Background work* above the providers it draws from, *Voice notes* above the
-Provider API keys every other section needs, and auto-create-PR above the GitHub
-connection it depends on. The user rejected all three (requirements.md,
-2026-09-18), which is the named evidence requirement 5 asks of a new field.
+order that fell out. Four rows then shipped where they cannot be: *Background
+work* above the providers it draws from, *Voice notes* above the Provider API
+keys every other section needs, the **memory budget** above the browser-stored
+rows it used to close the tab beneath, and auto-create-PR above the GitHub
+connection it depends on. The user rejected all four, and a fifth that needed no
+new field (requirements.md → req 13, and the 2026-09-18 receipt). Three of them
+need the rank, which is the named evidence requirement 5 asks of a new field.
 
 The ranks that exist, and nothing more:
 
 | Row | Rank | Says |
 |---|---|---|
 | `services.nonTurnModel` | 1 | Beneath the Model providers panel: pick the model after the accounts that can run it |
-| The four **Voice notes** declarations | `VOICE_NOTES_ORDER` | That section goes last, so Provider API keys leads. It takes all four because a section is placed by the first of its rows and they are spread over three files; `voice.deliveryMode` leads them, because delivery is what the webhook and hands-free answer to |
+| `advanced.memoryBudgetMb` | 1 | Last on Advanced, before the hand-placed Reset Container: the one row about the install rather than about a session's agent |
+| The four **Voice notes** declarations | `VOICE_NOTES_ORDER` | That section goes last, so Provider API keys leads |
 
 Each is load-bearing and each has a test that goes red when it alone is removed
 (`registry.test.ts`, `VoiceTab.test.tsx`, `DeclaredSettings.test.tsx`).
 
-**Auto-create-PR is not one of them.** Its fix is a `tab`: it left Integrations
-for Advanced → **Automation**, beside `autoFixCi`, `autoResolveConflicts` and
-`autoResetMergedBranch` — every row in that group is ShipIt acting on a pull
-request unasked — and it leads the group, which now reads in the order a PR
-lives. Its key keeps the `integrations.` prefix: that is the name the agent
-addresses it by, and req 8 holds the agent's view still.
+**Why Voice takes four ranks and not one.** Review found a cheaper statement of
+the literal requirement — `order: -1` on `voice.providerKey` alone — which yields
+*Provider API keys → Voice notes → Voice input → Voice playback*. The four ranks
+buy a different outcome: *Provider API keys → Voice input → Voice playback →
+Voice notes*, the order the tab had before the rework, with the agent's spoken
+notes after the dictation and playback settings rather than wedged between them.
+It takes all four because a section is placed by the first of its rows and they
+are spread over three files; `voice.deliveryMode` leads them, because delivery is
+the choice the webhook and hands-free answer to. That is a judged outcome rather
+than a stated one, and the one-rank alternative is what to reach for if the
+judgement is wrong.
+
+**Two of the five placements needed no rank at all.** Auto-create-PR's fix is a
+`tab`: it left Integrations for Advanced → **Automation**, beside `autoFixCi`,
+`autoResolveConflicts` and `autoResetMergedBranch` — every row in that group is
+ShipIt acting on a pull request unasked — and it leads the group, which now reads
+in the order a PR lives. Its key keeps the `integrations.` prefix: that is the
+name the agent addresses it by, and req 8 holds the agent's view still. And the
+**built-in-instructions toggle** leads its tab by being declared first, because
+all three of that tab's declarations are in one file — the free move, and the
+shape to reach for before a rank.
 
 ## 5. Components
 
@@ -376,7 +397,11 @@ existing one or renders a row that cannot save.
    declaration, and this is what moving the declaration is for). **The
    enforcement warning on the Network tab now reads the setting's value rather
    than the egress store's copy of it**: the two agree, and reading one of them
-   is what stops them disagreeing for the round trip after a change. What slice 2
+   is what stops them disagreeing for the round trip after a change. **The
+   memory budget moved with the rest of the payload scalars and was not noticed
+   until 2026-09-18**: it had closed the tab, below Notifications, and generation
+   put it above the browser-stored rows. It states an `order` now and closes the
+   tab again — see *Placement*. What slice 2
    gave up with the hand-written channel control: it can no longer be disabled
    while an update applies, and a failed switch reports through the shared toast
    instead of the panel's own error line.
@@ -418,7 +443,11 @@ existing one or renders a row that cannot save.
    longer focuses the first box** (it was a `ref` the dialog passed into the
    hand-written textarea). The built-in-instructions toggle moved to the bottom of
    the tab, because the disclosure that belongs under it is chrome and a `note`
-   renders above a section (req 11).
+   renders above a section (req 11). **Overturned 2026-09-18**: slice 4 added
+   `rowNotes`, which render *beneath* their row, so the disclosure follows the
+   toggle wherever it sits and the reason for the move is gone. The toggle is
+   declared first and leads the tab again — no rank needed, because all three of
+   that tab's declarations are in one file.
 
    One more thing the slice found: **the git identity had two write paths**, the
    declared `PUT /api/settings` and `POST /api/settings/git-identity`. The dialog

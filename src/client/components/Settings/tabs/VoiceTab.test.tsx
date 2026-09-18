@@ -102,16 +102,22 @@ describe("VoiceTab section order", () => {
   // Delivery decides whether the webhook is used at all, so it leads the
   // section the other three share a rank with. The exact row sequence is
   // asserted over the catalogue in `registry.test.ts`; this is that the
-  // renderer follows it.
+  // renderer follows it — against BOTH the rows below it, because comparing
+  // Delivery to hands-free alone passes with the webhook rendered first.
   it("opens Voice notes with the delivery choice", async () => {
     await renderTab();
     const section = screen.getByRole("region", { name: "Voice notes" });
-    const first = within(section).getAllByRole("combobox")[0]!;
-    const handsFree = within(section).getByRole("switch");
+    const delivery = within(section).getAllByRole("combobox")[0]!;
+    const below = [
+      within(section).getByTestId("voice-webhook-url"),
+      within(section).getByRole("switch"),
+    ];
 
-    expect(first).toHaveAccessibleName(settingCopy("voice.deliveryMode").label);
-    expect(Boolean(first.compareDocumentPosition(handsFree) & Node.DOCUMENT_POSITION_FOLLOWING))
-      .toBe(true);
+    expect(delivery).toHaveAccessibleName(settingCopy("voice.deliveryMode").label);
+    for (const row of below) {
+      expect(Boolean(delivery.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING))
+        .toBe(true);
+    }
   });
 });
 

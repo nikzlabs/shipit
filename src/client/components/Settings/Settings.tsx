@@ -105,9 +105,8 @@ export function Settings({
               which is why the panel brings no chrome of its own.
 
               The background-work model renders BENEATH the providers it draws
-              from, which its declaration's `order` is what states: it is a
-              payload setting in `global-settings.ts`, the registry's first
-              source, so declaration order alone puts every such row first. */}
+              from, which its declaration's `order` states — declaration order
+              alone puts a payload setting first (plan.md → Placement). */}
           <TabsContent value="services">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               <DeclaredSettings tab="services" />

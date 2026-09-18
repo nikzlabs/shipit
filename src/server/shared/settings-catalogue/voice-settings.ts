@@ -22,11 +22,9 @@ const WEBHOOK_PATH = "/api/voice/webhook";
  * The rank that puts **Voice notes** last on the tab, so **Provider API keys**
  * leads it — the key is what every other section on the tab needs first.
  *
- * It is carried by all four of that section's declarations, across three files,
- * because a section is placed by the first of its rows and `voice.handsFree` is
- * declared in `browser-settings.ts`. One of the four could not do it alone:
- * `voice.deliveryMode` is a payload scalar and cannot leave `GLOBAL_SETTINGS`,
- * which is the registry's first source (`types.ts` → `order`).
+ * All four of that section's declarations carry it, across three files: a
+ * section is placed by the first of its rows, and `voice.handsFree` is declared
+ * in `browser-settings.ts` (plan.md → Placement).
  */
 export const VOICE_NOTES_ORDER = 1;
 

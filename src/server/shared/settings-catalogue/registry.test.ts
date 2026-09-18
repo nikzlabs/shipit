@@ -190,6 +190,31 @@ describe("the settings registry", () => {
     expect(keys.length).toBeGreaterThan(1);
   });
 
+  // The one row on Advanced about the install rather than about a session's
+  // agent, and the last thing before the tab's hand-placed Reset Container.
+  it("places the memory budget below every browser-stored row on Advanced", () => {
+    const keys = placedOnTab("advanced").map((d) => d.key);
+
+    expect(keys.at(-1)).toBe("advanced.memoryBudgetMb");
+  });
+
+  /*
+    Free placement, and the shape to reach for first: all three declarations are
+    in one file, so the toggle leads by being declared first. Its disclosure is
+    a `rowNote` and renders beneath it wherever it sits — which is what slice 3
+    lacked when it put the toggle last, because only section notes existed then.
+  */
+  it("leads the Instructions tab with the built-in-instructions toggle", () => {
+    const keys = placedOnTab("instructions").map((d) => d.key);
+
+    expect(keys).toEqual([
+      "instructions.agentInstructionsEnabled",
+      "instructions.userInstructions",
+      "instructions.opsInstructions",
+    ]);
+    expect(placedOnTab("instructions").every((d) => d.order === undefined)).toBe(true);
+  });
+
   // The rank is what a row states when its file's position cannot state it, so
   // a tab where nothing states one must read exactly as the catalogue does.
   it("leaves a tab whose rows state no rank in declaration order", () => {

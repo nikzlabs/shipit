@@ -80,11 +80,18 @@ describe("the Advanced tab's rows come from the declarations", () => {
   });
 
   // req 3 — a setting whose editing needs its own logic is still a declared row:
-  // the block renders the component the declaration names, in its place.
+  // the block renders the component the declaration names, in its place. Its
+  // place is last: the memory budget is a payload scalar, so declaration order
+  // alone put it above the browser-stored rows below (see its `order`).
   it("renders a declaration's component in place of a generated control", () => {
-    render(<DeclaredSettings tab="advanced" />);
+    const { container } = render(<DeclaredSettings tab="advanced" />);
+    const budget = screen.getByTestId("settings-memory-budget");
+    const notifications = screen.getByRole("region", { name: "Notifications" });
 
-    expect(screen.getByTestId("settings-memory-budget")).toBeInTheDocument();
+    expect(budget).toBeInTheDocument();
+    expect(Boolean(notifications.compareDocumentPosition(budget) & Node.DOCUMENT_POSITION_FOLLOWING))
+      .toBe(true);
+    expect([...container.querySelectorAll("section")].at(-1)).toContainElement(budget);
   });
 
   it("groups rows under their declared section, in declaration order", () => {
@@ -373,13 +380,21 @@ describe("the instruction boxes", () => {
     expect(screen.getByText("System prompt is too long (max 50,000 characters)")).toBeInTheDocument();
   });
 
-  // The toggle beside them is an ordinary declared boolean, so it needs nothing
-  // of its own — but the tab has to actually render it.
-  it("renders the built-in instructions toggle as a plain declared switch", () => {
+  /*
+    The toggle beside them is an ordinary declared boolean, so it needs nothing
+    of its own — but the tab has to actually render it, and above both boxes.
+    Slice 3 put it last because its disclosure was a section note, which renders
+    above its rows; the disclosure is a `rowNote` now and follows the row.
+  */
+  it("leads the tab with the built-in instructions toggle, above both boxes", () => {
     render(<DeclaredSettings tab="instructions" />);
 
     const declaration = findSetting("instructions.agentInstructionsEnabled")!;
-    expect(screen.getByRole("switch", { name: declaration.label })).toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: declaration.label });
+    for (const box of screen.getAllByRole("textbox")) {
+      expect(Boolean(toggle.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING))
+        .toBe(true);
+    }
   });
 });
 

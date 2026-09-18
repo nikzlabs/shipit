@@ -21,10 +21,9 @@ import { DeclaredSettings } from "./Settings/DeclaredSettings.js";
  * here (req 11). What is left is this note — prose belonging to a section rather
  * than to any one setting (inventory.md P12).
  *
- * **Auto-create-PR is not on this tab.** It led it for one release, above the
- * connection it depends on, and it now sits in Advanced → Automation with the
- * other things ShipIt does to a pull request unasked. It is still visible with
- * GitHub disconnected, which is P13 and requirement 4.
+ * **Auto-create-PR is not on this tab.** It sits in Advanced → Automation with
+ * the other things ShipIt does to a pull request unasked (req 13), and is still
+ * visible with GitHub disconnected — P13 and requirement 4.
  *
  * The split closes the discoverability gap that sent users hunting for a Linear
  * MCP (which would bypass the `shipit issue` brokering): Linear sits right next

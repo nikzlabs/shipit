@@ -225,16 +225,14 @@ interface SettingDeclarationBase<T> {
   readonly section?: string;
   /**
    * Where this row sits on its tab when declaration order alone cannot say:
-   * lower first, unset meaning 0, and declaration order deciding within a rank
-   * (VS Code's `order`, taken at last after being skipped — see
-   * docs/308-data-driven-settings plan.md → Placement).
+   * lower first, unset meaning 0, declaration order deciding within a rank
+   * (docs/308-data-driven-settings plan.md → Placement).
    *
-   * It exists because three rows led tabs they cannot lead, and the free fix
-   * does not reach them: a group's place is its first declaration's place, but
-   * a declaration can only MOVE inside its own file, and `GLOBAL_SETTINGS` is
-   * the registry's first source. Every payload scalar therefore leads its tab,
-   * and a payload scalar cannot leave `global-settings.ts` without dropping out
-   * of the derived `GlobalSettings` types (`global-settings.ts:306`).
+   * **Move the declaration first; this is for where that cannot reach.** It
+   * only moves inside its own file, and every payload scalar is in
+   * `GLOBAL_SETTINGS` — the registry's first source, and the one it cannot
+   * leave without dropping out of the derived `GlobalSettings` types
+   * (`global-settings.ts:306`) — so a payload scalar leads its tab otherwise.
    */
   readonly order?: number;
   /**

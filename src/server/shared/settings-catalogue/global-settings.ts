@@ -85,16 +85,12 @@ export const GLOBAL_SETTINGS = {
   }),
 
   /*
-    On Advanced rather than Integrations, and inside Automation rather than
-    beside it: every row in that group is ShipIt acting on a pull request
-    without being asked, which is exactly what this one is. It leads the group
-    because the group reads in the order a PR lives — opened, checks fixed,
-    conflicts resolved, branch reset after the merge.
+    Inside Automation, and leading it: every row in that group is ShipIt acting
+    on a pull request without being asked, and the group reads in the order a PR
+    lives — opened, checks fixed, conflicts resolved, branch reset after merge.
 
-    The key keeps its `integrations.` prefix. It is the name the agent addresses
-    the setting by (`shipit settings get integrations.autoCreatePr`), and req 8
-    holds the agent's view still; a key names a domain, and moving a row between
-    tabs is a dialog fact.
+    The key keeps its `integrations.` prefix, which is the name the agent
+    addresses the setting by; req 8 holds the agent's view still.
   */
   "integrations.autoCreatePr": defineSetting({
     key: "integrations.autoCreatePr",
@@ -182,6 +178,9 @@ export const GLOBAL_SETTINGS = {
   "advanced.memoryBudgetMb": defineSetting({
     key: "advanced.memoryBudgetMb",
     tab: "advanced",
+    // Last on the tab, before the hand-placed Reset Container: it is the one
+    // row about the install rather than about a session's agent.
+    order: 1,
     // Stored in MB and shown in GB, with an explicit Save (inventory.md P4).
     component: "memory-budget",
     scope: "global",
@@ -210,6 +209,27 @@ export const GLOBAL_SETTINGS = {
     store: { kind: "git-config" },
     wire: "gitIdentity",
     emits: userText("The name and email the user chose for their own commits."),
+    propose: { kind: "yes" },
+  }),
+
+  /*
+    Leads the Instructions tab, above the two boxes. Its own disclosure — the
+    built-in text, which is not a setting — is a `rowNote` and so renders
+    beneath it wherever it sits; slice 3 put the toggle last only because
+    `rowNotes` did not exist yet and a section note renders above its rows.
+  */
+  "instructions.agentInstructionsEnabled": defineSetting({
+    key: "instructions.agentInstructionsEnabled",
+    tab: "instructions",
+    scope: "global",
+    label: "ShipIt Agent Instructions",
+    description:
+      "Built-in context sent with every message to help the agent understand the ShipIt "
+      + "environment.",
+    type: bool({ default: true }),
+    store: { kind: "credential-store", field: "agentSystemInstructionsEnabled" },
+    wire: "agentSystemInstructionsEnabled",
+    emits: plain(),
     propose: { kind: "yes" },
   }),
 
@@ -244,27 +264,12 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "instructions.agentInstructionsEnabled": defineSetting({
-    key: "instructions.agentInstructionsEnabled",
-    tab: "instructions",
-    scope: "global",
-    label: "ShipIt Agent Instructions",
-    description:
-      "Built-in context sent with every message to help the agent understand the ShipIt "
-      + "environment.",
-    type: bool({ default: true }),
-    store: { kind: "credential-store", field: "agentSystemInstructionsEnabled" },
-    wire: "agentSystemInstructionsEnabled",
-    emits: plain(),
-    propose: { kind: "yes" },
-  }),
-
   "voice.deliveryMode": defineSetting({
     key: "voice.deliveryMode",
     tab: "voice",
     section: "Voice notes",
-    // Leads the section its three siblings share the rank of, because delivery
-    // is the choice the webhook and hands-free answer to.
+    // Leads the section its three siblings share the rank of: delivery is the
+    // choice the webhook and hands-free answer to.
     order: VOICE_NOTES_ORDER,
     scope: "global",
     label: "Delivery",

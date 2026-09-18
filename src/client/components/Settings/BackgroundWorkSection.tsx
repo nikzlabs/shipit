@@ -188,10 +188,9 @@ export function BackgroundWorkSection({ settingKey }: { settingKey: SettingKey }
           {!resolved && !pinnedIsStale && (
             <p className="mt-1 text-[11px] text-(--color-text-tertiary)">
               {/*
-                No direction: where the provider list sits on this tab comes
-                from the declarations now (req 11), and this row has already
-                moved above it and back below it once. A word that names a
-                direction is a word a declaration can falsify.
+                No direction: where the provider list sits comes from the
+                declarations (req 11), so a word naming one is a word a
+                declaration can falsify.
               */}
               Nothing to run it on yet — add a model provider.
             </p>
