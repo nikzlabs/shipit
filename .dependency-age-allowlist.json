@@ -1,16 +1,1 @@
-[
-  {
-    "manifest": "docker/agent-cli/package.json",
-    "package": "@openai/codex",
-    "version": "0.154.0",
-    "reason": "Nik asked on 2026-09-10 for the latest allowed Codex CLI and explicitly signed off waiving the cooldown for 0.154.0 (published 2026-09-09, ~1 day old) rather than waiting until 2026-09-16. First-party OpenAI package; the waiver names only this exact version, so the next bump gets the full seven-day window again.",
-    "expires": "2026-09-17"
-  },
-  {
-    "manifest": "docker/agent-cli/package.json",
-    "package": "opencode-ai",
-    "version": "1.18.30",
-    "reason": "Nik explicitly signed off on 2026-09-14 to waive the cooldown for 1.18.30 (published 2026-09-09, ~5.4 days old). 1.18.29 already widens OpenCode's ChatGPT-subscription model filter from /^gpt-(\\d+\\.\\d+)/ to /^gpt-(\\d+)(?:\\.(\\d+))?/, which is what lets gpt-6-astra through; 1.18.30 additionally routes gpt-6 ids to a dedicated system prompt. Nik chose the prompt over waiting until 2026-09-16. The waiver names only this exact version, so the next bump gets the full seven-day window again.",
-    "expires": "2026-09-21"
-  }
-]
+[]
