@@ -19,9 +19,10 @@ Sessions share three caches so installs are fast:
 | Overlay dependency base (docs/183) | per (repo, runtime, dep-dir) | the dep dir's read-only lowerdir |
 
 Only the first two are mounted read-write into a session. The overlay base is
-kept outside `dep-cache` so no session mounts it
-(`src/server/orchestrator/overlay-volume.ts:5`), so "shared package cache"
-below means the first two. Per-session uids
+the read-only lowerdir of an overlay volume, kept outside `dep-cache` so no
+session can name its path (`src/server/orchestrator/overlay-volume.ts:5`); a
+session changes it only through the publish path. "Shared package cache" below
+means the first two. Per-session uids
 (docs/270) kept all three group-writable on purpose (`shareOne`,
 `src/server/orchestrator/session-worker-uid.ts:124`), because
 `docs/270-per-session-worker-uids` req 9 requires sessions to keep sharing them.

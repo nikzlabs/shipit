@@ -31,11 +31,20 @@ recorded in [requirements.md](./requirements.md); none is open.
       the blobs). Overlay copy-up would isolate the writes — sound by the kernel
       contract — but the existing docs/183 overlay *excludes pnpm* on purpose
       (hardlinks cannot cross overlayfs), so this is new machinery.
-- [ ] **Solve the trusted-base lifecycle** before building (plan.md section 5):
-      seed/migrate the base from a trusted source (today's store is
-      attacker-writable), an authenticated publish path for newly-downloaded
-      packages (or dedup and req 10 are lost), and the cross-repo store key vs
-      the per-repo overlay base. This is the unsolved part.
+- [x] **Design the trusted-base lifecycle (2026-09-18, plan.md section 5).**
+      Content-based: the base is orchestrator-written and holds only entries
+      verified against registry integrity (index.db key == tarball sha512;
+      manifest re-derivable from the tarball — both measured). Sessions install
+      into private uppers; publish = verify-and-admit; start the base empty
+      rather than promote today's writable store; per-runtime key stays.
+- [ ] Spike verify-and-admit: from a session upper, list new `index.db` entries,
+      fetch each tarball by key, check hash == key, re-derive the manifest and
+      match it, check each blob hashes to its name, admit to a new generation.
+      Measure fetch cost per new package and confirm pnpm accepts the result.
+- [ ] Decide the publish trigger (after each session install, as docs/183 does)
+      and what a verification failure does: drop the entry from the base, keep
+      it private to the session, and surface it — never fail the session's own
+      install (req 9).
 - [ ] Measure store-in-overlay for real via Docker-mounted overlays — adapt
       `docs/183-overlay-dep-store/prototype/nested-overlay-spike.sh`; run the
       manifest and blob attacks through session A and an install through B, with
