@@ -225,7 +225,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     prerelease: false,
     bumpType: "minor",
     versionSource: "package.json",
-    notes: "## Features\n- x",
+    notesDraftPath: "RELEASE_NOTES.draft.md",
     commitSha: "abc123",
     checks: { state: "success", total: 2, passed: 2, failed: 0, pending: 0 },
     release: {

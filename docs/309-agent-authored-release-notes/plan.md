@@ -52,13 +52,13 @@ rather than falling back.
 ## Flow
 
 1. User: "cut a patch release."
-2. Agent reads `git log origin/stable..origin/main`, writes a compact summary to
-   `RELEASE_NOTES.draft.md`, runs `shipit release plan patch`, and stops at the
-   `proposed` card — pointing the user at the file. The draft is written **before
-   the card appears**, because **Confirm & publish** is the only action and it
-   accepts the notes too (req 4); a card offered ahead of the draft would make
-   that click uninformed.
-3. User opens the draft in ShipIt's editor, edits it, says go.
+2. Agent works out what the release ships, writes a compact summary to
+   `RELEASE_NOTES.draft.md`, runs `shipit release plan patch` for the version
+   arithmetic, and emits the propose marker — which is what raises the
+   `proposed` card. The draft is written **before the card appears**, because
+   **Confirm & publish** is the only action and it accepts the notes too (req 4);
+   a card offered ahead of the draft would make that click uninformed (req 10).
+3. User opens the draft from the card, edits it, says go.
 4. Agent runs `shipit release prepare patch --from main`. `prepare` reads the
    draft, commits it as `.release-notes/v<version>.md` next to the version bump,
    deletes the draft, and opens the PR.
@@ -71,7 +71,55 @@ file is auto-committed onto the open release PR — a gitignored draft cannot be
 so the rule's reason does not reach it. The exception is named explicitly in the
 doc rather than left for the agent to infer.
 
+## The card is raised by the proposal, and points at the draft
+
+Two rules, and the first is what makes the second reachable.
+
+**Only a proposal raises the card (req 10).** `shipit release plan` is version
+arithmetic — it used to call `releaseStatusPoller.propose` on every invocation,
+so a read-only command raised a confirmation card, necessarily before any draft
+existed. That call is gone; the agent's `propose` marker is the one thing that
+raises a `proposed` card, plus `prepare --prerelease`, which proposes an rc it
+is about to tag (req 10a). `plan` instead **warns** when the draft is missing:
+it is the only point in the flow where the orchestrator can answer the agent,
+and without that a forgotten draft would be a marker that silently does nothing.
+
+**A release that will publish notes and has none raises nothing** (req 10).
+`reactToReleaseMarkers` resolves the draft before proposing and drops the
+proposal when a required draft is absent — the card is the confirm button, so
+showing one for a release `prepare` would refuse is the same defect in a later
+phase. Exempt, and so carded with no link (req 10a): a prerelease, and a repo
+whose `release.yml` does not read `.release-notes/`.
+
+That workflow test reads the **session checkout**, not `prepare`'s payload ref.
+At propose time no payload is chosen yet — `--pick`/`--from` are arguments to a
+command that has not run — so the question the card can actually ask is "does
+this repo publish authored notes", which is also the grep the agent is told to
+run. The two diverge only for a `--pick` hotfix onto a maintenance branch still
+carrying the old workflow: the card asks for a draft `prepare` would not
+require. Erring that way costs one file and leaves `prepare`'s warning (req 6b)
+intact; erring the other way is defect 1 again.
+
+**The card links to the draft; it carries no copy of it (req 11).** The
+`proposed` card renders `notesDraftPath` as a link that opens the file in
+ShipIt's editor — the same editor the user edits it in, so one affordance both
+shows and changes the notes, and there is no second copy to fall out of date
+when they do. This replaced an inlined-text design at the user's suggestion; it
+is also what removes the staleness question an inlined copy would have raised.
+
+Nothing agent-written reaches the card any more. The `notes` free-text field is
+gone from every marker (`propose`, `pr-opened`, `tagged`) and `ReleaseStatusSummary.notes`
+is gone with it: it was rendered **only** in the `proposed` phase, which is
+exactly the phase where it was guaranteed not to be the published text, and the
+published body already lives in `release.body`.
+
 ## Changes
+
+**`src/server/orchestrator/release-notes-draft.ts`** (new) — the draft's name,
+`readDraftNotes(dir)`, and `repoPublishesAuthoredNotes(dir)`. Shared by
+`release-prepare` (the refusal), the plan route (the warning), and
+`release-flow` (the card gate), so the three cannot drift on what "has notes"
+means. The blank test is `trim()`, matching CI's `grep -q '[^[:space:]]'`.
 
 **`src/server/orchestrator/services/release-prepare.ts`** — the draft is read
 into memory **before any branch work**, the notes are **resolved and required**
@@ -164,7 +212,10 @@ later a workflow change alone.
 
 ## Key files
 
+- `src/server/orchestrator/release-notes-draft.ts` — what counts as having notes
 - `src/server/orchestrator/services/release-prepare.ts` — commits the notes file
+- `src/server/orchestrator/services/release-flow.ts` — raises the card, or doesn't
 - `src/server/orchestrator/services/updates.ts` — reads it back for the panel
+- `src/client/components/ReleaseLifecycleCard.tsx` — links to the draft
 - `src/client/components/Settings/tabs/UpdatePanel.tsx` — renders it
 - `.github/workflows/release.yml` — publishes it

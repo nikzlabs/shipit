@@ -1,15 +1,20 @@
 import path from "node:path";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import type { GitManager } from "../../shared/git.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ReleaseBumpType } from "../../shared/types/release-types.js";
-import type { ReleaseProposeInput } from "../release-status-poller.js";
 import { ServiceError } from "./types.js";
 import { agentCreatePr, findBranchPullRequest } from "./github.js";
 import { workflowPublishesAuthoredNotes } from "../release-autopublish-check.js";
+import {
+  NOTES_DIR,
+  NOTES_DRAFT_FILE,
+  readDraftNotes,
+  repoPublishesAuthoredNotes,
+} from "../release-notes-draft.js";
 import {
   computeNextVersion,
   detectAllVersionSources,
@@ -25,10 +30,6 @@ import {
 } from "../release-version.js";
 
 const BUMP_TRAILER = "Shipit-Release-Version";
-
-/** Gitignored (docs/309-agent-authored-release-notes): a tracked draft would trip the clean-tree check the user's edit lands in front of, and would not survive the checkout onto the release branch. */
-export const NOTES_DRAFT_FILE = "RELEASE_NOTES.draft.md";
-export const NOTES_DIR = ".release-notes";
 
 const BUMP_TYPES: ReadonlySet<string> = new Set(["major", "minor", "patch", "prerelease"]);
 
@@ -148,6 +149,7 @@ export async function planRelease(git: GitManager, args: PlanReleaseArgs): Promi
     current = await resolveCurrentVersion(git, detected, args.dir, args.mechanism, args.releaseBranch);
   }
   const { version, bumpType } = await computePlan(git, current, args.bump, args.prerelease ?? false);
+  const prerelease = args.prerelease ?? false;
   return {
     currentVersion: current,
     version,
@@ -155,21 +157,31 @@ export async function planRelease(git: GitManager, args: PlanReleaseArgs): Promi
     bumpType,
     versionSource: detected.source,
     versionSourcePath: detected.path!,
-    prerelease: args.prerelease ?? false,
+    prerelease,
+    ...(await missingDraftWarning(args.dir, `v${version}`, prerelease)),
   };
 }
 
-export function buildPlanProposeInput(
-  plan: ReleasePlan,
-  mechanism: string | undefined,
-): ReleaseProposeInput {
+/*
+  `plan` is read-only and raises no card (docs/309 req 10), so this warning is
+  the only place the orchestrator can tell the agent its draft is missing —
+  without it, a forgotten draft is a propose marker that silently does nothing.
+*/
+async function missingDraftWarning(
+  dir: string,
+  tag: string,
+  prerelease: boolean,
+): Promise<{ warning?: string }> {
+  if (prerelease) return {};
+  if (!(await repoPublishesAuthoredNotes(dir))) return {};
+  if (await readDraftNotes(dir)) return {};
   return {
-    version: plan.version,
-    tag: plan.tag,
-    prerelease: plan.prerelease,
-    ...(plan.bumpType !== "explicit" ? { bumpType: plan.bumpType } : {}),
-    versionSource: plan.versionSource,
-    ...(mechanism ? { mechanism: mechanism as ReleaseProposeInput["mechanism"] } : {}),
+    warning:
+      `⚠ ${tag} has no release notes yet. This repo publishes authored notes rather than GitHub's ` +
+      `generated per-PR list, so write a compact summary of what ${tag} contains to ` +
+      `"${NOTES_DRAFT_FILE}" at the repo root BEFORE proposing the release: the confirmation card ` +
+      `does not appear without it, and \`shipit release prepare\` refuses the release. ` +
+      `(It is gitignored, so it will not dirty the tree that command checks.)`,
   };
 }
 
@@ -557,16 +569,6 @@ async function resolvePayloadRef(
   if (from) return remoteBranches.includes(from) ? `origin/${from}` : from;
   if (remoteBranches.includes(releaseBranch)) return `origin/${releaseBranch}`;
   return `origin/${await git.getDefaultBranch()}`;
-}
-
-/** Read before any branch work: a checkout must never be what decides whether the user's text survives. */
-async function readDraftNotes(dir: string): Promise<string | null> {
-  try {
-    const body = await readFile(path.join(dir, NOTES_DRAFT_FILE), "utf-8");
-    return body.trim() ? body : null;
-  } catch {
-    return null;
-  }
 }
 
 async function writeNotesFile(dir: string, tag: string, body: string): Promise<string> {

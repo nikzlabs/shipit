@@ -54,8 +54,9 @@ hand-edit a version file or run `git tag`. **Prefer it over the manual git steps
 below** (those are kept only to explain what the command does and as a fallback):
 
 - `shipit release plan [<patch|minor|major|VERSION>] [--prerelease] [--version-source-path FILE] [--json]`
-  — **read-only**: detect the version source and compute the next version. Run
-  this in the propose step (it reflects a `proposed` card); then stop for confirm.
+  — **read-only**: detect the version source and compute the next version. It
+  raises **no card** — proposing is your act, not a side effect of arithmetic —
+  and it warns you when the release notes draft is missing.
 - `shipit release prepare [<bump|VERSION>] [--pick SHA]… [--from BRANCH] [--release-branch NAME] [--bootstrap] [--allow-empty] [--notes TEXT] [--prerelease [--confirm]] [--version-source-path FILE] [--json]`
   — on confirmation, do the release mechanics:
   - **`release-branch` final release:** opens (or updates) a version-bump PR
@@ -145,12 +146,17 @@ When the user asks to cut/tag/publish a release:
 5. **Emit a proposal marker** on its own line, then stop and wait:
 
 ```
-<!--shipit:release {"action":"propose","version":"0.3.0","bumpType":"minor","tag":"v0.3.0","prerelease":false,"notes":"- Feature: …\n- Fix: …"}-->
+<!--shipit:release {"action":"propose","version":"0.3.0","bumpType":"minor","tag":"v0.3.0","prerelease":false}-->
 ```
 
 ShipIt shows a **release lifecycle card** with **Confirm & publish** / **Cancel**.
 The user confirms there, or replies "yes, ship it" in chat. **Do not bump,
 commit, tag, open a PR, or push in the proposal turn.**
+
+**The marker is the only thing that raises that card**, and on a repo that
+publishes authored notes it raises nothing until the draft exists — step 4 is a
+precondition, not a courtesy. No marker carries a `notes` field: the card links
+to the draft file, so what the user confirms is what will actually publish.
 
 When the user clicks **Confirm & publish**, ShipIt injects a templated reply that
 leads with a provenance marker (`[Release card → Confirm & publish]`). Treat that
@@ -253,7 +259,7 @@ rendered chat — they drive the card.
 
 | Marker | When | Effect |
 |---|---|---|
-| `{"action":"propose", …}` | After computing the next version | Card → **proposed** (Confirm/Cancel) |
+| `{"action":"propose", …}` | After computing the next version **and writing the notes draft** | Card → **proposed** (Confirm/Cancel), linking the draft. Ignored while a required draft is missing |
 | `{"action":"tagged","tag":…,"sha":…}` | After pushing the tag (tag-triggered) | Card → **gating**, polling starts |
 | `{"action":"already-released","tag":…}` | Tag already exists | Card → "already released" |
 | `{"action":"cancelled"}` | User cancelled | Card dismissed |
@@ -274,7 +280,9 @@ both. Then:
 
 1. **Before you emit the proposal marker** — there is one action, **Confirm &
    publish**, and it accepts the notes as well as the release, so the draft has
-   to exist and be named in your message by the time the card appears.
+   to exist by the time the card appears. ShipIt enforces this rather than
+   trusting it: on a repo set up for authored notes, a propose marker with no
+   draft raises **no card at all**, and `shipit release plan` warns you first.
 
    **Summarize what this release ships, which is not `<release-branch>..<source>`.**
    A squash-merged maintenance branch has release commits unreachable from the
@@ -288,7 +296,8 @@ both. Then:
    grouped highlights in the user's terms, not one line per commit or per PR,
    which is the thing the generated notes already do.
 2. **Tell the user the draft is there** and that they can edit it before
-   confirming. They open it from the file tree. It is gitignored, so their edit
+   confirming. The card links to it, and the file tree opens it too. It is
+   gitignored, so their edit
    cannot dirty the working tree `prepare` refuses to run against, and it
    survives the checkout onto the release branch.
 3. `shipit release prepare` commits it as **`.release-notes/<tag>.md`** beside

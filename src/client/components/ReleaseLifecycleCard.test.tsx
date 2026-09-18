@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { ReleaseLifecycleCard } from "./ReleaseLifecycleCard.js";
+import { useFileStore } from "../stores/file-store.js";
 import type { ReleaseStatusSummary } from "../../server/shared/types.js";
 
 function card(over: Partial<ReleaseStatusSummary> = {}): ReleaseStatusSummary {
@@ -43,6 +44,26 @@ describe("ReleaseLifecycleCard — proposed", () => {
     render(<ReleaseLifecycleCard card={card({ mechanism: "release-branch" })} onConfirm={onConfirm} />);
     fireEvent.click(screen.getByRole("button", { name: /Confirm & publish/ }));
     expect(onConfirm).toHaveBeenCalledWith("0.3.0", "release-branch");
+  });
+
+  // docs/309 req 11 — the card points at the notes, it does not copy them.
+  it("opens the notes draft in the editor rather than rendering its text", () => {
+    const realOpenEditor = useFileStore.getState().openEditor;
+    const openEditor = vi.fn();
+    useFileStore.setState({ openEditor } as never);
+    try {
+      render(<ReleaseLifecycleCard card={card({ notesDraftPath: "RELEASE_NOTES.draft.md" })} />);
+      const link = screen.getByRole("button", { name: /RELEASE_NOTES\.draft\.md/ });
+      fireEvent.click(link);
+      expect(openEditor).toHaveBeenCalledWith("s1", "RELEASE_NOTES.draft.md");
+    } finally {
+      useFileStore.setState({ openEditor: realOpenEditor });
+    }
+  });
+
+  it("offers no notes link when the release publishes none (req 10a)", () => {
+    render(<ReleaseLifecycleCard card={card()} />);
+    expect(screen.queryByRole("button", { name: /draft/i })).not.toBeInTheDocument();
   });
 
   it("cancel fires once and passes the version", () => {

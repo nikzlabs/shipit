@@ -320,6 +320,12 @@ release anything by itself — and the user can equally just say yes in chat.
 Publishing is outward-facing and effectively irreversible, so nothing is
 published before that answer.
 
+Where the repository publishes release notes you wrote, the proposed card also
+**links to the notes draft**, which opens in ShipIt's editor — the one click
+both shows the user what will be published and lets them rewrite it, since
+confirming the release is also what accepts the notes. That card does not
+appear at all until the draft exists, so write it before you propose.
+
 What happens after the answer depends on the mechanism, and getting this wrong
 ships the wrong thing:
 

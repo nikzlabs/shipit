@@ -45,7 +45,8 @@ export interface ReleaseStatusSummary {
   prerelease: boolean;
   bumpType?: ReleaseBumpType;
   versionSource?: string;
-  notes?: string;
+  /** Workspace-relative release-notes draft the proposed card links to (docs/309 req 11). The card carries no copy of the text. */
+  notesDraftPath?: string;
   commitSha?: string;
   alreadyReleased?: boolean;
   checks?: ReleaseChecksSummary;

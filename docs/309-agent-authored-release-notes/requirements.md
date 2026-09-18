@@ -80,17 +80,23 @@ requirement is a candidate: it can be struck without argument.
     - 10a. *[stated]* Where no notes will be published — a prerelease (req 6a) or
       a repo whose workflow does not read them (req 6b, req 9) — the release is
       ready to confirm without them, so the card appears.
-11. *[stated]* The card shows the notes that would be published: the draft
-    itself. It never shows a summary written separately from the draft, and
-    where no notes will be published it shows none rather than a stand-in.
+11. *[stated]* The card points at the notes that would be published: it links to
+    the draft, which opens in ShipIt's own viewer. It carries no copy of the
+    text and never a summary written separately from the draft, and where no
+    notes will be published it offers no link rather than a stand-in.
 
 ## Open questions
 
-- Req 11 — the user edits the draft after the card is up. Does the card have to
-  track the file from then on, or is showing the draft as proposed enough?
+- (none)
 
 ## Resolved questions
 
+- 2026-09-18 — **The user edits the draft after the card is up: must the card
+  track the file, or is the draft as proposed enough?** Neither — *"the card
+  could just have a link to the draft, opening it in the ShipIt viewer, instead
+  of inlined content."* A link cannot go stale, so the question it was asked
+  about does not arise, and the same click is how the user edits the notes
+  anyway. → req 11.
 - 2026-09-18 — **Review surface?** A file the user opens in ShipIt's Monaco
   editor, not an editable chat card. Reason given: simplicity. → req 7.
 - 2026-09-18 — **Replace GitHub's generated list, or sit above it?** Replace

@@ -85,6 +85,71 @@ describe("reactToReleaseMarkers", () => {
     expect(arg).not.toHaveProperty("mechanism");
   });
 
+  describe("the propose card and the notes draft (docs/309 req 10, 11)", () => {
+    const NOTES_AWARE = "jobs:\n  publish:\n    steps:\n      - run: cat .release-notes/$TAG.md\n";
+    const LEGACY = "jobs:\n  publish:\n    steps:\n      - run: gh release create --generate-notes\n";
+
+    function withWorkflow(dir: string, body: string): string {
+      fs.mkdirSync(path.join(dir, ".github", "workflows"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".github", "workflows", "release.yml"), body);
+      return dir;
+    }
+
+    it("links the draft rather than carrying its text", async () => {
+      const { deps, poller } = makeDeps();
+      const sessionDir = withWorkflow(
+        makeSessionDir({ "RELEASE_NOTES.draft.md": "## Highlights\n- a faster spinner\n" }),
+        NOTES_AWARE,
+      );
+      await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir, turnText: PROPOSE });
+      const arg = (poller.propose as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2];
+      expect(arg.notesDraftPath).toBe("RELEASE_NOTES.draft.md");
+      expect(JSON.stringify(arg)).not.toContain("faster spinner");
+    });
+
+    it("raises no card when the repo publishes authored notes and there is no draft", async () => {
+      const { deps, poller } = makeDeps();
+      const sessionDir = withWorkflow(makeSessionDir({ "package.json": `{"version":"0.2.0"}` }), NOTES_AWARE);
+      await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir, turnText: PROPOSE });
+      expect(poller.propose).not.toHaveBeenCalled();
+    });
+
+    it("treats a blank draft as no draft", async () => {
+      const { deps, poller } = makeDeps();
+      const sessionDir = withWorkflow(makeSessionDir({ "RELEASE_NOTES.draft.md": "  \n\n" }), NOTES_AWARE);
+      await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir, turnText: PROPOSE });
+      expect(poller.propose).not.toHaveBeenCalled();
+    });
+
+    it("still cards a repo whose workflow ignores authored notes (req 9), with no link", async () => {
+      const { deps, poller } = makeDeps();
+      const sessionDir = withWorkflow(makeSessionDir({ "package.json": `{"version":"0.2.0"}` }), LEGACY);
+      await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir, turnText: PROPOSE });
+      expect(poller.propose).toHaveBeenCalledTimes(1);
+      const arg = (poller.propose as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2];
+      expect(arg).not.toHaveProperty("notesDraftPath");
+    });
+
+    it("still cards a prerelease, which cannot carry a notes file (req 6a)", async () => {
+      const { deps, poller } = makeDeps();
+      const sessionDir = withWorkflow(makeSessionDir({ "package.json": `{"version":"0.2.0"}` }), NOTES_AWARE);
+      const turnText = `<!--shipit:release {"action":"propose","version":"0.3.0-rc.1","tag":"v0.3.0-rc.1","prerelease":true}-->`;
+      await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir, turnText });
+      expect(poller.propose).toHaveBeenCalledTimes(1);
+      const arg = (poller.propose as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2];
+      expect(arg).not.toHaveProperty("notesDraftPath");
+    });
+
+    it("ignores a notes field the agent writes into the marker", async () => {
+      const { deps, poller } = makeDeps();
+      const sessionDir = makeSessionDir({ "package.json": `{"version":"0.2.0"}` });
+      const turnText = `<!--shipit:release {"action":"propose","version":"0.3.0","tag":"v0.3.0","prerelease":false,"notes":"- invented summary"}-->`;
+      await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir, turnText });
+      const arg = (poller.propose as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2];
+      expect(JSON.stringify(arg)).not.toContain("invented summary");
+    });
+  });
+
   it("no-ops without a GitHub remote", async () => {
     const { poller } = makeDeps();
     const sessionManager = { get: () => ({ remoteUrl: undefined }) } as unknown as SessionManager;
