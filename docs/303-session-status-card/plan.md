@@ -500,6 +500,7 @@ being iterated on and a round is worth more than a summary of it:
 | `look-loud.html` | Round 2 — louder: accent tint, an accent header cap, a full-bleed band, a bigger card, all three at once. Drawn in the card's real neighbourhood (agent prose above, composer below), which is what the first cut of this round got wrong. **Tinted** chosen. |
 | `look-tinted.html` | Round 3 — the three capped cards, with the three sub-questions still open: how much colour, one middle card or two, where "Stale" goes. All three ruled; `mockup.html` is the chosen combination. |
 | `mockup-freshness.html` | The original prototype, from before the card had sections: how freshness is shown (the "Stale" label in the accent colour). Its card shape is superseded. |
+| `look-step-comment.html` | A comment per manual step (req 37): five options, including doing nothing and the existing "Add comment…", plus what the agent receives and a 390px comparison of the two that differ only in cost. **C** chosen. |
 
 The rows, the
 badge and the submit button are the existing follow-up action card's, so a
@@ -541,6 +542,56 @@ shows its description (req 26).
   semibold primary label. A manual step is a checklist row whose toggle means
   "I've done this" (req 29): the same rows as the offers, with that hint as the
   row's title and in each checkbox's accessible name.
+- **A note per manual step (req 37).** Each step row carries a quiet
+  `ChatCircleDots` control at its right-hand end; pressing it opens a two-row
+  textarea under the step, inside the row's own tint. A step is submitted when it
+  is ticked, when it carries a note, or both — not done · done · answered — so
+  the Submit is enabled by a note alone, and an unticked row with a note carries
+  an **ANSWERED** pill (`ChecklistItem.tag`, the RECOMMENDED styling) because an
+  unticked row otherwise means "nothing will be sent".
+
+  **The shape has one owner, and the note does not change it.** `needsYou` stays
+  a list of strings with no server-side identity. Nothing stores a note: it rides
+  one message and is gone, exactly as the locally-known "SENT" grey is. So the
+  row's identity stays its text — which is what makes a note and a grey survive
+  an agent rewriting the list around it — and the only addition is a suffix for a
+  repeated entry (`stepKeys`), so two identical steps are two rows rather than
+  one duplicated React key. Giving a step an `offerId`-like identity would mean a
+  column, a migration and a reconciliation pass for a value that never reaches
+  the server.
+
+  **Where the control lives is load-bearing.** A `<button>` inside the row's
+  `<label>` activates the checkbox as well as itself, so pressing "Add a note"
+  would report the step done. `ActionChecklist` therefore grew
+  `renderTrailing` / `renderBelow`, both rendered **outside** the label and
+  inside a new row wrapper that now carries the tint — so the note sits inside
+  its row rather than beside it. jsdom does not forward a label activation, so
+  the guard is on the DOM (`control.closest("label")` is null); a click test
+  passes with the button nested and proves nothing.
+
+  **The control is a toggle, and nothing else closes the field** — in particular
+  not a blur. An earlier cut closed an empty field when focus left it, so that a
+  stray press cost no height, and that is a real defect: the close runs on
+  **mousedown**, lifting everything under the field before mouseup lands, so the
+  click that caused it is swallowed. Pressing Submit with an empty note open
+  submitted nothing. It was found in a browser and not by the test beside it,
+  which dispatches `blur` and `click` as separate events and cannot see the
+  interaction; the guard is therefore that the field survives a blur, which goes
+  red the moment the handler comes back. Pressing the control again closes the
+  field **and drops the note**, which is what the control's label says it does:
+  a field kept open out of sight would submit words the user cannot see.
+
+  A successful submit clears every note and closes every field — the note is in
+  the transcript by then, and the card does not keep a second copy — and greys
+  the answered rows as reported ones. A **refused** submit keeps the notes with
+  the ticks, so Submit retries the whole of what the user composed.
+
+  **A note of whitespace is not an answer**, on the row or in the message: the
+  ANSWERED mark reads the trimmed note, as the submission does, or a row would
+  claim to be sending something that is then dropped. And an already-sent row
+  that carries a NEW note is marked ANSWERED **beside** its SENT: the mark is
+  the caller's to set, so `ActionChecklist` renders `tag` on a taken row too,
+  because SENT alone would deny a pending re-answer.
 - **The unticked checkbox carries its own surface.** `ActionChecklist` draws an
   empty box as `bg-(--color-bg-primary)` inside `border-(--color-border-secondary)`.
   The old borderline-only box all but vanished on the tinted body — worst in
@@ -577,7 +628,21 @@ shows its description (req 26).
   `send_message`. The steps the user reports doing ride the SAME message, under
   their own heading (req 29), so one Submit covers the whole card; a reported
   step needs no offer, so `sessionStatusOfferIds` is omitted when none was
-  ticked. The button is labelled "Submit", never a count.
+  ticked. **Steps take two headings, not one** (req 37): "I have done these
+  manual steps:" and "I answered these manual steps without doing them:", with
+  each step's note on its own indented `Note:` line under it. Two headings
+  rather than a per-line qualifier because the distinction is what the agent
+  acts on — a refusal read as a report of finished work is exactly the failure
+  the split exists to prevent — and the note under its own step is what keeps it
+  attributed when several are submitted at once. The `[Action card → Submit]`
+  marker leads whichever block comes first, and appears exactly once.
+  **Both boundaries are enforced, not assumed**: a note is a textarea, so every
+  line of it is indented rather than only the first, and a step's own text is
+  folded onto one line — otherwise a later line reading `- …`, or a line that
+  repeats a heading, arrives as a step of its own. "Add comment…" composes with
+  the same rule, since the user edits that text in the composer and a note that
+  breaks out of its step there is the same defect.
+  The button is labelled "Submit", never a count.
 - Not on the sidebar row (req 7); not an input to `computeAttentionReason`
   (req 9). The field is on `SessionInfo`, so the sidebar could read it; it
   must not.
@@ -1070,7 +1135,26 @@ built file is named in brackets. Every one of them exists.
   unselected item; a sent row greyed, unticked, tagged SENT and still tickable;
   stale card's offers selectable; submit carries `sessionStatusOfferIds` and
   per-offer provenance, and rides with the reported steps; a step submitted
-  alone carries no offer ids.
+  alone carries no offer ids. Req 37, one guard per state the row can be in:
+  the field absent until the control is pressed and opening it ticking nothing;
+  a note on an unticked step sent as an answer and on a ticked one as a detail;
+  each note under its own step when several go at once; an answered step greyed
+  and its note cleared; a refused submit keeping the note AND the retry sending
+  the same message; the field surviving a blur, empty or not, and a Submit
+  pressed with an empty one open still submitting; the control closing the field
+  and dropping the note; a note of whitespace marking and sending nothing; a new
+  note on a sent row reading ANSWERED beside SENT; the note carried into "Add
+  comment…"; two identical steps each carrying their own note through to the
+  message; the control outside the label, which is where the browser's rule can
+  be seen (jsdom forwards no label activation); and no note control on an offer.
+- `ActionChecklist.test.tsx` — `renderTrailing` and `renderBelow` rendered
+  outside the label and inside the row's tint, neither present when the caller
+  supplies neither, and `tag` shown beside the label on a taken row as well.
+- `action-checklist-message.test.ts` — the done/answered split, a step that is
+  neither dropped, the marker leading whichever block is first and appearing
+  once, plural headings, and the two boundaries: every line of a multi-line note
+  indented, a step's own text folded onto one line, and "Add comment…" composing
+  by the same rule.
 - `ActionChecklistCard.test.tsx` — unchanged behavior after the split.
 - `agent-instructions.test.ts` — section present in flag-on variants, absent
   in flag-off ones.
@@ -1141,6 +1225,9 @@ Each is reversible without touching a numbered requirement.
 - The status card has no single-button variant. (Its earlier "one Send, no
   comment shortcut" is withdrawn — Nik ruled the card extends the action card
   rather than reducing it, req 26.)
+- A per-step note is client-side only: nothing stores it, so `needsYou` keeps
+  its shape (a list of strings) and a step keeps its text as its identity.
+- An answered step greys as a reported one: the agent has been told either way.
 - Every tool field is a delta on the stored card: omitted means unchanged,
   `needsYou: []` clears; a bare call with no stored card is refused. `lastTurn`
   is the exception, for the reason req 31 gives.

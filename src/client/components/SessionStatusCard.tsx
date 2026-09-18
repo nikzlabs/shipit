@@ -24,9 +24,25 @@ import {
 import {
   formatOfferedActionsComment,
   formatOfferedActionsMessage,
+  type ReportedStep,
 } from "../utils/action-checklist-message.js";
 
 const NOTICE_MS = 5000;
+
+/**
+ * A manual step has no server-side identity (`needsYou: string[]`) and needs
+ * none: a note is never stored, so its text is the key, which is what carries a
+ * note and a SENT grey across the agent rewriting the list around it. A repeated
+ * entry gets a suffix so two identical steps are two rows (docs/303 req 37).
+ */
+function stepKeys(entries: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  return entries.map((entry) => {
+    const n = seen.get(entry) ?? 0;
+    seen.set(entry, n + 1);
+    return n === 0 ? entry : `${entry}\u0000${n}`;
+  });
+}
 
 /**
  * `MarkdownContent` carries `prose-sm`, a size up from the card's `text-xs`.
@@ -148,6 +164,14 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
   const [sent, setSent] = useState<ReadonlySet<string>>(() => new Set());
   /** req 29 — manual steps the user has ticked and already told the agent about. */
   const [reportedSteps, setReportedSteps] = useState<ReadonlySet<string>>(() => new Set());
+  /** req 37 — what the user typed against a step, keyed by the step's row key. */
+  const [notes, setNotes] = useState<ReadonlyMap<string, string>>(() => new Map());
+  /**
+   * req 37 — rows whose note field is open. A field with text in it stays open
+   * because the text is its content; an empty one closes when it loses focus, so
+   * the control never leaves a row taller than the user asked for.
+   */
+  const [openNotes, setOpenNotes] = useState<ReadonlySet<string>>(() => new Set());
   const [sendFailed, setSendFailed] = useState(false);
   const failedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // eslint-disable-next-line no-restricted-syntax -- timer cleanup on unmount
@@ -171,29 +195,106 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
   );
   const { selected, toggle, clear } = useChecklistSelection(items);
 
+  /** The rows of the manual-step list, each with the key its local state uses. */
+  const stepRows = useMemo(() => {
+    const entries = status.needsYou ?? [];
+    return stepKeys(entries).map((key, i) => ({ key, text: entries[i] }));
+  }, [status.needsYou]);
+
+  const stepBase = useMemo<ChecklistItem[]>(
+    () =>
+      stepRows.map((row) => ({
+        key: row.key,
+        label: row.text,
+        ...(reportedSteps.has(row.key) ? { taken: true } : {}),
+      })),
+    [stepRows, reportedSteps],
+  );
+  // The selection is derived from the rows, so the ANSWERED mark — which
+  // depends on it — is added afterwards rather than inside them.
+  const steps = useChecklistSelection(stepBase);
+
   const stepItems = useMemo<ChecklistItem[]>(
     () =>
-      (status.needsYou ?? []).map((entry) => ({
-        key: entry,
-        label: entry,
-        ...(reportedSteps.has(entry) ? { taken: true } : {}),
-      })),
-    [status.needsYou, reportedSteps],
+      stepBase.map((item) =>
+        // req 37 — an unticked row normally sends nothing, and a note breaks
+        // that, so the row says what it is about to do. A TICKED row with a
+        // note is not answered: it is done, with a detail, and its tick already
+        // says so.
+        // Trimmed, because a note of spaces is not submitted either: the mark
+        // and the submission must agree on what counts as an answer.
+        notes.get(item.key)?.trim() && !steps.selected.has(item.key)
+          ? { ...item, tag: "ANSWERED" }
+          : item,
+      ),
+    [stepBase, notes, steps.selected],
   );
-  const steps = useChecklistSelection(stepItems);
+
+  /**
+   * req 37 — a step is submitted when it is ticked, when it carries a note, or
+   * both: done · answered · done with a detail. `tag` is only shown on the
+   * unticked ones, where the mark is needed.
+   */
+  const submittedSteps = useMemo<ReportedStep[]>(
+    () =>
+      stepRows
+        .map((row) => {
+          const note = notes.get(row.key)?.trim() ?? "";
+          return {
+            text: row.text,
+            done: steps.selected.has(row.key),
+            ...(note ? { note } : {}),
+          };
+        })
+        .filter((step) => step.done || step.note),
+    [stepRows, steps.selected, notes],
+  );
+
+  const setNote = useCallback((key: string, value: string) => {
+    setNotes((prev) => {
+      const next = new Map(prev);
+      if (value) next.set(key, value);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+
+  /**
+   * The control is a toggle, and the field is NEVER closed by anything else —
+   * in particular not by the blur of the user's next click. Closing on blur
+   * removes the field on mousedown, which shifts everything under it up before
+   * mouseup lands, so the click that caused it is swallowed: pressing Submit
+   * with an empty note open submitted nothing.
+   */
+  const toggleNote = useCallback((key: string) => {
+    setOpenNotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    // Closing discards the note, which is what the control says it does; an
+    // open field kept out of sight would submit words the user cannot see.
+    setNotes((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }, []);
 
   const handleSubmit = useCallback(() => {
     // req 17 — a sent offer stays selectable, so a ticked one is re-sent on
     // purpose: an agent that crashed or ignored it needs telling again.
     const chosen = status.actions.filter((offer) => selected.has(offer.offerId));
-    const done = (status.needsYou ?? []).filter((entry) => steps.selected.has(entry));
-    if (chosen.length === 0 && done.length === 0) return;
+    if (chosen.length === 0 && submittedSteps.length === 0) return;
     const offerIds = chosen.map((offer) => offer.offerId);
-    const delivered = onSubmit?.(formatOfferedActionsMessage(chosen, done), {
+    const delivered = onSubmit?.(formatOfferedActionsMessage(chosen, submittedSteps), {
       ...(offerIds.length > 0 ? { sessionStatusOfferIds: offerIds } : {}),
     }) ?? false;
     if (failedTimer.current) clearTimeout(failedTimer.current);
-    // A refused message keeps the selection, so pressing submit again retries it.
+    // A refused message keeps the selection AND the notes, so pressing submit
+    // again retries the whole of what the user composed.
     if (!delivered) {
       setSendFailed(true);
       failedTimer.current = setTimeout(() => setSendFailed(false), NOTICE_MS);
@@ -201,19 +302,27 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
     }
     setSendFailed(false);
     setSent((prev) => new Set([...prev, ...offerIds]));
-    setReportedSteps((prev) => new Set([...prev, ...done]));
+    // req 29 — a step that was answered has been reported too, so it greys like
+    // one reported done; its note is delivered and lives in the transcript now.
+    const reported = stepRows
+      .filter((row) => steps.selected.has(row.key) || notes.get(row.key)?.trim())
+      .map((row) => row.key);
+    setReportedSteps((prev) => new Set([...prev, ...reported]));
+    setNotes(new Map());
+    setOpenNotes(new Set());
     clear();
     steps.clear();
-  }, [status.actions, status.needsYou, selected, steps, onSubmit, clear]);
+  }, [status.actions, stepRows, notes, selected, steps, submittedSteps, onSubmit, clear]);
 
   const handleAddComment = useCallback(() => {
     const chosen = status.actions.filter((offer) => selected.has(offer.offerId));
-    const done = (status.needsYou ?? []).filter((entry) => steps.selected.has(entry));
-    useSessionStore.getState().setPrefillText(formatOfferedActionsComment(chosen, done));
+    useSessionStore
+      .getState()
+      .setPrefillText(formatOfferedActionsComment(chosen, submittedSteps));
     useUiStore.getState().setMobilePanel("chat");
-  }, [status.actions, status.needsYou, selected, steps.selected]);
+  }, [status.actions, selected, submittedSteps]);
 
-  const nothingTicked = selected.size === 0 && steps.selected.size === 0;
+  const nothingTicked = selected.size === 0 && submittedSteps.length === 0;
 
   const stale = !status.fresh;
   /**
@@ -276,13 +385,48 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
           {needsYou.length > 0 && (
             <div>
               <Subtitle icon={<ClipboardTextIcon size={ICON_SIZE.SM} />}>Manual steps</Subtitle>
-              {/* req 29 — each step carries its own "I've done this" toggle. */}
+              {/* req 29 — each step carries its own "I've done this" toggle.
+                  req 37 — and a note of its own, so a value ("I named it
+                  billing-prod") or an answer ("no, use SQLite") reaches the
+                  agent attached to the step it is about. */}
               <ActionChecklist
                 items={stepItems}
                 selected={steps.selected}
                 onToggle={steps.toggle}
                 ariaLabel="Manual steps"
                 toggleHint="I've done this"
+                renderTrailing={(item) => {
+                  const open = openNotes.has(item.key);
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => toggleNote(item.key)}
+                      aria-label={`${open ? "Remove note" : "Add a note"}: ${item.label}`}
+                      aria-expanded={open}
+                      title={open ? "Remove note" : "Add a note"}
+                      className={`shrink-0 mt-1 mr-1 rounded-md p-1 hover:bg-(--color-bg-hover) ${
+                        open ? "text-(--color-accent)" : "text-(--color-text-tertiary)"
+                      }`}
+                    >
+                      <ChatCircleDotsIcon size={ICON_SIZE.SM} />
+                    </button>
+                  );
+                }}
+                renderBelow={(item) =>
+                  openNotes.has(item.key) ? (
+                    <textarea
+                      // Focused on mount: the field exists only because the
+                      // user pressed the control that opens it.
+                      autoFocus
+                      rows={2}
+                      value={notes.get(item.key) ?? ""}
+                      onChange={(e) => setNote(item.key, e.target.value)}
+                      aria-label={`Note: ${item.label}`}
+                      placeholder="Add a note for the agent…"
+                      className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1 text-xs text-(--color-text-primary) placeholder:text-(--color-text-tertiary) focus:border-(--color-accent) focus:outline-none"
+                    />
+                  ) : null
+                }
               />
             </div>
           )}

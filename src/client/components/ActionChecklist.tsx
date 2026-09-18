@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { ArrowRightIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -19,6 +19,12 @@ export interface ChecklistItem {
    * (docs/303 req 17).
    */
   taken?: boolean;
+  /**
+   * An extra pill after the label, in the same style as RECOMMENDED. The status
+   * card marks a step ANSWERED with it: unticked normally means "nothing will be
+   * sent", and an answered step breaks that (docs/303 req 37).
+   */
+  tag?: string;
 }
 
 const EMPTY: ReadonlySet<string> = new Set();
@@ -97,25 +103,48 @@ export interface ActionChecklistProps {
    * manual steps read "I've done this" (docs/303 req 29).
    */
   toggleHint?: string;
+  /**
+   * A control beside the row's text, OUTSIDE the label — a button inside it
+   * would toggle the checkbox as well as itself. The status card's manual steps
+   * put the note control here (docs/303 req 37).
+   */
+  renderTrailing?: (item: ChecklistItem) => ReactNode;
+  /** Content under the row, indented to the label's text and inside its tint. */
+  renderBelow?: (item: ChecklistItem) => ReactNode;
 }
 
-export function ActionChecklist({ items, selected, onToggle, ariaLabel, toggleHint }: ActionChecklistProps) {
+export function ActionChecklist({
+  items,
+  selected,
+  onToggle,
+  ariaLabel,
+  toggleHint,
+  renderTrailing,
+  renderBelow,
+}: ActionChecklistProps) {
   return (
     <div className="flex flex-col gap-0.5" role="group" aria-label={ariaLabel}>
       {items.map((item) => {
         const taken = item.taken === true;
         const checked = selected.has(item.key);
+        const below = renderBelow?.(item);
         return (
-          <label
+          <div
             key={item.key}
+            // The tint is on the wrapper, not the label, so anything rendered
+            // under the row sits inside the row rather than beside it.
+            className={`rounded-md transition-colors ${
+              checked ? "bg-(--color-accent-subtle)" : "hover:bg-(--color-bg-hover)"
+            }`}
+          >
+          <div className="flex items-start">
+          <label
             title={toggleHint}
             // `relative` contains the `sr-only` box below, which is absolutely
             // positioned: with no containing block in the row it lands far down
             // the page, and focusing it on click scrolls the chat column out of
             // the window (planning#592).
-            className={`relative flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors cursor-pointer ${
-              checked ? "bg-(--color-accent-subtle)" : "hover:bg-(--color-bg-hover)"
-            }`}
+            className="relative flex min-w-0 flex-1 items-start gap-2.5 px-2 py-1.5 cursor-pointer"
           >
             <input
               type="checkbox"
@@ -147,6 +176,13 @@ export function ActionChecklist({ items, selected, onToggle, ariaLabel, toggleHi
                   RECOMMENDED
                 </span>
               )}
+              {/* Shown on a taken row too: a row already sent that now carries
+                  a NEW answer is pending, and SENT alone would deny it. */}
+              {item.tag && (
+                <span className="ml-1.5 align-middle text-[10px] font-semibold tracking-wide text-(--color-text-link) bg-(--color-accent-subtle) rounded-full px-1.5 py-px">
+                  {item.tag}
+                </span>
+              )}
               {/* Grey alone does not say why a row is grey (docs/303 req 17). */}
               {taken && (
                 <span className="ml-1.5 align-middle text-[10px] font-semibold tracking-wide text-(--color-text-tertiary) bg-(--color-bg-tertiary) rounded-full px-1.5 py-px">
@@ -162,6 +198,11 @@ export function ActionChecklist({ items, selected, onToggle, ariaLabel, toggleHi
               )}
             </span>
           </label>
+          {renderTrailing?.(item)}
+          </div>
+          {/* Aligned under the label's text: px-2 + the 16px box + the 10px gap. */}
+          {below && <div className="pl-[34px] pr-2 pb-1.5">{below}</div>}
+          </div>
         );
       })}
     </div>
