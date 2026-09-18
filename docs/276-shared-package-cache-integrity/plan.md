@@ -121,12 +121,15 @@ for it and invisible to everyone else. docs/198's 464 MB-per-session objection
 applies only to sessions that change their dependencies; sessions that use the
 base's tree pay 4 KB.
 
-**Caveat on this table.** It is not backed by a committed harness, and the rows
-measure *reading* a base and *adding* a dependency, not a warm pnpm install with
-the store inside the overlay — so it does not establish req 10 for an installing
-session, and the store-poisoning row needs a control proving A changed the
-intended entry and B then consumed that package. Reproduce it with the
-Docker-mounted route in the checklist before relying on it.
+**This table is now backed by a committed harness.**
+[`store-overlay-spike.sh`](./store-overlay-spike.sh), run on a Docker host
+2026-09-18 ([FINDINGS.md](./FINDINGS.md)), measured the store-poisoning row with
+a control (attacker A poisons through its upper, victim B installs clean over
+the shared base, and the no-overlay control poisons B) and the installing-session
+disk and time: a base-hit install adds ~48 KB to a session's upper, a
+new-package install ~114 KB, and the store-on-overlay install matched the
+plain-store control within noise (0.35 s vs 0.36 s). So req 10 holds for an
+installing session, not only for a reader.
 
 Two constraints for implementation:
 
@@ -227,16 +230,29 @@ publications and verifies nothing about content). The lifecycle:
   is never modified while it can be a live lowerdir; a new generation is minted
   per publish and the janitor reaps unreferenced ones.
 
-**Measured inputs, still to measure, and the test route.** `index.db` is about
-2% of the store (816 KB for 165 packages / 38 MB), so its whole-file copy-up on a
-session's first store write is bounded; measure it at ShipIt's own scale. Still
-unmeasured: an installing session's disk and time with the store on an overlay
-(req 7, req 10), and pnpm's store lock across a base and an upper. The test needs
-Docker-mounted overlays — adapt `docs/183-overlay-dep-store/prototype/nested-overlay-spike.sh`
-(rungs 3 and 5 are the attack shape) with a warmed store as lowerdir, attacks
-through one container and an install through another, plus a control proving
-the second container consumed the attacked package. It cannot run in a session
-container (no Docker socket). The `--frozen-store` read-only mode is not a
+**Measured 2026-09-18 ([FINDINGS.md](./FINDINGS.md),
+[`store-overlay-spike.sh`](./store-overlay-spike.sh)).** With a warmed store as
+the overlay lowerdir, the H4 manifest rewrite and the H2 mtime-kept byte poison
+run through attacker session A stayed in A's private upper: the base `index.db`
+was byte-unchanged and victim session B installed clean, while the same attack
+with **no overlay** (shared bind) poisoned B — the copy-up isolation is the
+mitigation, measured with a control, not asserted. `index.db` is **1.3%** of the
+store at a realistic scale (659 KB on a 51 MB, 2 168-file store), so its
+whole-file copy-up on a session's first store write is bounded. An installing
+session's cost is small: ~48 KB added to the upper for a base-hit install, ~114
+KB for a new-package install, and a store-on-overlay install matched the
+plain-store control within noise (req 7, req 10). Two concurrent installs over
+one base into two uppers both succeeded — the store lock holds across a base and
+an upper. It cannot run in a session container (no Docker socket); it ran on the
+services host.
+
+One thing the store overlay does **not** cover: pnpm keeps resolution metadata
+(`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`, separate from the store, so an offline
+install fails to *resolve* a name with an empty metadata cache even when the
+store holds the content. A cross-session offline install needs either a committed
+lockfile or a shared metadata cache; that cache is a separate surface from the
+store and, if shared writable, is its own integrity question (what a name
+resolves to — the req 6 class). The `--frozen-store` read-only mode is not a
 fallback on its own: a session must still install its own packages (req 9).
 
 **A finding outside this issue's scope.** The docs/183 overlay base for
@@ -255,8 +271,11 @@ verify-and-admit lifecycle above is the same fix for it. Filed as
    lands**, so on ext4 ship 2 and 3 together, or accept the interim cost
    deliberately.
 3. **The pnpm store inside an overlay with a content-verified base (section
-   5)** — the load-bearing step for H2/H4. The lifecycle is designed; the
-   Docker-mounted measurements in section 5 gate building it.
+   5)** — the load-bearing step for H2/H4. The lifecycle is designed and the
+   overlay mechanism is measured (FINDINGS.md: attack isolation with a control,
+   bounded `index.db` copy-up, no material install slowdown). What still gates
+   building it is the verify-and-admit publish spike (the orchestrator side),
+   not the kernel mechanism.
 4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
    pnpm store is safe against H3 and H4 (req 8).
 

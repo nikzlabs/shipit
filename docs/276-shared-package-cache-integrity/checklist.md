@@ -45,13 +45,22 @@ recorded in [requirements.md](./requirements.md); none is open.
       and what a verification failure does: drop the entry from the base, keep
       it private to the session, and surface it — never fail the session's own
       install (req 9).
-- [ ] Measure store-in-overlay for real via Docker-mounted overlays — adapt
-      `docs/183-overlay-dep-store/prototype/nested-overlay-spike.sh`; run the
-      manifest and blob attacks through session A and an install through B, with
-      a shared-bind attack control. Not runnable in a session container.
-- [ ] Measure the install-time disk and time (req 7, req 10) with the store on
-      an overlay: whole-file `index.db` copy-up, imported package files, store
-      lock. The 4 KB / 63 MB figures are for reading a base, not installing.
+- [x] Measure store-in-overlay for real via Docker-mounted overlays
+      (`store-overlay-spike.sh`, [FINDINGS.md](./FINDINGS.md), services host
+      2026-09-18). H4 + H2 through session A stayed in A's upper; base
+      `index.db` byte-unchanged; victim B installed clean; the no-overlay
+      shared-bind control poisoned B. The overlay copy-up is the mitigation,
+      measured with a control.
+- [x] Measure the install-time disk and time (req 7, req 10) with the store on
+      an overlay. `index.db` is 1.3% of the store at scale (whole-file copy-up
+      bounded); base-hit install adds ~48 KB to the upper, a new-package install
+      ~114 KB; store-on-overlay install matched the plain control within noise;
+      two concurrent installs over one base held the store lock (rc 0/0).
+- [ ] Record the metadata-cache dependency in the wiring: an offline install
+      needs `XDG_CACHE_HOME/pnpm` (resolution metadata, separate from the store)
+      or a committed lockfile. The store overlay alone does not make cross-session
+      offline installs resolve; the metadata cache is a separate surface and, if
+      shared writable, its own integrity question (req 6 class).
 - [ ] Set `verify-store-integrity=true` explicitly (ShipIt sets neither pnpm
       value today), but treat it as necessary, not sufficient — it trusts the
       writable `index.db`.
