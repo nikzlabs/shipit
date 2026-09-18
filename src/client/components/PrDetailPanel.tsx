@@ -1,15 +1,4 @@
-/**
- * PrDetailPanel — the body of the "PR" tab in the right-hand panel.
- *
- * docs/133: the inline drill-in destination for a session's pull request.
- * Rendered as the `rightTab === "pr"` branch in App.tsx. Reads from the same
- * `pr-store` slice as the inline `PrLifecycleCard`, so the two surfaces are
- * always consistent views of one model.
- *
- * Phase 1 + status scaffold: header, markdown description, status breakdown,
- * and a link to the existing diff viewer. Editing, conversation threads, and
- * the activity timeline are later phases (see the plan).
- */
+
 
 import { GitPullRequestIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";

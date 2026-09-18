@@ -1,22 +1,16 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: resets the lazily-fetched body (docs/244) when a different tool result occupies the same slot after a session switch or rewind.
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import hljs from "highlight.js";
+import { highlightCode, languageFromPath } from "../syntax-highlight.js";
 import { Button } from "./ui/button.js";
 import type { ToolResultBlock } from "./MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useDevicePixelRatio } from "../hooks/useDevicePixelRatio.js";
 
 interface ToolResultImage {
-  /** Base64 payload — only present on results the client parsed locally. */
+
   data?: string;
-  mediaType: string; // "image/png", etc.
-  /**
-   * docs/244 — content-addressed URL substituted for the base64 payload on the
-   * serve path. An MCP screenshot is ~500 KB of base64 inside the result JSON;
-   * keeping it there made every transcript load carry every screenshot ever
-   * taken. Rendered at the stored resolution, not downscaled: these images have
-   * no click-to-full-size view to recover detail from.
-   */
+  mediaType: string;                     
+
   src?: string;
 }
 
@@ -33,7 +27,6 @@ export const READ_MAX_LINES = 20;
 export const GREP_MAX_LINES = 20;
 export const GENERIC_MAX_LINES = 15;
 
-/** Truncate text to a maximum number of lines, returning whether it was truncated. */
 function truncateLines(text: string, maxLines: number): { text: string; truncated: boolean; totalLines: number } {
   const lines = text.split("\n");
   if (lines.length <= maxLines) {
@@ -46,59 +39,20 @@ function truncateLines(text: string, maxLines: number): { text: string; truncate
   };
 }
 
-/** Detect language from file path extension for syntax highlighting. */
-function languageFromPath(filePath: string): string {
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-  const map: Record<string, string> = {
-    ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
-    json: "json", html: "xml", css: "css", scss: "scss",
-    py: "python", rb: "ruby", go: "go", rs: "rust",
-    java: "java", kt: "kotlin", c: "c", cpp: "cpp", h: "c",
-    sh: "bash", bash: "bash", zsh: "bash",
-    md: "markdown", yaml: "yaml", yml: "yaml",
-    sql: "sql", xml: "xml", toml: "ini",
-  };
-  return map[ext] ?? "";
-}
-
-/** Try to extract file path from Read result content (first line often has path info). */
-function extractFilePathFromReadContent(content: string): string | null {
-  // Read results from Claude CLI often start with the file path or line numbers
-  // Try to detect if the content looks like it has line numbers (e.g., "     1\tconst x = 1;")
-  const firstLine = content.split("\n")[0] ?? "";
-  if (/^\s*\d+\t/.test(firstLine)) {
-    return null; // Has line numbers — it's file content, not a path header
-  }
-  return null;
-}
-
-/**
- * docs/244 — the lazy tail of a server-sliced result.
- *
- * The transcript carries only the head slice of a heavy tool output, plus the
- * true line count so the "Show all N lines" label stays honest. This bundles
- * the fetch for the rest; the four preview components below share it through
- * `useExpandable` so the fetch lives in one place rather than four.
- */
 export interface LazyResultBody {
-  /** `content` is a server slice (or empty) with the body available behind a fetch. */
+
   serverTruncated: boolean;
-  /** The fetch has resolved — `full` is the authoritative body. */
+
   fetched: boolean;
-  /** True line count of the whole body. */
+
   totalLines?: number;
-  /** The full body, once fetched. */
+
   full?: string;
   loading: boolean;
   error: boolean;
   fetchFull: () => void;
 }
 
-/**
- * Expand/collapse state for a result preview, with the docs/244 lazy fetch
- * folded in. Falls back to purely client-side truncation when `lazy` is absent
- * (nothing was sliced server-side), so behavior is unchanged for small results.
- */
 function useExpandable(content: string, maxLines: number, lazy?: LazyResultBody) {
   const [expanded, setExpanded] = useState(false);
   const source = lazy?.full ?? content;
@@ -106,17 +60,13 @@ function useExpandable(content: string, maxLines: number, lazy?: LazyResultBody)
     () => truncateLines(source, maxLines),
     [source, maxLines]
   );
-  // Once the fetch resolves, `source` IS the whole body, so ordinary
-  // client-side truncation takes over and the server's metadata is no longer
-  // the authority — using it would keep claiming a body is short when we now
-  // hold all of it.
+
   const serverTruncated = (lazy?.serverTruncated ?? false) && !(lazy?.fetched ?? false);
 
   return {
     expanded,
     displayText: expanded ? source : preview,
-    // Collapse the box while a slice is still only a slice, so an expanded
-    // fetch-in-flight doesn't render a short body as if it were complete.
+
     clipped: !expanded && (truncated || serverTruncated),
     showToggle: truncated || serverTruncated,
     totalLines: lazy?.fetched ? totalLines : (lazy?.totalLines ?? totalLines),
@@ -131,7 +81,6 @@ function useExpandable(content: string, maxLines: number, lazy?: LazyResultBody)
 
 type Expandable = ReturnType<typeof useExpandable>;
 
-/** The "Show all N lines" / "Show less" footer shared by every preview. */
 function ExpandToggle({ state }: { state: Expandable }) {
   if (!state.showToggle) return null;
   const label = state.error
@@ -178,21 +127,14 @@ function BashResult({ content, isError, maxLines, lazy }: { content: string; isE
   );
 }
 
-function ReadResult({ content, maxLines, lazy }: { content: string; maxLines?: number; lazy?: LazyResultBody }) {
+function ReadResult({ content, maxLines, lazy, filePath }: { content: string; maxLines?: number; lazy?: LazyResultBody; filePath?: string }) {
   const state = useExpandable(content, maxLines ?? READ_MAX_LINES, lazy);
   const { displayText } = state;
 
-  extractFilePathFromReadContent(content);
-
-  // Attempt syntax highlighting based on content heuristics
-  const highlighted = useMemo(() => {
-    try {
-      const result = hljs.highlightAuto(displayText);
-      return result.value;
-    } catch {
-      return null;
-    }
-  }, [displayText]);
+  const highlighted = useMemo(
+    () => highlightCode(displayText, filePath ? languageFromPath(filePath) : null),
+    [displayText, filePath],
+  );
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
@@ -212,14 +154,13 @@ function GrepResult({ content, maxLines, lazy }: { content: string; maxLines?: n
   const state = useExpandable(content, maxLines ?? GREP_MAX_LINES, lazy);
   const { displayText } = state;
 
-  // Grep output has file:line:content format — highlight file paths
   const lines = displayText.split("\n");
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
       <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${state.clipped ? "max-h-[16rem] overflow-hidden" : ""}`}>
         {lines.map((line, i) => {
-          // Match ripgrep-style output: file:line:content or file:line-content
+
           const match = /^([^:]+):(\d+)[:-](.*)/.exec(line);
           if (match) {
             return (
@@ -232,7 +173,7 @@ function GrepResult({ content, maxLines, lazy }: { content: string; maxLines?: n
               </div>
             );
           }
-          // File-only matches (files_with_matches mode)
+
           if (line.trim() && !line.includes(" ")) {
             return (
               <div key={i}>
@@ -353,22 +294,6 @@ function ToolResultImages({ images }: { images: ToolResultImage[] }) {
   );
 }
 
-/**
- * Try to extract images and text from a JSON-stringified MCP content array.
- *
- * MCP tools (e.g. mcp__playwright__browser_take_screenshot) return content as
- * an array of {type:"text"} and {type:"image"} blocks. The server stores this
- * as JSON.stringify(content), so we parse it back here.
- *
- * The `startsWith("[")` guard is a fast-path to skip plain string content.
- * If content happens to be a JSON array without image blocks, we return null
- * and fall through to normal text rendering.
- *
- * If a screenshot renders as raw JSON text instead of an image, the block is
- * missing *upstream*, not lost here: `@playwright/mcp` only attaches the image
- * when `browser_take_screenshot` is called without a `filename`. See
- * `session/agents/playwright-mcp.ts`.
- */
 export function parseContentForImages(content: string): { text: string; images: ToolResultImage[] } | null {
   if (!content.startsWith("[")) return null;
   try {
@@ -387,9 +312,7 @@ export function parseContentForImages(content: string): { text: string; images: 
             mediaType: (source.media_type as string) ?? "image/png",
           });
         } else if (typeof source?.shipit_url === "string") {
-          // docs/244 — the projection replaced the base64 with a URL. The array
-          // is still valid JSON with the same block structure, which is why
-          // image-bearing results need no exemption from the line slice.
+
           images.push({
             src: source.shipit_url,
             mediaType: (source.media_type as string) ?? "image/png",
@@ -421,7 +344,7 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
   const fetchFullRef = useRef<(() => void) | undefined>(undefined);
 
   // A new tool result in the same slot (session switch, rewind) must not show
-  // the previous one's body.
+
   // eslint-disable-next-line no-restricted-syntax -- resets state owned by an external fetch when its identity key changes; there is no event to hang this on, since the component is re-pointed at a different result rather than interacted with.
   useEffect(() => {
     setFull(undefined);
@@ -429,10 +352,6 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
     setError(false);
   }, [result.toolUseId, sessionId]);
 
-  // Fetch as soon as the result is shown. `ToolResult` renders only inside
-  // `ToolCallModal`, so mounting IS the click that requirement 8 licenses a
-  // loading state for — and since docs/244 strips the body of a modal-only
-  // result to nothing, there is no preview to show while waiting.
   // eslint-disable-next-line no-restricted-syntax -- loads data owned by an external endpoint when the view that displays it mounts; the mount is the user's click, there is no earlier event to hang it on.
   useEffect(() => {
     if (result.truncated) fetchFullRef.current?.();
@@ -469,7 +388,16 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
   };
 }
 
-export function ToolResult({ tool, result }: { tool: string; result: ToolResultBlock }) {
+export function ToolResult({ tool, result, filePath }: {
+  tool: string;
+  result: ToolResultBlock;
+  /**
+   * The `file_path` from the tool's own input, when it had one. Optional
+   * because most tools have no file to name; a `Read` that supplies it gets
+   * highlighted by lookup instead of by auto-detection.
+   */
+  filePath?: string;
+}) {
   const lazy = useLazyResultBody(result);
   const parsed = useMemo(
     () => parseContentForImages(lazy?.full ?? result.content),
@@ -477,14 +405,7 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   );
 
   const displayContent = parsed?.text ?? (lazy?.full ?? result.content);
-  // The previews below read `lazy.full` in preference to the `content` prop
-  // (`useExpandable`), so the two have to be in the SAME units. For a content-
-  // block array they are not: `displayContent` is the text we just unwrapped out
-  // of the blocks, while `lazy.full` is the raw `JSON.stringify`'d array. Handing
-  // the raw one through drew the whole array — image payload and all — as the
-  // text panel directly under the screenshot it had already rendered, which is
-  // what a `browser_take_screenshot` modal showed. Substitute the unwrapped text
-  // so the fetched tail arrives as the same kind of thing the preview started with.
+
   const textLazy = lazy && parsed && lazy.full !== undefined
     ? { ...lazy, full: parsed.text }
     : lazy;
@@ -492,10 +413,8 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   const hasImages = images.length > 0;
   const hasContent = !!displayContent;
 
-  // docs/244 — a modal-only result arrives with an EMPTY body and a `truncated`
   // marker, because nothing renders its content until this modal opens. Show
-  // the fetch rather than "(no output)", which would be a lie about a result
-  // that has plenty.
+
   const awaitingBody = !!lazy && !lazy.fetched && !lazy.error;
   if (!hasContent && !hasImages && awaitingBody) {
     return (
@@ -520,7 +439,6 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
     );
   }
 
-  // When images are present, shrink the text output panel
   const textMaxLines = hasImages ? 8 : undefined;
 
   let textResult = null;
@@ -528,7 +446,7 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
     if (tool === "Bash") {
       textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={textLazy} />;
     } else if (tool === "Read") {
-      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
+      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} {...(filePath ? { filePath } : {})} />;
     } else if (tool === "Grep" || tool === "Glob") {
       textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
     } else {
@@ -536,11 +454,8 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
     }
   }
 
-  // A projected screenshot arrives as an emptied text block plus a URL-backed
-  // image, so `hasImages` carries it past both status branches above and the
-  // text half of it can fail silently: the picture renders and the body that
   // never loaded leaves no trace. The image is still the useful part, so this
-  // reports the miss beside it rather than replacing it.
+
   const imageBodyFailed = hasImages && !hasContent && !!lazy?.error;
 
   return (
@@ -556,4 +471,4 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   );
 }
 
-export { truncateLines, languageFromPath };
+export { truncateLines };

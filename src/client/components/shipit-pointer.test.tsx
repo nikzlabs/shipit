@@ -29,7 +29,7 @@ describe("agent-authored pointers — rendering", () => {
     render(<MarkdownContent text="Look at [the run](shipit-preview://web/runs/1)." shipitLinks />);
     const el = screen.getByRole("button", { name: "the run" });
     // No real href: a custom-protocol href would be handed to the OS protocol
-    // handler on middle-click / "open in new tab".
+
     expect(el.getAttribute("href")).toBeNull();
     expect(el.tagName).toBe("A");
   });
@@ -70,9 +70,7 @@ describe("agent-authored pointers — rendering", () => {
 
 describe("agent-authored pointers — where the schemes are live", () => {
   // The security boundary. `MarkdownContent` is shared with PR descriptions and
-  // comments, issue bodies, reviews and subagent reports — all text ShipIt did
-  // NOT author. A pointer there could present a button that starts a Compose
-  // service (req 12), which is exactly the untrusted-input boundary.
+
   it("is inert without the opt-in, rendering only the label", async () => {
     usePreviewStore.setState({
       services: [{ name: "web", status: "stopped", port: 5173, preview: "auto" }],
@@ -97,9 +95,7 @@ describe("agent-authored pointers — where the schemes are live", () => {
   });
 
   it("does not let image syntax put the scheme in the DOM either", () => {
-    // `urlTransform` passes the schemes through so `MarkdownLink` can recognise
-    // them — but that pass-through is `href`-only. Without the restriction this
-    // emits a literal `<img src="shipit-present:…">` on every surface.
+
     for (const shipitLinks of [false, true]) {
       cleanup();
       const { container } = render(
@@ -112,9 +108,7 @@ describe("agent-authored pointers — where the schemes are live", () => {
 
 describe("agent-authored pointers — transcript session scoping", () => {
   it("ignores a click on a transcript belonging to another session", () => {
-    // `MessageList` paints a deferred copy of the messages, so during a switch
-    // the outgoing session's transcript is briefly still on screen and
-    // clickable — while every store the click reads has already moved on.
+
     usePreviewStore.setState({
       services: [{ name: "web", status: "stopped", port: 5173, preview: "auto" }],
     });
@@ -126,7 +120,7 @@ describe("agent-authored pointers — transcript session scoping", () => {
     fireEvent.click(screen.getByRole("button", { name: "go" }));
 
     expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
-    // Silently — the user clicked a message on its way off screen.
+
     expect(useUiStore.getState().toast).toBeNull();
   });
 
@@ -146,8 +140,7 @@ describe("agent-authored pointers — transcript session scoping", () => {
 
 describe("agent-authored pointers — branch order", () => {
   it("wins over the repo-file branch, which would read it as a path", async () => {
-    // `shipit-present:/persist/x.html` has no `://`, so `parseRepoFileLink`
-    // accepts it as a repo path and would open the file preview modal.
+
     const openPreview = vi.fn();
     useFileStore.setState({ openPreview } as never);
     const user = userEvent.setup();
@@ -155,7 +148,7 @@ describe("agent-authored pointers — branch order", () => {
 
     await user.click(screen.getByRole("button", { name: "art" }));
     expect(openPreview).not.toHaveBeenCalled();
-    // Nothing presented from that path — req 10 reports the path.
+
     expect(useUiStore.getState().toast?.message).toContain("/persist/x.html");
   });
 

@@ -43,7 +43,7 @@ describe("handleBranchSyncedCard (docs/221)", () => {
 
   it("is idempotent by cardId — a reconnect replay appends once", () => {
     handleBranchSyncedCard(ctx, event());
-    handleBranchSyncedCard(ctx, event()); // same cardId (history load + buffer replay)
+    handleBranchSyncedCard(ctx, event());                                              
     expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 

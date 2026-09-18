@@ -1,9 +1,3 @@
-/**
- * Tests for the egress reload seam (docs/172 Gap 1, planning#92) — relaunching the
- * Tier B resolver + Tier C proxy after a durable allowlist add, without a
- * container restart. Pure orchestration; the in-netns swap is verified live.
- */
-
 import { describe, it, expect, vi } from "vitest";
 import type Docker from "dockerode";
 import { reloadEgressSidecars } from "./egress-reload.js";
@@ -59,7 +53,6 @@ describe("reloadEgressSidecars", () => {
     expect(cfg.Entrypoint).toEqual(["/usr/local/bin/run-resolver.sh"]);
     expect(cfg.HostConfig?.NetworkMode).toBe("container:agent1");
     expect(cfg.Labels?.[EGRESS_RESOLVER_LABEL]).toBe("s1");
-    // The regenerated dnsmasq config (base64) embeds the new host's domain.
     const b64 = (cfg.Env ?? []).find((e) => e.startsWith("EGRESS_DNSMASQ_CONFIG_B64="))?.split("=")[1] ?? "";
     expect(Buffer.from(b64, "base64").toString("utf-8")).toContain("new.example.com");
   });

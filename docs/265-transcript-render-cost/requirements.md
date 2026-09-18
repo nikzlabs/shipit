@@ -17,6 +17,11 @@ the main thread was blocked for 4.35 s of a 17.6 s recording, in bursts of 1.2 s
 the existing behaviours that must survive the fix; the user named the first three of them
 when approving the work.
 
+Requirement 13 comes from a **second** report, on 2026-09-01: *"ShipIt burns ~25% of a CPU
+core on a session where nothing is happening."* It is the same finding this folder's
+`checklist.md` had already recorded and deliberately left unfixed, now reproduced a third
+time and complained about by a user.
+
 ## Requirements
 
 1. While the agent is streaming a turn, the chat UI must stay responsive. The user must be
@@ -44,7 +49,10 @@ when approving the work.
    *(Delivered — see `plan.md`.)*
 
 9. Every message stays present in the page. The browser's own Ctrl+F, and "select all →
-   copy", must keep covering the whole conversation, not only the visible part.
+   copy", must keep covering the whole conversation, not only the visible part. Narrowed
+   on 2026-09-14: once the reader clicks inside the transcript, Ctrl+F opens ShipIt's own
+   search instead of the browser's. Every other way of pressing it, including scrolling
+   without clicking, still reaches the browser's find-in-page over every message.
 
 10. Switching away from a session and back must not download the conversation again. The
     user moves between sessions constantly, and each move currently costs megabytes.
@@ -55,11 +63,35 @@ when approving the work.
 12. The file tree must not be re-sent as part of the chat-history response when it has not
     changed. It is 325 KB of this repository's payload and is unrelated to the transcript.
 
+13. A session where nothing is happening must not keep the processor busy. With no turn
+    running, no typing and no network traffic, the page must cost close to nothing — however
+    long the conversation is, and whatever the page is showing.
+
+14. Motion in the interface must look smooth. A spinner or other indicator must not visibly
+    step or stutter, including on a 120 Hz display where everything around it is smooth.
+    This holds *at the same time as* requirement 13 — meeting one by giving up the other is
+    not meeting them.
+
 ## Open questions
 
 *(none)*
 
 ## Resolved questions
+
+- **2026-09-14 — Requirement 9 narrowed for the chat-search chord.** The `chat-search`
+  keybinding (Ctrl+F / ⌘F) was extended from the composer to the transcript, which takes the
+  chord from the browser there. Raised because requirement 9 promises the browser's own
+  Ctrl+F over the whole conversation, and ShipIt's in-app search reads message text only —
+  tool inputs, tool results and card bodies are invisible to it. **The user chose to keep the
+  transcript shortcut and narrow the requirement.** The click is the gate: a reader who has
+  not clicked in the transcript still gets the browser's find-in-page.
+
+- **2026-09-02 — Requirement 14 added.** The user reported the interface had stopped freezing
+  but now felt *"visibly sluggish, especially on a 120 Hz monitor"*, and traced it to the fix
+  for requirement 13: that fix capped every infinite animation at ten steps a second, which is
+  choppy by construction. Recorded as a requirement rather than a bug because the first fix
+  was measured against requirement 13 alone and passed — nothing in the requirements said the
+  result had to still look right. No trade was needed in the end: see `plan.md` §2c.
 
 - **2026-08-15 — Must the whole conversation stay present in the page?** Asked because the
   cheapest way to meet requirement 3 is to render only the visible part ("windowing"), which

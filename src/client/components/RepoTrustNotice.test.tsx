@@ -28,8 +28,7 @@ describe("RepoTrustNotice (docs/178 consent reachable without the Preview tab)",
   });
 
   it("grants trust without any Preview tab in the tree", async () => {
-    // The regression this component exists for: local mode (dogfood) renders no
-    // Preview tab, so RepoTrustBanner — which lives inside the preview frame —
+
     // never mounts. Nothing here depends on it.
     const url = "https://github.com/owner/repo.git";
     useRepoStore.setState({ repos: [repo(url, false)] });
@@ -44,7 +43,7 @@ describe("RepoTrustNotice (docs/178 consent reachable without the Preview tab)",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ url }) }),
     );
     await waitFor(() => expect(useRepoStore.getState().repos[0].trusted).toBe(true));
-    // The grant flips the store, so the button retires on the next render.
+
     await waitFor(() =>
       expect(screen.queryByTestId("repo-trust-notice-accept")).not.toBeInTheDocument(),
     );
@@ -57,19 +56,14 @@ describe("RepoTrustNotice (docs/178 consent reachable without the Preview tab)",
   });
 
   it("still explains the block when the remote isn't a tracked repo", () => {
-    // The caller (App's `agentMessagingBlocked`) has already decided the
-    // composer is blocked. With no resolvable repo there's nothing the trust
-    // endpoint would accept, but silently rendering nothing would leave a
-    // disabled composer with no explanation at all.
+
     render(<RepoTrustNotice repoUrl="https://github.com/owner/unknown.git" />);
     expect(screen.getByTestId("repo-trust-notice")).toHaveTextContent(/isn.t trusted yet/);
     expect(screen.queryByTestId("repo-trust-notice-accept")).not.toBeInTheDocument();
   });
 
   it("does not point the user at the Preview tab", () => {
-    // The old copy read "Trust this repository in Preview before sending
-    // messages to the agent" — an instruction that is impossible to follow in
-    // any mode without a Preview tab.
+
     const url = "https://github.com/owner/repo.git";
     useRepoStore.setState({ repos: [repo(url, false)] });
     render(<RepoTrustNotice repoUrl={url} />);

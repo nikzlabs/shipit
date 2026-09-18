@@ -9,12 +9,6 @@ import { useUiStore } from "../stores/ui-store.js";
 
 afterEach(cleanup);
 
-/**
- * docs/248 — the doc's `issue:` pointer resolves against the trackers this
- * repository declares, and the browser's view of those is the Issues store's
- * tracker list. Declaring one is what makes the chip an in-app jump rather than
- * a legible badge.
- */
 const DECLARED_LINEAR = {
   id: "linear:TRACKER" as const,
   kind: "linear" as const,
@@ -117,9 +111,6 @@ Context body.
 `;
       useIssuesStore.setState({ trackers: [DECLARED_LINEAR] });
       render(<MarkdownSelectionComments {...makeProps({ content })} />);
-      // The issue pointer renders as a jump-to-issue chip in the destination's
-      // name form (req 15). A declared tracker opens the inline Issues view, so
-      // it must NOT be an external link.
       const chip = screen.getByText("roadmap#TRACKER-28");
       expect(chip.closest("a")).toBeNull();
       expect(chip.closest("button")).toHaveAttribute("title", "Open roadmap#TRACKER-28 in ShipIt");
@@ -151,7 +142,6 @@ issue: https://linear.app/example/issue/TRACKER-28/decouple
         }),
       );
       expect(useUiStore.getState().rightTab).toBe("issues");
-      // The doc is usually read in the preview modal — it must get out of the way.
       expect(closePreview).toHaveBeenCalled();
     });
 
@@ -199,13 +189,10 @@ issue: https://example.com/tickets/42
 
     it("shows the quoted text inside each comment card", () => {
       render(<MarkdownSelectionComments {...makeProps({ comments })} />);
-      // Both the body paragraph and the two comment blockquotes contain this string.
       const matches = screen.getAllByText("Architecture body");
       expect(matches.length).toBeGreaterThanOrEqual(2);
     });
 
-    // Every review comment is human-authored (the AI write path was removed in
-    // docs/203 + docs/220), so no card carries an author label.
     it("does not label a comment with an author", () => {
       render(<MarkdownSelectionComments {...makeProps({ comments })} />);
       expect(screen.queryByText("AI")).not.toBeInTheDocument();
@@ -321,9 +308,6 @@ issue: https://example.com/tickets/42
         <MarkdownSelectionComments {...makeProps({ comments })} />,
       );
       const testingPara = within(container).getByText("Testing body lives here.");
-      // The comment card is rendered as a sibling of the paragraph's enclosing
-      // block. Walk up to the block wrapper and confirm the comment text lives
-      // in the same wrapper.
       const blockWrapper = testingPara.parentElement!.parentElement!;
       expect(within(blockWrapper).getByText("comment on testing")).toBeInTheDocument();
     });
@@ -341,7 +325,6 @@ issue: https://example.com/tickets/42
       ];
       render(<MarkdownSelectionComments {...makeProps({ content, comments })} />);
       expect(screen.getByText("about the second cat")).toBeInTheDocument();
-      // Anchored (not orphaned) because the quoted text exists.
       expect(screen.queryByText("Orphaned comments")).not.toBeInTheDocument();
     });
 
@@ -400,10 +383,6 @@ issue: https://example.com/tickets/42
     });
 
     it("anchors comments to their own top-level block when quoted text is unique per block", () => {
-      // docs/153 Phase 2: confirm the new mdast-split block boundaries route
-      // each comment to the correct top-level block instead of dumping them
-      // all onto the first one. Each comment quotes text that only appears in
-      // one block so the assignment is unambiguous.
       const content = "First block mentions kestrels here.\n\nSecond block mentions albatross there.";
       const comments: SelectionCommentData[] = [
         {
@@ -490,11 +469,6 @@ issue: https://example.com/tickets/42
     });
 
     it("anchors a comment that selects across a code-block boundary into the block whose text contains it", () => {
-      // Selections near block boundaries (heading → fenced code, code → next
-      // paragraph) used to be a hazard with the marked + DOMParser pipeline
-      // because the splitter normalised whitespace differently than the
-      // rendered DOM. Pin the mdast-split boundary so that quoted text from
-      // inside a fenced code block routes to that code block's wrapper.
       const content = "Header text.\n\n```\nspecial_token_inside_code\n```\n\nFollowing paragraph.";
       const comments: SelectionCommentData[] = [
         {
@@ -608,8 +582,6 @@ issue: https://example.com/tickets/42
       const heading = container.querySelector("h2");
       expect(heading).toBeInTheDocument();
       expect(heading?.textContent).toBe("Architecture");
-      // The docs viewer has no deep-linking affordance, so headings should not
-      // be wrapped by `rehype-autolink-headings` anchors.
       expect(heading?.querySelector("a")).toBeNull();
     });
   });

@@ -1,7 +1,3 @@
-// docs/262 req 23 — claimant chips: which services AND which plugins use a
-// declared secret. A name claimed by both is one row, because it is one
-// stored secret (plan §3).
-
 import { describe, it, expect, afterEach } from "vitest";
 import { render, cleanup, screen } from "@testing-library/react";
 import { DeclaredSecretRow, isPlatformProvided } from "./DeclaredSecretRow.js";
@@ -32,7 +28,6 @@ describe("DeclaredSecretRow claimants", () => {
   it("a plugin-only credential still renders a settable row", () => {
     renderRow({ name: "FAL_KEY", services: [], plugins: ["artk"] });
     expect(screen.getByTestId("secret-plugin-claimant-FAL_KEY-artk")).toBeTruthy();
-    // No "Required" badge: a plugin never marks a project's secret required.
     expect(screen.queryByTestId("secret-required-FAL_KEY")).toBeNull();
   });
 
@@ -50,9 +45,6 @@ describe("DeclaredSecretRow claimants", () => {
 
 describe("isPlatformProvided", () => {
   it("a legacy platform row a plugin also claims stays editable", () => {
-    // Platform forwarding is dead (docs/184), so a plugin declaring the same
-    // name needs a real value — and this row is where the card's "Add key…"
-    // sends the user. Read-only here would make the plugin unsatisfiable.
     const merged: DeclaredSecretState = {
       name: "GITHUB_TOKEN",
       services: ["api"],

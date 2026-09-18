@@ -1,18 +1,3 @@
-/**
- * Integration test for lazy transcript bodies (docs/244, planning#269).
- *
- * Drives the real orchestrator so the whole round-trip is exercised: a
- * transcript containing a megabyte tool output, a Write with a big file body,
- * and a base64 screenshot is persisted whole, served light, and the removed
- * bodies are fetchable from the three endpoints.
- *
- * The load-bearing assertion is the last one: serving the transcript must not
- * change what is stored. The projection sits next to `ChatHistoryManager`,
- * whose `fromRow` feeds several read-modify-write paths — putting the slice
- * there would make an ordinary card update silently persist the truncation and
- * destroy the body permanently. This test would catch that.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -39,22 +24,10 @@ import { COMMAND_SUMMARY_CHARS } from "../../shared/transcript-input-policy.js";
 const HEAVY_OUTPUT = Array.from({ length: 40_000 }, (_, i) => `stdout line ${i}`).join("\n");
 const FILE_BODY = Array.from({ length: 2_000 }, (_, i) => `const x${i} = ${i};`).join("\n");
 const SCREENSHOT = Buffer.from("x".repeat(200_000)).toString("base64");
-// Distinct from HEAVY_OUTPUT on purpose: the Task result is the subagent report,
-// which ships its clamped HEAD (docs/109 req 8) where an ordinary result ships
-// nothing at all — so the assertions below can only tell the two cases apart if
-// their bodies differ.
 const SUBAGENT_REPORT = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
-// A cross-agent consult's verbatim output (planning#299). Deliberately distinct from
-// SUBAGENT_REPORT above, whose head still ships in the same payload — so an
-// "is it on the wire?" assertion can tell the two apart.
 const CONSULT_OUTPUT = Array.from({ length: 5_000 }, (_, i) => `review note ${i}`).join("\n");
-// planning#298 — the input side. A heredoc command and a subagent prompt are both
-// routinely kilobytes, and the transcript draws 80 characters of the first and
-// none of the second.
 const HEAVY_COMMAND = `gh pr create --body-file - <<'EOF'\n${Array.from({ length: 800 }, (_, i) => `body line ${i}`).join("\n")}\nEOF`;
 const TASK_PROMPT = Array.from({ length: 400 }, (_, i) => `instruction ${i}`).join("\n");
-// A plan document's body is the one Write body the transcript renders inline
-// (`findPlanContent` → `PlanApproval`), so it must survive the projection.
 const PLAN_BODY = Array.from({ length: 300 }, (_, i) => `## Step ${i}`).join("\n");
 
 describe("Integration: lazy transcript bodies (planning#269)", () => {
@@ -139,9 +112,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   }
 
   it("serves a transcript far smaller than what it stores (req 1)", async () => {
-    // The direct assertion of requirement 1: nothing goes over the wire that
-    // isn't visible without a click. Stored is >1 MB of bodies; served has to
-    // be a small multiple of what the transcript actually draws.
     const stored = JSON.stringify(history.load(sessionId)).length;
     expect(stored).toBeGreaterThan(1_000_000);
 
@@ -150,31 +120,18 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
 
     expect(served).toBeLessThan(stored / 2);
 
-    // None of the three heavy bodies appears in the payload at all. The Bash
-    // output can now be asserted absolutely rather than "beyond its slice":
-    // nothing renders it without a click, so not one line of it ships.
     const body = res.rawPayload.toString("utf8");
     expect(body).not.toContain(SCREENSHOT.slice(0, 200));
     expect(body).not.toContain(FILE_BODY.slice(-200));
     expect(body).not.toContain("stdout line 0");
     expect(body).not.toContain("stdout line 39999");
-    // …and the same for the input side (planning#298): the command's tail and the
-    // subagent's prompt are behind clicks too.
     expect(body).not.toContain("body line 799");
     expect(body).not.toContain("instruction 399");
-    // docs/109 req 8 — the subagent report used to be the one exception here,
-    // shipping whole because the card rendered it with nothing to click. It
-    // now clamps behind a modal, so its tail is behind a click like everything
-    // else — while the head the card actually draws still ships.
     expect(body).not.toContain("finding 4999");
     expect(body).toContain("finding 0");
   });
 
   it("ships no body at all for a modal-only result, keeping only its metadata", async () => {
-    // Requirement 1 at full strength: a Bash result is drawn nowhere until the
-    // tool-call modal opens, so the transcript carries none of it. What stays
-    // is exactly the metadata requirement 3 names, plus the line count the
-    // modal's expander needs.
     const { messages } = await loadHistory();
     const bash = messages[1]!.toolResults!.find((r) => r.toolUseId === "bash-1")!;
     expect(bash.content).toBe("");
@@ -182,12 +139,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(bash.totalLines).toBe(40_000);
   });
 
-  /**
-   * docs/109 req 8. The counterpart to the Bash case above, and the reason the
-   * report is not simply emptied like one: the card draws the clamped head with
-   * no click, so the head has to ship. Only the tail moved behind the modal's
-   * fetch.
-   */
   it("serves the clamped head of the subagent final report, not the whole thing", async () => {
     const { messages } = await loadHistory();
     const task = messages[1]!.toolResults!.find((r) => r.toolUseId === "task-1")!;
@@ -218,11 +169,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(write.input.file_path).toBe("/a.ts");
   });
 
-  /**
-   * planning#298. Everything below this comment is the input side of requirement 1:
-   * before it, a megabyte `Bash` command shipped whole behind an 80-character
-   * summary and a `Task` prompt shipped whole behind a collapsed disclosure.
-   */
   it("ships only the characters of a command the tool line draws", async () => {
     const { messages } = await loadHistory();
     const bash = messages[1]!.toolUse!.find((t) => t.id === "bash-1")!;
@@ -236,15 +182,10 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     const task = messages[1]!.toolUse!.find((t) => t.id === "task-1")!;
     expect(task.input.prompt).toBeUndefined();
     expect(task.inputChars?.prompt).toBe(TASK_PROMPT.length);
-    // The description sits beside the toggle in the card header.
     expect(task.input.description).toBe("review");
   });
 
   it("keeps a plan document's body, which the transcript renders inline", async () => {
-    // The regression the per-tool policy exists to prevent: `findPlanContent`
-    // renders this body as markdown in the transcript with no click and no
-    // fetch path, so the blanket Edit/Write strip blanked the plan card on
-    // every history load.
     const { messages } = await loadHistory();
     const plan = messages[1]!.toolUse!.find((t) => t.id === "plan-1")!;
     expect(plan.input.content).toBe(PLAN_BODY);
@@ -271,9 +212,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   });
 
   it("serves the whole stored input from the fetch endpoint", async () => {
-    // The response is the input verbatim (planning#298), not the three Edit/Write
-    // fields it used to name: the projection now shortens or removes keys for
-    // every tool, so what a caller needs back depends on the tool.
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/write-1` });
     expect(res.statusCode).toBe(200);
     const { input } = res.json() as { input: Record<string, unknown> };
@@ -299,11 +237,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   });
 
   it("resolves ids nested inside a subagent, not just top-level ones", async () => {
-    // A Task's innards are rendered by the same components as top-level tools,
-    // so they get sliced the same way — which means the fetch endpoints have to
-    // find them too. They live in the `subagent_events` column, not
-    // `tool_results`/`tool_use`, so a lookup that only scanned the top level
-    // would strip these bodies and then 404 on the expand.
     history.append(sessionId, {
       role: "assistant",
       text: "delegating",
@@ -326,7 +259,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
       ],
     });
 
-    // Served light…
     const { messages } = await loadHistory();
     const nested = messages.at(-1) as unknown as {
       subagentEvents: { kind: string; toolUse?: { id: string; bodyTruncated?: true; diffStats?: { added: number; removed: number } }[]; toolResults?: { toolUseId: string; truncated?: true; totalLines?: number }[] }[];
@@ -339,7 +271,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(nestedWrite.bodyTruncated).toBe(true);
     expect(nestedWrite.diffStats).toEqual({ added: 2_000, removed: 0 });
 
-    // …and both bodies are still reachable by their own tool-use ids.
     const result = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/sub-bash-1` });
     expect(result.statusCode).toBe(200);
     expect((result.json() as { content: string }).content).toBe(HEAVY_OUTPUT);
@@ -350,32 +281,18 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   });
 
   it("a rewind takes the row and its body away together", async () => {
-    // The requirements resolved "what shows when a body is no longer
-    // fetchable?" as a false premise: a chat rewind deletes the rows, and the
-    // client drops the same rows from the transcript in the same handler, so
-    // the expand affordance disappears with the row it belonged to. That
-    // invariant is what makes a 404 an ordinary error rather than a state the
-    // UI has to design for — so it is worth pinning rather than assuming.
     expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/bash-1` })).statusCode).toBe(200);
 
-    // Keep only the opening user message — the assistant row owning bash-1 goes.
     history.truncate(sessionId, 1);
 
     const { messages } = await loadHistory();
     expect(messages).toHaveLength(1);
     expect(messages.some((m) => m.toolResults?.some((r) => r.toolUseId === "bash-1"))).toBe(false);
 
-    // No visible row references it any more, so the now-404 is unreachable
-    // from the UI rather than a dangling affordance.
     expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/bash-1` })).statusCode).toBe(404);
   });
 
   it("serves a tool-result image whose block omits source.type", async () => {
-    // The projection substitutes any image block carrying `source.data`, so the
-    // lookup has to recognise the same set. It used to pre-filter on the
-    // literal text "base64" — which this shape does not contain — so the
-    // projection handed the client an /images/ URL that then 404'd forever.
-    // MCP image results in the wild take this shape (see ToolResult.test.tsx).
     const png = Buffer.from("nested-png-bytes").toString("base64");
     history.append(sessionId, {
       role: "assistant",
@@ -390,8 +307,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
       }],
     });
 
-    // The URL the client is actually handed, taken from the served transcript
-    // rather than reconstructed — so this fails if the two ever disagree.
     const { messages } = await loadHistory();
     const served = messages.at(-1)!.toolResults!.find((r) => r.toolUseId === "shot-1")!;
     const url = (JSON.parse(served.content) as { source?: { shipit_url?: string } }[])
@@ -403,11 +318,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   });
 
   it("serves an image whose block type is JSON-escaped", async () => {
-    // The projection's test is semantic — parse, then check `type === "image"`.
-    // Any lexical pre-filter in the lookup is therefore a different predicate,
-    // and the gap between them is a permanent 404. `"image"` is valid JSON
-    // that parses to exactly "image", so it is projected but was invisible to a
-    // substring check. This is the shape that proves the two agree.
     const png = Buffer.from("escaped-png-bytes").toString("base64");
     history.append(sessionId, {
       role: "assistant",
@@ -430,11 +340,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   });
 
   it("substitutes images in the fetched tool-result body instead of re-sending base64", async () => {
-    // The tool-call modal fetches this endpoint to draw a screenshot result's
-    // TEXT — the image beside it is already painted from /images/:hash. Serving
-    // the stored bytes verbatim put the whole base64 payload back on the wire
-    // the moment the modal opened, undoing the transfer this feature exists to
-    // remove, and handed the client a raw block array to render as text.
     const png = Buffer.from("modal-fetch-png-bytes").toString("base64");
     history.append(sessionId, {
       role: "assistant",
@@ -453,8 +358,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(res.statusCode).toBe(200);
     const { content } = res.json() as { content: string };
     expect(content).not.toContain(png);
-    // The text the fetch exists to deliver is whole, and the image is still
-    // reachable — through the URL, which is the point.
     expect(content).toContain("captured the viewport");
     const url = (JSON.parse(content) as { source?: { shipit_url?: string } }[])
       .find((b) => b.source?.shipit_url)!.source!.shipit_url!;
@@ -464,10 +367,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   });
 
   it("keeps a report's accounting footer a separate block when substituting its images", async () => {
-    // `parseSubagentReport` recognizes the CLI's footer ONLY as the last text
-    // block, so the image substitution must not restructure the array around it.
-    // The collapse that `projectBlockArray` applies when it *slices* would turn
-    // the footer into prose and drop the header chips it feeds.
     const png = Buffer.from("report-png-bytes").toString("base64");
     const footer = "subagent_tokens: 4210\ntool_uses: 7\nduration_ms: 91000";
     history.append(sessionId, {
@@ -495,9 +394,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   });
 
   it("does not 304 an image that doesn't exist", async () => {
-    // A conditional request carries the client's own ETag, so matching on it
-    // alone answers "not modified" for anything — including a hash the session
-    // has never held. The existence check has to come first.
     const res = await app.inject({
       method: "GET",
       url: `/api/sessions/${sessionId}/images/${"0".repeat(64)}`,
@@ -518,9 +414,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
   });
 
   it("serves a sub-agent consult as its preview line, with the output behind a fetch (planning#299)", async () => {
-    // A cross-agent review is routinely tens of kilobytes and the card face
-    // draws one 140-character line of it, so the rest is modal-only content —
-    // the same shape as a tool result, and the same treatment.
     history.append(sessionId, {
       role: "assistant",
       text: "",
@@ -544,36 +437,20 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(card.outputTruncated).toBe(true);
     expect(card.outputMarkdown!.length).toBeLessThan(200);
     expect(res.rawPayload.toString("utf8")).not.toContain("review note 4999");
-    // …while the subagent final report in the same payload still ships the head
-    // its card draws, so this asserts a distinction rather than an empty
-    // transcript. (Its tail is behind a click too since docs/109 req 8; what
-    // separates the two is that the consult card draws one collapsed LINE while
-    // the report card draws a clamped block.)
     expect(res.rawPayload.toString("utf8")).toContain("finding 0");
     expect(res.rawPayload.toString("utf8")).not.toContain("review note 0\nreview note 1");
-    // The summary line ("Consulted Codex · 900s") is drawn without a click, so
-    // its inputs stay on the wire.
     expect(card.status).toBe("success");
     expect(card.durationMs).toBe(900_000);
 
-    // …and the whole output is one fetch away, from the still-whole stored card.
     const full = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/sub-agent-consults/consult-1` });
     expect(full.statusCode).toBe(200);
     expect((full.json() as { outputMarkdown: string }).outputMarkdown).toBe(CONSULT_OUTPUT);
 
-    // `shipit agent result` reads the persisted card directly — it must never
-    // see the preview, or the agent's copy and the user's copy stop being one
-    // artifact (docs/236).
     expect(history.listSubAgentConsultCards(sessionId)[0]!.outputMarkdown).toBe(CONSULT_OUTPUT);
   });
 
   it("a read-modify-write updater does not write back a sliced body", async () => {
-    // The specific mechanism the design is built to avoid, exercised rather
-    // than argued: `updateLastMessage` decodes a row via `fromRow`, mutates one
-    // field, and writes the WHOLE row back through `toRow`. If the projection
-    // ever moved into `fromRow`, this single unrelated card update would
-    // silently persist the truncation and destroy the tail forever — and every
-    // other test here would still pass, because they only read.
+    // Updating one field rewrites the row; decoded bodies must remain complete.
     await loadHistory();
 
     history.updateLastMessage(sessionId, { commitHash: "abc123" });
@@ -585,15 +462,11 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
       toolUse?: { id: string; input: Record<string, unknown> }[];
     };
     expect(last.commitHash).toBe("abc123");
-    // The mutation landed AND the bodies in that same row are still whole.
     expect(last.toolResults!.find((r) => r.toolUseId === "bash-1")!.content).toBe(HEAVY_OUTPUT);
     expect(last.toolUse!.find((t) => t.id === "write-1")!.input.content).toBe(FILE_BODY);
   });
 
   it("does not persist the projection — serving must not narrow storage", async () => {
-    // The regression guard for the single most dangerous way to build this:
-    // slicing inside `fromRow`, which several read-modify-write paths would
-    // then write straight back to disk.
     await loadHistory();
     await loadHistory();
 
@@ -605,7 +478,6 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     const images = (stored[0] as { images: { data: string }[] }).images;
     expect(images[0]!.data).toBe(SCREENSHOT);
 
-    // And the endpoints still return the whole thing after those loads.
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/bash-1` });
     expect((res.json() as { content: string }).content).toBe(HEAVY_OUTPUT);
   });

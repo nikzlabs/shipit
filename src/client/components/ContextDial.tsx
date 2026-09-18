@@ -24,26 +24,6 @@ const levelBarColors: Record<string, string> = {
   red: "bg-(--color-context-full)",
 };
 
-/**
- * docs/178 — heuristic FALLBACK for detecting compaction: a sharp drop in
- * context size between the previous and most recent turn. The authoritative
- * signal is now the backend's own `agent_compacted` event (surfaced as a
- * persisted `CompactionCard` and passed in via `authoritativeCompacted`); this
- * heuristic only backstops cases that signal didn't reach (e.g. an older turn
- * series loaded with no card, or a backend that under-reports). Threshold (40%)
- * is conservative so normal turn-to-turn variance doesn't trip a false positive.
- *
- * Uses `turnContextTokens()` (input + cache reads + cache writes) rather than
- * raw `inputTokens` — with prompt caching active, `inputTokens` is tiny and
- * noisy, so comparing it would never reliably detect a compaction.
- */
-/**
- * docs/252 req 16 — the split, derived from the per-turn series, for the render
- * before session totals have arrived. Deliberately mirrors the server's rule
- * rather than summing `costUsd`: that column is money, so summing it across a
- * subscription session yields zero and across a mixed one yields only the
- * metered half.
- */
 function fallbackTotals(turns: TurnUsage[]): UsageTotals {
   const totals: UsageTotals = {
     meteredCostUsd: 0, meteredTurns: 0, meteredTokens: 0,
@@ -69,13 +49,6 @@ function fallbackTotals(turns: TurnUsage[]): UsageTotals {
   return totals;
 }
 
-/**
- * The popover's cost rows — up to three, never added together.
- *
- * A session with no usage at all still gets the "Metered spend" row reading
- * `$0.00`, because the row is also the click target that opens the usage modal
- * and a button with no label is worse than a zero.
- */
 function CostRows({ totals, underline }: { totals: UsageTotals; underline?: boolean }) {
   const label = underline
     ? "text-(--color-text-secondary) underline decoration-dotted underline-offset-2"
@@ -132,73 +105,15 @@ function wasCompacted(turns: TurnUsage[]): boolean {
   return last < prev * 0.6;
 }
 
-/**
- * Compact context-window usage indicator with an expandable popover that
- * surfaces a per-turn token/cost breakdown. Inspired by Conductor's
- * "context dial" (v0.33.0).
- *
- * The dial fills from green → yellow → orange → red as the most recent
- * turn's input tokens (= the current context size, since Claude re-reads
- * the entire conversation each turn) approaches the model's window. When
- * the dial is full enough, a hint suggests typing `/compact` in the
- * composer — the slash command travels through the regular send path,
- * so this component never invokes it directly (CLAUDE.md §5).
- *
- * The dial is also the canonical surface for *running session cost*. The
- * trigger button shows one running figure next to the K-token reading, and
- * the popover breaks it into its parts and opens the full usage modal.
- * The previous standalone cost pill in the composer toolbar (driven from
- * the same `currentSessionUsage` the dial now reads) was removed when
- * these two surfaces were unified.
- *
- * **docs/252 req 16 — which figure, and what it means.** `cost_usd` is money
- * that left the account, so a subscription session's is zero. Rendering that
- * zero would tell most users their session consumed nothing, so the trigger
- * falls through to the at-API-rates estimate — prefixed `≈`, and labelled in
- * the tooltip and the popover, never presented as money spent
- * ({@link sessionRunningFigure}). The popover is where the parts are separated:
- * metered spend, the estimate, and any pre-feature total each get their own
- * row, and no two of them are ever added together.
- *
- * On mobile the K-token reading and the cost are both hidden (`hidden
- * md:inline`) to keep the composer's input bar compact — the dial icon
- * stays, and tapping it opens the popover where the full total cost
- * (and "Total cost → usage modal" row) remains available.
- */
 export function ContextDial({
   modelInfo,
   turnUsage,
-  /** Override the dial's "current context tokens" reading (defaults to the most recent turn's input). */
   contextTokensOverride,
-  /**
-   * Authoritative session-cumulative totals — sourced from `UsageManager`
-   * via `usage_update` / `/history`. Used for the popover's cost rows so
-   * they always match what `UsageModal` shows (no more $1.31-vs-$5.41
-   * discrepancy between the dial's per-turn sum and the cost pill).
-   */
   sessionTotals,
   cumulativeInputTokens,
   cumulativeOutputTokens,
-  /**
-   * Click handler for the popover's "Total cost" row. Wired up to open the
-   * usage modal — the dial is now the entry point that the cost pill used
-   * to be.
-   */
   onOpenUsageDetails,
-  /**
-   * docs/178 — authoritative "a compaction just happened" signal, derived from
-   * the backend's own `agent_compacted` event (a `CompactionCard` present after
-   * the last user message). When true it forces the compacted pill on; the
-   * `wasCompacted` heuristic remains as a fallback when it's false.
-   */
   authoritativeCompacted,
-  /**
-   * docs/260 — the composer is narrower than 700px, so the dial renders as the
-   * ring alone (req 15). The token count and running cost are not shown beside
-   * it; both stay reachable in the popover this trigger opens. Distinct from the
-   * `hidden md:inline` on those spans, which is a WINDOW media query and so
-   * blind to a desktop chat panel dragged narrow — the bug this feature fixes.
-   */
   compact = false,
 }: {
   modelInfo: ModelInfo | null;
@@ -214,16 +129,9 @@ export function ContextDial({
   const [open, setOpen] = useState(false);
 
   const lastTurn = turnUsage.length > 0 ? turnUsage[turnUsage.length - 1] : null;
-  // Context occupancy = uncached input + cache reads + cache writes. Using
-  // `lastTurn.inputTokens` alone here was the bug behind "Context: 4 / 200K" —
-  // with prompt caching, virtually the entire window shows up as cache tokens.
   const contextTokens = contextTokensOverride ?? (lastTurn ? turnContextTokens(lastTurn) : 0);
-  // Authoritative event wins; fall back to the heuristic when it's absent.
   const compacted = authoritativeCompacted || wasCompacted(turnUsage);
 
-  // Cumulative cache totals are still derived from the per-turn series — the
-  // server doesn't currently surface session-level cache totals, and they're
-  // strictly informational (shown only when > 0).
   const cacheAggregate = useMemo(() => {
     let totalCacheRead = 0;
     let totalCacheCreate = 0;
@@ -234,14 +142,6 @@ export function ContextDial({
     return { totalCacheRead, totalCacheCreate };
   }, [turnUsage]);
 
-  // Top contributors — biggest turns by context occupancy (input + cache);
-  // mostly informative when the context is approaching full.
-  //
-  // IMPORTANT: this hook must stay above the `if (!modelInfo) return null`
-  // guard below. `modelInfo` flips from null → populated once the first
-  // turn's usage arrives, so a component instance that rendered while it was
-  // null (1 fewer hook) would render more hooks on the next pass → React
-  // error #310 ("Rendered more hooks than during the previous render").
   const topTurns = useMemo(() => {
     return [...turnUsage]
       .map((t, i) => ({ ...t, index: i + 1, contextTokens: turnContextTokens(t) }))
@@ -249,11 +149,6 @@ export function ContextDial({
       .slice(0, 3);
   }, [turnUsage]);
 
-  // Authoritative cost / token totals — fall back to per-turn sums only if
-  // the parent didn't pass them (e.g. tests, or a pre-rehydration render). The
-  // fallback splits the same way the server does: a `sub` turn contributes its
-  // at-API-rates value and never a dollar, so a pre-rehydration render cannot
-  // briefly show a subscription session as having spent money.
   const totals = sessionTotals ?? fallbackTotals(turnUsage);
   const running = sessionRunningFigure(totals);
   const totalInput = cumulativeInputTokens ?? turnUsage.reduce((sum, t) => sum + t.inputTokens, 0);
@@ -267,9 +162,6 @@ export function ContextDial({
   const textColor = levelTextColors[level];
   const barColor = levelBarColors[level];
 
-  // Sparkline scaling — top of the chart is the largest context occupancy
-  // ever seen so the dial reflects the running maximum (= effective context
-  // size, including cache reads/writes).
   const maxContext = turnUsage.reduce((m, t) => Math.max(m, turnContextTokens(t)), 1);
 
   return (
@@ -289,7 +181,6 @@ export function ContextDial({
           data-level={level}
         >
           <span className={`flex items-center justify-center ${textColor}`}>
-            {/* Circular dial indicator */}
             <svg width={ICON_SIZE.MD} height={ICON_SIZE.MD} viewBox="0 0 20 20">
               <circle
                 cx="10"
@@ -418,9 +309,6 @@ export function ContextDial({
               <div className="text-(--color-text-secondary)">Largest turns</div>
               <div className="space-y-0.5 font-mono">
                 {topTurns.map((t) => {
-                  // docs/252 req 16 — a subscription turn's `costUsd` is zero
-                  // by rule, so it shows its at-API-rates value instead of
-                  // reporting the turn as free.
                   const cost = turnCostDisplay(t);
                   return (
                     <div
@@ -440,11 +328,6 @@ export function ContextDial({
             </div>
           )}
 
-          {/* docs/252 req 16 — one row per KIND of figure. Money, allowance
-              valued at API rates, and pre-feature accounting are three
-              different things, so they are listed rather than summed. Each row
-              appears only when it has something to say, so a subscription-only
-              session shows one line and no misleading `$0.00`. */}
           <div className="border-t border-(--color-border-primary) pt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-(--color-text-secondary)">
             {onOpenUsageDetails ? (
               <button

@@ -1,16 +1,7 @@
-/**
- * HostPanel — read-only "Host" tab for ops sessions (docs/128).
- *
- * Renders the orchestrator's host signals inline: every ShipIt-managed
- * container with its Docker state, status, and owning session. Informational
- * only (§1/§2) — there are NO action buttons here. To *do* anything (inspect
- * logs, kill an orphan) the operator asks the agent in chat (§5), which reaches
- * Docker read-only through the proxy.
- */
-
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll the host overview while the tab is visible
 import { useCallback, useEffect, useState } from "react";
-import { ArrowClockwiseIcon, CircleNotchIcon, WarningIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
+import { ArrowClockwiseIcon, WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -19,11 +10,9 @@ import { useSessionStore } from "../stores/session-store.js";
 import type { HostOverview, HostContainerInfo } from "../../server/shared/types.js";
 
 interface HostPanelProps {
-  /** True while the tab is visible — gates the background poll. */
   isActiveTab: boolean;
 }
 
-/** Local mirror of the orchestrator's `ShipitSourceStatus` DTO (docs/162). */
 interface SourceStatus {
   available: boolean;
   ref?: string;
@@ -39,7 +28,7 @@ const POLL_MS = 5000;
 function stateColor(state: string): string {
   if (state === "running") return "bg-(--color-success)";
   if (state === "restarting" || state === "paused" || state === "created") return "bg-(--color-warning)";
-  return "bg-(--color-error)"; // exited / dead
+  return "bg-(--color-error)";
 }
 
 function ContainerRow({ c }: { c: HostContainerInfo }) {
@@ -77,9 +66,6 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
   const [data, setData] = useState<HostOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  // docs/162 — the running ShipIt source ref the Ops agent's `shipit source *`
-  // reads run against. Fetched per active ops session (the route is gated on
-  // `kind === "ops"`); changes only on deploy, so no tight poll.
   const sessionId = useSessionStore((s) => s.sessionId);
   const [source, setSource] = useState<SourceStatus | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
@@ -112,9 +98,7 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
     }
   }, [sessionId]);
 
-  // Poll while the tab is open; stop when it's hidden so a background ops
-  // session isn't hammering the Docker socket. This is a genuine external-system
-  // sync (a polling timer with cleanup), which the rule explicitly permits.
+  // Poll only while visible to avoid needless Docker socket traffic.
   // eslint-disable-next-line no-restricted-syntax -- interval polling of the host overview with cleanup on unmount/tab-hide
   useEffect(() => {
     if (!isActiveTab) return;
@@ -123,8 +107,6 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
     return () => clearInterval(t);
   }, [isActiveTab, refresh]);
 
-  // Source status changes only on deploy — fetch once when the tab opens
-  // (and whenever the active session changes), no interval.
   // eslint-disable-next-line no-restricted-syntax -- one-shot source-status fetch on tab activation
   useEffect(() => {
     if (!isActiveTab) return;
@@ -154,7 +136,7 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
           aria-label="Refresh host overview"
         >
           {loading
-            ? <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />
+            ? <Spinner size={ICON_SIZE.SM} />
             : <ArrowClockwiseIcon size={ICON_SIZE.SM} />}
         </Button>
       </div>

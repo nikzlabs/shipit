@@ -55,12 +55,12 @@ needs.
 ### The loop
 
 ```
-present({ content, mimeType, title })            // → { presentId }
+present({ content, mimeType, title })
   → browser_navigate(127.0.0.1:${WORKER_PORT}/present-files/{presentId})
-  → browser_take_screenshot                        // agent SEES its output
+  → browser_take_screenshot
   → observe defects → edit content
-  → present({ content, mimeType, replaceId: presentId })   // revise in-place
-  → browser_navigate(... same URL ...) → screenshot   // confirm the fix
+  → present({ content, mimeType, replaceId: presentId })
+  → browser_navigate(... same URL ...) → screenshot
 ```
 
 `replaceId` already exists in the Tier 1 API and `PresentBuffer.put()` already

@@ -16,7 +16,7 @@ export const handleRewindRestored: Handler<WsRewindRestored> = (_ctx, data) => {
   const currentSessionId = useSessionStore.getState().sessionId;
   if (currentSessionId === data.sessionId) {
     void loadSessionHistory(data.sessionId);
-    // Code/both restore calls rollback() server-side, which moves HEAD.
+
     if (data.action === "code" || data.action === "both") {
       useGitStore.getState().fetchLog(data.sessionId).catch((err: unknown) => console.warn("[git-log-refresh]", err));
     }

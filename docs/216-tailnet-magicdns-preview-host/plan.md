@@ -52,21 +52,15 @@ origin would emit `https://{id}--{port}.<sslip>/`, which has no cert (see the
 mixed-content constraint under *Non-goals*).
 
 ```ts
-// resolvePreviewHost(locationHost, bootstrap): the {host, protocol} used to build
-// {sessionId}--{port}.<host> preview URLs. Preview call sites ONLY.
 export function resolvePreviewHost(
   locationHost: string,
   bootstrap: Bootstrap,
 ): { host: string; protocol: string } {
-  // VITE_API_HOST is a DEV-ONLY override (set only in docker/local/dev/compose.yml,
-  // unset in the VPS prod image — see "VITE_API_HOST is dev-only" below).
   if (import.meta.env.VITE_API_HOST) {
     return { host: import.meta.env.VITE_API_HOST, protocol: window.location.protocol };
   }
   const hostname = locationHost.split(":")[0].toLowerCase();
   if (bootstrap.tailnetPreviewHost && hostname.endsWith(".ts.net")) {
-    // MagicDNS browsing → sslip previews. Force http: — sslip has no TLS, and the
-    // MagicDNS app is itself HTTP, so there is no mixed-content downgrade here.
     return { host: bootstrap.tailnetPreviewHost, protocol: "http:" };
   }
   return { host: locationHost, protocol: window.location.protocol };

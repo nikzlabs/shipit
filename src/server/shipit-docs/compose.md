@@ -106,9 +106,12 @@ now actively harmful, in two ways that look nothing alike:
 **If your image genuinely needs its own user** — it keeps startup scripts in that
 account's home, or drops privileges itself — declare it, and the service still
 runs: ShipIt adds the session's group to it, and the workspace is group-writable,
-so it can write the tree the agent shares with it. Accept the two costs above in
-exchange, and keep such a service away from git and from the workspace's
-dependency directories.
+so it can write the tree the agent shares with it. What it *creates* there is
+group-writable too — every workspace directory carries a POSIX default ACL, so a
+file or directory the service makes under its own umask is still one the agent
+can edit and `rm -rf` (docs/271 §3). Accept the two costs above in exchange, and
+keep such a service away from git and from the workspace's dependency
+directories, which are deliberately outside that guarantee.
 
 ## Hot reload (HMR) needs polling
 
@@ -146,12 +149,12 @@ services:
   web:
     image: node:24-slim
     ports: ["5173:5173"]
-    x-shipit-preview: auto     # Shown in preview pane
+    x-shipit-preview: auto
 
   db:
     image: postgres:16
     ports: ["5432:5432"]
-    x-shipit-preview: manual   # User starts when needed
+    x-shipit-preview: manual
 ```
 
 When omitted, the default is `auto` if the service has `ports`, `manual`
@@ -175,7 +178,7 @@ services:
     command: npm run dev -- --host 0.0.0.0 --port 3000
     ports: ["3000:3000"]
     x-shipit-preview: auto
-    x-shipit-depends-on-install: true   # default for auto — gate on install
+    x-shipit-depends-on-install: true
 ```
 
 When omitted, it defaults to `true` for `auto` services and `false` for
@@ -187,7 +190,7 @@ fresh dependency tree. The `x-` prefix means Docker Compose ignores it.
 ## `x-shipit-secrets`
 
 Declare which env vars (API keys, connection strings, tokens) each service
-needs. The user configures values once in **Settings → Secrets**;
+needs. The user configures values once in **Project Settings → Secrets**;
 ShipIt auto-injects them into every session for the repo:
 
 ```yaml
@@ -195,8 +198,8 @@ services:
   api:
     image: node:24-slim
     x-shipit-secrets:
-      - STRIPE_SECRET_KEY            # string shorthand
-      - name: DATABASE_URL           # object form with metadata
+      - STRIPE_SECRET_KEY
+      - name: DATABASE_URL
         description: PostgreSQL URL
         required: true
 ```
@@ -316,11 +319,11 @@ services:
     ports: ["8501:8501"]
     volumes: [".:/app"]
     x-shipit-preview: auto
-    x-shipit-depends-on-install: false   # no agent.install to gate on
+    x-shipit-depends-on-install: false
 ```
 
 ```yaml
-# shipit.yaml — no Python install step; the service self-installs
+# shipit.yaml
 compose: docker-compose.yml
 ```
 
@@ -377,10 +380,10 @@ is **not** "ask the user to click Start in the UI": when your task needs the
 service, bring it up yourself.
 
 ```bash
-shipit service list                       # every service: status, preview mode, port, url
-shipit service start db                   # bring up a manual service
-shipit service logs db --lines 200        # what it printed
-shipit service restart web                # pick up a config change
+shipit service list
+shipit service start db
+shipit service logs db --lines 200
+shipit service restart web
 shipit service stop db
 ```
 
@@ -434,10 +437,15 @@ none to give.
 
 ### Starts can take minutes
 
-A service is `manual` precisely because it's heavy. The first `start` runs
-`docker compose up -d --build`, so it may pull a multi-gigabyte image or run a
-`build:`. `start` and `restart` wait up to **10 minutes** — if your shell caps
-foreground commands below that, run them in the background.
+A service is `manual` because it isn't needed on every boot, not because
+starting it is a big decision. When your change can be verified against a
+running service, start it and verify — a few minutes of start time is never a
+reason to ship unverified work, or to hand the decision back to the user.
+
+The first `start` runs `docker compose up -d --build`, so it may pull a
+multi-gigabyte image or run a `build:`. `start` and `restart` wait up to **10
+minutes** — if your shell caps foreground commands below that, run them in the
+background.
 
 If a start does hit the timeout, it is **still running**: the message says so.
 Re-check with `shipit service list` and follow progress with `shipit service
@@ -490,7 +498,7 @@ compose: docker-compose.yml
 services:
   web:
     image: node:24-slim
-    command: npm run dev          # plain run, no install gate
+    command: npm run dev
     working_dir: /app
     ports: ["5173:5173"]
     volumes: [".:/app"]
@@ -515,15 +523,15 @@ general device passthrough.
 ```yaml
 services:
   emulator:
-    image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
-    user: "1300:1301"              # REQUIRED — the image's own user, numeric (see below)
+    image: budtmo/docker-android:emulator_14.0
+    user: "1300:1301"
     environment:
-      - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI on 6080
-      - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
-    devices: ["/dev/kvm:/dev/kvm"] # the ONLY permitted device mapping
-    ports: ["6080:6080"]           # the emulator's web UI → rendered in the preview pane
-    expose: ["5555"]               # adb, reached on the session network by service name
-    x-shipit-preview: auto         # show the web UI as the interactive preview
+      - WEB_VNC=true
+      - EMULATOR_DEVICE=Samsung Galaxy S10
+    devices: ["/dev/kvm:/dev/kvm"]
+    ports: ["6080:6080"]
+    expose: ["5555"]
+    x-shipit-preview: auto
 ```
 
 - **This image is one that needs an explicit `user:`, written numerically.** By
@@ -613,19 +621,31 @@ session, ShipIt starts services on an internal-only session network, installs
 the standard egress allowlist in each service network namespace, and then gives
 the service its controlled internet route. An unlisted destination is blocked
 from a service in the same way that it is blocked from the agent container.
-Add required package or API hosts through Settings → Network. An Open session,
-or a deployment with containment explicitly disabled, keeps normal Docker
-egress.
+Required package or API hosts are added through Settings → Network. Before you
+send the user there, read the network settings yourself —
+`shipit settings list --tab network`, then `shipit settings get
+network.egressContained` — so you can say whether this session is contained at
+all, and whether a change would take effect now or only after the container
+restarts. A session that started open, or a deployment with containment
+explicitly disabled, keeps normal Docker egress and needs no allowlist entry;
+the read says which case you are in (`/shipit-docs/settings.md`).
 
 This protection applies to running Compose services, not Dockerfile build
 steps. BuildKit runs build commands in daemon-managed containers before the
-service exists. ShipIt requires Docker Compose 2.24.4 or newer for contained
-service network replacement.
+service exists, so a build step still has ordinary Docker egress even in a
+contained session — the allowlist does not reach it. What a contained session's
+build step may not do is ask for a *wider* namespace than the builder's default:
+`build.network` may only be `none` or the default (`build.network: host` makes
+the host's network namespace the build's default for every `RUN`), and a
+`build.privileged: true` or a non-empty `build.entitlements` is rejected.
+ShipIt requires Docker Compose 2.24.4 or newer for contained service network
+replacement.
 
 Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
-request `use_api_socket`, add lifecycle hooks, or declare labels in ShipIt's
-reserved `shipit-egress-*` namespace. Service `extends` is also rejected in
-contained sessions because ShipIt cannot safely validate and override
+request `use_api_socket`, add lifecycle hooks, declare a `build.network` other
+than `none`/default, ask for `build.privileged` or a `build.entitlements` entry,
+or declare labels in ShipIt's reserved `shipit-egress-*` namespace. Service `extends` is
+also rejected in contained sessions because ShipIt cannot safely validate and override
 definitions from a second file. Compose `include:` is rejected in **every**
 session for the same reason — the effective model would be the root file plus
 files ShipIt never validated.

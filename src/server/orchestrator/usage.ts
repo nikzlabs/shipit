@@ -8,16 +8,7 @@ import { costFromRates } from "./turn-attribution.js";
 
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
-/**
- * Zero-fill the weeks between the first and last active bucket so the trend
- * chart's x-axis is evenly spaced — a quiet week must render as an empty column,
- * not silently collapse the axis (which would make two adjacent bars look like
- * consecutive weeks when they aren't).
- *
- * Deliberately bounded by the DATA, not by "now": extending the series to the
- * current week would make `getStats()` depend on the wall clock. The client
- * windows this to the most recent N weeks that fit its chart.
- */
+// Fill only between recorded weeks; the client chooses the visible time window.
 export function fillWeekGaps(buckets: WeeklyUsage[]): WeeklyUsage[] {
   if (buckets.length === 0) return [];
   const byWeek = new Map(buckets.map((b) => [b.week, b]));
@@ -32,7 +23,8 @@ export function fillWeekGaps(buckets: WeeklyUsage[]): WeeklyUsage[] {
 
 interface UsageRow {
   id: number;
-  session_id: string;
+  /** Null is install-level spend: work that belongs to no session (docs/299 req 7). */
+  session_id: string | null;
   cost_usd: number;
   duration_ms: number;
   input_tokens: number | null;
@@ -43,55 +35,25 @@ interface UsageRow {
   context_tokens: number | null;
   sub_agent_id: string | null;
   cumulative_cost_usd: number | null;
-  // docs/252 req 16 — attribution. All six are null together (a `legacy` row) or
-  // present together; the table's CHECK constraint is what makes that true.
   service_id: string | null;
   billing_mode: string | null;
   rate_input: number | null;
   rate_output: number | null;
   rate_cache_read: number | null;
   rate_cache_write: number | null;
+  background_work: number;
   created_at: string;
 }
 
-/**
- * Where a turn's `costUsd` came from — which is what decides whether it still
- * needs the cumulative-to-delta conversion, and the column cannot say.
- *
- * - `cumulative` — a harness's running conversation total (Claude Code's
- *   `total_cost_usd`). `record()` diffs it against the session's previous
- *   snapshot to get this turn's cost.
- * - `per-turn` — already this turn's own cost, from whatever computed it (a
- *   one-shot sub-agent consult's reported run cost; from phase 3 on, a figure
- *   derived from the catalogue's persisted rates). Stored verbatim.
- *
- * Branching on the *source* rather than on `subAgentId` is the fix docs/252
- * phase 3 requires: "not a sub-agent implies cumulative" holds only while the
- * sole producer is Claude on Anthropic, and delta'ing an already-per-turn
- * figure yields the difference between two consecutive turns.
- */
 export type TurnCostSource = "cumulative" | "per-turn";
 
-/**
- * docs/252 req 16 — who billed a turn, and at what rates.
- *
- * A single object rather than six loose fields, so the all-or-nothing rule holds
- * in the type system as well as in SQL: there is no such thing as a row that
- * knows its service but not what it was charged, and historical attribution
- * cannot be reconstructed afterwards, so a half-row is unrecoverable.
- */
 export interface TurnAttribution {
   serviceId: string;
   billingMode: BillingMode;
-  /**
-   * The catalogue's unit rates **at the time of the turn**, persisted rather
-   * than looked up later: a price edit must not restate history, and a retired
-   * model has no live price to look up at all (catalogue.md, Pricing).
-   */
+  /** Persist the turn's rates; later catalogue edits must not change history. */
   rates: ModelPrice;
 }
 
-/** Inputs for a single recorded turn. */
 export interface RecordedTurn {
   costUsd: number;
   durationMs: number;
@@ -100,75 +62,35 @@ export interface RecordedTurn {
   cacheRead?: number;
   cacheCreate?: number;
   model?: string;
-  /**
-   * Real context occupancy at turn end (last API iteration's input + cache).
-   * Distinct from the turn-wide cache sums, which over-count for multi-call
-   * tool-use turns. See `TurnUsage.contextTokens` doc.
-   */
+  /** Last API call's context occupancy, not the turn-wide token sum. */
   contextTokens?: number;
-  /** docs/144 — set when the turn was a sub-agent consult rather than the pinned agent's own. */
   subAgentId?: string;
   /**
-   * docs/260 §5 — the credential route (account or stored string credential)
-   * this turn authenticated with. Independent of `attribution`'s all-or-none
-   * rule: a turn can know its route without rates (and vice versa). Absent for
-   * env-delivered credentials and legacy rows.
+   * Background work — session naming, pull-request descriptions, voice cleanup.
+   * It has its own context window and is never one of the session's turns, so it
+   * is classified here rather than inferred from a harness id: a direct provider
+   * call runs the same work with no harness to name (docs/299 req 7).
    */
+  backgroundWork?: boolean;
   credentialRouteId?: string;
-  /**
-   * Defaults to today's behaviour — `per-turn` for a sub-agent consult,
-   * `cumulative` otherwise — so a caller that does not know still gets what it
-   * got before.
-   */
   costSource?: TurnCostSource;
-  /**
-   * Absent = a `legacy` row: nothing records where this usage went. Written
-   * before ShipIt tracked it, or — since planning#343 — written now by work
-   * that genuinely resolved no model, which is the same absence reached from
-   * the other direction.
-   */
   attribution?: TurnAttribution;
-  /**
-   * docs/252 phase 3 — the harness's running conversation total, when it
-   * reported one, on a turn whose `cost_usd` did **not** come from it.
-   *
-   * Without this the delta chain breaks the moment a session's turns stop
-   * sourcing their cost from the harness. A session on a subscription records
-   * `cost_usd: 0` and, under the plain rule, no snapshot at all; switch it to
-   * the same service's metered key and the first key turn finds no prior
-   * cumulative, so the CLI's running total — which still covers every earlier
-   * subscription turn of the same resumed conversation — is recorded as that one
-   * turn's cost. The chain is about continuity of the harness's own number, so
-   * the snapshot is stored whenever that number exists, independently of which
-   * figure the column took.
-   */
+  /** Preserve the harness total across billing-mode changes, even when costUsd has another source. */
   cumulativeSnapshot?: number;
 }
 
-/** The trailing bag of `record()` — everything `RecordedTurn` holds that the positional parameters don't. */
 export type RecordedTurnExtra = Omit<
   RecordedTurn,
   "costUsd" | "durationMs" | "inputTokens" | "outputTokens"
 >;
 
-/**
- * docs/252 req 16 — the split aggregation, grouped by `(service, mode)` AND by
- * the rate set the rows carry.
- *
- * The rates are in the GROUP BY on purpose: "at API rates" recomputes from each
- * row's **persisted** rates, and a `(service, mode)` pair accumulates several
- * rate sets over time (different models, and the same model after a price
- * edit). Grouping by them lets one `costFromRates` call price a whole bucket,
- * so the formula stays in one place instead of being re-expressed in SQL —
- * while still never consulting the live catalogue.
- *
- * Legacy rows have all six attribution columns NULL together (the table's
- * `CHECK`), and SQLite groups NULLs as equal, so they fall into exactly one
- * bucket with no rate set at all.
- */
+// Group by persisted rates as well as service/mode so price changes remain distinct.
+// `install_level` keeps spend belonging to no session in a row of its own rather
+// than folded into a session-attributed group for the same provider.
 const SPLIT_COLUMNS = `
   service_id, billing_mode,
   rate_input, rate_output, rate_cache_read, rate_cache_write,
+  session_id IS NULL AS install_level,
   SUM(cost_usd) AS cost,
   SUM(COALESCE(input_tokens, 0)) AS input_tokens,
   SUM(COALESCE(output_tokens, 0)) AS output_tokens,
@@ -178,12 +100,14 @@ const SPLIT_COLUMNS = `
   GROUP_CONCAT(DISTINCT model) AS models
 `;
 const SPLIT_GROUP_BY = `
-  GROUP BY service_id, billing_mode, rate_input, rate_output, rate_cache_read, rate_cache_write
+  GROUP BY service_id, billing_mode, rate_input, rate_output, rate_cache_read, rate_cache_write,
+           install_level
 `;
 
 interface SplitRow {
   service_id: string | null;
   billing_mode: string | null;
+  install_level: number;
   rate_input: number | null;
   rate_output: number | null;
   rate_cache_read: number | null;
@@ -197,34 +121,27 @@ interface SplitRow {
   models: string | null;
 }
 
-/**
- * The literal key of the one bucket for rows that carry no attribution.
- *
- * Named for its founding case — rows recorded before attribution existed — but
- * it is **not** purely historical and does not drain on its own (req 16,
- * planning#343). Work that resolves no model writes into it going forward: the
- * unknown is what defines the bucket, not when the row was written.
- */
+// Includes new rows without attribution, not only historical usage.
 export const LEGACY_GROUP_KEY = "legacy";
 
-/**
- * Fold rate-set buckets into one group per `(service, mode)`, plus the legacy
- * bucket. Sorted so the wire shape is stable: subscriptions first (they are the
- * allowance side of the split), then metered, then legacy last — it is the one
- * group that says nothing about where the usage went.
- */
+/** Distinguishes install-level spend from a session-attributed group for the same provider. */
+const INSTALL_LEVEL_KEY_PREFIX = "install:";
+
 function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
   const byKey = new Map<string, UsageGroup & { modelSet: Set<string> }>();
   for (const r of rows) {
     const attributed = r.service_id !== null && (r.billing_mode === "sub" || r.billing_mode === "key");
     const billingMode = attributed ? (r.billing_mode as BillingMode) : undefined;
-    const key = attributed ? `${r.service_id}:${billingMode}` : LEGACY_GROUP_KEY;
+    const installLevel = r.install_level === 1;
+    const key = (installLevel ? INSTALL_LEVEL_KEY_PREFIX : "")
+      + (attributed ? `${r.service_id}:${billingMode}` : LEGACY_GROUP_KEY);
     let group = byKey.get(key);
     if (!group) {
       group = {
         key,
         kind: billingMode ?? "legacy",
         ...(attributed ? { serviceId: r.service_id!, billingMode } : {}),
+        ...(installLevel ? { installLevel: true } : {}),
         models: [],
         modelSet: new Set<string>(),
         turns: 0,
@@ -236,12 +153,7 @@ function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
     }
     group.turns += r.turns;
     group.tokens += r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_create_tokens;
-    // A `sub` row spent nothing — `cost_usd` is already zero for it, but the
-    // column is what makes that a rule rather than a coincidence of the writer.
     if (billingMode !== "sub") group.costUsd += r.cost ?? 0;
-    // req 16 puts the "would have cost" comparison on `sub` rows and nowhere
-    // else: for a `key` row the rates ARE the spend, so a second figure under a
-    // comparison's name would duplicate it.
     if (billingMode === "sub" && r.rate_input !== null) {
       group.atApiRatesUsd += costFromRates(
         {
@@ -263,9 +175,13 @@ function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
     }
   }
   const rank = { sub: 0, key: 1, legacy: 2 };
+  const installRank = (g: UsageGroup) => (g.installLevel ? 1 : 0);
   return [...byKey.values()]
     .map(({ modelSet, ...group }) => ({ ...group, models: [...modelSet].sort() }))
-    .sort((a, b) => rank[a.kind] - rank[b.kind] || a.key.localeCompare(b.key));
+    .sort((a, b) =>
+      rank[a.kind] - rank[b.kind]
+      || installRank(a) - installRank(b)
+      || a.key.localeCompare(b.key));
 }
 
 export class UsageManager {
@@ -289,34 +205,25 @@ export class UsageManager {
         sub_agent_id, cumulative_cost_usd,
         service_id, billing_mode,
         rate_input, rate_output, rate_cache_read, rate_cache_write,
-        credential_route_id
+        credential_route_id, background_work
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    // docs/260 §5 — the account the session's PREVIOUS turn ran on, for the
-    // req-10 "Continuing on X" change notice. Primary turns only: a sub-agent
-    // consult routes independently and must not read as the session moving.
+    // Consults and background work route independently and must not change the
+    // session's account notice. Background work is named by its own column: a
+    // direct provider call has no harness id to leave in `sub_agent_id`.
     this.stmtLastRoute = this.db.prepare(`
       SELECT credential_route_id FROM usage_turns
-      WHERE session_id = ? AND sub_agent_id IS NULL AND credential_route_id IS NOT NULL
+      WHERE session_id = ? AND sub_agent_id IS NULL AND background_work = 0
+        AND credential_route_id IS NOT NULL
       ORDER BY id DESC LIMIT 1
     `);
-    // Most recent cumulative snapshot for ONE agent's turns within a session,
-    // used to diff a running total into a per-turn delta. The chain is keyed by
-    // `(session, sub_agent_id)` because a resume chain belongs to one
-    // conversation: the primary agent's chain is the `sub_agent_id IS NULL` one,
-    // so a consult still can't perturb it — that guarantee is unchanged, just
-    // stated as a key rather than as an exclusion. Binding NULL through `IS ?`
-    // reproduces the previous `IS NULL` clause exactly for every primary turn.
-    //
-    // Keyed rather than primary-only because docs/252's cost-source
-    // discriminator makes a cumulative CONSULT expressible, where `subAgentId`
-    // previously made it unreachable. Under the old exclusion such a row would
-    // have been diffed against the PRIMARY agent's unrelated running total,
-    // which is a wrong number rather than a missing one.
+    // Each conversation has its own cumulative baseline; a NULL sub-agent id and
+    // no background flag together identify the session's own turns.
     this.stmtLastCumulative = this.db.prepare(`
       SELECT cumulative_cost_usd FROM usage_turns
-      WHERE session_id = ? AND sub_agent_id IS ? AND cumulative_cost_usd IS NOT NULL
+      WHERE session_id = ? AND sub_agent_id IS ? AND background_work = ?
+        AND cumulative_cost_usd IS NOT NULL
       ORDER BY id DESC LIMIT 1
     `);
     this.stmtSessionUsage = this.db.prepare(`
@@ -340,74 +247,36 @@ export class UsageManager {
   }
 
   /**
-   * Record a turn's cost, duration, optional token counts (input/output),
-   * cache breakdown, and the model that produced the turn.
-   *
-   * Backwards-compatible with the previous positional signature so existing
-   * callers continue to work; new fields can be supplied via the trailing
-   * `extra` object.
-   *
-   * Cost semantics — IMPORTANT: a `cumulative` cost (`extra.costSource`, which
-   * is what a harness's `total_cost_usd` is) is the running total of the entire
-   * resumed conversation, NOT this turn's cost. We convert it into a per-turn
-   * delta here (`max(0, current - previous)`), storing the delta in `cost_usd`
-   * and the raw cumulative in `cumulative_cost_usd` so the next turn can diff
-   * against it. A reset (the CLI's running total drops because the resume chain
-   * broke — e.g. a container re-clone started a fresh conversation) shows up as
-   * `current < previous`, which the `max(0, …)` collapses to treating `current`
-   * as a new baseline. SUM(cost_usd) is then the true session bill instead of a
-   * sum of cumulative snapshots (which over-counted ~N× for N resume chains).
-   *
-   * A `per-turn` cost is already this turn's own and is stored verbatim, with a
-   * null cumulative so it never becomes a baseline the next cumulative turn
-   * diffs against. Sub-agent turns (`extra.subAgentId` set) are one-shot
-   * consults that report a per-run cost, so that is what they default to.
-   *
-   * The default reproduces the historical rule exactly — sub-agent ⇒ per-turn,
-   * everything else ⇒ cumulative — but the rule itself is only true while the
-   * sole producer is a harness billing its own vendor. A caller with a
-   * rate-derived figure says so; see {@link TurnCostSource}.
-   *
-   * The delta chain is keyed by `(session, subAgentId)`, because a running total
-   * belongs to one conversation. The primary agent's chain is the one with no
-   * sub-agent, so a consult still never perturbs it; and a consult that does
-   * report a running total diffs against its OWN previous snapshot rather than
-   * against the primary agent's unrelated one.
-   *
-   * Returns the per-turn cost actually persisted (the delta for a cumulative
-   * turn, the verbatim value otherwise), so the live emit can show the same
-   * figure the DB will rehydrate instead of the cumulative snapshot.
+   * Return the persisted per-turn cost so live output matches reloaded history.
+   * A null session id is install-level spend — work that belongs to no session.
    */
   record(
-    sessionId: string,
+    sessionId: string | null,
     costUsd: number,
     durationMs: number,
     inputTokens?: number,
     outputTokens?: number,
     extra?: RecordedTurnExtra,
   ): number {
+    const ownTurn = extra?.subAgentId === undefined && !extra?.backgroundWork;
     const costSource: TurnCostSource =
-      extra?.costSource ?? (extra?.subAgentId !== undefined ? "per-turn" : "cumulative");
+      extra?.costSource ?? (ownTurn ? "cumulative" : "per-turn");
     let perTurnCost = costUsd;
-    // See {@link RecordedTurn.cumulativeSnapshot}: a per-turn row still carries
-    // the harness's running total forward when it reported one, so a later
-    // cumulative turn of the same conversation diffs against a live baseline
-    // rather than treating the whole conversation as one turn.
     let cumulative: number | null = extra?.cumulativeSnapshot ?? null;
     if (costSource === "cumulative") {
       cumulative = costUsd;
-      const prev = this.stmtLastCumulative.get(sessionId, extra?.subAgentId ?? null) as
+      const prev = this.stmtLastCumulative.get(
+        sessionId,
+        extra?.subAgentId ?? null,
+        extra?.backgroundWork ? 1 : 0,
+      ) as
         | { cumulative_cost_usd: number }
         | undefined;
       const prevCum = prev?.cumulative_cost_usd;
-      // First primary turn of a chain (no prior cumulative) OR a reset
-      // (current < previous) → `current` is itself the per-turn cost. Otherwise
-      // the delta is current minus the prior running total.
+      // A decreased total starts a new chain; charge the current amount rather than a negative delta.
       perTurnCost =
         prevCum !== undefined && cumulative >= prevCum ? cumulative - prevCum : cumulative;
     }
-    // All six or none — the CHECK constraint rejects anything else. Absent is
-    // the `legacy` bucket, which needs no discriminator of its own.
     const attribution = extra?.attribution;
     this.stmtInsert.run(
       sessionId,
@@ -419,7 +288,6 @@ export class UsageManager {
       extra?.cacheCreate ?? null,
       extra?.model ?? null,
       extra?.contextTokens ?? null,
-      // docs/144 — attribute to the sub-agent when the turn was a spawn.
       extra?.subAgentId ?? null,
       cumulative,
       attribution?.serviceId ?? null,
@@ -429,24 +297,16 @@ export class UsageManager {
       attribution?.rates.cacheRead ?? null,
       attribution?.rates.cacheWrite ?? null,
       extra?.credentialRouteId ?? null,
+      extra?.backgroundWork ? 1 : 0,
     );
     return perTurnCost;
   }
 
-  /**
-   * docs/260 §5 — the credential route the session's most recent primary turn
-   * authenticated with, or `undefined` when no turn recorded one.
-   */
   lastTurnCredentialRouteId(sessionId: string): string | undefined {
     const row = this.stmtLastRoute.get(sessionId) as { credential_route_id: string } | undefined;
     return row?.credential_route_id ?? undefined;
   }
 
-  /**
-   * Aggregated usage for a single session, split by `(service, billing mode)`
-   * (docs/252 req 16). Carries its `groups` because this is the session the
-   * user is looking at; the all-sessions list gets totals alone.
-   */
   getSessionUsage(sessionId: string): SessionUsage | undefined {
     const row = this.stmtSessionUsage.get(sessionId) as { total_duration: number | null; turn_count: number };
 
@@ -462,7 +322,6 @@ export class UsageManager {
     };
   }
 
-  /** Get cumulative token totals for a session. */
   getSessionTokenTotals(sessionId: string): { cumulativeInputTokens: number; cumulativeOutputTokens: number } | undefined {
     const row = this.stmtSessionTokens.get(sessionId) as { input_total: number | null; output_total: number | null; turn_count: number };
 
@@ -475,28 +334,19 @@ export class UsageManager {
     };
   }
 
-  /** Get per-turn usage data for a session (for the usage modal breakdown). */
   getSessionTurns(sessionId: string): UsageTurn[] {
     const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
-    return rows.map((r) => this.fromRow(r));
+    return rows.map((r) => this.fromRow(r, sessionId));
   }
 
-  /**
-   * Get per-turn breakdown shaped for the context-dial UI (105). Skips turns
-   * that lack token data — those entries can't meaningfully populate the
-   * dial.
-   */
   getPerTurnUsage(sessionId: string): TurnUsage[] {
     const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
     const out: TurnUsage[] = [];
     for (const r of rows) {
-      // The dial tracks the PINNED agent's per-turn context occupancy; a
-      // sub-agent consult (docs/144) has its own, smaller window and must not
-      // appear in the series the dial reads its "current context" from. (Before
-      // these turns carried tokens they were already excluded by the token gate
-      // below; this keeps that behavior now that they do.)
-      if (r.sub_agent_id !== null) continue;
-      // The dial needs at least one of input/output tokens to be useful.
+      // Consults and background work have separate context windows and must not
+      // affect the session dial. Background work is excluded by its own column,
+      // not by the harness id it may not have (docs/299 req 7).
+      if (r.sub_agent_id !== null || r.background_work === 1) continue;
       if (r.input_tokens === null && r.output_tokens === null) continue;
       const turn: TurnUsage = {
         inputTokens: r.input_tokens ?? 0,
@@ -515,18 +365,18 @@ export class UsageManager {
     return out;
   }
 
-  /** Get aggregated usage across all sessions, split by `(service, billing mode)`. */
   getStats(): UsageStats {
-    // Per session, the same split — folded down to totals, because nothing in
-    // the all-sessions list ranks or renders by group.
     const perSession = this.db.prepare(`
       SELECT session_id, SUM(duration_ms) as total_duration, ${SPLIT_COLUMNS}
       FROM usage_turns
       ${SPLIT_GROUP_BY.replace("GROUP BY", "GROUP BY session_id,")}
-    `).all() as (SplitRow & { session_id: string; total_duration: number | null })[];
+    `).all() as (SplitRow & { session_id: string | null; total_duration: number | null })[];
 
     const bySession = new Map<string, { rows: SplitRow[]; durationMs: number; turns: number }>();
     for (const r of perSession) {
+      // Install-level spend belongs to no session and gets no session row; it is
+      // reported install-wide, in `groups` and the totals below.
+      if (r.session_id === null) continue;
       let entry = bySession.get(r.session_id);
       if (!entry) bySession.set(r.session_id, (entry = { rows: [], durationMs: 0, turns: 0 }));
       entry.rows.push(r);
@@ -548,21 +398,14 @@ export class UsageManager {
       sessions,
       totals: usageTotalsFrom(groups),
       groups,
-      totalTurns: sessions.reduce((n, s) => n + s.turnCount, 0),
+      // Counted from the install-wide groups, not from `sessions`, so install-level
+      // work is in the same count as the totals beside it.
+      totalTurns: groups.reduce((n, g) => n + g.turns, 0),
       weekly: this.weeklySeries(),
     };
   }
 
-  /**
-   * Per-week buckets for the trend chart. `created_at` is a UTC timestamp;
-   * `date(x, 'weekday 0', '-6 days')` snaps it to that week's MONDAY (advance
-   * to the coming Sunday, step back six days), giving stable `YYYY-MM-DD` keys,
-   * oldest → newest.
-   *
-   * Grouped by week AND by the split's own key, so each week's three series can
-   * be built from the same folding rule the headline uses — a week's "Paid"
-   * cannot drift from the total it rolls up into.
-   */
+  // Advance to Sunday, then subtract six days to group by UTC Monday.
   private weeklySeries(): WeeklyUsage[] {
     const rows = this.db.prepare(`
       SELECT date(created_at, 'weekday 0', '-6 days') as week, ${SPLIT_COLUMNS}
@@ -590,20 +433,19 @@ export class UsageManager {
     );
   }
 
-  /** Clear all usage data. */
   clear(): void {
     this.db.prepare("DELETE FROM usage_turns").run();
   }
 
-  /** Delete all usage data for a session. */
   delete(sessionId: string): boolean {
     const result = this.stmtDeleteBySession.run(sessionId);
     return result.changes > 0;
   }
 
-  private fromRow(row: UsageRow): UsageTurn {
+  // The caller's id, since only a session's own rows are read through here.
+  private fromRow(row: UsageRow, sessionId: string): UsageTurn {
     const turn: UsageTurn = {
-      sessionId: row.session_id,
+      sessionId,
       costUsd: row.cost_usd,
       durationMs: row.duration_ms,
       timestamp: row.created_at,
@@ -619,21 +461,9 @@ export class UsageManager {
   }
 }
 
-/**
- * docs/252 req 16 — stamp a turn with how it was billed and what its tokens are
- * worth at the rates persisted with the row.
- *
- * Recomputed here rather than stored, for the same reason the aggregation
- * recomputes: the value is a function of this row's own rates and tokens, so it
- * must never be re-derived from a live price table. A `legacy` row carries no
- * rates and gets neither field — which is what the per-turn column reads to know
- * it cannot say anything about that turn.
- */
 function applyAttribution(turn: TurnUsage | UsageTurn, row: UsageRow): void {
   if (row.billing_mode !== "sub" && row.billing_mode !== "key") return;
   turn.billingMode = row.billing_mode;
-  // `sub` only — see {@link TurnUsage.atApiRatesUsd}. A `key` turn's `costUsd`
-  // is already the figure derived from these rates.
   if (row.billing_mode !== "sub" || row.rate_input === null) return;
   turn.atApiRatesUsd = costFromRates(
     {

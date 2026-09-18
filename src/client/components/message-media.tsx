@@ -4,7 +4,6 @@ import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { ChatMessageImage, ChatMessageFile } from "./MessageList.js";
 
-/** Render file attachment chips on a message bubble. Clicking opens the preview modal. */
 export function MessageFileAttachments({ files }: { files: ChatMessageFile[] }) {
   const handleClick = (filePath: string) => {
     const sid = useSessionStore.getState().sessionId;
@@ -33,20 +32,11 @@ export function MessageFileAttachments({ files }: { files: ChatMessageFile[] }) 
   );
 }
 
-/** Render inline image thumbnails for a user message. Clicking opens the preview modal. */
 export function MessageImages({ images, isUserMessage }: { images: ChatMessageImage[]; isUserMessage: boolean }) {
   return (
     <div className={`flex gap-2 flex-wrap ${images.length > 0 && isUserMessage ? "mt-2" : "mb-2"}`} data-testid="message-images">
       {images.map((img, i) => {
-        // `src` is the content-addressed endpoint for anything served from the
-        // orchestrator (docs/244) and a blob: URL for optimistic local
-        // messages; `data` only survives on the latter. One URL serves both the
-        // 96px render and the full-size preview below — the browser cache makes
-        // the second free, which is why no separate thumbnail is stored.
-        //
-        // Nothing resizes the image, here or anywhere else in the repo — the
-        // 96px render is CSS only, so the browser downloads the full bytes to
-        // paint it. Accepted by docs/244 requirement 9; planning#302 revisits it.
+
         const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         const alt = `Attached image ${i + 1}`;
         return (

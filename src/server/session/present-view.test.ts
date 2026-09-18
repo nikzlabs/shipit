@@ -81,7 +81,6 @@ describe("renderPresentDocument", () => {
   });
 
   it("decodes a base64 image data URI to raw bytes with its own mime", async () => {
-    // 1x1 transparent PNG.
     const b64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
     const out = await renderPresentDocument({ content: `data:image/png;base64,${b64}`, mimeType: "image/png" });
@@ -113,7 +112,6 @@ describe("registerPresentFilesRoutes", () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  /** Write an artifact to disk and register its metadata, returning the registry. */
   async function seed(presentId: string, body: string, mimeType: string): Promise<PresentRegistry> {
     const registry = new PresentRegistry();
     const filePath = path.join(tmpDir, presentId);
@@ -180,7 +178,7 @@ describe("registerPresentFilesRoutes", () => {
       expect(res.statusCode).toBe(200);
       expect(res.headers["cache-control"]).toBe("no-store");
       const body = res.json() as { content: string; mimeType: string };
-      expect(body.content).toBe("# Heading"); // raw markdown, NOT rendered HTML
+      expect(body.content).toBe("# Heading");
       expect(body.mimeType).toBe("text/markdown");
     } finally {
       await app.close();
@@ -198,14 +196,11 @@ describe("registerPresentFilesRoutes", () => {
     }
   });
 
-  // docs/093 — re-register a presentation into a fresh worker's registry after a
-  // container restart, then serve its bytes from the persisted path.
   it("registers a presentation and then serves its raw bytes", async () => {
     const filePath = path.join(tmpDir, "reregister.html");
     await writeFile(filePath, "<h1>restored</h1>", "utf8");
     const app = await buildApp(new PresentRegistry());
     try {
-      // Empty registry → raw read misses first.
       expect((await app.inject({ method: "GET", url: "/present/pres_re/raw" })).statusCode).toBe(404);
 
       const reg = await app.inject({
@@ -263,7 +258,6 @@ describe("registerPresentFilesRoutes", () => {
         },
       });
       expect(reg.statusCode).toBe(200);
-      // Registration succeeds, but the on-disk read fails → graceful 404.
       const res = await app.inject({ method: "GET", url: "/present/pres_gone/raw" });
       expect(res.statusCode).toBe(404);
       expect((res.json() as { error: string }).error).toMatch(/no longer on disk/i);

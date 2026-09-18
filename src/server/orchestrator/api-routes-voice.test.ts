@@ -1,11 +1,3 @@
-/**
- * Tests for the Voice API routes (docs/144).
- *
- * Builds a real Fastify instance and registers ONLY the voice routes with fake
- * deps (credentialStore, authManager) and a stubbed global fetch so no real
- * OpenAI/Anthropic calls happen. Uses app.inject() — no network port.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
@@ -15,13 +7,45 @@ import Fastify, { type FastifyInstance } from "fastify";
 import fastifyMultipart from "@fastify/multipart";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
 import type { ApiDeps } from "./api-routes.js";
+import type { CredentialRoute } from "../shared/types.js";
 
-/** Minimal in-memory credential store covering just the voice methods. */
-function makeCredentialStore() {
+function anthropicKeyRoute(): CredentialRoute {
+  return {
+    id: "anthropic-key",
+    serviceId: "anthropic",
+    billingMode: "key",
+    via: "string",
+    status: "ready",
+    priority: 0,
+    isPrimary: true,
+    label: "test",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+/**
+ * `backgroundWork` is the model-provider registry cleanup resolves against
+ * (docs/299-direct-provider-calls req 5). It is deliberately separate from the voice keys: an OpenAI
+ * voice key is not a service credential, so it buys no cleanup.
+ */
+function makeCredentialStore(backgroundWork: CredentialRoute[] = []) {
   const keys = new Map<string, string>();
   let deliveryMode: "native" | "external" | "both" = "native";
   let webhook: { url: string; token: string } | null = null;
   return {
+    getNonTurnModel: vi.fn(() => undefined),
+    listCredentialRoutes: vi.fn((serviceId?: string, billingMode?: string) =>
+      backgroundWork.filter(
+        (r) =>
+          (serviceId === undefined || r.serviceId === serviceId)
+          && (billingMode === undefined || r.billingMode === billingMode),
+      ),
+    ),
+    getCredentialSecret: vi.fn(() => "sk-background-work"),
+    getCredentialRoute: vi.fn((id: string) => backgroundWork.find((r) => r.id === id)),
+    getSelectionMode: vi.fn(() => "strict" as const),
+    getFailoverCutoffs: vi.fn(() => ({ session: 90, weekly: 90 })),
     getVoiceProviderKey: vi.fn((id: string): string | null => keys.get(id) ?? null),
     setVoiceProviderKey: vi.fn((id: string, k: string) => {
       keys.set(id, k);
@@ -32,7 +56,6 @@ function makeCredentialStore() {
     getConfiguredVoiceProviders: vi.fn((): string[] =>
       [...keys.entries()].filter(([, v]) => v.trim()).map(([id]) => id),
     ),
-    // docs/163
     getVoiceDeliveryMode: vi.fn(() => deliveryMode),
     setVoiceDeliveryMode: vi.fn((m: "native" | "external" | "both") => {
       deliveryMode = m;
@@ -47,15 +70,10 @@ function makeCredentialStore() {
   };
 }
 
-/** Fake runner registry capturing emitted WS messages for one session. */
 function makeRunnerRegistry(sessionId: string) {
   const emitted: { type: string; [k: string]: unknown }[] = [];
-  // The native sink records the card on the runner (docs/163): `emitChatCard`
-  // reads chatMessageGroups for the anchor and pushes onto recordedCards.
   const runner = {
     emitMessage: (m: { type: string }) => emitted.push(m),
-    // The `voice_note` tool fires from inside the agent's turn, so the card
-    // rides the in-progress turn rather than `emitChatCard`'s post-turn append.
     running: true,
     chatMessageGroups: [] as { text: string; toolUse: unknown[] }[],
     steeredMessages: [] as unknown[],
@@ -65,13 +83,6 @@ function makeRunnerRegistry(sessionId: string) {
     emitted,
     runner,
     registry: { get: (id: string) => (id === sessionId ? runner : undefined) },
-  };
-}
-
-/** Auth manager whose getAccessToken returns no bearer by default. */
-function makeAuthManager(token: string | null = null) {
-  return {
-    getAccessToken: vi.fn(async () => ({ token })),
   };
 }
 
@@ -105,41 +116,30 @@ let tmpDir: string;
 
 async function buildApp(overrides?: {
   credentialStore?: ReturnType<typeof makeCredentialStore>;
-  authManager?: ReturnType<typeof makeAuthManager>;
   runnerRegistry?: { get: (id: string) => unknown };
   chatHistoryManager?: {
     replaceInProgress: (sessionId: string, messages: unknown[]) => void;
     append: (sessionId: string, message: unknown) => void;
   };
-  providerAccountManager?: {
-    selectRouteForTurn: (agentId: string) => unknown;
-    resolveCredentialRoot?: (agentId: string, accountId: string) => string;
-  };
 }): Promise<{
   app: FastifyInstance;
   credentialStore: ReturnType<typeof makeCredentialStore>;
-  authManager: ReturnType<typeof makeAuthManager>;
+  broadcasts: { event: string; data: unknown }[];
 }> {
   const credentialStore = overrides?.credentialStore ?? makeCredentialStore();
-  const authManager = overrides?.authManager ?? makeAuthManager();
+  const broadcasts: { event: string; data: unknown }[] = [];
   const app = Fastify();
   await app.register(fastifyMultipart);
   await registerVoiceRoutes(app, {
     credentialStore,
-    authManager,
     workspaceDir: tmpDir,
     stateDir: tmpDir,
+    sseBroadcast: (event: string, data: unknown) => broadcasts.push({ event, data }),
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
     chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn(), append: vi.fn() },
-    // docs/150-multiple-provider-subscriptions req 19 — cleanup resolves the account whose credentials it reads.
-    // Defaults to a reserved route (no account root), which is the pre-account
-    // shape the rest of these tests assume.
-    providerAccountManager: overrides?.providerAccountManager ?? {
-      selectRouteForTurn: () => ({ kind: "api-key", id: "claude-api-key" }),
-    },
   } as unknown as ApiDeps);
   await app.ready();
-  return { app, credentialStore, authManager };
+  return { app, credentialStore, broadcasts };
 }
 
 beforeEach(() => {
@@ -174,7 +174,6 @@ describe("GET /api/voice/credentials/status", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.configured).toEqual(["openai"]);
-    // Security: status must NEVER carry the raw key under any field name.
     expect(JSON.stringify(body)).not.toContain("sk-super-secret-123");
     expect(body.apiKey).toBeUndefined();
     expect(body.key).toBeUndefined();
@@ -253,64 +252,44 @@ describe("POST/DELETE /api/voice/credentials", () => {
 });
 
 describe("GET /api/voice/cleanup/status", () => {
-  it("returns null provider when no OAuth bearer and no key", async () => {
-    // authManager returns no token and key is null → no provider available.
-    const { app } = await buildApp({ authManager: makeAuthManager(null) });
+  it("reports no model when no background-work credential is configured", async () => {
+    const { app } = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ provider: null });
+    expect(res.json()).toEqual({ model: null, adoptableVoiceKey: null });
     await app.close();
   });
 
-  it("indicates the claude cleanup provider when an OAuth bearer is present", async () => {
-    const { app } = await buildApp({ authManager: makeAuthManager("oauth-bearer-token") });
+  it("names the background-work model that would clean the next dictation", async () => {
+    const credentialStore = makeCredentialStore([anthropicKeyRoute()]);
+    const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.provider).toBeTruthy();
+    expect(res.json().model).toMatchObject({ serviceName: "Anthropic" });
     await app.close();
   });
 
-  // docs/150-multiple-provider-subscriptions req 19 — the singleton config root holds nothing once the legacy
-  // aliases are retired, so cleanup has to read the account the router picks.
-  it("reads the bearer from the credential root of the account the router picks", async () => {
-    const authManager = makeAuthManager("oauth-bearer-token");
-    const { app } = await buildApp({
-      authManager,
-      providerAccountManager: {
-        selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
-        resolveCredentialRoot: (agentId, accountId) =>
-          `/credentials/provider-accounts/${agentId}/${accountId}`,
-      },
-    });
-
+  // The OpenAI voice key lives in `voiceProviderKeys`, not in the model-provider
+  // registry, so it is not a credential background work can run on — which is
+  // exactly the install the adoption offer exists for (docs/299 req 5).
+  it("reports no model for an install whose only OpenAI key is the voice one, and offers to adopt it", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
+    const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
-
     expect(res.statusCode).toBe(200);
-    expect(authManager.getAccessToken).toHaveBeenCalledWith(
-      "/credentials/provider-accounts/claude/acct_work",
-    );
+    expect(res.json().model).toBeNull();
+    expect(res.json().adoptableVoiceKey).toMatchObject({ providerId: "openai" });
     await app.close();
   });
 
-  // Cleanup is best-effort: `pickCleanupProvider` already treats a broken
-  // Claude path as "fall through to OpenAI". Account resolution must not be
-  // the one step that escapes that and 500s the request.
-  it("degrades to an unscoped read when account resolution throws", async () => {
-    const authManager = makeAuthManager("oauth-bearer-token");
-    const { app } = await buildApp({
-      authManager,
-      providerAccountManager: {
-        selectRouteForTurn: () => {
-          throw new Error("account store unavailable");
-        },
-      },
-    });
-
+  it("reports no model for a Deepgram-only install, where cleanup cannot run", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("deepgram", "dg-xyz");
+    const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
-
     expect(res.statusCode).toBe(200);
-    expect(authManager.getAccessToken).toHaveBeenCalledWith(undefined);
+    expect(res.json()).toEqual({ model: null, adoptableVoiceKey: null });
     await app.close();
   });
 });
@@ -354,7 +333,6 @@ describe("POST /api/voice/speak", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/voice/speak",
-      // "21m00..." is an ElevenLabs voice id, invalid for OpenAI.
       payload: { text: "Hello", voice: "21m00Tcm4TlvDq8ikWAM", speed: 1, provider: "openai" },
     });
     expect(res.statusCode).toBe(400);
@@ -366,7 +344,6 @@ describe("POST /api/voice/speak", () => {
     const credentialStore = makeCredentialStore();
     credentialStore.setVoiceProviderKey("openai", "sk-abc");
 
-    // Stub global fetch so the OpenAI TTS provider returns a streamed body.
     const audioBytes = new Uint8Array([1, 2, 3, 4, 5]);
     vi.stubGlobal(
       "fetch",
@@ -476,6 +453,132 @@ describe("POST /api/voice/transcribe", () => {
     await app.close();
   });
 
+  // An install with no model-provider credential has nothing to clean with, and
+  // the raw transcript is what the composer gets (docs/299-direct-provider-calls req 6).
+  it("inserts the raw transcript when cleanup is on and only a Deepgram key is set", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("deepgram", "dg-xyz");
+
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          results: { channels: [{ alternatives: [{ transcript: "um add a react use effect" }] }] },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const { payload, boundary } = buildMultipartBody([
+      { name: "audio", filename: "audio.webm", contentType: "audio/webm", value: Buffer.from("audio-bytes") },
+      { name: "cleanup", value: "true" },
+      { name: "sttProvider", value: "deepgram" },
+    ]);
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/transcribe",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      text: "um add a react use effect",
+      rawText: "um add a react use effect",
+      cleanupErrorCode: "no-provider",
+    });
+    // One call: the transcription. No cleanup request was attempted.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("cleans the transcript on the background-work model", async () => {
+    const credentialStore = makeCredentialStore([anthropicKeyRoute()]);
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
+
+    const fetchImpl = vi.fn(async (input: unknown) =>
+      String(input).includes("api.anthropic.com")
+        ? new Response(
+            JSON.stringify({ content: [{ type: "text", text: "Add a React useEffect" }] }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
+        : new Response(JSON.stringify({ text: "um add a react use effect" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const { payload, boundary } = buildMultipartBody([
+      { name: "audio", filename: "audio.webm", contentType: "audio/webm", value: Buffer.from("audio-bytes") },
+      { name: "cleanup", value: "true" },
+      { name: "sttProvider", value: "openai" },
+    ]);
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/transcribe",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      text: "Add a React useEffect",
+      rawText: "um add a react use effect",
+    });
+    await app.close();
+  });
+
+  /**
+   * docs/299-direct-provider-calls req 6. A dictation is not an operation the user is watching, so a
+   * cleanup failure inserts the raw transcript and writes nothing to the chat
+   * transcript — no card, persisted or emitted.
+   */
+  it("writes nothing to the chat transcript when cleanup fails", async () => {
+    const credentialStore = makeCredentialStore([anthropicKeyRoute()]);
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
+    const chatHistoryManager = { replaceInProgress: vi.fn(), append: vi.fn() };
+    const { emitted, registry } = makeRunnerRegistry("s1");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) =>
+        String(input).includes("api.anthropic.com")
+          ? new Response("no key", { status: 401 })
+          : new Response(JSON.stringify({ text: "um add a react use effect" }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+      ),
+    );
+
+    const { payload, boundary } = buildMultipartBody([
+      { name: "audio", filename: "audio.webm", contentType: "audio/webm", value: Buffer.from("audio-bytes") },
+      { name: "cleanup", value: "true" },
+      { name: "sttProvider", value: "openai" },
+    ]);
+    const { app } = await buildApp({ credentialStore, chatHistoryManager, runnerRegistry: registry });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/transcribe",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      text: "um add a react use effect",
+      rawText: "um add a react use effect",
+      cleanupErrorCode: "provider-error",
+    });
+    expect(chatHistoryManager.append).not.toHaveBeenCalled();
+    expect(chatHistoryManager.replaceInProgress).not.toHaveBeenCalled();
+    expect(emitted).toEqual([]);
+    await app.close();
+  });
+
   it("returns provider transcription details when upstream transcription fails", async () => {
     const credentialStore = makeCredentialStore();
     credentialStore.setVoiceProviderKey("openai", "sk-route-transcribe-secret");
@@ -511,7 +614,14 @@ describe("POST /api/voice/transcribe", () => {
 });
 
 describe("Voice-note webhook config (docs/163)", () => {
-  it("stores the webhook on POST and reports configured status without the token", async () => {
+  /*
+    The write and the read are one address (docs/308-data-driven-settings
+    inventory.md P2): the dialog POSTs both halves to this path and reads the url
+    back from a GET of the same path, under the same field name. Nothing answers
+    the token — that is what `configuredOnly` means, and a route that returned it
+    would be the one place the browser could read it back.
+  */
+  it("stores the webhook on POST and echoes the stored url, never the token", async () => {
     const { app, credentialStore } = await buildApp();
     const res = await app.inject({
       method: "POST",
@@ -520,13 +630,19 @@ describe("Voice-note webhook config (docs/163)", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(credentialStore.setVoiceWebhook).toHaveBeenCalledWith("https://hook.example/notes", "super-secret");
+    expect(res.json()).toEqual({ url: "https://hook.example/notes" });
 
-    const status = await app.inject({ method: "GET", url: "/api/voice/webhook/status" });
-    const body = status.json();
-    expect(body.configured).toBe(true);
-    expect(body.url).toBe("https://hook.example/notes");
-    // The token must never be returned.
-    expect(JSON.stringify(body)).not.toContain("super-secret");
+    const read = await app.inject({ method: "GET", url: "/api/voice/webhook" });
+    expect(read.json()).toEqual({ url: "https://hook.example/notes" });
+    expect(JSON.stringify(read.json())).not.toContain("super-secret");
+    await app.close();
+  });
+
+  it("answers an empty url when no webhook is stored", async () => {
+    const { app } = await buildApp();
+    const read = await app.inject({ method: "GET", url: "/api/voice/webhook" });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual({ url: "" });
     await app.close();
   });
 
@@ -549,6 +665,38 @@ describe("Voice-note webhook config (docs/163)", () => {
     await app.close();
   });
 
+  /*
+    The webhook is a declared row now, read back on the `settings_changed`
+    refresh — so a write that stayed silent would reach no browser but the one
+    that made it. The tab used to re-read the status on mount, which covered
+    less: it needed somebody to leave the Voice tab and come back.
+  */
+  it("tells every viewer the webhook moved, on both the write and the removal", async () => {
+    const credentialStore = makeCredentialStore();
+    const { app, broadcasts } = await buildApp({ credentialStore });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/voice/webhook",
+      payload: { url: "https://hook.example/notes", token: "t" },
+    });
+    await app.inject({ method: "DELETE", url: "/api/voice/webhook" });
+
+    expect(broadcasts.map((b) => b.event)).toEqual(["settings_changed", "settings_changed"]);
+    expect(broadcasts[0]!.data).toEqual({ keys: ["voice.webhook.url", "voice.webhook.token"] });
+    expect(JSON.stringify(broadcasts)).not.toContain("hook.example");
+    await app.close();
+  });
+
+  it("says nothing to anyone when the write is refused", async () => {
+    const { app, broadcasts } = await buildApp();
+
+    await app.inject({ method: "POST", url: "/api/voice/webhook", payload: { url: "ftp://nope" } });
+
+    expect(broadcasts).toEqual([]);
+    await app.close();
+  });
+
   it("rejects a non-http URL with 400", async () => {
     const { app } = await buildApp();
     const res = await app.inject({
@@ -568,6 +716,7 @@ describe("Voice-note webhook config (docs/163)", () => {
     expect(res.statusCode).toBe(200);
     expect(credentialStore.clearVoiceWebhook).toHaveBeenCalled();
     expect(credentialStore.getVoiceWebhook()).toBeNull();
+    expect(res.json()).toEqual({ url: "" });
     await app.close();
   });
 });
@@ -630,7 +779,6 @@ describe("SECURITY: no GET route returns the raw key", () => {
     const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/credentials" });
     expect(res.statusCode).toBe(404);
-    // And even the 404 body must not echo the secret.
     expect(res.payload).not.toContain("sk-super-secret-123");
     await app.close();
   });

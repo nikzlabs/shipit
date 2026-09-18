@@ -13,7 +13,6 @@ const card = (over: Partial<WsEgressPromptCard> = {}): WsEgressPromptCard => ({
   ...over,
 });
 
-// The handlers only touch zustand stores; ctx is unused.
 const ctx = {} as never;
 
 beforeEach(() => {

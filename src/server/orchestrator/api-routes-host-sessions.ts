@@ -1,42 +1,3 @@
-/**
- * docs/255 — read-only host session INVENTORY for Ops sessions.
- *
- *   GET /api/sessions/:id/host-sessions[?branch=&pr=&container=&id=
- *                                        &includeArchived=&limit=]
- *
- * Answers "which session produced this branch / PR / container?" from the
- * orchestrator's own `sessions` table, so an Ops session no longer has to
- * correlate journal timestamps against container names and guess.
- *
- * Deliberately shaped exactly like `api-routes-source.ts` (docs/162), for the
- * same reason: it is an Ops-only read that coexists with the container trust
- * boundary WITHOUT weakening it.
- *
- *  - The route lives under the CALLER'S OWN session path, so
- *    `api-container-guard.ts`'s §3 own-session scope check passes unchanged —
- *    no cross-session exemption, no `HARD_DENY_PREFIXES` edit, and
- *    `/api/sessions` itself stays container-inaccessible.
- *  - `config: { containerAccessible: true }` + `requireOpsSession()` on the
- *    server-authoritative `session.kind === "ops"` (404 absent, 403 non-ops).
- *  - The worker injects the trusted SESSION_ID, so the agent cannot ask on
- *    another session's behalf.
- *
- * The response is METADATA ONLY — id/title/kind/branch/repo/parent/timestamps
- * and the PR number+url+state. Never conversation replay, prompts, queued
- * messages, assistant text, secrets, env, or workspace contents. The allowlist
- * that enforces that is `services/host-sessions.ts:buildHostSessionView`; read
- * its docstring before adding a field here.
- *
- * docs/264 adds a second route on the same shape and the same gate:
- *
- *   GET /api/sessions/:id/host-session-logs?target=<session>[&since=&until=&lines=]
- *
- * which returns another session's SERVER-SOURCE log entries — orchestrator
- * lifecycle text, never agent output. Its allowlist is
- * `services/host-session-logs.ts:SERVER_LOG_SOURCES`; read that module's
- * docstring before touching it.
- */
-
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import {
@@ -49,11 +10,6 @@ import {
 import { getErrorMessage } from "./validation.js";
 import type { SessionManager } from "./sessions.js";
 
-/**
- * Confirm the calling session exists and is an Ops session. Sends the 404/403
- * itself and returns false so the route can bail. Mirrors the identical gate in
- * `api-routes-source.ts` — Ops is the only kind allowed to read across sessions.
- */
 function requireOpsSession(
   sessionManager: SessionManager,
   sessionId: string,
@@ -77,13 +33,6 @@ export async function registerHostSessionRoutes(
 ): Promise<void> {
   const { sessionManager } = deps;
 
-  // GET /api/sessions/:id/host-sessions[?filters]
-  //
-  // NOTE on the `id=` filter name: the container guard falls back to a
-  // `?session=` query param for its own-session scope check when a path carries
-  // no `/api/sessions/<id>/` segment. This route HAS that segment, so `session=`
-  // would never be consulted here — but naming a filter the same thing the guard
-  // reads as a scope is a trap for whoever touches either file next. Hence `id=`.
   app.get<{
     Params: { id: string };
     Querystring: {
@@ -121,9 +70,6 @@ export async function registerHostSessionRoutes(
           const limit = Number(q.limit);
           if (Number.isFinite(limit)) query.limit = limit;
         }
-        // Pass a bad offset THROUGH to the service so it 400s, rather than
-        // dropping it here — a silently-ignored offset returns page 1 dressed
-        // as the page the caller asked for, which loops a paging client.
         if (q.offset) query.offset = Number(q.offset);
         return queryHostSessions(sessionManager, query);
       } catch (err) {
@@ -138,15 +84,7 @@ export async function registerHostSessionRoutes(
     },
   );
 
-  // GET /api/sessions/:id/host-session-logs?target=<session>[&since=&until=&lines=]
-  //
-  // docs/264 — another session's server-source log entries. `:id` is the CALLING
-  // ops session (so the container guard's own-session check is untouched); the
-  // session being READ is the `target=` query param.
-  //
-  // `target=` and not `session=` for the reason the sibling route names its
-  // filter `id=`: `session=` is what `api-container-guard.ts` reads as a SCOPE,
-  // and a filter sharing that name is a trap for whoever edits either file next.
+  // :id identifies the caller for the container guard; target identifies the logs' owner.
   app.get<{
     Params: { id: string };
     Querystring: { target?: string; since?: string; until?: string; lines?: string };
@@ -157,9 +95,6 @@ export async function registerHostSessionRoutes(
       if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
       const { logStore } = deps;
       if (!logStore) {
-        // Only reachable in a test harness that omits the store. Say so rather
-        // than returning an empty page, which reads as "this session logged
-        // nothing" — the exact wrong conclusion for an incident.
         reply.code(503).send({ error: "The durable log store is not available on this host." });
         return;
       }
@@ -168,9 +103,6 @@ export async function registerHostSessionRoutes(
         const query: HostSessionLogQuery = {};
         if (q.since) query.since = q.since;
         if (q.until) query.until = q.until;
-        // Pass a bad value THROUGH so the service 400s, exactly as the sibling
-        // route does with `offset`. Dropping it here would return the default
-        // 200 lines dressed as the bound the operator asked for.
         if (q.lines) query.lines = Number(q.lines);
         return queryHostSessionLogs(sessionManager, logStore, q.target ?? "", query);
       } catch (err) {

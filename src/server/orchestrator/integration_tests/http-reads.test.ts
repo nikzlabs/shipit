@@ -63,19 +63,15 @@ describe("Integration: Phase 1 GET endpoints", () => {
     }
   });
 
-  /** Helper: create a session with a git repo and some files. */
   async function createSession(id: string, title: string): Promise<string> {
     const sessionDir = path.join(tmpDir, "sessions", id);
     fs.mkdirSync(sessionDir, { recursive: true });
     sessionManager.track(id, title, sessionDir);
 
-    // Initialize git repo
     const git = new GitManager(sessionDir);
     await git.init();
     return sessionDir;
   }
-
-  // ---- File tree ----
 
   it("GET /api/sessions/:id/files returns file tree", async () => {
     const dir = await createSession("s1", "Session 1");
@@ -94,8 +90,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/files" });
     expect(res.statusCode).toBe(404);
   });
-
-  // ---- File content ----
 
   it("GET /api/sessions/:id/files/* returns file content", async () => {
     const dir = await createSession("s1", "Session 1");
@@ -128,8 +122,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // ---- Docs ----
-
   it("GET /api/sessions/:id/docs returns doc list", async () => {
     const dir = await createSession("s1", "Session 1");
     fs.writeFileSync(path.join(dir, "notes.md"), "# Notes");
@@ -152,8 +144,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(body.content).toContain("# Notes");
   });
 
-  // ---- Git log ----
-
   it("GET /api/sessions/:id/git/log returns commits", async () => {
     const dir = await createSession("s1", "Session 1");
     const git = new GitManager(dir);
@@ -169,8 +159,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(body.commits[0]).toHaveProperty("message");
   });
 
-  // ---- Git remotes ----
-
   it("GET /api/sessions/:id/git/remotes returns remotes", async () => {
     await createSession("s1", "Session 1");
 
@@ -180,8 +168,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(body).toHaveProperty("remotes");
     expect(Array.isArray(body.remotes)).toBe(true);
   });
-
-  // ---- Git branches ----
 
   it("GET /api/sessions/:id/git/branches returns current branch", async () => {
     const dir = await createSession("s1", "Session 1");
@@ -197,8 +183,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(typeof body.current).toBe("string");
     expect(Array.isArray(body.remote)).toBe(true);
   });
-
-  // ---- Git diff ----
 
   it("GET /api/sessions/:id/git/diff returns diff between commits", async () => {
     const dir = await createSession("s1", "Session 1");
@@ -228,8 +212,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  // ---- Session status ----
-
   it("GET /api/sessions/:id/status returns runtime status", async () => {
     await createSession("s1", "Session 1");
 
@@ -243,8 +225,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     });
   });
 
-  // ---- Usage stats ----
-
   it("GET /api/sessions/:id/usage returns usage stats", async () => {
     await createSession("s1", "Session 1");
 
@@ -253,8 +233,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     const body = res.json();
     expect(body).toHaveProperty("stats");
   });
-
-  // ---- PR status ----
 
   it("GET /api/sessions/:id/pr/status returns null when not authenticated", async () => {
     await createSession("s1", "Session 1");
@@ -266,8 +244,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(body.pr).toBeNull();
   });
 
-  // ---- Sibling sessions ----
-
   it("GET /api/sessions/:id/worktrees returns sibling session list", async () => {
     await createSession("s1", "Session 1");
 
@@ -277,8 +253,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(body).toHaveProperty("worktrees");
     expect(Array.isArray(body.worktrees)).toBe(true);
   });
-
-  // ---- Docs with issue pointer (docs/168) ----
 
   it("GET /api/sessions/:id/docs includes the issue pointer from frontmatter", async () => {
     const dir = await createSession("s-feat2", "Doc Session");
@@ -298,8 +272,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(tracked.issue).toBe("https://linear.app/example/issue/TRACKER-28/decouple");
   });
 
-  // ---- GitHub repos search ----
-
   it("GET /api/github/repos returns empty array for short query", async () => {
     const res = await app.inject({ method: "GET", url: "/api/github/repos?q=a" });
     expect(res.statusCode).toBe(200);
@@ -317,8 +289,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(body).toHaveProperty("repos");
     expect(body.repos.length).toBeGreaterThan(0);
   });
-
-  // ---- Workspace state (combined git log + file tree) ----
 
   it("GET /api/sessions/:id/workspace-state returns gitLog and fileTree", async () => {
     const dir = await createSession("s1", "Session 1");
@@ -342,8 +312,6 @@ describe("Integration: Phase 1 GET endpoints", () => {
     const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/workspace-state" });
     expect(res.statusCode).toBe(404);
   });
-
-  // ---- Chat history (read-only) ----
 
   it("GET /api/sessions/:id/history returns empty messages for new session", async () => {
     await createSession("s1", "Session 1");

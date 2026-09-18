@@ -1,10 +1,3 @@
-/**
- * AgentProcess — re-exports from shared types.
- *
- * The canonical definitions live in shared/types/agent-types.ts.
- * This file re-exports them so existing session-layer imports continue to work.
- */
-
 export type {
   AgentId,
   AgentCapabilities,
@@ -14,6 +7,9 @@ export type {
   AgentToolResultEvent,
   AgentResultEvent,
   AgentContentBlock,
+  AgentGoal,
+  AgentGoalCommand,
+  AgentGoalCommandResult,
   AgentProcess,
   AgentProcessEvents,
   AgentRunParams,

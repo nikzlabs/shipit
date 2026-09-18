@@ -1,5 +1,59 @@
 # 265 — Transcript render cost: checklist
 
+- [x] `content-visibility: auto` on groups of 20 rows rather than every row, with boundaries counted
+      over anchor rows from the front and groups keyed by ordinal, so no UNCHANGED row changes DOM
+      parent — the task panel does move, deliberately (req 13, planning#491)
+- [x] The search jump re-centres until the transcript's height settles (req 7). A group-sized
+      `contain-intrinsic-size` estimate resolves to the real height in the frame the jump reveals
+      it, so a single `scrollIntoView` lands beside the match rather than on it
+- [x] ~~An infinite animation animates only `transform`/`opacity` and steps at ~10 Hz~~ —
+      superseded 2026-09-02. The rate cap was a visual regression (req 14) and did not hold the
+      rate either, since step boundaries are per-animation. Replaced by: an infinite animation
+      animates `opacity` and nothing else, unstepped and smooth (reqs 13 + 14)
+- [x] Spinners are one `<Spinner />` — twelve spokes with a rotating opacity stagger — instead of
+      ~50 rotating Phosphor icons, so they cost 0 main-thread frames/s instead of 50 while
+      looking smooth at display rate (reqs 13, 14)
+- [x] The spinner's phase offset lives in twelve `@keyframes`, not in a staggered
+      `animation-delay`. Twelve animations sharing one phase behave as one; measured on a
+      running ShipIt the delay spelling costs 50 main frames/s against 5 for pixel-identical
+      output (reqs 13, 14)
+- [x] `scripts/measure-spinner-cost.mjs` reproduces the A/B, including a CONTROLLED pair (one
+      element, one timing, only the property changed) and — given an app URL — the phase pair,
+      which no synthetic fixture reproduces
+
+From independent review (all fixed):
+
+- [x] `TodoPanel`'s in-progress ring kept a `.tool-spinner` class whose animation this change
+      deleted, so an active task showed a frozen arc while every test passed. The class is gone
+      entirely rather than kept as a marker, and a guard now checks `Spinner.tsx` and
+      `index.css` agree on the spoke count
+- [x] "Compositing was never the variable" overstated the evidence — the before/after pair
+      varied the element type as well as the property. A controlled same-element pair now
+      carries the claim, and the compositing question is recorded as separate and unsettled
+- [x] The cost claim is narrowed to renderer MAIN-THREAD work: the new spinner deliberately
+      draws more compositor frames, so req 13's "processor" is not established by these numbers
+- [x] The documented "twelve staggered opacity spinners" case was not staggered
+- [x] Policy-guard bypasses closed: all client `.css` files (not just `index.css`),
+      comma-separated animation lists, arbitrary-value `animate-[…]` and `[animation:…]`
+      utilities, inline animation styles, and the `animation-name`/`animation-iteration-count`
+      longhands that let the cascade hide an infinite animation across two rules. The component
+      scan's positive control now runs the real scan over a fixture directory
+- [x] Under `prefers-reduced-motion` the travelling head is dropped for a uniform breath — the
+      design creates *perceived* rotation, so "it is only opacity" argued about the
+      implementation rather than what the user sees
+- [x] The auto-fix indicator keeps its wrench (static) rather than becoming a generic spinner
+      indistinguishable from the CI one beside it
+- [x] Decorative illustration (the rocket scene, the preview-setup art) is finite instead, so an
+      idle empty screen settles at nothing rather than at 10 Hz (req 13)
+- [x] The `running` service dot stops animating — a steady state is not in-flight work, and it
+      was what made a session with nothing happening animate at all (req 13)
+- [x] Guard test over every infinite animation (`index.animation-policy.test.ts`) — the saving is
+      the union, so one animation breaking the rule cancels it. Now also scans components for
+      `animate-spin`/`ping`/`bounce`, which is what would have caught the ~50 call sites that
+      never touched `index.css`; each of its four guards verified to fail on its own violation
+- [x] `trace-idle-frames.mjs` measured its window over every event in the trace, including the
+      browser process and Perfetto's flush, so every per-second rate it has ever reported was
+      1.35x too low
 - [x] Cancel a superseded `/history` load instead of parsing and discarding it (req 8)
 - [x] Stable element identity from `buildVisualElements` (design 1a)
 - [x] Ref-backed handler context so upstream callbacks stop invalidating rows (design 1b)
@@ -23,13 +77,163 @@ From independent review (all fixed, each with a regression test):
 - [x] The history cache was FIFO despite the LRU intent — a 304 did not count as a use,
       so the most-revisited session was the one that aged out
 
+- [x] Cache syntax highlighting outside React render state, so a remount stops re-paying 274 ms
+      for unchanged text (design 2b), with an end-to-end guard through the real row → markdown →
+      `CodeBlock` chain (`transcript-highlight-cost.test.tsx`) — `transcript-row-memo.test.tsx`
+      mocks the row and is blind to everything below it
+
+From independent review of that change (all fixed, each with a regression test):
+
+- [x] The write-up attributed the 35 calls to abandoned concurrent renders under
+      `useDeferredValue`, on the strength of the trace's 2,515 scroll events. Refuted: the
+      transcript's scroll handler only mutates refs, so scrolling schedules no React update, and
+      yielding to input can pause work without discarding it. The claim is now the narrow one
+      (a mount always runs the factory; an update compares against the last *commit*), and the
+      trigger is recorded as unidentified rather than explained.
+- [x] The cache was not actually LRU: replacing an entry (same code, different language)
+      overwrote the `Map` value without moving its insertion position, so a just-recomputed
+      block stayed the oldest and was the next evicted
+- [x] 64 entries bounds cardinality, not memory — nothing caps how long a code block may be. A
+      character budget is enforced alongside the entry cap, with the most recent entry always kept
+- [x] The transcript guards were masked by the cache they validate: counting `hljs` calls, a broken
+      memo chain would have shown up as *zero* extra highlights. The probe moved to the memo
+      boundary (`highlightCached`), so they measure the chain independently of the cache, plus a
+      guard at more distinct blocks than the cache can hold
+
 Still open:
 
+- [x] Commit the real-browser probe rather than describing its results
+      (`scripts/fixtures/transcript-highlight-probe.*`), so the eliminations below are reproducible
+      and the next investigator does not rebuild it
+
+- [x] Give the probe a listener counter that models DOM deduplication and `once: true`
+      auto-removal, so it counts registrations rather than `addEventListener` calls — the naive
+      version reported a 160-per-keystroke and 159-per-modal-cycle "leak" that the browser was not
+      holding
+- [x] Attribute the (bounded, self-clearing) keydown listener cost to the rewind handles with a
+      control condition (`?rewind=0`), rather than by inspection
+
+- [x] Establish that the trace's listener rise is **registration churn, not a leak** — the trace has
+      163 minor (scavenger) GCs and zero major/mark-compact ones, and only a major GC releases
+      detached nodes and their listeners, so "never fell across GCs" was never a retention finding.
+      A subtree mounting and unmounting each iteration produces exactly the measured curve.
+- [x] Reconcile the trace's +73/+108/+113/+116 outliers with the rewind handles: at two listeners
+      per handle they imply 37–58 handles, plausible at the traced session's 14,524 DOM nodes
+
+- [ ] **What subtree registers ~620 listeners on mount is unidentified.** The figure itself survived
+      falsification (2,131 counter samples; growth tracks calls not clock; a 2.7 s window with 819
+      samples and no heavy call grew by 0), so it is a real per-iteration cost. Nothing reachable in
+      the transcript, the diff modal, or a keystroke *retains* listeners — which is the expected
+      result for churn, not a missing explanation. Finding the subtree with that mount cost would
+      very likely name the loop's engine too.
+
+- [x] Establish the traced surface. **No modal was open during the recording** (user who took the
+      trace, 2026-08-30), which excludes `ReadResult` (`ToolCallModal`-only) and `WriteContent`
+      (`DiffModal`-only) and leaves `CodeBlock` as the only call site — so the block is a whole-file
+      fenced block in the transcript with no usable language on the fence, and since `CodeBlock`
+      cannot re-highlight while mounted, the loop **remounts transcript rows**
+
+- [x] Row-key churn **does not** remount, and is eliminated. Inserting and removing a leading
+      message shifts every bubble's `m-${el.index}`, but React reconciles keyed children across the
+      whole list, so the key *set* is unchanged except at its ends: each fiber is reused and
+      re-rendered with the next row's props. Six flips produced **0** `CodeBlock` mounts.
+- [x] Point the probe at `highlight.js/lib/core`, the instance `syntax-highlight.ts` actually calls.
+      Patching the full `highlight.js` build intercepts nothing, so `__probe.auto` read 0 forever and
+      every elimination became a false negative — the **third** instrument in this investigation that
+      was blind by construction. Each run now checks for a non-zero baseline at mount before any zero
+      elsewhere is believed.
+- [x] Give the probe a mount counter that does not go through `highlight.js`. Counting
+      `highlightAuto` can no longer detect a remount at all, because `highlightCached` makes one a
+      map lookup — the fix blinds the obvious probe, which is the same masking review caught in
+      `transcript-highlight-cost.test.tsx`. The probe now counts `code.hljs` nodes entering and
+      leaving the DOM.
+
+- [x] Eliminate the ~1.8 s cadence hypotheses. A periodic **re-render** cannot be the engine at any
+      cadence — 8 forced re-renders at the real timers' 1 s produce 0 block mounts and 0 highlights,
+      and only a remount can re-highlight. `@formkit/auto-animate` (the closest cadence in the repo,
+      2 s) is sidebar-only and not an ancestor of `MessageList`; the only keyed elements in
+      `App.tsx`/`AppLayout.tsx` are a banner and a dialog; `useNarrowContainer` is Issues-panel only.
+- [x] Give the mount counter a positive control (`window.__swapWrapper`, the `AppLayout`
+      Fragment/div shape), so a "0 mounts" result is falsifiable rather than free. Four flips: 3
+      mounts, and 3 highlight runs with the cache neutered against 0 with it live.
+- [x] Establish the loop is **self-scheduled, not timer-driven**: correlation between a call's
+      duration and the following idle gap is r = +0.22 (n = 27), where a fixed-period timer would
+      give roughly −1. Period = duration + ~10 ms, so a cheaper iteration is a *faster* loop.
+- [x] Eliminate click and focus as the trigger, and retract the earlier "focusin immediately before
+      the burst" reading — it came from a windowing bug in the analysis script. Direct enumeration:
+      `focus`/`focusin`/`DOMFocusIn` each fire exactly once at 7,172.2 ms, 546 ms *after* the burst
+      began, and the trace holds exactly one click. Both sit inside an already-running loop.
+- [x] Eliminate the `AppLayout` `isMobile` swap for this trace on the **viewport measurement**: the
+      full-page `Paint` clip is 2742 × 1906 at `hostDPR: 2`, i.e. 1371 × 953 CSS px, against a
+      `(max-width: 767px)` query — stably false by a factor of 1.8, with nothing resizing.
+- [x] State the instrument rule once, generally, rather than as four separate incidents
+      (`plan.md` → "The rule this investigation kept relearning").
+
+- [ ] **Fix the `AppLayout` Fragment-vs-div remount** (`AppLayout.tsx`, the `isMobile ? <>…</> :
+      <div>…</div>` branch). Not this trace's engine — the viewport rules that out — but a real
+      latent defect on its own: every crossing of the 768 px breakpoint discards every fiber in the
+      transcript and re-highlights every code block. Give both branches the same element type; the
+      mobile branch's relative wrapper is load-bearing for the sessions-drawer overlay and has to
+      survive. Needs a test asserting a child below the branch keeps identity across an
+      `isMobile` flip.
+
+- [ ] **The loop's engine is still unidentified.** The 35 calls are one loop — 29 consecutive calls,
+      2.8–6.1 ms apart, 8.2 s long, period = one highlight — that starts 1.8 s *after* scrolling
+      begins and outlives the last scroll event by 4.8 s, scheduling each iteration through a
+      microtask after the previous commit. Two failures must hold at once: something re-renders
+      continuously, and every one of those renders re-highlights. The probe eliminated
+      `MessageList`, the memoized rows, `SubagentReport`'s ResizeObserver, the `content-visibility`
+      pairing, and both lazy-body fetches. **The surface question is settled** — no modal was open,
+      so the payload (16,979 bytes, a whole file) is a whole-file fence rendered by `CodeBlock`, and
+      since `CodeBlock` cannot re-highlight while mounted, the loop remounts transcript rows.
+      **Every named engine is now eliminated too**: periodic re-render (any cadence, by
+      construction), `@formkit/auto-animate`, keyed ancestors, `useNarrowContainer`, history
+      rehydration, SSE, click/focus, and — on the viewport measurement — the `AppLayout`
+      `isMobile` swap. **The Docs-tab trigger did not close it either, and this is the trap to
+      avoid repeating.** A second trace (2026-08-30 12:00, 17.3 s) has an 8,264 ms synchronous
+      call that the user reproduced as Docs-tab-conditional, which looked like the handle this
+      item needs. It is not: the leaf is `highlight.js` (twenty sampled functions align at a
+      constant −1/−2 column offset with the first trace's module, and the 8,264 ms reproduces
+      as 8,747 ms on 20.8 KB of prose), while the genuinely tab-conditional bug found in that
+      trace — `DocsViewer`'s O(u²·n) grouping — accounts for **≤90 ms** there and is a
+      *different* cost. The user then confirmed the freeze also occurs on a repo with few
+      markdown files, where the grouping bug cannot bite. So a tab-conditional trigger for a
+      transcript highlight is real and still unexplained. What would close it: a trace whose
+      component name (record with "Highlight updates when components render" on, or use the React
+      Profiler). Whoever picks this up starts from an empty candidate list, not from these.
+- [x] **The Docs tab's own freeze is identified and fixed** — a *different* cost from the loop above,
+      and the one that matches the user's reproducible trigger ("opening the docs tab freezes the UI;
+      with any other tab open it does not"). `DocsViewer` grouped its list with predicates that each
+      re-scanned the whole doc list, `hasTrackedSibling` once per candidate sibling — O(u²·n) over n
+      docs of which u are untracked — in its render body, and it re-renders with `App`, so every
+      update to the transcript paid it again. Measured in Chrome on this repo's real list
+      (n = 866, u = 96): **342–486 ms per render**; indexed, **3.6 ms**, with byte-identical
+      grouping. Only the Docs branch renders the component, which is exactly why no other tab pays
+      it. Guards, each shown able to fail first: a cost guard in `doc-paths.test.ts` (12,894 ms
+      pre-fix against a 500 ms budget); a derivation guard in `DocsViewer.test.tsx` watching both the
+      index build and the per-doc regrouping (21 `isTrackedIn` calls across 6 renders with the group
+      memos removed, against 6); and a duplicate-path guard, since the index counts each tracked
+      *path* once where the scan it replaces excluded every entry matching the query.
+
+      **What this does not settle.** It is not established that this is the 8,264 ms leaf in the
+      2026-08-30 12:00 trace — that trace was read by another session and attributed to
+      `hljs.highlightAuto`, and it was not available here. The precise claim is that the *grouping
+      subtree* does not call `highlightAuto`, so an `_highlight` leaf would be a separate cost; it is
+      NOT that `highlightAuto` is unreachable while the Docs tab is open, since the transcript stays
+      mounted and opening a doc renders its markdown through the same `CodeBlock`. Both costs present
+      as one multi-second synchronous `FunctionCall` inside a component render, so the leaf name is
+      what distinguishes them, not the shape.
+
+- [ ] The two modal-only `highlightAuto` sites (`ReadResult`, `WriteContent`) still re-highlight on
+      every modal open. Deliberately not wired here — a concurrent session is changing language
+      selection in exactly those files — so this is a one-line follow-up for whoever lands that.
+
 - [ ] Re-trace a **streaming turn on a long session** and compare against the table in
-      `plan.md`. A post-merge trace was taken (2026-08-16) and is recorded below, but it
-      does **not** close reqs 1–4: it is a different session with a 20x smaller
-      transcript and no token stream, so it cannot tell the fixed build from the
-      unfixed one.
+      `plan.md`. Two post-merge traces exist (2026-08-16, 2026-08-30) and are recorded
+      below. **Neither closes reqs 1–4**, and for the same reason both times: no token
+      stream. The 2026-08-30 one carried 12 WebSocket frames in 15 s. Until a trace is
+      taken *while an agent is writing a reply*, this stays open — a trace of an idle or
+      scrolling session cannot tell the fixed build from the unfixed one.
 - [ ] Decide from that measurement whether explicit event batching is still needed
       (design 2) — blocked on the item above; deliberately not built on speculation.
 - [ ] Hand-check Ctrl+F, select-all, pin-to-bottom, search jump-to-match on a long
@@ -40,7 +244,10 @@ Still open:
 - [ ] Record one production trace **with the `cc` category enabled**, during a streaming turn on a
       large session. It serves two open questions at once: the reqs 1–4 measurement above, and the
       `visible_layers` reading that decides between the two readings in *Separate finding*
-      correction 2 below.
+      correction 2 below. Attempted again 2026-08-30 and **missed again** — that trace has 0
+      events whose category is exactly `cc`, and no draw-property event on any thread. Whoever
+      records the next one must enable `cc` explicitly in the Performance panel; it is off by
+      default, and the naive check for "cc" in a category string will wrongly say it is on.
 
 ## Post-merge trace, 2026-08-16
 
@@ -72,6 +279,65 @@ consistent with the fix and evidence of nothing.
 
 What would close reqs 1–4: a trace of an agent **streaming a reply** into a session with a
 transcript comparable to the baseline's.
+
+## Second post-merge trace, 2026-08-30
+
+A 14.9 s production trace of `nikz.win`. Recorded while the user scrolled the transcript and
+typed; **not** a streaming turn (12 WebSocket frames in 15 s), and a mid-size session.
+
+| | baseline (2026-08-15) | 2026-08-16 | 2026-08-30 |
+|---|---|---|---|
+| trace length | 17.7 s | 21.8 s | 14.9 s |
+| main thread blocked | 5.28 s (30%) | 3.81 s (18%) | **10.39 s (70%)** |
+| DOM nodes | 53,628 | 3,986 | 14,532 |
+| heap peak | 461 MB | 109 MB | 164 MB |
+| live listeners peak | 206,457 | 2,993 | 41,274 |
+
+**Does not close reqs 1–4.** Same defect as 2026-08-16 — no token stream — so it still cannot
+distinguish the fixed build from the unfixed one. It is recorded because it establishes
+something else.
+
+### The dominant cost is now syntax highlighting, not row rendering
+
+`hljs.highlightAuto()` is **52% of the trace**: 7,786 ms of self time in the `_highlight`
+leaf, 8,847 ms across the whole highlight.js module, out of 14,897 ms. 35 calls, all
+synchronous inside a React render. Reconstructed stack, leaf first: `_highlight` ← the
+`.map()` arrow inside `highlightAuto` ← a `useMemo` callback ← a function component ←
+`renderWithHooks` ← `beginWork` ← `renderRootSync`.
+
+`highlightAuto` is not told the language, so it highlights the text once per registered
+language — all 192 — and compares relevance. Measured in a browser on 12 KB (11,975 chars):
+
+| call | cost |
+|---|---|
+| `highlightAuto(code)` — all 192 languages | 248.9 ms |
+| `highlightAuto(code, subset)` — 13 languages | 19.6 ms |
+| `highlight(code, {language})` | 4.1 ms |
+
+248.9 ms reproduces the 274 ms in the trace. Two of the three call sites can know the language
+and do not: `ToolResult.tsx:190` (its `extractFilePathFromReadContent` helper is dead code —
+every path returns `null`, and line 185 discards the result) and `DiffBlock.tsx:259` (the
+parent's `filePath` is not passed to `WriteContent`). Tracked separately.
+
+**One payload, ~35 times — mechanism NOT established.** Cost per call is near-constant
+(p50 274 ms, p90 276 ms, max 277 ms) while `highlightAuto` cost scales with input size
+(13 ms at 1 line, 172 ms at 200, 396 ms at 600). So the same content is highlighted over and
+over. `useMemo` compares strings by value and cannot retrigger on an unchanged one, which
+points at a remount rather than a re-render — supported by listeners more than doubling
+(19,521 → 41,274) while DOM nodes stayed flat (14,524 → 14,532) and never falling across
+several GCs. Whether the row memo of this design is implicated is **not** established.
+
+### Idle compositing persists, and `cc` was missed again
+
+`Layerize` 0.5590 ms/call and `Commit` 0.1211 ms/call over 638 frames, against the
+*Separate finding* section's 0.6500 and 0.1113 — the phenomenon reproduces on a second
+production recording, so correction 2's open question is not an artifact of one trace.
+42.8 main-thread frames/s with nothing streaming.
+
+The `visible_layers` reading is still missing: 0 events with category exactly `cc`, and the
+renderer's Compositor thread carries the same 21 PipelineReporter-family event names as
+before, with no draw-property event under any name. **This trace cannot decide between
+readings (a) and (b) either.**
 
 ## Separate finding — continuous idle compositing
 
@@ -290,7 +556,170 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
    so much larger than anything reproduced here, and they are fixable independently — the first is
    understood today, the second is not.
 
+### FIXED (2026-09-01) — the third ingredient nobody had varied
+
+**First, a correction to the instrument, because it changes every number in this file.**
+`trace-idle-frames.mjs` measured its window as the span of *every* event in the trace. The
+browser process is already producing frames when tracing starts and Perfetto's flush runs after
+`Tracing.end`, so an 8 s recording measured **10.77 s** and every per-second rate came out
+**1.35x too low** — a 60 Hz display read as 44.7. The window is now the span of this renderer's
+own main-thread work and frames. **Numbers recorded above this line use the old denominator and
+are not comparable with the ones below it.**
+
+Everything above treated the pairing as a choice between two removable things,
+`content-visibility: auto` and `@formkit/auto-animate`. Both are load-bearing, so the answer
+kept coming out "neither".
+
+**The animation is the third ingredient, and it is the cheap one.** On `idle-frame-cost.html` at
+`n=2000`, one run per cell (the frame rates are deterministic; the busy figures move a few per
+cent with container load):
+
+| n=2000 | main-thread frames/s | main-thread busy |
+|---|---|---|
+| animation + `content-visibility` rows + live JS observer | 60 | 176.6 ms/s |
+| animation + `content-visibility` rows only | 60 | 229.1 ms/s |
+| animation + live JS observer only | 60 | 166.9 ms/s |
+| animation, **both** observer sources removed | **0** | 1.8 ms/s |
+| **no animation**, both observer sources present | **0** | **0.2 ms/s** |
+
+The last two rows cost the same. So removing the animation is not a worse fix than removing both
+observers — it is the **same** fix, reached by moving one ingredient instead of two, and the one
+it moves has no unmeasured benefit behind it.
+
+#### `content-visibility: auto` now has its numbers, and it stays
+
+The experiment this file specifies was run, with the variant it says is needed:
+`scripts/trace-load-and-scroll.mjs` traces from *before* navigation. (Its phase spans come from
+markers the page emits, so the denominator correction above does not apply to it.) `n=2000`, no
+animation, two runs per condition:
+
+| | first contentful paint | load-phase busy | 6 s top-to-bottom scroll |
+|---|---|---|---|
+| `content-visibility: auto` | **123 / 124 ms** | 127 / 117 ms | 3,415 / 3,777 ms |
+| removed | 227 / 256 ms | 220 / 227 ms | **1,026 / 1,000 ms** |
+
+Two results, and the second was not expected. It **halves first paint** on a long transcript —
+the benefit it was put there for, which nobody had measured. And it makes a full-transcript
+scroll **3.5x more expensive**, not cheaper; about a third of that scroll cost (1,026–1,170 ms)
+is `computeIntersections`. This file's premise that it exists "so a long transcript does not lay
+out and paint every off-screen row" is right about load and wrong about scroll.
+
+Neither number decides anything now, because the idle cost it was being traded against is gone
+once the animation stops scheduling frames. It stays as it is.
+
+**The scroll figure led to planning#491, now fixed — and the answer was not "remove it".**
+`content-visibility: auto` moved onto *groups* of 20 rows. See `plan.md` section 2d for the
+design; the numbers are below, and they correct the ones this section was filed with.
+
+**Correction: the synthetic fixture overstated the scroll win by about 4x.** It predicted 7–11x
+(619 / 565 ms at 20 rows per group against 4,578 / 4,529 per-row, at n=2,000). Re-measured on the
+**real** `MessageList` at 803 messages, two runs each, a 6 s full-transcript scroll costs
+**339 / 346 ms against 482 / 501 ms** — about 30%. The fixture's rows were trivial, so
+intersections dominated its scroll cost; a real scroll is dominated by rendering rich rows, and
+only the intersection component moves. That component itself does fall as predicted:
+**3.7 / 3.7 ms against 98 / 101 ms, ~26x.**
+
+The large win is elsewhere and was not what the issue was filed for: with **one indicator
+animating** — the steady state section 2c is about — the real component costs **10.0 / 10.2 ms/s
+against 56.2**, because every scheduled frame runs the intersection pass over every element
+carrying containment. So 2c cut the frames ~6x and this cuts the cost of each remaining frame
+~5x.
+
+#### The fix, and the rule it turned into
+
+`steps(N)` wakes the main thread only when the animated value changes. Sweeping N at 300 rows,
+with a live observer and `content-visibility` rows present throughout:
+
+| `steps(N)` | 4 | 8 | 10 | 16 | 30 | linear |
+|---|---|---|---|---|---|---|
+| main-thread frames/s | 4.1 | 8.0 | 10.1 | 16.1 | 30.0 | 60.1 |
+| main-thread busy | 4.7 | 8.4 | 10.8 | 15.8 | 26.3 | 44.9 ms/s |
+
+Exactly N frames per second. Three constraints came out of the same fixture, and all three shape
+what got written:
+
+- **It only works for a COMPOSITOR-ONLY property.** `steps(10)` on an animation of `left` still
+  costs **60** main-thread frames/s (against 10 for the same `steps()` on `transform`), because
+  the main thread has to run layout for it whatever the timing function says. This was missed in
+  the first draft of this change and caught in review: `.preview-art-dash` animates
+  `stroke-dashoffset`, so the preview empty state would have cancelled the whole saving while
+  every syntactic check passed.
+- **The cost is the UNION over running animations.** One linear animation beside a `steps(10)`
+  one puts the page back at 60.1 frames/s.
+- **Step boundaries run from each animation's own start time.** Two `steps(10)` animations
+  mounted 37 ms apart cost **20.1** frames/s, not 10; mounted together they cost 10.1. So there
+  is **no shared clock** — an earlier draft of this section called it a "shared 10 Hz grid" and
+  that was wrong. Each animation is individually capped at 10 value changes a second, and
+  independently-phased ones add.
+
+So the rule is two-part and lives in `src/client/index.animation-policy.test.ts`: an **infinite**
+animation may animate only `transform`/`opacity`, and must step at about 10 Hz. `--animate-spin`,
+`--animate-ping` and `--animate-pulse` are re-declared in an `@theme` block, and `.tool-spinner`
+takes `steps(10)`.
+
+**Decorative illustration is finite instead.** The rocket scene and the preview-setup art are
+both mounted on *empty* screens that a user can sit on indefinitely, so stepping them would have
+left an idle page waking 10 times a second rather than not at all — and one of them could not be
+stepped usefully anyway. They now run for about 24 s and stop, at their original smooth easing:
+a finite animation is exempt from both rules because it costs nothing once it ends.
+
+#### An idle session was animating, and the section below says it should not have been
+
+The section below states the cost "is paid only while something animates, i.e. while a tool
+runs". That is wrong, and it is why an idle session could cost a quarter of a core. `ServiceList`
+and `PreviewServicesDrawer` drew the **running** service dot with `animate-ping` — a service that
+is up is a *steady state*, and that ping ran for as long as the service did. It is now a static
+dot; `starting` keeps its spinner, because that one is genuinely in flight.
+
+Auditing the rest found no second steady-state case: every other infinite animation (CI pending,
+cloning, agent-running, recording, the skeleton pulses) marks work that really is in flight.
+Several can run for many minutes, which is what the 10 Hz cap is for.
+
+#### Before and after
+
+Real UI, dogfood session, 60 Hz, indicators injected with the app's own classes
+(`scripts/fixtures/inject-app-spinner.js`, which reports each element's resolved `animation` as
+its positive control — a run reading `linear` is measuring the wrong build):
+
+| | before | after |
+|---|---|---|
+| one indicator animating | 60.1 fps / 40.5 ms/s | **17.9 fps / 14.7 ms/s** |
+| three indicators, staggered | 60.1 fps / 45.8 ms/s | **31.1 fps / 27.4 ms/s** |
+| nothing animating (control) | — | 4.7 fps / 4.9 ms/s |
+
+On the long transcript the report is about — `idle-frame-cost.html?spin=1&io=1&cv=1&n=2000`:
+**179 → 47.4 ms/s**, frames **60 → 10.1**.
+
+The two changes compose in the order that matters for the report: an idle session with a running
+service used to sit on the "one indicator animating" row and now sits on the control row.
+
+Verified in the real app rather than inferred: every animation resolves to its stepped form, and
+the spinner shows **3 distinct transforms in 300 ms** — 10 Hz, not 60.
+
+#### What this does not do
+
+- It does not make an animating page free. Three staggered indicators still cost 31.1 frames/s,
+  and six independently-phased ones would saturate. The union rule is a real ceiling.
+- **It does not make an idle page free the instant it loads.** The two illustrations animate for
+  about 24 s before stopping. An idle screen showing one costs display-rate frames for that long
+  and nothing afterwards.
+- It does not touch correction 2's open question — what makes a production frame cost 0.65 ms. It
+  removes 5/6 of the frames, so it pays that unknown back at the frame rate, which is the reason
+  the two problems were worth separating.
+- **The main thread is not the whole 25%.** The production trace attributes 11.8% of a core to
+  the renderer main thread and reaches ~22% only by adding the GPU main thread (5.8%), the viz
+  compositor (1.5%) and the renderer compositor (1.3%). Those are driven by the same frames, so
+  removing frames should move them together — but only the main-thread half is measured here.
+- The `cc` category was **again** absent from the 2026-09-01 production trace (0 events with
+  category exactly `cc`), so `visible_layers` is still unread. One new datum for correction 2:
+  `Layerize` costs **0.180 ms/call** there, against 0.650 and 0.559 in the two earlier traces —
+  so whatever drives that number varies threefold across production recordings rather than being
+  a fixed property of the app.
+
 ### Decision: no code change, and what would justify one
+
+*(Superseded by the section above, which fixes it. Kept because it is the record of what was
+measured before, and its decision rule is the one that was followed.)*
 
 Not fixed here, deliberately. The cost is real: **~28 ms/s of main thread** on this 21-row
 session while any tool runs (36.8 today against 9.1 with both sources removed), and it grows with

@@ -1,14 +1,3 @@
-/**
- * planning#2315 — the skip path's wiring for the unbacked-output warning.
- *
- * `install-skip-warning.test.ts` covers the decision; this covers what the
- * controller does with it, which is the part that can regress silently: the
- * warning must ride the `install_log` stream (the agent Logs tab is where a
- * human can read it), and it must change nothing else — the request still
- * returns `{ skipped: true }` and no install is started. A warning that cost a
- * reinstall would be worse than the failure it describes.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
@@ -23,7 +12,6 @@ import { makeMarker, serializeMarker } from "../shared/install-marker.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
 
-/** A workspace with the given shipit.yaml `agent:` block, and no git repo. */
 function makeWorkspace(agentBlock: string): { workspaceDir: string; stateDir: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "install-skip-warn-"));
   const workspaceDir = path.join(root, "workspace");
@@ -38,11 +26,6 @@ function makeWorkspace(agentBlock: string): { workspaceDir: string; stateDir: st
   return { workspaceDir, stateDir };
 }
 
-/**
- * Write the marker the `/install` gate will accept for `commands`. No git repo,
- * so the stamp's source commit is `null` — the same value `readSourceCommit`
- * resolves — and matching is then decided by runtime + commands (+ deps hash).
- */
 function writeMatchingMarker(workspaceDir: string, stateDir: string, commands: string[]): void {
   const stamp = {
     sourceCommit: null,
@@ -96,11 +79,9 @@ describe("install skip warning — controller wiring", () => {
 
     const res = await app.inject({ method: "POST", url: "/install", payload: { commands } });
 
-    // The behaviour change is the log line and nothing else.
     expect(res.json()).toEqual({ skipped: true, reason: "marker" });
     expect(logText()).toContain("npm run build");
     expect(logText()).toContain("agent.dep-dirs");
-    // The marker survives — a warning must never look like a miss.
     expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(true);
   });
 

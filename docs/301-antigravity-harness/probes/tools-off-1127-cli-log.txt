@@ -1,0 +1,11 @@
+# Antigravity 1.1.27 — CLI log lines behind tools-off-1127.json
+
+## The deny-all permission set was LOADED and APPLIED, yet the request still carried 11 tools
+I0913 20:16:42.104104       1 cli_setting_manager.go:92] CLI settings initialized: permissions=&{Allow:[] Deny:[*] Ask:[]}, toolPermission=request-review
+
+## An unresolved --agent name falls back to the default rather than failing
+W0913 20:15:19.830420       1 session.go:81] Agent "notools" not found, falling back to default
+W0913 20:18:11.858726       1 session.go:81] Agent "notools" not found, falling back to default
+
+## toolPermission has no read-only value; the loader rejects the whole file
+E0913 20:16:25.999646       1 cli_setting_manager.go:48] failed to load cli settings, using defaults: invalid settings: toolPermission: unrecognized value "read-only"

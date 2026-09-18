@@ -62,11 +62,6 @@ describe("Integration: Session clones", () => {
     }
   });
 
-  /**
-   * Helper: create a session with a git repo and activate it.
-   * Sends a message, waits for Claude to start, emits init + finish,
-   * then drains all resulting WS messages. Returns the app session ID.
-   */
   async function createAndActivateSession(
     client: TestClient,
     title: string,
@@ -74,7 +69,6 @@ describe("Integration: Session clones", () => {
     client.send({ type: "send_message", text: title });
 
     const claude = await waitForClaude(() => lastClaude);
-    // Emit init event so the server sends session_started
     claude.emit("event", {
       type: "system",
       subtype: "init",
@@ -83,7 +77,6 @@ describe("Integration: Session clones", () => {
     });
     claude.finish("test-session");
 
-    // Drain all messages until there's a pause
     let sessionId = "";
     try {
       while (true) {
@@ -96,7 +89,6 @@ describe("Integration: Session clones", () => {
       // Timeout — no more messages
     }
 
-    // Fallback: look up in session manager if we missed the WS message
     if (!sessionId) {
       const sessions = sessionManager.list();
       if (sessions.length > 0) {
@@ -107,17 +99,14 @@ describe("Integration: Session clones", () => {
     return sessionId;
   }
 
-  // ---- fork_session (HTTP) ----
-
   it("fork_session creates a cloned session via HTTP", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const parentId = await createAndActivateSession(client, "Parent session");
     expect(parentId).toBeTruthy();
     client.close();
 
-    // Fork the session via HTTP
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/fork`,
@@ -133,7 +122,7 @@ describe("Integration: Session clones", () => {
 
   it("fork_session rejects empty branch name via HTTP", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const parentId = await createAndActivateSession(client, "Parent");
     client.close();
@@ -148,7 +137,7 @@ describe("Integration: Session clones", () => {
 
   it("fork_session rejects invalid branch name characters via HTTP", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const parentId = await createAndActivateSession(client, "Parent");
     client.close();
@@ -170,8 +159,6 @@ describe("Integration: Session clones", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // ---- list sibling sessions ----
-
   it("list sibling sessions returns 404 for nonexistent session", async () => {
     const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/worktrees" });
     expect(res.statusCode).toBe(404);
@@ -179,11 +166,10 @@ describe("Integration: Session clones", () => {
 
   it("list sibling sessions returns empty for session without remoteUrl", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await createAndActivateSession(client, "Parent");
 
-    // Sessions without remoteUrl have no branch, so sibling sessions list is filtered to entries with branch
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/worktrees` });
     expect(res.statusCode).toBe(200);
     const worktrees = res.json().worktrees;
@@ -192,16 +178,13 @@ describe("Integration: Session clones", () => {
     client.close();
   });
 
-  // ---- archive_session with clone ----
-
   it("archive_session cleans up clone when archiving child session", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const parentId = await createAndActivateSession(client, "Parent");
     client.close();
 
-    // Fork via HTTP
     const forkRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/fork`,
@@ -212,20 +195,15 @@ describe("Integration: Session clones", () => {
     const childSession = sessionManager.get(childId);
     const childDir = childSession!.workspaceDir!;
 
-    // Archive the child via HTTP
     const archiveRes = await app.inject({ method: "DELETE", url: `/api/sessions/${childId}` });
     expect(archiveRes.statusCode).toBe(200);
 
-    // The child session should be archived
     const child = sessionManager.get(childId);
     expect(child?.archived).toBe(true);
 
-    // Parent had no remoteUrl, so the fork has none either — archive preserves
-    // the workspace dir because there's no cache to re-clone from on unarchive.
+    // With no remote, unarchive cannot restore a deleted workspace.
     expect(fs.existsSync(childDir)).toBe(true);
   }, 15_000);
-
-  // ---- merge_session (HTTP) ----
 
   it("merge_session returns 404 for nonexistent target session via HTTP", async () => {
     const res = await app.inject({
@@ -238,13 +216,12 @@ describe("Integration: Session clones", () => {
 
   it("merge_session merges a session branch into the parent session via HTTP", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const parentId = await createAndActivateSession(client, "Parent");
     expect(parentId).toBeTruthy();
     client.close();
 
-    // Fork via HTTP
     const forkRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/fork`,
@@ -256,12 +233,10 @@ describe("Integration: Session clones", () => {
     const childSession = sessionManager.get(childId);
     const childDir = childSession!.workspaceDir!;
 
-    // Make changes in the child session
     fs.writeFileSync(path.join(childDir, "feature.txt"), "new feature");
     const childGit = new GitManager(childDir);
     await childGit.autoCommit("Add feature");
 
-    // Merge the child into the parent via HTTP
     const mergeRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/git/merge`,
@@ -272,7 +247,6 @@ describe("Integration: Session clones", () => {
     expect(body.success).toBe(true);
     expect(body.message).toContain("to-merge");
 
-    // Verify the file exists in the parent
     const parentSession = sessionManager.get(parentId);
     expect(parentSession).toBeDefined();
     expect(fs.existsSync(path.join(parentSession!.workspaceDir!, "feature.txt"))).toBe(true);

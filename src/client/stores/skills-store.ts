@@ -16,21 +16,17 @@ import type { MarketplaceInfo, PluginInfo } from "../../server/shared/types.js";
 
 interface SkillsState {
   marketplaces: MarketplaceInfo[];
-  /** Plugin list per marketplace id (already filtered by the server). */
+
   pluginsByMarketplace: Record<string, PluginInfo[]>;
-  /** True while a network request is in flight. */
+
   loading: boolean;
-  /** Last error surfaced from a fetch / install call, if any. */
+
   error: string | null;
 
   fetchMarketplaces: (agentId: string) => Promise<void>;
   fetchPlugins: (marketplaceId: string) => Promise<void>;
   refreshMarketplace: (marketplaceId: string) => Promise<void>;
-  /**
-   * docs/149 v1c — repo-targeted install. Spawns a dedicated session that
-   * installs the skill and opens a PR, leaving the current session untouched.
-   * Returns the new session id + PR so the caller can point the user at it.
-   */
+
   installToRepo: (
     repoUrl: string,
     agentId: string,
@@ -87,7 +83,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       );
       set((s) => ({
         pluginsByMarketplace: { ...s.pluginsByMarketplace, [marketplaceId]: data.plugins },
-        // Update the marketplace row in-place too, since the fetch flips it ok/fetch-failed.
+
         marketplaces: s.marketplaces.map((m) => (m.id === marketplaceId ? data.marketplace : m)),
       }));
     } catch (err) {
@@ -105,7 +101,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
           method: "POST",
         }),
       );
-      // Pull the fresh plugin list now that the cache is up-to-date.
+
       await get().fetchPlugins(marketplaceId);
     } catch (err) {
       set({ error: (err as Error).message, loading: false });

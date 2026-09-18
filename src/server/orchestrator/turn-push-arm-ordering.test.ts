@@ -1,26 +1,3 @@
-/**
- * The post-turn auto-push is armed AFTER the turn's own git work, not inside
- * the commit.
- *
- * The post-turn flows push: `postTurnPrFlow` opens a pull request with a plain
- * push, or a `forcePush` when re-arming past a merged one (`quickCreatePr`), and
- * the release flow can publish a branch. While the arm lived inside
- * `postTurnCommit`, a debounced plain push could race that force-push, be
- * rejected non-fast-forward, and post the "your branch has diverged" transcript
- * notice for a branch that was fine — the false-alarm class
- * `services/auto-push-scheduler.ts` documents from two production incidents.
- *
- * What kept them apart was nothing but the 5-second debounce being longer than
- * the flow, which was never a guarantee: PR creation writes its title with an
- * LLM and can exceed it. `merged-push-guard.ts` deliberately ALLOWS the
- * auto-push once the branch has left the merged tip, which is exactly the
- * re-arm case, so the two really do meet on that path.
- *
- * The ordering is now explicit — `postTurnCommit` hands the arm to
- * `turn-executor.ts` via `deferPushArm` — and that is what these pin. Without
- * it the debounce cannot go to 0, which is where it belongs: it never coalesced
- * anything (see `app-di.ts`).
- */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -86,13 +63,8 @@ function makeListenerDeps(): SystemTurnDeps["listenerDeps"] {
 
 describe("post-turn auto-push arm ordering", () => {
   let repoDir: string;
-  /** Every ordered event of one turn's post-turn sequence, in the order it happened. */
   let order: string[];
 
-  /**
-   * Stands in for the real wiring: `commitTurn` → `postTurnCommit`, which takes
-   * the arm rather than firing it when the caller passes `deferPushArm`.
-   */
   function makeDeps(over: Partial<SystemTurnDeps> = {}): SystemTurnDeps {
     const agents: FakeAgent[] = [];
     return {
@@ -115,7 +87,6 @@ describe("post-turn auto-push arm ordering", () => {
     } as SystemTurnDeps;
   }
 
-  /** Run one turn to completion against `deps`, returning the fake agents used. */
   async function runOneTurn(runner: SessionRunner, agents: FakeAgent[]): Promise<void> {
     runner.dispatch(testDispatch({ text: "do the thing" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn started");
@@ -152,8 +123,6 @@ describe("post-turn auto-push arm ordering", () => {
       },
       postTurnPrFlow: vi.fn(async () => {
         order.push("pr-flow-start");
-        // The PR flow's own `git push` / `forcePush` — the thing the debounced
-        // push must not race.
         await new Promise((r) => setTimeout(r, 5));
         order.push("pr-flow-end");
       }),
@@ -203,22 +172,10 @@ describe("post-turn auto-push arm ordering", () => {
 
     await runOneTurn(runner, agents);
 
-    // A commit that never gets pushed, with nothing said, is the failure the
-    // scheduler exists to make impossible — a failing PR flow must not cause it.
     expect(order).toEqual(["commit", "pr-flow", "push-armed"]);
     runner.dispose({ force: true });
   });
 
-  /**
-   * The path an independent review found, and the reason the arm is not held by
-   * the post-turn flow alone. `tryDrain` COMMITS before it starts a queued turn,
-   * and starting that turn supersedes this one's agent. The `superseded` handler
-   * is settle-only — it is forbidden from running a post-turn commit — and a
-   * retired turn's `done` carries the previous spawn's runToken, so it may be
-   * dropped and never arrive. The commit would then sit local with no scheduler
-   * record and nothing said anywhere: invariant 3's failure, reintroduced by the
-   * deferral itself.
-   */
   it("arms when the turn is superseded after committing, even with no `done`", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
@@ -233,13 +190,9 @@ describe("post-turn auto-push arm ordering", () => {
 
     runner.dispatch(testDispatch({ text: "first" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn 1 started");
-    // Queued behind it — this is what makes the drain commit.
     runner.dispatch(testDispatch({ text: "second" }));
     expect(runner.queueLength).toBe(1);
 
-    // `agent_result` drains: it commits turn 1's work, then starts turn 2 —
-    // and `setAgent` emits `superseded` on turn 1's agent for real. No `done`
-    // ever follows for it, which is the case the runToken guard can produce.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => agents.length === 2, "turn 2 started (turn 1 superseded)");
     expect(order).toContain("commit");
@@ -262,7 +215,6 @@ describe("post-turn auto-push arm ordering", () => {
 
     runner.dispatch(testDispatch({ text: "do the thing" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn started");
-    // Both terminal signals, as a crashing streaming agent produces.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agents[0]!.emit("done", 0);
     agents[0]!.emit("done", 0);

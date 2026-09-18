@@ -4,14 +4,6 @@ import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
 import type { SubAgentConsultCard } from "../shared/types.js";
 import { CARD_MESSAGE_FIELDS } from "../../client/components/visual-elements.js";
 
-/**
- * Serialization contract: a `PersistedMessage` carrying every optional field.
- * If you add a field to `PersistedMessage`, wire it through `toRow`/`fromRow`
- * (and a migration) AND add it here — a field that serializes one way but not
- * the other (the recurring "card renders live but vanishes on reload" bug class,
- * docs/188) fails the round-trip deep-equal below, and any inline-card field
- * fails the CARD_MESSAGE_FIELDS guard test if it's missing here.
- */
 const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   role: "assistant",
   text: "everything",
@@ -25,6 +17,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   commitHash: "abc123",
   parentCommitHash: "def456",
   uploadPaths: ["/uploads/x.png"],
+  clientRequestId: "req-1",
   notice: true,
   noticeLevel: "warn",
   rolledBack: true,
@@ -35,10 +28,6 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", details: "{\n  \"file_path\": \".npmrc\"\n}", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
   egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "denied", createdAt: "2026-06-05T00:00:00.000Z" },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
-  // docs/261 phase 4 — `runOn` rides the same json column as the rest of the
-  // card, so it needs no migration; what it DOES need is to be here, or the
-  // round-trip below cannot tell "attribution survives a reload" from
-  // "attribution was never stored", which is the exact bug class docs/188 names.
   subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" }, status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, outputMarkdown: "## Findings\n\n- `foo.ts:42` — bug\n", createdAt: "2026-06-05T00:00:00.000Z" },
   nonTurnFailure: {
     cardId: "ntf1",
@@ -63,6 +52,18 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     branch: "shipit/apobab",
     headSha: "abc12345",
     createdAt: "2026-06-05T00:00:00.000Z",
+  },
+  repoSessionProposal: {
+    cardId: "rsp1",
+    repo: "acme/api",
+    repoUrl: "https://github.com/acme/api.git",
+    registered: true,
+    title: "Add cursor pagination to /events",
+    prompt: "Add cursor pagination to GET /events. The web client in acme/web depends on it.",
+    createdAt: "2026-09-14T00:00:00.000Z",
+    state: "started",
+    startedSessionId: "ses_child",
+    startedAt: "2026-09-14T00:01:00.000Z",
   },
   presentInline: {
     presentId: "pres_0123456789abcdef0123456789abcdef",
@@ -105,6 +106,33 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     ],
     pendingRestart: true,
     createdAt: "2026-06-05T00:00:00.000Z",
+  },
+  sshHostKey: {
+    cardId: "sshk1",
+    hostId: "ssh_1",
+    label: "prod",
+    address: "prod.example.com",
+    kind: "mismatch",
+    fingerprint: "SHA256:seen",
+    keyType: "ssh-ed25519",
+    recordedFingerprint: "SHA256:recorded",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
+  settingsProposal: {
+    cardId: "set-1",
+    target: { key: "advanced.enableSubAgents", repoUrl: "https://github.com/o/r", item: "notion" },
+    label: "Multi-agent sessions",
+    description: "Let the agent start child sessions and consult other agents.",
+    path: "Settings › Advanced",
+    from: "off",
+    to: "on",
+    reason: "The review you asked for runs as a separate agent.",
+    phase: "applied",
+    createdAt: "2026-06-05T00:00:00.000Z",
+    resolvedAt: "2026-06-05T00:01:00.000Z",
+    outcome: "Multi-agent sessions is on",
+    outcomeDetail: "Applies to sessions started from now on.",
+    effect: { state: "restart-dependent", detail: "Running containers are unchanged." },
   },
   issueWrite: {
     cardId: "iw1",
@@ -276,6 +304,7 @@ describe("ChatHistoryManager", () => {
           id: "tool-1",
           name: "Edit",
           input: { file_path: "/workspace/app.ts", old_string: "x", new_string: "y" },
+          startedAt: "2026-09-11T14:32:05.000Z",
         },
       ],
     };
@@ -284,6 +313,9 @@ describe("ChatHistoryManager", () => {
     const loaded = mgr.load("sess-1");
     expect(loaded[0].toolUse).toHaveLength(1);
     expect(loaded[0].toolUse![0].name).toBe("Edit");
+    // The call time is what the tool-call dialog shows, so it has to survive a
+    // reload — not just the live emit.
+    expect(loaded[0].toolUse![0].startedAt).toBe("2026-09-11T14:32:05.000Z");
   });
 
   it("persists a compaction card so it survives a reload (docs/178)", () => {
@@ -335,9 +367,6 @@ describe("ChatHistoryManager", () => {
     expect(loaded[0].voiceNote).toEqual(msg.voiceNote);
   });
 
-  // The `needsAttention` gate was removed (docs/163). Rows written before that
-  // carry the extra key in their stored JSON; they must still rehydrate so the
-  // card keeps rendering — no migration, nothing reads the dead flag.
   it("rehydrates a pre-removal voice-note row carrying a legacy needsAttention flag", () => {
     const mgr = new ChatHistoryManager(dbManager);
     const legacy = {
@@ -347,7 +376,6 @@ describe("ChatHistoryManager", () => {
       kind: "authored",
       createdAt: "2026-06-02T00:00:00.000Z",
     };
-    // Written the way the old code wrote it — the extra key is not in the type.
     mgr.append("sess-1", {
       role: "assistant",
       text: "",
@@ -383,7 +411,6 @@ describe("ChatHistoryManager", () => {
       const msg = draftCard("bug-card-1");
       mgr.append("sess-1", msg);
 
-      // A fresh manager (mirrors a reload rebuilding from the DB) sees the card.
       const loaded = new ChatHistoryManager(dbManager).load("sess-1");
       expect(loaded[0].bugReport).toEqual(msg.bugReport);
     });
@@ -404,7 +431,6 @@ describe("ChatHistoryManager", () => {
       expect(card?.phase).toBe("filed");
       expect(card?.issueNumber).toBe(1234);
       expect(card?.issueUrl).toContain("issues/1234");
-      // Original draft fields are preserved through the merge.
       expect(card?.title).toBe("Preview won't reload");
     });
 
@@ -452,8 +478,6 @@ describe("ChatHistoryManager", () => {
       mgr.append("sess-1", { role: "assistant", text: "acting on it" });
       mgr.append("sess-1", consult("spawn-b", "second report"));
 
-      // A fresh manager — this is the read `shipit agent result` makes, and the
-      // reason a run whose caller died is still recoverable.
       const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
       expect(cards.map((c) => c.spawnId)).toEqual(["spawn-a", "spawn-b"]);
       expect(cards[1].outputMarkdown).toBe("second report");
@@ -474,8 +498,6 @@ describe("ChatHistoryManager", () => {
         cardId: `card-${spawnId}`,
         spawnId,
         subAgentId: "codex",
-        // docs/261 phase 4 — written at SPAWN time, so it has to survive the
-        // terminal patch that lands minutes later on an already-finalized row.
         runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
         status: "pending",
         createdAt: "2026-08-03T00:00:00.000Z",
@@ -483,9 +505,6 @@ describe("ChatHistoryManager", () => {
     });
 
     it("flips a pending card to its terminal state on a FINALIZED row", () => {
-      // The common shape after docs/236: the consult was backgrounded, so its
-      // originating turn finalized long before the run ended. There is no
-      // in-progress turn to re-record into — the row patch is the only path.
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", { role: "user", text: "review the PR with codex" });
       mgr.append("sess-1", pending("spawn-a"));
@@ -497,7 +516,6 @@ describe("ChatHistoryManager", () => {
         outputMarkdown: "## Findings",
       })).toBe(true);
 
-      // Read back through a fresh manager — this is the reload path.
       const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
       expect(cards).toHaveLength(1);
       expect(cards[0]).toMatchObject({
@@ -506,14 +524,9 @@ describe("ChatHistoryManager", () => {
         status: "success",
         durationMs: 900_000,
         outputMarkdown: "## Findings",
-        // untouched fields survive the merge
         createdAt: "2026-08-03T00:00:00.000Z",
-        // docs/261 req 9 — including the attribution. The patch that finalizes a
-        // card carries no `runOn`, so a merge that replaced rather than merged
-        // would leave the permanent record unable to say what reviewed the work.
         runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
       });
-      // patched in place — one card, not a second row appended
       const all = new ChatHistoryManager(dbManager).load("sess-1");
       expect(all.filter((m) => m.subAgentConsult)).toHaveLength(1);
     });
@@ -531,13 +544,8 @@ describe("ChatHistoryManager", () => {
       expect(mgr.listSubAgentConsultCards("sess-1")[0].status).toBe("pending");
     });
 
-    // planning#309 — the boot reconcile's write. `finalize` clears in_progress so the
-    // reconciled card cannot be deleted by a docs/240-adopted turn's
-    // `replaceInProgress`, which drops every in_progress=1 row in the session.
     it("finalize clears in_progress, so an adopted turn's replaceInProgress can't delete the card", () => {
       const mgr = new ChatHistoryManager(dbManager);
-      // The foreground-consult shape: the card is still inside its own turn's
-      // in-progress row set when the orchestrator dies.
       mgr.replaceInProgress("sess-1", [
         { role: "assistant", text: "consulting codex", inProgress: true },
         { ...pending("spawn-a"), inProgress: true },
@@ -550,7 +558,6 @@ describe("ChatHistoryManager", () => {
         { finalize: true },
       )).toBe(true);
 
-      // The adopted turn now rebuilds its own rows, wiping every in-progress row.
       mgr.replaceInProgress("sess-1", [{ role: "assistant", text: "the adopted turn", inProgress: true }]);
 
       const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
@@ -558,12 +565,6 @@ describe("ChatHistoryManager", () => {
       expect(cards[0]).toMatchObject({ status: "cancelled", statusDetail: "ShipIt restarted" });
     });
 
-    // planning#402 — `finalize` used to be the ONLY thing standing between a card
-    // and the next turn's delete, and only the boot reconcile passed it. The
-    // storage chokepoint in `replaceInProgress` now finalizes an orphaned
-    // consult row on its own, so a card patched WITHOUT `finalize` survives too.
-    // `finalize` is still correct and still what the reconcile wants — it just
-    // stopped being load-bearing for durability.
     it("survives the next replaceInProgress even when the patch omits finalize", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.replaceInProgress("sess-1", [{ ...pending("spawn-a"), inProgress: true }]);
@@ -575,17 +576,6 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  /**
-   * planning#402 — the incident: a foreground `shipit agent run` finished
-   * successfully, its 16,529-character review was written into the turn's
-   * `in_progress=1` rows, an auto-fix turn preempted that turn 330 ms later, and
-   * its first `replaceInProgress` deleted the row. `shipit agent result` read
-   * `pending` for hours and the output was unrecoverable.
-   *
-   * The invariant these pin: **no delete of turn scratch takes a row carrying a
-   * sub-agent consult card** — and preserving it must not disturb the card's
-   * position inside a turn that is still alive.
-   */
   describe("consult cards are not turn scratch (planning#402)", () => {
     const card = (
       spawnId: string,
@@ -603,30 +593,22 @@ describe("ChatHistoryManager", () => {
       },
     });
 
-    /** The turn's rows as `emitChatCard` / `persistTurnInProgress` build them. */
     const turnRows = (...msgs: PersistedMessage[]): PersistedMessage[] =>
       msgs.map((m) => ({ ...m, inProgress: true }));
 
     it("keeps a terminal card whose turn is preempted before it finalizes", () => {
       const mgr = new ChatHistoryManager(dbManager);
-      // Turn T: the agent blocks on its own foreground `shipit agent run`, so
-      // the pending card lands in T's in-progress rows and T stays open.
       const spawned = turnRows(
         { role: "assistant", text: "running the review" },
         card("spawn-a"),
       );
       mgr.replaceInProgress("sess-1", spawned);
 
-      // 12 minutes later the consult returns. `persistCardTransition` takes the
-      // in-flight branch (T is still running), patching the recorded card and
-      // re-flushing the turn.
       mgr.replaceInProgress("sess-1", turnRows(
         { role: "assistant", text: "running the review" },
         card("spawn-a", { status: "success", outputMarkdown: "## Findings", durationMs: 761_642 }),
       ));
 
-      // 330 ms later an auto-fix turn preempts T and rebuilds from ITS OWN
-      // (empty) recorded cards. Before the fix this deleted the success row.
       mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "fixing the failing test" }));
 
       const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
@@ -639,8 +621,6 @@ describe("ChatHistoryManager", () => {
     });
 
     it("keeps a card that is still pending when its turn is preempted", () => {
-      // The same delete, one beat earlier: lose the pending row and the terminal
-      // patch that arrives minutes later has no row to land on at all.
       const mgr = new ChatHistoryManager(dbManager);
       mgr.replaceInProgress("sess-1", turnRows(card("spawn-a")));
       mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "a different turn" }));
@@ -664,27 +644,17 @@ describe("ChatHistoryManager", () => {
       mgr.clearInProgress("sess-1");
 
       const all = new ChatHistoryManager(dbManager).load("sess-1");
-      // The aborted turn's scratch is gone; the consult record is not.
       expect(all.map((m) => m.text)).toEqual([""]);
       expect(all[0].subAgentConsult).toMatchObject({ cardId: "card-spawn-a", status: "success" });
     });
 
     it("never leaves two rows for one card, and lets the terminal copy win", () => {
-      // Defect A on its own — no deletion involved, so this has to manufacture
-      // the finalized twin by a route that exists WITHOUT the fix: an
-      // out-of-band `finalizeInProgress` (docs/240's turn adoption, the auth
-      // handler, the crash paths). A live turn keeps the card in
-      // `recordedCards`, so its next rebuild re-offers it; inserting it beside
-      // the finalized copy leaves the stale row first, and every read that takes
-      // a first match then reports `pending` for a finished run.
       const mgr = new ChatHistoryManager(dbManager);
       mgr.replaceInProgress("sess-1", turnRows(
         { role: "assistant", text: "running the review" },
         card("spawn-a"),
       ));
       mgr.finalizeInProgress("sess-1");
-      // The turn is still alive and flushes its recorded card again — now
-      // carrying the terminal status.
       mgr.replaceInProgress("sess-1", turnRows(
         { role: "assistant", text: "running the review" },
         card("spawn-a", { status: "success", outputMarkdown: "## Findings" }),
@@ -707,12 +677,6 @@ describe("ChatHistoryManager", () => {
     });
 
     it("re-anchors a replaced card instead of freezing it above its own turn", () => {
-      // The other half of finding 2: when a finalized twin exists and the batch
-      // copy is at least as current, the surviving row is dropped and the card
-      // re-inserted at its anchor. Patching the twin in place would keep the
-      // data and lose the position — the card floating above the groups that
-      // preceded it, which is the regression the preserve step is conditional
-      // to avoid.
       const mgr = new ChatHistoryManager(dbManager);
       const rows = (status: "pending" | "success") => turnRows(
         { role: "assistant", text: "before the consult" },
@@ -720,10 +684,7 @@ describe("ChatHistoryManager", () => {
         { role: "assistant", text: "after the consult" },
       );
       mgr.replaceInProgress("sess-1", rows("pending"));
-      // A foreign rebuild orphans the card, so the preserve step finalizes THAT
-      // ROW ALONE — the state the twin branch actually sees in production.
       mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "a preempting turn" }));
-      // The original turn is alive after all and flushes its recorded card.
       mgr.replaceInProgress("sess-1", rows("success"));
 
       const all = new ChatHistoryManager(dbManager).load("sess-1");
@@ -736,9 +697,6 @@ describe("ChatHistoryManager", () => {
     });
 
     it("leaves the card at its anchor while its own turn is still rebuilding", () => {
-      // Why the preserve is conditional on the batch: finalize a row the LIVE
-      // turn still owns and its id freezes while the assistant rows around it
-      // are reborn with higher ones — the card floats to the top of its turn.
       const mgr = new ChatHistoryManager(dbManager);
       const rebuild = (tail: string[]) =>
         mgr.replaceInProgress("sess-1", turnRows(
@@ -771,12 +729,8 @@ describe("ChatHistoryManager", () => {
 
     it("skips a notice whose id already exists as a finalized row", () => {
       const mgr = new ChatHistoryManager(dbManager);
-      // Turn start: the env-prep notice is written in-progress…
       mgr.replaceInProgress("sess-1", [{ ...notice("n-1"), inProgress: true }]);
-      // …and a stale teardown finalizes it out from under the turn.
       mgr.finalizeInProgress("sess-1");
-      // The turn's next boundary rebuilds from `recordedCards`, which still
-      // hold the notice — the finalized copy must win, not duplicate.
       mgr.replaceInProgress("sess-1", [
         { ...notice("n-1"), inProgress: true },
         { role: "assistant", text: "working…", inProgress: true },
@@ -825,8 +779,6 @@ describe("ChatHistoryManager", () => {
     });
 
     it("returns every pending card across ALL sessions, with its owning session", () => {
-      // The boot sweep does not know which sessions were running when the
-      // previous orchestrator died — that is why this read is not per-session.
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", consultWith("spawn-a", "pending"));
       mgr.append("sess-1", consultWith("spawn-b", "success"));
@@ -842,8 +794,6 @@ describe("ChatHistoryManager", () => {
     });
 
     it("includes a card still inside its own in-progress turn", () => {
-      // The foreground-consult strand: the card never reached in_progress=0
-      // because the turn holding it never finalized.
       const mgr = new ChatHistoryManager(dbManager);
       mgr.replaceInProgress("sess-1", [{ ...consultWith("spawn-a", "pending"), inProgress: true }]);
       expect(mgr.listPendingSubAgentConsultCards()).toHaveLength(1);
@@ -874,7 +824,6 @@ describe("ChatHistoryManager", () => {
 
       const loaded = mgr.load("sess-1");
       expect(loaded).toHaveLength(2);
-      // Lands after the agent's turn (append-at-end), like a post-turn notice.
       expect(loaded[1].releaseCard?.phase).toBe("proposed");
       expect(loaded[1].text).toBe("");
     });
@@ -942,7 +891,6 @@ describe("ChatHistoryManager", () => {
       const card = mgr.load("sess-1")[1].permissionPrompt;
       expect(card?.phase).toBe("approved");
       expect(card?.remembered).toBe(true);
-      // Original request fields survive the merge.
       expect(card?.toolName).toBe("Write");
       expect(card?.path).toBe(".npmrc");
     });
@@ -960,36 +908,22 @@ describe("ChatHistoryManager", () => {
       expect(mgr.updatePermissionCard("sess-1", "missing", { phase: "approved" })).toBe(false);
     });
 
-    // Regression: the permission card resolves MID-TURN (the agent is blocked
-    // awaiting the answer), unlike bug-report / issue-write cards which resolve
-    // after their turn finalizes. So a DB-only `updatePermissionCard` patch is
-    // clobbered by the next in-progress rebuild — the card reverts to its
-    // Approve/Deny variant on the next switch/reload. The fix patches the
-    // recorded card so each rebuild carries the terminal phase.
     it("a later in-progress rebuild clobbers a DB-only patch, but a rebuild from the patched card survives", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", { role: "user", text: "add a line to .npmrc" });
 
-      // Proposing turn persists the assistant group + the pending card in-progress
-      // (what emitChatCard → persistTurnInProgress does on the request).
       const inProgress = (card: PersistedMessage): PersistedMessage[] => [
         { role: "assistant", text: "editing .npmrc", inProgress: true },
         { ...card, inProgress: true },
       ];
       mgr.replaceInProgress("sess-1", inProgress(pendingCard("perm-1")));
 
-      // DB-only patch flips it to approved...
       mgr.updatePermissionCard("sess-1", "perm-1", { phase: "approved", remembered: true });
       expect(mgr.load("sess-1").find((m) => m.permissionPrompt?.requestId === "perm-1")?.permissionPrompt?.phase).toBe("approved");
 
-      // ...but the NEXT rebuild of the same in-progress turn re-inserts from the
-      // turn's recorded cards, which still hold pending — reverting the card.
-      // This is the clobber `updateRecordedCard` prevents.
       mgr.replaceInProgress("sess-1", inProgress(pendingCard("perm-1")));
       expect(mgr.load("sess-1").find((m) => m.permissionPrompt?.requestId === "perm-1")?.permissionPrompt?.phase).toBe("pending");
 
-      // With the recorded card itself patched to approved, every rebuild — and
-      // the final end-of-turn persist — carries the terminal phase.
       const approved = pendingCard("perm-1");
       approved.permissionPrompt = { ...approved.permissionPrompt!, phase: "approved", remembered: true };
       mgr.replaceInProgress("sess-1", inProgress(approved));
@@ -1030,8 +964,6 @@ describe("ChatHistoryManager", () => {
 
   it("degrades a legacy agent_review row to a plain aiReview card (docs/203 migration)", () => {
     const mgr = new ChatHistoryManager(dbManager);
-    // Simulate a pre-docs/203 row: only the legacy `agent_review` column is set
-    // (no `ai_review`). It must still render as a degraded `aiReview` card.
     dbManager.db
       .prepare(
         "INSERT INTO messages (session_id, role, content, agent_review) VALUES (?, 'assistant', '', ?)",
@@ -1077,14 +1009,6 @@ describe("ChatHistoryManager", () => {
   });
 
   it("every inline-card field is exercised by the serialization contract (no emit-only cards, docs/188)", () => {
-    // The forcing function that kills the recurring bug class: every field in
-    // CARD_MESSAGE_FIELDS (the single list that also drives `hasCardContent`, so
-    // it's the only way to make a card render) MUST appear in the round-trip
-    // message above. Combined with the deep-equal round-trip test, this chains:
-    //   in the render list ⇒ must be in this contract message ⇒ must survive
-    //   append→load ⇒ must have a DB column + toRow/fromRow.
-    // So a new card that ships emit-only (renders live, vanishes on reload)
-    // turns CI red, naming the missing field.
     for (const field of CARD_MESSAGE_FIELDS) {
       expect(
         EVERY_OPTIONAL_FIELD_MESSAGE[field],
@@ -1094,16 +1018,78 @@ describe("ChatHistoryManager", () => {
     }
   });
 
+  describe("settings proposal card persistence (docs/299-agent-settings-access)", () => {
+    const proposal = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      settingsProposal: {
+        cardId,
+        target: { key: "advanced.enableSubAgents" },
+        label: "Multi-agent sessions",
+        description: "Let the agent start child sessions.",
+        path: "Settings › Advanced",
+        from: "off",
+        to: "on",
+        phase: "pending",
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
+    });
+
+    it("finds a card by id, and only that card", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", proposal("set-a"));
+      mgr.append("sess-1", proposal("set-b"));
+      expect(mgr.getSettingsProposalCard("sess-1", "set-b")?.cardId).toBe("set-b");
+      expect(mgr.getSettingsProposalCard("sess-1", "set-c")).toBeUndefined();
+      // Cards are per session: another session's id must not resolve here.
+      expect(mgr.getSettingsProposalCard("sess-2", "set-a")).toBeUndefined();
+    });
+
+    it("merges a phase patch into the stored card and returns what it stored", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", proposal("set-a"));
+
+      const merged = mgr.updateSettingsProposalCard("sess-1", "set-a", {
+        phase: "applied",
+        resolvedAt: "2026-06-05T00:05:00.000Z",
+        outcome: "Multi-agent sessions is on",
+      });
+
+      expect(merged).toMatchObject({
+        cardId: "set-a",
+        phase: "applied",
+        resolvedAt: "2026-06-05T00:05:00.000Z",
+        outcome: "Multi-agent sessions is on",
+        // The patch must not drop the fields it does not name.
+        label: "Multi-agent sessions",
+        from: "off",
+        to: "on",
+      });
+      expect(mgr.load("sess-1")[0].settingsProposal).toEqual(merged);
+    });
+
+    it("returns null for a card it does not hold, so a caller cannot emit a phantom card", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", proposal("set-a"));
+      expect(mgr.updateSettingsProposalCard("sess-1", "set-missing", { phase: "applied" })).toBeNull();
+    });
+
+    it("skips an unparseable row rather than losing the readable cards beside it", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      dbManager.db
+        .prepare("INSERT INTO messages (session_id, role, content, settings_proposal) VALUES (?, 'assistant', '', ?)")
+        .run("sess-1", "{not json");
+      mgr.append("sess-1", proposal("set-a"));
+      expect(mgr.getSettingsProposalCard("sess-1", "set-a")?.cardId).toBe("set-a");
+    });
+  });
+
   describe("issue-write card persistence (docs/177)", () => {
     const writeCard = (cardId: string): PersistedMessage => ({
       role: "assistant",
       text: "",
       issueWrite: {
         cardId,
-        // docs/248 — a card records BOTH the destination the write reached and
-        // the name it was addressed by: the destination so an Undo survives the
-        // repository dropping the declaration (req 11), the name so a re-point
-        // re-targets it (req 16).
         tracker: "github:acme/planning",
         trackerName: "planning",
         issueId: "42",
@@ -1165,7 +1151,6 @@ describe("ChatHistoryManager", () => {
           title: "Doc",
           verb: "comment-edit",
           summary: "edited a comment on SHI-9",
-          // Line 2 shows the NEW body; the prior text lives on the snapshot.
           content: { comment: "Corrected: the migration replays 1,344 comments." },
           attribution: "workspace",
           undo: { kind: "comment-edit", commentId: "c-99", previousBody: "the original text" },
@@ -1175,8 +1160,6 @@ describe("ChatHistoryManager", () => {
       };
       mgr.append("sess-1", msg);
       const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
-      // The whole card survives a reload — without the snapshot the Undo button
-      // would render with nothing to restore.
       expect(card).toEqual(msg.issueWrite);
     });
 
@@ -1189,8 +1172,6 @@ describe("ChatHistoryManager", () => {
           cardId: "iw-label-edit",
           tracker: "github:acme/planning",
           trackerName: "planning",
-          // A label write targets tracker CONFIG, so there is no issue: the
-          // identifier is the label's name AS IT NOW STANDS.
           issueId: "",
           identifier: "Bug",
           title: "",
@@ -1210,8 +1191,6 @@ describe("ChatHistoryManager", () => {
       };
       mgr.append("sess-1", msg);
       const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
-      // Without the snapshot surviving a reload the Undo button would render
-      // with nothing to restore — the label would stay wrong the other way.
       expect(card).toEqual(msg.issueWrite);
     });
 
@@ -1261,7 +1240,6 @@ describe("ChatHistoryManager", () => {
       expect(mgr.updateIssueWriteCard("sess-1", "iw-1", { undoState: "undone" })).toBe(true);
       const card = mgr.load("sess-1")[0].issueWrite;
       expect(card?.undoState).toBe("undone");
-      // Original fields survive the merge.
       expect(card?.summary).toBe("commented on planning#42");
     });
 
@@ -1269,6 +1247,37 @@ describe("ChatHistoryManager", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", writeCard("iw-1"));
       expect(mgr.updateIssueWriteCard("sess-1", "missing", { undoState: "undone" })).toBe(false);
+    });
+  });
+
+  describe("action-checklist submission (docs/299)", () => {
+    const checklist = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      actionChecklist: {
+        cardId,
+        actions: [{ id: "1", label: "Open a PR", payload: "Open a PR" }],
+        createdAt: "2026-09-13T00:00:00.000Z",
+      },
+    });
+
+    it("records submittedAt inside the existing card JSON, so no migration is needed", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", checklist("a1"));
+      // An older row reads as never submitted, which is the correct default.
+      expect(mgr.findActionChecklistCard("sess-1", "a1")?.submittedAt).toBeUndefined();
+
+      expect(mgr.updateActionChecklistCard("sess-1", "a1", { submittedAt: "2026-09-13T01:00:00.000Z" })).toBe(true);
+      const card = mgr.load("sess-1")[0].actionChecklist;
+      expect(card?.submittedAt).toBe("2026-09-13T01:00:00.000Z");
+      expect(card?.actions).toHaveLength(1);
+    });
+
+    it("returns false when no checklist matches the given id", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", checklist("a1"));
+      expect(mgr.updateActionChecklistCard("sess-1", "missing", { submittedAt: "x" })).toBe(false);
+      expect(mgr.findActionChecklistCard("sess-1", "missing")).toBeNull();
     });
   });
 
@@ -1373,7 +1382,6 @@ describe("ChatHistoryManager", () => {
 
     mgr.append("sess-1", msg);
 
-    // Reload via a fresh instance to confirm round-trip serialization works.
     const mgr2 = new ChatHistoryManager(dbManager);
     const loaded = mgr2.load("sess-1");
     expect(loaded).toHaveLength(1);
@@ -1411,15 +1419,9 @@ describe("ChatHistoryManager", () => {
     });
 
     it("skips in-progress rows so postTurnCommit doesn't stamp commit info on a stale next-turn row", () => {
-      // Regression: the previous behavior selected the absolute last row by id.
-      // If the next turn had already inserted in_progress=1 rows when
-      // postTurnCommit ran, the commit_hash got stamped on one of those
-      // transient rows — and the next replaceInProgress wiped it. The result
-      // was an "0 files" rewind preview for a turn that genuinely committed.
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", { role: "user", text: "first" });
       mgr.append("sess-1", { role: "assistant", text: "finalized answer" });
-      // Next turn has begun and persisted an in-progress placeholder.
       mgr.append("sess-1", { role: "assistant", text: "next turn streaming...", inProgress: true });
 
       const updatedId = mgr.updateLastMessage("sess-1", { commitHash: "deadbeef" });
@@ -1453,7 +1455,6 @@ describe("ChatHistoryManager", () => {
       expect(kept[0].text).toBe("A");
       expect(kept[1].text).toBe("B");
 
-      // Verify persisted state
       const loaded = mgr.load("sess-1");
       expect(loaded).toHaveLength(2);
     });
@@ -1479,7 +1480,6 @@ describe("ChatHistoryManager", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", { role: "user", text: "Original" });
 
-      // Corrupt the insert statement to force an error mid-transaction
       const internal = mgr as any;
       const origRun = internal.stmtInsert.run;
       let callCount = 0;
@@ -1489,7 +1489,6 @@ describe("ChatHistoryManager", () => {
         return origRun.apply(this, args);
       });
 
-      // saveMessages: deletes existing + inserts new → error on 2nd insert should roll back
       expect(() =>
         mgr.saveMessages("sess-1", [
           { role: "user", text: "New A" },
@@ -1499,17 +1498,12 @@ describe("ChatHistoryManager", () => {
 
       vi.restoreAllMocks();
 
-      // Original data should be intact (transaction rolled back the delete + first insert)
       const messages = mgr.load("sess-1");
       expect(messages).toHaveLength(1);
       expect(messages[0].text).toBe("Original");
     });
   });
 
-  // docs/252 phase 7 (req 9) — the notice must still be findable after a reload,
-  // and dismissal is STATE on the row rather than its removal: deleting it would
-  // make "I read this" and "it never happened" the same thing on the next load,
-  // and would take the record of a recurring failure with it.
   it("keeps a dismissed non-turn-failure notice in history with its dismissal stamped", () => {
     const mgr = new ChatHistoryManager(dbManager);
     mgr.append("sess-1", {
@@ -1521,7 +1515,7 @@ describe("ChatHistoryManager", () => {
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
         fallback: "The session kept its placeholder title.",
         createdAt: "2026-08-09T00:00:00.000Z",
       },
@@ -1563,7 +1557,6 @@ describe("ChatHistoryManager", () => {
       const first = mgr.consumeUnreportedBugOutcomes("s1");
       expect(first).toHaveLength(1);
       expect(first[0].issueNumber).toBe(7);
-      // The mark is durable, so a second turn — or a restart — gets nothing.
       expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
       expect(new ChatHistoryManager(dbManager).consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
     });
@@ -1591,8 +1584,6 @@ describe("ChatHistoryManager", () => {
         text: "",
         bugReport: card({ cardId: "c2", phase: "dismissed" }) as never,
       });
-      // The single last-write-wins `pendingAgentNotice` slot could not do this,
-      // which is why the flag lives on the card.
       expect(mgr.consumeUnreportedBugOutcomes("s1").map((c) => c.cardId)).toEqual(["c1", "c2"]);
     });
 
@@ -1608,29 +1599,12 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  /**
-   * planning#324 — the validator behind the conditional `GET /history`.
-   *
-   * The whole feature rests on one claim: a revision that has not moved means
-   * the session's transcript has not changed. A write path that fails to move it
-   * does not fail loudly — the client is told "unchanged", keeps the transcript
-   * it already has, and the change is invisible until something else happens to
-   * bump the counter. So every mutating method gets a case here, and a new one
-   * must get a case too.
-   *
-   * The table is deliberately exhaustive rather than representative. It is also
-   * the only executable statement of the issue's central subtlety: an in-place
-   * card patch changes the transcript while leaving both `MAX(id)` and
-   * `COUNT(*)` exactly where they were.
-   */
   describe("transcript revision (planning#324)", () => {
-    /** The CLI's background-launch acknowledgement, the shape `retire…` replaces. */
     const LAUNCH_ACK = JSON.stringify([{
       type: "text",
       text: "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: af0615944a51b458\nThe agent is working in the background. You will be notified automatically when it completes.",
     }]);
 
-    /** A carrier message holding one of the round-trip fixture's inline cards. */
     const cardOf = (field: keyof PersistedMessage): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -1753,7 +1727,6 @@ describe("ChatHistoryManager", () => {
           mgr.append("s1", { role: "assistant", text: "rolled back" });
           mgr.markRolledBackFromIndex("s1", 0, "c0ffee");
         },
-        // Row id 1 — the database is fresh for every test in this file.
         run: (mgr) => mgr.clearRolledBack("s1", [1]),
       },
       {
@@ -1782,13 +1755,6 @@ describe("ChatHistoryManager", () => {
       expect(new ChatHistoryManager(dbManager).transcriptRevision("never-used")).toBe(0);
     });
 
-    /**
-     * The mechanism is the trigger, not the methods above it: a write that goes
-     * around `ChatHistoryManager` entirely — hand-written SQL, `clearAll`, a
-     * method somebody adds next year — still moves the validator. This is what
-     * makes "every write path moves it" true by construction rather than by
-     * convention, and it is the one property a hand-placed bump cannot have.
-     */
     it("moves for a raw SQL write that goes around the manager", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("s1", { role: "assistant", text: "original" });
@@ -1801,11 +1767,6 @@ describe("ChatHistoryManager", () => {
       expect(mgr.transcriptRevision("s1")).toBeGreaterThan(before);
     });
 
-    /**
-     * The issue's central subtlety, made executable: a card lifecycle
-     * transition patches its row, so a validator built from the row count and
-     * the largest id would report "unchanged" over a transcript that changed.
-     */
     it("moves for an in-place patch that leaves MAX(id) and COUNT(*) untouched", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("s1", cardOf("bugReport"));
@@ -1820,8 +1781,6 @@ describe("ChatHistoryManager", () => {
       expect(after.n).toBe(before.n);
       expect(after.maxId).toBe(before.maxId);
       expect(after.revision).toBeGreaterThan(before.revision);
-      // …and the content really did change, so the assertions above are not
-      // agreeing about a no-op.
       expect(mgr.load("s1")[0].bugReport?.phase).toBe("dismissed");
     });
 
@@ -1837,13 +1796,6 @@ describe("ChatHistoryManager", () => {
       expect(mgr.transcriptRevision("s2")).toBeGreaterThan(0);
     });
 
-    /**
-     * The counter is in the database, not in the manager instance that happened
-     * to write it — so a second manager (a second viewer's request path) reads
-     * the same value. Durability ACROSS A RESTART is a different claim and is
-     * pinned where it can actually be tested, over a file-backed database:
-     * `database.test.ts` → "survives closing and reopening the database".
-     */
     it("is shared by every manager over the same database", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("s1", { role: "user", text: "hello" });
@@ -1851,11 +1803,6 @@ describe("ChatHistoryManager", () => {
         .toBe(mgr.transcriptRevision("s1"));
     });
 
-    /**
-     * A revision a client already holds must never come back attached to
-     * different content. Deleting a session's rows keeps its counter, so the
-     * rewrite that follows lands on a value nobody has seen.
-     */
     it("never rewinds when a transcript is deleted and written again", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("s1", { role: "user", text: "first life" });

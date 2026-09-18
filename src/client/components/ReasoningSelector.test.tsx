@@ -61,8 +61,6 @@ describe("ReasoningSelector (docs/217)", () => {
     expect(screen.getByTestId("reasoning-trigger").textContent).toContain("High");
   });
 
-  // docs/260 — `compactTrigger` is gone for the same reason it is gone from the
-  // harness selector: below 700px of composer width this control is not in the
   // row at all, so it never has to survive a width too small for its label.
   it("always shows the current level and names the knob for a screen reader", () => {
     render(<ReasoningSelector agent={claude} sessionReasoning="high" onChange={() => {}} />);
@@ -73,7 +71,7 @@ describe("ReasoningSelector (docs/217)", () => {
   });
 
   it("falls back to the per-agent localStorage seed in the new-session composer", () => {
-    // seedFromHistory=true previews the level the about-to-be-created session inherits.
+
     saveReasoning("claude", "max");
     render(
       <ReasoningSelector agent={claude} sessionReasoning={undefined} onChange={() => {}} seedFromHistory />,
@@ -82,8 +80,7 @@ describe("ReasoningSelector (docs/217)", () => {
   });
 
   it("does NOT bleed the localStorage seed into an active session at Default", () => {
-    // The leak fix: an active session (seedFromHistory=false) genuinely at Default
-    // shows "Default", not whatever level was last picked in another session.
+
     saveReasoning("claude", "max");
     render(<ReasoningSelector agent={claude} sessionReasoning={undefined} onChange={() => {}} />);
     expect(screen.getByTestId("reasoning-trigger").textContent).toContain("Default");
@@ -99,8 +96,7 @@ describe("ReasoningSelector (docs/217)", () => {
 
   it("drops the optimistic pick when the active session changes (keyed remount)", async () => {
     const user = userEvent.setup();
-    // Session A at Default; user optimistically picks Max. The call site keys the
-    // selector on the session id, so a switch remounts it and the pick is dropped.
+
     const { rerender } = render(
       <ReasoningSelector key="A" agent={claude} sessionReasoning={undefined} onChange={() => {}} />,
     );
@@ -116,15 +112,6 @@ describe("ReasoningSelector (docs/217)", () => {
   });
 });
 
-/**
- * docs/274 req 14 — the picker follows the SELECTION, not the harness.
- *
- * Grok is the harness that makes this visible: it declares four levels and its
- * CLI drops `--reasoning-effort` before the wire on a key-billed row, so a
- * picker reading `capabilities.reasoning.options` would put four controls on
- * screen that change nothing. The selection is derived from the bound session,
- * so these drive the session store rather than a prop.
- */
 describe("ReasoningSelector — levels follow the selection (docs/274 req 14)", () => {
   const grok: AgentOption = {
     id: "grok",
@@ -162,7 +149,7 @@ describe("ReasoningSelector — levels follow the selection (docs/274 req 14)", 
     const { container } = render(
       <ReasoningSelector agent={grok} sessionReasoning={undefined} onChange={() => {}} />,
     );
-    // The harness DOES declare levels — what hides the control is the mode gate.
+
     expect(grok.reasoning?.options.length).toBeGreaterThan(0);
     expect(container.firstChild).toBeNull();
   });
@@ -177,8 +164,7 @@ describe("ReasoningSelector — levels follow the selection (docs/274 req 14)", 
 
   it("drops a level the row does not offer, without dropping the control", async () => {
     const user = userEvent.setup();
-    // grok-4.5 is subscription-only and has no `xhigh` — the per-ROW narrowing,
-    // which the mode gate alone could not express.
+
     bindSession("sub", "grok-4.5");
     render(<ReasoningSelector agent={grok} sessionReasoning={undefined} onChange={() => {}} />);
     await user.click(screen.getByTestId("reasoning-trigger"));

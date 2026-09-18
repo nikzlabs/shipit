@@ -7,7 +7,6 @@ import {
 import { useSessionStore } from "../stores/session-store.js";
 import { useEventListener } from "./useEventListener.js";
 
-// Re-export for consumers that import the type from here.
 export type { PreviewError } from "../stores/preview-store.js";
 
 export interface UsePreviewErrorsReturn {
@@ -21,7 +20,7 @@ interface PostMessageData {
   source?: string;
   type?: string;
   message?: string;
-  /** File source URL from window.onerror — uses fileSrc to avoid collision with postMessage source identifier. */
+
   fileSrc?: string;
   level?: string;
   args?: string[];
@@ -30,11 +29,6 @@ interface PostMessageData {
   stack?: string;
 }
 
-/**
- * Extract session ID from a preview subdomain origin.
- * Subdomain format: {sessionId}--{port}.hostname
- * Returns the sessionId or null if the origin doesn't match.
- */
 function extractSessionIdFromOrigin(origin: string): string | null {
   try {
     const hostname = new URL(origin).hostname;
@@ -45,14 +39,6 @@ function extractSessionIdFromOrigin(origin: string): string | null {
   }
 }
 
-/**
- * Hook that listens for `postMessage` events from the preview iframe's
- * error-capture script and writes errors into the Zustand preview store.
- * Deduplication and rolling-buffer logic live in the store.
- *
- * With the iframe pool, multiple iframes may emit errors. We filter by
- * origin to only process errors from the active session's iframe.
- */
 export function usePreviewErrors(): UsePreviewErrorsReturn {
   const errors = usePreviewStore((s) => s.errors);
   const clearErrors = usePreviewStore((s) => s.clearErrors);
@@ -62,8 +48,6 @@ export function usePreviewErrors(): UsePreviewErrorsReturn {
     const data = event.data as PostMessageData | undefined;
     if (data?.source !== "shipit-preview") return;
 
-    // Filter out errors from background iframes (non-active sessions).
-    // Preview subdomains embed the sessionId: {sessionId}--{port}.hostname
     const originSessionId = extractSessionIdFromOrigin(event.origin);
     if (originSessionId) {
       const activeSessionId = useSessionStore.getState().sessionId;

@@ -1,19 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { runtimeKey, detectLibc, tuneNpmInstall } from "./install-runtime.js";
 
-// `runtimeKey` mixes env-driven inputs (the base digest / image-id fallback) with
-// live process inputs (`process.arch`, `detectLibc()`, `process.versions.modules`).
-// The live inputs are constant within a test run, so comparing two `runtimeKey`
-// calls isolates the env-driven part — exactly the planning#196 safety property.
 describe("runtimeKey (planning#196 — pinned base digest, not the full image id)", () => {
   it("composes base digest, arch, libc, and Node ABI", () => {
     const key = runtimeKey({ BASE_IMAGE_DIGEST: "sha256:base" } as NodeJS.ProcessEnv);
     expect(key).toBe(`sha256:base|${process.arch}|${detectLibc()}|abi${process.versions.modules}`);
   });
 
-  // Safety guard #1: an app-code-only rebuild (new worker-image id, SAME base
-  // digest) MUST preserve the key — that is the churn fix. If this regresses, the
-  // overlay store mints a fresh ~500 MB base every deploy again.
   it("a no-op app rebuild (image id churns, base digest fixed) preserves the key", () => {
     const before = runtimeKey({
       BASE_IMAGE_DIGEST: "sha256:base",
@@ -26,8 +19,6 @@ describe("runtimeKey (planning#196 — pinned base digest, not the full image id
     expect(after).toBe(before);
   });
 
-  // Safety guard #2: a base-image bump MUST change the key — narrowing biases
-  // toward reuse, so the one input that signals a real ABI change has to roll it.
   it("a base-digest bump changes the key", () => {
     const a = runtimeKey({ BASE_IMAGE_DIGEST: "sha256:base-A" } as NodeJS.ProcessEnv);
     const b = runtimeKey({ BASE_IMAGE_DIGEST: "sha256:base-B" } as NodeJS.ProcessEnv);
@@ -53,10 +44,6 @@ describe("runtimeKey (planning#196 — pinned base digest, not the full image id
   });
 });
 
-// docs/248 — when the repo pins a Node version the install runs under THAT
-// Node, so the key has to record it. The absence case is the load-bearing one:
-// an unconditional extra segment would invalidate every overlay base and
-// install marker in the fleet at once.
 describe("runtimeKey (docs/248 — repo-pinned Node)", () => {
   it("leaves the key byte-identical when no pin is active", () => {
     const unpinned = runtimeKey({ BASE_IMAGE_DIGEST: "sha256:base" } as NodeJS.ProcessEnv);

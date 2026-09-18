@@ -4,14 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { resolveBridge } from "./mcp-bridge-paths.js";
 
-/**
- * docs/199 — resolveBridge prefers the precompiled plain-JS bundle (run with
- * `node`) over the `.ts` source (run with `tsx`), so a session at the 0.5-CPU
- * AGENT_DEFAULTS no longer pays the per-spawn tsx compile that made the
- * permission bridge miss the Claude CLI's 2000ms MCP pre-wait. Falls back to tsx
- * source when no bundle is present (dev/local images), and to null when neither
- * exists (stripped-down test image).
- */
 describe("resolveBridge (docs/199)", () => {
   let tmp: string;
   let compiledDir: string;
@@ -25,7 +17,6 @@ describe("resolveBridge (docs/199)", () => {
     sourceDir = path.join(tmp, "src", "session");
     fs.mkdirSync(compiledDir, { recursive: true });
     fs.mkdirSync(sourceDir, { recursive: true });
-    // Fake interpreter binaries so the existsSync gate passes.
     nodeBin = path.join(tmp, "node");
     tsxBin = path.join(tmp, "tsx");
     fs.writeFileSync(nodeBin, "#!/bin/sh\n");

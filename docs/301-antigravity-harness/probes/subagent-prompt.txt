@@ -1,0 +1,7 @@
+Use your SUBAGENT tools for this job. Do not use run_command, and do not do the work yourself.
+
+1) Call `define_subagent` to define a subagent named `counter` whose job is to count files in a directory.
+2) Call `invoke_subagent` to run `counter` against this repository, asking it to count the files in the repository root.
+3) Report the number the subagent gives back, in one sentence.
+
+Then stop. Every step above must be a real tool call to the named tool.

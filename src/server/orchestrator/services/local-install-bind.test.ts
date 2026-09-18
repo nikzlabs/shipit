@@ -5,23 +5,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
-/**
- * Drives the REAL local-install helpers (deployment/local/lib.sh) against a
- * throwaway SHIPIT_HOME and a stubbed `tailscale` binary on PATH, in the same
- * spirit as update-script.test.ts (which drives the real VPS updater and stubs
- * only the Docker build).
- *
- * The properties under test are docs/254's requirements, not the implementation:
- * a user without Tailscale is untouched (req 3), an opted-in user gets a tailnet
- * binding ALONGSIDE loopback (req 4), Tailscale being unavailable never blocks
- * startup (req 5), and a changed tailnet address is re-derived rather than
- * remembered (req 6).
- *
- * Why this matters enough to test the shell directly: the failure mode it guards
- * is "ShipIt won't start", and the reason the binding is computed at runtime at
- * all is that Docker fails the whole container when any one published binding
- * can't be bound. That is invisible in a unit test of anything else.
- */
 const LIB_SH = fileURLToPath(
   new URL("../../../../deployment/local/lib.sh", import.meta.url),
 );
@@ -50,7 +33,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  /** Install a fake `tailscale` on PATH. `ip: null` models installed-but-not-connected. */
   function stubTailscale(ip: string | null): void {
     const script =
       ip === null
@@ -61,14 +43,8 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     fs.chmodSync(p, 0o755);
   }
 
-  /**
-   * Source lib.sh and run the refresh, returning the `-f` args it would hand to
-   * docker compose plus whatever it wrote to stderr. `withTailscale: false`
-   * models a machine that has never had Tailscale installed.
-   */
   function refresh(opts: { withTailscale: boolean }): { args: string; stderr: string } {
     const stderrFile = path.join(root, "stderr.txt");
-    // A PATH without the stub dir still needs the real coreutils lib.sh calls.
     const pathEnv = opts.withTailscale
       ? `${binDir}:${process.env.PATH ?? ""}`
       : (process.env.PATH ?? "");
@@ -92,7 +68,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     const { args } = refresh({ withTailscale: true });
 
     expect(fs.existsSync(overlay)).toBe(false);
-    // Exactly one -f, the base compose file: nothing about this install changed.
     expect(args.trim().split("\n")).toEqual([
       "-f",
       path.join(home, "docker/local/prod/compose.yml"),
@@ -108,10 +83,7 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     expect(fs.existsSync(overlay)).toBe(true);
     const yml = fs.readFileSync(overlay, "utf8");
     expect(yml).toContain('"100.83.12.47:4123:4123"');
-    // The overlay ADDS a port; it must not restate/replace the loopback binding,
-    // which lives in compose.yml and is what keeps localhost working.
     expect(yml).not.toContain("127.0.0.1");
-    // Both files are passed to compose, base first so the overlay merges onto it.
     const parts = args.trim().split("\n");
     expect(parts.filter((p) => p === "-f")).toHaveLength(2);
     expect(parts[parts.length - 1]).toBe(overlay);
@@ -122,7 +94,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
 
     const { args, stderr } = refresh({ withTailscale: false });
 
-    // The whole point: no overlay, no non-zero exit, no bind on a missing IP.
     expect(fs.existsSync(overlay)).toBe(false);
     expect(args.trim().split("\n").filter((p) => p === "-f")).toHaveLength(1);
     expect(stderr).toContain("localhost only");
@@ -154,13 +125,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
   });
 
   it("finds the CLI inside the macOS app bundle, absent from PATH (req 4)", () => {
-    // The bug this pins: the standalone macOS Tailscale app keeps its CLI at
-    // /Applications/Tailscale.app/Contents/MacOS/Tailscale and never puts
-    // `tailscale` on PATH, so the original `command -v tailscale` reported "not
-    // installed" on a fully connected Mac — with no configuration that fixed it.
-    // Verified broken on a real laptop, and the previous tests could not catch
-    // it because they all stubbed the binary ONTO PATH, which is precisely the
-    // assumption that doesn't hold there.
     fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\n");
     const bundleDir = path.join(root, "prefix", "Applications", "Tailscale.app", "Contents", "MacOS");
     fs.mkdirSync(bundleDir, { recursive: true });
@@ -181,7 +145,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
          shipit_compose_files`,
       ],
       {
-        // PATH deliberately WITHOUT any `tailscale`, as on a stock Mac.
         env: {
           ...process.env,
           HOME: home,
@@ -202,8 +165,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     fs.mkdirSync(path.dirname(custom), { recursive: true });
     fs.writeFileSync(custom, '#!/bin/sh\n[ "$1" = "ip" ] && echo 100.5.5.5\n');
     fs.chmodSync(custom, 0o755);
-    // A DIFFERENT tailscale is on PATH; the explicit override must win, so a user
-    // pointing at the bundle isn't silently overridden by a stale shim on PATH.
     stubTailscale("100.99.99.99");
 
     execFileSync(
@@ -232,9 +193,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
   it("still starts when the overlay cannot be written at all (req 5)", () => {
     fs.writeFileSync(envFile, "SHIPIT_TAILNET_BIND=1\n");
     stubTailscale("100.83.12.47");
-    // An unwritable parent directory, so `mktemp` cannot create the temp file.
-    // Models the read-only-checkout / full-disk class of failure. The binding is
-    // best-effort, so this must degrade to loopback, not abort the start.
     fs.chmodSync(home, 0o555);
     try {
       const { args, stderr } = refresh({ withTailscale: true });
@@ -246,9 +204,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
   });
 
   it("warns rather than silently binding on when a stale overlay cannot be removed", () => {
-    // Opted out, but the overlay can't be deleted. shipit_compose_files keys off
-    // the file's existence, so staying silent would keep binding an address the
-    // user opted out of — and fail the container outright once it stops existing.
     fs.writeFileSync(envFile, "");
     fs.writeFileSync(overlay, "services: {}\n");
     const dir = path.dirname(overlay);
@@ -262,10 +217,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
   });
 
   it("survives a SHIPIT_HOME containing spaces", () => {
-    // Not hypothetical: SHIPIT_HOME defaults to $HOME/.shipit, and macOS home
-    // directories are routinely "/Users/First Last". A naive $(...) split here
-    // would shred the path into separate argv entries and hand docker compose a
-    // -f that doesn't exist.
     const spaced = path.join(root, "My Home Dir");
     fs.mkdirSync(spaced, { recursive: true });
     fs.writeFileSync(path.join(spaced, ".shipit.env"), "SHIPIT_TAILNET_BIND=1\n");
@@ -287,7 +238,6 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
       { env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}`, HOME: spaced } },
     ).toString();
 
-    // Exactly 4: -f, base, -f, overlay — not 6 from a split on the space.
     expect(out.trim()).toBe("4");
   });
 
@@ -297,12 +247,9 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
     refresh({ withTailscale: true });
     expect(fs.existsSync(overlay)).toBe(true);
 
-    // Opt out — an empty env file, as if the line were deleted by hand.
     fs.writeFileSync(envFile, "");
     refresh({ withTailscale: true });
 
-    // A leftover overlay would keep binding the tailnet IP after opt-out, and
-    // would fail the container outright once that address stopped existing.
     expect(fs.existsSync(overlay)).toBe(false);
   });
 });
@@ -317,7 +264,6 @@ describe("deployment/local/lib.sh — shipit_persist_env (docs/276 req 3)", () =
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  /** Run a snippet with lib.sh sourced against a throwaway SHIPIT_HOME. */
   function run(snippet: string): string {
     return execFileSync(
       "bash",
@@ -333,9 +279,6 @@ describe("deployment/local/lib.sh — shipit_persist_env (docs/276 req 3)", () =
   }
 
   it("writes the harness answer where every later build reads it", () => {
-    // The whole point of persisting: `update.sh` never re-asks, so an answer that
-    // did not land here would silently revert to the default set on the next
-    // update — an install quietly growing back a harness the operator removed.
     run('shipit_persist_env SHIPIT_HARNESSES "codex"');
     const out = run('shipit_load_env_file; printf "%s" "$SHIPIT_HARNESSES"');
     expect(out).toBe("codex");
@@ -343,8 +286,6 @@ describe("deployment/local/lib.sh — shipit_persist_env (docs/276 req 3)", () =
   });
 
   it("replaces an earlier answer instead of appending a second line", () => {
-    // Two lines for one key is not a cosmetic problem: `. file` takes the LAST
-    // one, so a re-run would look correct in the file and install the old set.
     run('shipit_persist_env SHIPIT_HARNESSES "codex"');
     run('shipit_persist_env SHIPIT_HARNESSES "claude,codex"');
     const lines = fs
@@ -360,7 +301,6 @@ describe("deployment/local/lib.sh — shipit_persist_env (docs/276 req 3)", () =
     const body = fs.readFileSync(path.join(home, ".shipit.env"), "utf8");
     expect(body).toContain("SESSION_EGRESS_ENFORCE=0");
     expect(body).toContain("SHIPIT_HARNESSES=claude");
-    // 0600: it sits in the checkout and now carries install-shaping answers.
     expect(fs.statSync(path.join(home, ".shipit.env")).mode & 0o777).toBe(0o600);
   });
 });
@@ -393,7 +333,7 @@ describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs
     git("add -A", home);
     git("commit -m first", home);
     git("push -u origin main", home);
-    // `edge` resolves straight to origin/main, skipping the stable ls-remote probe.
+    // Skip the stable-channel remote probe.
     fs.writeFileSync(path.join(home, ".release-channel"), "edge\n");
   });
 
@@ -421,17 +361,12 @@ describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs
   }
 
   it("syncs despite untracked operator files, which reset --hard never touches", () => {
-    // The bug this fixes: .shipit.env (written by the egress opt-out) is untracked
-    // and lives in the checkout, so the old `git status --porcelain` check
-    // refused forever — wedging the only supported update path.
     fs.writeFileSync(path.join(home, ".shipit.env"), "SESSION_EGRESS_ENFORCE=0\n");
     fs.writeFileSync(path.join(home, "some-other-untracked.txt"), "x\n");
 
     const { ok } = sync();
 
     expect(ok).toBe(true);
-    // ...and the file is still there afterwards, which is why refusing on it was
-    // never protecting anything.
     expect(fs.existsSync(path.join(home, ".shipit.env"))).toBe(true);
   });
 
@@ -442,7 +377,6 @@ describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs
 
     expect(ok).toBe(false);
     expect(stderr).toContain("uncommitted changes to tracked files");
-    // The edit must survive the refusal — that is the whole point of the guard.
     expect(fs.readFileSync(path.join(home, "tracked.txt"), "utf8")).toBe("local edit\n");
   });
 });
@@ -455,10 +389,7 @@ describe("docker/local/prod/compose.yml — default bind address (docs/254-local
       .map((l) => l.trim())
       .filter((l) => l.startsWith('- "${SHIPIT_BIND_ADDR'));
 
-    // Every published port is bound through the variable...
     expect(ports.length).toBeGreaterThan(0);
-    // ...and every one of them defaults to loopback. ShipIt has no built-in
-    // auth, so a bare "4123:4123" here (0.0.0.0) is a security regression.
     for (const line of ports) {
       expect(line).toMatch(/\$\{SHIPIT_BIND_ADDR:-127\.0\.0\.1\}/);
     }

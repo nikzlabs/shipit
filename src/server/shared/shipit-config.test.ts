@@ -9,10 +9,7 @@ import {
   ShipitConfigError,
   AGENT_DEFAULTS,
 } from "./shipit-config.js";
-
-// ---------------------------------------------------------------------------
-// parseShipitConfig (unit tests — no filesystem)
-// ---------------------------------------------------------------------------
+import { expectInvalidShipitConfig } from "./shipit-config-test-guard.js";
 
 describe("parseShipitConfig", () => {
   it("returns defaults for null/undefined input", () => {
@@ -34,8 +31,6 @@ describe("parseShipitConfig", () => {
     expect(() => parseShipitConfig([1, 2])).toThrow(ShipitConfigError);
   });
 
-  // ---- version ----
-
   it("parses valid version", () => {
     const config = parseShipitConfig({ version: 1 });
     expect(config.version).toBe(1);
@@ -53,8 +48,6 @@ describe("parseShipitConfig", () => {
     expect(() => parseShipitConfig({ version: "1" })).toThrow("`version` must be a positive integer");
   });
 
-  // ---- agent ----
-
   it("parses agent config fields", () => {
     const config = parseShipitConfig({
       agent: { install: ["npm install"] },
@@ -68,7 +61,6 @@ describe("parseShipitConfig", () => {
 
   it("warns-and-ignores removed resource fields (memory/cpu/pids — docs/229)", () => {
     const config = parseShipitConfig({ agent: { memory: 2048, cpu: 2.0, pids: 512 } });
-    // Fields are not on AgentConfig anymore — sizing is automatic.
     expect(config.agent).toEqual({ ...AGENT_DEFAULTS, install: [] });
     expect(config.warnings).toContainEqual(expect.stringContaining("`agent.memory` is no longer used"));
     expect(config.warnings).toContainEqual(expect.stringContaining("`agent.cpu` is no longer used"));
@@ -83,8 +75,6 @@ describe("parseShipitConfig", () => {
   it("throws for non-object agent", () => {
     expect(() => parseShipitConfig({ agent: "bad" })).toThrow("`agent` must be a mapping");
   });
-
-  // ---- agent.install ----
 
   it("parses string install as single-element array", () => {
     const config = parseShipitConfig({ agent: { install: "npm install" } });
@@ -115,8 +105,6 @@ describe("parseShipitConfig", () => {
   it("throws for invalid install type", () => {
     expect(() => parseShipitConfig({ agent: { install: 42 } })).toThrow("must be a string or array");
   });
-
-  // ---- agent.dep-dirs (docs/183) ----
 
   it("defaults dep-dirs to [node_modules] when absent", () => {
     expect(parseShipitConfig({}).agent.depDirs).toEqual(["node_modules"]);
@@ -158,18 +146,17 @@ describe("parseShipitConfig", () => {
     const config = parseShipitConfig({
       agent: {
         "dep-dirs": [
-          "node_modules", // valid
-          "/abs/node_modules", // absolute → dropped
-          "packages/*/node_modules", // glob → dropped
-          "../escape", // .. → dropped
-          ".", // root → dropped
-          "  ", // empty → dropped
-          42, // non-string → dropped
+          "node_modules",
+          "/abs/node_modules",
+          "packages/*/node_modules",
+          "../escape",
+          ".",
+          "  ",
+          42,
         ],
       },
     });
     expect(config.agent.depDirs).toEqual(["node_modules"]);
-    // One warning per dropped entry (6 dropped).
     expect(config.warnings.filter((w) => w.includes("agent.dep-dirs["))).toHaveLength(6);
   });
 
@@ -180,8 +167,6 @@ describe("parseShipitConfig", () => {
       "`agent.dep-dirs` must be a string or a list of strings; using the default [node_modules].",
     );
   });
-
-  // ---- agent.install-inputs (docs/197) ----
 
   it("defaults install-inputs to null (not configured → command-derived) when absent", () => {
     expect(parseShipitConfig({}).agent.installInputs).toBeNull();
@@ -223,8 +208,6 @@ describe("parseShipitConfig", () => {
     );
   });
 
-  // ---- compose (string form) ----
-
   it("parses compose as string", () => {
     const config = parseShipitConfig({ compose: "docker-compose.yml" });
     expect(config.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
@@ -238,8 +221,6 @@ describe("parseShipitConfig", () => {
     const config = parseShipitConfig({ compose: "  docker-compose.yml  " });
     expect(config.compose!.file).toBe("docker-compose.yml");
   });
-
-  // ---- compose (object form) ----
 
   it("parses compose as object", () => {
     const config = parseShipitConfig({
@@ -264,8 +245,6 @@ describe("parseShipitConfig", () => {
   it("throws for invalid compose type", () => {
     expect(() => parseShipitConfig({ compose: 42 })).toThrow("must be a string or object");
   });
-
-  // ---- warnings for old-format keys ----
 
   it("warns for preview key", () => {
     const config = parseShipitConfig({ preview: { command: "npm run dev" } });
@@ -298,9 +277,6 @@ describe("parseShipitConfig", () => {
   });
 
   it("does not warn for the reserved plugin-repository keys (docs/262)", () => {
-    // `plugins:` (consumer declaration) and `exports:` (plugin manifest) are
-    // reserved ahead of their slice-2 parser so the live test-plugin fixture in
-    // this repo's own shipit.yaml doesn't trip the migration banner.
     const config = parseShipitConfig({ agent: {}, plugins: { repos: [] }, exports: { plugins: {} } });
     expect(config.warnings).toEqual([]);
   });
@@ -309,8 +285,6 @@ describe("parseShipitConfig", () => {
     const config = parseShipitConfig({ agent: { memory: 1024, unknown_field: true } });
     expect(config.warnings).toContainEqual(expect.stringContaining("Unknown key `agent.unknown_field`"));
   });
-
-  // ---- full config ----
 
   it("parses a complete config", () => {
     const config = parseShipitConfig({
@@ -335,8 +309,6 @@ describe("parseShipitConfig", () => {
     });
     expect(config.warnings).toEqual([]);
   });
-
-  // ---- x-shipit-host-mounts (docs/128) ----
 
   it("defaults host mounts to empty array", () => {
     const config = parseShipitConfig({});
@@ -388,8 +360,6 @@ describe("parseShipitConfig", () => {
     expect(config.warnings).toEqual([]);
   });
 
-  // ---- release: block (docs/171 Phase 2) ----
-
   describe("release: block", () => {
     it("returns undefined when absent", () => {
       const config = parseShipitConfig({});
@@ -400,29 +370,23 @@ describe("parseShipitConfig", () => {
       const config = parseShipitConfig({
         release: {
           "version-source": "Cargo.toml",
-          "tag-pattern": "v{version}",
-          "prerelease-pattern": "v{version}-rc.{n}",
-          notes: "github-generated",
-          gate: "cargo test",
+          "version-source-path": "crates/api/Cargo.toml",
+          branch: "stable",
           mechanism: "tag-triggered",
-          workflow: ".github/workflows/release.yml",
         },
       });
       expect(config.release).toEqual({
         versionSource: "Cargo.toml",
-        tagPattern: "v{version}",
-        prereleasePattern: "v{version}-rc.{n}",
-        notes: "github-generated",
-        gate: "cargo test",
+        versionSourcePath: "crates/api/Cargo.toml",
+        branch: "stable",
         mechanism: "tag-triggered",
-        workflow: ".github/workflows/release.yml",
       });
     });
 
     it("accepts a partial release block (only version-source)", () => {
       const config = parseShipitConfig({ release: { "version-source": "VERSION" } });
       expect(config.release?.versionSource).toBe("VERSION");
-      expect(config.release?.tagPattern).toBeUndefined();
+      expect(config.release?.branch).toBeUndefined();
     });
 
     it("throws for non-object release block", () => {
@@ -431,10 +395,6 @@ describe("parseShipitConfig", () => {
 
     it("throws for unknown version-source value", () => {
       expect(() => parseShipitConfig({ release: { "version-source": "lerna.json" } })).toThrow(ShipitConfigError);
-    });
-
-    it("throws for tag-pattern without {version}", () => {
-      expect(() => parseShipitConfig({ release: { "tag-pattern": "release-{tag}" } })).toThrow(ShipitConfigError);
     });
 
     it("throws for unknown mechanism", () => {
@@ -464,8 +424,6 @@ describe("parseShipitConfig", () => {
       const config = parseShipitConfig({ release: {} });
       expect(config.warnings).toEqual([]);
     });
-
-    // ---- docs/214: release-branch mechanism + branch + version-source-path ----
 
     it("parses the release-branch mechanism with branch + version source", () => {
       const config = parseShipitConfig({
@@ -515,10 +473,6 @@ describe("parseShipitConfig", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// resolveShipitConfig (filesystem tests)
-// ---------------------------------------------------------------------------
-
 describe("resolveShipitConfig", () => {
   let tmpDir: string;
 
@@ -567,7 +521,9 @@ describe("resolveShipitConfig", () => {
 
   it("propagates ShipitConfigError", () => {
     const dir = setup();
-    fs.writeFileSync(path.join(dir, "shipit.yaml"), "agent: bad_value\n");
+    expectInvalidShipitConfig(() => {
+      fs.writeFileSync(path.join(dir, "shipit.yaml"), "agent: bad_value\n");
+    });
     expect(() => resolveShipitConfig(dir)).toThrow(ShipitConfigError);
   });
 
@@ -588,10 +544,6 @@ describe("resolveShipitConfig", () => {
     expect(config.warnings.length).toBeGreaterThanOrEqual(2);
   });
 });
-
-// ---------------------------------------------------------------------------
-// docs/248 — `issues.trackers`
-// ---------------------------------------------------------------------------
 
 describe("issues.trackers", () => {
   const parse = (yaml: string) => parseShipitConfig(parseYaml(yaml));
@@ -614,8 +566,6 @@ issues:
     expect(config.warnings).toEqual([]);
   });
 
-  // req 3 — both kinds are declared the same way; req 5 — a linear declaration
-  // states the team key, which is also the prefix its issue keys carry.
   it("parses a linear declaration into a named team destination", () => {
     const config = parse(`
 issues:
@@ -633,7 +583,6 @@ issues:
     expect(config.issues.trackers[0]).toMatchObject({ team: "SHI" });
   });
 
-  // req 3 — a repository may declare two Linear trackers on different teams.
   it("accepts two linear declarations on different teams", () => {
     const config = parse(`
 issues:
@@ -651,9 +600,6 @@ issues:
     ]);
   });
 
-  // req 9a — `label` is the Issues tab's display text; `name` stays the address.
-  // Restored under its original v0.3.1 spelling, so a config written in that
-  // window parses rather than warning about an unknown key.
   it("parses an optional display label alongside the addressable name", () => {
     const config = parse(`
 issues:
@@ -679,8 +625,6 @@ issues:
     expect(config.issues.trackers[0]).not.toHaveProperty("label");
   });
 
-  // A cosmetic field must not cost a repository its tracker: a bad `label`
-  // warns and falls back to the name, rather than dropping the declaration.
   it("warns and falls back to the name for a blank or non-string label", () => {
     for (const bad of ["label: '   '", "label: 42"]) {
       const config = parse(
@@ -707,11 +651,6 @@ issues:
     expect(config.issues.trackers.map((t) => t.name)).toEqual(["first", "second"]);
   });
 
-  // The forward-compatibility contract in req 7: a config written against a
-  // NEWER ShipIt that declares a tracker kind this build has never heard of must
-  // degrade to "that tab doesn't appear", never to a failed session. Same for
-  // every other malformed shape — a tracker declaration gates one tab, not the
-  // container, so nothing here is allowed to throw.
   it.each([
     ["an unrecognized kind", "issues:\n  trackers:\n    - kind: jira\n      project: SHI\n      name: jira\n"],
     ["a missing kind", "issues:\n  trackers:\n    - repo: acme/planning\n      name: planning\n"],
@@ -747,9 +686,6 @@ issues:
     expect(config.warnings.length).toBe(1);
   });
 
-  // req 6 — `name` is unique within a repository. A duplicate is dropped rather
-  // than shadowing, because a name resolving to two destinations is exactly the
-  // ambiguity req 11 makes fail closed.
   it("drops a duplicate tracker name", () => {
     const config = parse(`
 issues:
@@ -766,9 +702,6 @@ issues:
     expect(config.warnings.some((w) => w.includes("duplicate tracker name"))).toBe(true);
   });
 
-  // req 6, the other direction — a DESTINATION is declared at most once. Two
-  // names for one repository are not an alias: `TrackerId` is the destination, so
-  // both entries collapse onto one id and one tab shadows the other.
   it("drops a second declaration of a destination already declared", () => {
     const config = parse(`
 issues:
@@ -785,8 +718,6 @@ issues:
     expect(config.warnings.some((w) => w.includes("already declared as `planning`"))).toBe(true);
   });
 
-  // Destination identity is case-insensitive, like every other comparison of it —
-  // GitHub treats `Acme/Planning` and `acme/planning` as the same repository.
   it("drops a duplicate destination written with different casing", () => {
     const config = parse(`
 issues:

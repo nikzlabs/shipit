@@ -12,7 +12,6 @@ function session(overrides: Partial<SessionInfo>): SessionInfo {
 function deps(
   sessions: Record<string, SessionInfo>,
   providerAccountManager?: LocalAgentHomeDeps["providerAccountManager"],
-  /** docs/260 — the turn route env-prep stamped on the runner, per session. */
   turnRoutes: Record<string, { kind: string; id: string } | undefined> = {},
 ): LocalAgentHomeDeps {
   return {
@@ -66,10 +65,6 @@ describe("resolveLocalAgentHome (docs/260)", () => {
     expect(home).toBe(`${CREDENTIALS}/provider-accounts/codex/acct-c`);
   });
 
-  // A reserved route authenticates from the environment (ANTHROPIC_API_KEY,
-  // ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY) and has no account root — which is
-  // the common dogfood setup, so getting this wrong would point a working
-  // install at an empty directory.
   it("keeps the process-global home for a reserved route", () => {
     const selectRouteForTurn = vi.fn().mockReturnValue({ kind: "account", id: "acct-a" });
     const home = resolveLocalAgentHome(
@@ -82,7 +77,6 @@ describe("resolveLocalAgentHome (docs/260)", () => {
       ),
     );
     expect(home).toBeUndefined();
-    // And it does not quietly re-route to an account the turn didn't select.
     expect(selectRouteForTurn).not.toHaveBeenCalled();
   });
 
@@ -90,9 +84,6 @@ describe("resolveLocalAgentHome (docs/260)", () => {
     expect(resolveLocalAgentHome("missing", "claude", deps({}))).toBeUndefined();
   });
 
-  // A cross-provider sub-agent spawn (docs/144): the session's own route says
-  // nothing about which Codex account to use, so the provider's own selection
-  // answers — the same resolution session naming uses.
   it("selects the other provider's account for a cross-provider spawn", () => {
     const selectRouteForTurn = vi.fn((serviceId: string) =>
       serviceId === "openai" ? { kind: "account" as const, id: "acct-codex" } : null);

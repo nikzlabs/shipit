@@ -1,13 +1,3 @@
-/**
- * Unit tests for the issue tracker service layer (docs/175 read + docs/177 write).
- *
- * `getIssueForTracker` is the single-issue read that backs `shipit issue view`;
- * `commentOnIssueForTracker` / `updateIssueForTracker` / `setIssueStatusForTracker`
- * / `setIssueAssigneeForTracker` are the do-then-surface writes, each snapshotting
- * prior state for undo, and `undoIssueWrite` replays that snapshot. The tests stub
- * the GitHub REST + Linear GraphQL HTTP and assert tracker-neutral behavior.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -36,11 +26,6 @@ import {
 import { ServiceError } from "./types.js";
 import type { GitHubTrackerContext } from "../trackers/index.js";
 
-/**
- * docs/248 — Linear is a declared tracker like any other, so the context these
- * services receive carries the declaration. `LINEAR_TRACKER` is the id it
- * resolves to; the bare `"linear"` no longer names anything.
- */
 const LINEAR_TEAM = "SHI";
 const LINEAR_TRACKER = "linear:SHI";
 const GH: GitHubTrackerContext = {
@@ -49,10 +34,8 @@ const GH: GitHubTrackerContext = {
   declared: [{ kind: "linear", name: "roadmap", team: LINEAR_TEAM }],
 };
 
-/** The lazy team-key → team-id lookup every Linear call now makes first. */
 const TEAM_LOOKUP_DATA = { teams: { nodes: [{ id: "team-1", key: LINEAR_TEAM }] } };
 
-/** A context whose only declared tracker is Linear (no GitHub repo in play). */
 const LINEAR_CTX: GitHubTrackerContext = {
   token: null,
   repo: null,
@@ -154,7 +137,6 @@ describe("getIssueForTracker (docs/175)", () => {
       LINEAR_CTX,
     );
     expect(tracker.id).toBe(LINEAR_TRACKER);
-    // req 15 — the identifier renders in the declared name's form.
     expect(issue.identifier).toBe("roadmap#TRACKER-28");
     expect(issue.priority.level).toBe("urgent");
     expect(issue.assignee?.name).toBe("Nik");
@@ -234,12 +216,10 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
           },
         });
       }
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     }) as unknown as typeof fetch;
     const out = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
-    // Sorted by board position, regardless of the response order.
     expect(out.availableStatuses).toEqual([
       { name: "Todo", type: "unstarted" },
       { name: "Done", type: "completed" },
@@ -275,13 +255,11 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("TeamIssues")) return jsonResponse({ data: { team: { issues: { nodes } } } });
       if (query.includes("TeamStates")) return jsonResponse({ data: { team: { states: { nodes: [] } } } });
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     }) as unknown as typeof fetch;
 
     const open = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
-    // req 15 — identifiers render in the declared name's form.
     expect(open.issues.map((i) => i.identifier)).toEqual(["roadmap#SHI-1"]);
 
     const all = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX, { includeDone: true });
@@ -297,7 +275,6 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
       if (query.includes("TeamIssues")) {
         return jsonResponse({ data: { team: { issues: { nodes: [] } } } });
       }
-      // TeamStates errors — the list must still succeed without statuses.
       return jsonResponse({ errors: [{ message: "states boom" }] });
     }) as unknown as typeof fetch;
     const out = await listIssuesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
@@ -332,7 +309,6 @@ describe("listLabelsForTracker (planning#94 foundation)", () => {
           data: { issueLabels: { nodes: [{ name: "security", color: "#d73a4a" }] } },
         });
       }
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     }) as unknown as typeof fetch;
@@ -341,7 +317,6 @@ describe("listLabelsForTracker (planning#94 foundation)", () => {
   });
 
   it("returns an empty set for an unconfigured tracker (no error)", async () => {
-    // Linear with no token/team is unconfigured — a normal empty state.
     const out = await listLabelsForTracker(tmpStore(), LINEAR_TRACKER, undefined, LINEAR_CTX);
     expect(out.labels).toEqual([]);
   });
@@ -349,8 +324,6 @@ describe("listLabelsForTracker (planning#94 foundation)", () => {
 
 describe("listStatusesForTracker (planning#201)", () => {
   it("returns GitHub's fixed Open/Closed pair without a network call", async () => {
-    // GitHub has no workflow states — the discovery list is the static pair, so
-    // no fetch should fire.
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const out = await listStatusesForTracker(tmpStore(), "github", fetchImpl, GH);
     expect(out.statuses).toEqual([
@@ -379,12 +352,10 @@ describe("listStatusesForTracker (planning#201)", () => {
           },
         });
       }
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     }) as unknown as typeof fetch;
     const out = await listStatusesForTracker(store, LINEAR_TRACKER, fetchImpl, LINEAR_CTX);
-    // Sorted by board position, not the order returned.
     expect(out.statuses).toEqual([
       { name: "Backlog", type: "backlog", color: "#bec2c8" },
       { name: "In Progress", type: "started", color: "#f2c94c" },
@@ -401,7 +372,6 @@ describe("user-initiated inline writes (docs/191)", () => {
   it("userSetIssueStatus sets GitHub state and returns the updated issue (no undo)", async () => {
     const out = await userSetIssueStatus(tmpStore(), "github", "42", "completed", ghFetch(), GH);
     expect(out.issue.status?.name).toBe("Closed");
-    // Returns just the issue — no IssueWriteOutcome verb/undo (no provenance card).
     expect(out).not.toHaveProperty("undo");
     expect(out).not.toHaveProperty("verb");
   });
@@ -435,12 +405,10 @@ describe("user-initiated inline writes (docs/191)", () => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
     });
     const out = await userSetIssuePriority(store, LINEAR_TRACKER, "SHI-9", "high", fetchImpl as unknown as typeof fetch, LINEAR_CTX);
-    // The issueUpdate input mapped "high" → numeric 2.
     const update = fetchImpl.mock.calls.find(
       ([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"),
     )!;
@@ -460,11 +428,8 @@ describe("user-initiated inline writes (docs/191)", () => {
     });
     const out = await userSetIssueLabels(tmpStore(), "github", "42", ["security", "design"], fetchImpl, GH);
     expect(out.issue.labels).toEqual([{ name: "security" }, { name: "design" }]);
-    // Wholesale replace: the PATCH carried exactly the requested set (not a merge
-    // with the issue's prior labels), since the editor commits the end-state.
     const patch = fetchImpl.mock.calls.find(([, i]) => (i?.method ?? "GET") === "PATCH")!;
     expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["security", "design"]);
-    // Inline user write — just the issue, no provenance card / undo.
     expect(out).not.toHaveProperty("undo");
     expect(out).not.toHaveProperty("verb");
   });
@@ -491,7 +456,6 @@ describe("user-initiated inline writes (docs/191)", () => {
   });
 });
 
-/** A GitHub REST stub routing on method + path tail. */
 describe("issue comment read/post services (docs/189 follow-up)", () => {
   function ghCommentsFetch() {
     return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -591,10 +555,6 @@ function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
   });
 }
 
-/**
- * A GitHub stub that also serves the repo `GET /labels` endpoint (planning#94), so
- * label resolution can validate names. `existing` is the repo's label set.
- */
 function ghFetchWithLabels(existing: string[], over: Partial<{ issue: Record<string, unknown> }> = {}) {
   const issue = {
     id: 1,
@@ -622,7 +582,6 @@ function ghFetchWithLabels(existing: string[], over: Partial<{ issue: Record<str
   });
 }
 
-/** A Linear GraphQL stub routing by query substring (IssueStates / issueUpdate). */
 function linearFetch(states: { id: string; name: string; type: string; position: number }[]) {
   const node = {
     id: "uuid-1", identifier: "SHI-9", title: "New doc", url: "https://linear.app/x/SHI-9",
@@ -637,18 +596,14 @@ function linearFetch(states: { id: string; name: string; type: string; position:
     if (query.includes("issueUpdate")) {
       return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
     }
-    // `IssueId` resolves a key/UUID for a mutation; the docs/248 team guard reads
-    // the team off it, so the stub has to carry one.
     if (query.includes("IssueId")) {
       return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
     }
-    // docs/248 — every Linear call first resolves the declared team key to a team id.
     if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
     throw new Error(`linearFetch: no route for "${query.trim().slice(0, 30)}"`);
   });
 }
 
-/** Pull the `issueUpdate` mutation's `input` from a linearFetch call list. */
 function lastIssueUpdateInput(fetchImpl: ReturnType<typeof linearFetch>): Record<string, unknown> {
   const call = fetchImpl.mock.calls.find(
     ([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"),
@@ -679,7 +634,6 @@ describe("issue write services (docs/177)", () => {
   it("create: forwards labels to the GitHub adapter (resolved against repo labels) (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["security", "backend"]);
     const out = await createIssueForTracker(store, "github", "New", "", { labels: ["security"] }, fetchImpl, GH);
-    // The POST /issues carried the resolved label.
     const post = fetchImpl.mock.calls.find(([u, i]) => i?.method === "POST" && (u as string).endsWith("/issues"))!;
     expect(JSON.parse(post[1]?.body as string).labels).toEqual(["security"]);
     expect(out.summary).toContain("labels: security");
@@ -698,30 +652,18 @@ describe("issue write services (docs/177)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  // docs/248-declared-issue-trackers req 11's carve-out — reversing a write grants no access the write
-  // did not already have (the card could only exist if the destination was
-  // declared when it was written), so an Undo must survive the repository
-  // dropping that declaration rather than being stranded behind a config edit.
   it("undo: reaches a destination the repository no longer declares", async () => {
     const fetchImpl = ghFetch();
     await undoIssueWrite(
       store,
       { tracker: "github:acme/planning", issueId: "42", undo: { kind: "create" } },
       fetchImpl,
-      // The context declares NOTHING — the card's recorded destination is the
-      // only thing that can resolve it.
       { token: "ghp_test", repo: { owner: "octocat", repo: "hello-world" } },
     );
     const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
     expect(patch[0]).toContain("/repos/acme/planning/issues/42");
   });
 
-  // req 16's exception — Undo is NOT re-targeted by a re-pointed name. This test
-  // previously asserted the opposite, and asserting it is what made the defect
-  // legible: it expected the undo to PATCH `acme/new-planning#42`, a DIFFERENT
-  // repository's issue 42, using a snapshot taken from `acme/old-planning#42`.
-  // Linear's team guard would have caught the equivalent attempt; GitHub has no
-  // such guard, so the wrong repository was silently rewritten.
   it("undo: refuses rather than following a name that has been re-pointed", async () => {
     const fetchImpl = ghFetch();
     await expect(
@@ -741,13 +683,9 @@ describe("issue write services (docs/177)", () => {
         },
       ),
     ).rejects.toThrow(/now points at .*new-planning.*but this write was made against/s);
-    // Nothing was written anywhere — not the new destination, not the old one.
     expect(fetchImpl.mock.calls.some(([, i]) => i?.method === "PATCH")).toBe(false);
   });
 
-  // The name is gone from shipit.yaml entirely — req 11's carve-out still applies,
-  // so the undo reaches the destination it recorded. Only a name pointing
-  // SOMEWHERE ELSE is refused; a name pointing nowhere is not a conflict.
   it("undo: still reaches the recorded destination when the name is undeclared", async () => {
     const fetchImpl = ghFetch();
     await undoIssueWrite(
@@ -765,9 +703,6 @@ describe("issue write services (docs/177)", () => {
     expect(patch[0]).toContain("/repos/acme/old-planning/issues/42");
   });
 
-  // The declaration still points where the write went — the ordinary case, which
-  // must keep working: the re-point check is an equality test, not a ban on
-  // cards that carry a name.
   it("undo: proceeds when the name still points at the recorded destination", async () => {
     const fetchImpl = ghFetch();
     await undoIssueWrite(
@@ -819,7 +754,6 @@ describe("issue write services (docs/177)", () => {
       { id: "s-done", name: "Done", type: "completed", position: 1 },
     ]);
     await undoIssueWrite(store, { tracker: LINEAR_TRACKER, issueId: "uuid-1", undo: { kind: "create" } }, fetchImpl);
-    // No canceled state → the first setStatus throws, the service retries with completed.
     expect(lastIssueUpdateInput(fetchImpl)).toEqual({ stateId: "s-done" });
   });
 
@@ -829,7 +763,6 @@ describe("issue write services (docs/177)", () => {
     expect(out.verb).toBe("comment");
     expect(out.summary).toContain("octocat/hello-world#42");
     expect(out.undo).toEqual({ kind: "comment", commentId: "9001" });
-    // docs/189 — the comment body is captured (clipped) for the card's line 2.
     expect(out.content).toEqual({ comment: "noted" });
   });
 
@@ -839,15 +772,9 @@ describe("issue write services (docs/177)", () => {
     const preview = out.content?.comment ?? "";
     expect(preview.endsWith("…")).toBe(true);
     expect(preview).not.toContain("\n");
-    expect(preview.length).toBeLessThanOrEqual(281); // 280 + ellipsis
+    expect(preview.length).toBeLessThanOrEqual(281);
   });
 
-  // ---- comment edit (planning#88) ----------------------------------------------
-
-  /**
-   * `ghFetch` plus the two calls a comment edit adds: the by-id comment read
-   * (author + owning issue + prior body) and the PATCH that rewrites it.
-   */
   function ghFetchWithComment(over: { author?: string; issueUrl?: string } = {}) {
     const base = ghFetch();
     return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -875,9 +802,7 @@ describe("issue write services (docs/177)", () => {
     const out = await editCommentForTracker(store, "github", "42", "9001", "corrected", fetchImpl, GH);
     expect(out.verb).toBe("comment-edit");
     expect(out.summary).toContain("octocat/hello-world#42");
-    // Undo restores the exact prior body — the symmetric reverse write.
     expect(out.undo).toEqual({ kind: "comment-edit", commentId: "9001", previousBody: "old text" });
-    // The card's line 2 shows the NEW body; the old one is one Undo away.
     expect(out.content).toEqual({ comment: "corrected" });
   });
 
@@ -899,9 +824,6 @@ describe("issue write services (docs/177)", () => {
     expect(JSON.parse(patch[1]?.body as string)).toEqual({ body: "old text" });
   });
 
-  // The judgement call, enforced end to end: editing a comment ShipIt did not
-  // write would silently rewrite a human's words, and neither backend refuses
-  // it. A 403 (not a 422) — there is no other value that would have worked.
   it("comment edit: refuses a comment written by someone else, as a 403", async () => {
     const fetchImpl = ghFetchWithComment({ author: "some-human" });
     await expect(
@@ -927,7 +849,6 @@ describe("issue write services (docs/177)", () => {
     const out = await updateIssueForTracker(store, "github", "42", { title: "New title" }, ghFetch(), GH);
     expect(out.verb).toBe("edit");
     expect(out.undo).toEqual({ kind: "edit", previousTitle: "Original title" });
-    // docs/189 — the title delta is surfaced on line 2.
     expect(out.content).toEqual({ title: { before: "Original title", after: "New title" } });
   });
 
@@ -939,12 +860,9 @@ describe("issue write services (docs/177)", () => {
   it("edit: labels are additive (merged with existing) and snapshot the prior set (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["existing", "added"], { issue: { labels: [{ name: "existing" }] } });
     const out = await updateIssueForTracker(store, "github", "42", { labels: ["added"] }, fetchImpl, GH);
-    // PATCH carried the merged set (existing kept + added), not just "added".
     const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
     expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["existing", "added"]);
-    // Undo restores the prior set.
     expect(out.undo).toMatchObject({ kind: "edit", previousLabels: ["existing"] });
-    // docs/189 — a labels-only edit still shows what changed on line 2 via `attrs`.
     expect(out.content?.attrs).toContain("labels:");
   });
 
@@ -970,7 +888,6 @@ describe("issue write services (docs/177)", () => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-prior", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
     });
@@ -979,7 +896,6 @@ describe("issue write services (docs/177)", () => {
       { tracker: LINEAR_TRACKER, issueId: "uuid-1", undo: { kind: "edit", previousParentId: "uuid-prior" } },
       fetchImpl as unknown as typeof fetch,
     );
-    // The reverse write re-parents to the snapshotted prior id (resolved verbatim).
     const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: "uuid-prior" });
   });
@@ -994,17 +910,14 @@ describe("issue write services (docs/177)", () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("query Issue")) {
-        // Prior issue has priority level "low" (numeric 4).
         return jsonResponse({ data: { issue: { ...node, priority: 4, priorityLabel: "Low" } } });
       }
       if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
     });
     const out = await updateIssueForTracker(store, LINEAR_TRACKER, "SHI-9", { priority: "high" }, fetchImpl as unknown as typeof fetch, LINEAR_CTX);
-    // The issueUpdate input mapped "high" → numeric 2.
     const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ priority: 2 });
     expect(out.undo).toMatchObject({ kind: "edit", previousPriority: "low" });
@@ -1020,24 +933,19 @@ describe("issue write services (docs/177)", () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("query Issue")) {
-        // Prior issue already nests under planning#102 → its internal id is snapshotted.
         return jsonResponse({ data: { issue: { ...node, parent: { id: "uuid-old", identifier: "SHI-100" } } } });
       }
       if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) {
         return jsonResponse({ data: { issueUpdate: { success: true, issue: { ...node, parent: { id: "uuid-204", identifier: "SHI-204" } } } } });
       }
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
     });
     const out = await updateIssueForTracker(store, LINEAR_TRACKER, "SHI-9", { parent: "SHI-204" }, fetchImpl as unknown as typeof fetch, LINEAR_CTX);
-    // The issueUpdate input carries the resolved parentId.
     const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: "uuid-1" });
     expect(out.undo).toMatchObject({ kind: "edit", previousParentId: "uuid-old" });
-    // docs/189 — the reparent is surfaced on line 2.
-    // req 15 — ShipIt-emitted references carry the declared name form.
     expect(out.content?.attrs).toContain("parent → roadmap#SHI-204");
   });
 
@@ -1050,11 +958,9 @@ describe("issue write services (docs/177)", () => {
     };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
-      // Prior issue has no parent → previousParentId is null (undo would detach).
       if (query.includes("query Issue")) return jsonResponse({ data: { issue: node } });
       if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
-      // docs/248 — every Linear call first resolves the declared team key to a team id.
       if (query.includes("TeamByKey")) return jsonResponse({ data: TEAM_LOOKUP_DATA });
       throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
     });
@@ -1066,10 +972,8 @@ describe("issue write services (docs/177)", () => {
   });
 
   it("status: snapshots the prior native status name for undo", async () => {
-    // Prior state is open → native name "Open".
     const out = await setIssueStatusForTracker(store, "github", "42", "completed", ghFetch(), GH);
     expect(out.undo).toEqual({ kind: "status", previousStatus: "Open" });
-    // docs/189 — the status transition is surfaced on line 2 (from the prior name).
     expect(out.content?.status?.from).toBe("Open");
     expect(out.content?.status?.to).toBeTruthy();
   });
@@ -1077,7 +981,6 @@ describe("issue write services (docs/177)", () => {
   it("assignee: snapshots the prior internal id (login), not the display name", async () => {
     const out = await setIssueAssigneeForTracker(store, "github", "42", "bob", ghFetch(), GH);
     expect(out.undo).toEqual({ kind: "assignee", previousAssigneeId: "alice" });
-    // docs/189 — the new assignee name is surfaced on line 2.
     expect(typeof out.content?.assignee).toBe("string");
   });
 
@@ -1129,16 +1032,6 @@ describe("issue write services (docs/177)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Label creation (planning#232): `shipit issue label create` + --create-missing-labels
-// ---------------------------------------------------------------------------
-
-/**
- * A GitHub stub with a MUTABLE repo label set: `GET /labels` reflects labels
- * added by `POST /labels`, so a create-missing-labels flow (mint, then resolve
- * on the issue write) sees its own creations. `used` marks labels the
- * usage-check endpoint reports as carried by an issue.
- */
 function ghLabelStoreFetch(
   existing: (string | { name: string; color?: string; description?: string })[],
   used: string[] = [],
@@ -1169,8 +1062,6 @@ function ghLabelStoreFetch(
       return ghResponse(created, 201);
     }
     if (method === "PATCH" && u.includes("/labels/")) {
-      // GitHub patches a label by its CURRENT name and renames in place via
-      // `new_name` — the label keeps its identity (and its issues).
       const name = decodeURIComponent(u.slice(u.indexOf("/labels/") + "/labels/".length));
       const target = labels.find((l) => l.name === name);
       if (!target) return ghResponse({ message: "Not Found" }, 404);
@@ -1205,7 +1096,6 @@ describe("label creation (planning#232)", () => {
     expect(out.label).toEqual({ name: "t3code", color: "#0ea5e9" });
     expect(out.undo).toEqual({ kind: "label", labelId: "t3code", labelName: "t3code" });
     const post = fetchImpl.mock.calls.find(([u, i]) => i?.method === "POST" && (u as string).endsWith("/labels"))!;
-    // GitHub wants the hex without '#'.
     expect(JSON.parse(post[1]?.body as string)).toEqual({ name: "t3code", color: "0ea5e9" });
   });
 
@@ -1214,7 +1104,6 @@ describe("label creation (planning#232)", () => {
     await expect(
       createLabelForTracker(store, "github", "security", {}, fetchImpl, GH),
     ).rejects.toMatchObject({ statusCode: 409 });
-    // Nothing was created.
     expect(fetchImpl.mock.calls.every(([, i]) => (i?.method ?? "GET") === "GET")).toBe(true);
   });
 
@@ -1248,7 +1137,6 @@ describe("label creation (planning#232)", () => {
       fetchImpl,
       GH,
     );
-    // Only the genuinely-missing label was minted, and it gets its own card data.
     expect(out.labelCreations).toEqual([
       { label: { name: "t3code", color: "#ededed" }, summary: 'created label "t3code"', undo: { kind: "label", labelId: "t3code", labelName: "t3code" } },
     ]);
@@ -1315,18 +1203,12 @@ describe("label creation (planning#232)", () => {
 
   it("createLabelForTracker's duplicate-name refusal points at `label edit`", async () => {
     const fetchImpl = ghLabelStoreFetch(["Security"]);
-    // The 409 stands (a typo must never repaint a live label), but it is no
-    // longer a dead end — planning#88 gave it a verb to name.
     await expect(createLabelForTracker(store, "github", "security", {}, fetchImpl, GH)).rejects.toMatchObject({
       statusCode: 409,
       message: expect.stringContaining("shipit issue label edit"),
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Label editing (planning#88): `shipit issue label edit`
-// ---------------------------------------------------------------------------
 
 describe("label editing (planning#88)", () => {
   let store: CredentialStore;
@@ -1339,19 +1221,14 @@ describe("label editing (planning#88)", () => {
     const out = await updateLabelForTracker(store, "github", "Feature", { color: "#8b5cf6" }, fetchImpl, GH);
     expect(out.label).toEqual({ name: "Feature", color: "#8b5cf6" });
     expect(out.undo).toEqual({ kind: "label-edit", labelId: "Feature", previousColor: "#ededed" });
-    // A recolor is invisible to every issue carrying the label, so line 2 of the
-    // card is the only place the change shows.
     expect(out.content).toEqual({ attrs: "color → #8b5cf6" });
     expect(out.summary).toContain("color → #8b5cf6");
   });
 
   it("renames a label case-insensitively matched, snapshotting the prior name", async () => {
     const fetchImpl = ghLabelStoreFetch([{ name: "bug", color: "d73a4a" }]);
-    // The motivating case: a label found by the wrong casing and fixed to the
-    // right one. Matching has to ignore case or the label is unreachable.
     const out = await updateLabelForTracker(store, "github", "BUG", { name: "Bug" }, fetchImpl, GH);
     expect(out.label.name).toBe("Bug");
-    // The undo address is the id AFTER the rename — on GitHub the name IS the id.
     expect(out.undo).toEqual({ kind: "label-edit", labelId: "Bug", previousName: "bug" });
     expect(out.content).toEqual({ label: { before: "bug", after: "Bug" } });
     const patch = fetchImpl.mock.calls.find(([u, i]) => i?.method === "PATCH" && (u as string).includes("/labels/"))!;
@@ -1363,8 +1240,6 @@ describe("label editing (planning#88)", () => {
     const out = await updateLabelForTracker(store, "github", "Feature", { color: "#8b5cf6" }, fetchImpl, GH);
     await undoIssueWrite(store, { tracker: "github", issueId: "", undo: out.undo }, fetchImpl, GH);
     const patches = fetchImpl.mock.calls.filter(([u, i]) => i?.method === "PATCH" && (u as string).includes("/labels/"));
-    // The reverse write restores ONLY the field the edit changed (GitHub's API
-    // takes the hex without '#', which the adapter strips).
     expect(JSON.parse(patches[patches.length - 1][1]?.body as string)).toEqual({ color: "ededed" });
     const labels = await listLabelsForTracker(store, "github", fetchImpl, GH);
     expect(labels.labels).toEqual([{ name: "Feature", color: "#ededed" }]);
@@ -1391,7 +1266,6 @@ describe("label editing (planning#88)", () => {
     await expect(
       updateLabelForTracker(store, "github", "defect", { name: "bug" }, fetchImpl, GH),
     ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("does not merge") });
-    // Nothing was written — a silent merge is the one outcome no undo could fix.
     expect(fetchImpl.mock.calls.every(([, i]) => (i?.method ?? "GET") === "GET")).toBe(true);
   });
 
@@ -1404,7 +1278,6 @@ describe("label editing (planning#88)", () => {
 
   it("409s on an edit that would change nothing, instead of carding a dead Undo", async () => {
     const fetchImpl = ghLabelStoreFetch([{ name: "Feature", color: "8b5cf6" }]);
-    // `#8B5CF6` vs stored `8b5cf6` — same color, differently written.
     await expect(
       updateLabelForTracker(store, "github", "Feature", { name: "Feature", color: "#8B5CF6" }, fetchImpl, GH),
     ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("nothing to change") });
@@ -1426,12 +1299,6 @@ describe("label editing (planning#88)", () => {
   });
 });
 
-/**
- * docs/262 req 25 — filing feedback on a declared plugin repository. The path is
- * the ordinary `create`; what the destination adds is the session's plugin
- * context, stamped server-side because the agent cannot read the running commit
- * from the staged checkout it browses.
- */
 describe("plugin repository feedback (docs/262 req 25)", () => {
   const PLUGIN_CTX: GitHubTrackerContext = {
     token: "ghp_test",
@@ -1455,7 +1322,6 @@ describe("plugin repository feedback (docs/262 req 25)", () => {
     );
     expect(out.verb).toBe("create");
     const [url, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
-    // The plugin's repository, not the session's own — req 25's whole point.
     expect(url as string).toContain("/repos/acme/dev-tools/issues");
     const body = JSON.parse(init!.body as string).body as string;
     expect(body).toContain("## Reproduction");
@@ -1472,8 +1338,6 @@ describe("plugin repository feedback (docs/262 req 25)", () => {
     expect(JSON.parse(init!.body as string).body).toBe("no footer");
   });
 
-  // A repository the project declares BOTH ways is one of its own trackers, and
-  // an ordinary planning issue filed there must not grow plugin context.
   it("does not stamp a repository that is also a declared tracker", async () => {
     const fetchImpl = ghFetch();
     await createIssueForTracker(

@@ -89,7 +89,7 @@ A standby is a normal session container pre-created by the warm pool and tagged
   startup validation to avoid treating an unclaimed standby as an orphan.
 
 Standby containers are excluded from the "real" count when the pool decides
-whether to create another (`size - standbyCount < maxIdleContainers`).
+whether to create another; since docs/284 the warm pool skips standby creation while ShipIt is at its memory budget (`isUnderEvictionPressure`), and the enforcer reclaims standbys before touching a real session.
 
 ## ContainerSessionRunner Internals
 
@@ -162,7 +162,7 @@ SessionContainerManager.create(config):
        Image: "shipit-session-worker:latest",
        Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
        NetworkingConfig: { shipit bridge network },
-       HostConfig: { Memory: sized from host capacity, CpuQuota, PidsLimit },
+       HostConfig: { Memory: sized from host capacity, CpuQuota, PidsLimit, Init: true },
        Labels: { "shipit-session-id": sessionId },
      })
   3. container.start()
@@ -170,6 +170,8 @@ SessionContainerManager.create(config):
   5. Poll GET http://{ip}:9100/health every 500ms (up to 30s)
   6. Return { id, workerUrl: "http://{ip}:9100", containerIp, status: "running" }
 ```
+
+**`Init: true` is load-bearing — PID 1 must be an init, never the worker** (planning#508, docs/051 §14). Node only `waitpid`s the pids it spawned, so every descendant whose intermediate parent exited first — an MCP server's headless Chromium, a `sh -c` wrapper, esbuild, a git helper — is reparented to PID 1 and, with the worker there, never reaped. Production on 2026-09-03 carried ~9,100 zombies across 35 workers. A zombie holds a pid, so it counts against `PidsLimit` and a long-lived session eventually fails every `fork` with EAGAIN while looking healthy by every other measure. Two consequences: `entrypoint.sh` must stay a chain of `exec`s (it runs *under* docker-init and hands the process on in place, which is what keeps SIGTERM forwarding working), and the flag has to survive any refactor of this HostConfig — `session-container.test.ts` → `describe("PID 1 / orphan reaping")` is the guard. The other `docker.createContainer` call sites (plugin CLI/install, the egress sidecars, the netns holder) are audited in docs/051 §14 and deliberately left without it: each is either short-lived or a single process that never forks. **The flag applies at create only** — a live container cannot gain an init, and a worker retained across a deployment (`restart-turn-reattach.ts` keeps busy ones; recycling is otherwise memory-pressure driven) keeps accumulating zombies until it is recreated.
 
 ### Container Destruction
 
@@ -268,6 +270,63 @@ The slot must be filled before the stream opens, which is why
 `restart-turn-reattach.ts` runs the same path at boot for containers reporting a
 live turn, so the flow completes even in sessions nobody opens.
 
+### Reclaiming Stale Idle Containers on Update (docs/242)
+
+The same boot sweep has a second job: an update must actually give back the
+memory of the workers it left on the old image. For each rediscovered container
+it either **adopts** a live turn (above) or, when the worker is `stale` and
+reports itself idle, **destroys the agent container and stops there** — no
+recreate, because nobody is attached at boot and the lazy attach path
+cold-starts a fresh container on the current image at the next open (which is
+also what clears the stale-container banner).
+
+Two rules do the work, and both replaced an earlier version that read `running`:
+
+- **Idle means `turnActive === false`**, never `running === false`. `running`
+  stays true for a resident CLI idling between turns, i.e. the steady state, so
+  the old test refused the normal case: on 2026-09-02 it rotated 4 of 35 stale
+  containers and left 31 holding 25.3 GiB.
+- **Every clause is a positive report from the worker.** A field an older image
+  omits says nothing, so `turnActive` must be `=== false` — "unknown" keeps a
+  legacy worker's turn alive.
+
+`GET /agent/status` therefore also publishes what the container knows and the
+orchestrator cannot re-derive after a restart — the docs/235 axis it otherwise
+holds only in memory as `runner.agentBusy`, plus the two controllers the agent
+controller does not own:
+
+| Field | Scope | Why |
+|---|---|---|
+| `backgroundTaskCount` | process | A turn routinely *ends* with tasks still running, so it survives `agent_result`. Cleared by one `vacateSlot()`, because `/agent/kill` nulls the slot before the late `done` handler runs — a stale count fails CLOSED and holds the container forever. |
+| `selfWakeActive` | turn | A self-woken turn never sets `turnActive`. |
+| `terminalActive` | container | A PTY survives the restart and is reattached on the next open. Says a shell EXISTS, not that it is busy — nothing reports that. |
+| `installRunning` | container | `agent.install` mid-flight. |
+
+The reclaim also **re-probes** before destroying (~1 s). docs/235's wire trace
+drains the task list 1 ms before the self-wake, so a single probe can catch a
+worker that is about to start a turn looking idle.
+
+Never reclaimed: a live or self-woken turn, outstanding background tasks, a live
+terminal or install, a `current`/`unknown` build, a standby, an archived session,
+a docs/241 reservation, a probe that failed (either one), and a session whose
+runner is busy, has a viewer, or declines disposal (planning#298 ordering — a
+refused dispose is never followed by a destroy).
+
+**The Compose stack is not the sweep's to take, and not a preview it preserves.**
+A clean update already `compose down`s every stack on the way out
+(`shutdown-manager.ts` → `disposeAll` → each `disposed` handler); one that
+survives a crash is unroutable, because `preview-proxy.ts` resolves a service
+port through the in-memory `serviceManagers` map the restart emptied, and the
+next attach's `ServiceManager.start()` opens with `killStaleContainers()` — a
+force-remove of every `shipit-parent-session` container — before `compose up`.
+That last mechanism, not the button, is why a stale session's preview appears to
+restart when you open it. `destroyAgentContainer()` rather than `destroy()` for a
+different reason: `destroy()` reaps every volume the SESSION created through the
+Docker API proxy.
+
+This is NOT the steady-state path below — it fires once per boot, on staleness,
+with no memory-budget input.
+
 ### Container Persistence Across Runner Disposal
 
 **`runner.dispose()` never destroys the Docker container.** Where a container does go away — idle cleanup, archive, Rescue — it is a *separate, explicit* `containerManager.destroy(sessionId)` call by that caller, sitting next to the dispose. Read the two as independent: a runner is an in-memory object, a container is a process on the host, and their lifetimes are deliberately not tied.
@@ -280,23 +339,48 @@ live turn, so the flow completes even in sessions nobody opens.
 
 Containers that survive — after any shutdown, clean or not — are rediscovered on startup, enabling fast reconnection: a new runner reconnects to the existing container without restarting anything, and `reattachInFlightTurns()` re-adopts a turn that is still running inside it.
 
-## Idle Container Cleanup
+## Idle Container Cleanup (docs/284)
 
-Instead of per-runner idle timers, ShipIt manages container lifecycle with a single `maxIdleContainers` setting (default 5, persisted in `CredentialStore`). An **idle container** is one where:
-- The runner has `viewerCount === 0` AND `!running`, OR
-- The container has no runner at all
+ShipIt reclaims idle sessions when, and only when, it is over the user's
+**memory budget** — one setting (`memoryBudgetMb`, Settings → Advanced; unset
+means "the whole machine"). Idle time alone reclaims nothing. The old
+`maxIdleContainers` count is gone: it treated an idle shell and a Postgres
+service as equal claims on the machine.
 
-`enforceIdleContainerLimit()` scans all containers, identifies idle ones, and destroys the oldest excess beyond the limit. It fires on two triggers:
+An **idle** session is one whose runner has `viewerCount === 0` and
+`!agentBusy`, or that has no runner at all. Sessions holding a docs/241
+reservation are never candidates.
+
+`enforceIdleContainerLimit()` (`idle-enforcer.ts`) reclaims longest-idle first,
+in three tiers, stopping as soon as usage is back under the evict line:
+
+0. **Standby containers** — speculative warm-pool capacity nobody claimed. Full
+   `containerManager.destroy()`; there is no runner and no stack to preserve.
+1. **Agent containers** — `containerManager.destroyAgentContainer()` (NOT
+   `destroy()`, which sweeps every `shipit-parent-session` container), with
+   `preserveComposeOnDispose = true` on the runner first. The session's Compose
+   stack keeps running and its preview stays reachable, because
+   `preview-proxy.ts:resolveTarget` routes through the `ServiceManager` that
+   stays in `serviceManagers`.
+2. **Preview stacks** — only stacks tier 1 orphaned in this process, and only
+   once tier 1 is exhausted. Keying off "manager with no runner" would also hit
+   a session mid-`restartAgent`.
+
+Three rules keep it honest against a snapshot the poller refreshes every 10s:
+an **unmeasured** reclaim (no `bySession` entry) ends the pass; **tier 2 is
+skipped** behind an unmeasured tier-1 reclaim; and a snapshot object is acted
+on at most once. A pass is also skipped entirely while a previous teardown is
+still in flight.
+
+It fires on two triggers:
 1. **A periodic timer** (`startup-monitors.ts`)
 2. **Agent finishes** — via the `onRunnerIdle` registry callback when a runner emits `"idle"`
 
 **It is deliberately NOT called from the WS close handler** (`route-registry.ts` carries an explicit comment saying so): WebSocket lifecycle must not drive container lifecycle, or a network blip or page reload would destroy a live session's container. A close handler only calls `detachFromRunner()`. See `CLAUDE.md` → *WebSocket lifecycle MUST NOT affect server behavior*.
 
-When excess idle containers are destroyed:
-- `containerManager.destroy(sessionId)` stops and removes the Docker container
-- `runnerRegistry.dispose(sessionId)` cleans up the in-memory runner
-
-The `maxIdleContainers` setting is exposed via `PUT /api/settings` and the Settings UI (Advanced tab).
+Because `serviceManagers` is process-local, a tier-1-preserved stack cannot be
+routed to or reclaimed by the *next* orchestrator — so the shutdown hook stops
+every runner-less manager, and the user reopening the session rebuilds it.
 
 ## Idle Timer
 
@@ -344,7 +428,7 @@ app.addHook("onClose"):
      -> stop the health monitor + drop listeners. Containers are NOT touched.
 ```
 
-**Session containers survive orchestrator shutdown, and so do their in-flight turns.** This is what makes updates zero-downtime (docs/113): `deploy.sh` replaces only the orchestrator, and the next boot re-adopts the survivors via `rediscoverContainers()` and `reattachInFlightTurns()` (docs/240). Orphan cleanup at startup reaps whatever no longer maps to an active session.
+**Session containers survive orchestrator shutdown, and so do their in-flight turns.** This is what makes updates zero-downtime (docs/113): `deploy.sh` replaces only the orchestrator, and the next boot re-adopts the survivors via `rediscoverContainers()` and `reattachInFlightTurns()` (docs/240). Orphan cleanup at startup reaps whatever no longer maps to an active session. What survives is *work*, not the container: the same sweep reclaims a stale worker that is idle (docs/242, above).
 
 **Standby containers are the one exception, and for the same reason.** docs/113 protects work in flight; a standby holds none — nobody has claimed it — while it does carry the previous deploy's worker image, pre-install and overlay base. So boot kills every standby (`reapStandbyContainers()`) and the warm pool rebuilds itself on the new image.
 
@@ -365,7 +449,8 @@ The session's **Compose stack** is the exception: it is still `compose down`-ed 
 
 **`agent.memory` / `agent.cpu` / `agent.pids` in `shipit.yaml` are removed keys** (docs/229). They are warned-and-ignored by `shipit-config.ts`, not honored — a repo that still sets them is getting host-derived sizing regardless.
 | Concurrent runners | 10 | `SessionRunnerRegistry` |
-| Runner idle timeout | 10 min (default) | `SessionRunnerRegistry` |
+| Container reclaim (steady state) | Only when over the memory budget (docs/284) | `idle-enforcer.ts` |
+| Container reclaim (on update) | Every stale idle worker, once per boot, regardless of the budget (docs/242) | `restart-turn-reattach.ts` |
 | Unused runner idle | 10 sec | `ContainerSessionRunner` |
 | Container stop timeout | 5 s | `session-container.ts` |
 | Health check interval | 500 ms | `session-container.ts` |

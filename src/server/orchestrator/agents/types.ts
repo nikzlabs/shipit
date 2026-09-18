@@ -1,17 +1,3 @@
-/**
- * Orchestrator-only `LimitsProvider` interface. The matching domain
- * type `SubscriptionLimits` lives in
- * `src/server/shared/types/usage-limits-types.ts` so it's
- * client-importable; providers themselves are server-only.
- *
- * Both providers today are *event-fed*: their numbers arrive on the
- * agent's stream (`rate_limit_event` for Claude,
- * `account/rateLimits/updated` for Codex) and the orchestrator pushes
- * them into the provider via its `setRateLimits()` method.
- *
- * See docs/135-subscription-limits-badge/plan.md.
- */
-
 import type {
   LimitsRefreshResult,
   SubscriptionLimits,
@@ -20,73 +6,22 @@ import type {
 import type { BillingMode } from "../../shared/catalogue/types.js";
 
 export interface LimitsProvider {
-  /**
-   * docs/252 req 10 — the `(service, billing mode)` this provider reports quota
-   * for. Replaces `agentId`: a harness is not a vendor and cannot own a quota,
-   * and one service can hold both a subscription and a key. Only a `sub` mode
-   * has an allowance to report, which is why both shipped providers declare
-   * one — a key mode renders no indicator at all rather than an empty one.
-   */
   readonly serviceId: string;
   readonly billingMode: BillingMode;
 
-  /**
-   * docs/150 — the routes this provider currently holds a snapshot for: a
-   * provider-account id (`acct_…`) or a reserved route id
-   * (`claude-env-oauth`, `claude-api-key`). Empty until the first
-   * `setRateLimits()` lands (event-fed providers stay blank on cold start) and
-   * again after sign-out; routes absent from this list are omitted from the
-   * broadcast map entirely, so the client renders no pill for them.
-   *
-   * This replaced a boolean `canFetch()`. Quota is per *subscription*, not per
-   * provider — a single flag could only ever describe one of them.
-   */
   routeIds(): string[];
 
-  /**
-   * Return the latest cached snapshot for one route, enriched with derived
-   * fields (e.g. plan tier read from credentials). Must never throw; returns
-   * `null` when that route has no snapshot or has been signed out.
-   */
+  /** Return the cached snapshot or null; must not throw. */
   fetch(routeId: string): Promise<SubscriptionLimits | null>;
 
-  /**
-   * Record a fresh rate-limit snapshot pushed from an agent turn (Claude:
-   * `rate_limit_event` stream messages; Codex: `account/rateLimits/updated`
-   * notification), attributed to the route whose credentials that turn ran on.
-   * Promoted onto the interface so the orchestrator's `recordAgentRateLimits`
-   * can be a one-line map lookup instead of an if/else cascade keyed by
-   * `agentId`. (docs/155)
-   */
   setRateLimits(
     session: SubscriptionLimitsWindow | null,
     weekly: SubscriptionLimitsWindow | null,
     routeId: string,
   ): void;
 
-  /** Drop every cached snapshot for one route (sign-out / disconnect). */
   forgetRoute(routeId: string): void;
 
-  /**
-   * Optional on-demand fetch of the authoritative usage snapshot from the
-   * provider's HTTP endpoint (Claude: `/api/oauth/usage`). This is the only
-   * way to learn the **low-usage** number the event stream omits below a
-   * warning threshold. Returns when the internal cache has been updated (so
-   * the caller can `fetch()` + broadcast). Must never throw; on 429 it sets
-   * an internal lockout and no-ops until it elapses.
-   *
-   * `reason: "seed"` is the once-per-sign-in baseline fetch and self-skips if
-   * a usage-api snapshot already exists; `reason: "manual"` is the user's
-   * refresh button and always attempts (subject only to the lockout). The
-   * lockout is per route — a 429 against one account's token says nothing
-   * about another's.
-   *
-   * Absent on providers with no HTTP usage endpoint (Codex), so callers must
-   * null-check.
-   *
-   * Resolves with *why* the attempt did or didn't produce numbers. Every
-   * non-`updated` outcome was previously a silent `return`, which is what made
-   * a rate-limited pill indistinguishable from a broken button.
-   */
+  /** Seed skips existing API snapshots; manual refresh still respects per-route 429 lockouts. */
   refreshNow?(reason: "manual" | "seed", routeId: string): Promise<LimitsRefreshResult>;
 }

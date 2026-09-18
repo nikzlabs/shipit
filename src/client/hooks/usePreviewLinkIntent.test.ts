@@ -30,7 +30,6 @@ beforeEach(() => {
   useUiStore.setState({ toast: null });
 });
 
-/** Mount the hook with a `send` that reports success unless told otherwise. */
 function mount(send: (data: unknown) => boolean = () => true, sessionId = "sess-1") {
   return renderHook(() => usePreviewLinkIntent(sessionId, send));
 }
@@ -55,9 +54,7 @@ describe("usePreviewLinkIntent — starting a stopped service (req 12)", () => {
   });
 
   it("sends one start for two rapid clicks on the same stopped service", () => {
-    // The second click replaces the intent while the boot is still in flight,
-    // so the service is still `stopped` and nothing in the intent itself would
-    // suppress a duplicate.
+
     const send = vi.fn(() => true);
     usePreviewStore.setState({ services: [WEB], previewLinkIntent: intent({ clickId: 1 }) });
     const { rerender } = mount(send);
@@ -67,7 +64,7 @@ describe("usePreviewLinkIntent — starting a stopped service (req 12)", () => {
   });
 
   it("starts a service already sitting in error, rather than refusing it (req 12)", () => {
-    // `error` from some earlier attempt means "not running", which req 12 says
+
     // to start. Refusing would leave a link that can never work again.
     const send = vi.fn(() => true);
     usePreviewStore.setState({
@@ -81,8 +78,7 @@ describe("usePreviewLinkIntent — starting a stopped service (req 12)", () => {
   });
 
   it("does not report a failure against its own start request", () => {
-    // The status is still `stopped` in the moment after the send — the server
-    // has not answered. Treating that as "did not start" would toast every time.
+
     const send = vi.fn(() => true);
     usePreviewStore.setState({ services: [WEB], previewLinkIntent: intent() });
     const { rerender } = mount(send);
@@ -115,9 +111,7 @@ describe("usePreviewLinkIntent — starting a stopped service (req 12)", () => {
 
 describe("usePreviewLinkIntent — selecting the intent's own port", () => {
   it("selects the target's port when it reaches running, not whatever else is up", () => {
-    // The multi-service case: A is already running and the pointer targets
-    // stopped B. `preview_status` carries only running ports and clears
-    // `selectedPort`, so without an explicit reselect the panel stays on A
+
     // unless Compose ordering happens to put B first.
     usePreviewStore.setState({
       services: [API_RUNNING, WEB],
@@ -145,8 +139,7 @@ describe("usePreviewLinkIntent — selecting the intent's own port", () => {
 
 describe("usePreviewLinkIntent — cancellation", () => {
   it("drops an intent belonging to another session", () => {
-    // `service_list` / `service_status` handlers ignore their own `sessionId`,
-    // so the intent has to check the session itself.
+
     usePreviewStore.setState({ services: [WEB], previewLinkIntent: intent() });
     mount(() => true, "sess-2");
     expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
@@ -163,7 +156,7 @@ describe("usePreviewLinkIntent — cancellation", () => {
 
     expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
     expect(send).not.toHaveBeenCalled();
-    // Not a failure — expiry is cleanup, and req 10 is best effort.
+
     expect(useUiStore.getState().toast).toBeNull();
   });
 

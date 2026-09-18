@@ -19,17 +19,13 @@ function route(overrides: Partial<CredentialRoute> = {}): CredentialRoute {
   };
 }
 
-// These two predicates are read by both Settings and the header usage pill, so
-// their contract is tested here rather than only through whichever component
-// happens to render them.
 describe("credentialStatusWord", () => {
   it("says nothing about a credential that can run a turn", () => {
     expect(credentialStatusWord(route())).toBeUndefined();
   });
 
   it("names the remedy the credential actually has (planning#358)", () => {
-    // An account has a login to run again; a supplied secret does not — there
-    // is nothing to reconnect to, and the only fix is a new value.
+
     expect(credentialStatusWord(route({ status: "auth_failed" }))).toEqual({
       text: "reconnect needed",
       tone: "error",
@@ -48,10 +44,7 @@ describe("credentialStatusWord", () => {
   });
 
   it("falls back to the account remedy for any other non-ready state", () => {
-    // `unavailable` today, and whatever a future `CredentialStatus` adds: the
-    // default is to say something rather than to fall silent, since silence is
-    // read as health. A new state that deserves its own wording will fail this
-    // expectation, which is the point.
+
     expect(credentialStatusWord(route({ status: "unavailable" }))).toEqual({
       text: "reconnect needed",
       tone: "error",
@@ -73,8 +66,7 @@ describe("isUnconnectedAttempt", () => {
   });
 
   it("is false for the states only a real login attempt reaches", () => {
-    // Covers the account that connected without a readable identity — an
-    // unreadable identity proceeds by design, so `externalId` alone over-hides.
+
     expect(isUnconnectedAttempt(route({ status: "ready" }))).toBe(false);
     expect(isUnconnectedAttempt(route({ status: "auth_failed" }))).toBe(false);
   });

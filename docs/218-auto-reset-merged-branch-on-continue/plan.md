@@ -105,13 +105,42 @@ mockup for reference.)
   `autoResetMergedBranch` (default on). Unticking is a **per-send** choice that does
   **not** persist — the next eligible message shows it checked again. The global
   setting is the escape hatch for someone who never wants it.
-- **Visibility is derived from live session state, recomputed after each turn — not
-  a one-shot flag.** Two behaviors fall out naturally:
+- **The offer belongs to one merge and is made once** (see
+  [requirements.md](./requirements.md) req 6). Either answer ends it:
   - **Sent checked →** the reset runs, the branch moves off the merged tip, the
     session re-arms; eligibility is now false → the control disappears and stays
     gone (nothing left to reset).
-  - **Sent unticked →** no reset, branch still at the merged tip, still merged →
-    eligibility holds → the control reappears (checked) on the next message.
+  - **Sent unticked →** no reset, but the decline is recorded against the merge
+    (`SessionInfo.mergeContinueDeclinedAnchor`), and eligibility answers false
+    from then on → the control does not reappear, and the docs/295 compaction
+    stands down with it, since it reads the same predicate.
+
+  **The anchor is the MERGE, not the commit** (`mergeContinueAnchor`:
+  `mergedAt` plus the head). Two attempts at a narrower identity were both
+  wrong, and review caught both. A head-only anchor **loses** the decline for a
+  session eligible by the ancestry clause, which needs no `mergedHeadSha` at all
+  — so those sessions were offered again on the next message, silently. And a
+  head is not unique to a merge: two pull requests can merge the same commit,
+  into different bases, so a later merge could inherit a refusal the user never
+  gave. `mergedAt` is written once per merge (`markMerged` runs only while it is
+  null) and nulled when the merge is retired, which is what makes it an identity
+  for the merge. Independently, `clearMerged` and `clearPriorPrRecord` also clear
+  the decline, so the two defences do not rely on each other.
+
+  This second half is a **2026-09-13 change**. It used to read "eligibility holds
+  → the control reappears (checked) on the next message", and that is what
+  shipped: eligibility is a pure state predicate — merged, clean tree,
+  `HEAD === mergedHeadSha` — and a declined continuation leaves all three true,
+  so the branch was reset and the context compacted on the *following* message
+  instead. A decline is an answer, not a pause.
+
+  **A refusal is not a decline.** A reset ShipIt refused (dirty tree, moved head)
+  was never *offered* — such a session is not eligible, so no control was shown —
+  and it stays re-evaluated every turn, as the merge-time notice promises. Only
+  `clause: "opted-out"` records a decline. And the decline is not a safety gate:
+  `shipit branch reset-to-base` still moves the branch on request, which is why
+  `declinedThisMerge` sits outside `computeResetBlocker` (shared with
+  `resetBranchToBaseExplicit`) rather than inside it.
 - **Correctness is server-side.** The checkbox value is only the user's *intent*; the
   pre-turn helper re-validates the full gate at send time regardless of what the
   client sent, so a stale client eligibility flag can never cause an unsafe reset.
@@ -435,6 +464,11 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
 | User card — persist | `shared/types/*`, `chat-history.ts`, `session-data.ts`, `database.ts` | `branchAutoReset` `PersistedMessage` field + column + `toRow`/`fromRow` + migration; rehydrate in `loadSessionHistory` |
 | User card — register | `visual-elements.ts` | Add to `CARD_MESSAGE_FIELDS`; extend `EVERY_OPTIONAL_FIELD_MESSAGE` |
 | User card — render | `src/client/components/` (new card component) | Render "Branch updated to latest `<base>`" + `was → now` SHAs |
+| Phase 9 — measure | `src/server/orchestrator/services/push-divergence.ts` (new) | `measurePushDivergence` (fetch → `aheadBehind` → `mergeBase` → name remote-only commits) + `formatDivergedPushNotice`, one recovery per shape |
+| Phase 9 — measure | `src/server/shared/git.ts` | `commitSubjects(range, maxCount)` — the primitive that lets the notice NAME the at-risk commits |
+| Phase 9 — report | `src/server/orchestrator/services/auto-push-scheduler.ts` | Measure at the rejection (once per episode, after the fast log line); arm the client's rebase banner only when `baseRebaseIsSafe`; `destructiveGitGuarded` dep so the notice never names a force-push the hook would block |
+| Phase 9 — guidance | `src/server/orchestrator/prompts/pull-requests.md`, `shipit-docs/github.md`, `shipit-docs/sessions.md` | Check the branch's state before moving it; never a hand-rolled rebase/reset onto the base |
+| Phase 9 — hook | `docker/agent-hooks/block-branch-ops.mjs` | `git rebase` joins the guard-armed destructive set; in-progress verbs exempt |
 
 ## Testing
 
@@ -559,11 +593,20 @@ fixes, mirroring how docs/216 re-arms the PR card "NOW" rather than lagging unti
    false — the handler emits `reset_eligible: false` immediately. This covers **every** send
    path (composer, propose-action buttons, programmatic follow-ups), independent of turn
    length. The post-turn recompute stays as the fail-safe (manual `git reset` with no pre-turn
-   move) and reconciles an unticked send back to eligible.
+   move). **Since req 6 (2026-09-13) an unticked send hides the control too** — the hook
+   records the decline and emits `reset_eligible: false` for it, where the post-turn recompute
+   used to reconcile it back to eligible.
 2. **Client (optimistic, composer path).** `handleSubmit` (`MessageInput.tsx`) also clears the
-   signal (`setResetEligible(sessionId, false)`) on a *checked* send, so the control vanishes
-   on click without even a WS round-trip. An *unticked* send leaves it intact (no reset runs).
-   Covered by the "optimistically clears / keeps eligibility" tests in `MessageInput.test.tsx`.
+   signal (`setResetEligible(sessionId, false)`), so the control vanishes on click without even
+   a WS round-trip. This was `&& resetChecked` until req 6 made both answers end the offer —
+   which is why an unticked send used to leave both controls standing through the turn it
+   started. It excludes a **control command**: `/compact` and `/goal` answer nothing (the
+   server skips the reset hook for them, and a `/goal` that does not ride a turn starts none),
+   so hiding the controls there would leave the user unable to re-tick a choice nothing had
+   spent — the same exclusion the untick itself already has. Predicting nothing is safe in only
+   one direction: a control that lingers is corrected by the post-turn recompute, one that
+   vanished wrongly is not. Covered by the "optimistically clears" tests in
+   `MessageInput.test.tsx`.
 
 **Phase 3 — default flipped ON.** `credentialStore.getAutoResetMergedBranch()` now defaults
 `?? true`; the client settings store, `GlobalSettings`, and the bootstrap fallback default
@@ -770,6 +813,81 @@ tries to fix.
   (`isClean()` then `uncommittedPaths()`). Deriving cleanliness from the path list
   would collapse them into one, but that changes what the *gate* means by clean,
   and this phase does not touch the gate.
+
+### Phase 9 — continuing after the reset: the guidance that undid it, and a notice that measures
+
+The 2026-08-30 incident (session e48417b0). Everything this feature owns worked:
+the pre-turn reset moved the branch to the fresh base, the heal force-push
+re-created the remote, and `detectAndReArmResetSession` cleared the merged state
+so the destructive-git guard disarmed for later turns. A later turn then
+committed and pushed one commit that belonged to no pull request. Inside the
+container, the agent rebased — and the branch LOST that already-published
+commit. Every auto-push after it was rejected as non-fast-forward, for 23 hours,
+leaving the session with no pull request, no diff, and its only work sitting on
+the remote.
+
+Two defects, neither in the reset itself.
+
+- **The agent instructions still described the pre-reset world.**
+  `prompts/pull-requests.md` told the agent, unconditionally, to
+  `git fetch origin && git rebase origin/<base>` before opening a follow-up PR.
+  That was right when the branch sat at the merged tip and nothing moved it; once
+  *this* feature became the common path it is wrong (the branch is already on the
+  base), and once a commit has been pushed it is actively harmful — a rebase then
+  rewrites published history with no `--force-with-lease` to finish it. The
+  paragraph now says to LOOK first (`git status -sb`, `git log`) and branches on
+  what it finds: already on the base ⇒ just commit; still at the merged tip ⇒
+  `shipit branch reset-to-base`; commits made after the merge ⇒ stop and ask the
+  user. It matches CLAUDE.md post-turn invariant 4 instead of contradicting it.
+  The same correction landed in the agent-facing copies
+  (`shipit-docs/github.md`, `shipit-docs/sessions.md`).
+- **The rejection notice guessed the shape instead of measuring it.**
+  `services/auto-push-scheduler.ts` emitted a fixed three-case menu that opened
+  with "the commit is safe in this session's local history" and emphasised
+  `shipit branch reset-to-base --force`. In this incident there *was* no local
+  commit, and that command — which resets to the base and force-pushes the heal —
+  would have deleted the one commit that existed anywhere. `services/push-divergence.ts`
+  now measures at the moment of the rejection (fetch the branch, count both sides
+  of the symmetric difference, check the merge base, name the remote-only
+  commits) and the notice states what it measured and names the ONE recovery that
+  fits. The rule that the auto-push never forces a divergence open is untouched —
+  the defect was the report, not the refusal.
+- **…and the client's rebase banner had the same defect, in its more dangerous
+  form.** `git_push_rejected` was emitted on every rejection, and the banner it
+  arms carries an "Update branch" button that rebases onto the base and
+  force-pushes (`services/rebase-driver.ts`). In this shape that is one click
+  from deleting the commit the notice was being fixed to protect. The banner now
+  waits for the measurement and is armed only when `baseRebaseIsSafe` — true for
+  the rewritten-branch shape it was built to repair (2026-08-15), false when the
+  remote holds commits this branch cannot republish, and false for anything
+  unmeasured.
+
+Three readings the measurement deliberately refuses to turn into advice, each
+because the confident version of it is how someone gets talked into a
+destructive command:
+
+- **`behind === 0` is not "the branch was rewritten, force-push it."**
+  `aheadBehind` counts the symmetric difference, so `behind === 0` means the
+  remote ref is an ancestor of HEAD and a PLAIN push fast-forwards — those counts
+  contradict the rejection that produced them. Reading them as a rewrite is
+  exactly how a stale tracking ref recommends overwriting a remote that is
+  actually ahead. The notice says the counts do not explain the rejection.
+- **A failed fetch names no recovery at all.** Stale counts understate `behind`,
+  the number the whole decision rests on. A caveat the reader skims is not a
+  substitute for not making the recommendation.
+- **"No merge base" may be a failed comparison.** `GitManager.mergeBase` maps
+  every error to `null`, so the notice says "unrelated, or the comparison itself
+  failed" rather than asserting the stronger of the two.
+
+`git rebase` also joined the hook's destructive set
+(`docker/agent-hooks/block-branch-ops.mjs`, docs/130), armed by the same
+`SHIPIT_GUARD_DESTRUCTIVE_GIT=1` as its siblings and exempting the in-progress
+verbs. That does not cover this incident — the guard was already disarmed by the
+re-arm above — but it closes the gap where the one rewrite ShipIt's own docs
+forbid in that window was also the only one the hook did not mention. A broader
+block was rejected: a rebase is legitimate nearly always, and deciding otherwise
+would mean shelling out to git from a PreToolUse hook to compare the branch with
+its own remote.
 
 ## Review notes
 

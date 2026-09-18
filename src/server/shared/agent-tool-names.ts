@@ -1,13 +1,3 @@
-/**
- * Tool names each agent CLI exposes, for UI mapping.
- *
- * Split out of `agent-registry.ts` (docs/252 phase 1) so the harness catalogue
- * can carry them without importing that module: `agent-registry.ts` now derives
- * its `AGENT_DEFS` from the catalogue, so a catalogue → registry import would
- * close a cycle. `agent-registry.ts` re-exports both constants, so existing
- * import sites are unchanged.
- */
-
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
   "AskUserQuestion",
@@ -52,8 +42,6 @@ export const CLAUDE_TOOL_NAMES = [
   "Write",
 ] as const;
 
-// Verified against a live `opencode run` turn (CLI 1.18.15, 2026-08-16);
-// docs/268-opencode-harness/plan.md. OpenCode tool ids are lowercase.
 export const OPENCODE_TOOL_NAMES = [
   "bash",
   "edit",
@@ -67,16 +55,6 @@ export const OPENCODE_TOOL_NAMES = [
   "write",
 ] as const;
 
-/**
- * Grok Build's advertised tool set, read verbatim off the `system`/`init` event
- * of a real headless turn (CLI 1.0.1, 2026-08-18 — identical across the
- * `grok-4.20-0309-non-reasoning` and `grok-4.6` captures;
- * docs/274-grok-build-harness/plan.md). Grok tool ids are lower_snake_case.
- *
- * This is the CLI's whole advertised list, not the subset ShipIt's transcript
- * gives dedicated treatment — the docs/272 recognition matrix is what decides
- * that, and it is a separate exercise from declaring what the CLI can call.
- */
 export const GROK_TOOL_NAMES = [
   "ask_user_question",
   "enter_plan_mode",
@@ -103,6 +81,69 @@ export const GROK_TOOL_NAMES = [
   "web_search",
   "workflow",
   "write",
+] as const;
+
+// The 57 names in the CLI's own `init.tools`, captured on 1.2.2
+// (docs/301-antigravity-harness/probes/flash-test.ndjson). MCP servers do not
+// appear here: every MCP call goes through the `call_mcp_tool` wrapper.
+export const ANTIGRAVITY_TOOL_NAMES = [
+  "ask_custom_permission",
+  "ask_permission",
+  "ask_question",
+  "browser_click_element",
+  "browser_drag_pixel_to_pixel",
+  "browser_get_dom",
+  "browser_get_network_request",
+  "browser_input",
+  "browser_list_network_requests",
+  "browser_mouse_down",
+  "browser_mouse_up",
+  "browser_move_mouse",
+  "browser_press_key",
+  "browser_refresh_page",
+  "browser_resize_window",
+  "browser_scroll",
+  "browser_scroll_dom",
+  "browser_select_option",
+  "browser_subagent",
+  "call_mcp_tool",
+  "capture_browser_console_logs",
+  "capture_browser_screenshot",
+  "click_browser_pixel",
+  "command_status",
+  "define_subagent",
+  "delete_knowledge",
+  "execute_browser_javascript",
+  "find_by_name",
+  "finish",
+  "generate_image",
+  "grep_search",
+  "invoke_subagent",
+  "list_browser_pages",
+  "list_dir",
+  "list_permissions",
+  "list_resources",
+  "manage_inbox",
+  "manage_subagents",
+  "manage_task",
+  "multi_replace_file_content",
+  "notebook_edit",
+  "notebook_execution",
+  "open_browser_url",
+  "read_browser_page",
+  "read_resource",
+  "read_url_content",
+  "replace_file_content",
+  "run_command",
+  "schedule",
+  "search_web",
+  "sed_file",
+  "send_command_input",
+  "send_message",
+  "view_file",
+  "wait",
+  "wait_5_seconds",
+  "write_to_file",
 ] as const;
 
 export const CODEX_TOOL_NAMES = [

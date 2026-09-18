@@ -1,12 +1,3 @@
-/**
- * docs/240 Fix A — the branded prepared dispatch.
- *
- * The load-bearing assertions here are TYPE-level (`@ts-expect-error`), because
- * the property under test is "this does not compile" and no runtime test can
- * express that. `npm run typecheck` compiles this file, so an `@ts-expect-error`
- * that stops being an error fails the build with "Unused '@ts-expect-error'
- * directive" — i.e. the guard fails loudly if the brand is ever removed.
- */
 import { describe, it, expect, vi } from "vitest";
 import {
   prepareDispatch,
@@ -20,7 +11,6 @@ import type { AgentDispatchOptions, QueuedMessage } from "./session-runner.js";
 import { createTurnSettlement, TURN_COMPLETED } from "./turn-settlement.js";
 import type { AgentId } from "../shared/types.js";
 
-/** Every field, so the exhaustiveness assertions below have something to chew on. */
 const FULL_INIT: AgentDispatchInit = {
   text: "everything",
   agentInterface: { source: "agent_interface_sdk", surface: "preview" },
@@ -36,6 +26,10 @@ const FULL_INIT: AgentDispatchInit = {
   onTurnComplete: () => {},
   deliveryId: "watch-1:1",
   dictated: true,
+  resetMergedBranch: false,
+  compactContext: false,
+  silent: true,
+  statusNudge: true,
 };
 
 function newRunner(): SessionRunner {
@@ -46,21 +40,14 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
   it("planning#261: a hand-built AgentDispatchOptions cannot be dispatched (type-level)", () => {
     const runner = newRunner();
 
-    // THE regression guard. planning#261's turn-adoption drain built exactly this
-    // shape — `{ text }` plus a few attachment fields — and handed it to
-    // `runner.dispatch`, silently dropping `execution`, `systemTurn`,
-    // `postTurn`, and `onTurnComplete`. It typechecked, so nothing caught it
-    // until a notify-on-merge watch stranded in production.
     const handRolled: AgentDispatchOptions = { text: "child PR merged", activity: "Resuming…" };
-    // @ts-expect-error planning#261 — dispatch accepts only a PreparedDispatch; a
-    // hand-built literal (the shape every re-narrowing drain produced) must not
-    // compile. If this line stops erroring, Fix A has been undone.
+    // @ts-expect-error dispatch requires a PreparedDispatch.
     runner.dispatch(handRolled);
 
-    // @ts-expect-error planning#261 — the same for an inline literal.
+    // @ts-expect-error inline literals lack the dispatch brand.
     runner.dispatch({ text: "inline literal" });
 
-    // @ts-expect-error planning#261 — and for the direct executor entry point.
+    // @ts-expect-error the executor also requires the dispatch brand.
     void runner.runDispatchedTurn({ text: "inline literal" });
 
     runner.dispose({ force: true });
@@ -68,16 +55,10 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
   });
 
   it("prepareDispatch requires a COMPLETE init — a partial re-opens the hole one level up (type-level)", () => {
-    // The doc's stated risk: "a brand is only as good as its producers. If
-    // `prepareDispatch` accepts a partial and fills defaults, it re-opens the
-    // same hole one level up." So every field must be mentioned, explicitly
-    // `undefined` when unwanted — dropping one becomes deliberate and visible.
-
-    // @ts-expect-error docs/240 — an incomplete init must not compile.
+    // @ts-expect-error incomplete dispatch initialization.
     prepareDispatch({ text: "only text" });
 
-    // @ts-expect-error docs/240 — nor one that mentions only the easy fields
-    // (this is precisely the shape a lazy drain site would reach for).
+    // @ts-expect-error attachments do not complete dispatch initialization.
     prepareDispatch({ text: "x", activity: "y", images: undefined });
 
     expect(prepareDispatch(FULL_INIT).text).toBe("everything");
@@ -91,10 +72,6 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
   });
 
   it("the converter carries EVERY AgentDispatchOptions field out of a queued entry", () => {
-    // Runtime companion to the compile-time exhaustiveness checks in
-    // `prepared-dispatch.ts`: adding a field to `AgentDispatchOptions` without
-    // teaching `AgentDispatchInit` / `DISPATCH_FIELDS` / the converter about it
-    // fails to compile there, and dropping it in the mapping fails here.
     const queued: QueuedMessage = toQueuedMessage(prepareDispatch(FULL_INIT));
     const restored = queuedMessageToDispatchOptions(queued);
     for (const key of Object.keys(prepareDispatch(FULL_INIT)) as (keyof AgentDispatchOptions)[]) {
@@ -104,6 +81,18 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
     }
   });
 
+  // docs/303 — `toQueuedMessage` is hand-written, so a field added to the options but not
+  // to it survives every dispatch except a queued one, which is the hard case to notice.
+  it("carries statusNudge and silent through the HAND-WRITTEN queued conversion", () => {
+    const queued = toQueuedMessage(prepareDispatch({ ...FULL_INIT, silent: true, statusNudge: true }));
+    expect(queued.statusNudge).toBe(true);
+    expect(queued.silent).toBe(true);
+
+    const restored = queuedMessageToDispatchOptions(queued);
+    expect(restored.statusNudge).toBe(true);
+    expect(restored.silent).toBe(true);
+  });
+
   it("the converter's output is itself dispatchable (the drain has a legal path)", () => {
     const runner = newRunner();
     const prepared: PreparedDispatch = queuedMessageToDispatchOptions({
@@ -111,8 +100,6 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
       execution: "dispatched",
       systemTurn: true,
     });
-    // No deps wired ⇒ dispatch falls back to enqueue; the point is that it
-    // TYPECHECKS, unlike the hand-rolled literal above.
     runner.dispatch(prepared);
     expect(runner.queueLength).toBe(1);
     expect(runner.messageQueue[0]!.systemTurn).toBe(true);
@@ -129,8 +116,6 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
 
     expect(() => chained.onTurnComplete!(TURN_COMPLETED)).toThrow("consumer blew up");
     expect(original).toHaveBeenCalledWith(TURN_COMPLETED);
-    // The settlement resolved despite the throw — a consumer awaiting the handle
-    // must never be stranded by someone else's bad callback.
     await expect(settlement.settled).resolves.toEqual(TURN_COMPLETED);
   });
 });

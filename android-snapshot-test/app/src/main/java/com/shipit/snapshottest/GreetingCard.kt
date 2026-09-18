@@ -13,12 +13,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 
-/**
- * A minimal real Compose UI with layout, spacing, and typography — enough for
- * layoutlib to render something whose pixels change when the layout changes,
- * which is the whole point of a snapshot test. Deliberately self-contained
- * (no resources, no Activity) so it renders headlessly.
- */
 @Composable
 fun GreetingCard(name: String, modifier: Modifier = Modifier) {
     Surface(modifier = modifier.fillMaxWidth()) {

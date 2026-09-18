@@ -1,58 +1,5 @@
-/**
- * Boot reconcile for sub-agent consult cards stranded by an orchestrator
- * restart (planning#309, docs/249).
- *
- * ## The strand
- *
- * `runSubAgent` (`services/sub-agent.ts`) is the ONLY writer of a consult card's
- * `pending` → terminal patch, and it writes it when the worker's synchronous
- * `/agent/spawn` response returns. That response is an in-memory promise. The
- * worker keeps no durable record of the run (`agent-controller.ts` returns the
- * result inline and drops the handle in a `finally`), so when the orchestrator
- * process dies mid-run there is nobody left to finish the card:
- *
- *  - the card stays `pending` in the DB forever,
- *  - the UI renders a consult that is permanently in flight,
- *  - `shipit agent result` answers `pending` on every call — exit `4`, "still
- *    running" — so a caller polling until the run finishes never stops, and
- *    `--wait` burns its whole timeout against it every time.
- *
- * Session containers outlive an orchestrator restart (docs/240), so the
- * sub-agent itself usually runs to completion — writing its output into a
- * socket whose other end is gone. That output is not recoverable here: this
- * sweep makes the card HONEST, it does not bring the work back. Recovering it
- * would take a durable worker-side record plus a re-attach path, which is
- * deliberately out of scope (docs/249 requirements, resolved 2026-08-04).
- *
- * ## Why a boot sweep is safe
- *
- * The hazard with any "mark the stale ones failed" pass is marking a LIVE run
- * failed. That cannot happen here, because of when it runs rather than because
- * of what it checks: `runSubAgent` holds its card's only in-memory handle, so a
- * card can only be finished by the process that started it. In a process that
- * has just booted, every `pending` card in the DB is by construction owned by a
- * dead process. The sweep runs once, during boot, before any route can accept a
- * new spawn — so there is no live consult for it to race with, and no need for
- * a heuristic about age or liveness.
- *
- * That reasoning is load-bearing: this must NOT be moved onto a periodic timer
- * or a per-activation hook, where a genuinely in-flight consult would be in
- * scope and would be cancelled out from under its caller.
- *
- * It also assumes ONE orchestrator per database — verified for the production
- * path (`autoStart` builds one app and listens only after `buildApp` resolves),
- * but not mechanically enforced: two `buildApp()` calls sharing an injected
- * `databaseManager` would let the second one's sweep cancel the first's live
- * card. That topology exists only in tests, and a second orchestrator on one
- * state directory is already broken in more serious ways. See docs/249.
- */
-
 import type { SubAgentConsultCard } from "../shared/types.js";
 
-/**
- * The chat-history surface the sweep needs. Structural so tests can pass a stub
- * without a real SQLite-backed `ChatHistoryManager`.
- */
 export interface ConsultCardReconcileStore {
   listPendingSubAgentConsultCards(): { sessionId: string; card: SubAgentConsultCard }[];
   updateSubAgentConsultCard(
@@ -63,50 +10,19 @@ export interface ConsultCardReconcileStore {
   ): boolean;
 }
 
-/**
- * What the reconciled card says happened.
- *
- * `cancelled` rather than `error`: nothing went wrong with the sub-agent — we
- * cut the run short by restarting — and an error-shaped card would send the
- * reader looking for a fault in Codex that isn't there. The card's verb alone
- * ("Cancelled Codex") is then indistinguishable from a consult the USER
- * cancelled, which is what `statusDetail` exists to fix.
- */
 export const ORPHANED_CONSULT_STATUS = "cancelled" as const;
 
-/**
- * ShipIt's own words, never the sub-agent's — hence `statusDetail` and not
- * `outputMarkdown` (see the field's docstring). Written to be actionable by
- * both readers of the card: the human, and the agent that gets it back from
- * `shipit agent result`.
- */
 export const ORPHANED_CONSULT_DETAIL =
   "ShipIt restarted while this consult was running, so its result was lost. "
   + "The sub-agent's output cannot be recovered — re-run the consult if you still need it.";
 
 export interface ReconcileOrphanedConsultsResult {
-  /** How many cards were flipped out of `pending`. */
   reconciled: number;
 }
 
 /**
- * Mark every consult card left `pending` by a previous orchestrator terminal.
- *
- * Call once at boot, and BEFORE `reattachInFlightTurns` (docs/240): a consult
- * spawned by a foreground `shipit agent run` is still inside its originating
- * turn, so its row is `in_progress=1`, and the adopted turn rebuilds that set
- * from its own (empty) `recordedCards`. `finalize` puts the reconciled card in
- * its resting state ahead of that rebuild.
- *
- * planning#402 narrowed what that ordering is protecting against. It used to be a
- * DELETE: `replaceInProgress` dropped every `in_progress=1` row, card included.
- * It no longer does — an orphaned consult row is finalized in place rather than
- * deleted — so the card now survives the adoption whether or not this ran first.
- * Keep the ordering anyway (a reconciled card should not spend a turn's worth of
- * rebuilds looking pending), but do not describe it as the thing standing
- * between the card and deletion.
- *
- * Never throws: a boot sweep that fails must not take the orchestrator with it.
+ * Boot only, before turn adoption or new consults. Assumes one orchestrator per database.
+ * The previous process held the only result handles; their output cannot be recovered.
  */
 export function reconcileOrphanedConsultCards(
   store: ConsultCardReconcileStore,
@@ -129,13 +45,7 @@ export function reconcileOrphanedConsultCards(
         {
           status: ORPHANED_CONSULT_STATUS,
           statusDetail: ORPHANED_CONSULT_DETAIL,
-          // Deliberately no `durationMs`, `costUsd` or `truncated`. Every one of
-          // those facts died with the response, and writing a zero is not the
-          // same as writing nothing: a `--json` caller reads `costUsd: 0` as
-          // "this consult was free" and `truncated: false` as "the output was
-          // complete", neither of which we know. Absent fields say "unknown",
-          // which is the true answer. The card face and the shim already treat
-          // absent and zero identically, so this costs no display.
+          // Missing telemetry means unknown; zero would claim a measured result.
         },
         { finalize: true },
       );

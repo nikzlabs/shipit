@@ -53,14 +53,12 @@ Two mutually exclusive modes — **`command`** (run a dev server) or **`html`**
 (serve static files):
 
 ```yaml
-# Mode 1: Run a dev server command
 preview:
   command: npm run dev
   ports: [3000]
 ```
 
 ```yaml
-# Mode 2: Serve static HTML with ShipIt's bundled Vite
 preview:
   html: index.html
 ```
@@ -93,13 +91,11 @@ installation — see [039 — Install command](../039-install-command/plan.md).
 Minimal examples:
 
 ```yaml
-# Static HTML project — no package.json or npm install needed
 preview:
   html: index.html
 ```
 
 ```yaml
-# Vite-based React app
 preview:
   command: npm run dev
   ports: [5173]
@@ -123,7 +119,6 @@ type PreviewMode =
 interface PreviewConfig {
   mode: PreviewMode;
   source: "shipit.yaml" | "package.json" | "index.html" | "none";
-  /** Shell command to install dependencies. From shipit.yaml `install` field. */
   install?: string;
 }
 
@@ -174,27 +169,15 @@ class PreviewManager extends EventEmitter {
   private _config: PreviewConfig | null = null;
 
   get running(): boolean;
-  /** All ports this preview is serving on. First is primary. */
   get ports(): number[];
-  /** Primary port (first in the list), or null if not running. */
   get port(): number | null;
   get config(): PreviewConfig | null;
 
-  /**
-   * Resolve config and start the preview server.
-   * For "html" mode, use ShipIt's bundled Vite binary with the wrapper
-   * config (error-capture plugin). For "command" mode, spawn via shell.
-   */
   async start(workspaceDir: string): Promise<void>;
 
-  /** Stop the running preview process. */
   stop(): void;
 
-  /** Stop then start with the given workspace dir. */
   async restart(workspaceDir: string): Promise<void>;
-
-  // Events: "ready" (ports), "stopped" (code), "error" (err), "config_missing",
-  //         "install_status" ({ status, message? })
 }
 ```
 
@@ -209,18 +192,14 @@ start(workspaceDir):
     emit("config_missing")
     return
 
-  // Install step — see doc 039 for details
   if config.install:
     run install command, skip if marker exists, emit install_status events
 
   if config.mode.kind === "html":
-    // Use ShipIt's bundled Vite binary with wrapper config (error capture)
-    // Resolve html path to determine the root directory for Vite
     spawn VITE_BIN with --config <wrapper> --port 5173 --host 0.0.0.0
     (same as current ViteManager.start)
     _ports = [5173]
   else: // kind === "command"
-    // General command: run via shell
     cwd = resolve(workspaceDir, config.mode.directory ?? ".")
     spawn("sh", ["-c", config.mode.command], { cwd })
 
@@ -280,27 +259,20 @@ activateSession(sessionId):
   ... existing logic (update activeSessionDir, restart FileWatcher) ...
 
   if directory changed:
-    // 1. Stop current preview process
     previewManager.stop()
 
-    // 2. Kill processes on previously-detected ports
     await killProcessesOnPorts(detectedPorts, sessionsRoot)
 
-    // 3. Clear detected ports
     detectedPorts = []
 
-    // 4. Broadcast clean "not running" preview status immediately
     broadcastPreviewStatus()
 
-    // 5. Clear terminal logs (old session's output is irrelevant)
     logBuffer = []
     broadcast({ type: "clear_logs" })
 
-    // 6. Start preview for the new session's workspace (if it exists)
     if (newDir)
       await previewManager.start(newDir)
 
-    // 7. Run a fresh port scan
     await runPortScan()
 ```
 
@@ -323,12 +295,6 @@ will create the session directory and trigger preview start.
 ### Kill processes on detected ports
 
 ```ts
-/**
- * Kill processes listening on the given ports.
- * Best-effort — failures are logged but do not throw.
- * Only kills processes whose cwd is within the sessions root directory,
- * as a safety guard against killing unrelated system processes.
- */
 async function killProcessesOnPorts(
   ports: number[],
   sessionsRoot: string
@@ -346,7 +312,6 @@ async function killProcessesOnPorts(
         }
       }
     } catch {
-      // fuser returns non-zero when no process found — expected
     }
   }
 }
@@ -387,7 +352,6 @@ Sent when PreviewManager cannot find a valid config for the session.
 ```ts
 interface WsPreviewConfigMissing {
   type: "preview_config_missing";
-  /** What was checked and not found */
   checked: ("shipit.yaml" | "package.json")[];
 }
 ```
@@ -529,7 +493,6 @@ selector UI works without changes.
 
 ```ts
 const getPreviewStatus = (): WsServerMessage => {
-  // Merge managed ports (after the primary) with scanner-detected ports
   const extraManagedPorts = previewManager.ports.slice(1);
   const allDetected = [...extraManagedPorts, ...detectedPorts];
 
@@ -537,7 +500,7 @@ const getPreviewStatus = (): WsServerMessage => {
     return {
       type: "preview_status",
       running: true,
-      port: previewManager.port,              // primary port (first in config.ports)
+      port: previewManager.port,
       url: `http://localhost:${previewManager.port}`,
       source: previewManager.config?.mode.kind === "html" ? "vite" : "managed",
       detectedPorts: allDetected.length > 0 ? allDetected : undefined,

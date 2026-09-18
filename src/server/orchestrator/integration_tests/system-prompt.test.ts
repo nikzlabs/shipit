@@ -22,12 +22,8 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { AGENT_SYSTEM_INSTRUCTIONS, buildAgentSystemInstructions } from "../agent-instructions.js";
 
-// docs/117 Phase 2 — `agent-execution.ts` now passes `currentAgent.agentId`
-// into `buildAgentSystemInstructions`, so the runtime prompt includes the
-// per-agent "Parallel sessions" section. FakeClaudeProcess reports
-// `agentId === "claude"`, so the expected baseline for these tests is the
-// Claude-flavoured rendering.
 const CLAUDE_AGENT_INSTRUCTIONS = buildAgentSystemInstructions({ agentId: "claude" });
+const CLAUDE_OPS_AGENT_INSTRUCTIONS = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
 
 describe("Integration: System prompt", () => {
   let app: FastifyInstance;
@@ -35,15 +31,17 @@ describe("Integration: System prompt", () => {
   let tmpDir: string;
   let lastClaude: FakeClaudeProcess = null as any;
   let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-sysprompt-"));
+    sessionManager = new SessionManager(dbManager);
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(dbManager),
+      sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       agentFactory: () => {
@@ -71,7 +69,6 @@ describe("Integration: System prompt", () => {
   });
 
   it("system prompt is passed to ClaudeProcess.run() when set", async () => {
-    // Set a system prompt via HTTP
     const settingsRes = await app.inject({
       method: "PUT",
       url: "/api/settings",
@@ -80,9 +77,8 @@ describe("Integration: System prompt", () => {
     expect(settingsRes.statusCode).toBe(200);
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Send a message to Claude
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
@@ -91,15 +87,6 @@ describe("Integration: System prompt", () => {
     client.close();
   });
 
-  /**
-   * planning#292 — the WS turn and the server-dispatched (system) turn read the
-   * global prompt through *different* closures: `route-registry.ts`'s
-   * per-connection `readSystemPrompt` and `bootstrap-managers.ts`'s app-scope
-   * `readSystemPromptApp`. Both now call `readGlobalSystemPrompt`, but only the
-   * first was covered — so a change that disconnected the app-scope one would
-   * have silently dropped the prompt from CI-fix, child and wake turns while
-   * every other test stayed green.
-   */
   it("system prompt reaches a server-dispatched turn, not just a WS turn", async () => {
     const settingsRes = await app.inject({
       method: "PUT",
@@ -109,9 +96,8 @@ describe("Integration: System prompt", () => {
     expect(settingsRes.statusCode).toBe(200);
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Dispatch over HTTP — the same path CI-fix / child / wake turns take.
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${client.sessionId}/agent/dispatch`,
@@ -127,21 +113,101 @@ describe("Integration: System prompt", () => {
 
   it("system prompt contains only agent instructions when no user prompt file exists", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
     expect(lastClaude.lastSystemPrompt).toBe(CLAUDE_AGENT_INSTRUCTIONS);
-    // Sanity: keep AGENT_SYSTEM_INSTRUCTIONS referenced so the no-options
-    // baseline stays imported (the Settings UI snapshot still uses it).
     expect(typeof AGENT_SYSTEM_INSTRUCTIONS).toBe("string");
 
     client.close();
   });
 
+  // docs/014-system-prompt req 6 — an ops session takes the ops block instead of
+  // the standard one, and takes nothing when the ops block is empty.
+  it("an ops session gets the ops block, never the standard one", async () => {
+    const settingsRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise.", systemPromptOps: "Report a timeline." },
+    });
+    expect(settingsRes.statusCode).toBe(200);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+    sessionManager.setKind(client.sessionId!, "ops");
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    expect(lastClaude.lastSystemPrompt).toBe(
+      `${CLAUDE_OPS_AGENT_INSTRUCTIONS}\n\nReport a timeline.`,
+    );
+
+    client.close();
+  });
+
+  it("an ops session with an empty ops block gets no user instructions at all", async () => {
+    const settingsRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise." },
+    });
+    expect(settingsRes.statusCode).toBe(200);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+    sessionManager.setKind(client.sessionId!, "ops");
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    expect(lastClaude.lastSystemPrompt).toBe(CLAUDE_OPS_AGENT_INSTRUCTIONS);
+
+    client.close();
+  });
+
+  it("a standard session keeps the standard block when an ops block is set", async () => {
+    const settingsRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise.", systemPromptOps: "Report a timeline." },
+    });
+    expect(settingsRes.statusCode).toBe(200);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    expect(lastClaude.lastSystemPrompt).toBe(`${CLAUDE_AGENT_INSTRUCTIONS}\n\nBe concise.`);
+
+    client.close();
+  });
+
+  it("rejects an over-long ops block without persisting the standard one", async () => {
+    await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Original.", systemPromptOps: "Original ops." },
+    });
+
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Replaced.", systemPromptOps: "x".repeat(50_001) },
+    });
+    expect(res.statusCode).toBe(400);
+
+    const after = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    const settings = after.json().settings as { systemPrompt: string; systemPromptOps: string };
+    expect(settings.systemPrompt).toBe("Original.");
+    expect(settings.systemPromptOps).toBe("Original ops.");
+  });
+
   it("agent system instructions are omitted when disabled", async () => {
-    // Disable agent system instructions
     const disableRes = await app.inject({
       method: "PUT",
       url: "/api/settings",
@@ -149,7 +215,6 @@ describe("Integration: System prompt", () => {
     });
     expect(disableRes.statusCode).toBe(200);
 
-    // Set a user system prompt
     await app.inject({
       method: "PUT",
       url: "/api/settings",
@@ -157,7 +222,7 @@ describe("Integration: System prompt", () => {
     });
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);

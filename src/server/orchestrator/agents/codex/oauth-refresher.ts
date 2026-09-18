@@ -1,25 +1,10 @@
-/**
- * Orchestrator-owned Codex OAuth refresh readiness (docs/154).
- *
- * Codex has the same structural risk Claude had before docs/153: every
- * session container holds a copied OAuth token and, if OpenAI ever makes
- * refresh tokens single-use or shortens access-token TTLs, N sessions behind
- * one outbound NAT could stampede the token endpoint. This refresher keeps
- * the source Codex token fresh from the orchestrator so session CLIs remain
- * consumers rather than independent refreshers.
- *
- * The refresh is delegated to the `codex` CLI. We do not implement OpenAI's
- * OAuth wire protocol in ShipIt; we spawn the pinned CLI against the account
- * credential root and use the auth file's freshness advancing as the success
- * signal.
- */
-
 import path from "node:path";
+import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import type { AgentId } from "../../../shared/types.js";
-import { killChild } from "../../../shared/kill-child.js";
+import { killProcessTree } from "../../../shared/kill-child.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import type { RuntimeMode } from "../../app-di.js";
 import { readCodexTokenFreshness } from "../../session-credentials.js";
@@ -53,12 +38,6 @@ export interface CodexRefreshResult {
 export interface CodexOAuthRefresherEvents {
   refreshed: [accountId: string, freshness: number];
   account_unauthenticated: [accountId: string];
-  /**
-   * A previously-revoked account's token rotated back to healthy. Recovery
-   * counterpart of `account_unauthenticated` — index.ts flips the row back to
-   * `ready` and re-broadcasts `agent_list` so the model selector clears its
-   * stale "needs auth" state. Fires only on the revoked → recovered transition.
-   */
   account_reauthenticated: [accountId: string];
 }
 
@@ -81,7 +60,7 @@ export interface CodexOAuthRefresherDeps {
   safetyMarginMs?: number;
 }
 
-export class CodexOAuthRefresher extends EventEmitter {
+export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents> {
   private readonly deps: Required<Omit<CodexOAuthRefresherDeps, "safetyMarginMs">> & { safetyMarginMs: number };
   private readonly accounts = new Map<string, AccountState>();
   private stopped = false;
@@ -122,13 +101,26 @@ export class CodexOAuthRefresher extends EventEmitter {
   }
 
   async refreshNow(accountId?: string): Promise<CodexRefreshResult[]> {
-    if (this.deps.runtimeMode !== "containerized") return [];
+    if (this.deps.runtimeMode !== "containerized" && !accountId) return [];
     if (accountId) return [await this.runTickForAccount(accountId)];
     const accounts = this.deps.providerAccountManager.list("openai");
     return Promise.all(accounts.map((a) => this.runTickForAccount(a.id)));
   }
 
+  async ensureFresh(accountId: string, opts?: { force?: boolean }): Promise<boolean> {
+    const file = path.join(this.deps.providerAccountManager.resolveCredentialRoot("codex", accountId), CODEX_AUTH_RELATIVE);
+    let before: string;
+    try { before = (JSON.parse(fs.readFileSync(file, "utf8")) as { tokens?: { access_token?: string } }).tokens?.access_token ?? ""; } catch { return false; }
+    const expiry = this.readSourceFreshness(accountId);
+    if (!opts?.force && expiry !== null && expiry > this.deps.now() + this.deps.safetyMarginMs) return true;
+    await this.runTickForAccount(accountId, opts?.force);
+    const afterExpiry = this.readSourceFreshness(accountId);
+    if (afterExpiry === null || afterExpiry <= this.deps.now()) return false;
+    try { return !opts?.force || (JSON.parse(fs.readFileSync(file, "utf8")) as { tokens?: { access_token?: string } }).tokens?.access_token !== before; } catch { return false; }
+  }
+
   private scheduleAccount(accountId: string): void {
+    if (this.deps.runtimeMode !== "containerized") return;
     if (this.stopped) return;
     const state = this.ensureAccountState(accountId);
     if (state.timer) {
@@ -150,6 +142,7 @@ export class CodexOAuthRefresher extends EventEmitter {
   }
 
   private scheduleBackoff(accountId: string, schedule: readonly number[]): void {
+    if (this.deps.runtimeMode !== "containerized") return;
     if (this.stopped) return;
     const state = this.ensureAccountState(accountId);
     if (state.timer) {
@@ -166,17 +159,17 @@ export class CodexOAuthRefresher extends EventEmitter {
     if (typeof state.timer.unref === "function") state.timer.unref();
   }
 
-  private runTickForAccount(accountId: string): Promise<CodexRefreshResult> {
+  private runTickForAccount(accountId: string, force = false): Promise<CodexRefreshResult> {
     const state = this.ensureAccountState(accountId);
     if (state.inFlight) return state.inFlight;
-    const promise = this.executeTick(accountId).finally(() => {
+    const promise = this.executeTick(accountId, force).finally(() => {
       state.inFlight = null;
     });
     state.inFlight = promise;
     return promise;
   }
 
-  private async executeTick(accountId: string): Promise<CodexRefreshResult> {
+  private async executeTick(accountId: string, force = false): Promise<CodexRefreshResult> {
     const accountRoot = this.deps.providerAccountManager.resolveCredentialRoot("codex", accountId);
     const sourceFile = path.join(accountRoot, CODEX_AUTH_RELATIVE);
     const before = this.readSourceFreshness(accountId);
@@ -189,9 +182,6 @@ export class CodexOAuthRefresher extends EventEmitter {
         reason: `source file missing or unparseable at ${sourceFile}`,
       };
       console.log(`[codex-oauth-refresh] account=${accountId} missing_credentials — waiting for auth_complete`);
-      // Missing or unreadable source credentials make an existing account
-      // unusable. Use the same account-qualified terminal path as revocation
-      // so persistence, routing, and Settings stop reporting it as ready.
       this.emitUnauthenticated(accountId, "missing_credentials");
       return result;
     }
@@ -204,7 +194,7 @@ export class CodexOAuthRefresher extends EventEmitter {
 
     const now = this.deps.now();
     const nearExpiry = before <= now + this.deps.safetyMarginMs;
-    if (!nearExpiry) {
+    if (!nearExpiry && !force) {
       const state = this.ensureAccountState(accountId);
       state.failureCount = 0;
       this.handleHealthySource(accountId);
@@ -251,9 +241,6 @@ export class CodexOAuthRefresher extends EventEmitter {
     this.emit("refreshed", accountId, after);
     if (wasUnauthenticated) {
       this.deps.sseBroadcast("codex_account_authenticated", { accountId });
-      // Repair the persisted row + agent_list the model selector reads from
-      // (index.ts → markProviderAccountReauthenticated). The SSE above only
-      // covers docs/150 failover consumers.
       this.emit("account_reauthenticated", accountId);
     }
     this.scheduleAccount(accountId);
@@ -324,14 +311,9 @@ export class CodexOAuthRefresher extends EventEmitter {
     state.emittedUnauthenticated = true;
     this.emit("account_unauthenticated", accountId);
     this.deps.sseBroadcast("codex_account_unauthenticated", { accountId });
-    // docs/150-multiple-provider-subscriptions req 19 — `accountId` is not optional decoration. The client
-    // files sign-in state per account and has no provider-wide slot left to
-    // fall back to, so an unqualified `agent_auth_failed` is dropped: the row
-    // of the account that was actually revoked would keep reading "ready".
     this.deps.sseBroadcast("agent_auth_failed", { loginId: "openai-chatgpt", accountId, reason });
   }
 
-  /** Clear the terminal-state latch when re-auth wrote a healthy source file. */
   private handleHealthySource(accountId: string): void {
     const state = this.ensureAccountState(accountId);
     if (!state.emittedUnauthenticated) return;
@@ -373,7 +355,7 @@ export class CodexOAuthRefresher extends EventEmitter {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        killChild(child, "SIGKILL");
+        killProcessTree(child, "SIGKILL");
         finish("[timeout] codex CLI did not exit in time");
       }, timeoutMs);
       if (typeof timer.unref === "function") timer.unref();

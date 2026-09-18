@@ -68,15 +68,14 @@ describe("Integration: Session isolation — switching & resume", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Ignore cleanup errors.
     }
   });
 
   it("archive_session preserves the session directory on disk", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Create a session via template using HTTP
     const templateRes = await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
@@ -85,24 +84,20 @@ describe("Integration: Session isolation — switching & resume", () => {
     expect(templateRes.statusCode).toBe(200);
     const session = templateRes.json().session;
 
-    // Verify directory exists
     expect(fs.existsSync(session.workspaceDir)).toBe(true);
 
-    // Archive the session via HTTP
     const archiveRes = await app.inject({
       method: "DELETE",
       url: `/api/sessions/${session.id}`,
     });
     expect(archiveRes.statusCode).toBe(200);
 
-    // Verify directory is still present (archive preserves data)
     expect(fs.existsSync(session.workspaceDir)).toBe(true);
 
     client.close();
   });
 
   it("session switch via HTTP history returns correct file tree", async () => {
-    // Create session A via template using HTTP
     const resA = await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
@@ -111,26 +106,20 @@ describe("Integration: Session isolation — switching & resume", () => {
     expect(resA.statusCode).toBe(200);
     const sessionA = resA.json().session;
 
-    // Write a marker file in session A's directory
     fs.writeFileSync(path.join(sessionA.workspaceDir, "marker-a.txt"), "session A");
 
-    // Create session B via template using HTTP
     await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
       payload: { templateId: "react-vite-ts" },
     });
 
-    // Fetch session A's history via HTTP — should show session A's files
     const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionA.id}/history` });
     expect(historyRes.statusCode).toBe(200);
     const body = historyRes.json();
 
     expect(body.messages).toBeDefined();
     expect(body.commits).toBeDefined();
-    // planning#375 — the file tree no longer rides on the history response; it
-    // has its own endpoint. The per-session isolation this test exists to prove
-    // is unchanged, so the assertion simply moved with the data.
     expect(body.fileTree).toBeUndefined();
 
     const filesRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionA.id}/files` });
@@ -138,12 +127,10 @@ describe("Integration: Session isolation — switching & resume", () => {
     const flatNames = filesRes.json().tree.map((n: any) => n.name);
     expect(flatNames).toContain("marker-a.txt");
     expect(flatNames).toContain("index.html");
-    // Session B's files should NOT be in the tree
     expect(flatNames).not.toContain("App.tsx");
   });
 
   it("HTTP history returns git_log scoped to each session", async () => {
-    // Create session A via template using HTTP
     const resA = await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
@@ -152,12 +139,10 @@ describe("Integration: Session isolation — switching & resume", () => {
     expect(resA.statusCode).toBe(200);
     const sessionA = resA.json().session;
 
-    // Add a unique commit in session A
     const gitA = new GitManager(sessionA.workspaceDir);
     fs.writeFileSync(path.join(sessionA.workspaceDir, "a-only.txt"), "session A");
     await gitA.autoCommit("Commit from session A");
 
-    // Create session B via template using HTTP
     const resB = await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
@@ -166,18 +151,15 @@ describe("Integration: Session isolation — switching & resume", () => {
     expect(resB.statusCode).toBe(200);
     const sessionB = resB.json().session;
 
-    // Add a unique commit in session B
     const gitB = new GitManager(sessionB.workspaceDir);
     fs.writeFileSync(path.join(sessionB.workspaceDir, "b-only.txt"), "session B");
     await gitB.autoCommit("Commit from session B");
 
-    // Fetch session A's history — git log scoped to session A
     const historyA = await app.inject({ method: "GET", url: `/api/sessions/${sessionA.id}/history` });
     const messagesA = historyA.json().commits.map((c: any) => c.message);
     expect(messagesA).toContain("Commit from session A");
     expect(messagesA).not.toContain("Commit from session B");
 
-    // Fetch session B's history — git log scoped to session B
     const historyB = await app.inject({ method: "GET", url: `/api/sessions/${sessionB.id}/history` });
     const messagesB = historyB.json().commits.map((c: any) => c.message);
     expect(messagesB).toContain("Commit from session B");
@@ -186,28 +168,22 @@ describe("Integration: Session isolation — switching & resume", () => {
 
   it("resumed session passes agent session ID to ClaudeProcess.run()", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Create a session
     client.send({ type: "send_message", text: "First turn" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "my-agent-session" });
     const sessionMsg = await client.receiveType("session_started");
     const appSessionId = (sessionMsg as any).session.id;
-    // docs/153 Fix 2 — emit a result so the deferred agent_session_id
-    // persist fires; otherwise the next turn's --resume has nothing to
-    // pass and this test's whole premise breaks. Mirrors the real CLI
-    // flow (a `result` event always precedes process exit on success).
+    // Persist the resume ID through a successful result event.
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "my-agent-session" });
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Resume the session — wait for NEW Claude instance
     const prevClaude2 = lastClaude;
     client.send({ type: "send_message", text: "Second turn", sessionId: appSessionId });
     await waitForClaude(() => lastClaude, prevClaude2);
 
-    // The resumed session should pass the agent session ID for --resume
     expect(lastClaude.lastSessionId).toBe("my-agent-session");
 
     client.close();
@@ -215,13 +191,11 @@ describe("Integration: Session isolation — switching & resume", () => {
 
   it("auto-commit goes to the correct session when user switches mid-turn", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start session A — send a message to trigger agent
     client.send({ type: "send_message", text: "Session A work" });
     const claudeA = await waitForClaude(() => lastClaude);
 
-    // Simulate agent init (ClaudeEvent format — adapter translates to AgentEvent)
     claudeA.emit("event", {
       type: "system",
       subtype: "init",
@@ -229,14 +203,11 @@ describe("Integration: Session isolation — switching & resume", () => {
       model: "claude-sonnet-4-20250514",
     });
 
-    // Wait for session_started so we know session A is created
     const sessionAMsg = await client.receiveType("session_started");
     const sessionA = (sessionAMsg as any).session;
 
-    // Write a file in session A's workspace (simulates agent writing code)
     fs.writeFileSync(path.join(sessionA.workspaceDir, "from-agent-a.txt"), "session A output");
 
-    // Now create session B while agent A is still running (via HTTP)
     const resBTemplate = await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
@@ -245,12 +216,8 @@ describe("Integration: Session isolation — switching & resume", () => {
     expect(resBTemplate.statusCode).toBe(200);
     const sessionB = resBTemplate.json().session;
 
-    // Verify sessions are different directories
     expect(sessionA.workspaceDir).not.toBe(sessionB.workspaceDir);
 
-    // Now agent A finishes — the auto-commit should go to session A's repo, NOT session B's.
-    // After new_session, we detached from session A's runner, so git_committed won't
-    // reach this client. Instead verify via git log directly.
     claudeA.emit("event", {
       type: "result",
       subtype: "success",
@@ -258,23 +225,19 @@ describe("Integration: Session isolation — switching & resume", () => {
     });
     claudeA.emit("done", 0);
 
-    // Wait for the async done handler to complete (auto-commit is async)
+    // Allow the asynchronous commit to finish.
     await new Promise((r) => setTimeout(r, 500));
 
-    // Verify: session A should have the agent's commit
     const gitA = new GitManager(sessionA.workspaceDir);
     const logA = await gitA.log();
-    // Should have "Initial commit" + the auto-commit from agent done
     expect(logA.length).toBeGreaterThanOrEqual(2);
     expect(logA.some((c) => c.message === "Agent turn")).toBe(true);
 
-    // Verify: session B should NOT have the agent's commit (only template commits)
     const gitB = new GitManager(sessionB.workspaceDir);
     const logB = await gitB.log();
     const logBMessages = logB.map((c) => c.message);
     expect(logBMessages.every((m) => m !== "Agent turn")).toBe(true);
 
-    // Session B should only have template-related commits
     expect(logBMessages.some((m) => m.includes("Apply template"))).toBe(true);
 
     client.close();

@@ -39,12 +39,12 @@ describe("handleBugReportCard (docs/164)", () => {
 
   it("(c) is idempotent by cardId — a duplicate delivery (reconnect replay) appends once", () => {
     handleBugReportCard(ctx, card());
-    handleBugReportCard(ctx, card()); // same cardId, e.g. history load + buffer replay
+    handleBugReportCard(ctx, card());                                                  
     expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 
   it("(c) does not duplicate when the marker already came from persisted history", () => {
-    // loadSessionHistory rehydrated a filed card marker into the message list.
+
     useSessionStore.setState({
       messages: [{ role: "assistant", text: "", bugReport: { cardId: "bug-card-1", phase: "filed" } }],
     });
@@ -52,11 +52,10 @@ describe("handleBugReportCard (docs/164)", () => {
       { ...card(), phase: "filed", issueNumber: 7, issueUrl: "https://github.com/nikzlabs/shipit/issues/7"},
     ]);
 
-    // A buffer replay re-delivers the original draft.
     handleBugReportCard(ctx, card());
 
     expect(useSessionStore.getState().messages).toHaveLength(1);
-    // The filed state survives the redundant draft delivery.
+
     expect(useBugReportStore.getState().cards["bug-card-1"]?.phase).toBe("filed");
   });
 });

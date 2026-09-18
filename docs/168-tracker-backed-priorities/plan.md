@@ -79,8 +79,8 @@ migration stays Done.
 
 ```yaml
 ---
-title: Tracker-backed priorities        # unchanged (optional; defaults to filename)
-description: One-line summary.           # unchanged (docs/138)
+title: Tracker-backed priorities
+description: One-line summary.
 ---
 ```
 

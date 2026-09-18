@@ -11,21 +11,6 @@ import { ServiceSelector } from "./ServiceSelector.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { ReviewerSlotView } from "../../../server/shared/types/agent-types.js";
 
-/**
- * docs/261 req 13 — **the same control everywhere**, asserted rather than
- * asserted-in-a-docstring.
- *
- * The three surfaces drifted apart once already: the composer had a borderless
- * trigger, the Reviewer tab grew its own bordered one, and Background work used
- * a native `<select>` that matched neither. Each was locally reasonable, and
- * nothing failed when they diverged.
- *
- * So this compares what a user actually sees — the rendered `className` of each
- * trigger — rather than checking that `Picker.js` is imported. An import can be
- * present and the class overridden at the call site, which is precisely how a
- * shared component stops being shared.
- */
-
 const agents: AgentOption[] = [
   {
     id: "claude",
@@ -70,7 +55,6 @@ const reviewerSlot = (slot: "first" | "second"): ReviewerSlotView => ({
   },
 });
 
-/** Every trigger a user can meet, by the surface that renders it. */
 function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
   const found: Record<string, HTMLButtonElement> = {};
 
@@ -80,9 +64,6 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
   found["composer model"] = screen.getByTestId("model-trigger") as HTMLButtonElement;
   cleanup();
 
-  // The harness trigger too. It is the one with a genuinely different STATE (it
-  // locks), which is exactly why it is the one most likely to grow its own
-  // styling for it — cross-backend review found it missing from this list.
   render(<HarnessSelector agents={agents} activeAgentId="claude" onAgentChange={() => {}} />);
   found["composer harness"] = screen.getByTestId("harness-trigger") as HTMLButtonElement;
   cleanup();
@@ -100,16 +81,19 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
   found["reviewer reasoning"] = screen.getByTestId("reviewer-reasoning-trigger-first") as HTMLButtonElement;
   cleanup();
 
-  useSettingsStore.getState().setNonTurnModel(null, {
+  useSettingsStore.getState().setNonTurnModelResolved({
     serviceId: "anthropic",
     billingMode: "sub",
     modelId: "claude-opus-5",
     serviceName: "Anthropic",
     label: "Opus 5",
     harnessId: "claude",
+    execution: "harness",
     source: "default",
   });
-  render(<BackgroundWorkSection agentList={agents} />);
+  // Background work takes its options from the server, not from `agents`.
+  useSettingsStore.getState().setBackgroundWorkModels(agents[0]!.eligibleModels!);
+  render(<BackgroundWorkSection settingKey="services.nonTurnModel" />);
   found["background service"] = screen.getByTestId("background-work-service-trigger") as HTMLButtonElement;
   found["background model"] = screen.getByTestId("background-work-model") as HTMLButtonElement;
   cleanup();
@@ -119,14 +103,14 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
 
 beforeEach(() => {
   useSettingsStore.getState().setReviewers([]);
-  useSettingsStore.getState().setNonTurnModel(null, null);
+  useSettingsStore.getState().setNonTurnModelResolved(null);
+  useSettingsStore.getState().setBackgroundWorkModels([]);
 });
 
 describe("picker consistency (req 13)", () => {
   it("renders one trigger, on every surface that asks the user to choose", () => {
     const triggers = triggersOnEverySurface();
-    // Guards the guard: if a surface stops rendering its control, the loop
-    // below would pass by asserting nothing.
+
     expect(Object.keys(triggers)).toHaveLength(8);
 
     for (const [where, button] of Object.entries(triggers)) {
@@ -147,7 +131,7 @@ describe("picker consistency (req 13)", () => {
     expect(reviewer.querySelectorAll("select")).toHaveLength(0);
     cleanup();
 
-    const { container: background } = render(<BackgroundWorkSection agentList={agents} />);
+    const { container: background } = render(<BackgroundWorkSection settingKey="services.nonTurnModel" />);
     expect(background.querySelectorAll("select")).toHaveLength(0);
   });
 
@@ -167,17 +151,14 @@ describe("picker consistency (req 13)", () => {
     );
 
     expect(screen.queryByTestId("empty-service-trigger")).toBeNull();
-    // And nothing a user could click into existence.
+
     expect(screen.queryByTestId("empty-service-menu")).toBeNull();
     await user.click(document.body);
     expect(screen.queryByTestId("empty-service-menu")).toBeNull();
   });
 
-  /** The general rule, at the component every picker goes through. */
   it("renders nothing when its options are all absent", () => {
-    // Typed rather than literal so the guard survives lint: what is under test
-    // is the FALSE branch of an ordinary `&&`, which leaves a boolean in the
-    // children array where a caller might expect a hole.
+
     const anyToShow = [].length > 0;
     render(
       <Picker label="Nothing" ariaLabel="Nothing" triggerTestId="nothing-trigger">
@@ -189,15 +170,9 @@ describe("picker consistency (req 13)", () => {
       </Picker>,
     );
 
-    // The `&&` guard and the `null` are holes, not options — counting slots
-    // rather than renderable children would keep a menu of nothing.
     expect(screen.queryByTestId("nothing-trigger")).toBeNull();
   });
 
-  /**
-   * An install with no service at all: the two Settings surfaces say so in
-   * prose and offer no dead controls.
-   */
   it("shows no pickers on either Settings surface when nothing is runnable", () => {
     const none: AgentOption[] = [
       { id: "claude", name: "Claude Code", installed: true, hasRunnableModels: false, models: [], eligibleModels: [], supportsReview: true },
@@ -207,14 +182,14 @@ describe("picker consistency (req 13)", () => {
       { slot: "second", source: "auto", resolved: undefined },
     ]);
     const { container: reviewer } = render(<ReviewerSection agentList={none} />);
-    expect(reviewer.querySelectorAll("button[aria-label^='Service for']")).toHaveLength(0);
+    expect(reviewer.querySelectorAll("button[aria-label^='Model provider for']")).toHaveLength(0);
     expect(reviewer.querySelectorAll("button[aria-label^='Model for']")).toHaveLength(0);
-    // Both slots say it — the prose is what replaces the controls.
+
     expect(screen.getAllByText(/Nothing to review with yet/)).toHaveLength(2);
     cleanup();
 
-    const { container: background } = render(<BackgroundWorkSection agentList={none} />);
-    expect(background.querySelectorAll("button[aria-label^='Service for']")).toHaveLength(0);
+    const { container: background } = render(<BackgroundWorkSection settingKey="services.nonTurnModel" />);
+    expect(background.querySelectorAll("button[aria-label^='Model provider for']")).toHaveLength(0);
     expect(background.querySelectorAll("button[aria-label='Model for background work']")).toHaveLength(0);
     expect(screen.getByText(/Nothing to run it on yet/)).toBeTruthy();
   });

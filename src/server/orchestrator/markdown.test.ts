@@ -70,7 +70,6 @@ describe("findMarkdownFiles", () => {
   });
 
   it("orders numbered feature dirs newest-first, prose docs last", async () => {
-    // Mix feature dirs that straddle the lexical 99→100 trap with a prose doc.
     fs.mkdirSync(path.join(tmpDir, "docs", "99-old"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "docs", "99-old", "plan.md"), "# old");
     fs.mkdirSync(path.join(tmpDir, "docs", "100-new"), { recursive: true });

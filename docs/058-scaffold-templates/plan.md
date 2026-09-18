@@ -30,20 +30,13 @@ export interface ProjectTemplate {
   category: "frontend" | "fullstack" | "backend" | "utility";
   icon: string;
 
-  // Exactly one of these must be set:
-  files?: Record<string, string>;     // Static mode (existing)
-  scaffold?: ScaffoldConfig;          // Scaffold mode (new)
+  files?: Record<string, string>;
+  scaffold?: ScaffoldConfig;
 }
 
 interface ScaffoldConfig {
-  /** Shell command to run inside the session directory.
-   *  Executed via `sh -c` with cwd = session workspace.
-   *  The command MUST create files in the current directory (`.`),
-   *  not in a subdirectory — use scaffolder flags to achieve this. */
   command: string;
 
-  /** Files to write AFTER the scaffold command completes.
-   *  Used for shipit.yaml and any overrides (e.g. vite.config.ts host binding). */
   postFiles?: Record<string, string>;
 }
 ```
@@ -100,7 +93,6 @@ For `package.json` overrides (scripts, ports), a JSON-merge approach is cleaner 
 interface ScaffoldConfig {
   command: string;
   postFiles?: Record<string, string>;
-  /** Deep-merge patches applied to generated package.json. */
   packageJsonPatch?: Record<string, unknown>;
 }
 ```

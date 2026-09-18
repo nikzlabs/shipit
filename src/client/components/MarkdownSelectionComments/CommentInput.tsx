@@ -1,17 +1,3 @@
-/**
- * The doc-comment composer — used for both a new selection comment and an
- * in-place edit of an existing one (CommentCard), so wiring voice here covers
- * both paths.
- *
- * Voice dictation (docs/144) reuses the same stack as the chat composer and the
- * AskUserQuestion "Other" field: `useVoiceInput` owns the recording state
- * machine, `MicButton` renders the four states, and `spliceTranscript` inserts
- * the cleaned transcript at the cursor. As in the question card there is **no
- * push-to-talk hotkey** — the global hotkey belongs to the chat composer, and a
- * doc can have a pending comment and an open edit mounted at once, which would
- * fire both recorders on one keypress. The mic is button-only.
- */
-
 // eslint-disable-next-line no-restricted-imports -- useEffect: focus the textarea on mount and subscribe to the voice transcript
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useEventListener } from "../../hooks/useEventListener.js";
@@ -51,22 +37,14 @@ export function CommentInput({
     language: voiceLanguage || undefined,
     sttProvider,
   });
-  // `onTranscript` is a stable `useCallback`, so depending on it directly
-  // (rather than on the whole `voice` object) wires the subscription up once.
   const { onTranscript } = voice;
 
-  // Focus the textarea on mount without the browser scrolling it into view.
-  // The new-comment input renders at the bottom of the document, so the native
-  // `autoFocus` attribute would jump the scroll position to the bottom and lose
-  // the user's place. `focus({ preventScroll: true })` focuses in place.
+  // Avoid moving the document to an input rendered below the selection.
   // eslint-disable-next-line no-restricted-syntax -- focus the input without auto-scroll
   useEffect(() => {
     textareaRef.current?.focus({ preventScroll: true });
   }, []);
 
-  // Splice each dictated transcript in at the cursor. Kept in a ref-free
-  // closure over `setText`'s updater form so the subscription wires up once and
-  // still sees freshly-typed text.
   // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
   useEffect(() => {
     return onTranscript((transcript) => {
@@ -95,8 +73,7 @@ export function CommentInput({
   useEventListener(window, "keydown", (e) => {
     if (e.key !== "Escape") return;
     e.stopPropagation();
-    // Escape while dictating cancels the *recording*, not the comment — losing
-    // a half-typed comment to a mistimed Escape would be the worse outcome.
+    // Preserve the draft when Escape stops an active recording.
     if (voice.state === "recording") {
       voice.cancelRecording();
       return;
@@ -130,9 +107,6 @@ export function CommentInput({
         onKeyDown={handleKeyDown}
       />
       <div className="flex items-center justify-between gap-2 mt-2">
-        {/* Mic sits opposite the actions rather than floating over the textarea:
-            this composer is a resizable multi-line card, so an absolute overlay
-            would collide with dictated text as it grows. */}
         <div className="flex items-center">
           {voiceInputEnabled && (
             <MicButton
@@ -160,7 +134,6 @@ export function CommentInput({
           </Button>
         </div>
       </div>
-      {/* Mobile full-screen recording surface — null when idle, so harmless. */}
       {voiceInputEnabled && isMobile && <MobileRecordingOverlay voice={voice} />}
     </div>
   );

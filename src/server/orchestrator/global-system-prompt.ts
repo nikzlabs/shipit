@@ -1,78 +1,119 @@
-/**
- * The GLOBAL system prompt — the free-text block a user types into
- * Settings → "System prompt", prepended to every session's first turn.
- *
- * It is stored at `<appWorkspaceDir>/.shipit/system-prompt.md`, and the whole
- * point of this module is the first word of that path. **`appWorkspaceDir` is
- * the orchestrator's own workspace root** — `/workspace` in production, the
- * directory that holds `sessions/` and therefore sits one level above every
- * session's clone. It is NOT a session clone, and nothing here ever touches a
- * user's repository.
- *
- * That distinction had been left to the reader, because the codebase calls both
- * things `workspaceDir`: `AppDeps.workspaceDir` is this root, while
- * `SessionInfo.workspaceDir` / `ServiceManagerOptions.workspaceDir` are a
- * session's git clone. The ambiguity is not cosmetic — confusing the two is what
- * produced the docs/246 bug where a flat-layout session resolved its state dir
- * to a host-shared `<sessionsRoot>/state`. So the four call sites that used to
- * compose this path by hand now go through one helper whose parameter says which
- * root it wants, and `.shipit` appears in exactly one place instead of four.
- *
- * Session-scoped ShipIt state has its own module and its own rule: it lives
- * outside the clone (`session-state-dir.ts`, docs/246-shipit-state-out-of-clone req 7). Nothing
- * ShipIt-generated may be written into a clone's `.shipit/` at all —
- * `no-clone-writes.test.ts` enforces that with no exemptions.
- */
-
 import fs from "node:fs/promises";
 import path from "node:path";
+import { APPLIED, applyFailed } from "../shared/settings-catalogue/index.js";
+import type { ApplyOutcome } from "../shared/settings-catalogue/index.js";
 
-/** Directory under the app workspace root that holds global ShipIt settings. */
 const APP_SETTINGS_SUBDIR = ".shipit";
 
-/** Filename of the global system prompt. */
-const GLOBAL_SYSTEM_PROMPT_FILE = "system-prompt.md";
-
 /**
- * Path of the global system prompt file.
- *
- * @param appWorkspaceDir The ORCHESTRATOR's workspace root (`AppDeps.workspaceDir`),
- *   never a session clone.
+ * An ops session never receives the standard block: ShipIt's own ops instructions
+ * contradict ordinary project conventions (docs/014-system-prompt req 6).
  */
-export function globalSystemPromptPath(appWorkspaceDir: string): string {
-  return path.join(appWorkspaceDir, APP_SETTINGS_SUBDIR, GLOBAL_SYSTEM_PROMPT_FILE);
+export type SystemPromptScope = "standard" | "ops";
+
+const PROMPT_FILES: Record<SystemPromptScope, string> = {
+  standard: "system-prompt.md",
+  ops: "system-prompt-ops.md",
+};
+
+// appWorkspaceDir is the orchestrator root, never a session clone.
+export function globalSystemPromptPath(
+  appWorkspaceDir: string,
+  scope: SystemPromptScope = "standard",
+): string {
+  return path.join(appWorkspaceDir, APP_SETTINGS_SUBDIR, PROMPT_FILES[scope]);
 }
 
 /**
- * Read the global system prompt, trimmed. Returns `undefined` when the file is
- * missing, unreadable, or blank — every caller treats "no prompt configured"
- * and "couldn't read it" the same way, so the distinction is not surfaced.
- *
- * @param appWorkspaceDir The ORCHESTRATOR's workspace root, never a session clone.
+ * `ok` with no content means there are no instructions; `ok: false` means ShipIt
+ * could not tell. The two used to be one answer, and a read of the setting then
+ * reported an `EACCES` on an existing file as *empty instructions*
+ * (docs/299-agent-settings-access req 1) — a made-up default the agent states to
+ * the user as fact.
  */
-export async function readGlobalSystemPrompt(appWorkspaceDir: string): Promise<string | undefined> {
+export type GlobalSystemPromptRead =
+  | { ok: true; content: string | undefined }
+  | { ok: false; error: unknown };
+
+export async function readGlobalSystemPrompt(
+  appWorkspaceDir: string,
+  scope: SystemPromptScope = "standard",
+): Promise<GlobalSystemPromptRead> {
   try {
-    const content = await fs.readFile(globalSystemPromptPath(appWorkspaceDir), "utf-8");
-    return content.trim() || undefined;
-  } catch {
-    return undefined;
+    const content = await fs.readFile(globalSystemPromptPath(appWorkspaceDir, scope), "utf-8");
+    return { ok: true, content: content.trim() || undefined };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, content: undefined };
+    return { ok: false, error: err };
   }
 }
 
 /**
- * Write the global system prompt, or delete the file when `content` is blank —
- * clearing the box in Settings means "no global prompt", not "a prompt that is
- * the empty string".
- *
- * @param appWorkspaceDir The ORCHESTRATOR's workspace root, never a session clone.
+ * The instructions to send with a turn, or none. Separate from the read above
+ * because it answers a different question: a turn still has to run when the file
+ * cannot be read, while a READ of the setting has to say it could not be read.
+ * Loud on purpose — dropping the user's global instructions silently is how this
+ * failure went unnoticed.
  */
-export async function writeGlobalSystemPrompt(appWorkspaceDir: string, content: string): Promise<void> {
-  const filePath = globalSystemPromptPath(appWorkspaceDir);
+export async function globalSystemPromptForTurn(
+  appWorkspaceDir: string,
+  scope: SystemPromptScope = "standard",
+): Promise<string | undefined> {
+  const read = await readGlobalSystemPrompt(appWorkspaceDir, scope);
+  if (read.ok) return read.content;
+  console.error(
+    `[global-system-prompt] reading the ${scope} instructions failed; this turn carries none:`,
+    read.error,
+  );
+  return undefined;
+}
+
+/**
+ * Reports whether the instructions are what the caller asked for, and never
+ * throws for a write it could not do (docs/299 → "Saved" has to mean saved).
+ *
+ * Clearing used to swallow the `unlink` error, so "cleared" could be false while
+ * the old instructions were still being sent to every agent. A write used to
+ * throw, which was worse than swallowing in a different way: it abandoned a
+ * multi-setting save part-way, losing both the outcomes already collected and
+ * the broadcast for the settings that had landed.
+ *
+ * The content is staged and renamed over the target, so a failure part-way
+ * cannot leave a truncated file — which is what lets a failure claim `failed`
+ * rather than `uncertain`: the previous instructions are verifiably still there.
+ */
+export async function writeGlobalSystemPrompt(
+  appWorkspaceDir: string,
+  content: string,
+  scope: SystemPromptScope = "standard",
+): Promise<ApplyOutcome> {
+  const filePath = globalSystemPromptPath(appWorkspaceDir, scope);
   const trimmed = content.trim();
   if (!trimmed) {
-    try { await fs.unlink(filePath); } catch { /* ok if missing */ }
-    return;
+    try {
+      await fs.unlink(filePath);
+    } catch (err) {
+      // A missing file is already cleared, so answering `failed` for that would
+      // make every repeat clear look like a failure.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return APPLIED;
+      console.error(`[global-system-prompt] clearing ${filePath} failed:`, err);
+      return applyFailed(
+        "ShipIt could not delete the instructions file, so the previous instructions are still in place.",
+      );
+    }
+    return APPLIED;
   }
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${trimmed}\n`, "utf-8");
+  const staging = `${filePath}.${process.pid}.tmp`;
+  try {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(staging, `${trimmed}\n`, "utf-8");
+    await fs.rename(staging, filePath);
+    return APPLIED;
+  } catch (err) {
+    console.error(`[global-system-prompt] writing ${filePath} failed:`, err);
+    await fs.rm(staging, { force: true }).catch(() => undefined);
+    return applyFailed(
+      "ShipIt could not write the instructions file, so the previous instructions are still in place.",
+    );
+  }
 }

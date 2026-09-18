@@ -1,19 +1,3 @@
-/**
- * BranchSyncedCard — inline record that a sync rebased the session branch onto
- * `origin/<base>` and/or fast-forwarded the session clone's local `<base>` ref
- * (docs/221). Emitted by the manual "Sync with <base>" action AND by the
- * automatic conflict-resolve-on-idle path, which is the case that most needs a
- * durable "your branch came out of this fine" — the user never asked for it.
- * The copy is deliberately trigger-neutral for that reason.
- *
- * Unlike the transient rebase banner/toast, this is durable scrollback: a lasting
- * record that the sync happened, with the concrete `was → now` SHAs for both the
- * branch and the local base for auditability. The card has NO lifecycle (no undo)
- * — the full payload arrives on the chat message and the component renders
- * straight from props (no store). Per CLAUDE.md §2 (inline beats link-out) there
- * are no GitHub links.
- */
-
 import { GitBranchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { BranchSyncedCard as BranchSyncedCardData } from "../../server/shared/types.js";
@@ -22,12 +6,10 @@ export interface BranchSyncedCardProps {
   card: BranchSyncedCardData;
 }
 
-/** Short, git-style 7-char SHA. */
 function short(sha: string): string {
   return sha.slice(0, 7);
 }
 
-/** A `label  was <a> → now <b>` provenance row. */
 function MoveRow({ label, from, to, suffix }: { label: string; from: string; to: string; suffix?: string }) {
   return (
     <span className="flex items-center gap-1.5">
@@ -79,10 +61,6 @@ export function BranchSyncedCard({ card }: BranchSyncedCardProps) {
                 <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>.
               </>
             )}
-            {/* planning#369 — a sync that rebased nothing can still have pushed:
-                the branch held commits origin had never seen, which is what kept
-                the pull request marked conflicting. Say so, or the card reads as
-                "nothing happened" while the PR state just changed. */}
             {!headMoved && card.forcePushed && (
               <> Pushed local commits missing from the remote.</>
             )}

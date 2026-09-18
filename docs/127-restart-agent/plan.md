@@ -70,11 +70,6 @@ ServiceManager."
 A small lifecycle hook on `ContainerSessionRunner`:
 
 ```ts
-/** Set by recovery flows that destroy+recreate the agent container
- *  but want the compose stack preserved. The disposed-handler in
- *  app-lifecycle.ts honors this flag by skipping `mgr.stop()` and by
- *  leaving the ServiceManager in the orchestrator-wide `serviceManagers`
- *  map. The next `setupServiceManager(newRunner)` reuses it. */
 preserveComposeOnDispose = false;
 ```
 
@@ -83,9 +78,6 @@ The disposed-handler reads the flag:
 ```ts
 runner.on("disposed", () => {
   if (isContainerRunner(runner) && runner.preserveComposeOnDispose) {
-    // Keep the ServiceManager alive; the next setupServiceManager
-    // call adopts it. We only detach the listeners attached to *this*
-    // runner so its disposed state can't leak into future events.
     mgr.off("stack_error", stackErrorListener);
     return;
   }
@@ -99,7 +91,6 @@ delegating to a sibling helper:
 
 ```ts
 function setupServiceManager(runner, deps) {
-  // …shared prelude: parse shipit.yaml, fire install, etc…
   const existing = serviceManagers.get(runner.sessionId);
   if (existing) {
     adoptExistingServiceManager(runner, existing, {
@@ -111,8 +102,6 @@ function setupServiceManager(runner, deps) {
     });
     return;
   }
-  // Normal path: create a fresh ServiceManager and start the stack.
-  // …existing code…
 }
 ```
 
@@ -176,7 +165,7 @@ export type RescuePhase =
   | "destroying_container"
   | "creating_container"
   | "starting_stack"
-  | "restarting_agent"   // <- new
+  | "restarting_agent"
   | "ready"
   | "failed";
 ```

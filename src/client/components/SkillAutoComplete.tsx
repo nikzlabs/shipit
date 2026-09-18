@@ -4,43 +4,32 @@ import { LightningIcon, SparkleIcon } from "@phosphor-icons/react";
 import { PopoverContent } from "./ui/popover.js";
 import type { SkillInfo } from "../../server/shared/types.js";
 
-/**
- * docs/178 — a ShipIt-native `/` command (e.g. `/compact`) surfaced in the same
- * menu as skills. Unlike skills, commands are ALWAYS `/`-prefixed (they're a
- * ShipIt construct, not a per-backend CLI skill whose token is `$` for Codex).
- */
 export interface SlashCommand {
   name: string;
   description: string;
 }
 
 export interface SkillAutoCompleteProps {
-  /** The current query text (after the leading `/`). */
+
   query: string;
-  /** Available skills to search through. */
+
   skills: SkillInfo[];
-  /** docs/178 — ShipIt-native `/` commands (always `/`-prefixed), listed first. */
+
   commands?: SlashCommand[];
-  /**
-   * Token prefix shown before each skill name — `/` for Claude, `$` for Codex.
-   * The trigger char stays `/` for both backends; only the displayed/inserted
-   * token differs. Defaults to `/`. See docs/138-skill-invocation §5.
-   */
+
   tokenPrefix?: string;
-  /** Called when the user selects a skill (passes the skill name). */
+
   onSelect: (skillName: string) => void;
-  /** docs/178 — called when the user selects a ShipIt `/` command. */
+
   onCommandSelect?: (commandName: string) => void;
-  /** Called when the autocomplete should be dismissed. */
+
   onDismiss: () => void;
 }
 
-/** A unified, keyboard-navigable menu row: either a ShipIt command or a skill. */
 type MenuItem =
   | { kind: "command"; name: string; description: string }
   | { kind: "skill"; name: string; description?: string };
 
-/** Filter skills by a query string (case-insensitive substring match on name). */
 function filterSkills(skills: SkillInfo[], query: string): SkillInfo[] {
   if (!query) return skills.slice(0, 20);
   const lower = query.toLowerCase();
@@ -65,10 +54,8 @@ export function SkillAutoComplete({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Commands first (they're ShipIt-native and few), then skills. Memoized
   // because `handleKeyDown` depends on it and is installed as a window
-  // listener — an unmemoized array would tear down and re-register the
-  // keydown handler on every render of the open menu.
+
   const matches: MenuItem[] = useMemo(() => [
     ...filterCommands(commands, query).map((c): MenuItem => ({ kind: "command", name: c.name, description: c.description })),
     ...filterSkills(skills, query).map((s): MenuItem => ({ kind: "skill", name: s.name, description: s.description })),
@@ -82,7 +69,6 @@ export function SkillAutoComplete({
     [onCommandSelect, onSelect],
   );
 
-  // Reset selected index when query changes (inline state reset during render)
   const prevQueryRef = useRef(query);
   if (prevQueryRef.current !== query) {
     prevQueryRef.current = query;

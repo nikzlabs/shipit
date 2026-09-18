@@ -10,35 +10,11 @@
 
 import type { CredentialRoute } from "../../server/shared/types.js";
 
-/** The word, and the colour it is said in, for a credential that needs attention. */
 export interface CredentialStatusWord {
   text: string;
   tone: "warning" | "error";
 }
 
-/**
- * The one word a credential says about itself — and only when something needs
- * doing (docs/252 req 19).
- *
- * A ready credential returns `undefined` and its surface stays silent, which is
- * the whole rule: Settings used to print a `status` pill on every row, so the
- * normal case spent width saying "ready" and the abnormal one said "auth
- * failed" in the same grey. The states that need attention now say so in words
- * and in a colour, rather than in a hue alone.
- *
- * planning#358 — the remedy differs by how the credential was supplied, and the
- * word has to name the one that exists. "Reconnect" is an account's remedy:
- * there is a login to run again. A `via: "string"` row is a secret someone
- * pasted or an env var the install was given — there is nothing to reconnect
- * to, and the only fix is a new value. Before 358 a string row could not reach
- * this state at all, so the account wording was the only wording needed; now
- * that a refused supplied secret is recorded, telling its owner to "reconnect"
- * would send them looking for a button that is not there.
- *
- * Shared by the Settings credential row and the header usage pill deliberately:
- * both are read-outs of the same credential, and two copies of this table would
- * be two ways to describe one broken account.
- */
 export function credentialStatusWord(
   credential: Pick<CredentialRoute, "status" | "via">,
 ): CredentialStatusWord | undefined {

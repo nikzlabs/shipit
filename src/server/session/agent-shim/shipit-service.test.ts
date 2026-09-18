@@ -1,13 +1,3 @@
-/**
- * Unit tests for `shipit service` (docs/238) — Compose service control.
- *
- * The shim talks to the worker over HTTP; the fake `call` here records the
- * transport's `timeoutMs` argument too, because the "unbounded transport for
- * start/restart" choice is the thing that makes an agent-initiated start of a
- * heavy service work at all (undici's non-disableable 300s headers timeout would
- * otherwise abort a cold image pull). A test that ignored that argument would
- * pass while the real bug came back.
- */
 
 import { describe, it, expect } from "vitest";
 import { runShim, type ShimIO } from "./shipit.js";
@@ -81,9 +71,6 @@ const LIST_RESPONSE: MockResponse = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// list
-// ---------------------------------------------------------------------------
 
 describe("shipit service list", () => {
   it("renders a table with status, preview mode, port and agent-reachable url", async () => {
@@ -127,15 +114,6 @@ describe("shipit service list", () => {
     expect(res.stdout).toContain("docker-compose.yml");
   });
 
-  /**
-   * planning#382 — the surface a docs/262 operator actually reported.
-   *
-   * "No services defined. Add them to docker-compose.yml" is right for a
-   * project with no stack and WRONG for one whose stack was declined: it sends
-   * the agent to write a file that already exists rather than to the line it
-   * has to change. docs/263's `user:` rule declines a stock compose file, so
-   * this was the first answer a normal project got.
-   */
   describe("a compose file ShipIt declined", () => {
     const REFUSED = {
       status: 200,
@@ -155,7 +133,6 @@ describe("shipit service list", () => {
       expect(res.exitCode).toBe(0);
       expect(res.stdout).toContain("refused");
       expect(res.stdout).toContain("numeric, non-root `user:`");
-      // The wrong advice must be GONE, not merely accompanied by the right one.
       expect(res.stdout).not.toContain("No services defined");
     });
 
@@ -172,9 +149,6 @@ describe("shipit service list", () => {
       });
       expect(res.stdout).toContain("could not read");
       expect(res.stdout).toContain("not valid YAML");
-      // `malformed` means ShipIt understood nothing, so there is no rule to
-      // satisfy — telling the agent to "edit it to satisfy that rule" would be
-      // an instruction it cannot follow.
       expect(res.stdout).not.toContain("satisfy that rule");
     });
 
@@ -206,11 +180,6 @@ describe("shipit service list", () => {
     });
   });
 
-  /**
-   * nikzlabs/shipit#2429 — the list is where the reported diagnosis went wrong. The
-   * service read `running`, every request failed on an unresolvable import, and
-   * nothing here connected either to the rebase that rewrote the tree.
-   */
   describe("dependencies that may not match the tree", () => {
     const GAP = {
       reason: "not-content-keyed",
@@ -233,8 +202,6 @@ describe("shipit service list", () => {
 
       expect(res.exitCode).toBe(0);
       expect(res.stdout).toContain("running");
-      // The row and the note have to arrive together: the row is the reason the
-      // agent stops looking, and the note is why it should not.
       expect(res.stdout).toContain("Dependencies:");
       expect(res.stdout).toContain("a sync onto the latest base");
     });
@@ -280,9 +247,6 @@ describe("shipit service list", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// start / restart
-// ---------------------------------------------------------------------------
 
 describe("shipit service start", () => {
   it("posts the service name and reports the polled status", async () => {
@@ -305,7 +269,6 @@ describe("shipit service start", () => {
     const res = await run(["service", "start", "db"], {
       "POST /services/start": { status: 200, body: { name: "db", status: "running" } },
     });
-    // 0 = explicitly unbounded (Node http, not undici fetch). See shipit-service.ts.
     expect(res.calls[0].timeoutMs).toBe(0);
   });
 
@@ -375,9 +338,6 @@ describe("shipit service start", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// stop
-// ---------------------------------------------------------------------------
 
 describe("shipit service stop", () => {
   it("stops a service on the bounded transport", async () => {
@@ -387,15 +347,11 @@ describe("shipit service stop", () => {
     });
     expect(res.exitCode).toBe(0);
     expect(res.calls[0]).toMatchObject({ method: "POST", path: "/services/stop", body: { name: "db" } });
-    // stop is quick; it must NOT opt into the unbounded transport.
     expect(res.calls[0].timeoutMs).toBeUndefined();
     expect(res.stdout).toContain("db: stopped");
   });
 });
 
-// ---------------------------------------------------------------------------
-// logs
-// ---------------------------------------------------------------------------
 
 describe("shipit service logs", () => {
   it("fetches logs and prints them verbatim", async () => {
@@ -434,9 +390,6 @@ describe("shipit service logs", () => {
   });
 
   it("explains a 404 as a stale worker, not a bare 'Not Found'", async () => {
-    // Fastify's no-such-route 404. An unknown *service* comes back as a 500
-    // carrying `Unknown service: x`, so a 404 can only mean the worker in this
-    // container predates the endpoint.
     const { run } = makeRunner();
     const res = await run(["service", "logs", "web"], {
       "GET /services/logs": { status: 404, body: { error: "Not Found", message: "Not Found" } },
@@ -454,9 +407,6 @@ describe("shipit service logs", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Dispatch + allowlist
-// ---------------------------------------------------------------------------
 
 describe("shipit service dispatch", () => {
   it("accepts the `services` plural alias", async () => {
@@ -473,7 +423,6 @@ describe("shipit service dispatch", () => {
       const res = await run(["service", sub, "db"]);
       expect(res.exitCode).not.toBe(0);
       expect(res.stderr).toContain("docker-compose.yml");
-      // No network call should have been attempted.
       expect(res.calls).toHaveLength(0);
     },
   );

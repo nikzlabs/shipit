@@ -4,13 +4,15 @@ import userEvent from "@testing-library/user-event";
 import { SettingsEgress } from "./SettingsEgress.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+import { initialSettingValues } from "../stores/setting-values.js";
 import type {
   EgressAllowlistEntry,
   EgressAllowlistView,
+  EgressEnforcementStatus,
   EgressHostGrantOutcome,
 } from "../../server/shared/types.js";
 
-/** Stateful fetch stub returning the effective-allowlist view. */
 function stubFetch(
   initial: EgressAllowlistEntry[],
   opts: {
@@ -18,7 +20,7 @@ function stubFetch(
     withSession?: boolean;
     defaultsCustomized?: boolean;
     enforcementActive?: boolean;
-    /** planning#376 — what the route says the add took effect on. */
+
     grant?: EgressHostGrantOutcome;
   } = {},
 ) {
@@ -27,10 +29,12 @@ function stubFetch(
   let defaultsCustomized = opts.defaultsCustomized ?? false;
   const enforcementActive = opts.enforcementActive ?? true;
   let override: boolean | null = null;
+  const enforcementStatus: EgressEnforcementStatus = enforcementActive ? "active" : "no-sidecar";
   const view = (): EgressAllowlistView => ({
     entries,
     globalEnabled,
     enforcementActive,
+    enforcementStatus,
     session: opts.withSession
       ? {
           sessionId: "s1",
@@ -39,6 +43,7 @@ function stubFetch(
           effectiveContained: override ?? globalEnabled,
           globalEnabled,
           enforcementActive,
+          enforcementStatus,
           startedContained: null,
           pendingRestart: false,
         }
@@ -53,7 +58,7 @@ function stubFetch(
     if (url.startsWith("/api/egress/session/") && method === "PUT") override = (body?.override ?? null) as boolean | null;
     if (url === "/api/egress/defaults/restore") {
       defaultsCustomized = false;
-      entries = entries.map((e) => (e.source === "builtin" ? e : e)); // restored set is server-authoritative
+      entries = entries.map((e) => (e.source === "builtin" ? e : e));                                        
     }
     if (url === "/api/egress/hosts" && method === "POST") {
       const source = body?.scope === "global" ? "user-global" : "user-session";
@@ -76,7 +81,23 @@ const mcp = (host: string): EgressAllowlistEntry => ({ host, source: "mcp", remo
 beforeEach(() => {
   useEgressStore.setState({ loaded: false, sessionId: null, entries: [], globalEnabled: true, enforcementActive: true, override: null, effectiveContained: true });
   useSessionStore.setState({ sessionId: undefined });
+  useSettingsStore.setState({ settingValues: initialSettingValues() });
 });
+
+/*
+  The containment toggle is a generated row now (docs/308-data-driven-settings
+  slice 2), so it is found by the label its declaration carries, and its value
+  is the one `refreshOwnRouteSettings` read from `GET /api/egress/settings` —
+  not the copy this panel's own allowlist view carries. A test that wants the
+  toggle off therefore says so through the record, the way hydration does.
+*/
+function containmentToggle(): HTMLElement {
+  return screen.getByRole("switch", { name: "Contain outbound network access" });
+}
+
+function seedContained(contained: boolean): void {
+  useSettingsStore.getState().setSettingValue("network.egressContained", contained);
+}
 
 afterEach(() => {
   cleanup();
@@ -89,7 +110,7 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
     stubFetch([]);
     render(<SettingsEgress />);
     await waitFor(() => expect(screen.getByTestId("settings-egress-empty")).toBeInTheDocument());
-    expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "true");
+    expect(containmentToggle()).toHaveAttribute("aria-checked", "true");
   });
 
   it("shows built-in defaults as removable (overridable defaults)", async () => {
@@ -125,9 +146,6 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
     await waitFor(() => expect(screen.getByText("internal.corp")).toBeInTheDocument());
   });
 
-  // planning#376 — a successful add used to say nothing at all, so the user
-  // could not tell whether anything had to restart. It does now, from the
-  // route's own answer rather than from a guess about the scope.
   describe("reports what the add took effect on", () => {
     const add = async () => {
       render(<SettingsEgress />);
@@ -143,7 +161,7 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
           scope: "global",
           liveNow: ["new-containers"],
           staleUntilRestart: ["agent", "services"],
-          // App-wide dialog: no session is in scope, so "restart" has no subject.
+
           restartSessionId: null,
           reach: "grantable",
         },
@@ -194,23 +212,24 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
   it("does NOT warn when containment is the policy AND enforcement is active", async () => {
     stubFetch([], { globalEnabled: true, enforcementActive: true });
     render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "true"));
+    await waitFor(() => expect(containmentToggle()).toHaveAttribute("aria-checked", "true"));
     expect(screen.queryByTestId("settings-egress-enforcement-warning")).not.toBeInTheDocument();
   });
 
   it("does NOT warn when policy is Open even if enforcement is inactive", async () => {
     stubFetch([], { globalEnabled: false, enforcementActive: false });
+    seedContained(false);
     render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() => expect(containmentToggle()).toHaveAttribute("aria-checked", "false"));
     expect(screen.queryByTestId("settings-egress-enforcement-warning")).not.toBeInTheDocument();
   });
 
   it("toggles containment off", async () => {
     stubFetch([]);
     render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "true"));
-    await userEvent.click(screen.getByTestId("settings-egress-contained"));
-    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() => expect(containmentToggle()).toHaveAttribute("aria-checked", "true"));
+    await userEvent.click(containmentToggle());
+    await waitFor(() => expect(containmentToggle()).toHaveAttribute("aria-checked", "false"));
   });
 
   it("shows 'Restore defaults' only when a default was removed, and POSTs the restore", async () => {
@@ -231,24 +250,23 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
   });
 
   it("renders no per-session controls even when a session is active (Settings is global-only)", async () => {
-    // The per-session containment override + add-scope toggle moved out of the
-    // global Settings dialog onto the session's own menu (docs/172).
+
     useSessionStore.setState({ sessionId: "s1" });
     stubFetch([], { withSession: true });
     render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toBeInTheDocument());
+    await waitFor(() => expect(containmentToggle()).toBeInTheDocument());
     expect(screen.queryByTestId("settings-egress-session-override")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-egress-override")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-egress-add-scope")).not.toBeInTheDocument();
   });
 
   it("loads the GLOBAL allowlist (no ?session=) even when a session is active", async () => {
-    // The mechanism behind global-only: the effective view is fetched with no
+
     // session in scope, so the server never returns "This session" rows.
     useSessionStore.setState({ sessionId: "s1" });
     const impl = stubFetch([], { withSession: true });
     render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toBeInTheDocument());
+    await waitFor(() => expect(containmentToggle()).toBeInTheDocument());
     const allowlistGets = impl.mock.calls.filter(([url]) => url.startsWith("/api/egress/allowlist"));
     expect(allowlistGets.length).toBeGreaterThan(0);
     expect(allowlistGets.every(([url]) => !url.includes("session="))).toBe(true);

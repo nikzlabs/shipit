@@ -40,15 +40,10 @@
   .amerge{margin-left:auto;flex:none;display:flex;color:var(--txt3);}
   .kebab{flex:none;color:var(--txt3);opacity:.4;}
   svg{display:block;} .i-sm{width:16px;height:16px;} .i-xs{width:12px;height:12px;}
-
-  /* A · solid full-height left rail (IMPLEMENTED) */
   .A .attn{box-shadow:inset 3px 0 0 var(--am);}
-  /* B · rail + faint row tint */
   .B .attn{box-shadow:inset 3px 0 0 var(--am);background:var(--am07);}
   .B .attn.sel{background:var(--sel);box-shadow:inset 3px 0 0 var(--am);}
-  /* C · rounded pill marker */
   .C .attn::before{content:"";position:absolute;left:1px;top:50%;transform:translateY(-50%);width:3px;height:60%;border-radius:999px;background:var(--am);}
-  /* dark column reuses the A rail */
   .dk .attn{box-shadow:inset 3px 0 0 var(--am);}
 
   .foot{margin-top:26px;font-size:12px;color:#4b5563;max-width:1000px;line-height:1.6;}
@@ -73,8 +68,6 @@
   </p>
 
   <div class="cols">
-
-    <!-- A -->
     <div class="panel warm A">
       <div class="ptitle"><span>A · Solid left rail ✅</span><span class="d">3px, full height — forms a scannable column</span></div>
       <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
@@ -89,8 +82,6 @@
       <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Let's migrate the package man…</div><div class="meta"><span>23h</span></div></div></div>
       <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Tanks Core: Check Plan Comple…</div><div class="meta"><span>20d</span></div></div></div>
     </div>
-
-    <!-- B -->
     <div class="panel warm B">
       <div class="ptitle"><span>B · Rail + faint tint</span><span class="d">rail edge + a slight warm body</span></div>
       <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
@@ -105,8 +96,6 @@
       <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Let's migrate the package man…</div><div class="meta"><span>23h</span></div></div></div>
       <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Tanks Core: Check Plan Comple…</div><div class="meta"><span>20d</span></div></div></div>
     </div>
-
-    <!-- C -->
     <div class="panel warm C">
       <div class="ptitle"><span>C · Rounded pill marker</span><span class="d">centered vertical pill — softer, modern</span></div>
       <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
@@ -121,8 +110,6 @@
       <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Let's migrate the package man…</div><div class="meta"><span>23h</span></div></div></div>
       <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Tanks Core: Check Plan Comple…</div><div class="meta"><span>20d</span></div></div></div>
     </div>
-
-    <!-- DARK rail check -->
     <div class="panel dk">
       <div class="ptitle"><span>Dark · Solid left rail</span><span class="d">same rail (A) on the dark theme</span></div>
       <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>

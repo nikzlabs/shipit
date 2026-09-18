@@ -1,15 +1,3 @@
-/**
- * docs/150-multiple-provider-subscriptions req 22 — account identity at connect time.
- *
- * Two things are under test and they fail differently, so they are separated:
- * *reading* an identity out of what the provider CLI wrote (pure filesystem
- * parsing, exercised against real files rather than a mocked `fs` so a wrong
- * path is a failure rather than a passing test of the wrong string), and the
- * *policy* applied to it, which is exercised against the real
- * `ProviderAccountManager` so a refusal's on-disk consequences are asserted
- * rather than assumed.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -21,7 +9,6 @@ import {
   refuseIfAlreadyConnected,
 } from "./provider-account-identity.js";
 
-/** Minimal JWT with the given payload — only the payload segment is read. */
 function jwt(payload: Record<string, unknown>): string {
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `header.${body}.signature`;
@@ -56,10 +43,6 @@ describe("reading provider account identity (req 22)", () => {
   });
 
   it("does not mistake Claude plan data for identity", () => {
-    // `.credentials.json` is the file it would be natural to reach for, and it
-    // is the wrong one: `subscriptionType` is a PLAN, so two different accounts
-    // on Max are indistinguishable by it. With no `.claude.json` there is no
-    // identity, and the connect degrades rather than inventing a shared key.
     fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
     fs.writeFileSync(
       path.join(root, ".claude", ".credentials.json"),
@@ -91,9 +74,6 @@ describe("reading provider account identity (req 22)", () => {
 
   it("reads Grok's user_id and email from the scope-keyed .grok/auth.json", () => {
     fs.mkdirSync(path.join(root, ".grok"), { recursive: true });
-    // Scope-keyed: the top level maps a scope NAME to that scope's record, so a
-    // reader hard-coded to one key would report an unauthenticated file the
-    // moment xAI renamed or added one.
     fs.writeFileSync(
       path.join(root, ".grok", "auth.json"),
       JSON.stringify({
@@ -113,9 +93,6 @@ describe("reading provider account identity (req 22)", () => {
   });
 
   it("does not mistake Grok's plan for identity", () => {
-    // The same trap Claude's `.credentials.json` sets: a plan is shared by every
-    // account on that tier, so two SuperGrok subscriptions would collide on it
-    // and req 22's duplicate detection would refuse a legitimate second account.
     fs.mkdirSync(path.join(root, ".grok"), { recursive: true });
     fs.writeFileSync(
       path.join(root, ".grok", "auth.json"),
@@ -131,19 +108,14 @@ describe("reading provider account identity (req 22)", () => {
     fs.writeFileSync(path.join(root, ".claude.json"), "{ not json");
     expect(readProviderAccountIdentity("claude", root)).toBeNull();
 
-    // An older CLI writes the config without `oauthAccount` at all.
     fs.writeFileSync(path.join(root, ".claude.json"), JSON.stringify({ projects: {} }));
     expect(readProviderAccountIdentity("claude", root)).toBeNull();
 
-    // Same for Grok, and for the same reason: an unreadable identity must
-    // degrade the connect to "generated label, no duplicate detection" rather
-    // than fail it.
     expect(readProviderAccountIdentity("grok", root)).toBeNull();
     fs.mkdirSync(path.join(root, ".grok"), { recursive: true });
     fs.writeFileSync(path.join(root, ".grok", "auth.json"), "{ not json");
     expect(readProviderAccountIdentity("grok", root)).toBeNull();
 
-    // OpenCode still has no account credential at all (docs/268 req 5).
     expect(readProviderAccountIdentity("opencode", root)).toBeNull();
   });
 });
@@ -163,7 +135,6 @@ describe("connect-time identity policy (req 22)", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  /** Write what a completed Claude sign-in leaves in an account's root. */
   function writeClaudeSignIn(accountId: string, uuid: string, email?: string): void {
     const dir = accounts.resolveCredentialRoot("claude", accountId);
     fs.mkdirSync(dir, { recursive: true });
@@ -197,9 +168,6 @@ describe("connect-time identity policy (req 22)", () => {
   });
 
   it("degrades to the generated label when the CLI reports no identity", () => {
-    // An older CLI, or an env-only route. The connect must still succeed —
-    // refusing everything ShipIt cannot identify would make such an install
-    // unable to connect any account at all.
     const account = accounts.create("anthropic");
 
     expect(refuseIfAlreadyConnected("claude", account.id, accounts)).toBeNull();
@@ -222,10 +190,8 @@ describe("connect-time identity policy (req 22)", () => {
 
     expect(message).toContain("already connected");
     expect(message).toContain("dev@example.com");
-    // req 22 — no second row for the same account...
     expect(accounts.list("anthropic")).toHaveLength(1);
     expect(accounts.get("anthropic", second.id)).toBeUndefined();
-    // ...and the existing row is untouched: same id, same status, same label.
     const kept = accounts.get("anthropic", first.id);
     expect(kept?.status).toBe("ready");
     expect(kept?.label).toBe("dev@example.com");
@@ -233,10 +199,6 @@ describe("connect-time identity policy (req 22)", () => {
   });
 
   it("lets a stale row re-authenticate into its own account", () => {
-    // The consequence the user accepted when choosing refusal over adopting:
-    // re-connecting is no longer a repair path, so the row's OWN Reconnect
-    // action has to keep working. It resolves to the same external id the row
-    // already holds, which is a self-match and must not be refused.
     const account = accounts.create("anthropic");
     writeClaudeSignIn(account.id, "uuid-1", "dev@example.com");
     refuseIfAlreadyConnected("claude", account.id, accounts);
@@ -250,10 +212,6 @@ describe("connect-time identity policy (req 22)", () => {
   });
 
   it("keeps an established row when a DIFFERENT account is signed into it", () => {
-    // Not the same case as a fresh "Add account": this row has a priority
-    // position, a name, and possibly pinned sessions. Deleting it because the
-    // user picked the wrong account in the browser would take all of that with
-    // it, so the row survives — credential-less and `auth_failed`.
     const first = accounts.create("anthropic");
     writeClaudeSignIn(first.id, "uuid-1", "first@example.com");
     refuseIfAlreadyConnected("claude", first.id, accounts);
@@ -263,7 +221,6 @@ describe("connect-time identity policy (req 22)", () => {
     refuseIfAlreadyConnected("claude", second.id, accounts);
     accounts.setAccountStatus("anthropic", second.id, "ready");
 
-    // Now the user re-connects the second row but signs in as the FIRST account.
     writeClaudeSignIn(second.id, "uuid-1", "first@example.com");
     const message = refuseIfAlreadyConnected("claude", second.id, accounts);
 
@@ -272,7 +229,6 @@ describe("connect-time identity policy (req 22)", () => {
     const kept = accounts.get("anthropic", second.id);
     expect(kept?.status).toBe("auth_failed");
     expect(kept?.externalId).toBe("uuid-2");
-    // The credentials that would have made it a working duplicate are gone.
     expect(
       fs.existsSync(path.join(accounts.resolveCredentialRoot("claude", second.id), ".claude.json")),
     ).toBe(false);

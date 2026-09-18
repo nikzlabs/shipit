@@ -6,10 +6,17 @@ import { handleAgentEvent } from "./agent-event.js";
 import { handleTurnSnapshot } from "./turn-snapshot.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
 import { handleActionChecklistCard } from "./action-checklist-card.js";
+import { handleActionChecklistUpdate } from "./action-checklist-update.js";
+import {
+  handleRepoSessionProposalCard,
+  handleRepoSessionProposalUpdate,
+} from "./repo-session-proposal.js";
 import { handlePresentInlineCard } from "./present-inline-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
 import { handleSessionRenamedCard } from "./session-renamed-card.js";
 import { handleSessionSettingsChangeCard } from "./session-settings-change-card.js";
+import { handleSshHostKeyCard } from "./ssh-host-key-card.js";
+import { handleSettingsProposalCard, handleSettingsProposalUpdate } from "./settings-proposal-card.js";
 import { handleBranchSyncedCard } from "./branch-synced-card.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleAutoResolveResult } from "./auto-resolve-result.js";
@@ -58,7 +65,6 @@ import { handleResetEligible } from "./reset-eligible.js";
 import { handlePresentCleared } from "./present-cleared.js";
 import { handlePresentContent } from "./present-content.js";
 import { handlePresentState } from "./present-state.js";
-import { handlePreviewError } from "./preview-error.js";
 import { handlePreviewStatus } from "./preview-status.js";
 import { handleQueueUpdated } from "./queue-updated.js";
 import { handleRebaseAborted } from "./rebase-aborted.js";
@@ -100,17 +106,8 @@ import { handleVoiceNote } from "./voice-note.js";
 
 export type { HandlerContext, Handler } from "./types.js";
 
-/** Shorthand for the `type` field of any server → client message. */
 export type WsMessageType = WsServerMessage["type"];
 
-/**
- * Per-type narrowing helper: given a discriminator string `T`, resolves to
- * the specific variant of `WsServerMessage` with `type: T`.
- *
- * The dispatcher map below is typed as `Partial<{ [T in WsMessageType]:
- * Handler<WsMessageForType<T>> }>` so each entry's handler receives the
- * narrowed payload — no `any`, no manual casts at call sites.
- */
 type WsMessageForType<T extends WsMessageType> = Extract<WsServerMessage, { type: T }>;
 
 type MessageHandlerMap = {
@@ -127,12 +124,18 @@ type MessageHandlerMap = {
  */
 export const messageHandlers: MessageHandlerMap = {
   action_checklist_card: handleActionChecklistCard,
+  action_checklist_update: handleActionChecklistUpdate,
+  repo_session_proposal_card: handleRepoSessionProposalCard,
+  repo_session_proposal_update: handleRepoSessionProposalUpdate,
   present_inline_card: handlePresentInlineCard,
   auto_resolve_result: handleAutoResolveResult,
   auto_resolve_started: handleAutoResolveStarted,
   branch_auto_reset_card: handleBranchAutoResetCard,
   session_renamed_card: handleSessionRenamedCard,
   session_settings_change_card: handleSessionSettingsChangeCard,
+  ssh_host_key_card: handleSshHostKeyCard,
+  settings_proposal_card: handleSettingsProposalCard,
+  settings_proposal_update: handleSettingsProposalUpdate,
   branch_synced_card: handleBranchSyncedCard,
   agent_event: handleAgentEvent,
   turn_snapshot: handleTurnSnapshot,
@@ -183,7 +186,6 @@ export const messageHandlers: MessageHandlerMap = {
   present_cleared: handlePresentCleared,
   present_content: handlePresentContent,
   present_state: handlePresentState,
-  preview_error: handlePreviewError,
   preview_status: handlePreviewStatus,
   queue_updated: handleQueueUpdated,
   rebase_aborted: handleRebaseAborted,
@@ -249,6 +251,9 @@ export const messageHandlers: MessageHandlerMap = {
  */
 const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
   "action_checklist_card",
+  "action_checklist_update",
+  "repo_session_proposal_card",
+  "repo_session_proposal_update",
   "present_inline_card",
   "branch_auto_reset_card",
   "branch_synced_card",
@@ -270,6 +275,9 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "self_merge_watch_card",
   "session_renamed_card",
   "session_settings_change_card",
+  "ssh_host_key_card",
+  "settings_proposal_card",
+  "settings_proposal_update",
   "session_report_card",
   "non_turn_failure_card",
   "non_turn_failure_dismissed",
@@ -300,20 +308,12 @@ function isForeignTranscriptMessage(data: WsServerMessage): boolean {
   return !!msgSessionId && !!activeSessionId && msgSessionId !== activeSessionId;
 }
 
-/**
- * Dispatch a single WS server message to its handler (if any).
- *
- * Performs the discriminated-union narrowing here so handlers can be
- * typed precisely against their specific message variant without callers
- * having to know which key to index.
- */
 export function dispatchMessage(ctx: HandlerContext, data: WsServerMessage): void {
   if (isForeignTranscriptMessage(data)) return;
   const handler = messageHandlers[data.type] as Handler | undefined;
   handler?.(ctx, data);
 }
 
-/** Create a fresh queued-message stash. See `QueuedMessageStash` doc. */
 export function createQueuedMessageStash(): QueuedMessageStash {
   return new Map();
 }

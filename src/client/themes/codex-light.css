@@ -1,6 +1,6 @@
-/* Codex Light theme — greenscreen printout: light mint with terminal green accent */
+
 .codex-light {
-  /* Surfaces */
+
   --color-bg-primary: #f2f7f2;
   --color-bg-secondary: #e6efe6;
   --color-bg-tertiary: #d8e6d8;
@@ -9,25 +9,21 @@
   --color-bg-hover: rgba(26, 154, 72, 0.06);
   --color-bg-active: rgba(26, 154, 72, 0.1);
 
-  /* Text */
   --color-text-primary: #1a2e1a;
   --color-text-secondary: #3a5a3a;
   --color-text-tertiary: #7a9a7a;
   --color-text-inverse: #f2f7f2;
   --color-text-link: #1a8a40;
 
-  /* Borders */
   --color-border-primary: #cbd8cb;
   --color-border-secondary: #b8ccb8;
   --color-border-focus: #1a9a48;
 
-  /* Accent */
   --color-accent: #1a9a48;
   --color-accent-hover: #148038;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(26, 154, 72, 0.1);
 
-  /* Status */
   --color-success: #1a8a40;
   --color-success-subtle: rgba(26, 138, 64, 0.1);
   --color-success-border: rgba(26, 138, 64, 0.3);
@@ -38,7 +34,6 @@
   --color-info: #1a8a40;
   --color-info-subtle: rgba(26, 138, 64, 0.1);
 
-  /* Domain-specific */
   --color-pr: #7050a0;
   --color-pr-subtle: rgba(112, 80, 160, 0.1);
   --color-pr-border: rgba(112, 80, 160, 0.3);
@@ -54,17 +49,14 @@
   --color-attention: #d97706;
   --color-attention-text: #92400e;
 
-  /* Context meter */
   --color-context-ok: #1a8a40;
   --color-context-mid: #a09018;
   --color-context-high: #c07020;
   --color-context-full: #c43838;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(122, 154, 122, 0.35);
   --color-scrollbar-thumb-hover: rgba(58, 90, 58, 0.5);
 
-  /* Syntax highlighting (green-tinted light) */
   --color-syntax-base: #1a2e1a;
   --color-syntax-bg: #f2f7f2;
   --color-syntax-keyword: #1a8a40;
@@ -82,6 +74,5 @@
   --color-syntax-deletion: #c43838;
   --color-syntax-deletion-bg: #f8e8e8;
 
-  /* Typography */
   --font-size-code: 13px;
 }

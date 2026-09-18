@@ -1,18 +1,14 @@
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
 
 export interface ParsedFrontmatter {
-  /** Body with the frontmatter block removed. Unchanged when no frontmatter. */
+
   body: string;
-  /** True iff a frontmatter block was present and stripped. */
+
   hasFrontmatter: boolean;
-  /**
-   * docs/168 — pointer to the tracking issue (Linear full URL or
-   * `owner/repo#N`), taken verbatim from the `issue:` field. Rendered as a
-   * jump-to-issue link in the doc modal header.
-   */
+
   issue?: string;
   description?: string;
-  /** Any other `key: value` lines from frontmatter, preserved for display. */
+
   extras: { key: string; value: string }[];
 }
 
@@ -48,8 +44,7 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
     } else if (key === "description") {
       description = value;
     } else if (key === "title") {
-      // Title is derived elsewhere (filename / parent dir); skip it from extras
-      // so we don't render a duplicate label above the H1.
+      // The heading already displays the title.
     } else {
       extras.push({ key, value });
     }

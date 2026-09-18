@@ -20,12 +20,9 @@ There is no separate mode, and that is the point. An agent-run install is the
 ordinary install with every answer supplied:
 
 ```bash
-# 1. Discover — no root, no writes, no clone.
+
 bash <(curl -fsSL …/deployment/local/setup.sh) --describe
 
-# 2. The agent shows the questions to the person and collects the answers.
-
-# 3. Install — the same command everyone else runs.
 SHIPIT_HARNESSES=claude,codex bash <(curl -fsSL …/deployment/local/setup.sh)
 ```
 
@@ -81,22 +78,22 @@ rather than defaulting, which reverses req 16 and breaks the documented
 ```jsonc
 {
   "schema": "shipit.installer/1",
-  "installer": "local",            // or "vps"
-  "command": "bash <(curl …)",     // what to run once answered
+  "installer": "local",
+  "command": "bash <(curl …)",
   "needsRoot": false,
   "instructions": [ … ],           // req 8: show the person, do not choose
   "questions": [
     {
       "id": "harnesses",
       "variable": "SHIPIT_HARNESSES",
-      "type": "multi_select",      // or "select", "text", "confirm"
+      "type": "multi_select",
       "default": "claude,codex,opencode",
-      "askedWhen": "always",       // or a condition, in words
+      "askedWhen": "always",
       "secret": false,
       "options": [ { "id": "claude", "label": "Claude Code", "summary": "…" } ]
     }
   ],
-  "followUps": [ … ]               // req 13: local Tailscale access
+  "followUps": [ … ]
 }
 ```
 

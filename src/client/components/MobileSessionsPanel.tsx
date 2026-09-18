@@ -6,7 +6,6 @@ interface MobileSessionsPanelProps {
   children: ReactNode;
 }
 
-/** Keeps the mobile sessions drawer mounted so its navigation state survives closing. */
 export function MobileSessionsPanel({ open, onClose, children }: MobileSessionsPanelProps) {
   return (
     <div

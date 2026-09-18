@@ -1,12 +1,3 @@
-/**
- * ElevenLabs TTS adapter (docs/144).
- *
- * Streams synthesized speech as `audio/mpeg`. The voice id is a path segment
- * (ElevenLabs keys voices by id, not a fixed enum like OpenAI), so the service
- * layer passes the configured voice through `opts.voice`. This adapter just
- * performs one synthesis call and returns the raw mp3 stream.
- */
-
 import { VoiceProviderError, type TtsProvider, type TtsSpeakOptions } from "./types.js";
 
 const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech";

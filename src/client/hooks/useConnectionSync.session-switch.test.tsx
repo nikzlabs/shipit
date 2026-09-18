@@ -59,21 +59,11 @@ class FakeWebSocket {
   }
 }
 
-/** Resolvers for the deferred `GET /history` responses, in issue order. */
 let historyResolvers: ((payload: unknown) => void)[] = [];
-/**
- * `loadSessionHistory` raises `historyLoaded` and then keeps going, awaiting
- * preview status. Deferring that tail is how a test holds a load "in flight
- * past the flag flip".
- */
+
 let previewStatusResolvers: ((payload: unknown) => void)[] = [];
 let deferPreviewStatus = false;
-/**
- * Opt-in ETag for `GET /history` (planning#467). Off by default so every test
- * above keeps taking the plain `200` path — switching them all to a cached
- * `304` would stop `json()` being called and hang their `historyResolvers`
- * waits. Set it to make the second load for a session revalidate.
- */
+
 let historyEtag: string | null = null;
 /**
  * Hold the `GET /history` *response* itself, rather than its `json()` body.
@@ -84,7 +74,6 @@ let historyEtag: string | null = null;
 let deferHistoryFetch = false;
 let historyFetchResolvers: (() => void)[] = [];
 
-/** The three hooks App composes for a session's transport, in App's order. */
 function useConnectionStack(sessionId: string) {
   const ws = useSessionWebSocket(sessionId);
   useConnectionSync({ status: ws.status, send: ws.send });
@@ -98,7 +87,6 @@ function useConnectionStack(sessionId: string) {
   return ws;
 }
 
-/** A running turn's persisted rows: in-progress, so a snapshot replaces them. */
 function historyPayload(texts: string[]) {
   return {
     messages: texts.map((text) => ({ role: "assistant", text, inProgress: true })),
@@ -162,21 +150,16 @@ describe("transcript hydration across session switches and reconnects", () => {
       { initialProps: { id: "A" } },
     );
 
-    // A's socket opens; its history load goes out and stays in flight.
     await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
     await waitFor(() => expect(historyResolvers).toHaveLength(1));
 
-    // A reconnect (the Reconnect button, or the foreground force-reconnect)
-    // while that load is in flight: open -> connecting.
     await act(async () => { result.current.reconnect(); });
     expect(result.current.status).toBe("connecting");
     expect(useSessionStore.getState().historyLoaded).toBe(false);
 
-    // The load lands late and raises the flag while the socket is connecting.
     await act(async () => { historyResolvers[0](historyPayload(["A baseline"])); });
     expect(useSessionStore.getState().historyLoaded).toBe(true);
 
-    // Now switch to B. The new URL rebuilds the socket, but `setStatus` is
     // handed the value it already holds, so `useConnectionSync` never re-runs.
     await act(async () => {
       resumeSessionInternal("B");
@@ -185,7 +168,6 @@ describe("transcript hydration across session switches and reconnects", () => {
     expect(result.current.status).toBe("connecting");
     expect(useSessionStore.getState().historyLoaded).toBe(false);
 
-    // B's socket attaches mid-turn: snapshot on the wire first, history after.
     const socketB = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
     await act(async () => { socketB.simulateOpen(); });
     await waitFor(() => expect(historyResolvers).toHaveLength(2));
@@ -198,8 +180,6 @@ describe("transcript hydration across session switches and reconnects", () => {
     });
     await act(async () => { historyResolvers[1](historyPayload(["B stale baseline"])); });
 
-    // The snapshot is authoritative for the running turn: the baseline's
-    // in-progress rows are replaced, not the other way round.
     await waitFor(() => {
       expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["B live tail"]);
     });
@@ -226,13 +206,11 @@ describe("transcript hydration across session switches and reconnects", () => {
       initialProps: { id: "A" },
     });
 
-    // First open: a 200 that caches the payload.
     await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
     await waitFor(() => expect(historyResolvers).toHaveLength(1));
     await act(async () => { historyResolvers[0](historyPayload(["persisted"])); });
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["persisted"]);
 
-    // The turn streams on, past the last persist boundary.
     act(() => {
       useSessionStore.getState().setMessages((prev) => [
         ...prev,
@@ -240,9 +218,6 @@ describe("transcript hydration across session switches and reconnects", () => {
       ]);
     });
 
-    // Foreground force-reconnect. Nothing was persisted in the gap, so the
-    // server will revalidate — and the response is held so the attach snapshot
-    // genuinely races it, which is the whole point.
     deferHistoryFetch = true;
     await act(async () => { result.current.reconnect(); });
     expect(useSessionStore.getState().historyLoaded).toBe(false);
@@ -251,7 +226,6 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { reconnected.simulateOpen(); });
     await waitFor(() => expect(historyFetchResolvers).toHaveLength(1));
 
-    // Snapshot first on the wire, with the load still outstanding.
     await act(async () => {
       reconnected.simulateMessage({
         type: "turn_snapshot",
@@ -263,19 +237,15 @@ describe("transcript hydration across session switches and reconnects", () => {
         ],
       });
     });
-    // Queued, not applied. The third row is what makes this discriminating: a
-    // snapshot dispatched immediately would already have added it.
+
     expect(useSessionStore.getState().messages.map((m) => m.text))
       .toEqual(["persisted", "streamed since"]);
 
-    // Now the 304 lands and installs the cached payload, which holds the
-    // persisted row alone.
     await act(async () => { historyFetchResolvers[0](); });
     await waitFor(() => expect(useSessionStore.getState().historyLoaded).toBe(true));
-    // No body was ever parsed on the reconnect.
+
     expect(historyResolvers).toHaveLength(1);
 
-    // …and the drain put the snapshot on top of it, so the tail is intact.
     await waitFor(() => {
       expect(useSessionStore.getState().messages.map((m) => m.text))
         .toEqual(["persisted", "streamed since", "produced while we were down"]);
@@ -307,7 +277,6 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { historyResolvers[0](historyPayload(["A baseline"])); });
     expect(useSessionStore.getState().historyLoaded).toBe(true);
 
-    // Same id, same URL, same socket — only the flag moves.
     await act(async () => { useSessionStore.getState().setHistoryLoaded(false); });
 
     await waitFor(() => expect(historyResolvers).toHaveLength(2));
@@ -343,8 +312,6 @@ describe("transcript hydration across session switches and reconnects", () => {
     await waitFor(() => expect(historyResolvers).toHaveLength(1));
     await act(async () => { historyResolvers[0](historyPayload(["persisted"])); });
 
-    // The turn streams past its last persist boundary. This row exists ONLY in
-    // memory — no payload carries it, and with no attach no snapshot will.
     act(() => {
       useSessionStore.getState().setMessages((prev) => [
         ...prev,
@@ -352,9 +319,6 @@ describe("transcript hydration across session switches and reconnects", () => {
       ]);
     });
 
-    // "All Sessions" renders even the active session as selectable
-    // (`AllSessionsDialog.tsx` passes `isCurrent={false}`), so this is one
-    // click away at any time.
     await act(async () => { resumeSessionInternal("A"); });
 
     expect(useSessionStore.getState().messages.map((m) => m.text))
@@ -380,7 +344,6 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { result.current.reconnect(); });
     expect(result.current.status).toBe("connecting");
 
-    // The abandoned load answers while we are between sockets.
     await act(async () => { historyResolvers[0](historyPayload(["stale baseline"])); });
     expect(useSessionStore.getState().historyLoaded).toBe(true);
 
@@ -393,8 +356,7 @@ describe("transcript hydration across session switches and reconnects", () => {
         messages: [{ role: "assistant", text: "live tail" }],
       });
     });
-    // Let any load this open would have issued resolve, so the assertion below
-    // fails loudly if one overwrote the snapshot.
+
     await act(async () => {
       historyResolvers.slice(1).forEach((resolve) => resolve(historyPayload(["stale baseline"])));
     });
@@ -402,16 +364,6 @@ describe("transcript hydration across session switches and reconnects", () => {
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["live tail"]);
   });
 
-  /**
-   * `loadSessionHistory` raises `historyLoaded` and then keeps going, so a reset
-   * landing in that tail lowers the flag while the in-flight guard is still
-   * raised. The guard is a ref, and clearing a ref renders nothing — so without
-   * an explicit nudge when the load settles, nothing ever re-runs the hydrate
-   * effect and the transcript stays queued forever.
-   *
-   * Lowers the flag directly for the same reason as the test above: a resume of
-   * the session already on screen is now a no-op (planning#467).
-   */
   it("re-arms hydration when the baseline drops after the flag flips but before the load settles", async () => {
     deferPreviewStatus = true;
     useSessionStore.getState().setSessionId("A");
@@ -422,13 +374,10 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
     await waitFor(() => expect(historyResolvers).toHaveLength(1));
 
-    // The transcript is applied and the flag is up, but the load is still
-    // running — it has the preview-status round trip left.
     await act(async () => { historyResolvers[0](historyPayload(["A baseline"])); });
     expect(useSessionStore.getState().historyLoaded).toBe(true);
     await waitFor(() => expect(previewStatusResolvers).toHaveLength(1));
 
-    // The baseline drops inside that window.
     await act(async () => { useSessionStore.getState().setHistoryLoaded(false); });
     expect(useSessionStore.getState().historyLoaded).toBe(false);
 
@@ -455,8 +404,7 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
     await waitFor(() => expect(historyResolvers).toHaveLength(1));
     await act(async () => { result.current.reconnect(); });
-    // The abandoned load answers between sockets, so the next open is already
-    // baselined and issues no load of its own.
+
     await act(async () => { historyResolvers[0](historyPayload(["baseline"])); });
     expect(useSessionStore.getState().historyLoaded).toBe(true);
 
@@ -500,19 +448,10 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { socketB.simulateOpen(); });
     await waitFor(() => expect(historyResolvers).toHaveLength(2));
 
-    // Settle B's load and confirm no third request follows it.
     await act(async () => { historyResolvers[1](historyPayload(["B baseline"])); });
     expect(historyResolvers).toHaveLength(2);
   });
 
-  /**
-   * The abandoned load settles AFTER its replacement has already started. A
-   * superseded `loadSessionHistory` resolves normally rather than throwing, so
-   * an attempt that does not check whether it is still the newest would clear
-   * the running load's guard and nudge — starting a third load that supersedes
-   * the second, whose own late settle repeats it. That is an unbounded fetch
-   * loop, and it also re-runs `onSessionConnect` for a dead socket generation.
-   */
   it("ignores an abandoned load that settles after its replacement started", async () => {
     useSessionStore.getState().setSessionId("A");
     const connected: string[] = [];
@@ -529,14 +468,11 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
     await waitFor(() => expect(historyResolvers).toHaveLength(1));
 
-    // Reconnect, and let the replacement socket start its own load while the
-    // first response is still outstanding.
     await act(async () => { result.current.reconnect(); });
     const reconnected = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
     await act(async () => { reconnected.simulateOpen(); });
     await waitFor(() => expect(historyResolvers).toHaveLength(2));
 
-    // The abandoned first response lands last.
     await act(async () => { historyResolvers[0](historyPayload(["stale"])); });
     expect(historyResolvers).toHaveLength(2);
 
@@ -544,7 +480,7 @@ describe("transcript hydration across session switches and reconnects", () => {
     expect(historyResolvers).toHaveLength(2);
     expect(useSessionStore.getState().historyLoaded).toBe(true);
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["current"]);
-    // Exactly one live attempt reached the session-hydration callback.
+
     expect(connected).toEqual(["A"]);
   });
 });

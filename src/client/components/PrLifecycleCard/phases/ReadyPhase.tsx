@@ -1,15 +1,11 @@
 import { useSessionStore } from "../../../stores/session-store.js";
+import { Spinner } from "../../Spinner.js";
 import type { PrCardState } from "../../../stores/pr-store.js";
 import { Button } from "../../ui/button.js";
-import { CircleNotchIcon } from "@phosphor-icons/react";
 import { PrStateBadge } from "../PrStateBadge.js";
 import { DiffStats, SessionTitleLabel, PreviouslyMergedNote, useOpenPrDiff } from "../shared.js";
 
-// Note: the global "Auto-create PR after every meaningful turn" toggle was
-// previously rendered here in an overflow menu. It moved to Settings → GitHub
 // because the ready-phase card only appears for sessions without a PR (and is
-// transient when auto-create is on), which made the toggle effectively
-// undiscoverable. See docs/099-auto-pr-on-meaningful-turn/plan.md.
 
 export function ReadyPhase({
   card,
@@ -45,7 +41,7 @@ export function ReadyPhase({
             disabled={creating || !onCreatePr}
             className="h-6 shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
           >
-            {creating && <CircleNotchIcon size={12} className="animate-spin" />}
+            {creating && <Spinner size={12} />}
             {creating ? "Creating PR..." : "Create PR"}
           </Button>
         )}

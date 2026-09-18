@@ -91,6 +91,14 @@ Prompts are written to stdin as JSON content blocks:
 
 File context references are prepended as text blocks with XML-like markers.
 
+### Teardown kills the whole tree
+
+Every ShipIt-initiated termination of an agent CLI — turn end, interrupt escalation, runner dispose — goes through `killProcessTree` (`shared/kill-child.ts`), never a bare `killChild` on the CLI's pid. An agent CLI is the root of a tree: MCP servers below it, and below those whatever they spawn. A pid-only kill leaves those running, reparented to the container's pid 1, until the container dies — one production Codex turn left a Playwright Chromium burning half a core for 19 minutes after it ended.
+
+A process-group kill is **not** the equivalent: `playwright-core` spawns every browser `detached`, in a session of its own, so a group signal never reaches it. The helper snapshots descendants from `/proc` *before* the first signal (once the CLI dies, its grandchildren are orphaned and unfindable), signals the root through `killChild`, signals the snapshot, then SIGKILLs survivors after a 5s grace. It walks a tree only when `/proc` says the root is our own child, and identity-checks `starttime` before every delayed signal.
+
+SIGINT-first paths (`ClaudeProcess.interrupt`, the OpenCode and Grok interrupts) still signal the CLI alone so it can flush; they reach the tree teardown through their existing escalation to `kill()`. Detail: `docs/289-agent-process-tree-teardown`.
+
 ## Agent Abstraction
 
 `src/server/session/agents/claude/adapter.ts` wraps `ClaudeProcess` as an `AgentProcess` (defined in `src/server/shared/types/agent-types.ts`). The adapter:

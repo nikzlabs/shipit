@@ -1,0 +1,5 @@
+# CLI log lines (run started 15:13:17 UTC), model gemini-3.6-flash-low, no plugin installed
+I0913 15:13:17.608240       1 server.go:299] Creating CLI server backend: product=antigravity workspaceDirs=[/persist/agy-login-test/ws-skills] appDataDir=/persist/agy-login-test/home/.gemini/antigravity-cli cascadeManager=true codeAssist=t
+I0913 15:13:17.611450       1 manager.go:426] Initializing CLI store manager for workspace /persist/agy-login-test/ws-skills
+I0913 15:13:17.683955     323 manager.go:1304] Reloading system slash commands and skills
+W0913 15:13:17.727963     347 declarative_config_loader.go:253] skipping component during resolution: empty component: prompt section "user_rules"

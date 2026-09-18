@@ -1,30 +1,19 @@
-/**
- * Voice service layer (docs/144).
- *
- * Composes the credential store, the Claude OAuth auth manager, the provider
- * registry, and the TTS cache into pure-ish async functions the route calls.
- * Routes never touch providers directly — this is the documented service-layer
- * pattern (CLAUDE.md "Service layer pattern").
- *
- * Provider selection is data-driven: the request names a provider id, the
- * service validates it against the shared catalog and dispatches through the
- * registry. Adding a provider needs no change here.
- */
-
 import type { CredentialStore } from "../credential-store.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
 import { ServiceError } from "./types.js";
 import {
   getVoiceAdapters,
-  pickCleanupProvider,
   cleanTranscript,
   stripForTts,
   ttsCacheKey,
   VoiceProviderError,
   type TtsCache,
   type CleanupErrorCode,
-  type CleanupProvider,
 } from "../voice/index.js";
+import { planCleanup, type CleanupPlan, type VoiceCleanupDeps } from "./voice-cleanup.js";
+import { createStringCredential } from "./credential-routes.js";
+import { getHarness, getService, type ConfiguredCredential } from "../../shared/catalogue/index.js";
+import { runnerForNonTurnSelection } from "../non-turn-model.js";
+import type { CredentialBillingMode, CredentialRoute } from "../../shared/types.js";
 import {
   getVoiceProvider,
   isValidVoice,
@@ -33,24 +22,146 @@ import {
 
 const DEFAULT_STT_PROVIDER = "openai";
 const DEFAULT_TTS_PROVIDER = "openai";
-/** Provider whose key backs the OpenAI cleanup fallback. */
-const CLEANUP_OPENAI_PROVIDER = "openai";
 
 export interface VoiceCredentialStatus {
-  /** Provider ids that currently have a server-side key. */
   configured: string[];
 }
 
 export interface TranscribeResult {
   text: string;
   rawText: string;
-  cleanupProvider?: CleanupProvider["id"];
   cleanupErrorCode?: CleanupErrorCode;
+}
+
+/** Null where nothing can clean a transcript, so the status line can say so. */
+export interface CleanupStatus {
+  model: {
+    serviceName: string;
+    modelId: string;
+    modelLabel: string;
+    /**
+     * What the status line owes the user beyond the model's name: a direct call
+     * is quick, a harness takes a few seconds, and a dictation is the one place
+     * where several seconds of silence reads as a fault.
+     */
+    execution: "direct" | "harness";
+    harnessName?: string;
+  } | null;
+  adoptableVoiceKey: VoiceKeyAdoptionOffer | null;
+}
+
+export interface VoiceKeyAdoptionOffer {
+  providerId: string;
+  providerLabel: string;
+  serviceName: string;
+}
+
+/**
+ * A voice key is stored for speech alone and buys no background work, so an
+ * install whose only OpenAI key is that one lost cleanup when it moved onto the
+ * background-work choice (docs/299-direct-provider-calls req 5). Adopting it as
+ * an ordinary model-provider credential is the migration, following the
+ * precedent docs/252-custom-models req 20 set for environment-supplied ones.
+ *
+ * The mapping is declared rather than inferred from ids that happen to match:
+ * voice providers and model providers are separate catalogues, and most entries
+ * of either appear in only one of them.
+ */
+const ADOPTABLE_VOICE_KEYS: {
+  voiceProviderId: string;
+  serviceId: string;
+  billingMode: CredentialBillingMode;
+}[] = [{ voiceProviderId: "openai", serviceId: "openai", billingMode: "key" }];
+
+type AdoptableVoiceKey = (typeof ADOPTABLE_VOICE_KEYS)[number];
+
+function unadoptedVoiceKeys(credentialStore: CredentialStore): AdoptableVoiceKey[] {
+  return ADOPTABLE_VOICE_KEYS.filter((entry) => {
+    if (!credentialStore.getVoiceProviderKey(entry.voiceProviderId)?.trim()) return false;
+    const stored = credentialStore.listCredentialRoutes(entry.serviceId, entry.billingMode);
+    return !stored.some((r) => r.via === "string");
+  });
+}
+
+/**
+ * Adoption seeds background work only when nothing is set, so a pin ShipIt
+ * cannot run keeps cleanup broken unless the pin is this very credential.
+ * Offering adoption there would promise something it cannot deliver.
+ *
+ * The question is put to the resolver rather than answered again here: it reads
+ * a pin through retirement, so a pin on a retired model that the adopted
+ * credential still reaches by its declared successor is runnable, and a rule
+ * restated in this file would call it dead.
+ */
+function adoptionWouldRunCleanup(
+  credentialStore: CredentialStore,
+  entry: AdoptableVoiceKey,
+): boolean {
+  const pinned = credentialStore.getNonTurnModel();
+  if (!pinned) return true;
+  const adopted: ConfiguredCredential = {
+    serviceId: entry.serviceId,
+    billingMode: entry.billingMode,
+    via: "string",
+  };
+  return !!runnerForNonTurnSelection(pinned, [adopted]);
+}
+
+/**
+ * The offer the Voice tab renders instead of its "nothing can clean" line. It
+ * is a forecast — the tab re-reads this status after adopting, so a run that
+ * still cannot clean says so rather than leaving the promise standing.
+ */
+export function findVoiceKeyAdoptionOffer(
+  credentialStore: CredentialStore,
+  plan: CleanupPlan | null,
+): VoiceKeyAdoptionOffer | null {
+  if (plan) return null;
+  for (const entry of unadoptedVoiceKeys(credentialStore)) {
+    if (!adoptionWouldRunCleanup(credentialStore, entry)) continue;
+    const provider = getVoiceProvider(entry.voiceProviderId);
+    const service = getService(entry.serviceId);
+    if (!provider || !service) continue;
+    return {
+      providerId: entry.voiceProviderId,
+      providerLabel: provider.label,
+      serviceName: service.name,
+    };
+  }
+  return null;
+}
+
+/**
+ * Takes the offer: the key becomes an ordinary model-provider credential —
+ * visible, renameable, removable, ordered with the rest — and nothing about the
+ * voice key changes, since speech still reads it from where it was.
+ *
+ * Writing the background-work choice is deliberately NOT done here. The caller
+ * runs the existing seeding, which writes only when nothing is set
+ * (`seedNonTurnModel`), because choosing a model on the user's behalf is what
+ * docs/252-custom-models req 9 reserves for them.
+ */
+export function adoptVoiceKeyAsCredential(
+  credentialStore: CredentialStore,
+  providerId: string,
+): { route: CredentialRoute; routes: CredentialRoute[] } {
+  const entry = unadoptedVoiceKeys(credentialStore).find((e) => e.voiceProviderId === providerId);
+  if (!entry) {
+    throw new ServiceError(
+      409,
+      `There is no ${getVoiceProvider(providerId)?.label ?? providerId} voice key left to add as a model provider.`,
+    );
+  }
+  const secret = credentialStore.getVoiceProviderKey(entry.voiceProviderId) ?? "";
+  return createStringCredential(credentialStore, {
+    serviceId: entry.serviceId,
+    billingMode: entry.billingMode,
+    secret,
+  });
 }
 
 function mapProviderError(err: unknown, fallback: string): ServiceError {
   if (err instanceof VoiceProviderError) {
-    // Surface upstream auth/rate-limit/4xx status; collapse 5xx onto 502.
     const status = err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 502;
     console.warn(`[voice] provider error ${err.statusCode}: ${err.message}`);
     const detail = err.message.trim().replace(/\s+/g, " ");
@@ -60,8 +171,6 @@ function mapProviderError(err: unknown, fallback: string): ServiceError {
   console.warn(`[voice] unexpected error:`, err);
   return new ServiceError(502, fallback);
 }
-
-// ---- Credentials ----
 
 export function setVoiceKey(
   credentialStore: CredentialStore,
@@ -91,26 +200,32 @@ export function getVoiceCredentialStatus(credentialStore: CredentialStore): Voic
 }
 
 /**
- * Which cleanup provider would run, without leaking credentials. Returns the
- * provider id or null when none is available — drives the Settings status
- * string.
+ * What would actually clean the next dictation — the background-work choice, or
+ * nothing (docs/299-direct-provider-calls req 5). It reports the same
+ * resolution cleanup runs, so the settings line cannot claim a provider that
+ * would then fail.
  */
-export async function getCleanupStatus(
-  credentialStore: CredentialStore,
-  authManager: AuthManager,
-  fetchImpl: typeof fetch = fetch,
-  credentialDir?: string,
-): Promise<{ provider: CleanupProvider["id"] | null }> {
-  const key = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
-  const provider = await pickCleanupProvider(authManager, key, fetchImpl, credentialDir);
-  return { provider: provider?.id ?? null };
+export function getCleanupStatus(deps: VoiceCleanupDeps): CleanupStatus {
+  const plan = planCleanup(deps);
+  const harnessName = plan?.harnessId
+    ? getHarness(plan.harnessId)?.name ?? plan.harnessId
+    : undefined;
+  return {
+    model: plan
+      ? {
+          serviceName: plan.serviceName,
+          modelId: plan.modelId,
+          modelLabel: plan.modelLabel,
+          execution: plan.execution,
+          ...(harnessName ? { harnessName } : {}),
+        }
+      : null,
+    adoptableVoiceKey: findVoiceKeyAdoptionOffer(deps.credentialStore, plan),
+  };
 }
 
-// ---- Transcription (STT + cleanup) ----
-
 export async function transcribeVoice(
-  credentialStore: CredentialStore,
-  authManager: AuthManager,
+  deps: VoiceCleanupDeps,
   input: {
     audio: Buffer;
     mimeType?: string;
@@ -119,7 +234,6 @@ export async function transcribeVoice(
     sttProvider?: string;
   },
   fetchImpl: typeof fetch = fetch,
-  credentialDir?: string,
 ): Promise<TranscribeResult> {
   const providerId = input.sttProvider ?? DEFAULT_STT_PROVIDER;
   if (!providerSupports(providerId, "stt")) {
@@ -130,7 +244,7 @@ export async function transcribeVoice(
     throw new ServiceError(400, `No transcription adapter for provider: ${providerId}`);
   }
 
-  const key = credentialStore.getVoiceProviderKey(providerId);
+  const key = deps.credentialStore.getVoiceProviderKey(providerId);
   if (!key) throw new ServiceError(400, `No API key configured for ${providerId}`);
   if (input.audio.length === 0) throw new ServiceError(400, "Empty audio");
 
@@ -148,26 +262,14 @@ export async function transcribeVoice(
   if (!raw) return { text: "", rawText: "" };
   if (!input.cleanup) return { text: raw, rawText: raw };
 
-  const cleanupKey = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
-  const provider = await pickCleanupProvider(authManager, cleanupKey, fetchImpl, credentialDir);
-  const result = await cleanTranscript(raw, provider, {
-    ...(input.language ? { language: input.language } : {}),
-  });
+  const result = await cleanTranscript(raw, planCleanup(deps));
   return {
     text: result.text,
     rawText: raw,
-    ...(result.cleanupProvider ? { cleanupProvider: result.cleanupProvider } : {}),
     ...(result.cleanupErrorCode ? { cleanupErrorCode: result.cleanupErrorCode } : {}),
   };
 }
 
-// ---- Speech (TTS) ----
-
-/**
- * Synthesize speech for the given prose. Returns null when the stripped text
- * is empty (route replies 204). Cache hit returns immediately without hitting
- * the provider.
- */
 export async function speakVoice(
   credentialStore: CredentialStore,
   ttsCache: TtsCache,

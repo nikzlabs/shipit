@@ -5,19 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { findMergeBase, isLintableSource, listChangedFiles, listUntrackedFiles } from "./changed-files.js";
 
-/**
- * Regression coverage for the dev-loop file selection.
- *
- * The defect these guard against: `lint-dev` / `test-dev` built their file
- * lists exclusively from `git diff`, which reports only *tracked* files. Since
- * ShipIt auto-commits only after a turn ends, every file an agent creates is
- * untracked while the agent runs the checks — so both scripts reported clean
- * on files they had never looked at, and CI caught it a round-trip later.
- *
- * These run against real temp repos rather than mocked git output: the whole
- * bug was a wrong assumption about what git reports, which a mock would have
- * faithfully reproduced.
- */
 let repo: string;
 
 function git(...args: string[]): string {
@@ -109,10 +96,6 @@ describe("listChangedFiles", () => {
   });
 
   it("omits a deleted file so ESLint is never handed a missing path", () => {
-    // `git diff --name-only` reports deletions, and a nonexistent path makes
-    // ESLint fail the entire run ("No files matching the pattern") rather than
-    // skip that one file — so deleting a component broke `npm run lint:dev`
-    // wholesale until the path was filtered out here.
     fs.rmSync(path.join(repo, "src/base.ts"));
     write("src/replacement.ts");
 

@@ -758,46 +758,14 @@ Add a provider-account registry to `CredentialStore`:
 ```ts
 interface ProviderAccount {
   id: string;
-  provider: AgentId; // "claude" | "codex"
+  provider: AgentId;
   label: string;
-  /**
-   * Position in this provider's user-controlled priority list (req 2).
-   * Ascending: the lowest `priority` is tried first. Dense and contiguous
-   * within a provider — reordering rewrites the affected rows rather than
-   * inserting fractional values, so "first entry" is unambiguous and the
-   * order survives a round-trip through the store.
-   *
-   * A newly connected account appends to the END (highest priority value),
-   * never displacing the account the user already relies on. On disconnect,
-   * the remaining rows are re-densified so no gap survives.
-   */
   priority: number;
-  /**
-   * Derived, not independent: the primary IS the head of the order
-   * (`priority === 0`). Kept as a stored field only because Phase 1 already
-   * ships it and the Settings UI reads it; "make primary" is implemented as
-   * "move to position 0" and must not be allowed to disagree with `priority`.
-   * A later cleanup may drop the field and compute it — do not add a second
-   * writer in the meantime.
-   */
   isPrimary: boolean;
-  // status is "ready" | "authenticating" | "auth_failed" | "unavailable".
-  // "exhausted" is NOT a stored status — it is derived from
-  //   exhaustedUntil != null && exhaustedUntil > now.
-  // Storing it would create two sources of truth that can drift, which is
-  // the same bug class doc 142 calls out for checkCredentials(). Selection
-  // and UI must compute exhaustion at read time from exhaustedUntil.
   status: "ready" | "authenticating" | "auth_failed" | "unavailable";
   plan?: string | null;
   capabilities?: ProviderAccountCapabilities;
   lastUsedAt?: number;
-  /**
-   * Earliest reset time across whichever quota window(s) are currently at
-   * 100%. Used to render reset hints and to name the earliest reset in the
-   * exhaustion error; NOT an exhausted/ready boolean. Whether a given turn is blocked
-   * is computed at selection time from `quota.*.usedPct` against the
-   * requested model's window (see Quota and exhaustion detection).
-   */
   exhaustedUntil?: number | null;
   quota?: SubscriptionLimits;
   createdAt: number;

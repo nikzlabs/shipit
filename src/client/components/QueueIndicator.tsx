@@ -4,6 +4,14 @@ import { ICON_SIZE } from "../design-tokens.js";
 interface QueueItem {
   text: string;
   position: number;
+  /**
+   * Set on a row this browser predicted and the server has not acknowledged
+   * yet (`utils/predicted-queue.ts`). Cancelling by position would name an
+   * entry the server's queue does not hold, so it would clear the row while
+   * the message went on to run — the user reading that as a cancel that did
+   * not take. Such a row carries no cancel control until it is acknowledged.
+   */
+  requestId?: string;
 }
 
 interface QueueIndicatorProps {
@@ -11,19 +19,9 @@ interface QueueIndicatorProps {
   onCancel: (position: number | "all") => void;
 }
 
-/**
- * Shows the current prompt queue just below the dialogue, sitting inside the
- * bottom stack alongside the PR card and rebase banner. The card uses `mx-4`
- * so it visually aligns with the MessageInput box below it, rather than
- * stretching to the full panel width and breaking the stack's silhouette.
- * `last:mb-2` provides an 8px gap to the MessageInput when this card is the
- * last thing in the bottom stack (matching AgentStatusBar/RebaseBanner), so
- * the queue card doesn't butt up against the input on desktop.
- * Displays a count badge with each queued item's truncated text, and lets the
- * user cancel individual items or clear the whole queue.
- */
 export function QueueIndicator({ queue, onCancel }: QueueIndicatorProps) {
   if (queue.length === 0) return null;
+  const cancellable = queue.some((item) => item.requestId === undefined);
 
   return (
     <div className="mx-4 last:mb-2 rounded-xl border border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2">
@@ -32,13 +30,15 @@ export function QueueIndicator({ queue, onCancel }: QueueIndicatorProps) {
           <PlayCircleIcon size={ICON_SIZE.XS} weight="fill" className="animate-pulse text-(--color-accent)" />
           {queue.length === 1 ? "1 message queued" : `${queue.length} messages queued`}
         </span>
-        <button
-          onClick={() => onCancel("all")}
-          className="text-xs text-(--color-text-secondary) hover:text-(--color-error) transition-colors"
-          aria-label="Clear all queued messages"
-        >
-          Clear all
-        </button>
+        {cancellable && (
+          <button
+            onClick={() => onCancel("all")}
+            className="text-xs text-(--color-text-secondary) hover:text-(--color-error) transition-colors"
+            aria-label="Clear all queued messages"
+          >
+            Clear all
+          </button>
+        )}
       </div>
       <div className="flex flex-col gap-1">
         {queue.map((item) => (
@@ -52,14 +52,16 @@ export function QueueIndicator({ queue, onCancel }: QueueIndicatorProps) {
             <span className="flex-1 text-xs text-(--color-text-secondary) truncate">
               {item.text.length > 80 ? `${item.text.slice(0, 80)  }\u2026` : item.text}
             </span>
-            <button
-              onClick={() => onCancel(item.position - 1)}
-              className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-(--color-text-tertiary) hover:text-(--color-error) transition-all"
-              aria-label={`Cancel queued message ${item.position}`}
-              title="Cancel this queued message"
-            >
-              <XIcon size={ICON_SIZE.XS} />
-            </button>
+            {item.requestId === undefined && (
+              <button
+                onClick={() => onCancel(item.position - 1)}
+                className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-(--color-text-tertiary) hover:text-(--color-error) transition-all"
+                aria-label={`Cancel queued message ${item.position}`}
+                title="Cancel this queued message"
+              >
+                <XIcon size={ICON_SIZE.XS} />
+              </button>
+            )}
           </div>
         ))}
       </div>

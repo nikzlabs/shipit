@@ -1,13 +1,3 @@
-/**
- * `renderGrokConfigToml` (docs/274).
- *
- * The reason this file exists is escaping. Everything else here is a shape read
- * off a real `grok mcp add` run and asserted once; the escaping is where a
- * user's own value — an MCP server's `args` or an `env` secret containing a
- * quote or a backslash — silently turns a config into a *different* config
- * rather than a broken one, which is the failure nobody notices.
- */
-
 import { describe, it, expect } from "vitest";
 import { renderGrokConfigToml } from "./config-toml.js";
 
@@ -46,14 +36,10 @@ describe("renderGrokConfigToml", () => {
         enabled: true,
       },
     });
-    // The server NAME is a value too — an unescaped quote there closes the
-    // table header early and the rest of the block lands somewhere else.
     expect(toml).toContain('[mcp_servers."t\\"ricky"]');
     expect(toml).toContain('command = "C:\\\\Program Files\\\\thing.exe"');
     expect(toml).toContain('args = ["--flag=\\"value\\"", "back\\\\slash"]');
     expect(toml).toContain('"K\\"EY" = "v\\"al\\\\ue"');
-    // Nothing may escape its own string: every quote in the document is either
-    // a delimiter or escaped, so the count stays even.
     const quotes = (toml.match(/(?<!\\)"/g) ?? []).length;
     expect(quotes % 2).toBe(0);
   });
@@ -63,8 +49,6 @@ describe("renderGrokConfigToml", () => {
       s: { command: "x", env: { NOTE: "line one\nline two" }, enabled: true },
     });
     expect(toml).toContain('"NOTE" = "line one\\nline two"');
-    // A raw newline inside a basic string is a TOML parse error, and would take
-    // the whole config — including every other server — with it.
     expect(toml.split("\n").some((l) => l.startsWith("line two"))).toBe(false);
   });
 
@@ -73,9 +57,6 @@ describe("renderGrokConfigToml", () => {
       s: { command: "x", args: ["a"], env: { A: "1" }, enabled: true },
     });
     const envHeader = toml.indexOf('[mcp_servers."s".env]');
-    // Everything after a `[a.b]` header belongs to that table. `enabled` landing
-    // after it would become `mcp_servers.s.env.enabled` — a key the CLI ignores,
-    // and a server that is silently off.
     expect(toml.indexOf("enabled = true")).toBeLessThan(envHeader);
     expect(toml.indexOf("args = ")).toBeLessThan(envHeader);
   });

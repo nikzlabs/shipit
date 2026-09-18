@@ -1,49 +1,9 @@
-/**
- * `shipit-git-credential` — a brokering git credential helper.
- *
- * Installed at /usr/local/bin/shipit-git-credential in the session worker image
- * and wired into the *container's* gitconfig as
- *
- *   [credential]
- *     helper = /usr/local/bin/shipit-git-credential
- *
- * (see `writeContainerGitConfig` in src/server/orchestrator/git-config.ts).
- *
- * Why this exists (docs/088-security-audit, finding #5):
- * The orchestrator's own global gitconfig embeds the GitHub PAT inline as a
- * shell one-liner credential helper. Historically that exact file was copied
- * into every session's `/credentials/.gitconfig`, so a prompt-injected agent
- * could `cat /credentials/.gitconfig` (or `git credential fill`) and read the
- * token directly — the precise failure Anthropic's managed-agents writeup warns
- * about. This helper closes that hole the same way the `gh` shim closes the
- * GitHub *API* surface: the token is brokered, never resident in the sandbox.
- *
- * How it works:
- * - Git invokes the helper as `shipit-git-credential <get|store|erase>` with the
- *   request attributes (protocol, host, path, …) on stdin, blank-line terminated.
- * - On `get`, the helper POSTs the host/protocol to the worker's
- *   `/agent-ops/git/credential` route (localhost). The worker brokers to the
- *   orchestrator, which returns the token for github.com only. The helper
- *   writes `username=`/`password=` back to git on stdout. The token thus exists
- *   only transiently in this process's memory + git's — never on disk, never in
- *   env, never in the gitconfig.
- * - `store`/`erase` are no-ops: the orchestrator owns the credential, so there
- *   is nothing for the sandbox to cache or forget. (Returning success keeps git
- *   from warning.)
- *
- * If the worker is unreachable or no credential is available for the host, the
- * helper prints nothing and exits 0 — git then falls back to its other helpers
- * or anonymous access, exactly as with a normal helper that has no answer.
- */
+// Broker credentials through the worker without storing tokens on disk.
 
 import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 
-// ---------------------------------------------------------------------------
-// IO abstraction so tests can drive the helper without spawning a process
-// ---------------------------------------------------------------------------
 
 export interface CredIO {
-  /** Resolve the full stdin contents git wrote (the credential description). */
   readStdin: () => Promise<string>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
@@ -72,7 +32,6 @@ const defaultIO: CredIO = {
 };
 
 export interface CredEnv {
-  /** Worker URL. Defaults to http://127.0.0.1:${WORKER_PORT|9100}. */
   workerUrl?: string;
 }
 
@@ -84,15 +43,11 @@ function workerBaseUrl(env: CredEnv = {}): string {
   return `http://127.0.0.1:${port}`;
 }
 
-/**
- * Parse git's credential description (key=value lines, blank-line terminated)
- * into a plain object. Unknown keys are preserved but unused.
- */
 export function parseCredentialInput(input: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const rawLine of input.split("\n")) {
     const line = rawLine.replace(/\r$/, "");
-    if (line === "") break; // blank line terminates the request
+    if (line === "") break;
     const eq = line.indexOf("=");
     if (eq === -1) continue;
     out[line.slice(0, eq)] = line.slice(eq + 1);
@@ -100,7 +55,6 @@ export function parseCredentialInput(input: string): Record<string, string> {
   return out;
 }
 
-/** POST the host/protocol to the worker broker. Network/parse errors → null. */
 async function fetchCredential(
   attrs: Record<string, string>,
   env: CredEnv,
@@ -138,10 +92,6 @@ export interface RunCredDeps {
   fetchImpl?: typeof fetch;
 }
 
-/**
- * Helper entry point. `argv` is the args after the binary name (git passes a
- * single operation: get/store/erase). Tests call this directly with stubs.
- */
 export async function runGitCredential(argv: string[], deps: RunCredDeps = {}): Promise<void> {
   const io = deps.io ?? defaultIO;
   const env = deps.env ?? {};
@@ -149,8 +99,7 @@ export async function runGitCredential(argv: string[], deps: RunCredDeps = {}): 
 
   const op = argv[0];
 
-  // store/erase: the orchestrator owns the credential — nothing to persist or
-  // forget in the sandbox. Drain stdin (git writes to it) and exit cleanly.
+  // The orchestrator owns storage; git still needs its input drained.
   if (op !== "get") {
     await io.readStdin();
     io.exit(0);
@@ -161,9 +110,7 @@ export async function runGitCredential(argv: string[], deps: RunCredDeps = {}): 
   const attrs = parseCredentialInput(input);
   const cred = await fetchCredential(attrs, env, fetchImpl);
 
-  // No answer → print nothing. Git falls back to its other helpers / anonymous
-  // access. This is the same contract as any helper that doesn't recognize the
-  // request, so a missing token or unreachable worker never hard-fails git.
+  // Empty output lets git try other helpers or anonymous access.
   if (!cred) {
     io.exit(0);
     return;
@@ -174,9 +121,6 @@ export async function runGitCredential(argv: string[], deps: RunCredDeps = {}): 
   io.exit(0);
 }
 
-// ---------------------------------------------------------------------------
-// Standalone entry — only when run as a script, not when imported by tests
-// ---------------------------------------------------------------------------
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   runGitCredential(process.argv.slice(2)).catch((err: unknown) => {
@@ -184,7 +128,6 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
       process.stderr,
       `shipit-git-credential: ${err instanceof Error ? err.message : String(err)}\n`,
     );
-    // Exit 0 even on error: a failing credential helper must not block git.
     exitAfterFlush(0);
   });
 }

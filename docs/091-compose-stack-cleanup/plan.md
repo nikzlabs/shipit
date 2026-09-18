@@ -1,3 +1,6 @@
+---
+issue: planning#587
+---
 
 # Compose Stack Cleanup
 
@@ -60,7 +63,6 @@ Thread the stack name (`process.env.DOCKER_STACK`) through to the compose overri
 **Step 2: Filter by stack in shell scripts.**
 
 ```bash
-# Kill stale compose service containers from previous runs
 docker rm -f $(docker ps -aq --filter "label=shipit-stack=shipit-dev") 2>/dev/null || true
 ```
 
@@ -72,6 +74,32 @@ For `deploy.sh` (Hetzner), the stack label is `shipit` (no suffix).
 
 `docker compose down` requires the original compose files and project name. After a crash, the workspace directory may not be intact. Label-based cleanup is more robust — it works purely through the Docker API with no filesystem state.
 
+### Every sweep is stack-scoped (planning#584)
+
+Two ShipIt instances on one Docker daemon each hold a session store that knows nothing of the other's sessions, so an unscoped "not in my store ⇒ orphan" sweep destroys the other instance's compose services, session networks, volumes, warm pool and in-flight plugin installs at every boot. Every boot sweep that judges liveness from the session store therefore adds the `shipit-stack=<DOCKER_STACK>` filter that `cleanupOrphanContainers` always had (`stack-label.ts` holds the label and the filter), and keeps it through the teardown it triggers, because a restored backup gives two instances the same session ids:
+
+- `reapStandbyContainers` and `cleanupOrphanComposeResources` (`container-discovery.ts`); the latter passes the filter into `cleanupSessionDockerResources`.
+- `reapSurvivingComposeStacks` (`compose-stack-reaper.ts`), discovery and `downComposeStackByProject` both.
+- The startup janitor's volume and network sweeps (`startup-janitor.ts`, `--filter label=shipit-stack=…` on `docker volume ls` / `docker network ls`) and its plugin sweep (`reapOrphanPluginInstalls` in `plugin-install.ts`).
+- The stop and launch scripts (`deployment/vps/stop.sh`, `deployment/local/lib.sh`, `docker/local/{dev,prod}.sh`): one `docker rm -f` over the stack label, and `docker network rm` over the stack's labelled networks instead of a host-wide `docker network prune`.
+
+The egress-sidecar reaper (`egress-orphan-reaper.ts`) stays host-wide on purpose: it judges from the sidecar's actual parent container, not from the session store, so it cannot mistake another instance's live session for an orphan.
+
+The filter is positive: a resource with **no** stack label is treated as foreign, not as ours. Ownership fails closed — a dangling volume may be another instance's stopped database — and an instance that runs with no `DOCKER_STACK` applies no filter, so it keeps the host-wide sweeps it always had.
+
+For a scoped sweep to see its own resources, everything ShipIt creates has to carry the label. Session workers, standbys, egress sidecars, session networks and dep-dir overlays always did (`baseLabels()`); the compose service containers have since this feature landed. planning#584 added it to the rest: the Compose-created session network and user-named volumes (`compose-generator.ts`), plugin install/CLI/netns containers with their sidecars and plugin overlay volumes (`plugin-install.ts`, `plugin-cli-run.ts`, `plugin-egress.ts`, `plugin-overlay.ts`), and everything a session creates through the Docker proxy (`ownershipLabels()` in `docker-proxy-helpers.ts`). **Consequence:** a Compose network, user-named volume, plugin resource or proxy-created resource that already existed when planning#584 shipped has no label, so the boot sweeps and stop scripts leave it alone from then on — including this instance's own already-orphaned ones. That is deliberate: the alternative is guessing ownership. The per-session paths are unaffected, since they select by session id or Compose project rather than by stack: `destroy` and archive (`cleanupSessionDockerResources`, `pruneSessionVolumes`) and generation deletion for plugin overlays (`plugin-leases.ts`).
+
+#### A live session's network is not litter — labelling it deadlocked `compose up`
+
+The consequence above reads as "unlabelled leftovers are merely never reclaimed". For the Compose **session network** of a session that is still alive, it was worse than that. Compose hashes the network's definition into `com.docker.compose.config-hash`, so adding the label changed the hash for networks created before the deploy: the next `up` decided the network must be recreated, and its `docker network rm` failed on the endpoints **ShipIt** attaches out-of-band — the session's agent container (`container-lifecycle.ts`) and the orchestrator, which joins every session network to route previews (`joinSessionNetwork`). Compose owns neither, so it could never clear them; `up` exited 1 after the build with no service container ever created, deterministically and forever. Two production sessions needed an operator to disconnect the endpoints by hand. The orphan-network sweep cannot help here either, and not only because the network is unlabelled: the session is in the store, so it is not an orphan by any definition.
+
+The recovery therefore belongs to the session's own `up`, beside the container-name-conflict recovery: `ComposeCli.recreateSessionNetwork` (`compose-cli.ts`) parses the network out of the daemon error and — only for `shipit-session-<this session's id>` — disconnects exactly the two endpoints ShipIt owns, removes the network, and retries the `up` once. Any later change to the network definition — another label, `internal`, a driver option — takes the same path instead of stranding every pre-existing session. Four properties are load-bearing:
+
+- **Endpoints Compose owns stay attached.** Compose removes those itself and recovers unaided; force-disconnecting a user's service would be ShipIt breaking a container it does not manage. So when the removal still fails, something ShipIt does not own holds the network, and the original `up` failure is what gets reported.
+- **Severing is always paired with re-attaching, inside `ComposeCli`.** The recovery hands the endpoints back through `rejoinSessionNetwork` on *every* exit — after the retry whether it succeeded or failed, and as soon as a removal fails after the severing achieved nothing. Leaving that to the caller does not work: `refreshSecrets` reaches `compose up` without ever calling `joinSessionNetwork`, and the poller's `healSessionNetwork` re-attaches only the agent, never the orchestrator. A session left running with the orchestrator off its network reports healthy services behind an unreachable preview. For the same reason the two endpoints are now joined **independently** (`joinSessionNetworkEndpoints`): a failing agent join used to skip the orchestrator's, and nothing else ever attaches the orchestrator.
+- **`ComposeCli` removes the network itself, and tries twice.** Deferring the removal to the retried `up` would widen the window between the disconnect and the removal from one Docker call to a whole build, and the poller's network heal re-attaches the agent inside it — turning the recovery back into the failure it is fixing. Removing it here narrows that window; a second disconnect-and-remove pass closes it, for far less machinery than serialising `ComposeCli` against the poller.
+- **Detection is anchored to the daemon's error record on a non-build line.** The rejected `up`'s message carries the tail of its whole stderr, build output included, so a matcher that accepts the bare phrase — or even a complete daemon error quoted by a `RUN` step — lets build output trigger a destructive recovery against a healthy network.
+
 ### Edge case: active sessions with stale compose stacks
 
 Sessions that still exist in the DB but whose compose stacks are orphaned (orchestrator restarted mid-session) are handled by the existing `ServiceManager.killStaleContainers()`, which runs at the start of `ServiceManager.start()` when the session is re-activated. No change needed.
@@ -81,6 +109,7 @@ Sessions that still exist in the DB but whose compose stacks are orphaned (orche
 | File | Role |
 |------|------|
 | `src/server/orchestrator/compose-generator.ts` | Add `shipit-stack` label to compose override |
+| `src/server/orchestrator/compose-cli.ts` | `up` recovery when a changed network definition meets ShipIt's own endpoints |
 | `src/server/orchestrator/container-discovery.ts` | Add `cleanupOrphanComposeResources()` |
 | `src/server/orchestrator/container-lifecycle.ts` | Existing `cleanupSessionDockerResources()` — reused, not modified |
 | `src/server/orchestrator/app-lifecycle.ts` | Pass stack name to ServiceManager; call new cleanup function during startup |

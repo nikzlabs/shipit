@@ -1,45 +1,5 @@
-/**
- * `gh` shim — a curated, sandboxed subset of the real GitHub CLI.
- *
- * Installed at /usr/local/bin/gh inside the session worker container so the
- * agent's bash tool can run `gh pr create -t "..." -b "..."` like it would
- * with the real CLI. The shim does not call GitHub directly — it POSTs to
- * the worker's `/agent-ops/*` router on localhost, which brokers through
- * the orchestrator's session-scoped routes.
- *
- * Why a shim, not the real gh:
- * - The real `gh` exposes `gh api`, `gh repo create/delete`, `gh workflow run`,
- *   `gh release`, `gh secret set`, `gh ssh-key`, etc. Backed by the user's
- *   GitHub token, that's a large mutation surface reachable from any process
- *   the agent spawns.
- * - The shim's allowlist is narrow on purpose: pull-request operations, plus
- *   reads of workflow runs and one write — re-running a run on the session's own
- *   branch (see the `gh run` handlers below for where that line sits).
- *
- * Output:
- * - `gh pr create` prints the PR URL on stdout, exits 0 (matches real gh).
- * - `gh pr view --json fields` prints valid JSON on stdout.
- * - Errors go to stderr; exit code is non-zero.
- *
- * The agent never sees the GitHub token. The worker injects the session ID;
- * the agent cannot ask for operations against a different *session*.
- *
- * Repo targeting (docs/211 — Sandbox sessions): the shim forwards the working
- * directory it ran in (`cwd`) and an optional `--repo owner/name`, so the
- * orchestrator can resolve the target repo from the current clone rather than a
- * fixed session repo. For a normal repo-bound session this is a no-op (the one
- * repo lives at the workspace root); for a sandbox it lets the agent open PRs
- * per-clone. The no-raw-token property is unchanged — only *which* repo the
- * (server-side) broker may act on widens.
- *
- * The shared CLI plumbing (flag parsing, the broker HTTP call, the IO
- * abstraction, body-from-file/stdin reading, the value/JSON-filter helpers)
- * lives in `shim-common.ts` and is shared with the `shipit` shim. Only the
- * PR-specific surface is in this file.
- *
- * For documentation: see /shipit-docs/github.md inside the container.
- */
 
+import { isValidRepoFlag, REPO_FLAG_FORMS } from "../../shared/github-repo-flag.js";
 import { wrapUntrustedContent } from "../../shared/untrusted-input.js";
 import {
   applyJq,
@@ -59,11 +19,12 @@ import {
 } from "./shim-common.js";
 import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 
-// Re-exported so existing importers (and tests) keep resolving these from
-// `./gh.js` after the move into shim-common.
 export { parseFlags, type ShimIO };
 
 const SHIM_NAME = "gh (ShipIt)";
+
+const LIMIT_MIN = 1;
+const LIMIT_MAX = 100;
 
 const REJECTED_HELP = `${SHIM_NAME} only supports a subset of pull-request operations.
 See /shipit-docs/github.md for the full list.`;
@@ -74,7 +35,7 @@ Supported subcommands:
   gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill] [-l|--label LABEL]
   gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]
   gh pr view     [<number>] [-c|--comments] [--json FIELDS] [-q|--jq EXPR]
-  gh pr list     [--state STATE] [--json FIELDS] [-q|--jq EXPR]
+  gh pr list     [--state open|closed|merged|all] [-L|--limit N] [--json FIELDS] [-q|--jq EXPR]
   gh pr status
   gh pr comment  [<number>] (-b BODY|--body-file FILE)
   gh pr ready    [<number>]
@@ -89,7 +50,11 @@ Supported subcommands:
   gh workflow view <workflow> [--json FIELDS] [-q|--jq EXPR]
 
 Operations target the repo of the current working directory's clone. Pass
---repo OWNER/NAME to target a specific repo explicitly.
+--repo OWNER/NAME to target a specific repo explicitly; a --repo that is not
+${REPO_FLAG_FORMS} is refused rather than falling back to the current repo.
+
+-L/--limit takes a whole number from ${LIMIT_MIN} to ${LIMIT_MAX} (default 30 for
+pr list, 20 for run list); anything else is refused.
 
 -q/--jq requires --json and supports simple paths only (${JQ_SUPPORTED_FORMS});
 anything else exits 3 with a message naming the expression.
@@ -112,44 +77,34 @@ const REJECTED_SUBCOMMANDS = new Set([
   "attestation", "co", "search", "org", "project",
 ]);
 
-// ---------------------------------------------------------------------------
-// Subcommand handlers
-// ---------------------------------------------------------------------------
 
 interface RunDeps {
   env: ShimEnv;
   io: ShimIO;
   call: typeof callBroker;
-  /**
-   * The working directory `gh` was invoked in (docs/211). Forwarded to the
-   * broker so the orchestrator resolves the target repo from this clone. The
-   * standalone entry passes `process.cwd()`; tests inject a fixed value.
-   */
   cwd: string;
 }
 
-/**
- * Build the `cwd`/`repo` fields a POST/PATCH PR op forwards in its body so the
- * orchestrator can resolve the repo-aware target (docs/211). Only populated
- * fields are included.
- */
+function requireValidRepo(deps: RunDeps, repo: string | undefined): void {
+  if (!isValidRepoFlag(repo)) {
+    fail(deps.io, `Invalid --repo "${repo}". Expected ${REPO_FLAG_FORMS}.`);
+  }
+}
+
 function targetBody(deps: RunDeps, repo: string | undefined): Record<string, string> {
+  requireValidRepo(deps, repo);
   const out: Record<string, string> = {};
   if (deps.cwd) out.cwd = deps.cwd;
   if (repo) out.repo = repo;
   return out;
 }
 
-/**
- * Build the querystring a GET PR op forwards (docs/211): the repo-aware target
- * (`cwd` + `--repo`) merged with op-specific params (`number`, `state`). Only
- * defined values are included.
- */
 function targetQuery(
   deps: RunDeps,
   repo: string | undefined,
   extra: Record<string, string | undefined> = {},
 ): string {
+  requireValidRepo(deps, repo);
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(extra)) {
     if (value) params.set(key, value);
@@ -160,17 +115,20 @@ function targetQuery(
   return qs ? `?${qs}` : "";
 }
 
-/**
- * The `-q`/`--jq` flag spec fragment, merged into every handler that supports
- * `--json`. Kept in one place so the two spellings can't drift per subcommand.
- */
+function parseLimit(raw: string | undefined, deps: RunDeps, command: string): string | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw.trim()) || !Number.isInteger(n) || n < LIMIT_MIN || n > LIMIT_MAX) {
+    fail(
+      deps.io,
+      `${command}: --limit must be a whole number between ${LIMIT_MIN} and ${LIMIT_MAX}, got "${raw}"`,
+    );
+  }
+  return String(n);
+}
+
 const JQ_FLAGS = { "-q": "jq", "--jq": "jq" } as const;
 
-/**
- * Reject `-q` without `--json`, matching real gh (which refuses the pair in its
- * PreRun, before any network call). Called right after flag parsing so the
- * refusal is the same shape here.
- */
 function requireJsonForJq(deps: RunDeps, command: string, parsed: { values: Record<string, string> }): void {
   if (parsed.values.jq !== undefined && parsed.values.json === undefined) {
     fail(
@@ -180,17 +138,6 @@ function requireJsonForJq(deps: RunDeps, command: string, parsed: { values: Reco
   }
 }
 
-/**
- * Print a `--json`-filtered payload, applying `-q/--jq` when one was given, then
- * exit 0.
- *
- * Exit codes are chosen so a caller that swallows stderr can still tell the
- * failure modes apart — the whole point of supporting `-q` at all was that a
- * polling loop like `gh pr view N --json state -q .state 2>/dev/null` used to
- * exit 2 with an empty string, indistinguishable from "not merged yet":
- * - 3 — the jq expression is outside the supported subset.
- * - 1 — a supported expression that doesn't fit the data (jq's own error class).
- */
 function emitJson(deps: RunDeps, command: string, payload: unknown, jq: string | undefined): void {
   if (jq === undefined) {
     deps.io.stdout(`${JSON.stringify(payload)}\n`);
@@ -208,28 +155,11 @@ function emitJson(deps: RunDeps, command: string, payload: unknown, jq: string |
     }
     fail(deps.io, `${command}: ${result.message}`, 1);
   }
-  // jq prints nothing for an empty result stream (e.g. `.[]` over `[]`).
   if (result.values.length > 0) deps.io.stdout(`${result.values.join("\n")}\n`);
   deps.io.exit(0);
 }
 
-// ---------------------------------------------------------------------------
-// `--json` field sets (docs/255)
-//
-// Each `--json` subcommand declares what it can return, and the value is
-// validated against that list BEFORE any network call. Previously `filterJson`
-// silently dropped names it didn't recognise, so `--json totallyBogusField` and
-// `--json comments` both printed `{}` — an unsupported field was
-// indistinguishable from "this PR has no data", and a reviewer's findings read
-// as a PR with no discussion on it. Never let those two look alike.
-// ---------------------------------------------------------------------------
 
-/**
- * `gh pr view --json`. `base`/`head` are ShipIt's original spellings;
- * `baseRefName`/`headRefName` are real gh's, accepted as aliases. The
- * conversation fields (`comments`, `reviews`, `reviewThreads`,
- * `reviewDecision`) cost an extra round-trip and are fetched only when named.
- */
 const PR_VIEW_JSON_FIELDS = [
   "additions", "author", "base", "baseRefName", "body", "comments", "createdAt",
   "deletions", "head", "headRefName", "isDraft", "labels", "merged", "mergedAt",
@@ -237,10 +167,11 @@ const PR_VIEW_JSON_FIELDS = [
   "updatedAt", "url",
 ];
 
-/** The subset of `PR_VIEW_JSON_FIELDS` that requires the conversation fetch. */
 const PR_CONVERSATION_FIELDS = new Set(["comments", "reviews", "reviewThreads", "reviewDecision"]);
 
-const PR_LIST_JSON_FIELDS = ["base", "head", "isDraft", "number", "state", "title", "url"];
+const PR_LIST_JSON_FIELDS = ["base", "head", "isDraft", "mergedAt", "number", "state", "title", "url"];
+
+const PR_LIST_STATES = ["open", "closed", "merged", "all"];
 
 const RUN_JSON_FIELDS = [
   "conclusion", "createdAt", "databaseId", "displayTitle", "event", "headBranch",
@@ -250,14 +181,6 @@ const RUN_VIEW_JSON_FIELDS = [...RUN_JSON_FIELDS, "jobs", "logs"];
 
 const WORKFLOW_JSON_FIELDS = ["id", "name", "path", "state", "url"];
 
-/**
- * Split a `--json a,b` value into the field list `filterJson` expects, failing
- * on a name the subcommand cannot return.
- *
- * Exit code 2 — an ordinary usage error, the same class as `-q` without
- * `--json`, and distinct from 1 (the request ran and failed) and 3 (an
- * unsupported jq expression).
- */
 function jsonFields(
   raw: string,
   deps: RunDeps,
@@ -269,9 +192,6 @@ function jsonFields(
   if (raw.trim() === "") {
     fail(deps.io, `${command}: --json needs at least one comma-separated field.\n${available}`);
   }
-  // An empty component (`--json title,,state`, a trailing comma) is a typo, and
-  // dropping it quietly is the same silent-acceptance this validation exists to
-  // remove — say so rather than proceeding with what survived the split.
   if (fields.some((f) => f === "")) {
     fail(deps.io, `${command}: --json has an empty field name in "${raw}".\n${available}`);
   }
@@ -283,6 +203,50 @@ function jsonFields(
     );
   }
   return fields;
+}
+
+function existingPrNotice(body: Record<string, unknown>): string {
+  const reason = body.alreadyExistedReason;
+  if (reason !== "merged-not-progressed" && reason !== "closed-not-progressed") {
+    return "Existing open PR for this branch — printing its URL.\n";
+  }
+  const merged = reason === "merged-not-progressed";
+  const state = merged ? "MERGED" : "CLOSED";
+  const num = typeof body.number === "number" ? `#${body.number}` : "for this branch";
+  const base = safeBaseRef(body.baseBranch);
+  const why = merged
+    ? "a merged PR cannot take new commits"
+    : "ShipIt does not reopen a closed PR";
+  const head = `No new PR was opened. The last PR ${num} on this branch is ${state}, and ${why}.\n`;
+
+  if (body.notProgressedBecause === "no-new-work") {
+    return `${head}This branch's tree is identical to \`origin/${base}\`, so there is nothing to open `
+      + `a PR for. If you expected new work here, check that your edits were committed — and note `
+      + `that commits which change nothing still count as no work.\n`;
+  }
+  if (body.notProgressedBecause === "base-unknown") {
+    return `${head}ShipIt could not resolve \`origin/${base}\` in this clone, so it could not tell `
+      + `whether this branch has new work. Run \`git fetch origin\` and try again.\n`;
+  }
+  if (body.notProgressedBecause === "fetch-failed") {
+    return `${head}ShipIt could not refresh \`origin/${base}\`, so it declined to decide off a `
+      + `possibly-stale ref rather than risk opening a duplicate PR of work that already shipped. `
+      + `Run \`git fetch origin\` yourself to see the real error, then try again.\n`;
+  }
+  return `${head}ShipIt did not open a replacement because this branch does not contain the current `
+    + `tip of \`origin/${base}\` — the base moved on under you — so any new commits here are NOT `
+    + `shipped and have nowhere to go yet.\n`
+    + `To ship them, merge the base into the branch and re-run \`gh pr create\`:\n`
+    + `    git fetch origin && git merge origin/${base}\n`
+    + `That rewrites no published history, needs no force-push and discards nothing. `
+    + `Do NOT rebase or \`git reset --hard\` onto the base.\n`
+    + `The ${state.toLowerCase()} PR's URL is printed below for reference.\n`;
+}
+
+// Git refs can contain shell metacharacters; this value enters a suggested command.
+function safeBaseRef(value: unknown): string {
+  if (typeof value !== "string" || value === "") return "<base>";
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) ? value : "<base>";
 }
 
 async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
@@ -326,12 +290,8 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
   if (res.status >= 200 && res.status < 300) {
     const url = typeof res.body.url === "string" ? res.body.url : "";
     if (res.body.alreadyExisted) {
-      // Match real gh behavior: we still print the URL (the user gets exactly
-      // what they expect), but note the dedup on stderr for logs.
-      deps.io.stderr(`Existing PR for this branch — printing its URL.\n`);
+      deps.io.stderr(existingPrNotice(res.body));
     }
-    // Labeling is best-effort: a bad label name never blocks the PR. When the
-    // orchestrator couldn't apply a label it returns a non-fatal warning here.
     emitLabelWarning(deps.io, res.body.labelWarning);
     success(deps.io, url);
     return;
@@ -348,8 +308,6 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
       "--repo": "repo", "-R": "repo",
     },
     arrays: {
-      // `--add-label` is the real-gh edit flag; `--label`/`-l` are kept as
-      // additive aliases so existing scripts keep working. All three add.
       "--add-label": "addLabel",
       "--label": "addLabel", "-l": "addLabel",
       "--remove-label": "removeLabel",
@@ -411,10 +369,7 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
     ? jsonFields(parsed.values.json, deps, "gh pr view", PR_VIEW_JSON_FIELDS)
     : undefined;
   const wantsComments = parsed.booleans.has("comments");
-  // docs/255 — who pays for the conversation round-trip. An explicit
-  // `--comments`, a `--json` naming any conversation field, or a plain view
-  // (which prints the summary line) needs it; `--json state -q .state` — the
-  // merge-read one-liner — deliberately does not.
+  // Fetch conversation data only when the output needs its extra round-trip.
   const wantsConversationJson = fields?.some((f) => PR_CONVERSATION_FIELDS.has(f)) === true;
   const needsConversation = wantsComments || wantsConversationJson || fields === undefined;
 
@@ -428,10 +383,6 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
     if (!pr) {
       fail(deps.io, "No pull request found for this branch.", 1);
     }
-    // A conversation fetch that failed comes back as an error string rather
-    // than empty arrays, so it can never be read as "no comments". An explicit
-    // request fails loudly; a plain view still prints the PR (exit 0) with the
-    // reason on stderr.
     const conversationError = asString(pr.conversationError);
     if (conversationError && (wantsComments || wantsConversationJson)) {
       fail(deps.io, `gh pr view: could not read this PR's conversation: ${conversationError}`, 1);
@@ -441,8 +392,6 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
       emitJson(deps, "gh pr view", filterJson(pr, fields), parsed.values.jq);
       return;
     }
-    // Plain-text rendering similar to real gh. We coerce field values to
-    // strings explicitly because the broker response is typed as `unknown`.
     const lines = [
       `${asString(pr.title)} #${asString(pr.number)}`,
       `${asString(pr.state)}${pr.isDraft === true ? " (draft)" : ""}`.trim(),
@@ -464,18 +413,9 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
   fail(deps.io, formatError(res, "Failed to view PR"), 1);
 }
 
-// ---------------------------------------------------------------------------
-// PR conversation rendering (docs/255)
-// ---------------------------------------------------------------------------
 
-/**
- * Cap on the rendered conversation. A PR discussion is unbounded in principle;
- * this keeps one `--comments` read from swallowing the agent's context. The
- * envelope says when it clipped.
- */
 const MAX_CONVERSATION_CHARS = 40_000;
 
-/** Pull the three conversation arrays off a PR payload. */
 function conversationOf(pr: Record<string, unknown>): {
   comments: Record<string, unknown>[];
   reviews: Record<string, unknown>[];
@@ -490,25 +430,15 @@ function conversationOf(pr: Record<string, unknown>): {
   };
 }
 
-/**
- * How many of each kind GitHub actually holds, which is NOT the same as how
- * many we fetched: the query is bounded, so a very busy PR returns a window.
- * Reporting the fetched length as the total would tell the agent it had read
- * everything when it hadn't — the same "looks complete, isn't" failure this
- * feature exists to remove. `*Total` comes back from the orchestrator; a
- * missing one falls back to the fetched length.
- */
 function totalOf(pr: Record<string, unknown>, key: string, fetched: number): number {
   const value = pr[key];
   return typeof value === "number" && value >= fetched ? value : fetched;
 }
 
-/** ` (showing the N most recent)` when the fetch was windowed, else "". */
 function windowNote(total: number, fetched: number): string {
   return total > fetched ? ` (showing ${fetched})` : "";
 }
 
-/** `@login` for a comment/review author, or `@ghost` for a deleted account. */
 function authorOf(item: Record<string, unknown>): string {
   const author = item.author as Record<string, unknown> | null | undefined;
   const login = author ? asString(author.login) : "";
@@ -519,11 +449,6 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-/**
- * The one-line summary a plain `gh pr view` ends with. The whole point is that
- * a PR with discussion on it can never render as a quiet one — so the
- * zero case is stated explicitly rather than left as silence.
- */
 function conversationSummary(pr: Record<string, unknown>): string {
   const { comments, reviews, threads } = conversationOf(pr);
   const commentTotal = totalOf(pr, "commentsTotal", comments.length);
@@ -543,26 +468,14 @@ function conversationSummary(pr: Record<string, unknown>): string {
   return `${parts.join(" · ")} — run \`gh pr view ${num} --comments\` to read them.`;
 }
 
-/** `path:line` for an inline thread, falling back to where it was written. */
 function threadLocation(t: Record<string, unknown>): string {
   const path = asString(t.path) || "(file unknown)";
-  // An OUTDATED thread has no current `line` — GitHub only keeps the line it
-  // was originally left on. Without the fallback the most common review
-  // finding (one whose code has since moved) would render as a bare filename.
+  // Outdated threads may have only the original line.
   const line = t.line ?? t.originalLine;
   if (line === null || line === undefined) return path;
   return `${path}:${asString(line)}`;
 }
 
-/**
- * Full `--comments` rendering: conversation comments, reviews, inline threads.
- *
- * Every byte here is authored by whoever can comment on the PR — on a public
- * repo, anyone — so the whole block goes through the planning#100 untrusted-input
- * envelope (`shared/untrusted-input.ts`, `source: "pr"`), exactly as the
- * `shipit issue` shim does with issue comments. It is data to read, never
- * instructions to follow.
- */
 function renderConversation(pr: Record<string, unknown>): string {
   const { comments, reviews, threads } = conversationOf(pr);
   const commentTotal = totalOf(pr, "commentsTotal", comments.length);
@@ -609,8 +522,6 @@ function renderConversation(pr: Record<string, unknown>): string {
     }
   }
 
-  // Totals without bodies (an inconsistent payload) must not render as an
-  // empty envelope — say what we know instead.
   if (out.length === 0) return "No comments, reviews, or review threads.";
 
   const { text, truncated } = capText(out.join("\n"), MAX_CONVERSATION_CHARS);
@@ -636,12 +547,22 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, `Unsupported flag for gh pr list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   requireJsonForJq(deps, "gh pr list", parsed);
-  // Validate --json before the network call, like real gh (and like gh pr view).
   const fields = parsed.values.json !== undefined
     ? jsonFields(parsed.values.json, deps, "gh pr list", PR_LIST_JSON_FIELDS)
     : undefined;
 
-  const qs = targetQuery(deps, parsed.values.repo, { state: parsed.values.state });
+  const state = parsed.values.state;
+  if (state !== undefined && !PR_LIST_STATES.includes(state)) {
+    fail(
+      deps.io,
+      `gh pr list: unknown --state "${state}"\nSupported states for gh pr list: ${PR_LIST_STATES.join(", ")}`,
+    );
+  }
+
+  const qs = targetQuery(deps, parsed.values.repo, {
+    state,
+    limit: parseLimit(parsed.values.limit, deps, "gh pr list"),
+  });
   const res = await deps.call("GET", `/agent-ops/pr/list${qs}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list PRs"), 1);
@@ -656,7 +577,7 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
     return;
   }
   const lines = prs.map(
-    (pr) => `#${asString(pr.number)}\t${asString(pr.title)}\t${asString(pr.head)}\t${asString(pr.state)}${pr.isDraft === true ? " DRAFT" : ""}`,
+    (pr) => `#${asString(pr.number)}\t${asString(pr.title)}\t${asString(pr.head)}\t${pr.mergedAt ? "merged" : asString(pr.state)}${pr.isDraft === true ? " DRAFT" : ""}`,
   );
   success(deps.io, lines.join("\n"));
 }
@@ -722,13 +643,6 @@ async function handlePrSimple(args: string[], deps: RunDeps, op: "ready" | "clos
   fail(deps.io, formatError(res, `Failed to ${op} PR`), 1);
 }
 
-/**
- * `gh pr merge` (docs/224). Brokered only for Sandbox sessions with the
- * "Allow merging PRs" grant — the orchestrator enforces that gate plus the
- * green-checks / branch-protection / no-force guardrails and returns a clear
- * message. The shim's job is to parse the method/auto flags, reject `--admin`
- * (force-merge is never available), and surface the result.
- */
 async function handlePrMerge(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--repo": "repo", "-R": "repo" },
@@ -750,14 +664,12 @@ async function handlePrMerge(args: string[], deps: RunDeps): Promise<void> {
       "ShipIt's gh shim does not support --admin (force-merge / bypassing branch protection). A merge must satisfy the repo's required checks and reviews.",
     );
   }
-  // Method is one of --merge / --squash / --rebase (mutually exclusive). Default merge.
   const methods = ["merge", "squash", "rebase"].filter((m) => parsed.booleans.has(m));
   if (methods.length > 1) {
     fail(deps.io, "gh pr merge: choose only one of --merge, --squash, --rebase.");
   }
   const method = methods[0] ?? "merge";
   if (parsed.booleans.has("deleteBranch")) {
-    // Branch deletion isn't brokered — note it rather than silently dropping it.
     deps.io.stderr("Note: ShipIt's gh shim does not delete the branch after merge (--delete-branch ignored).\n");
   }
   const num = await resolvePrNumber(parsed.positional, deps, { repo: parsed.values.repo });
@@ -768,9 +680,7 @@ async function handlePrMerge(args: string[], deps: RunDeps): Promise<void> {
   };
   const res = await deps.call("POST", `/agent-ops/pr/${num}/merge`, payload, deps.env);
   if (res.status >= 200 && res.status < 300) {
-    // A guardrail refusal (checks not green, draft, branch protection) comes back
-    // 200 with success:false — surface it as a non-zero exit, matching real gh on
-    // an un-mergeable PR.
+    // The broker can refuse a merge with HTTP 200 and success:false.
     if (res.body.success === false) {
       fail(deps.io, asString(res.body.message) || `Failed to merge PR #${num}`, 1);
     }
@@ -793,10 +703,6 @@ async function resolveBody(
   return readBodyFromFileOrStdin(bodyFile, deps.io, command, "body file");
 }
 
-/**
- * Resolve the PR number from positional args. When omitted, falls back to the
- * open PR for the current branch via /agent-ops/pr/status.
- */
 async function resolvePrNumber(
   positional: string[],
   deps: RunDeps,
@@ -813,8 +719,6 @@ async function resolvePrNumber(
   if (opts.requiredFor) {
     fail(deps.io, "PR number is required.");
   }
-  // Look up via status route — repo-aware so the fallback resolves the PR of
-  // the same clone the op targets (docs/211).
   const res = await deps.call("GET", `/agent-ops/pr/status${targetQuery(deps, opts.repo)}`, undefined, deps.env);
   const pr = res.body.pr as Record<string, unknown> | null;
   if (!pr || typeof pr.number !== "number") {
@@ -823,19 +727,12 @@ async function resolvePrNumber(
   return pr.number;
 }
 
-/**
- * Print a best-effort label warning to stderr, if the orchestrator returned
- * one. Labeling never blocks the PR operation (the URL is still printed and
- * the exit code stays 0) — a missing label or a token without label-write just
- * surfaces this note for the agent/user.
- */
 function emitLabelWarning(io: ShimIO, warning: unknown): void {
   if (typeof warning === "string" && warning.trim()) {
     io.stderr(warning.endsWith("\n") ? warning : `${warning}\n`);
   }
 }
 
-/** Format a broker/orchestrator error response as a single-line message. */
 function formatError(
   res: { status: number; body: Record<string, unknown> },
   fallback: string,
@@ -848,9 +745,6 @@ function formatError(
   return message;
 }
 
-// ---------------------------------------------------------------------------
-// GitHub Actions handlers — `gh run` / `gh workflow`. Reads, plus `run rerun`.
-// ---------------------------------------------------------------------------
 
 async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
@@ -875,7 +769,7 @@ async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
     workflow: parsed.values.workflow,
     branch: parsed.values.branch,
     status: parsed.values.status,
-    limit: parsed.values.limit,
+    limit: parseLimit(parsed.values.limit, deps, "gh run list"),
   });
   const res = await deps.call("GET", `/agent-ops/run/list${qs}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
@@ -890,7 +784,6 @@ async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
     success(deps.io, "No workflow runs found.");
     return;
   }
-  // STATUS  CONCLUSION  TITLE  WORKFLOW  BRANCH  EVENT  ID
   const lines = runs.map((r) =>
     [
       asString(r.status),
@@ -947,7 +840,6 @@ async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
   const logs = asString(res.body.logs);
 
   if (fields !== undefined) {
-    // Merge jobs/logs into the run object so `--json jobs` / `--json …` works.
     const merged = { ...run, jobs, logs };
     emitJson(deps, "gh run view", filterJson(merged, fields), parsed.values.jq);
     return;
@@ -971,18 +863,6 @@ async function handleRunView(args: string[], deps: RunDeps): Promise<void> {
   success(deps.io, lines.join("\n"));
 }
 
-/**
- * `gh run rerun [<run-id>] [--failed]` — the one Actions write.
- *
- * Bare `rerun` maps to GitHub's `rerun` endpoint (the whole run); `--failed`
- * maps to `rerun-failed-jobs`. With no run id the orchestrator resolves the
- * latest run for the current branch, matching how `gh run view` behaves.
- *
- * The guardrails (own branch, own HEAD commit, push/PR-triggered) live in
- * `services/github.ts` and arrive here as a 403 whose message names the concrete
- * mismatch — we print it verbatim rather than summarizing, because the specific
- * mismatch is what tells the agent what to do instead.
- */
 async function handleRunRerun(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--repo": "repo", "-R": "repo" },
@@ -1006,8 +886,6 @@ async function handleRunRerun(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, `gh run rerun takes at most one run id — got ${parsed.positional.length}: ${parsed.positional.join(" ")}`);
   }
   const raw = parsed.positional[0];
-  // Decimal digits only. `Number()` would accept "1e3", "0x2a", " 42 " and
-  // "1.5", each of which reaches the API as a different id than the agent typed.
   if (raw !== undefined && !/^[1-9]\d*$/.test(raw)) {
     fail(deps.io, `Invalid run id: ${raw}. Pass the numeric id from gh run list, or omit it for this branch's latest run.`);
   }
@@ -1028,8 +906,6 @@ async function handleRunRerun(args: string[], deps: RunDeps): Promise<void> {
   const lines = [`${what} run${id ? ` ${id}` : ""}${name ? ` (${name})` : ""}.`];
   const url = asString(run.url);
   if (url) lines.push(url);
-  // Only name the follow-up read when we know the id — a `gh run view` with a
-  // blank argument would be worse than omitting the hint.
   if (id) lines.push("", `Watch it with: gh run view ${id}`);
   success(deps.io, lines.join("\n"));
 }
@@ -1039,8 +915,6 @@ async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> 
     values: {
       "--json": "json",
       "--repo": "repo", "-R": "repo",
-      // Accepted for real-gh compatibility but not forwarded (the orchestrator
-      // returns the repo's workflows up to a fixed cap).
       "-L": "limit", "--limit": "limit",
       ...JQ_FLAGS,
     },
@@ -1053,11 +927,13 @@ async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> 
   const fields = parsed.values.json !== undefined
     ? jsonFields(parsed.values.json, deps, "gh workflow list", WORKFLOW_JSON_FIELDS)
     : undefined;
+  const limit = parseLimit(parsed.values.limit, deps, "gh workflow list");
   const res = await deps.call("GET", `/agent-ops/workflow/list${targetQuery(deps, parsed.values.repo)}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list workflows"), 1);
   }
-  const workflows = (res.body.workflows as Record<string, unknown>[] | undefined) ?? [];
+  const all = (res.body.workflows as Record<string, unknown>[] | undefined) ?? [];
+  const workflows = limit !== undefined ? all.slice(0, Number(limit)) : all;
   if (fields !== undefined) {
     emitJson(deps, "gh workflow list", workflows.map((w) => filterJson(w, fields)), parsed.values.jq);
     return;
@@ -1066,7 +942,6 @@ async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> 
     success(deps.io, "No workflows found.");
     return;
   }
-  // NAME  STATE  ID
   const lines = workflows.map((w) =>
     [asString(w.name), asString(w.state), asString(w.id)].join("\t"),
   );
@@ -1143,9 +1018,6 @@ const WORKFLOW_HANDLERS: Record<string, (args: string[], deps: RunDeps) => Promi
   view: handleWorkflowView,
 };
 
-// ---------------------------------------------------------------------------
-// Top-level dispatch
-// ---------------------------------------------------------------------------
 
 const PR_HANDLERS: Record<
   string,
@@ -1163,7 +1035,6 @@ const PR_HANDLERS: Record<
   merge: handlePrMerge,
 };
 
-/** Top-level command groups the shim allows, each with its own subcommand map. */
 const COMMAND_GROUPS: Record<
   string,
   Record<string, (args: string[], deps: RunDeps) => Promise<void>>
@@ -1173,10 +1044,6 @@ const COMMAND_GROUPS: Record<
   workflow: WORKFLOW_HANDLERS,
 };
 
-/**
- * Top-level shim entry point. Tests call this directly with stubs so we can
- * verify behavior without spawning a subprocess.
- */
 export async function runShim(
   argv: string[],
   io: ShimIO = defaultIO,
@@ -1186,8 +1053,6 @@ export async function runShim(
 ): Promise<void> {
   const deps: RunDeps = { env, io, call, cwd };
 
-  // Strip "node /path/to/gh.ts" if present (real invocations omit them, but
-  // tests often pass full argv). Also handle direct shebang invocation.
   const args = stripNodeArgs(argv);
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
@@ -1224,25 +1089,15 @@ export async function runShim(
   await handler(args.slice(2), deps);
 }
 
-/**
- * Strip "node ..." or "tsx ..." prefixes from argv. Allows runShim to accept
- * either raw user args (`["pr", "create", ...]`) or full process.argv.
- */
 function stripNodeArgs(argv: string[]): string[] {
   if (argv.length === 0) return argv;
   const first = argv[0];
-  // Heuristic: real CLI args start with the subcommand ("pr"/"--help"/etc).
-  // process.argv would start with "/usr/bin/node" or similar.
   if (first === "node" || first === "tsx" || first.startsWith("/") || first.endsWith("node") || first.endsWith("tsx")) {
-    // Skip node + the script path
     return argv.slice(2);
   }
   return argv;
 }
 
-// ---------------------------------------------------------------------------
-// Standalone entry — only when run as a script, not when imported by tests
-// ---------------------------------------------------------------------------
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   runShim(process.argv.slice(2)).catch((err: unknown) => {

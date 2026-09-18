@@ -12,6 +12,7 @@ import {
   type KeybindingGroup,
 } from "../keybindings/registry.js";
 import { KeybindingCapture } from "./KeybindingCapture.js";
+import { SettingCopy } from "./Settings/declared.js";
 
 const GROUP_ORDER: KeybindingGroup[] = ["General", "Sessions", "Chat", "Search", "Voice"];
 
@@ -32,6 +33,11 @@ function FixedRow({ def }: { def: KeybindingDef }) {
   );
 }
 
+/**
+ * The panel `keyboard.keybindings` names: rows over a fixed command registry, a
+ * chord capture rather than a value kind, and a conflict decided across every
+ * editable binding at once (docs/308-data-driven-settings inventory.md P16).
+ */
 export function KeybindingSettings() {
   const keybindings = useSettingsStore((s) => s.keybindings);
   const setKeybinding = useSettingsStore((s) => s.setKeybinding);
@@ -40,7 +46,6 @@ export function KeybindingSettings() {
 
   const resolve = (def: KeybindingDef): string => keybindings[def.id] ?? def.defaultBinding;
 
-  // Conflict map: a normalized chord shared by >1 editable binding is a clash.
   const counts = new Map<string, number>();
   for (const def of KEYBINDINGS) {
     if (!def.editable) continue;
@@ -69,11 +74,17 @@ export function KeybindingSettings() {
   })).filter((g) => g.defs.length > 0);
 
   return (
-    <div className="px-5 py-4 flex flex-col gap-6 overflow-y-auto h-full">
-      <p className="text-sm text-(--color-text-secondary)">
-        Customize keyboard shortcuts. Click <span className="text-(--color-text-primary)">Change</span> and press the
-        keys you want. Editor keys like Enter and Esc are fixed.
-      </p>
+    <div className="flex flex-col gap-6" data-testid="settings-keybindings">
+      <SettingCopy
+        settingKey="keyboard.keybindings"
+        heading
+        /* Not the setting's own words: how to operate the control. */
+        detail={
+          <p className="mt-1 text-sm text-(--color-text-secondary)">
+            Click <span className="text-(--color-text-primary)">Change</span> and press the keys you want.
+          </p>
+        }
+      />
 
       {grouped.map(({ group, defs }) => (
         <div key={group} className="space-y-1">
@@ -86,6 +97,7 @@ export function KeybindingSettings() {
                     <span className="text-sm text-(--color-text-primary)">{def.label}</span>
                     <div className="flex items-center gap-1.5">
                       <KeybindingCapture
+                        label={def.label}
                         value={resolve(def)}
                         onCapture={(chord) => handleCapture(def, chord)}
                         invalid={!!errors[def.id] || isConflicting(def)}

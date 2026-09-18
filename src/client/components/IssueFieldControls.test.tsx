@@ -3,13 +3,6 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IssuePriorityEditor, IssueStatusEditor } from "./IssueFieldControls.js";
 
-/**
- * Tests for the inline status / priority editors (docs/191): they open a
- * single-select menu, fire the async write with the chosen value, no-op on
- * re-picking the current value, and degrade to a read-only trigger when there
- * are no options to choose from.
- */
-
 afterEach(() => cleanup());
 
 describe("IssueStatusEditor", () => {

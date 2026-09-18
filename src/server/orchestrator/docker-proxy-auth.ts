@@ -1,22 +1,8 @@
-/**
- * Ownership / authorization checks for the Docker API proxy.
- *
- * These functions verify that a Docker resource (container, network, volume,
- * exec instance) belongs to a specific session by inspecting its labels.
- */
-
 import fs from "node:fs/promises";
 import path from "node:path";
 
 import { forwardToDocker, PARENT_SESSION_LABEL } from "./docker-proxy-helpers.js";
 
-// ---------------------------------------------------------------------------
-// Container ownership
-// ---------------------------------------------------------------------------
-
-/**
- * Check if a container belongs to a session by inspecting its labels.
- */
 export async function containerBelongsToSession(
   socketPath: string,
   containerId: string,
@@ -33,13 +19,6 @@ export async function containerBelongsToSession(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Network ownership
-// ---------------------------------------------------------------------------
-
-/**
- * Check if a network belongs to a session by inspecting its labels.
- */
 export async function networkBelongsToSession(
   socketPath: string,
   networkId: string,
@@ -55,13 +34,6 @@ export async function networkBelongsToSession(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Volume ownership
-// ---------------------------------------------------------------------------
-
-/**
- * Check if a volume belongs to a session by inspecting its labels.
- */
 export async function volumeBelongsToSession(
   socketPath: string,
   volumeName: string,
@@ -77,13 +49,6 @@ export async function volumeBelongsToSession(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Exec ownership
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve an exec ID to its parent container ID by querying the Docker daemon.
- */
 export async function getExecParentContainerId(
   socketPath: string,
   execId: string,
@@ -98,28 +63,13 @@ export async function getExecParentContainerId(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Path validation
-// ---------------------------------------------------------------------------
-
-/**
- * Validate that a host path (from Binds or Mounts) is under the session's workspace.
- * Uses realpath to resolve symlinks.
- *
- * SECURITY NOTE: There is an inherent TOCTOU (time-of-check-time-of-use) race here.
- * A process inside the session container could create a symlink pointing inside the
- * workspace to pass this check, then swap it to point outside before Docker mounts it.
- * This is a fundamental limitation of path validation from outside the mount namespace
- * and cannot be fully mitigated at this layer. The container's restricted capabilities
- * (CapDrop: ALL) and network isolation reduce the blast radius.
- */
+// Symlinks can change between this check and Docker's mount; this layer cannot close that race.
 export async function isPathUnderWorkspace(hostPath: string, workspaceDir: string): Promise<boolean> {
   try {
     const resolved = await fs.realpath(hostPath);
     const resolvedWorkspace = await fs.realpath(workspaceDir);
     return resolved.startsWith(resolvedWorkspace + path.sep) || resolved === resolvedWorkspace;
   } catch {
-    // Path doesn't exist — reject
     return false;
   }
 }

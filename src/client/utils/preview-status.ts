@@ -25,13 +25,6 @@
 import type { PreviewStatus } from "../components/PreviewFrame.js";
 import type { ManagedServiceState } from "../stores/preview-store.js";
 
-/**
- * Compute the effective preview status from the current `preview_status` and
- * the live services list. When `preview.running` is already `true`, the
- * input is returned unchanged. Otherwise, if at least one service is in
- * `running` state with a `port`, return a synthetic `running: true` status
- * pointing at that service.
- */
 export function deriveEffectivePreviewStatus(
   preview: PreviewStatus | null,
   services: ManagedServiceState[],

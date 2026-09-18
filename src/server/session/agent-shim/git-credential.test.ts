@@ -5,7 +5,6 @@ import {
   type CredIO,
 } from "./git-credential.js";
 
-/** Build a capturing IO stub with a canned stdin payload. */
 function makeIO(stdin: string): { io: CredIO; out: string[]; err: string[]; code: () => number | null } {
   const out: string[] = [];
   const err: string[] = [];
@@ -47,7 +46,6 @@ describe("runGitCredential: get", () => {
 
     expect(out.join("")).toBe("username=x-access-token\npassword=ghp_brokered\n");
     expect(code()).toBe(0);
-    // The host was forwarded to the broker.
     const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[0]).toBe("http://127.0.0.1:9100/agent-ops/git/credential");
     expect(JSON.parse(call[1].body)).toMatchObject({ host: "github.com", protocol: "https" });

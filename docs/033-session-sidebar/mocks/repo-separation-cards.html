@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <title>Variant 3 revisited — containment without an invented rail</title>
 <style>
-/* Tokens copied from src/client/themes/warm-light.css and dark.css. */
 :root, .warm-light {
   --color-bg-primary: #fdf8f0;
   --color-bg-secondary: #f5ede0;
@@ -45,7 +44,6 @@
   --color-attention: #f59e0b;
   --page-bg: #000;
   --page-fg: #fafafa;
-  /* Shadows are near-invisible on a #0a0a0a rail — this is the whole point of 3c. */
   --card-shadow: 0 1px 2px rgba(0,0,0,.6), 0 2px 6px rgba(0,0,0,.5);
 }
 .warm-light [data-accent="a0"] { --accent: #8a6a3c; --accent-soft: rgba(138,106,60,.10); }
@@ -96,12 +94,6 @@ h2 { font-size: 15px; margin: 40px 0 12px; }
 .pill.good { background: var(--color-accent); color: #fff; }
 .pill.bad { background: var(--color-bg-tertiary); color: var(--color-text-secondary); }
 
-/* ─────────────────────────────────────────────────────────────────────────
-   APP CONTEXT — the whole point of this second mock. The sidebar is rendered
-   against its REAL neighbours: the sidebar rail is --color-bg-primary and the
-   chat panel to its right is --color-bg-secondary (AppLayout.tsx:344). There
-   is no third surface behind the groups to recess into.
-   ───────────────────────────────────────────────────────────────────────── */
 .app {
   display: flex; height: 620px; border-radius: 10px; overflow: hidden;
   border: 1px solid var(--color-border-primary); box-shadow: 0 4px 16px rgba(0,0,0,.10);
@@ -122,7 +114,6 @@ h2 { font-size: 15px; margin: 40px 0 12px; }
   color: var(--color-text-tertiary); background: var(--page-bg); padding: 1px 5px; border-radius: 4px;
 }
 
-/* ── Sidebar skeleton (identical DOM across all sub-variants) ──────────── */
 .grp { display: flex; flex-direction: column; position: relative; }
 .ghead { display: flex; align-items: center; gap: 6px; padding: 6px 12px 6px 14px; position: relative; }
 .caret { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-tertiary); }
@@ -148,39 +139,31 @@ h2 { font-size: 15px; margin: 40px 0 12px; }
 .row.new .plus { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; opacity: .7; }
 .row.new .title { color: var(--color-text-secondary); }
 
-/* ── 3 · as originally mocked: an INVENTED --color-bg-tertiary rail ────── */
 .s-invented .scroll { background: var(--color-bg-tertiary); padding: 8px; }
 .s-invented .grp { background: var(--color-bg-primary); border: 1px solid var(--color-border-primary); border-radius: 9px; overflow: hidden; margin-bottom: 8px; }
 .s-invented .row { margin: 0 5px; }
 .s-invented .row.current { background: var(--color-bg-tertiary); }
 
-/* ── 3a · Outline only — no fill change anywhere ───────────────────────── */
 .s-outline .scroll { padding: 6px; }
 .s-outline .grp { border: 1px solid var(--color-border-primary); border-radius: 9px; overflow: hidden; margin-bottom: 8px; }
 .s-outline .row { margin: 0 4px; }
 
-/* ── 3b · Tinted well — the GROUP is the recessed surface ──────────────── */
 .s-well .scroll { padding: 6px; }
 .s-well .grp { background: var(--color-bg-secondary); border-radius: 9px; overflow: hidden; margin-bottom: 8px; }
 .s-well .row { margin: 0 4px; }
-/* bg-secondary is now the group's own surface, so the current row must move up
-   a step or it disappears into the well. */
 .s-well .row.current { background: var(--color-bg-tertiary); }
 .s-well .pindiv { background: var(--color-border-secondary); opacity: .6; }
 
-/* ── 3c · Elevation only — shadow, no border, no fill ──────────────────── */
 .s-shadow .scroll { padding: 8px 7px; }
 .s-shadow .grp { background: var(--color-bg-primary); border-radius: 9px; box-shadow: var(--card-shadow); margin-bottom: 11px; }
 .s-shadow .row { margin: 0 4px; }
 
-/* ── 3d · Recess the rail for real — sidebar becomes bg-secondary ──────── */
 .s-recess .rail { background: var(--color-bg-secondary); }
 .s-recess .scroll { padding: 6px; }
 .s-recess .grp { background: var(--color-bg-primary); border-radius: 9px; overflow: hidden; margin-bottom: 8px; }
 .s-recess .row { margin: 0 4px; }
 .s-recess .row.current { background: var(--color-bg-tertiary); }
 
-/* ── 3e · Outline + per-repo accent edge (variant 10, minus the rail) ──── */
 .s-edge .scroll { padding: 6px; }
 .s-edge .grp {
   border: 1px solid var(--color-border-primary); border-left: 3px solid var(--accent);
@@ -195,7 +178,6 @@ h2 { font-size: 15px; margin: 40px 0 12px; }
 .s-edge .sublabel { font-size: 9.5px; opacity: .8; }
 .s-edge .row { margin: 0 4px; }
 
-/* ── 3f · Bracket — accent edge + top rule, no closed outline ──────────── */
 .s-bracket .scroll { padding: 4px 0; }
 .s-bracket .grp { border-top: 1px solid var(--color-border-primary); border-left: 3px solid var(--accent); margin: 0 0 10px 6px; padding-left: 3px; }
 .s-bracket .grp:first-child { border-top: 0; }

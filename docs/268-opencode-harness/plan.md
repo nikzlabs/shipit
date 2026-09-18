@@ -176,6 +176,11 @@ can be set because nothing routes through the fetched registry.
 
 ## Auth scope (req 5)
 
+The proposed ChatGPT follow-up is now described in
+[docs/295](../295-opencode-chatgpt/plan.md). It reuses the OpenAI login rather
+than adding a separate OpenCode login integration. This is a design only; the
+launch behavior below remains the implemented behavior.
+
 Launch = key-billed modes only, enforced structurally by the missing `account`
 credential target (see catalogue row). `AGENT_CREDENTIAL_PATHS` still lists
 `.local/share/opencode/` so per-agent credential isolation and sub-agent
@@ -282,6 +287,154 @@ a `shipit agent run` cross-agent spawn in a real install and an
 image-attachment turn (`supportsImages` stayed false until observed — that
 probe has since been run, below).
 
+## Rate limits, and the 429 that reports nothing (planning#453)
+
+Probed 2026-08-23 against CLI **1.18.18** at a local HTTP recorder, one
+variable — the status code — across `400 / 401 / 402 / 403 / 429 / 500 / 529`.
+No quota was spent to obtain any of it.
+
+### `agent_rate_limits`: the transport is fine; there is no window to send
+
+The error event carries the provider's **complete `responseHeaders` map**,
+verbatim, on stdout. The 401 control:
+
+```jsonc
+{"type":"error","timestamp":…,"sessionID":"ses_…","error":{"name":"APIError",
+  "data":{"message":"invalid x-api-key","statusCode":401,"isRetryable":false,
+    "responseHeaders":{"content-type":"application/json","date":"…",…},
+    "responseBody":"{\"type\":\"error\",…}",
+    "metadata":{"url":"http://127.0.0.1:8789/v1/messages"}}}}
+```
+
+`OpencodeEvent` in `shared/opencode-stream.ts` types only three of those
+fields, and the adapter test's `ERROR_EVENT` fixture was trimmed to match —
+which is why the header channel was not known to exist.
+
+So OpenCode *could* emit `agent_rate_limits`. What stops it is the catalogue,
+not the CLI. `agent_rate_limits` describes a **subscription** window, and every
+route OpenCode can take is one of:
+
+- a **metered key**, where no subscription window exists at all. An API's
+  `x-ratelimit-*` headers are per-minute request/token buckets — a different
+  quantity, and rendering them in the subscription pill would be a lie.
+- **OpenCode Go**, the single subscription it carries (`carriers: ["opencode",
+  "codex"]`), whose quota is declared-unread by a human decision: dollar caps,
+  no per-key usage API (docs/272 req 6, `opencode-go-usage`).
+
+OpenCode has **no `account` target**, so Anthropic's and xAI's OAuth windows
+are unreachable by construction (`service-routing.ts` states the same axis from
+the other side).
+
+**State the conclusion at its actual strength**: no route ShipIt can currently
+take needs this wired. That is *not* the same as "the channel is ready". The
+401 that proved headers survive is a **non-retryable** error, and the statuses
+that would actually carry quota information — 429 and the 5xx pair — emit
+nothing at all (next section). Whichever change makes a subscription window
+reachable will have to re-probe the response that would carry it, because the
+one probe that matters has not been run and cannot be until that response
+reports anything. Basis recorded in the adapter header per
+docs/266 item 13.
+
+### The defect the probe actually found: a 429 hangs the turn
+
+Far more serious than the missing badge, and **not** repaired here.
+
+| status | reports? | exit | wall clock |
+|---|---|---|---|
+| 400 / 401 / 402 / 403 | yes — a full `{"type":"error"}` event | 1 | ~3.5 s |
+| **429**, **500**, **529** | **no — zero bytes on stdout** | **never exits** | **killed at the deadline** |
+
+The split is **retryability**, not severity: the statuses the AI SDK considers
+retryable are exactly the silent ones. On a 429 the CLI logs `AI_APICallError`
+to its own `$HOME/.local/share/opencode/log/opencode.log`, writes **nothing**
+to stdout, and then sits — a separate 15-minute run confirmed it is a hang and
+not slowness. Two requests reach the recorder: the `build` stream fails
+immediately without retrying, the `title` side-agent retries at 2 s and 4 s and
+gives up. Then silence.
+
+Note this **corrects the Phase 0 finding above** for CLI 1.18.18. That entry
+(against 1.18.15) reads "on a fatal API error (401) the CLI emits … and then
+hangs; the process never exits". At 1.18.18 a 401 emits and exits **1**,
+promptly. What hangs is the retryable class — which Phase 0 also saw ("on a
+retryable 5xx it retries with no stdout at all") without connecting it to a
+missing exit. The adapter's kill-after-`error` machinery is therefore aimed at
+a case that no longer occurs, and the case that does occur reaches none of it.
+
+What that means in production: an OpenCode turn refused for quota never
+produces `agent_result`, never reaches `detectHardExhaustion`, never benches
+the account, and never ends. The adapter's inactivity watchdog only *warns*
+(deliberately — a long bash tool call is legitimately silent for minutes), so
+the turn hangs until the user interrupts it. Filed as **planning#476**; the
+fix needs a design decision the rate-limits work does not own, because the two
+candidate mitigations — killing on prolonged silence, or reading the CLI's own
+log file — each cost something the current adapter contract protects.
+
+### Corrected: the status code is not what hangs (planning#476)
+
+The table above was re-probed at 1.18.18 on 2026-08-23 while fixing
+planning#476, at a local recorder with the **response shape** as the variable
+rather than only the status code. Two of its claims do not survive, and the
+row for 429/500/529 above is superseded by this section.
+
+- **A well-formed 429 does not hang.** The CLI retries the turn's own stream
+  six times over ~72 s (backoff ≈ 2 s → 34 s), then emits a complete
+  `{"type":"error"}` event — message, `statusCode: 429`, `isRetryable: true`,
+  full `responseHeaders`, `responseBody` — and exits **1**. Measured
+  identically for `anthropic-messages` and `openai-chat-completions`, and for
+  a 429 with an empty body. So the adapter already fails such a turn honestly,
+  `detectHardExhaustion` already sees it, and the req-14 failover already
+  applies. It also means the header channel the *"Two Claude events this
+  adapter never emits"* docstring calls unproven for retryable statuses is in
+  fact present on a 429.
+- **What hangs is a response the CLI never finishes reading** — headers sent
+  and the body never ended, or a connection accepted and never answered. Then
+  stdout, stderr **and the CLI's own log** are all empty (the log's last line
+  is `llm runtime selected`) and the process never exits. That reproduces the
+  reported "two requests then silence" signature exactly, and it is the shape
+  the original probe most likely produced.
+- **Consequence for the fix: option (b) is not merely unattractive, it is
+  empty.** Reading the CLI's log for the retry state cannot end this hang,
+  because in the case that hangs the log has no retry state — nothing is
+  written to it at all.
+- **`opencode run --format json` does not stream.** It accumulates the turn's
+  events and writes the whole log at process **exit**. Verified by delaying
+  step 2's model call by 60 s and watching step 1's events — generated at
+  4.3 s by their own `timestamp` fields — arrive at 64.4 s with everything
+  else, then re-verified under a PTY to rule out stdio buffering. This is why
+  `_isStreaming` is false, and it is what made the old 60 s "no output"
+  watchdog meaningless: silence is the normal state of every turn, so that
+  warning fired on every turn longer than a minute.
+
+**The fix.** A **stall deadline** in the adapter (`armWatchdog` /
+`onStallDeadline`): 45 minutes with no output on any channel and no growth in
+the CLI's log directory ends the turn with a synthesized failed
+`agent_result`. Because no signal distinguishes "waiting on a model that will
+answer" from "waiting on one that never will", a clock is the only instrument
+available; the log directory is used as a **liveness heartbeat** — `mtime`
+only, never parsed — so a turn that keeps reaching step and tool boundaries
+keeps postponing the deadline, and a missing or moved log degrades to the bare
+deadline rather than to an early kill.
+
+Two things the first draft of this got wrong, both caught in review and worth
+keeping written down:
+
+- **The heartbeat beats at boundaries, not continuously.** The CLI logs when a
+  tool is authorized and when a step closes, nothing while either runs, so one
+  long quiet operation produces no beat. The deadline is therefore a ceiling on
+  a single quiet OPERATION, and has to clear the longest one the platform
+  itself sanctions: `shipit agent result --wait --timeout` accepts up to **30
+  minutes**, and CLAUDE.md tells agents to collect a detached review exactly
+  that way. A 15-minute deadline would have killed a turn doing what ShipIt
+  told it to do. 45 clears it by half again, with big builds, SDK installs and
+  full test suites underneath.
+- **The synthesized message must not promise that retrying is safe.** The
+  deadline fires wherever the silence fell, so the turn may already have run
+  tools with effects outside the workspace.
+
+Guard tests: `adapter.test.ts` → "stall deadline", including that a user
+interrupt landing near the deadline still settles as *interrupted* rather than
+as an invented adapter failure.
+
 ## Image attachments (planning#458)
 
 The deferred probe, run 2026-08-20 against CLI **1.18.18** on the dogfood inner
@@ -326,16 +479,94 @@ instead of its container path. Everything else — `validateImages`,
 `saveImagesToUploadsDir`, the prompt block, the adapter, the spawn — is ShipIt's
 own code unchanged.
 
-**What the modality claim costs — planning#460.** It is declared for every
-routed model, because `ModelDef` carries no per-model modality. Attach an image
-while routed to a text-only model and the request is malformed, so the service
-rejects it; the trade is deliberate, since declaring nothing lost the image
-silently for every model, vision-capable or not. It is a *harder* failure than
-Claude Code's harness-level `supportsImages: true`, and the two should not be
-read as the same bet — Claude's delivery is a text block naming a file, so image
-bytes reach the API only if the agent reads it, while this declaration has the
-CLI hand the file part to the model directly. planning#460 tracks gating it per
-model once the catalogue can say which models see.
+**What the modality claim cost, and how it was paid off (planning#460).** It was
+first declared for every routed model, because `ModelDef` carried no per-model
+modality: attaching an image on a text-only route made the request malformed and
+the service rejected it. A deliberate trade — declaring nothing lost the image
+silently for *every* model — but only until the catalogue could say which models
+see. It now can; see [Per-model image input](#per-model-image-input-planning460).
+
+It remains a *harder* failure than Claude Code's harness-level `supportsImages:
+true`, and the two should not be read as the same bet — Claude's delivery is a
+text block naming a file, so image bytes reach the API only if the agent reads
+it, while this declaration has the CLI hand the file part to the model directly.
+
+## Per-model image input (planning#460)
+
+The catalogue now carries a vision verdict per **canonical model**
+(`shared/catalogue/model-vision.ts`), and `visionSupportFor(selection)` resolves
+it.
+
+**Why not a `ModelDef` field**, which is where `reasoningEfforts` lives: that
+field is on the row because the fact it carries genuinely differs between two
+rows of one model (subscription `grok-4.6` offers `xhigh`, the key-billed twin
+offers nothing). Vision does not differ — it is a property of the weights — and
+`canonicalModelKey` is the catalogue's existing home for a fact that is true of
+the model rather than of the offering. `deepseek-v4-flash` is five rows across
+four services; on the row its verdict would be authored five times. A per-row
+override becomes right the day a gateway is *measured* to drop the image part
+while its upstream sees fine, and not before.
+
+**Where the verdicts came from.** Two independent public model endpoints, read
+2026-08-23 — OpenRouter's `architecture.input_modalities` and Vercel AI
+Gateway's `modalities.input`, the same two this catalogue's gateway prices were
+authored from. They agree on every model both carry, which is the evidence for
+treating the fact as service-invariant rather than an assumption that it must be.
+models.dev, OpenCode's own source, is not resolvable from a session container.
+Four models are text-only at both — DeepSeek V4 Flash and Pro, GLM-5.2 and 5.3 —
+and they are the only rows that gate anything. One model has no verdict from
+either source (`gpt-5.3-codex-spark`, ChatGPT-Pro-only with no API) and is marked
+`"unverified"` rather than inferred from its siblings.
+
+**Three states, not a boolean.** `"unverified"` behaves exactly as before this
+change: the image is handed over, and a model that cannot see produces a visible
+failure. Only a `"no"` changes anything. That asymmetry is the design — not
+knowing must never resolve to a refusal, or an unrecognised pin would block
+attachments on a guess.
+
+**Consumers — one gate and two layers of telling the user.** Withholding the
+modality alone was never enough: it would put the turn back where planning#458
+found it, with `read` reporting *"Image read successfully"* into a model that
+never receives the pixels. So the visible half is what most of this change is.
+
+- `opencodeProviderConfig` declares `input: ["text"]` instead of `["text",
+  "image"]` for a `"no"`, so the CLI never issues a malformed request.
+- **Admission** — `imageAttachmentRefusal` (`orchestrator/validation.ts`) refuses
+  the message outright at both admission points, the WS `send_message` handler
+  and `dispatchAgentMessage`, naming the model. Best where it applies: no turn is
+  spent and the user keeps their text. It covers `uploads` as well as `images`,
+  because `uploads` — not `images` — is the shape the browser composer sends, and
+  it asks about `msg.sessionId ?? activeAppSessionId`, the same target the
+  handler resolves later, so a frame aimed at another session cannot be judged
+  against this one's model.
+- **Execution backstop** — the same function again in `runDispatchedTurn`, as a
+  **notice** rather than a refusal: the image is dropped from the prompt and the
+  user is told in the transcript. This is the only point EVERY dispatched ingress
+  passes through, and it exists because admission is not enough twice over:
+
+  1. **Quick Capture** reaches `runner.dispatch` straight from
+     `createHeadlessSession` and never calls `dispatchAgentMessage` at all.
+  2. Admission answers at **enqueue** time, and a session's model can change
+     before its queue drains — so a queued image can execute on a model that was
+     not the one it was admitted against.
+
+  A notice and not a refusal because by that point the turn is committed and the
+  prompt is worth running: throwing away a fire-and-forget capture from a hotkey
+  overlay because one of its files is a PNG costs more than it saves. `uploadPaths`
+  is left intact so the user's bubble still shows the chip.
+
+**The one case nothing catches, stated as a trade rather than covered:** an image
+already on disk that the agent opens by itself carries no attachment, so nothing
+fires and the pixels are dropped where the blanket claim used to produce a
+provider 400. Accepted deliberately — that 400 was not scoped to attachments, so
+ANY `read` of ANY image killed the whole turn, and an agent glancing at a
+screenshot in the repo could end a text-only session's work.
+
+**Deliberately not done here:** the composer still offers an attach affordance
+whatever the session is pinned to. That is not a per-model gap — no client or
+server code reads `capabilities.supportsImages` at all, so grok's evidence-backed
+harness-level `false` is unenforced too. One surface should answer both, so it is
+scoped out to planning#474 rather than half-built here.
 
 ## Independent review outcomes (docs/268, same-day)
 
@@ -359,13 +590,21 @@ met and surfaced five substantive defects, all fixed and test-locked:
    failure was only logged. Both now follow Claude's contract (no result /
    fail the run).
 
-One residual it named is accepted and documented rather than fixed: a
+One residual it named was accepted and documented rather than fixed: a
 DROPPED final `step_finish` combined with the MCP keep-alive means no
-stop-kill is armed and the turn runs until the user interrupts (which now
+stop-kill is armed and the turn runs until the user interrupts (which
 settles correctly as interrupted). The alternative — killing on stream
 silence — would kill legitimate long silent tool calls (OpenCode emits tool
 events only at completion), which is worse. A warn-only 60s watchdog
-(Claude parity) narrates the state.
+(Claude parity) narrated the state.
+
+**Superseded by planning#476.** That warn-only watchdog is now a stall
+deadline that ends the turn, and this residual is covered by it — see
+[Corrected: the status code is not what hangs](#corrected-the-status-code-is-not-what-hangs-planning476)
+for why the 60 s warning was not merely insufficient but meaningless (the CLI
+writes its whole event log at exit, so *every* turn over a minute tripped it),
+and for what makes killing on silence safe now that a liveness heartbeat
+carries the signal the stream cannot.
 
 ## Known risks / review checklist
 

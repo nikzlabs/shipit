@@ -16,6 +16,47 @@ when the user explicitly asks for *another session*, *a parallel branch*, or
 > so `shipit session create` is refused. See
 > [sandbox-session.md](sandbox-session.md).
 
+## Work that belongs in a DIFFERENT repository — `propose_repo_session`
+
+Everything else on this page is about sessions on **your own** repository. When
+the work belongs somewhere else — the API repo you consume, a shared library,
+an infrastructure repo — `shipit session create` cannot do it: a spawn always
+claims the parent's repo, and there is no `--repo` flag.
+
+Use the **`propose_repo_session`** MCP tool instead. It posts a card in the
+chat; one click starts an ordinary session on that repository with your prompt
+already sent, so the user does not copy your instruction into a session they
+make by hand.
+
+```
+propose_repo_session({
+  repo:   "acme/api",                          // owner/repo, or a clone URL
+  title:  "Add cursor pagination to /events",  // the sidebar name, ≤60 chars
+  prompt: "…",                                 // the first message, ≤4000 chars
+})
+```
+
+Four things to know:
+
+- **You name the repository, and ShipIt verifies it before the card exists.**
+  The call is refused — to you, in the same turn — if the name is not a GitHub
+  repository, if it is the repository you are already in, or if the user's
+  connected GitHub account cannot write to it. So a name you got wrong is yours
+  to correct, not the user's to discover on the click.
+- **The prompt must stand alone.** The session that receives it has a different
+  repository checked out and none of this conversation. State the goal, the
+  constraints and what to read there; say which repository the request came
+  from, so that agent can look at the other half of the contract. Name files,
+  docs and issues rather than pasting their contents.
+- **The started session is independent.** It is not a child: you cannot
+  `message`, `wait` on, or be woken by it. Everything it needs goes in the
+  prompt.
+- **It is non-blocking.** Post the card and end your turn; do not repeat the
+  proposal in prose.
+
+If the repository is one ShipIt has never seen, that is fine — the card says so,
+and starting it registers the repository. Nothing is added until the user clicks.
+
 ## When to spawn a sibling session
 
 Spawn a new session when **the user has asked for it**. Concretely, when the
@@ -116,6 +157,7 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
+| `shipit session create` … | **Same repository only.** There is no `--repo`/`--owner`; a spawn claims the parent's repo. For work in a *different* repository, use `propose_repo_session` (top of this page). |
 | `shipit session create --prompt-file FILE --title T [--role NAME\|--no-role] [OVERRIDE…] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. **What the child runs on** is named the same way as for `shipit agent run` — see *What the child runs on* below. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available, and the resolved `agent` + `model` the child actually runs on (use these to confirm the backend/model rather than trusting the child's own self-report, which models are unreliable at). |
@@ -123,10 +165,11 @@ override the parent.
 | `shipit session wait <id...> [--timeout SECONDS] [--any\|--all] [--json]` | Wait until the child reaches a terminal state, or the timeout elapses. **Resilient**: it polls in short segments and absorbs connection resets / orchestrator redeploys beneath you, so a single call is the robust unit — you never script your own retry loop. Default 5 minutes, capped at 1 hour. Outcomes are distinguishable by exit code: `idle`/`archived` → `0`, child **error** → `3`, timed-out → `1`. Pass multiple ids with `--any` (resolve on the first finisher) or `--all` (resolve when every child finishes); the `--timeout` is shared across all of them. See *Coordinating* below. Note: `wait` blocks only until the child's *agent turn* goes idle (code written / PR opened) — it does **not** wait on a human **merge**. For that, use `notify-on-merge`. |
 | `shipit session notify-on-merge <id> [--json]` | **Async** — arm a watch and return immediately (exit `0`, "armed"); the turn ends. When the child's PR later **merges**, the orchestrator wakes *this* session with a queued, self-describing system turn (child id, branch, merged PR ref, merge SHA, and the intent: "proceed with the planned rebase unless the user has since redirected you") and surfaces a "Child PR merged" card in this chat. If the PR **closes without merging**, you get a *distinct* wake-turn telling you the work did **not** ship — don't proceed as if it had. Use this instead of blocking a turn on a human merge (which can take days). The child's PR need not exist yet — the watch fires once it appears and resolves. Fires once. Only the parent that spawned the child may watch it. If the wake-turn itself can't be delivered (this session's container won't resume, for instance) the orchestrator retries it on a backoff; after repeated failures it gives up and posts a "Couldn't resume this session" card in this chat naming the merged PR, so the merge is never silently dropped — send a message here to continue by hand. |
 | `shipit session notify-on-merge --self [--json]` | **Async, and about YOUR own PR.** Arm a watch on this session's currently-open PR and return immediately; the turn ends. When that PR merges — by hand, from ShipIt or GitHub, or via auto-merge — the orchestrator wakes **this** session with a turn telling you to run `shipit branch reset-to-base` and then continue the work you were already asked for. Use it when the user asked for several PRs in a row and the next step can only start after this one lands. Refuses if the branch has no open PR (open one first; if your PR has *already* merged, just keep going in this turn). Arming always **replaces** any previous self-watch, so re-arming mid-chain is normal. **Nothing re-arms on your behalf** — after you open the next PR, run it again if more work remains. See *Chaining several PRs* below. |
+| `shipit session continue-after-rebase --note "TEXT" [--json]` | **Only while ShipIt is driving a rebase of THIS session**, i.e. during the conflict-resolution turn it gave you. That turn ends *before* the rebase does — ShipIt stages your edits, continues the rebase, then force-pushes — so work that only makes sense on the finished result cannot be done in it. This arms that work: ShipIt gives your note back as a new turn once the rebase concludes, on both the manual Sync path and the idle auto-resolve path. `--note` is required, and arming again in a later conflict round appends rather than replaces. A rebase that does not conclude (aborted, refused, timed out) delivers nothing, and arming outside a driven rebase is refused. See [github.md](github.md) → *Work to do after a rebase concludes*. |
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
-| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its cohort siblings, and any children it spawned. This topology view can include a resolved peer that cannot receive a message. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
+| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its read-only sibling topology, and any children it spawned. Siblings shown here cannot receive messages from this child. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
 | `shipit session rename --title T [--json]` | Retitle **this** session (never another — there is no session-id argument). A session is named automatically from your first message, so once it has done more than that first piece of work the sidebar name is stale; renaming is what keeps it honest. Do it when you open a PR and when you continue past a merged one. Max 60 characters, **rejected** if longer rather than truncated. It changes only the title — never the git branch, which usually has a PR attached by then. If the user has renamed the session by hand, this refuses (exit non-zero) and that name is final: leave it alone. |
-| `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every eligible sibling). Each eligible recipient gets a card and a queued system turn. Resolved siblings are named as not delivered and receive neither. See *Reporting upward* below. |
+| `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent] [--json]` | Push a report **up** to the session that spawned you. The parent gets a card and a queued system turn. Sibling and cohort delivery is rejected. See *Reporting upward* below. |
 | `shipit session help` | Print the subcommand reference. |
 | `shipit session find --branch NAME \| --pr NUMBER \| --container NAME \| --id ID [--include-archived] [--include-warm] [--limit N] [--offset N] [--json]` | **Ops sessions only** (docs/255). Resolve a branch, PR, or container name back to the session that produced it — the one-step answer to "what session created this PR?". `--container` takes a name exactly as `docker ps` or the host journal prints it (`agent-83292266-744`, `shipit-83292266-744-web-1`); a container with a project-set explicit `container_name:` carries no session id, and the error points you at its `shipit-parent-session` / `shipit-session-id` label instead of guessing. `--pr` accepts `1744`, `#1744`, or the PR URL and matches the session's *current* PR as well as the one immediately before it on the same branch (only one prior PR is retained — for an older one, look it up by `--branch`). Sessions the user archived, and warm pool sessions, are excluded from the default answer — `--include-archived` / `--include-warm` show them (a disk-**evicted** session is not hidden; eviction is orthogonal to visibility). Results are capped; when more exist the output names the exact `--offset N` for the next page. Returns **metadata only** — id, title, kind, branch, repo, parent session, agent/model, timestamps, container name, PR number/url/state — never another session's conversation, prompts, secrets, or workspace contents, and the repo URL is credential-stripped. In a non-Ops session this exits non-zero with "only available in Ops sessions". |
 | `shipit session list --all [--include-archived] [--include-warm] [--limit N] [--offset N] [--json]` | **Ops sessions only** (docs/255). The whole host inventory, same metadata-only projection and same flags as `find`. Without `--all`, `list` is unchanged: only the children **this** session spawned. |
@@ -262,7 +305,6 @@ session per defect in a single turn rather than batching them into one PR.
 ### Example
 
 ```sh
-# User asked: "Spin up a separate session to port the API to TypeScript."
 shipit session create --prompt-file - --title "Port API to TypeScript" <<'EOF'
 Port the API in /server to TypeScript. Land it as a separate PR.
 EOF
@@ -272,7 +314,6 @@ EOF
 ```
 
 ```sh
-# Coordinate later in the conversation:
 shipit session list
 # ses_abc123    running    shipit/k7p2qz    Port API to TypeScript
 shipit session view ses_abc123
@@ -301,6 +342,28 @@ explicitly declined to ship in v1:
 If you try one, the shim exits non-zero with an error pointing back to this
 file.
 
+### When a spawn fails to answer
+
+A `shipit session create` that ends in a transport error — "Could not reach
+orchestrator", or any 502/503/504 — has **not** told you that no session was
+created. It may have spawned one and lost only the reply. Two rules follow.
+
+**The shim retries once for you, under a key derived from the request**, so a
+lost reply resolves itself: the retry returns the session the first attempt
+made, rather than making a second one. If it says
+`the first attempt did reach ShipIt`, that is what happened — the session in the
+output is the one you already asked for, not an extra.
+
+**If it says it could not confirm, do not just run the command again.** Check
+first — `shipit session list` for a child, the sidebar for a `--detached` spawn,
+which is not a child and appears in no children list. The key is held for ten
+minutes, so a prompt retry is still safe, but a retry after the orchestrator has
+restarted is not, and that is exactly the case the message is warning about.
+
+This costs real cleanup when ignored: duplicate children have to be told to stop
+mid-turn and then archived, because a running child cannot be archived
+(docs/306-spawn-retry-safety).
+
 ### Coordinating with a spawned session
 
 After spawning, you have four downward coordination levers — `wait`, `message`,
@@ -309,44 +372,21 @@ linkage; you cannot operate on sessions you didn't spawn. (The upward direction
 is `shipit session report`, below.)
 
 ```sh
-# Spawn a long-running task on its own branch (branch name is auto-generated).
 shipit session create --prompt-file - --title "Migrate API to Drizzle" <<'EOF'
 Migrate the API to Drizzle
 EOF
 # session-id: ses_abc
 
-# Block until the child reaches a terminal state (or the timeout fires).
 shipit session wait ses_abc --timeout 1800
-# The wait is resilient: it polls in short segments and silently retries
-# through connection resets and orchestrator redeploys, so you don't need
-# to re-issue it yourself. Branch on the exit code, NOT on transport noise:
-#   exit 0 → child idle / archived (finished its turn(s), nothing queued)
-#   exit 3 → child's last turn ERRORED — do NOT treat as success
-#   exit 1 → timed out while the child was still running (or it was not found)
-# With --json the same outcome is in the `outcome` field, and a swallowed
-# transport hiccup (if any) is reported in `lastTransportError` — it is never
-# itself an outcome, so "exit 1" always means a real timeout, not a blip.
 
-# Orchestrate a fleet with one call. --any wakes you on the first finisher
-# so you can act on it, then wait on the rest; --all waits for everyone.
 shipit session wait ses_a ses_b ses_c --any --timeout 1800
 shipit session wait ses_a ses_b ses_c --all --timeout 1800
 
-# Send a follow-up prompt without the user switching sessions.
 shipit session message ses_abc -m "Also update the README to mention Drizzle"
 
-# Be woken when the child's PR MERGES — without blocking this turn. `wait`
-# only blocks until the child's agent goes idle (PR opened); the human merge
-# can take days, so don't wait on it. Arm a watch and end your turn instead:
 shipit session notify-on-merge ses_abc
 # notify-on-merge: armed
-# …turn ends. Later, when ses_abc's PR merges, THIS session gets a queued
-# system turn ("child PR merged — proceed with the planned rebase") plus a
-# merge card. If the PR is closed unmerged, you get a distinct "did not ship"
-# wake-turn instead. The watch fires once and survives an orchestrator restart.
 
-# Archive an idle child that's done its job. Refuses while the child is
-# still running — `wait` first if you want a deterministic teardown.
 shipit session archive ses_abc
 ```
 
@@ -354,13 +394,13 @@ Be conservative with `message` — every prompt you push lands in the
 child's chat, visible to the user. Use it for coordination, not for
 chattering at the child agent.
 
-### Reporting upward (and to your cohort)
+### Reporting upward
 
 Everything above is parent → child. `shipit session report` is the other
-direction: it is how a **spawned session** tells the session that spawned it —
-and, optionally, its siblings — something they need to know. Without it, a
-finding can only sit in your PR body or your final turn summary, where nobody
-learns about it until they go and look.
+direction: it is how a **spawned session** tells the session that spawned it
+something the parent needs to know. The parent is the coordination hub. A child
+cannot message a sibling, because lateral wake-ups can form feedback loops and
+message storms.
 
 First, know where you are:
 
@@ -380,7 +420,7 @@ shipit session whoami
 Then push what travels:
 
 ```sh
-shipit session report --severity blocker --to cohort \
+shipit session report --severity blocker \
   --subject "regen command deletes every catalog" --body-file - <<'EOF'
 `npm run regen` clears data/catalogs/ before writing, so running it destroys the
 druid and necromancer catalogs too, not just mine. I can't fix it from here (it's
@@ -388,17 +428,17 @@ shared machinery, outside my scope). Don't run it until this is fixed.
 EOF
 # report-id: 6f0b…
 # severity:  blocker
-# to:        cohort
-# delivered: 3/3 recipient(s) woken
+# to:        parent
+# delivered: 1/1 recipient(s) woken
 ```
 
-**Reach.** `--to parent` (default) delivers to the session that spawned you.
-`--to cohort` (or `--cohort`) delivers to your parent **and** every live sibling
-under it. You cannot name an arbitrary session id: recipients are derived from
-your own parent linkage, so a report never leaves the tree your parent already
-coordinates. A session with no parent (top-level, or spawned `--detached`) has no
-cohort, and `report` exits non-zero telling you so — put the finding in your PR
-body or file an issue with `shipit issue create` instead.
+**Reach.** `--to parent` is the only target and the default. The recipient is
+derived from your own parent linkage. `--to cohort`, `--cohort`, sibling session
+ids, and arbitrary session ids are rejected. If a sibling needs to know, report
+the finding to the parent and let the parent coordinate it. A session with no
+parent (top-level, or spawned `--detached`) cannot report and exits non-zero —
+put the finding in your PR body or file an issue with `shipit issue create`
+instead.
 
 **Severity** shapes what the recipient is told to do with it:
 
@@ -409,15 +449,15 @@ body or file an issue with `shipit issue create` instead.
 **When to use it.** When what you found reaches **beyond your own session**:
 
 - shared machinery, policy, or docs you are scoped **not** to touch but that is
-  broken (especially when it can damage a sibling's work);
-- a blocker that stops part of your assignment and changes what the cohort
+  broken, especially when it can damage another child's work;
+- a blocker that stops part of your assignment and changes what the parent
   should expect from you;
-- a finding that invalidates a sibling's approach.
+- a finding the parent must coordinate across children.
 
 **When not to.** Routine progress, anything already visible in your PR, or a
-question for the *user* (that's `voice_note`). A report costs every recipient a
-real agent turn, so batch your findings into one report rather than sending a
-stream — the shim rate-limits a runaway sender (5 per 10 minutes).
+question for the *user* (that's `voice_note`). A report costs the parent a real
+agent turn, so batch your findings into one report rather than sending a stream
+— the shim rate-limits a runaway sender (5 per 10 minutes).
 
 **What the recipient gets.** A persisted card in its chat (so the human sees it
 inline, and it survives a reload) plus a queued system turn carrying the report
@@ -435,7 +475,7 @@ next can start, you don't have to stop at the first PR and wait to be nudged:
 gh pr create -t "Step one" --body-file - <<'EOF'
 ...
 EOF
-shipit session notify-on-merge --self     # arm, then end your turn
+shipit session notify-on-merge --self
 ```
 
 When that PR merges, ShipIt starts a new turn in this session. That turn's first
@@ -463,7 +503,21 @@ discards nothing by construction, so the command just does it.
 One shape of refusal is permanent: once this branch's work has shipped under a
 *different* commit — a cherry-pick recovery, or the squash merge you then built
 on — the check's "this branch is exactly what merged" clause can never hold
-again, and without an override the session can never open another pull request.
+again, and without an override the branch can never be *reset* onto the base.
+Note the refusal is a refusal: the command declines to move the branch, it never
+discards the commits on it.
+
+If the branch carries **new, unshipped** work, you do not need the reset at all —
+merge the base into the branch instead and open the next PR on top:
+
+```sh
+git fetch origin && git merge origin/<base>
+```
+
+That makes the base an ancestor of your branch, which is what `gh pr create`'s
+progress check requires; it rewrites no published history, needs no force-push,
+and discards nothing. Use the override below only when the branch has nothing of
+its own to keep.
 
 For that case, and only with the user's say-so, there is a break-glass:
 
@@ -486,10 +540,22 @@ conflicts rather than dropping the already-shipped commits. And a hand-rolled
 `git reset --hard` is worse than the `--force` above, not equivalent: no
 clean-tree check, no recorded reason, no transcript card. It is also blocked.
 
+There is a second, quieter cost, and it has happened: if **any commit on the
+branch has already been pushed**, a rebase rewrites *published* history. Those
+commits stay on the remote and leave your branch, so ShipIt's next plain
+auto-push is rejected as non-fast-forward — and stays rejected, because ShipIt
+never force-pushes on its own. The session is then left with no pull request, no
+diff, and work that exists only on GitHub. If you ever do rewrite published
+history on purpose, it is not finished until you have republished it with
+`git push --force-with-lease`.
+
 That last point is **enforced, not just advised**: while a session sits on a
 merged branch (ShipIt has recorded the merged head commit), `git reset --hard`,
-`git checkout -f` and force-pushes are blocked before they run, and the refusal
-points you back here. `shipit branch reset-to-base` is unaffected — it relays to
+`git checkout -f`, force-pushes, starting a `git rebase`, and `git pull --rebase`
+are blocked before they run, and the refusal points you back here.
+(`git rebase --continue` / `--abort` / `--skip` / `--quit` stay allowed — a
+rebase you are already inside must remain exitable — as does a plain `git pull`,
+which merges rather than rewrites.) `shipit branch reset-to-base` is unaffected — it relays to
 the orchestrator rather than running git in your shell. The block is scoped to
 that window only: on an ordinary session, discarding a local mess with
 `git reset --hard` still works normally.

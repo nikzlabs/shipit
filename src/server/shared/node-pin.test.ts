@@ -1,7 +1,3 @@
-/**
- * Tests for the Node version pin reader/matcher (docs/248, nikzlabs/shipit#1728).
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,7 +18,6 @@ function v(text: string): NodeVersion {
   return parsed;
 }
 
-/** Assert `version` matches `range`, failing loudly if the range won't parse. */
 function matches(range: string, version: string): boolean {
   const spec = parseRange(range);
   if (!spec) throw new Error(`range did not parse: ${range}`);
@@ -94,7 +89,6 @@ describe("parseRange / satisfies", () => {
   it("reads `>20` as after the whole 20 line, matching npm x-range semantics", () => {
     expect(matches(">20", "20.19.0")).toBe(false);
     expect(matches(">20", "21.0.0")).toBe(true);
-    // With an explicit patch it is an ordinary strict comparison.
     expect(matches(">20.19.0", "20.19.0")).toBe(false);
     expect(matches(">20.19.0", "20.19.1")).toBe(true);
   });
@@ -127,9 +121,6 @@ describe("parseRange / satisfies", () => {
   });
 
   it("accepts an operator written with a space before its operand", () => {
-    // `">= 20"` is valid npm syntax and appears in real engines fields; naive
-    // whitespace tokenization would reject it and silently leave the repo on
-    // the image's Node.
     expect(matches(">= 20", "24.15.0")).toBe(true);
     expect(matches(">= 20", "18.0.0")).toBe(false);
     expect(matches("^ 22", "22.20.1")).toBe(true);
@@ -143,8 +134,6 @@ describe("parseRange / satisfies", () => {
   });
 
   it("rejects a concrete component to the right of a wildcard", () => {
-    // `20.x.3` is not valid npm semver. Reading it as `>=20.0.3 <21` would
-    // activate a Node the repo never asked for.
     expect(parseRange("20.x.3")).toBeNull();
     expect(parseRange("x.2.3")).toBeNull();
   });
@@ -152,14 +141,10 @@ describe("parseRange / satisfies", () => {
   it("rejects leading-zero components", () => {
     expect(parseRange("020")).toBeNull();
     expect(parseRange("20.01")).toBeNull();
-    // A genuine zero component is still fine.
     expect(parseRange("20.0.1")).not.toBeNull();
   });
 
   it("returns null for forms it does not implement, rather than guessing", () => {
-    // Aliases and hyphen ranges must surface as `unsupported` upstream — a
-    // silently-wrong match would activate the wrong Node, which is worse than
-    // reporting that we couldn't read the pin.
     expect(parseRange("lts/jod")).toBeNull();
     expect(parseRange("lts/*")).toBeNull();
     expect(parseRange("node")).toBeNull();
@@ -232,8 +217,6 @@ describe("readNodePin", () => {
   });
 
   it("reports an unsupported .nvmrc rather than falling through to engines.node", () => {
-    // The repo did express a preference; honoring a different source silently
-    // would be more surprising than saying we couldn't read this one.
     fs.writeFileSync(path.join(dir, ".nvmrc"), "lts/jod");
     fs.writeFileSync(
       path.join(dir, "package.json"),

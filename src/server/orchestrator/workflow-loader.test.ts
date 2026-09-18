@@ -7,7 +7,6 @@ import {
   type WorkflowEventName,
 } from "./workflow-loader.js";
 
-/** Build a trigger with only the filters a given test cares about. */
 function ev(
   event: WorkflowEventName,
   overrides: Partial<Omit<ParsedWorkflowEvent, "event">> = {},
@@ -163,7 +162,6 @@ jobs: {}
   });
 
   it("falls back to unparseable=true on unparseable YAML (conservative)", () => {
-    // Unclosed flow mapping is a hard syntax error in YAML 1.2.
     const parsed = parseWorkflowContent("on: { pull_request: { paths: [unterminated");
     expect(parsed.unparseable).toBe(true);
   });
@@ -216,15 +214,10 @@ describe("workflowAppliesToPr — event and branch filters", () => {
   const pr = { headBranch: "shipit/iksdum", baseBranch: "main", changedFiles: ["src/index.ts"] };
 
   it("never applies when the workflow declares no PR-relevant trigger", () => {
-    // `on: { workflow_dispatch: }` alone — parsed to zero relevant events.
     expect(workflowAppliesToPr({ unparseable: false, events: [] }, pr)).toBe(false);
   });
 
   it("does not apply when a push trigger's branches exclude the PR head branch", () => {
-    // nikzlabs/shipit#1730: the repo's only workflow is manual + a push
-    // trigger scoped to one non-default branch. A session-branch PR into main
-    // matches nothing, so GitHub creates zero check runs — terminal from the
-    // first poll, not pending.
     const w = {
       unparseable: false,
       events: [ev("push", { branchesInclude: ["deploy"] })],
@@ -235,7 +228,6 @@ describe("workflowAppliesToPr — event and branch filters", () => {
 
   it("matches push branch filters against the head branch, not the base", () => {
     const w = { unparseable: false, events: [ev("push", { branchesInclude: ["main"] })] };
-    // Base is main but the pushed ref is the session branch — no match.
     expect(workflowAppliesToPr(w, pr)).toBe(false);
   });
 

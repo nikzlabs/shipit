@@ -60,7 +60,7 @@ describe("Integration: File content viewer", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Ignore cleanup errors.
     }
   });
 
@@ -100,7 +100,6 @@ describe("Integration: File content viewer", () => {
   });
 
   it("returns isImage with base64 data URI for image files", async () => {
-    // Write a file with PNG-like bytes
     const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a]);
     fs.writeFileSync(path.join(sessionDir, "image.png"), buf);
 
@@ -112,7 +111,6 @@ describe("Integration: File content viewer", () => {
   });
 
   it("returns isBinary for non-image binary files", async () => {
-    // Write a file with null bytes (binary indicator) but non-image extension
     const buf = Buffer.from([0x00, 0x01, 0x02, 0x03]);
     fs.writeFileSync(path.join(sessionDir, "data.bin"), buf);
 
@@ -124,7 +122,6 @@ describe("Integration: File content viewer", () => {
   });
 
   it("returns isBinary for large files", async () => {
-    // Write a file over 1 MB
     const bigContent = "x".repeat(1_048_577);
     fs.writeFileSync(path.join(sessionDir, "big.txt"), bigContent);
 
@@ -241,11 +238,6 @@ describe("Integration: File content viewer", () => {
     expect(log[0]?.message).toBe("Edit hello.ts");
   });
 
-  // docs/128 / docs/211 — the manual-edit commit is one of ShipIt's automatic
-  // commits (the agent asked for nothing), so `services/auto-commit-gate.ts`
-  // refuses it for ops and sandbox. The SAVE still happens: only the commit is
-  // withheld, leaving the change for the agent — which owns git in those kinds —
-  // to commit itself.
   for (const kind of ["ops", "sandbox"] as const) {
     it(`saves but does not commit a manual edit in a ${kind} session`, async () => {
       fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
@@ -264,17 +256,7 @@ describe("Integration: File content viewer", () => {
     });
   }
 
-  /**
-   * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — this call site destructured only
-   * `commitHash`, so a workspace ShipIt's own git cannot fully read produced a
-   * save that looked committed and was not. The notice is PERSISTED because the
-   * user must still find it after a reload — and there may be no runner at all
-   * on this path.
-   *
-   * The unreadable state is produced with mode bits on a self-owned directory:
-   * a session container has no root and `unshare -r` is refused, so genuine
-   * foreign ownership cannot be reproduced. The kernel check is the same.
-   */
+  // Mode bits simulate unreadable data without requiring a foreign owner.
   it("warns in the transcript when a manual edit's commit came up short", async () => {
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
     const dataDir = path.join(sessionDir, "pgdata");
@@ -298,10 +280,7 @@ describe("Integration: File content viewer", () => {
 
   it("rejects edits on a warm (not-yet-graduated) session", async () => {
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "old");
-    // Let the one-shot startup sweep (startup-tasks.ts) run while this session
-    // is still non-warm — otherwise marking it warm below races the sweep,
-    // which would delete it and turn the expected 409 into a 404. See
-    // flushStartupTasks() for the full timing rationale.
+    // Let startup finish before marking the session warm, or its sweep can delete it.
     await flushStartupTasks();
     sessionManager.setWarm(sessionId, true);
 
@@ -312,7 +291,6 @@ describe("Integration: File content viewer", () => {
     });
 
     expect(res.statusCode).toBe(409);
-    // The write must not have happened.
     expect(fs.readFileSync(path.join(sessionDir, "hello.ts"), "utf8")).toBe("old");
   });
 });

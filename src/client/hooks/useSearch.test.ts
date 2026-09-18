@@ -71,7 +71,7 @@ describe("useSearch", () => {
       const { result } = renderHook(() => useSearch(messages));
 
       act(() => result.current.setQuery("aa"));
-      // "aaa" has "aa" at pos 0 and pos 1
+
       expect(result.current.matches).toHaveLength(2);
     });
 
@@ -110,7 +110,6 @@ describe("useSearch", () => {
       act(() => result.current.goToNext());
       expect(result.current.currentMatchIndex).toBe(2);
 
-      // Wraps around
       act(() => result.current.goToNext());
       expect(result.current.currentMatchIndex).toBe(0);
     });
@@ -121,7 +120,6 @@ describe("useSearch", () => {
 
       act(() => result.current.setQuery("a"));
 
-      // From 0, going prev wraps to last match
       act(() => result.current.goToPrev());
       expect(result.current.currentMatchIndex).toBe(2);
 
@@ -137,7 +135,6 @@ describe("useSearch", () => {
       act(() => result.current.goToNext());
       expect(result.current.currentMatchIndex).toBe(1);
 
-      // Changing query resets index
       act(() => result.current.setQuery("foo"));
       expect(result.current.currentMatchIndex).toBe(0);
     });

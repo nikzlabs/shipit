@@ -23,25 +23,11 @@ interface RewindPointProps {
   gapPosition: number;
   currentState?: boolean;
   disabled?: boolean;
-  /**
-   * A turn is currently running. In-place rewind (chat/code/both) mutates this
-   * session's workspace and conflicts with the running agent, so it's hidden.
-   * Fork is independent — it spins off a NEW session from an already-committed
-   * SHA without touching this one — so it stays available (planning#184).
-   */
+
   turnRunning?: boolean;
-  /**
-   * Horizontal alignment of the rewind handle within the row. Mirrors the
-   * bubble of the turn that just finished: "right" after a user turn,
-   * "left" after an agent turn, "center" when the side is unknown.
-   */
+
   align?: "left" | "center" | "right";
-  /**
-   * Suggested title for the forked session — defaults to the parent
-   * session's title so the fork inherits its name. The user can edit it
-   * before confirming. The fork's branch name is derived server-side from
-   * the active session's branch (with a fresh slug) — not from this value.
-   */
+
   defaultSessionName: string;
   previews?: Partial<Record<RewindGapAction, WsRewindPreview>>;
   onRequestPreview?: (gapPosition: number, action: RewindGapAction) => void;
@@ -108,9 +94,9 @@ export function RewindPoint({
   const [pendingAction, setPendingAction] = useState<Exclude<RewindGapAction, "chat"> | null>(null);
   const [sessionName, setSessionName] = useState(defaultSessionName);
   const [menuOpen, setMenuOpen] = useState(false);
-  // currentState and a running turn both restrict the menu to fork only: the
+
   // former has no past state to rewind to, the latter must not mutate the
-  // workspace while the agent owns it. Fork stays in both cases.
+
   const forkOnly = currentState || turnRunning;
   const availableActions = forkOnly ? (["fork"] as RewindGapAction[]) : ACTIONS;
   const modalPreview = pendingAction ? previews?.[pendingAction] : undefined;
@@ -147,12 +133,7 @@ export function RewindPoint({
 
   const interactive = !disabled;
   const justify = align === "left" ? "justify-start" : align === "right" ? "justify-end" : "justify-center";
-  // The negative bottom margin pulls the handle tight against the message
-  // below it. When the handle is on the right (after a user turn) the bubble
-  // below sits on the left, so the tightening is invisible. When it's on the
-  // left (after an agent turn) a long, full-width user bubble below shares the
-  // handle's column, and the negative margin makes them look glued — so we
-  // drop the bottom tightening for left/center, keeping only the top.
+
   const bottomMargin = align === "right" ? "-mb-0.75" : "";
   return (
     <div

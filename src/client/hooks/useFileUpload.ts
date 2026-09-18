@@ -1,18 +1,25 @@
-/**
- * useFileUpload — manages file upload API calls.
- * All upload state lives in the file store (Zustand) so it survives page reloads.
- * Pending uploads (not yet sent in a message) are shown as input chips.
- *
- * Files attached before a session exists (e.g. while on /{slug}/new before
- * claimSession resolves) are buffered locally; placeholder upload chips appear
- * immediately and the actual POST is deferred until sessionId is available.
- */
 
-// eslint-disable-next-line no-restricted-imports -- useEffect: drain deferred upload buffer when sessionId becomes available
-import { useCallback, useEffect, useRef } from "react";
+
+// eslint-disable-next-line no-restricted-imports -- useEffect: resume uploads when sessionId becomes available
+import { useCallback, useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { UploadedFile, UploadRef, UploadItem } from "../../server/shared/types.js";
-import { useFileStore, markUploadDeleted, clearUploadTombstone } from "../stores/file-store.js";
+import {
+  useFileStore,
+  markUploadDeleted,
+  clearUploadTombstone,
+  retainUploadBytes,
+  getUploadBytes,
+  noteUploadDismissed,
+  wasUploadDismissed,
+  forgetUploadDismissal,
+  pendingUploadBytes,
+  releaseUploadBytes,
+  markUploadActive,
+  markUploadSettled,
+  isUploadActive,
+  noteUploadsChanged,
+} from "../stores/file-store.js";
 import { addDraftUpload, removeDraftUploads } from "../utils/local-storage.js";
 
 export type { UploadItem, UploadStatus } from "../../server/shared/types.js";
@@ -23,21 +30,43 @@ interface UploadResponse {
 
 let uploadIdCounter = 0;
 
+/**
+ * Best-effort DELETE of an uploaded file nothing on screen refers to any more.
+ * Exported because the Uploads panel deletes files too, and docs/294 req 1 wants
+ * every writer to invalidate an in-flight listing — a hand-rolled fetch at
+ * another call site is exactly the writer that gets forgotten.
+ */
+export async function deleteUploadFromServer(sessionId: string, uploadPath: string): Promise<void> {
+  const filename = uploadPath.replace(/^\/uploads\//, "");
+  try {
+    const res = await fetch(
+      `/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      console.warn(`[upload] DELETE ${uploadPath} failed: ${res.status} ${res.statusText}`);
+      // A definite refusal changed nothing, so it must NOT spend a listing's
+
+      return;
+    }
+
+    noteUploadsChanged(sessionId);
+  } catch (err: unknown) {
+
+    console.warn("[upload] DELETE failed:", err);
+    noteUploadsChanged(sessionId);
+  }
+}
+
 export function useFileUpload(sessionId: string | undefined) {
   const pendingUploads = useFileStore(useShallow((s) => s.sessionUploads.filter((u) => u.pending)));
 
-  // Files attached before a session exists. Each entry maps a File to the
-  // placeholder UploadItem id created at attach time, so we can resolve to
-  // "ready" status (and rewrite name/path/size from the server response) once
-  // the session is ready and the POST completes.
-  const deferredFilesRef = useRef<{ file: File; itemId: string }[]>([]);
-
-  /** POST a batch of files; updates the existing UploadItems with server response. */
   const uploadToServer = useCallback(async (sid: string, files: File[], items: UploadItem[]) => {
     const formData = new FormData();
     for (const file of files) {
       formData.append("file", file);
     }
+    for (const item of items) markUploadActive(item.id);
     try {
       const res = await fetch(`/api/sessions/${sid}/files/uploads`, {
         method: "POST",
@@ -57,14 +86,26 @@ export function useFileUpload(sessionId: string | undefined) {
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];
         if (uploaded) {
-          // A fresh upload supersedes any stale tombstone for its path. Without
-          // this, re-uploading a same-named file (server reuses the name via
-          // deduplicateFilename) leaves a prior delete's tombstone in place, and
-          // hydrateUploads filters the new file out on the next reconnect.
+
+          // cleared every chip when they went elsewhere. The chip list cannot
+
+          if (wasUploadDismissed(items[i].id)) {
+            releaseUploadBytes(items[i].id);
+            forgetUploadDismissal(items[i].id);
+            markUploadDeleted(uploaded.path);
+            void deleteUploadFromServer(sid, uploaded.path);
+            continue;
+          }
+          if (!st.sessionUploads.some((u) => u.id === items[i].id)) {
+
+            releaseUploadBytes(items[i].id);
+            clearUploadTombstone(uploaded.path);
+            addDraftUpload(sid, uploaded.path);
+            continue;
+          }
+
           clearUploadTombstone(uploaded.path);
-          // Record the attached-but-unsent path so the chip survives a reload /
-          // session switch (mirrors how the composer's draft text is persisted).
-          // hydrateUploads self-heals this set against chat history, so a path
+
           // left here after the file is sent never resurrects a chip.
           addDraftUpload(sid, uploaded.path);
           st.updateSessionUpload(items[i].id, {
@@ -74,6 +115,8 @@ export function useFileUpload(sessionId: string | undefined) {
             size: uploaded.size,
             progress: 100,
           });
+
+          releaseUploadBytes(items[i].id);
         }
       }
     } catch (err) {
@@ -82,20 +125,19 @@ export function useFileUpload(sessionId: string | undefined) {
       for (const item of items) {
         st.updateSessionUpload(item.id, { status: "error", error: errorMsg, progress: 0 });
       }
+    } finally {
+      for (const item of items) markUploadSettled(item.id);
+
+      noteUploadsChanged(sid);
     }
   }, []);
 
-  /**
-   * Add files. Placeholder chips appear immediately; the upload POST runs as
-   * soon as a session exists (buffered if not).
-   */
   const uploadFiles = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return;
 
       const store = useFileStore.getState();
 
-      // Create placeholder items (with thumbnail preview for images)
       const items: UploadItem[] = files.map((f) => ({
         id: `upload-${++uploadIdCounter}`,
         name: f.name,
@@ -108,8 +150,10 @@ export function useFileUpload(sessionId: string | undefined) {
       }));
 
       store.addSessionUploads(items);
+      for (let i = 0; i < files.length; i++) {
+        retainUploadBytes(items[i].id, files[i]);
+      }
 
-      // Read image files as data URLs for stable display in chat messages
       for (let i = 0; i < files.length; i++) {
         if (files[i].type.startsWith("image/")) {
           const reader = new FileReader();
@@ -121,91 +165,103 @@ export function useFileUpload(sessionId: string | undefined) {
         }
       }
 
-      if (!sessionId) {
-        // Defer — drained by the useEffect below when sessionId resolves
-        for (let i = 0; i < files.length; i++) {
-          deferredFilesRef.current.push({ file: files[i], itemId: items[i].id });
-        }
-        return;
-      }
+      if (!sessionId) return;
 
       await uploadToServer(sessionId, files, items);
     },
     [sessionId, uploadToServer],
   );
 
-  // Drain the deferred buffer when a sessionId becomes available
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  /**
+   * Start (or restart) the POST for every chip that still reads "uploading" and
+   * still has its bytes. This is one pass rather than two because the two cases
+   * it covers are the same state seen from different angles:
+   *
+   *   - a session did not exist when the file was attached (the /{slug}/new view
+   *     before claimSession resolves), and now it does;
+   *   - THIS hook was remounted before the POST was ever started, so the queue
+   *     that would have started it belonged to a hook that no longer exists.
+   *     Crossing the mobile breakpoint does that (`AppLayout` swaps component
+   *     trees), and the chip was left at "uploading" forever with docs/293 req 1
+   *     barring Send.
+   *
+   * Deriving the work from store state instead of a hook-local queue is what
+   * makes the second case heal itself: a remounted hook re-derives it.
+   *
+   * `isUploadActive` is what keeps that from becoming a duplicate-upload bug.
+   * Unmounting does NOT cancel an in-flight `fetch` — it runs to completion and
+   * still writes to the store — so a chip mid-upload has an owner even though its
+   * hook is gone, and must not be restarted. The same check absorbs React
+   * StrictMode's double-invoked mount effect.
+   */
+  // eslint-disable-next-line no-restricted-syntax -- resumes uploads owned by a hook instance that no longer exists
   useEffect(() => {
-    if (!sessionId || deferredFilesRef.current.length === 0) return;
-    const queued = deferredFilesRef.current;
-    deferredFilesRef.current = [];
+    if (!sessionId) return;
     const all = useFileStore.getState().sessionUploads;
     const items: UploadItem[] = [];
     const files: File[] = [];
-    for (const q of queued) {
-      const item = all.find((u) => u.id === q.itemId);
-      if (item) {
-        items.push(item);
-        files.push(q.file);
-      }
+    for (const { id, file } of pendingUploadBytes()) {
+      if (isUploadActive(id)) continue;
+      const item = all.find((u) => u.id === id);
+      if (item?.status !== "uploading") continue;
+      items.push(item);
+      files.push(file);
     }
     if (files.length > 0) {
       void uploadToServer(sessionId, files, items);
     }
   }, [sessionId, uploadToServer]);
 
-  /** Remove a pending upload by index and delete the file from the server. */
   const removeUpload = useCallback((index: number) => {
     const item = pendingUploads[index];
     if (!item) return;
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+
+    noteUploadDismissed(item.id);
     if (item.path && sessionId) {
-      const filename = item.path.replace(/^\/uploads\//, "");
       markUploadDeleted(item.path);
-      // The user dismissed the chip before sending — drop it from the draft set
-      // so it isn't restored on the next reload.
+
       removeDraftUploads(sessionId, [item.path]);
-      void (async () => {
-        try {
-          const res = await fetch(`/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" });
-          if (!res.ok) console.warn(`[upload] DELETE ${item.path} failed: ${res.status} ${res.statusText}`);
-        } catch (err: unknown) {
-          console.warn("[upload] DELETE failed:", err);
-        }
-      })();
+      void deleteUploadFromServer(sessionId, item.path);
       useFileStore.getState().removeSessionUpload(item.path);
     } else {
       useFileStore.getState().removeSessionUploadById(item.id);
     }
   }, [sessionId, pendingUploads]);
 
-  /** Retry a failed upload — removes it, user can re-attach. */
   const retryUpload = useCallback((index: number) => {
     const item = pendingUploads[index];
-    if (!item) return;
-    useFileStore.getState().removeSessionUploadById(item.id);
-  }, [pendingUploads]);
+    if (item?.status !== "error") return;
+    const file = getUploadBytes(item.id);
+    if (!file) return;
+    if (isUploadActive(item.id)) return;
+    const retried: UploadItem = { ...item, status: "uploading", progress: 0 };
+    useFileStore.getState().updateSessionUpload(item.id, {
+      status: "uploading",
+      progress: 0,
+      error: undefined,
+    });
 
-  /** Get pending ready uploads as UploadRef[] for send_message. */
+    if (!sessionId) return;
+    void uploadToServer(sessionId, [file], [retried]);
+  }, [pendingUploads, sessionId, uploadToServer]);
+
   const getUploadRefs = useCallback((): UploadRef[] => {
     return pendingUploads
       .filter((u) => u.status === "ready" && u.path)
       .map((u) => ({ path: u.path!, type: "upload" as const }));
   }, [pendingUploads]);
 
-  /** Mark all pending uploads as sent (clears the input chips). */
   const clearUploads = useCallback(() => {
     const sentPaths = pendingUploads.map((u) => u.path).filter((p): p is string => Boolean(p));
+
     useFileStore.getState().markUploadsSent();
-    // These paths are now sent, so they're no longer a draft. Removing them
-    // keeps the draft set tight; hydrateUploads would also prune them against
-    // chat history, so a missed removal here can't leave a stale chip.
+
     if (sessionId) removeDraftUploads(sessionId, sentPaths);
   }, [pendingUploads, sessionId]);
 
   return {
-    /** Pending uploads — shown as input chips, cleared on send. */
+
     uploads: pendingUploads,
     uploadFiles,
     removeUpload,

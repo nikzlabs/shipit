@@ -1,0 +1,39 @@
+=== compact on 3.7
+
+== Using GEMINI_API_KEY from the environment (metered key mode, model gemini-3.7-flash-low)
+
+== PROBE compact-a
+exit=0
+status:   "status":"SUCCESS"
+response: "response":"ok\n"
+tool steps:
+        1 "step_type":"agent_response"
+        1 "step_type":"user_input"
+conversation_id=1e0a7af2-6fc0-432b-a891-28c76051c739
+
+== PROBE compact-b
+(pacing 65s)
+exit=0
+status:   "status":"ERROR"
+response: "response":"I have noted the compaction request. Context and key details (including the codeword **TANGERINE**) are preserved. Let me know how you'd like to proceed!\n"
+tool steps:
+        2 "step_type":"agent_response"
+        1 "step_type":"error_message"
+        1 "step_type":"system_message"
+        1 "step_type":"user_input"
+
+== PROBE compact-c
+(pacing 65s)
+exit=0
+status:   "status":"ERROR"
+response: "response":"TANGERINE\n"
+tool steps:
+        2 "step_type":"agent_response"
+        1 "step_type":"system_message"
+        1 "step_type":"user_input"
+transcript steps: 9
+
+== Workspace files written by the runs (expect none):
+
+== Done. Outputs in /persist/agy-login-test/probes.
+finished rc=0

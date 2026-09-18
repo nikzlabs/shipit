@@ -2,13 +2,6 @@ import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { ChildMergedCard } from "./ChildMergedCard.js";
 
-/**
- * Tests for the in-chat `ChildMergedCard` (docs/196). The card is static — every
- * value is a prop persisted on the message row — so these pin the three
- * variants' copy: merged, closed-unmerged, and the planning#260 delivery-failure
- * follow-up that says the agent did NOT start.
- */
-
 const BASE = {
   childSessionId: "child-1",
   childTitle: "Child API",
@@ -50,10 +43,8 @@ describe("ChildMergedCard", () => {
     expect(screen.getByText(/Send a message here to continue/)).toBeTruthy();
     expect(screen.getByText("container could not be resumed")).toBeTruthy();
     expect(screen.getByTestId("child-merged-card").getAttribute("data-delivery-failed")).toBe("true");
-    // The PR facts stay on the card so the user can act on the merge by hand.
     expect(screen.getByText("#7")).toBeTruthy();
     expect(screen.getByText("deadbeefcafe")).toBeTruthy();
-    // The success copy must NOT also render.
     expect(screen.queryByText(/planned rebase \/ integration/)).toBeNull();
   });
 

@@ -18,7 +18,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
 /**
- * The placeholder a composer shows when the install has no runnable service
+ * The placeholder a composer shows when the install has no runnable provider
  * (req 3). Three properties, all load-bearing:
  *
  * - **It names no location.** The same string serves while the onboarding panel
@@ -26,20 +26,12 @@ import { useUiStore } from "../stores/ui-store.js";
  *   long after onboarding, when the answer is Settings. "In Settings" is wrong
  *   in the first case; "above" is wrong in the second.
  * - **Its verb and noun match the control to find** — docs/252's Settings
- *   surface is "Services" and its action is "Add a service".
+ *   surface is "Model providers" and its action is "Add a model provider".
  * - **It says what is blocked, not what is broken.** The composer is the only
  *   disabled thing; everything else works, so this is an instruction.
  */
-export const NO_RUNNABLE_SERVICE_REASON = "Add a service to start chatting";
+export const NO_RUNNABLE_SERVICE_REASON = "Add a model provider to start chatting";
 
-/**
- * The composer's `disabledReason`, or `undefined` when the chat is live.
- *
- * `bootstrapLoaded` is not decoration: the store's pre-bootstrap default is
- * `false`, so without the gate a perfectly runnable install would paint one
- * frame of dead composer telling the user to add a service. Undefined until
- * the server has actually answered.
- */
 export function chatDisabledReason(state: {
   bootstrapLoaded: boolean;
   canRunTurns: boolean;
@@ -105,14 +97,12 @@ export function harnessOnboardingPanelVisible(state: {
   return state.harnessOnboardingCompletedAt === null;
 }
 
-/** Store-reading wrapper for {@link chatDisabledReason} — the composer's hook. */
 export function useChatDisabledReason(): string | undefined {
   const canRunTurns = useSettingsStore((s) => s.canRunTurns);
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
   return chatDisabledReason({ bootstrapLoaded, canRunTurns });
 }
 
-/** Store-reading wrapper for {@link harnessOnboardingPanelVisible}. */
 export function useHarnessOnboardingPanelVisible(githubGateUp: boolean): boolean {
   const harnessOnboardingCompletedAt = useSettingsStore((s) => s.harnessOnboardingCompletedAt);
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);

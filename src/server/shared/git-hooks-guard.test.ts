@@ -1,23 +1,3 @@
-/**
- * planning#384 — the guard that stops orchestrator-side git from executing
- * hooks a repository carries.
- *
- * The escalation these tests stand in for: a plugin CLI run and a plugin
- * service both get the session workspace bind-mounted read-write at `/project`,
- * and `.git` is chowned to the uid they run as — so `.git/hooks/pre-commit` is
- * a file untrusted code can write. ShipIt's post-turn auto-commit then runs
- * `git commit` on that tree from inside the orchestrator process, which is root
- * and mounts `/credentials`, `/var/run/docker.sock`, and every session's
- * workspace.
- *
- * These tests drive the REAL `GitManager` at a real temp repository carrying
- * real executable hooks, and assert the hooks did not run. The hooks write a
- * marker file rather than exiting non-zero on purpose: a hook that fails the
- * operation would be caught by any test that merely checks the operation
- * succeeded, whereas the actual danger is a hook that runs *and lets the
- * operation succeed*, which is invisible unless you look for its side effect.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -33,15 +13,6 @@ import {
 } from "./git-hooks-guard.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
-/**
- * Every client-side hook `githooks(5)` documents for git 2.39, not just the
- * ones the operations below are expected to fire.
- *
- * Planting the whole set is the point: the fix does not enumerate hook types
- * (git resolves them all through one lookup that `core.hooksPath` overrides), so
- * the test shouldn't either. If a future git fires a hook we didn't predict on
- * one of these operations, this fixture catches it rather than agreeing with us.
- */
 const HOOK_NAMES = [
   "applypatch-msg",
   "pre-applypatch",
@@ -78,7 +49,7 @@ describe("git hooks guard", () => {
   let markerFile: string;
   let origGitConfigGlobal: string | undefined;
 
-  /** Install a marker-writing, always-succeeding hook of every type. */
+  // Mark execution without failing git: successful commands can still run unsafe hooks.
   function plantHooks(repoDir: string): void {
     const hooksDir = path.join(repoDir, ".git", "hooks");
     fs.mkdirSync(hooksDir, { recursive: true });
@@ -89,7 +60,6 @@ describe("git hooks guard", () => {
     }
   }
 
-  /** The hook names that fired, deduplicated. */
   function firedHooks(): string[] {
     if (!fs.existsSync(markerFile)) return [];
     return [...new Set(fs.readFileSync(markerFile, "utf-8").split("\n").filter(Boolean))].sort();
@@ -114,12 +84,6 @@ describe("git hooks guard", () => {
     fs.rmSync(path.dirname(markerFile), { recursive: true, force: true });
   });
 
-  // ── The fixture itself must be able to fail ───────────────────────────────
-  // A guard test whose fixture can't observe the thing it guards against
-  // proves nothing. This runs the identical hooks through UNGUARDED git and
-  // asserts they DO fire, so a later green run of the tests below means the
-  // guard worked rather than that the hooks were never wired up.
-
   it("control: the planted hooks really do fire under unguarded git", () => {
     execFileSync("git", ["init", "--initial-branch=main"], { cwd: tmpDir, stdio: "ignore" });
     plantHooks(tmpDir);
@@ -127,14 +91,10 @@ describe("git hooks guard", () => {
     execFileSync("git", ["add", "-A"], { cwd: tmpDir, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "one"], { cwd: tmpDir, stdio: "ignore" });
 
-    // `reference-transaction` fires on essentially any ref update, which is why
-    // "just don't commit" is not a mitigation for this class.
     expect(firedHooks()).toEqual(
       expect.arrayContaining(["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "reference-transaction"]),
     );
   });
-
-  // ── GitManager: the post-turn auto-commit path ────────────────────────────
 
   it("GitManager.autoCommit does not run a repository pre-commit hook", async () => {
     const git = new GitManager(tmpDir);
@@ -144,7 +104,6 @@ describe("git hooks guard", () => {
     write("payload.txt", "agent output");
     const result = await git.autoCommit("a turn");
 
-    // The commit still happens — this is a security fix, not a behaviour stop.
     expect(result.commitHash).toBeTruthy();
     expect(firedHooks()).toEqual([]);
   });
@@ -160,10 +119,6 @@ describe("git hooks guard", () => {
     expect(hash).toBeTruthy();
     expect(firedHooks()).toEqual([]);
   });
-
-  // ── Non-commit operations ────────────────────────────────────────────────
-  // `autoCommit` is the cheapest vector, not the only one: the orchestrator
-  // also merges, rebases, checks out branches and pushes on these trees.
 
   it("GitManager.checkoutNewBranch does not run a repository post-checkout hook", async () => {
     const git = new GitManager(tmpDir);
@@ -182,7 +137,6 @@ describe("git hooks guard", () => {
     write("base.txt", "base");
     await git.autoCommit("base");
 
-    // A side branch with its own commit, so the merge is a real one.
     await git.checkoutNewBranch("side");
     write("side.txt", "side");
     await git.autoCommit("side");
@@ -208,7 +162,6 @@ describe("git hooks guard", () => {
     write("feature.txt", "feature");
     await git.autoCommit("feature");
 
-    // Move the base forward so the rebase actually replays a commit.
     await git.rollback(base);
     await git.checkoutNewBranch("moved-base");
     write("other.txt", "other");
@@ -244,16 +197,10 @@ describe("git hooks guard", () => {
     }
   });
 
-  // ── The other half of the two-layer guard ────────────────────────────────
-
   it("a repository-local core.hooksPath cannot re-enable hooks", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
     plantHooks(tmpDir);
-    // `.git/config` sits on the same writable mount as `.git/hooks`, so an
-    // attacker who could only be beaten by config-file precedence would just
-    // point `core.hooksPath` back at their directory. The `-c` we pass is read
-    // after every config file, so it still wins.
     execFileSync("git", ["config", "core.hooksPath", path.join(tmpDir, ".git", "hooks")], {
       cwd: tmpDir,
       stdio: "ignore",
@@ -299,9 +246,6 @@ describe("git hooks guard: exposed shapes", () => {
   });
 
   it("keeps a caller's own simple-git options, including other unsafe opt-ins", () => {
-    // `repo-git.ts` and `git-utils.ts` pass `unsafe.allowUnsafeConfigPaths` etc.
-    // Clobbering those would break every credentialed fetch, so the merge has to
-    // be additive rather than a replacement.
     const git = safeSimpleGit(undefined, {
       unsafe: { allowUnsafeConfigPaths: true },
       config: ["user.name=Someone"],

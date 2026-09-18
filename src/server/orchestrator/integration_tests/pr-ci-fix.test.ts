@@ -1,9 +1,3 @@
-/**
- * Integration tests for CI fix flow (Phase 2):
- * - POST /api/sessions/:id/pr/fix-ci
- * - POST /api/sessions/:id/pr/auto-fix
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -41,7 +35,6 @@ beforeEach(async () => {
 
   githubAuth = new StubGitHubAuthManager();
 
-  // Create a session with a git repo + initial commit
   sessionId = crypto.randomUUID();
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -56,7 +49,6 @@ beforeEach(async () => {
     env: { ...process.env, HOME: tmpDir },
   });
 
-  // Set origin + feature branch
   await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
   execSync("git checkout -b shipit/test-feature", {
     cwd: sessionDir,
@@ -66,7 +58,6 @@ beforeEach(async () => {
   sessionManager = new SessionManager(dbManager);
   sessionManager.track(sessionId, "Test session", sessionDir);
 
-  // Create poller with sseBroadcast spy
   prStatusPoller = new PrStatusPoller({
     githubAuth: githubAuth as any,
     sessionManager,
@@ -96,12 +87,6 @@ afterEach(async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
-
-// docs/169 — the per-session POST /api/sessions/:id/pr/auto-fix toggle was
-// removed; auto-fix CI is now a global account-level setting
-// (PUT /api/settings { autoFixCi }). The auto-loop reads the global flag at
-// decision time. The manual "Fix CI" button (/pr/fix-ci) dispatches a plain
-// agent turn and (docs/169 follow-up) no longer marks the auto-fix state running.
 
 describe("POST /api/sessions/:id/pr/fix-ci", () => {
   it("returns 401 when not authenticated with GitHub", async () => {
@@ -134,7 +119,6 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ paused: true });
     expect(sessionManager.get(sessionId)!.autoFixCiPaused).toBe(true);
-    // The flag shows up in the visible session list the route re-broadcasts.
     expect(sessionManager.list().find((s) => s.id === sessionId)?.autoFixCiPaused).toBe(true);
   });
 
@@ -170,9 +154,6 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
 
 describe("PrStatusPoller auto-fix state", () => {
   it("getAutoFixState returns undefined when not set", () => {
-    // docs/169 follow-up — a manual "Fix CI" is a plain agent turn and no longer
-    // seeds auto-fix state; only the automatic loop sets it (covered by the
-    // auto-fix-manager and pr-status-poller unit suites).
     expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();
   });
 });

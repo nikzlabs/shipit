@@ -9,10 +9,6 @@ import {
 import type { SessionManager } from "./sessions.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 
-// Per-repo cadence (fast/slow bucket selection, post-push fast window,
-// multi-repo independence) is exercised through the PrStatusPoller public API
-// and asserted via the resulting GraphQL poll timing. docs/201 Phase P9.
-
 // eslint-disable-next-line no-restricted-syntax -- vi.mock's importOriginal generic needs an inline import() type
 vi.mock("./workflow-loader.js", async (importOriginal: () => Promise<typeof import("./workflow-loader.js")>) => {
   const actual = await importOriginal();
@@ -35,8 +31,6 @@ describe("PrPollingSupervisor — per-repo cadence scaling (Strategy 2)", () => 
     vi.useRealTimers();
   });
 
-  // ---- Per-repo cadence scaling (Strategy 2) ----
-
   it("settled PRs poll at slow cadence (120s), not fast (15s)", async () => {
     const successNode = makeGraphQLPrNode();
     const graphqlResult = {
@@ -53,15 +47,12 @@ describe("PrPollingSupervisor — per-repo cadence scaling (Strategy 2)", () => 
     poller.notifyViewerAttached();
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // Initial poll lands.
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
 
-    // 60 s in: cadence is slow (120 s) → no fresh poll.
     await vi.advanceTimersByTimeAsync(60_000);
     expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
 
-    // Past 120 s: a poll fires.
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
   });
@@ -118,20 +109,14 @@ describe("PrPollingSupervisor — per-repo cadence scaling (Strategy 2)", () => 
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
 
-    // Without a post-push signal: a settled PR sits at slow cadence and
-    // doesn't poll again in the next 60 s.
     await vi.advanceTimersByTimeAsync(60_000);
     expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
 
-    // scheduleAutoPush ⇒ poller is notified. Fast cadence resumes.
     poller.notifyAutoPush("s1");
 
-    // Next supervisor tick polls.
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
 
-    // 5 minutes after the push, the window closes and the PR settles back
-    // to slow cadence — no fresh poll in the following 60 s after that.
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     const callsAfterWindow = (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length;
     await vi.advanceTimersByTimeAsync(60_000);
@@ -139,9 +124,6 @@ describe("PrPollingSupervisor — per-repo cadence scaling (Strategy 2)", () => 
   });
 
   it("multi-repo: a pending-CI repo polls fast while a settled repo polls slow", async () => {
-    // Two repos, two sessions. Repo A has pending CI; repo B is settled.
-    // Only repo A should poll on every tick; repo B should poll on the
-    // slow cadence.
     const pendingNode = makeGraphQLPrNode({
       headRefName: "branch-a",
       commits: {
@@ -179,13 +161,11 @@ describe("PrPollingSupervisor — per-repo cadence scaling (Strategy 2)", () => 
     poller.trackSession("sB", "https://github.com/owner/repoB");
 
     await vi.advanceTimersByTimeAsync(0);
-    // Both repos polled once at track time.
     const a0 = graphql.mock.calls.filter((c) => (c[1] as { name: string }).name === "repoA").length;
     const b0 = graphql.mock.calls.filter((c) => (c[1] as { name: string }).name === "repoB").length;
     expect(a0).toBe(1);
     expect(b0).toBe(1);
 
-    // Advance 60 s: repoA's fast cadence fires 4 polls; repoB stays put.
     await vi.advanceTimersByTimeAsync(60_000);
     const aAfter = graphql.mock.calls.filter((c) => (c[1] as { name: string }).name === "repoA").length;
     const bAfter = graphql.mock.calls.filter((c) => (c[1] as { name: string }).name === "repoB").length;

@@ -33,22 +33,16 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const resetBranchToBase = useGitStore((s) => s.resetBranchToBase);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
-  // docs/186 — the per-session auto-fix pause only makes sense when the global
-  // auto-fix-CI setting is on, so the toggle is gated on it (pausing an
-  // already-off loop would be a no-op the user can't reason about).
+
   const globalAutoFixCi = useSettingsStore((s) => s.autoFixCi);
   const repoDefaultBranch = useSessionDefaultBranch(sessionId);
   const closeState = useClosePr(sessionId);
 
-  // Whether the session has a GitHub remote — gates the remote-only actions
-  // (auto-merge, sync). Mirrors the `canAutoMerge` prop the card passes around.
   const canAutoMerge = !!session?.remoteUrl;
   // Prefer card-derived branches because they update mid-turn (e.g. branch
-  // rename on graduation), then fall back to the session record.
+
   const headBranch = card?.pr?.headBranch ?? card?.headBranch ?? session?.branch;
-  // Pre-PR there's no `pr.baseBranch` to read, so fall back to the repo's real
-  // default branch rather than assuming "main" — "Sync with master" on a
-  // master repo, and a rebase onto a ref that actually exists.
+
   const syncBaseBranch = card?.pr?.baseBranch ?? repoDefaultBranch;
   const syncDisabled = isAgentRunning || rebaseStatus !== "idle";
   const isOpen = card?.phase === "open";
@@ -60,9 +54,6 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
     setToast({ message: "Branch name copied" });
   };
 
-  // An active branch syncs by rebasing. A merged branch instead uses the
-  // squash-safe reset flow: hard-reset to the merged PR's latest base, heal the
-  // remote, re-arm the PR lifecycle, and record the durable branch-updated card.
   const handleSyncWithBase = () => {
     if (isAgentRunning || useGitStore.getState().rebaseStatus !== "idle") return;
     if (isMerged) {
@@ -72,19 +63,12 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
     }
   };
 
-  // The auto-merge toggle is shown here only for the phases without an inline
-  // row (pre-PR, merged, closed); the open phase shows it inline on the card.
-  // It stays available on a merged/closed card on purpose: that is where a
-  // reused session is armed for its NEXT pull request, and with auto-create-PR
-  // on there is no `ready` phase to do it in (`pr-lifecycle.ts` goes creating →
   // open). What it must NOT do is show the dead PR's arming — `useActiveAutoMerge`
-  // handles that, so the toggle reads OFF here until the user arms it again.
-  // The trigger is always rendered (the menu is a stable home for PR actions);
+
   // in practice Copy branch name is essentially always available, so it's never
-  // empty for a real session.
+
   const showAutoMergeToggle = canAutoMerge && !isOpen;
-  // Auto-fix pause is relevant whenever the session has a remote and the global
-  // auto-fix-CI loop is on — independent of the PR phase (CI runs while open).
+
   const showAutoFixPause = canAutoMerge && globalAutoFixCi;
 
   return (
@@ -92,7 +76,7 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
       label="Pull request actions"
       triggerClassName="h-auto w-auto p-1"
       onOpenChange={(open) => {
-        // Reset the destructive close-confirm whenever the menu closes, so a
+
         // partial confirmation never carries over to the next open.
         if (!open) closeState.reset();
       }}

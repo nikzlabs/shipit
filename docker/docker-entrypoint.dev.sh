@@ -1,8 +1,6 @@
 #!/bin/sh
 set -e
 
-# The node_modules named volume persists across rebuilds, so it can go stale
-# when dependencies change.  Only re-install when package-lock.json changes.
 LOCK_HASH=$(sha256sum package-lock.json | cut -d' ' -f1)
 MARKER=node_modules/.package-lock-hash
 

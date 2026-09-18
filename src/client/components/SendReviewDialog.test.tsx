@@ -2,8 +2,6 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { SendReviewDialog } from "./SendReviewDialog.js";
 
-// The shared Dialog pushes a dummy history entry on open; stub it so jsdom's
-// real history isn't mutated across tests (same reason as ui/dialog.test.tsx).
 beforeEach(() => {
   vi.spyOn(window.history, "pushState").mockImplementation(() => {});
   vi.spyOn(window.history, "back").mockImplementation(() => {});
@@ -42,9 +40,6 @@ describe("SendReviewDialog", () => {
     expect(screen.getByRole("button", { name: /Send 1 comment$/ })).toBeTruthy();
   });
 
-  // The whole point of the first version: no comment list, no per-comment
-  // removal (requirements.md → Later versions). Guard it, so the dialog does
-  // not quietly regrow one.
   it("does not list the comments", () => {
     renderDialog();
     expect(screen.queryByText(/Every new feature/)).toBeNull();
@@ -115,8 +110,6 @@ describe("SendReviewDialog", () => {
     expect(props.onClose).not.toHaveBeenCalled();
   });
 
-  // The server rejects a note over 4000 characters; the field stops it first,
-  // so that 400 is unreachable by typing.
   it("caps the note at the length the server accepts", () => {
     renderDialog();
     const field = screen.getByLabelText(/Add a note for the agent/) as HTMLTextAreaElement;

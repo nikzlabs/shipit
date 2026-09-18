@@ -49,10 +49,10 @@ workspace operation.
 ```yaml
 agent:
   install: npm ci
-  dep-dirs:            # default: [node_modules]
+  dep-dirs:
     - node_modules
-    - packages/web/node_modules   # monorepo: list each explicitly
-    - services/worker/.venv        # polyglot: just more literals
+    - packages/web/node_modules
+    - services/worker/.venv
 ```
 
 - **Literal relative paths only — no globs, no detection.** Each entry is a relative directory path
@@ -189,6 +189,73 @@ Regression coverage: `overlay-snapshot.test.ts` drives a local HTTP server that 
 and then destroys the TCP socket mid-archive, asserting a clean rejection and an empty
 `uncaughtException` log; `overlay-publish.test.ts` asserts the signal is threaded, a mid-stream death
 becomes an `"error"` outcome, and an abort stops the remaining dirs.
+
+### The dep dir is NOT quiescent while it is snapshotted (prod degradation, 2026-09-02)
+
+The producer's first design assumed the post-install / pre-agent workspace was still, so tar's
+`file changed as we read it` race could not apply and any non-zero exit was a real failure. It is not
+still: compose services start in a **parallel** async IIFE beside `agent.install`
+(`service-manager-setup.ts` — the install gate *retries* a service that fails during install, it never
+defers starting one), and a running Node dev server writes inside the dep dir it is served from (Vite's
+optimizer cache is `node_modules/.vite`). Creating or removing a top-level entry moves the dep dir's own
+mtime, so tar's final stat of `.` differs and it exits **1**. Measured on the production host: 18 of 46
+live agent containers, across multiple repositories — ~39% of publishes silently declined, so those dep
+dirs' rolling bases never advanced and later sessions paid a cold install.
+
+**The producer's rule is unchanged: a non-zero tar exit still refuses the archive.** GNU tar's exit 1
+means the archive is not an exact copy of the file set, and this base is shared by every future session
+of the repo. What changed is that the race is treated as **transient and retryable**: the orchestrator
+re-pulls the dep dir once (`pullSnapshotWithRetry`, `overlay-publish.ts`) before recording an `"error"`.
+The write that caused it is one-shot — the cache directory a dev server creates is already there on the
+second read — so attempt 2 is clean, and only an archive tar itself called exact is ever published.
+
+Two alternatives were ruled out, and one hole had to be closed first:
+
+- **Excluding volatile cache dirs** (`.vite`, `.cache`) in `depSnapshotTarArgs` — ruled out
+  **empirically**: with GNU tar 1.34, `--exclude=./.vite` still exits 1 with
+  `tar: .: file changed as we read it`, because excluding a child does not stop tar noticing that the
+  parent directory's mtime moved. It also does nothing for the second observed variant
+  (`tar: ./deep-eql/index.js: …`), a member rewritten mid-read.
+- **Tolerating the root-only warning** (accepting exit 1 when tar named only `.`) — tempting, because a
+  directory carries no content in a tar and so no member can be torn. Rejected on **completeness**: tar
+  reads a directory's listing and then traverses it, so a top-level entry created after that listing is
+  simply absent from the archive with only `.` reported. Published under a pointer whose `markerStamp`
+  later lets a session skip installing, a base missing a real dependency is exactly the poisoning the
+  `skipped-empty` guard already exists to prevent.
+- **A failed tar did not reliably reach the orchestrator at all.** `'close'` fires *after* stdout's
+  `'end'`, so piping tar's stdout straight to the HTTP reply let a FAILED tar complete the response
+  successfully — and both exit-1 shapes leave a structurally COMPLETE archive, so the orchestrator's
+  `tar -x` succeeded and published it. The endpoint's `done.catch(… stream.destroy(err))` was a race it
+  usually lost. `createDepSnapshotTar` now streams through a `PassThrough` that withholds end-of-stream
+  until `done` settles. Without this the retry above would be decorative, and "a member race is fatal"
+  was never actually true end-to-end.
+
+The spawn also drops **`TAR_OPTIONS`** from tar's environment (and pins `LC_ALL=C`). GNU tar reads that
+variable as extra flags: an `--exclude` in a session's environment would silently remove members from a
+base every future session of the repo mounts.
+
+The failure was also invisible orchestrator-side — the only signal anywhere on the host was a
+`console.warn` inside each session container. A dep dir whose publish still returns `"error"` after the
+retry now emits a session log line (`service-manager-setup.ts`) carrying **counts only**; the dep dir
+names stay off it because `agent.dep-dirs` is repo-declared text and the line is on the docs/264
+ops-readable channel (its `OPS_SAFE_TEMPLATES` entry is what lets `shipit session logs` show it at all).
+
+**Measuring the retry.** A retry that keeps succeeding is indistinguishable from a run that never raced,
+so `DepDirPublishOutcome` carries an `attempts` count (1 ordinarily, 2 when the retry fired) and
+`formatOverlayMeasurement` renders it as an `:a<attempts>` segment — **only when it is greater than 1**,
+so an ordinary line is byte-identical to before and `grep ':a'` counts the dep dirs that raced. It is its
+own segment rather than part of the `d<depth>g<generation>` suffix because the case worth counting most
+is an `"error"`, which read no pointer and so has no depth to hang it on. `attempts` is absent when no
+pull was attempted at all (aborted before it started, or an install that declined every dir before any
+I/O). An aggregate rate across sessions is a separate, unbuilt signal — planning#493.
+
+Regression coverage: `dep-snapshot.test.ts` blocks tar on an undrained stdout and mutates the tree while
+it is provably mid-read, asserting that both race shapes reject *and* that the stream errors rather than
+ending cleanly (plus that `TAR_OPTIONS` is not honoured); `overlay-publish.test.ts` covers the retry —
+raced-then-clean publishes, twice-raced declines, an aborted pull is not retried, a failed attempt's
+partial tree never mixes into the retry's, and the `attempts` count reaches both the outcome and the
+`[overlay-measure]` line in each shape; `service-manager-setup.test.ts` asserts the log line's real
+string matches the ops-safe template, carries the `"server"` source, and names no dep dir.
 
 ### Reused vs dropped vs changed (relative to the whole-workspace implementation already on the branch)
 
@@ -369,6 +436,68 @@ removed siblings back. So a release records `SessionContainer.overlayVolumesRecr
 install-gated services; a **manual** service the user had started stays stopped, and the session's
 Logs panel says so — the alternative was leaving it running against an upper layer that no longer
 exists.
+
+**So a rotation must be *earned* — a code-only commit does not rotate the base (ops finding,
+2026-09-03).** Everything above makes a rotation survivable; it also makes one expensive, and the
+publish CAS was handing out rotations nobody asked for. A session on a repo whose dependency files had
+not moved for two days was restarted; container creation logged `base generation rotated`,
+force-removed the two running Compose service containers holding its overlay volumes (exit 137), and
+reconciled the stack. The user's dev server died so the session could be moved onto a generation whose
+contents were byte-identical to the one it was already on.
+
+The cause was that the CAS ordered on **commit ancestry alone**: any strictly-forward default-branch
+commit advanced the base and therefore minted `g<N+1>`, whether or not it changed a single dependency
+input. Every published generation is a new immutable directory, so a code-only merge on `main` was
+enough to invalidate every live session's volume opts.
+
+The fix is to make the forward branch ask a second question before it materializes anything: *would
+this generation hold the same dependencies as the current one?* When the answer is provably yes, the
+pointer's **lineage** advances (`commit`, `updatedAt`) and its **contents** do not (`generation`,
+`baseDir`, `depth` are untouched) — the `lineage-advanced` outcome in `overlay-base.ts`. Live mounts
+keep resolving, `overlayDriverOpts` produces the same string, `overlayVolumeState` reads `match`,
+`releaseOverlayVolumeHolders` is never reached, and `applyOverlayDepDirs` is never told to reconcile.
+
+**The equality test is the one docs/198 already trusts**, not a new one: the pointer's recorded
+`marker.depsHash` (the dependency-input content key), `marker.runtimeKey` (the worker-side runtime
+fingerprint) and `marker.installCommands`, all against the candidate's. Everything the triple omits is
+already in the scope hash (repo URL, orchestrator runtime fingerprint, dep dir), so it cannot differ
+between the two sides.
+
+**But it needs one precondition docs/198's own use does not, because reusing a tree is a stronger
+claim than re-validating one** (review finding). `preStampInstallMarker` uses that triple to let a
+session **skip `agent.install`** — and a wrong skip is caught downstream, because the worker gate
+re-derives its own runtime key and re-checks the overlay-emptiness contradiction. Declining to
+*republish* has no such backstop: the candidate's freshly-installed snapshot is discarded and the old
+generation stands. That difference matters exactly where the hashed inputs stop describing the output:
+`npm ci` runs the repository's own `postinstall`, so a commit that changes only `scripts/build.js` or a
+`patches/*.patch` produces a different installed tree under an identical key — and a `patch-package`
+-style script writes that difference straight into the dep dir the base holds.
+
+This repo had already reached that conclusion once, on the plugin side (`plugin-dep-store.ts`, which
+declines the store outright for a lifecycle-script install with no declared inputs). So the detector
+moved to `shared/deps-hash.ts:hasInstallLifecycleScript` and both callers use it. On the session path
+it is carried as `PublishCandidate.contentKeyDescribesTree`, resolved by `overlay-publish.ts` (the side
+that holds the workspace) and **absent-means-false**, so a caller that cannot answer keeps rotating. A
+declared `agent.install-inputs` overrides it: that is the author stating what their install actually
+consumes, and it is why the incident repo qualifies despite its `npm ci --prefix …` commands, which
+the command allowlist alone rejects.
+
+Every uncertainty rotates, as before: a missing marker on either side, a `null`/absent `depsHash`
+(content-keying off, or an install whose inputs are not recognized), a pointer written before
+`depsHash` existed, a changed runtime key or install-command list. So does every comparison that is
+not a clean fast-forward — the equal-commit skip, the behind-the-base decline and the **force-push
+lineage reset** all keep their existing behavior, because a rewritten lineage is not a safe place to
+reason about content. The conservative answer is only ever wasteful; the permissive one would leave a
+session mounting deps it does not have.
+
+Advancing the pointer's `commit` rather than skipping outright is what keeps ordering intact. `commit`
+now means *the newest default-branch commit whose dependency content this generation is known to
+hold*, which is what both of its readers want: the CAS's ordering key (so a genuinely older candidate
+arriving late still reads as behind), and `preStampInstallMarker`'s exact-commit gate (a session at
+that commit hashes its dep files to the value the marker already records, so the widened match claims
+nothing the content match did not already grant). Guards: `overlay-base.test.ts`'s content-equal
+block, and `integration_tests/overlay-restart-preserves-services.test.ts`, which spans publish →
+generation → driver opts → holder eviction in both directions.
 
 **A stale volume also loses its lowerdir, which is why it must not survive a create.** Two of the four
 damaged sessions had the pinned base generation itself gone from disk. `liveMountedOverlayBaseGenerations`

@@ -1,12 +1,4 @@
-/**
- * PrLifecycleCard — sticky top chrome for the chat panel.
- *
- * Single-line design for each PR phase: ready, creating, open, merged, error.
- * Updates in place when the store state changes. Always renders (even pre-PR
- * or for sessions without a PR card) so the right cluster — search icon and
- * the overflow menu housing conversation- and PR-level preferences — has a
- * stable home. See docs/156.
- */
+
 
 import { useState, useCallback, useMemo } from "react";
 import { usePrStore } from "../../stores/pr-store.js";
@@ -33,18 +25,8 @@ import { useSessionDefaultBranch } from "../../utils/default-branch.js";
 import { ReadyPhase, OpenPhase, TerminalPhase, ErrorPhase } from "./phases/index.js";
 import type { NotableFileChange } from "../../../server/shared/types/github-types.js";
 
-/** Stable empty reference so a card-less / no-docs render doesn't churn props. */
 const EMPTY_NOTABLE_FILES: NotableFileChange[] = [];
 
-// ---- Changed-docs toggle (docs/205) ----
-
-/**
- * Two-document toggle in the header's action cluster, left of the ⋯ menu. Its
- * presence is the signal that the PR touched a notable file, so there's no
- * count badge. Collapsed → icon only, caret points up, header height unchanged.
- * Expanded → icon turns active (purple), caret flips down toward the panel that
- * drops in below.
- */
 function ChangedDocsToggle({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
   return (
     <button
@@ -68,16 +50,14 @@ function ChangedDocsToggle({ expanded, onToggle }: { expanded: boolean; onToggle
   );
 }
 
-// ---- Main component ----
-
 export interface PrLifecycleCardProps {
   sessionId: string;
   onOpenDetails?: () => void;
-  /** Ask the agent to create a PR. The agent has context the orchestrator doesn't, so it can pick a good title and write a proper Summary/Changes/Test plan body. */
+
   onCreatePr?: () => void;
-  /** Whether the session has a GitHub remote — gates the Auto-fix / Auto-merge overflow toggles. */
+
   canAutoMerge?: boolean;
-  /** Opens the conversation search bar. */
+
   onSearch?: () => void;
 }
 
@@ -90,30 +70,13 @@ export function PrLifecycleCard({
 }: PrLifecycleCardProps) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
 
-  // docs/205/210 — the changed-docs strip. Sourced from the standalone
-  // `notableFilesBySession` slice (not the card) so it survives the poller
-  // rebuilding the card on reload/session-switch and repopulates from the
-  // viewer-connect re-seed. Only contributes to the strip when a card exists, so
-  // a session with changed docs but no PR card yet doesn't render a floating
-  // strip. The toggle is hidden entirely when there's nothing to show (its
-  // presence is the signal). Collapse state is pure view state, per session in
-  // localStorage, defaulting to collapsed.
   const storedNotableFiles = usePrStore((s) => s.notableFilesBySession[sessionId]);
   const notableFiles = card ? (storedNotableFiles ?? EMPTY_NOTABLE_FILES) : EMPTY_NOTABLE_FILES;
 
-  // docs/206 — related-issue chips, computed purely from data already on the
-  // client: the PR body (poller `prBody`, falling back to the lifecycle card's
-  // `pr.body`) for Closes/Refs, and the session's first user message for the
-  // issue it was started from. No server round-trip.
-  // The repo's real default branch, so "Merged: … into <base>" only annotates a
-  // genuinely non-default base (a `master` repo shouldn't read "into master").
   const repoDefaultBranch = useSessionDefaultBranch(sessionId);
   const prBody = usePrStore((s) => s.statusBySession[sessionId]?.prBody) ?? card?.pr?.body;
   const firstUserText = useSessionStore((s) => s.messages.find((m) => m.role === "user")?.text);
-  // docs/248 — resolve the PR body's references against the destinations this
-  // session declares, so a chip only becomes an inline link when there is a
-  // declared tracker behind it. Subscribed (not `getState()`) so the chips
-  // re-resolve when the tracker list lands or a declaration changes.
+
   const trackers = useIssuesStore((s) => s.trackers);
   const issueRefs = useMemo(
     () =>
@@ -130,16 +93,8 @@ export function PrLifecycleCard({
     [prBody, firstUserText, trackers],
   );
 
-  // The panel (and its header toggle) appears when there's anything to show in
-  // it — related issues OR notable files. An issues-only PR still gets a toggle.
   const hasPanelContent = notableFiles.length > 0 || issueRefs.length > 0;
-  // Collapse state is per-session view state in localStorage. A session with no
-  // stored preference defaults to expanded on desktop (roomy) and collapsed on
-  // mobile (where header height is precious); a stored preference always wins.
-  // We adjust state during render when `sessionId` changes (re-reading the saved
-  // value) rather than reaching for useEffect — the React-endorsed "store info
-  // from previous render" pattern, so a session switch restores that session's
-  // own expanded/collapsed preference without an effect.
+
   const isMobile = useIsMobile();
   const defaultExpanded = !isMobile;
   const [docsState, setDocsState] = useState(() => ({
@@ -163,19 +118,10 @@ export function PrLifecycleCard({
     });
   }, [sessionId, defaultExpanded]);
 
-  // The whole card body opens the PR detail tab, but only once a PR exists
-  // (open/merged/closed) — the ready/creating/error phases have no PR to
-  // drill into. Clicks that originate on an interactive control (button, link,
-  // input) are ignored via the closest() guard, so toggling auto-fix, merging,
   // or copying the branch never also switches the tab — no per-control
-  // stopPropagation needed. See docs/133.
-  //
+
   // `[role="menu"]` is in the guard because the PR actions overflow menu is
-  // rendered through a Radix Portal: its items live in the DOM at <body>, but
-  // React still bubbles their synthetic click events up through the React tree
-  // to this onClick. Radix menu items are `div[role="menuitem"]` (not buttons),
-  // so without this the first click of the two-step "Close PR" confirm would
-  // bubble here and switch to the PR tab on mobile — navigating away before the
+
   // user could confirm, so the PR never closed.
   const hasPr = !!card?.pr && (card.phase === "open" || card.phase === "merged" || card.phase === "closed");
   const clickable = hasPr && !!onOpenDetails;
@@ -186,41 +132,14 @@ export function PrLifecycleCard({
     onOpenDetails?.();
   };
 
-  // When the strip drops in below, it owns the assembly's bottom border — so the
-  // header drops its own `border-b` to avoid a divider line between the two,
-  // letting header + strip read as one seamless card (they share the same
-  // transparent background). The mobile action row sits between the two and
-  // plays the same game: whichever element is last carries the border.
   const stripShown = hasPanelContent && docsExpanded;
-  // On mobile the open card's status chips + actions break out of the header's
-  // left column into a full-width row of their own. The header's right-hand
-  // icon cluster is a sibling column, so it narrows every wrapped row inside
-  // that column — leaving too little for the auto-merge toggle and the merge
-  // button to share a line. See PrStatusActions.
+
   const actionsRowShown = isMobile && card?.phase === "open" && !!card.pr;
 
-  // Key the inner subtree on sessionId so transient per-session UI state
-  // (e.g. MergeButton's "Merging..." flag, CreatePR's "Creating..." flag,
-  // OpenPhase's "Fixing..." flag) resets when the user switches sessions.
-  // Without this, switching sessions while a merge is in flight leaves the
-  // button stuck on "Merging..." against the new session.
-  //
   // The mobile actions row below is keyed on sessionId too, and must keep being:
-  // on mobile PrStatusActions is hoisted OUT of this subtree into a sibling row,
-  // taking every one of those transient flags with it. A key only on the header
-  // remounts the desktop copy — the mobile copy survived the switch and left
-  // "Merging..." (and "Fixing CI...", "Resolving...", "Sending...") pinned to
-  // whatever session the user landed on, for the rest of the page's life.
-  //
+
   // The two keys MUST stay namespaced apart (`header:`/`actions:`), never the
-  // bare sessionId on both. Keys only have to be unique among *siblings*, and
-  // these two divs are siblings in this fragment — a bare sessionId on both made
-  // them duplicates. React's keyed reconciler indexes the previous children into
-  // a Map by key, so the second div overwrote the first; on a session switch
-  // every key changed, React created fresh nodes and then deleted "the rest" from
-  // that Map — which no longer held the old header. Its DOM node was orphaned in
-  // place, so on mobile (the only viewport where the second keyed div renders)
-  // every session switch stacked one more stale PR header under the app chrome.
+
   const phaseContent = card ? (
     <>
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} onCreatePr={onCreatePr} />}
@@ -236,9 +155,7 @@ export function PrLifecycleCard({
       {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} onCreatePr={onCreatePr} />}
     </>
   ) : (
-    // No PR card yet — leave the left side empty so the right cluster (search
-    // + overflow) anchors the bar. Keeps session-management actions reachable
-    // pre-PR without re-introducing a separate top bar.
+
     <div className="min-w-0 flex-1" />
   );
 
@@ -270,12 +187,7 @@ export function PrLifecycleCard({
         </div>
       </div>
       {actionsRowShown && card && (
-        // Left padding reproduces the PR title's own offset so the chips and
-        // merge controls start on the title's text edge, not under the badge:
-        // header px-3 (12) + badge w-5 (20) + OpenPhase's gap-x-3 (12) = 44px =
-        // pl-11. The header widens to px-4 at `sm`, and this row is rendered up
-        // to 767px (useIsMobile), so it has to track that: 16 + 20 + 12 = 48px =
-        // sm:pl-12. Right padding mirrors the header's px-3/sm:px-4.
+
         <div
           key={`actions:${sessionId}`}
           className={`shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 pl-11 sm:pl-12 pr-3 sm:pr-4 pb-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"}`}

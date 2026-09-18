@@ -3,21 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { LIVE_CREDENTIALS_DIR, resolveCredentialsDir } from "./app-di.js";
 
-/**
- * Regression cover for the "Not logged in · Please run /login" session-killer.
- *
- * `initializeManagers` defaulted `credentialsDir` to {@link LIVE_CREDENTIALS_DIR}.
- * ~86 of the 99 test files that call `buildApp()` pass `workspaceDir: tmpDir`
- * but no `credentialsDir`, so under test they pointed `ProviderAccountManager`
- * at that live path. Its legacy migration is gated on "no accounts registered
- * yet" — never true in production, ALWAYS true against a fresh test DB — and
- * ended in a `renameSync`. Inside a ShipIt session container `/credentials` is
- * the session's own agent home, so running the suite moved the running CLI's
- * `.claude/` (credential *and* conversation jsonl) into
- * `provider-accounts/claude/claude-default/` and every later turn 401'd.
- *
- * These tests pin the two rules that make that unreachable.
- */
 describe("resolveCredentialsDir", () => {
   const created: string[] = [];
 

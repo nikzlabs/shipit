@@ -32,7 +32,6 @@
   .opt-note { font-size: 12px; color: var(--text-faint); margin-left: auto; }
   .rec { color: #34d399 !important; }
 
-  /* shared composer pieces */
   .stack { display: flex; flex-direction: column; }
   .gap { height: 8px; }
   .composer { border: 1px solid var(--ctl-border); border-radius: 12px; background: var(--input); overflow: hidden; }
@@ -41,7 +40,6 @@
   .pill { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; white-space: nowrap; }
   .send { margin-left: auto; background: var(--accent); color: #04122e; font-weight: 600; font-size: 12px; border: none; border-radius: 8px; padding: 6px 13px; }
 
-  /* the control, in its variants */
   .ctl-row { display: flex; align-items: center; gap: 9px; }
   .chk { width: 16px; height: 16px; border-radius: 5px; flex: none; background: var(--accent); display: grid; place-items: center; color: #06122b; box-shadow: 0 0 0 1px rgba(91,141,239,0.5); }
   .chk svg { display:block; }
@@ -49,16 +47,12 @@
   .ctl-sub { font-size: 11px; color: var(--text-dim); }
   .ctl-sub code, .ctl-title code { background: rgba(255,255,255,0.06); padding: 0 4px; border-radius: 4px; font-size: 10.5px; }
 
-  /* A: detached card above */
   .detached { border: 1px solid var(--ctl-border); border-radius: 10px; background: var(--accent-soft); padding: 9px 11px; }
 
-  /* B: inside, top row */
   .inside-top { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); background: var(--accent-soft); }
 
-  /* C: inside, row above footer */
   .inside-mid { padding: 8px 12px; border-top: 1px solid var(--border-soft); background: var(--accent-soft); }
 
-  /* D: chip in footer */
   .chip {
     display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600;
     color: #cfe0ff; border: 1px solid rgba(91,141,239,0.4); background: rgba(91,141,239,0.12);
@@ -80,7 +74,7 @@
   <p class="sub">docs/218 · none of these alter the input's border-radius. Same checked-by-default behavior in all four.</p>
 
   <div class="grid">
-    <!-- A -->
+
     <div class="opt">
       <div class="opt-h"><span class="opt-tag">A</span><span class="opt-name">Detached card above</span><span class="opt-note">most explanatory</span></div>
       <div class="stack">
@@ -105,7 +99,6 @@
       </div>
     </div>
 
-    <!-- B -->
     <div class="opt">
       <div class="opt-h"><span class="opt-tag">B</span><span class="opt-name">Inside border, top row</span><span class="opt-note rec">recommended</span></div>
       <div class="stack">
@@ -129,7 +122,6 @@
       </div>
     </div>
 
-    <!-- C -->
     <div class="opt">
       <div class="opt-h"><span class="opt-tag">C</span><span class="opt-name">Inside border, above footer</span><span class="opt-note">closest to send</span></div>
       <div class="stack">
@@ -150,7 +142,6 @@
       </div>
     </div>
 
-    <!-- D -->
     <div class="opt">
       <div class="opt-h"><span class="opt-tag">D</span><span class="opt-name">Toggle chip in the footer</span><span class="opt-note">most minimal</span></div>
       <div class="stack">

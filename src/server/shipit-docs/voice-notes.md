@@ -8,8 +8,8 @@ isn't looking at the screen still needs to hear when you need them.
 
 ```jsonc
 voice_note({
-  summary: "Done — one test is still red, want me to dig in?", // ear-shaped headline
-  context: { repo: "shipit", prUrl: "...", prTitle: "..." }     // optional, display-only
+  summary: "Done — one test is still red, want me to dig in?",
+  context: { repo: "shipit", prUrl: "...", prTitle: "..." }
 })
 ```
 

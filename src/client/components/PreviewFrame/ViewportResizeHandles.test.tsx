@@ -11,8 +11,6 @@ import { usePreviewStore } from "../../stores/preview-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { findPresetById } from "../device-presets.js";
 
-// jsdom doesn't implement ResizeObserver — no-op stub for useDeviceFrame's
-// container measurement (same stub as PreviewFrame.test.tsx).
 beforeEach(() => {
   vi.stubGlobal(
     "ResizeObserver",
@@ -82,8 +80,7 @@ describe("computeViewportResize", () => {
   });
 
   it("never exceeds the absolute custom-size bound, however wide the panel", () => {
-    // An uncapped drag on a >2560px panel would create a size the persisted
-    // viewport validation rejects — silently deleting that session's memory.
+
     expect(computeViewportResize(2500, 500, 1, 3000)).toBe(2560);
   });
 });
@@ -115,7 +112,7 @@ describe("computeKeyboardResize", () => {
 });
 
 describe("ViewportResizeHandles", () => {
-  // iPhone 16 is 393×852 — the gesture-start size for every drag below.
+
   beforeEach(() => {
     usePreviewStore.getState().clearViewportMemory();
     localStorage.clear();
@@ -137,7 +134,7 @@ describe("ViewportResizeHandles", () => {
     fireEvent.pointerDown(screen.getByTestId("viewport-handle-x"), { clientX: 100, clientY: 50, button: 0 });
     fireEvent.pointerMove(document, { clientX: 130, clientY: 50 });
     const s = usePreviewStore.getState();
-    // 393 + 2×30 = 453 wide; height untouched by the width handle.
+
     expect(s.devicePreset).toMatchObject({ id: "custom", label: "Custom" });
     expect(s.customSize).toEqual({ width: 453, height: 852 });
     fireEvent.pointerUp(document);
@@ -149,7 +146,7 @@ describe("ViewportResizeHandles", () => {
     fireEvent.pointerMove(document, { clientX: 210, clientY: 190 });
     expect(usePreviewStore.getState().customSize).toEqual({ width: 413, height: 832 });
     fireEvent.pointerUp(document);
-    // The gesture is over: further moves change nothing.
+
     fireEvent.pointerMove(document, { clientX: 400, clientY: 400 });
     expect(usePreviewStore.getState().customSize).toEqual({ width: 413, height: 832 });
   });
@@ -159,7 +156,7 @@ describe("ViewportResizeHandles", () => {
     fireEvent.pointerDown(screen.getByTestId("viewport-handle-y"), { clientX: 50, clientY: 100, button: 0 });
     fireEvent.pointerMove(document, { clientY: 120 });
     fireEvent.pointerMove(document, { clientY: 110 });
-    // Total delta +10 from start → 852 + 20, regardless of the path taken.
+
     expect(usePreviewStore.getState().customSize).toEqual({ width: 393, height: 872 });
     fireEvent.pointerUp(document);
   });
@@ -170,7 +167,7 @@ describe("ViewportResizeHandles", () => {
     expect(screen.getByTestId("viewport-drag-shield")).toBeInTheDocument();
     expect(document.body.style.cursor).toBe("ew-resize");
     fireEvent.pointerMove(document, { clientX: 120 });
-    // The badge tracks the live store-driven size: 393 + 2×20 = 433.
+
     expect(screen.getByTestId("viewport-drag-badge")).toHaveTextContent("433 × 852");
     fireEvent.pointerUp(document);
     expect(screen.queryByTestId("viewport-drag-badge")).not.toBeInTheDocument();
@@ -216,9 +213,7 @@ describe("ViewportResizeHandles", () => {
     const x = screen.getByTestId("viewport-handle-x");
     expect(x).toHaveAttribute("role", "slider");
     expect(x).toHaveAttribute("tabindex", "0");
-    // The width value moves on Left/Right — horizontal — even though the
-    // grip's drawn bar is vertical. Announcing the bar told AT users the
-    // opposite keys from the implemented ones.
+
     expect(x).toHaveAttribute("aria-orientation", "horizontal");
     expect(x).toHaveAttribute("aria-valuenow", "393");
     expect(x).toHaveAttribute("aria-valuetext", "393 pixels wide");
@@ -234,7 +229,7 @@ describe("ViewportResizeHandles", () => {
     render(<Harness />);
     const xy = screen.getByTestId("viewport-handle-xy");
     // role=button here would promise Enter/Space activation that cannot
-    // exist; both axes are already keyboard-reachable through the sliders.
+
     expect(xy).toHaveAttribute("aria-hidden", "true");
     expect(xy).not.toHaveAttribute("role");
     expect(xy).not.toHaveAttribute("tabindex");
@@ -247,7 +242,7 @@ describe("ViewportResizeHandles", () => {
     render(<Harness />);
     fireEvent.pointerDown(screen.getByTestId("viewport-handle-x"), { clientX: 100, clientY: 50, button: 0 });
     expect(screen.getByTestId("viewport-drag-shield")).toBeInTheDocument();
-    // A session switch (keyboard shortcut, automatic navigation) while the
+
     // pointer is held: the move must not resize B's viewport with A's geometry.
     useSessionStore.setState({ sessionId: "session-b" });
     fireEvent.pointerMove(document, { clientX: 200, clientY: 50 });

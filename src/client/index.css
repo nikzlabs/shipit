@@ -10,6 +10,7 @@
 @import "./themes/codex.css";
 @import "./themes/opencode.css";
 @import "./themes/grok.css";
+@import "./themes/antigravity.css";
 @import "./themes/warm-light.css";
 @import "./themes/cool-light.css";
 @import "./themes/solarized.css";
@@ -18,10 +19,10 @@
 @import "./themes/codex-light.css";
 @import "./themes/opencode-light.css";
 @import "./themes/grok-light.css";
+@import "./themes/antigravity-light.css";
 @import "./themes/high-contrast.css";
 
-/* Class-based dark mode for Tailwind v4 — includes all dark-like themes */
-@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .opencode, .opencode *, .grok, .grok *, .solarized, .solarized *, .high-contrast, .high-contrast *));
+@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .opencode, .opencode *, .grok, .grok *, .antigravity, .antigravity *, .solarized, .solarized *, .high-contrast, .high-contrast *));
 
 /* App-shell height. The default is the CSS dynamic viewport; `useAppViewportHeight`
    overwrites it with a measured pixel value on every resize/resume, because an
@@ -29,9 +30,7 @@
    `dvh` — which strands the mobile tab bar below the fold with `overflow: hidden`
    and no way to scroll back to it. See that hook for the full reasoning. */
 :root {
-  /* `100vh` first so a browser without `dvh` still gets a viewport-sized shell
-     rather than an invalid `height` (which computes to `auto` and lets the
-     document grow past the fold — the very failure this variable exists for). */
+
   --app-height: 100vh;
 }
 @supports (height: 100dvh) {
@@ -40,7 +39,6 @@
   }
 }
 
-/* ── Shared motion tokens (theme-independent) ── */
 :root {
   --duration-fast: 150ms;
   --duration-normal: 200ms;
@@ -48,6 +46,73 @@
   --ease-default: ease;
   --ease-out: ease-out;
   --ease-in: ease-in;
+}
+
+/* ── What an INFINITE animation costs, and the one rule (docs/265) ─────────────
+   ONE RULE, enforced by `index.animation-policy.test.ts`:
+
+     An infinite animation may animate `opacity`, and nothing else. It then needs
+     no `steps()` and should stay smooth.
+
+   Why. A live `IntersectionObserver` target — ShipIt always has some, one per
+   `content-visibility: auto` transcript group plus auto-animate and Present
+   cards — makes Chrome recompute intersections, which needs the full main-thread
+   rendering lifecycle. A `transform` animation moves geometry, so every frame it
+   produces drags that lifecycle behind it. An `opacity` animation moves none, so
+   it produces the same compositor frames and wakes the main thread not at all.
+
+   The controlled measurement, ONE element with ONE timing and only the property
+   changed (`node scripts/measure-spinner-cost.mjs`; fuller table in
+   `docs/265-transcript-render-cost/plan.md` §2c):
+
+     transform, linear     60 main frames/s, 39.1 ms/s
+     opacity,   linear      0 main frames/s,  2.5 ms/s
+
+   Read that as renderer MAIN-THREAD cost. The opacity spinner deliberately draws
+   more compositor frames than the stepped one did — that is what smooth means —
+   so this is not a claim about total processor or battery cost.
+
+   Three controls, because the tempting explanations are all wrong: `contain:
+   strict` does not rescue a transform; `scale` and `translate` cost what
+   `rotate` costs, so it is geometry and not rotation; and opacity stays free with
+   the animating element observed directly and inside a `content-visibility: auto`
+   container. What this does NOT establish is a claim about compositing: a
+   production trace recorded `compositeFailed` on a rotating icon, and whether
+   the transform was accelerated is a separate question from the one measured
+   here. The rule rests on the property, which is what the controlled pair varies.
+
+   THE OLD RULE SAID `transform` WAS FINE IF STEPPED. That was wrong twice over.
+   It read as a visual regression (a 10 fps spinner is choppy by construction, and
+   unmistakably so at 120 Hz), and it did not even deliver 10 Hz: step boundaries
+   run from each animation's own start time, so independently mounted spinners do
+   not share a train and their wake-ups add. Twelve stepped transforms mounted
+   7 ms apart measured 60 main frames/s against 10 for one — which is the shape of
+   the production trace that showed 118.5 main frames/s on a 120 Hz display with
+   the "10 Hz" rule in force.
+
+   PHASE MATTERS EVEN FOR OPACITY, and this one only shows up against a real app.
+   Twelve opacity animations sharing one phase behave as one; twelve phases do
+   not. Measured on a running ShipIt: a spinner phased with a staggered
+   `animation-delay` costs 50 main frames/s, and the same spinner with the phase
+   moved into its keyframes costs 5. Pixel-identical output, ten times the cost.
+   Neither a bare fixture nor one with 1,500 `content-visibility` rows reproduces
+   it, so measure this one with `measure-spinner-cost.mjs <seconds> <appUrl>`.
+
+   A FINITE animation is exempt: it stops, so it costs nothing in the steady
+   state. That is the right shape for decoration (the rocket scene, the
+   preview-setup art), and it is the only way to animate a property — like
+   `stroke-dashoffset` — that this rule otherwise forbids. Silence means finite:
+   the CSS default is one iteration, so only `infinite` makes an animation
+   unbounded. For that reading to be sound, the `animation-name` and
+   `animation-iteration-count` LONGHANDS are banned outright — they let the
+   cascade split one animation across two rules, neither of which looks unbounded
+   on its own. Write one `animation:` shorthand.
+
+   The progress spinner is built out of this rule: see `.spinner` below and
+   `components/Spinner.tsx`. */
+@theme {
+
+  --animate-pulse: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 /* docs/211 — sandbox-session accent: teal, distinct from PR violet, ops amber,
@@ -66,7 +131,7 @@
    theme's darker override — the chip stayed pale teal-400 on light surfaces.
    Keeping the bright value scoped to the dark-theme classes (which only match a
    dark <html>) makes it win for dark themes and stay out of the light ones. */
-.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .solarized, .high-contrast {
+.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .antigravity, .solarized, .high-contrast {
   --color-sandbox: #2dd4bf;
 }
 
@@ -85,37 +150,26 @@
      --color-sandbox above: the dark values MUST stay scoped to the dark-theme
      classes, never :root, or they clobber every light theme. */
 :root {
-  --repo-color-0: #9c5636;          /* Clay */
-  --repo-color-1: #a8763c;         /* Ochre */
-  --repo-color-2: #8a7a2f;       /* Mustard */
-  --repo-color-3: #6d8a3a;         /* Olive */
-  --repo-color-4: #3c783c;          /* Fern */
-  --repo-color-5: #2c6f66;          /* Pine */
-  --repo-color-6: #2c7f96;          /* Cyan */
-  --repo-color-7: #3a6c9c;         /* Steel */
-  --repo-color-8: #3c56a8;         /* Denim */
-  --repo-color-9: #5c5088;      /* Lavender */
-  --repo-color-10: #96488c;        /* Orchid */
-  --repo-color-11: #a8506a;          /* Rose */
-  --repo-color-12: #a84040;         /* Brick */
-  --repo-color-13: #7a5c46;        /* Sienna */
-  --repo-color-14: #566b7a;         /* Slate */
-  --repo-color-15: #8a6060;         /* Taupe */
+  --repo-color-0: #9c5636;                    
+  --repo-color-1: #a8763c;                    
+  --repo-color-2: #8a7a2f;                    
+  --repo-color-3: #6d8a3a;                    
+  --repo-color-4: #3c783c;                    
+  --repo-color-5: #2c6f66;                    
+  --repo-color-6: #2c7f96;                    
+  --repo-color-7: #3a6c9c;                    
+  --repo-color-8: #3c56a8;                    
+  --repo-color-9: #5c5088;                    
+  --repo-color-10: #96488c;                    
+  --repo-color-11: #a8506a;                    
+  --repo-color-12: #a84040;                    
+  --repo-color-13: #7a5c46;                    
+  --repo-color-14: #566b7a;                    
+  --repo-color-15: #8a6060;                    
 
-  /* How much of the repo's own color the group's header band is mixed from,
-     over --color-bg-primary. The band's whole job is to say "this row is a
-     header, not a session" — the colored edge already does the separating — so
-     this is deliberately the SMALLEST signal that still reads as a header. The
-     band was originally --color-bg-tertiary, chosen to maximize contrast
-     against the flat Claude palettes; on a light theme that makes it the
-     DARKEST surface in the rail, so the headers outweighed the sessions and a
-     collapsed group became a solid slab. Maximum contrast was the wrong target.
-
-     Dark needs a slightly stronger mix: the same fraction of a light hue over
-     a near-black base separates less than a dark hue over a near-white one. */
   --repo-band-mix: 7%;
 }
-.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .solarized, .high-contrast {
+.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .antigravity, .solarized, .high-contrast {
   --repo-band-mix: 10%;
   --repo-color-0: #e09a6a;
   --repo-color-1: #dcb980;
@@ -135,10 +189,6 @@
   --repo-color-15: #c2a6a8;
 }
 
-/* Lock the page to the visible viewport. The app shell uses h-[100dvh] and
-   manages its own scroll regions; without this, mobile browsers let the
-   whole document scroll when the URL bar shows/hides, pushing the header
-   and PR card out of view. */
 html, body {
   overflow: hidden;
   overscroll-behavior: none;
@@ -148,27 +198,20 @@ html, body {
   background: var(--color-bg-primary);
 }
 
-/* Custom highlight for the markdown-comments "pending comment" range. The
-   native browser selection is dimmed or cleared once focus moves to the
-   comment textarea, so we paint a persistent highlight via the CSS Custom
-   Highlight API. See MarkdownSelectionComments.tsx. */
 ::highlight(shipit-pending-comment) {
   background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   color: inherit;
 }
 
-/* ── Rocket launch animation (new-session empty state) ── */
-
 .rocket-scene {
   position: relative;
 }
 
-/* ── Stars ── */
 .star {
   position: absolute;
   border-radius: 50%;
   background: var(--color-text-tertiary);
-  animation: twinkle 2s ease-in-out infinite alternate;
+  animation: twinkle 2s ease-in-out 9 alternate forwards;
 }
 .star-1 { width: 3px; height: 3px; top: 10%; left: 15%; animation-delay: 0s; }
 .star-2 { width: 2px; height: 2px; top: 20%; left: 75%; animation-delay: 0.4s; }
@@ -184,7 +227,6 @@ html, body {
   100% { opacity: 0.6; transform: scale(1.5); }
 }
 
-/* ── Rocket container — anchored at bottom, smooth liftoff ── */
 .rocket-container {
   position: absolute;
   bottom: 0;
@@ -216,37 +258,35 @@ html, body {
   }
 }
 
-/* ── Rocket SVG ── */
 .rocket-svg {
   position: relative;
   z-index: 2;
   filter: drop-shadow(0 0 20px rgba(233, 69, 96, 0.3));
-  /* Shift down so the fins (not the flame) sit at the container bottom edge */
+
   margin-bottom: -60px;
 }
 
-/* ── Flame — ignites sideways first, then grows downward for thrust ── */
 .flame-group {
   transform-origin: 256px 400px;
   animation: flame-ignite 17.5s ease-out forwards;
 }
 
 @keyframes flame-ignite {
-  /* Ignition: sideways spread (0–5s) */
+
   0%    { transform: scaleY(0) scaleX(0); opacity: 0; }
   8%    { transform: scaleY(0.15) scaleX(1.8); opacity: 0.6; }
   16%   { transform: scaleY(0.2) scaleX(2.2); opacity: 0.8; }
   24%   { transform: scaleY(0.25) scaleX(2.0); opacity: 0.9; }
   28.5% { transform: scaleY(0.4) scaleX(1.6); opacity: 1; }
-  /* Slow creep phase — flames start growing downward (5–7s) */
+
   40%   { transform: scaleY(0.8) scaleX(1.3); opacity: 1; }
-  /* Full thrust during acceleration */
+
   60%   { transform: scaleY(1.6) scaleX(1.2); opacity: 1; }
   100%  { transform: scaleY(3.0) scaleX(1.1); opacity: 1; }
 }
 
 .flame-main, .flame-left, .flame-right {
-  animation: flame-flicker 0.6s ease-in-out infinite alternate;
+  animation: flame-flicker 0.6s ease-in-out 29 alternate forwards;
 }
 .flame-left  { animation-delay: 0.2s; }
 .flame-right { animation-delay: 0.4s; }
@@ -256,7 +296,6 @@ html, body {
   100% { opacity: 1;   transform: scaleX(1.06); }
 }
 
-/* ── Exhaust glow — bloom that grows during ignition ── */
 .exhaust-glow {
   position: absolute;
   bottom: -30px;
@@ -279,7 +318,6 @@ html, body {
   100% { opacity: 0; transform: translateX(-50%) scale(1.0); }
 }
 
-/* ── Exhaust particles — sparks shooting sideways first, then outward ── */
 .particles {
   position: absolute;
   bottom: -10px;
@@ -295,15 +333,14 @@ html, body {
   border-radius: 50%;
   background: #f7c948;
   opacity: 0;
-  animation: particle-burst 4.5s ease-out infinite;
+  animation: particle-burst 4.5s ease-out 4;
 }
 
-/* Sideways-biased particles (fire during ignition) */
 .p1 { animation-delay: 1.5s; --px: -60px; --py: 15px; background: #ff6b35; }
 .p2 { animation-delay: 2.5s; --px: 55px;  --py: 12px; background: #f7c948; }
 .p3 { animation-delay: 3.5s; --px: -45px; --py: 20px; background: #ff6b35; }
 .p4 { animation-delay: 4.5s; --px: 50px;  --py: 18px; background: #f7c948; }
-/* Downward particles (during thrust) */
+
 .p5 { animation-delay: 7.0s; --px: -25px; --py: 70px; background: #e94560; }
 .p6 { animation-delay: 7.5s; --px: 20px;  --py: 80px; background: #ff6b35; }
 .p7 { animation-delay: 8.0s; --px: -10px; --py: 65px; background: #f7c948; }
@@ -320,7 +357,6 @@ html, body {
   }
 }
 
-/* ── Smoke clouds — anchored at bottom of scene, billow sideways ── */
 .smoke-clouds {
   position: absolute;
   bottom: 0;
@@ -371,7 +407,6 @@ html, body {
   }
 }
 
-/* Toast entry animation — start invisible, transition to visible on mount */
 @starting-style {
   .toast-enter {
     opacity: 0;
@@ -379,22 +414,139 @@ html, body {
   }
 }
 
-/* Spinning indicator for in-progress tools */
-@keyframes spin-slow {
-  to {
-    transform: rotate(360deg);
+/* ── The progress spinner (docs/265; components/Spinner.tsx) ──
+   Twelve fixed spokes whose OPACITY is animated so a bright head travels round
+   the ring. Nothing moves, so by the rule above it runs smooth at the display's
+   own rate for a fraction of what rotating one icon cost.
+
+   WHY TWELVE @keyframes INSTEAD OF ONE PLUS A STAGGERED animation-delay. The
+   obvious spelling is a single `spinner-fade` on every spoke with
+   `animation-delay: calc(var(--i) * -0.1s)`. It renders identically and it is
+   MUCH more expensive: measured in the live app, one spinner written that way
+   costs 50 main-thread frames/s, and the same spinner with the stagger moved
+   into the keyframes costs 5.6. Twelve animations sharing one phase behave as
+   one; twelve phases do not. (The old `steps()` rule was undone by the same
+   effect — see the rule comment above `@theme`.) So the phase offset lives in
+   the keyframes and every spoke runs on delay 0.
+
+   Each block is the same sawtooth sampled at a different offset: spoke i is
+   brightest at i/12 through the cycle and fades to 0.12 over the remaining
+   cycle, with the `x.xx%`/`x.xx%` pair a step back up to full at the wrap. To
+   regenerate, opacity at t=0 is `0.12 + 0.88 * i/12`.
+
+   The trailing opacity is 0.12 rather than 0: a spoke that vanishes makes the
+   ring read as a gap chasing its tail, which is a busier shape than the comet.
+
+   Sizes are proportional so one rule serves every ICON_SIZE — the component sets
+   only width/height. `currentColor` is what lets a spinner take the same
+   `text-(--color-*)` token the icon it replaced took. */
+@keyframes spoke-0 { 0% { opacity: 1 } 75% { opacity: 0 } 97.222% { opacity: 0 } 100% { opacity: 1 } }
+@keyframes spoke-1 { 0% { opacity: 0 } 2.778% { opacity: 1 } 77.778% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-2 { 0% { opacity: 0 } 2.778% { opacity: 0 } 5.556% { opacity: 1 } 80.556% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-3 { 0% { opacity: 0 } 5.556% { opacity: 0 } 8.333% { opacity: 1 } 83.333% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-4 { 0% { opacity: 0 } 8.333% { opacity: 0 } 11.111% { opacity: 1 } 86.111% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-5 { 0% { opacity: 0 } 11.111% { opacity: 0 } 13.889% { opacity: 1 } 88.889% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-6 { 0% { opacity: 0 } 13.889% { opacity: 0 } 16.667% { opacity: 1 } 91.667% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-7 { 0% { opacity: 0 } 16.667% { opacity: 0 } 19.444% { opacity: 1 } 94.444% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-8 { 0% { opacity: 0 } 19.444% { opacity: 0 } 22.222% { opacity: 1 } 97.222% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-9 { 0% { opacity: 0 } 22.222% { opacity: 0 } 25% { opacity: 1 } 100% { opacity: 0 } }
+@keyframes spoke-10 { 0% { opacity: 0.037 } 2.778% { opacity: 0 } 25% { opacity: 0 } 27.778% { opacity: 1 } 100% { opacity: 0.037 } }
+@keyframes spoke-11 { 0% { opacity: 0.0741 } 5.556% { opacity: 0 } 27.778% { opacity: 0 } 30.556% { opacity: 1 } 100% { opacity: 0.0741 } }
+@keyframes spoke-12 { 0% { opacity: 0.1111 } 8.333% { opacity: 0 } 30.556% { opacity: 0 } 33.333% { opacity: 1 } 100% { opacity: 0.1111 } }
+@keyframes spoke-13 { 0% { opacity: 0.1481 } 11.111% { opacity: 0 } 33.333% { opacity: 0 } 36.111% { opacity: 1 } 100% { opacity: 0.1481 } }
+@keyframes spoke-14 { 0% { opacity: 0.1852 } 13.889% { opacity: 0 } 36.111% { opacity: 0 } 38.889% { opacity: 1 } 100% { opacity: 0.1852 } }
+@keyframes spoke-15 { 0% { opacity: 0.2222 } 16.667% { opacity: 0 } 38.889% { opacity: 0 } 41.667% { opacity: 1 } 100% { opacity: 0.2222 } }
+@keyframes spoke-16 { 0% { opacity: 0.2593 } 19.444% { opacity: 0 } 41.667% { opacity: 0 } 44.444% { opacity: 1 } 100% { opacity: 0.2593 } }
+@keyframes spoke-17 { 0% { opacity: 0.2963 } 22.222% { opacity: 0 } 44.444% { opacity: 0 } 47.222% { opacity: 1 } 100% { opacity: 0.2963 } }
+@keyframes spoke-18 { 0% { opacity: 0.3333 } 25% { opacity: 0 } 47.222% { opacity: 0 } 50% { opacity: 1 } 100% { opacity: 0.3333 } }
+@keyframes spoke-19 { 0% { opacity: 0.3704 } 27.778% { opacity: 0 } 50% { opacity: 0 } 52.778% { opacity: 1 } 100% { opacity: 0.3704 } }
+@keyframes spoke-20 { 0% { opacity: 0.4074 } 30.556% { opacity: 0 } 52.778% { opacity: 0 } 55.556% { opacity: 1 } 100% { opacity: 0.4074 } }
+@keyframes spoke-21 { 0% { opacity: 0.4444 } 33.333% { opacity: 0 } 55.556% { opacity: 0 } 58.333% { opacity: 1 } 100% { opacity: 0.4444 } }
+@keyframes spoke-22 { 0% { opacity: 0.4815 } 36.111% { opacity: 0 } 58.333% { opacity: 0 } 61.111% { opacity: 1 } 100% { opacity: 0.4815 } }
+@keyframes spoke-23 { 0% { opacity: 0.5185 } 38.889% { opacity: 0 } 61.111% { opacity: 0 } 63.889% { opacity: 1 } 100% { opacity: 0.5185 } }
+@keyframes spoke-24 { 0% { opacity: 0.5556 } 41.667% { opacity: 0 } 63.889% { opacity: 0 } 66.667% { opacity: 1 } 100% { opacity: 0.5556 } }
+@keyframes spoke-25 { 0% { opacity: 0.5926 } 44.444% { opacity: 0 } 66.667% { opacity: 0 } 69.444% { opacity: 1 } 100% { opacity: 0.5926 } }
+@keyframes spoke-26 { 0% { opacity: 0.6296 } 47.222% { opacity: 0 } 69.444% { opacity: 0 } 72.222% { opacity: 1 } 100% { opacity: 0.6296 } }
+@keyframes spoke-27 { 0% { opacity: 0.6667 } 50% { opacity: 0 } 72.222% { opacity: 0 } 75% { opacity: 1 } 100% { opacity: 0.6667 } }
+@keyframes spoke-28 { 0% { opacity: 0.7037 } 52.778% { opacity: 0 } 75% { opacity: 0 } 77.778% { opacity: 1 } 100% { opacity: 0.7037 } }
+@keyframes spoke-29 { 0% { opacity: 0.7407 } 55.556% { opacity: 0 } 77.778% { opacity: 0 } 80.556% { opacity: 1 } 100% { opacity: 0.7407 } }
+@keyframes spoke-30 { 0% { opacity: 0.7778 } 58.333% { opacity: 0 } 80.556% { opacity: 0 } 83.333% { opacity: 1 } 100% { opacity: 0.7778 } }
+@keyframes spoke-31 { 0% { opacity: 0.8148 } 61.111% { opacity: 0 } 83.333% { opacity: 0 } 86.111% { opacity: 1 } 100% { opacity: 0.8148 } }
+@keyframes spoke-32 { 0% { opacity: 0.8519 } 63.889% { opacity: 0 } 86.111% { opacity: 0 } 88.889% { opacity: 1 } 100% { opacity: 0.8519 } }
+@keyframes spoke-33 { 0% { opacity: 0.8889 } 66.667% { opacity: 0 } 88.889% { opacity: 0 } 91.667% { opacity: 1 } 100% { opacity: 0.8889 } }
+@keyframes spoke-34 { 0% { opacity: 0.9259 } 69.444% { opacity: 0 } 91.667% { opacity: 0 } 94.444% { opacity: 1 } 100% { opacity: 0.9259 } }
+@keyframes spoke-35 { 0% { opacity: 0.963 } 72.222% { opacity: 0 } 94.444% { opacity: 0 } 97.222% { opacity: 1 } 100% { opacity: 0.963 } }
+
+.spinner {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.spinner > i {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  -webkit-mask: radial-gradient(closest-side, transparent 75%, #000 76%);
+  mask: radial-gradient(closest-side, transparent 75%, #000 76%);
+}
+
+.spinner > i:nth-child(1) { background: conic-gradient(from 0deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-0 1.1s linear infinite }
+.spinner > i:nth-child(2) { background: conic-gradient(from 10deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-1 1.1s linear infinite }
+.spinner > i:nth-child(3) { background: conic-gradient(from 20deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-2 1.1s linear infinite }
+.spinner > i:nth-child(4) { background: conic-gradient(from 30deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-3 1.1s linear infinite }
+.spinner > i:nth-child(5) { background: conic-gradient(from 40deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-4 1.1s linear infinite }
+.spinner > i:nth-child(6) { background: conic-gradient(from 50deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-5 1.1s linear infinite }
+.spinner > i:nth-child(7) { background: conic-gradient(from 60deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-6 1.1s linear infinite }
+.spinner > i:nth-child(8) { background: conic-gradient(from 70deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-7 1.1s linear infinite }
+.spinner > i:nth-child(9) { background: conic-gradient(from 80deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-8 1.1s linear infinite }
+.spinner > i:nth-child(10) { background: conic-gradient(from 90deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-9 1.1s linear infinite }
+.spinner > i:nth-child(11) { background: conic-gradient(from 100deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-10 1.1s linear infinite }
+.spinner > i:nth-child(12) { background: conic-gradient(from 110deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-11 1.1s linear infinite }
+.spinner > i:nth-child(13) { background: conic-gradient(from 120deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-12 1.1s linear infinite }
+.spinner > i:nth-child(14) { background: conic-gradient(from 130deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-13 1.1s linear infinite }
+.spinner > i:nth-child(15) { background: conic-gradient(from 140deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-14 1.1s linear infinite }
+.spinner > i:nth-child(16) { background: conic-gradient(from 150deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-15 1.1s linear infinite }
+.spinner > i:nth-child(17) { background: conic-gradient(from 160deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-16 1.1s linear infinite }
+.spinner > i:nth-child(18) { background: conic-gradient(from 170deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-17 1.1s linear infinite }
+.spinner > i:nth-child(19) { background: conic-gradient(from 180deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-18 1.1s linear infinite }
+.spinner > i:nth-child(20) { background: conic-gradient(from 190deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-19 1.1s linear infinite }
+.spinner > i:nth-child(21) { background: conic-gradient(from 200deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-20 1.1s linear infinite }
+.spinner > i:nth-child(22) { background: conic-gradient(from 210deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-21 1.1s linear infinite }
+.spinner > i:nth-child(23) { background: conic-gradient(from 220deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-22 1.1s linear infinite }
+.spinner > i:nth-child(24) { background: conic-gradient(from 230deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-23 1.1s linear infinite }
+.spinner > i:nth-child(25) { background: conic-gradient(from 240deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-24 1.1s linear infinite }
+.spinner > i:nth-child(26) { background: conic-gradient(from 250deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-25 1.1s linear infinite }
+.spinner > i:nth-child(27) { background: conic-gradient(from 260deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-26 1.1s linear infinite }
+.spinner > i:nth-child(28) { background: conic-gradient(from 270deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-27 1.1s linear infinite }
+.spinner > i:nth-child(29) { background: conic-gradient(from 280deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-28 1.1s linear infinite }
+.spinner > i:nth-child(30) { background: conic-gradient(from 290deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-29 1.1s linear infinite }
+.spinner > i:nth-child(31) { background: conic-gradient(from 300deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-30 1.1s linear infinite }
+.spinner > i:nth-child(32) { background: conic-gradient(from 310deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-31 1.1s linear infinite }
+.spinner > i:nth-child(33) { background: conic-gradient(from 320deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-32 1.1s linear infinite }
+.spinner > i:nth-child(34) { background: conic-gradient(from 330deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-33 1.1s linear infinite }
+.spinner > i:nth-child(35) { background: conic-gradient(from 340deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-34 1.1s linear infinite }
+.spinner > i:nth-child(36) { background: conic-gradient(from 350deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-35 1.1s linear infinite }
+
+@media (prefers-reduced-motion: reduce) {
+
+  /* A paused animation rests on its 0% frame, and across the wedges those frames
+     ARE the arc — so pausing them holds the comet still instead of flattening it
+     into a plain ring, and the whole ring breathes in one animation. */
+  .spinner > i:nth-child(n) {
+    animation-play-state: paused;
+  }
+
+  .spinner {
+    animation: spinner-breathe 2.4s ease-in-out infinite alternate;
   }
 }
 
-.tool-spinner {
-  animation: spin-slow 1s linear infinite;
+@keyframes spinner-breathe {
+  from { opacity: 0.85 }
+  to { opacity: 0.3 }
 }
 
-/* ── Preview empty-state illustration (PreviewSetupInvite.tsx) ──
-   Decorative only: the dashed outlines march slowly to read as "waiting to be
-   filled", and the chat bubble's dots blink to read as a live conversation.
-   Nothing here carries meaning the copy doesn't also state, so the whole set
-   is switched off under `prefers-reduced-motion` at the bottom of this block. */
 @keyframes preview-art-march {
   to {
     stroke-dashoffset: -160;
@@ -431,29 +583,29 @@ html, body {
 }
 
 .preview-art-dash {
-  animation: preview-art-march 24s linear infinite;
+  animation: preview-art-march 24s linear 1;
 }
 
 .preview-art-float {
   transform-origin: 80px 60px;
-  animation: preview-art-drift 6s ease-in-out infinite;
+  animation: preview-art-drift 6s ease-in-out 4;
 }
 
 .preview-art-blink {
-  animation: preview-art-pulse 2.4s ease-in-out infinite;
+  animation: preview-art-pulse 2.4s ease-in-out 10;
 }
 
 .preview-art-blink-2 {
-  animation-delay: 0.25s;
+  animation-delay: 0.2s;
 }
 
 .preview-art-blink-3 {
-  animation-delay: 0.5s;
+  animation-delay: 0.4s;
 }
 
 .preview-art-sparkle {
   transform-origin: center;
-  animation: preview-art-shine 3.6s ease-in-out infinite;
+  animation: preview-art-shine 3.6s ease-in-out 6;
 }
 
 .preview-art-sparkle-late {
@@ -469,9 +621,6 @@ html, body {
   }
 }
 
-/* Monaco line highlight when the preview is opened at a specific line
-   (e.g. from a `path:line` link in chat). Fades on its own after the
-   decoration is cleared. */
 @keyframes preview-line-flash {
   from {
     background-color: rgb(250 204 21 / 0.35);
@@ -501,7 +650,6 @@ html, body {
   cursor: pointer;
 }
 
-/* readOnly surfaces (agent-review snapshots) suppress the click. */
 .monaco-comment-glyph--static {
   cursor: default;
 }
@@ -526,11 +674,6 @@ html, body {
   background-color: var(--color-accent-hover);
 }
 
-/* Same badge as the `+`, with a dot instead. The badge carries its own
-   contrast pair (accent fill, accent-text dot) rather than relying on the
-   fill reading against the editor background — both surfaces pin Monaco to
-   `vs-dark` regardless of the app theme, so a theme with a dark accent
-   (cool-light) would leave a bare accent-colored dot barely visible. */
 .monaco-comment-glyph::before {
   content: "";
   width: 14px;
@@ -548,7 +691,6 @@ html, body {
   background-color: var(--color-accent-text);
 }
 
-/* Resize handle — vertical divider between panels */
 .resize-handle {
   width: 8px;
   cursor: col-resize;
@@ -559,7 +701,6 @@ html, body {
   cursor: col-resize;
 }
 
-/* Search highlight — background color on matched text */
 .search-highlight {
   background-color: rgba(250, 204, 21, 0.4);
   color: inherit;
@@ -567,20 +708,15 @@ html, body {
   padding: 0 1px;
 }
 
-/* Active/current match — brighter to distinguish from other matches */
 .search-highlight--current {
   background-color: rgba(250, 204, 21, 0.8);
   color: #111;
 }
 
-/* ── Prose list markers — match text color ── */
 .prose :where(ul, ol) > li::marker {
   color: currentColor;
 }
 
-/* ── Prose code overrides — ensure proper contrast in light mode ──
- * Tailwind typography defaults assume dark pre backgrounds, so pre code
- * text is very light. Override to use our theme-aware syntax colors. */
 .prose :where(pre code):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
   color: var(--color-syntax-base);
 }
@@ -591,8 +727,6 @@ html, body {
   border-radius: 0.25rem;
   font-size: 0.85em;
 }
-
-/* ── Scrollbar styling (uses theme tokens) ── */
 
 ::-webkit-scrollbar {
   width: 8px;
@@ -621,9 +755,6 @@ html, body {
   scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
 
-/* Horizontal strips (e.g. the right-panel tab bar) that need to scroll on
-   overflow but are too short to give up height to the 8px scrollbar. The strip
-   stays swipe/scroll-able; the scrollbar itself is just hidden. */
 @utility no-scrollbar {
   scrollbar-width: none;
   &::-webkit-scrollbar {
@@ -631,13 +762,11 @@ html, body {
   }
 }
 
-/* ── Syntax highlighting (token-based, works in all themes) ── */
 .hljs {
   color: var(--color-syntax-base);
   background: transparent;
 }
 
-/* ── Prose overrides — strip default inline-code and pre styling ── */
 .prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
   background: transparent;
   padding: 0;

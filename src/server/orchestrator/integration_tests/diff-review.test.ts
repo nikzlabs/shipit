@@ -66,11 +66,9 @@ describe("Integration: Diff review", () => {
   });
 
   it("GET /api/sessions/:id/git/diff returns file changes between two commits", async () => {
-    // Create initial file and commit
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
     const { commitHash: hash1 } = await git.autoCommit("Add hello.ts");
 
-    // Modify the file and commit
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 2;\nconst y = 3;\n");
     const { commitHash: hash2 } = await git.autoCommit("Modify hello.ts");
 
@@ -90,7 +88,6 @@ describe("Integration: Diff review", () => {
     const log = await git.log();
     const initialHash = log[0].hash;
 
-    // Add a new file
     fs.writeFileSync(path.join(sessionDir, "new-file.ts"), "export const foo = 42;\n");
     const { commitHash: hash2 } = await git.autoCommit("Add new-file.ts");
 
@@ -104,11 +101,9 @@ describe("Integration: Diff review", () => {
   });
 
   it("GET /api/sessions/:id/git/diff handles deleted files", async () => {
-    // Create a file
     fs.writeFileSync(path.join(sessionDir, "to-delete.ts"), "delete me\n");
     const { commitHash: hash1 } = await git.autoCommit("Add to-delete.ts");
 
-    // Delete the file
     fs.unlinkSync(path.join(sessionDir, "to-delete.ts"));
     const { commitHash: hash2 } = await git.autoCommit("Delete to-delete.ts");
 
@@ -125,7 +120,6 @@ describe("Integration: Diff review", () => {
     const log = await git.log();
     const hash = log[0].hash;
 
-    // Same commit for from and to — no changes
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${hash}&to=${hash}` });
     expect(res.statusCode).toBe(200);
     const diff = res.json();
@@ -142,7 +136,6 @@ describe("Integration: Diff review", () => {
     const log = await git.log();
     const initialHash = log[0].hash;
 
-    // Create multiple files
     fs.writeFileSync(path.join(sessionDir, "a.ts"), "file a\n");
     fs.writeFileSync(path.join(sessionDir, "b.ts"), "file b\n");
     fs.writeFileSync(path.join(sessionDir, "c.ts"), "file c\n");

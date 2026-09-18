@@ -1,27 +1,14 @@
+import { buildCleanupPrompt } from "./cleanup-prompt.js";
+
 /**
- * Cleanup-provider selection + the cleanup runner with sanity checks (docs/144).
- *
- * `pickCleanupProvider()` is the single place provider selection lives:
- *   1. Claude Code OAuth bearer (the common case for ShipIt users).
- *   2. OpenAI voice key (fallback).
- * It gates on a non-null token from `getAccessToken()` rather than the generic
- * `checkCredentials()` boolean, which is also true for API-key-only setups
- * that have no usable OAuth bearer for direct Anthropic calls.
- *
- * `cleanTranscript()` runs the chosen adapter under a 3s timeout and a small
- * sanity check. On ANY failure it returns the raw transcript plus an
- * `errorCode` — the user is never blocked on a flaky cleanup call.
+ * How long a user will watch the mic button's "cleaning" state before raw text
+ * is the better answer — a property of their patience, not of whatever runs the
+ * work, which is why both executions share it (docs/299-direct-provider-calls
+ * req 9).
  */
+export const CLEANUP_TIMEOUT_MS = 15_000;
 
-import type { AuthManager } from "../agents/claude/auth-manager.js";
-import { createClaudeCleanupProvider } from "./providers/claude-cleanup.js";
-import { createOpenAiCleanupProvider } from "./providers/openai-cleanup.js";
-import type { CleanupProvider } from "./providers/types.js";
-
-export const CLEANUP_TIMEOUT_MS = 3000;
-/** Cleaned output longer than this ratio of the input is treated as garbage. */
 const MAX_LENGTH_RATIO = 2;
-/** Telltale preambles a misbehaving model emits despite the "output ONLY" rule. */
 const PREAMBLE_PATTERNS = [
   /^here(?:'s| is)\b/i,
   /^the cleaned\b/i,
@@ -39,81 +26,88 @@ export type CleanupErrorCode =
 
 export interface CleanupResult {
   text: string;
-  /** Set when cleanup ran successfully (so the client can show which path ran). */
-  cleanupProvider?: CleanupProvider["id"];
-  /** Set when cleanup fell through to the raw transcript. */
   cleanupErrorCode?: CleanupErrorCode;
 }
 
+export interface CleanupRequest {
+  prompt: string;
+  signal: AbortSignal;
+}
+
 /**
- * Resolve the cleanup provider to use, in order of preference. Returns null
- * when neither a Claude OAuth bearer nor an OpenAI key is available.
- *
- * `credentialDir` scopes the OAuth read to a provider account (docs/150-multiple-provider-subscriptions req 19).
- * Unscoped, `getAccessToken()` reads the singleton config root — which used to
- * be an alias into the migrated default account, and since req 19 retired those
- * aliases holds nothing on a migrated install. Passing nothing here would drop
- * cleanup to the OpenAI fallback (or to no provider at all) for every user with
- * a connected Claude subscription. A reserved route has no account root, so
- * `undefined` is still correct there: those routes legitimately use the
- * singleton path / `ANTHROPIC_AUTH_TOKEN`.
+ * How one cleanup prompt is run, resolved from the background-work choice
+ * (docs/299-direct-provider-calls req 5). Aborting the signal must *cancel*
+ * the run, not merely stop waiting for it — a harness left running would hold a
+ * spawn home and keep spending.
  */
-export async function pickCleanupProvider(
-  authManager: AuthManager,
-  openaiKey: string | null,
-  fetchImpl: typeof fetch = fetch,
-  credentialDir?: string,
-): Promise<CleanupProvider | null> {
-  try {
-    const token = await authManager.getAccessToken(credentialDir);
-    if (token.token) {
-      return createClaudeCleanupProvider(token.token, fetchImpl);
-    }
-  } catch {
-    // Fall through to OpenAI — a broken Claude path must not block cleanup.
-  }
-  if (openaiKey) {
-    return createOpenAiCleanupProvider(openaiKey, fetchImpl);
-  }
-  return null;
+export interface CleanupRunner {
+  deadlineMs: number;
+  run(req: CleanupRequest): Promise<string>;
+}
+
+/** A cleaned transcript is the same message tidied, so its ceiling follows the transcript. */
+export function acceptableCleanupLength(raw: string): number {
+  return Math.max(40, raw.length * MAX_LENGTH_RATIO);
 }
 
 function isSane(raw: string, cleaned: string): CleanupErrorCode | null {
   if (!cleaned) return "empty-output";
-  if (cleaned.length > Math.max(40, raw.length * MAX_LENGTH_RATIO)) return "too-long";
+  if (cleaned.length > acceptableCleanupLength(raw)) return "too-long";
   if (PREAMBLE_PATTERNS.some((p) => p.test(cleaned))) return "preamble";
   return null;
 }
 
 /**
- * Run cleanup with timeout + sanity check, falling through to `raw` on any
- * failure. `provider` is null when none is available (caller passes the
- * result of `pickCleanupProvider`).
+ * The deadline is the orchestrator's own and is enforced by racing the run,
+ * never by trusting whatever runs the work to answer
+ * (docs/299-direct-provider-calls req 9). Passing a timeout downstream bounds
+ * nothing: the worker's spawn transport defaults to 35 minutes and aborting it
+ * does not cancel the spawn. So on the deadline this
+ * returns the raw transcript at once and does NOT await the run — it only
+ * signals it to cancel, which the cleanup container does by spawn id, leaving
+ * every other request in that shared container alone.
  */
 export async function cleanTranscript(
   raw: string,
-  provider: CleanupProvider | null,
-  opts: { language?: string; timeoutMs?: number } = {},
+  runner: CleanupRunner | null,
 ): Promise<CleanupResult> {
-  if (!provider) {
+  if (!runner) {
     return { text: raw, cleanupErrorCode: "no-provider" };
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? CLEANUP_TIMEOUT_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"deadline">((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve("deadline");
+    }, runner.deadlineMs);
+  });
   try {
-    const cleaned = await provider.clean(raw, {
-      signal: controller.signal,
-      ...(opts.language ? { language: opts.language } : {}),
-    });
+    // Settling the run into a value before the race is what keeps a rejection
+    // arriving after the deadline from going unhandled.
+    const outcome = await Promise.race([
+      // eslint-disable-next-line no-restricted-syntax -- the two-arg form is the point: await would abandon a rejection arriving after the deadline
+      runner.run({
+        prompt: buildCleanupPrompt(raw),
+        signal: controller.signal,
+      }).then(
+        (text) => ({ kind: "text" as const, text }),
+        (err: unknown) => ({ kind: "error" as const, err }),
+      ),
+      deadline,
+    ]);
+    if (outcome === "deadline") return { text: raw, cleanupErrorCode: "timeout" };
+    if (outcome.kind === "error") {
+      const aborted = outcome.err instanceof Error && outcome.err.name === "AbortError";
+      return { text: raw, cleanupErrorCode: aborted ? "timeout" : "provider-error" };
+    }
+    const cleaned = outcome.text.trim();
     const problem = isSane(raw, cleaned);
     if (problem) {
       return { text: raw, cleanupErrorCode: problem };
     }
-    return { text: cleaned, cleanupProvider: provider.id };
-  } catch (err) {
-    const aborted = err instanceof Error && err.name === "AbortError";
-    return { text: raw, cleanupErrorCode: aborted ? "timeout" : "provider-error" };
+    return { text: cleaned };
   } finally {
     clearTimeout(timer);
   }

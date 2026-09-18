@@ -1,13 +1,3 @@
-/**
- * docs/262 req 15 — the consumer lease over a live plugin generation.
- *
- * The lease exists so a refresh cannot delete a checkout out from under a
- * container that has it mounted, and everything worth asserting here is about
- * the two ways that can go wrong: a deletion starting while a consumer holds the
- * tree, and a hold being taken while a deletion is already under way. Both are
- * decided synchronously on purpose, so the tests are ordering tests.
- */
-
 import { describe, it, expect, afterEach } from "vitest";
 import type Docker from "dockerode";
 import {
@@ -49,13 +39,6 @@ describe("holdGeneration / claimGenerationDeletion", () => {
     claim!();
   });
 
-  /**
-   * docs/273-plugin-generation-rebuild — a rebuild is an independent tree with
-   * its own volume, so the lease must not treat it as the build it was made
-   * beside. If it did, pruning the superseded one would be refused for ever
-   * (its rebuild is mounted), and — worse — a hold on either would answer for
-   * both.
-   */
   it("tells two builds of one commit apart", () => {
     const commit = A;
     const rebuilt = ref({ generationId: `${commit}.deadbeef` });
@@ -72,8 +55,6 @@ describe("holdGeneration / claimGenerationDeletion", () => {
   it("refuses a hold while a deletion is under way, and allows one after", () => {
     const done = claimGenerationDeletion(ref());
     expect(done).not.toBeNull();
-    // This is the invocation path's "the version it resolved was replaced
-    // mid-call": the tree is being removed, so it must not be mounted.
     expect(holdGeneration(ref())).toBeNull();
 
     done!();
@@ -97,7 +78,6 @@ describe("holdGeneration / claimGenerationDeletion", () => {
     const stale = holdGeneration(ref());
     stale!();
     const other = holdGeneration(ref());
-    // The first consumer's `finally` running twice must not drop the second's.
     stale!();
     expect(generationHoldCount(ref())).toBe(1);
     other!();
@@ -125,7 +105,6 @@ describe("holdGenerationsForOwner", () => {
     holdGenerationsForOwner(owner, [ref({ generationId: A })]);
     expect(generationHoldCount(ref({ generationId: A }))).toBe(1);
 
-    // A refresh: the service surface now runs B, so A must become prunable.
     holdGenerationsForOwner(owner, [ref({ generationId: B })]);
     expect(generationHoldCount(ref({ generationId: A }))).toBe(0);
     expect(generationHoldCount(ref({ generationId: B }))).toBe(1);
@@ -138,8 +117,6 @@ describe("holdGenerationsForOwner", () => {
     holdGenerationsForOwner(owner, [ref()]);
     holdGenerationsForOwner(owner, [ref()]);
     expect(generationHoldCount(ref())).toBe(1);
-    // Never dropped to zero in between: a pruner running between the rounds
-    // still finds it held.
     expect(claimGenerationDeletion(ref())).toBeNull();
   });
 
@@ -187,7 +164,6 @@ describe("releaseSessionGenerationHolds", () => {
   });
 });
 
-/** A daemon that answers only what the lease asks: does this volume still exist. */
 function fakeDocker(opts: { held?: Set<string> } = {}) {
   const volumes = new Set<string>();
   const held = opts.held ?? new Set<string>();
@@ -221,9 +197,6 @@ describe("createGenerationDeletionLease", () => {
 
     const done = await begin({ repoName: "tools", generationId: A });
     expect(done).not.toBeNull();
-    // Removing the volume is PART of taking the lease: the directories it
-    // describes are about to go, so a volume left behind would be a mount
-    // description of nothing — and nothing else in a running session removes it.
     expect(volumes.has(VOLUME)).toBe(false);
     done!();
   });
@@ -231,13 +204,11 @@ describe("createGenerationDeletionLease", () => {
   it("refuses when a container still holds the generation's volume", async () => {
     const { docker, volumes, held } = fakeDocker();
     volumes.add(VOLUME);
-    held.add(VOLUME); // a plugin service is still attached to the superseded tree
+    held.add(VOLUME);
     const begin = createGenerationDeletionLease({ docker, sessionId: "sess" });
 
     expect(await begin({ repoName: "tools", generationId: A })).toBeNull();
     expect(volumes.has(VOLUME)).toBe(true);
-    // The refusal released its own claim, so the next publish's prune retries
-    // rather than finding the generation permanently unclaimable.
     const retry = claimGenerationDeletion(ref());
     expect(retry).not.toBeNull();
     retry!();
@@ -255,9 +226,6 @@ describe("createGenerationDeletionLease", () => {
     const begin = createGenerationDeletionLease({ docker, sessionId: "sess" });
 
     expect(await begin({ repoName: "tools", generationId: A })).toBeNull();
-    // The in-process half is checked first and is decisive on its own: a CLI
-    // that has resolved the generation but not yet created its container holds
-    // no volume the daemon could report.
     expect(asked).toBe(false);
     release!();
   });
@@ -275,7 +243,6 @@ describe("createGenerationDeletionLease", () => {
     } as unknown as Docker;
     const begin = createGenerationDeletionLease({ docker, sessionId: "sess" });
     expect(await begin({ repoName: "tools", generationId: A })).toBeNull();
-    // Fail-closed, but not wedged: the claim is released on the way out.
     const retry = claimGenerationDeletion(ref());
     expect(retry).not.toBeNull();
     retry!();

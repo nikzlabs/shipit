@@ -72,23 +72,15 @@
     letter-spacing: .04em; color: var(--color-text-tertiary);
     border: 1px solid var(--color-border-primary); border-radius: 999px; padding: 1px 6px; background: var(--color-bg-primary);
   }
-
-  /* BG-A · Amber fill, selection = inset ring */
   .a .row.attn { background: var(--amber-12); }
   .a .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
   .a .row.attn.sel { background: var(--amber-12); box-shadow: inset 0 0 0 1.5px var(--color-border-secondary); }
-
-  /* BG-B · Selected fill wins, attention falls back to rail */
   .b .row.attn { background: var(--amber-12); }
   .b .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
   .b .row.attn.sel { background: var(--color-bg-secondary); border-left: 3px solid var(--color-attention); border-radius: 6px; }
-
-  /* BG-C · Deepened amber for the both-state */
   .c .row.attn { background: var(--amber-12); }
   .c .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
   .c .row.attn.sel { background: var(--amber-22); color: var(--color-text-primary); }
-
-  /* BG-D · Left amber bar + tint (rail rides the fill) */
   .d .row.attn { background: var(--amber-08); border-left: 3px solid var(--color-attention); border-radius: 6px; }
   .d .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
   .d .row.attn.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); border-left: 3px solid var(--color-attention); border-radius: 6px; }
@@ -110,8 +102,6 @@
   </div>
 
   <div class="grid">
-
-    <!-- BG-A -->
     <div class="card a featured">
       <div class="label"><span class="name">A · Amber fill, selection ring</span><span class="tag">recommended</span></div>
       <div class="desc-row">Attention tints the bg amber. Selected gets the gray fill. <b>Both</b> = amber fill + a thin inset gray ring marking selection — attention color wins, selection still legible.</div>
@@ -122,8 +112,6 @@
         <div class="row attn sel"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>api · 8m</span></div></div><span class="state">sel+attn</span></div>
       </div>
     </div>
-
-    <!-- BG-B -->
     <div class="card b">
       <div class="label"><span class="name">B · Selected wins, attention → rail</span></div>
       <div class="desc-row">Background stays <b>reserved for selection</b>. Attention normally tints the bg, but when a row is also selected the gray fill takes over and attention falls back to a left rail. Never two fills.</div>
@@ -134,8 +122,6 @@
         <div class="row attn sel"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>api · 8m</span></div></div><span class="state">sel+attn</span></div>
       </div>
     </div>
-
-    <!-- BG-C -->
     <div class="card c">
       <div class="label"><span class="name">C · Deepened amber both-state</span></div>
       <div class="desc-row">Attention = light amber fill, selected = gray, and <b>selected + attention</b> = a deeper, more saturated amber — the most urgent combination gets the strongest color of all.</div>
@@ -146,8 +132,6 @@
         <div class="row attn sel"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>api · 8m</span></div></div><span class="state">sel+attn</span></div>
       </div>
     </div>
-
-    <!-- BG-D -->
     <div class="card d">
       <div class="label"><span class="name">D · Tint + rail together</span></div>
       <div class="desc-row">Attention = faint amber fill <i>plus</i> a left rail (belt &amp; suspenders). When also selected, the gray fill replaces the tint but the rail stays — selection reads through, attention persists.</div>

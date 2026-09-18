@@ -21,7 +21,6 @@ The Claude Code web app supports this: prompts are queued and executed after the
 The server manages a per-connection message queue.
 
 ```typescript
-// Per-connection state additions in index.ts WebSocket handler:
 const messageQueue: Array<{
   text: string;
   images?: ImageAttachment[];
@@ -33,10 +32,7 @@ let isClaudeRunning = false;
 
 ```typescript
 if (msg.type === "send_message") {
-  // ... existing auth checks ...
-
   if (isClaudeRunning) {
-    // Queue the message instead of spawning a new Claude process
     messageQueue.push({ text: msg.text, images: msg.images });
     send({
       type: "message_queued",
@@ -47,7 +43,6 @@ if (msg.type === "send_message") {
   }
 
   isClaudeRunning = true;
-  // ... existing Claude spawn logic ...
 }
 ```
 
@@ -55,22 +50,16 @@ if (msg.type === "send_message") {
 
 ```typescript
 currentClaude.on("done", async (code: number | null) => {
-  // ... existing auto-commit, port scan, etc. ...
-
   isClaudeRunning = false;
 
-  // Process next queued message if any
   if (messageQueue.length > 0) {
     const next = messageQueue.shift()!;
-    // Trigger send_message handler with the queued message
-    // (reuse the same session ID and context)
     const syntheticMsg = {
       type: "send_message" as const,
       text: next.text,
       sessionId: activeAppSessionId,
       images: next.images,
     };
-    // Process it (recursive call to message handler logic)
     handleSendMessage(syntheticMsg);
   }
 });
@@ -81,26 +70,19 @@ currentClaude.on("done", async (code: number | null) => {
 #### New Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsCancelQueuedMessage {
   type: "cancel_queued_message";
-  /** Position in queue (0-indexed) to cancel, or "all" to clear queue. */
   position: number | "all";
 }
 
-// Server → Client
 export interface WsMessageQueued {
   type: "message_queued";
-  /** Position in queue (1-indexed for display). */
   position: number;
   text: string;
 }
 
 export interface WsQueueUpdated {
   type: "queue_updated";
-  /** Current queue contents after a cancel/reorder. */
   queue: Array<{ text: string; position: number }>;
 }
 ```
@@ -112,9 +94,7 @@ export interface WsQueueUpdated {
 The key UX change: **the MessageInput component is no longer disabled during loading**.
 
 ```typescript
-// In App.tsx, change:
 <MessageInput onSend={handleSend} disabled={isLoading || status !== "open"} />
-// To:
 <MessageInput onSend={handleSend} disabled={status !== "open"} />
 ```
 
@@ -132,13 +112,11 @@ User: And write tests for it                ← queued (dimmed, with badge)
 ```
 
 ```typescript
-// New ChatMessage property
 interface ChatMessage {
   role: "user" | "assistant";
   text: string;
-  // ... existing fields ...
-  queued?: boolean;      // true for messages waiting in queue
-  queuePosition?: number; // 1-indexed position
+  queued?: boolean;
+  queuePosition?: number;
 }
 ```
 
@@ -163,7 +141,6 @@ A small indicator near the chat input showing queue status:
 #### State Management
 
 ```typescript
-// New state in App.tsx
 const [queuedMessages, setQueuedMessages] = useState<Array<{ text: string; position: number }>>([]);
 ```
 

@@ -10,6 +10,7 @@
 ### 1.2 Compose-child OOM detection
 - [x] Widen Docker event label filter in `container-health.ts` to dispatch by label inside the handler (Path 1: `shipit-session`, Path 2: `shipit-parent-session`).
 - [x] On `die`/`oom` for a compose-child, look up session via `shipit-parent-session` label and emit `service_exited` with `oom`.
+- [x] Gate `service_exited` on a service NAME (`shipit-service-name`, or Compose's own `com.docker.compose.service` for a stack the session started itself), not on `shipit-parent-session` (§1.2a). The parent label is on every ShipIt-parented container, so egress-sidecar churn was reported as the project's services crashing; `serviceName` is now required and everything else emits `session_child_exited` (console only).
 - [x] Emit `service_oom` runner event with service name + container id (`app-lifecycle.ts` `service_exited` handler).
 - [x] Add `service_oom` to `ws-server-messages.ts`.
 - [x] Per-session log ring + `log_entry` runner message with OOM-vs-exit guidance text.
@@ -27,10 +28,10 @@
 - [x] `session_status.lastInterruptError` field added; emitted from the recovery flow when the best-effort `killAgentOnWorker` call fails. Client renders an auto-dismissing inline toast in `SessionHealthStrip` (8s timeout, dismissable).
 
 ### 1.5 Preview-proxy 502 server-side surfacing
-- [x] In `preview-proxy.ts`, on connection error emit `runner.emitMessage({ type: "preview_error", port, message })` (with HMR-upgrade variant) + a `log_entry` with `source: "preview"`.
-- [x] Add `preview_error` to `ws-server-messages.ts`.
+- [x] In `preview-proxy.ts`, on connection error write a `log_entry` with `source: "preview"` (with HMR-upgrade variant).
 - [x] Throttle errors per `(session, port)` to avoid log spam (5s window).
-- [x] Client `PreviewFrame.tsx`: render an inline banner on `preview_error` for the active port with Retry / Dismiss buttons. Sits above the iframe.
+- [x] ~~Add `preview_error` to `ws-server-messages.ts`.~~ Removed with the banner — see the superseded note in `plan.md` §1.5.
+- [x] ~~Client `PreviewFrame.tsx`: render an inline banner on `preview_error` for the active port with Retry / Dismiss buttons.~~ Removed — same note.
 
 ### 1.6 Idle-disposal user-visible notice
 - [x] Idle enforcer broadcasts `session_status` SSE with `reason: "idle-disposed"` (or `"memory-pressure"`) and `idleMs`.

@@ -207,6 +207,73 @@ describe("Integration: rewind and fork", () => {
     client.close();
   });
 
+  // docs/303 req 11 — a rewind can remove the work the card describes, so it must never
+  // read as current afterwards.
+  it("marks the session status card stale on rewind", async () => {
+    const { sessionId } = await createSession();
+    sessionManager.setSessionStatus(sessionId, {
+      status: "Routes done.",
+      actions: [],
+      fresh: true,
+      writeSeq: 2,
+    });
+
+    chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "discard" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "chat" });
+    await client.receiveType("rewind_complete");
+
+    expect(sessionManager.get(sessionId)?.sessionStatus).toMatchObject({
+      status: "Routes done.",
+      fresh: false,
+      writeSeq: 2,
+    });
+
+    client.close();
+  });
+
+  it("keeps an upload a retained message still references", async () => {
+    const { sessionId, sessionDir } = await createSession();
+    const uploadsDir = path.join(sessionDir, "uploads");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadsDir, "shared.txt"), "uploaded\n");
+
+    chatHistoryManager.append(sessionId, {
+      role: "user",
+      text: "look at this",
+      files: [{ path: "/uploads/shared.txt", contentPreview: "uploaded" }],
+      uploadPaths: ["/uploads/shared.txt"],
+    });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    // The same upload re-attached later, which is what the Files tab's "Add to
+    // chat" and the `@` menu produce.
+    chatHistoryManager.append(sessionId, {
+      role: "user",
+      text: "and again",
+      files: [{ path: "/uploads/shared.txt", contentPreview: "uploaded" }],
+      uploadPaths: ["/uploads/shared.txt"],
+    });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "chat" });
+    await expect(client.receiveType("rewind_complete")).resolves.toMatchObject({
+      type: "rewind_complete",
+      action: "chat",
+      droppedMessageCount: 1,
+    });
+
+    expect(fs.existsSync(path.join(uploadsDir, "shared.txt"))).toBe(true);
+
+    client.close();
+  });
+
   it("stores a chat rewind snapshot and restores it on request", async () => {
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
@@ -286,9 +353,6 @@ describe("Integration: rewind and fork", () => {
     const initialHead = await git.getHeadHash();
     expect(initialHead).toBeTruthy();
 
-    // No autoCommit calls — every message lacks commitHash and parentCommitHash,
-    // so findCommitBeforeGap returns null. Used to fail the action entirely;
-    // now degrades to chat-only.
     chatHistoryManager.append(sessionId, { role: "user", text: "first message" });
     chatHistoryManager.append(sessionId, { role: "assistant", text: "first reply" });
     chatHistoryManager.append(sessionId, { role: "user", text: "discard me" });
@@ -358,9 +422,6 @@ describe("Integration: rewind and fork", () => {
   });
 
   it("forks a session with no code commits from a past gap, basing the clone on HEAD", async () => {
-    // planning#186: no autoCommit calls, so no message carries a commitHash and
-    // findCommitBeforeGap returns null. This used to fail with "No code state
-    // available to fork."; now it forks at HEAD (the repo's base).
     const { sessionId, workspaceDir } = await createSession();
     const git = new GitManager(workspaceDir);
     const head = await git.getHeadHash();
@@ -387,9 +448,6 @@ describe("Integration: rewind and fork", () => {
   });
 
   it("allows fork while a turn is running but still blocks in-place rewind", async () => {
-    // planning#184: fork is independent of the running turn (new session off a
-    // committed SHA), so it must succeed; chat/code/both still conflict with
-    // the agent mutating the workspace and stay gated.
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
     chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });

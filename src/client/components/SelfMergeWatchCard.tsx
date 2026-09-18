@@ -29,7 +29,7 @@ import type { SelfMergeWatchCard as SelfMergeWatchCardData } from "../../server/
 
 export interface SelfMergeWatchCardProps {
   card: SelfMergeWatchCardData;
-  /** The session that owns this transcript — the cancel target. */
+
   sessionId: string;
 }
 

@@ -6,9 +6,7 @@ const T0 = 1_800_000_000_000;
 
 describe("deriveCiDisplay", () => {
   it("reports unknown when the poller hasn't spoken", () => {
-    // Distinct from "none": callers gate the merge button on "none", and
-    // treating silence as "no CI applies" would flash the button before the
-    // first poll.
+
     expect(deriveCiDisplay(undefined, T0)).toEqual({ kind: "unknown" });
   });
 
@@ -44,8 +42,7 @@ describe("deriveCiDisplay", () => {
   });
 
   it("retires the grace-forced pending once its deadline passes", () => {
-    // The core of nikzlabs/shipit#1730: polling can pause (last viewer
-    // detached) while a forced-pending summary is the last word, so the
+
     // client must be able to expire it without a server round-trip.
     const checks = {
       state: "pending" as const,
@@ -60,8 +57,7 @@ describe("deriveCiDisplay", () => {
   });
 
   it("never expires a pending state that has real checks behind it", () => {
-    // A deadline should only ever ride along with an empty set; if one leaks
-    // onto a summary with real checks, honor the checks.
+
     const checks = {
       state: "pending" as const,
       total: 2,

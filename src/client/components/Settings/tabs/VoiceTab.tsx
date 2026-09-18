@@ -1,512 +1,234 @@
-// eslint-disable-next-line no-restricted-imports -- credential/cleanup status fetch on mount
+// eslint-disable-next-line no-restricted-imports -- cleanup status fetch on mount and whenever a key changes
 import { useState, useEffect } from "react";
 import { Button } from "../../ui/button.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
-import {
-  sttProviders,
-  ttsProviders,
-  keyRequiringProviders,
-  providerVoices,
-  providerSpeeds,
-  getVoiceProvider,
-} from "../../../../server/shared/voice-catalog.js";
-import { armAutoplay } from "../../../voice/voice-notes.js";
-import { ToggleSwitch } from "../ToggleSwitch.js";
-import { ProviderKeyField } from "../ProviderKeyField.js";
-import { inputClass } from "../shared.js";
+import { getVoiceProvider } from "../../../../server/shared/voice-catalog.js";
+import { useVoiceKeyStatus } from "../../../voice/voice-key-status.js";
+import { SettingsTabPane } from "../SettingsTabPane.js";
+import { DeclaredSettings } from "../DeclaredSettings.js";
 
-const VOICE_LANGUAGES: { code: string; label: string }[] = [
-  { code: "", label: "Auto (browser locale)" },
-  { code: "en", label: "English" },
-  { code: "es", label: "Spanish" },
-  { code: "fr", label: "French" },
-  { code: "de", label: "German" },
-  { code: "it", label: "Italian" },
-  { code: "pt", label: "Portuguese" },
-  { code: "nl", label: "Dutch" },
-  { code: "ru", label: "Russian" },
-  { code: "ja", label: "Japanese" },
-  { code: "ko", label: "Korean" },
-  { code: "zh", label: "Chinese" },
-];
+// Cleanup runs on the background-work model, not on a provider ShipIt picks for
+// it (docs/299-direct-provider-calls req 5), so the line names that model or says nothing can clean.
+const CLEANUP_UNAVAILABLE =
+  "No model is set up to run background work, so cleanup can't run. Until then the raw transcript is inserted.";
 
-const CLEANUP_STATUS_LABELS: Record<string, string> = {
-  "claude-oauth": "Cleanup via your Claude subscription",
-  "openai-cleanup": "Cleanup via your OpenAI key",
-};
+interface CleanupModel {
+  serviceName: string;
+  modelId: string;
+  modelLabel: string;
+  execution: "direct" | "harness";
+  harnessName?: string;
+}
+
+interface VoiceKeyOffer {
+  providerId: string;
+  providerLabel: string;
+  serviceName: string;
+}
+
+// "Nothing can clean" and "couldn't ask" are different facts and the first one
+// blames the user, so a failed status fetch must not render as the first line.
+type CleanupStatus =
+  | { state: "pending" }
+  | { state: "unknown" }
+  | { state: "ready"; model: CleanupModel | null; offer: VoiceKeyOffer | null };
 
 /**
- * "Voice" settings tab (docs/144) — dictation + playback. Each provider that
- * needs a credential has its own server-side key (POSTed to
- * /api/voice/credentials, never read back; status is the `configured` id
- * list). STT/TTS providers are chosen from the shared catalog. Every other
- * field lives in the client settings-store (localStorage). The cleanup-provider
- * line is read-only — the orchestrator picks it; the user only sees which runs.
+ * Names the user's own choice and links to it — the line it replaced named a
+ * provider ShipIt picked, which described a decision the user could neither see
+ * nor change. The second sentence is the wait: a direct call is quick, and a
+ * harness run is the case worth warning about.
+ */
+function cleanupModelLine(model: CleanupModel) {
+  return (
+    <>
+      Cleaned by {model.modelLabel}, your{" "}
+      <button
+        type="button"
+        onClick={() => useUiStore.getState().setSettingsTab("services")}
+        className="text-(--color-text-link) hover:text-(--color-accent) transition-colors"
+        data-testid="voice-cleanup-background-work-link"
+      >
+        Background work
+      </button>{" "}
+      model.{" "}
+      {model.execution === "direct" ? (
+        "Called directly, so it is quick."
+      ) : (
+        <>
+          <span className="text-(--color-warning)">
+            Runs through {model.harnessName ?? "a harness"}, so it takes a few seconds.
+          </span>{" "}
+          An API key for a model provider would make it quick.
+        </>
+      )}
+    </>
+  );
+}
+
+/**
+ * "Voice" settings tab (docs/144) — dictation + playback + voice notes.
+ *
+ * Every control on it is generated from a declaration
+ * (docs/308-data-driven-settings): the rows, their order and their sections come
+ * from the catalogue, four of them through components that own logic a value
+ * writer has no shape for — the provider-key list, the TTS trio, hands-free and
+ * the webhook pair. What is left here is chrome the declarations do not carry
+ * (inventory.md P12): the link to the Keyboard tab, and the cleanup status with
+ * the key-adoption offer inside it.
+ *
+ * Two things that status says which the model's name does not
+ * (docs/299-direct-provider-calls reqs 5 and 6). **How long a dictation will
+ * wait**, because a harness run takes seconds and several seconds of silence
+ * after speaking is indistinguishable from a fault. And **the voice key that is
+ * not a model provider**: cleanup moved onto the background-work choice, which
+ * cannot see a key stored for speech, so the tab offers to adopt it rather than
+ * writing a background-work choice the user never made (docs/252-custom-models
+ * req 9). Declining leaves cleanup unavailable, and the line then says so.
  */
 export function VoiceTab() {
-  const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
-  const setVoiceInputEnabled = useSettingsStore((s) => s.setVoiceInputEnabled);
-  const sttProvider = useSettingsStore((s) => s.sttProvider);
-  const setSttProvider = useSettingsStore((s) => s.setSttProvider);
   const cleanupEnabled = useSettingsStore((s) => s.cleanupEnabled);
-  const setCleanupEnabled = useSettingsStore((s) => s.setCleanupEnabled);
-  const voiceLanguage = useSettingsStore((s) => s.voiceLanguage);
-  const setVoiceLanguage = useSettingsStore((s) => s.setVoiceLanguage);
-  const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
-  const setVoicePlaybackEnabled = useSettingsStore((s) => s.setVoicePlaybackEnabled);
-  const ttsProvider = useSettingsStore((s) => s.ttsProvider);
-  const setTtsProvider = useSettingsStore((s) => s.setTtsProvider);
-  const ttsVoice = useSettingsStore((s) => s.ttsVoice);
-  const setTtsVoice = useSettingsStore((s) => s.setTtsVoice);
-  const ttsSpeed = useSettingsStore((s) => s.ttsSpeed);
-  const setTtsSpeed = useSettingsStore((s) => s.setTtsSpeed);
-  const voiceDeliveryMode = useSettingsStore((s) => s.voiceDeliveryMode);
-  const setVoiceDeliveryMode = useSettingsStore((s) => s.setVoiceDeliveryMode);
-  const voiceWebhookConfigured = useSettingsStore((s) => s.voiceWebhookConfigured);
-  const setVoiceWebhookConfigured = useSettingsStore((s) => s.setVoiceWebhookConfigured);
-  const voiceHandsFree = useSettingsStore((s) => s.voiceHandsFree);
-  const setVoiceHandsFree = useSettingsStore((s) => s.setVoiceHandsFree);
+  const sttProvider = useSettingsStore((s) => s.sttProvider);
+  const configuredKeys = useVoiceKeyStatus((s) => s.configured);
 
-  const [configured, setConfigured] = useState<string[]>([]);
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [webhookToken, setWebhookToken] = useState("");
-  const [webhookSavedUrl, setWebhookSavedUrl] = useState<string | null>(null);
-  const [webhookBusy, setWebhookBusy] = useState(false);
-  const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
-  const [testMessage, setTestMessage] = useState<string | null>(null);
-  const [cleanupProvider, setCleanupProvider] = useState<string | null>(null);
-
-  const refreshKeyStatus = async () => {
-    try {
-      const res = await fetch("/api/voice/credentials/status");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { configured: string[] };
-      setConfigured(Array.isArray(data.configured) ? data.configured : []);
-    } catch {
-      setConfigured([]);
-    }
-  };
+  const [cleanupStatus, setCleanupStatus] = useState<CleanupStatus>({ state: "pending" });
+  const [offerDismissed, setOfferDismissed] = useState(false);
+  const [adoptBusy, setAdoptBusy] = useState(false);
 
   const refreshCleanupStatus = async () => {
     try {
       const res = await fetch("/api/voice/cleanup/status");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { provider: string | null };
-      setCleanupProvider(data.provider);
+      const data = (await res.json()) as {
+        model: CleanupModel | null;
+        adoptableVoiceKey: VoiceKeyOffer | null;
+      };
+      setCleanupStatus({ state: "ready", model: data.model, offer: data.adoptableVoiceKey ?? null });
     } catch {
-      setCleanupProvider(null);
+      setCleanupStatus({ state: "unknown" });
     }
   };
 
-  const refreshWebhookStatus = async () => {
-    try {
-      const res = await fetch("/api/voice/webhook/status");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { configured: boolean; url: string | null };
-      setVoiceWebhookConfigured(data.configured);
-      setWebhookSavedUrl(data.url);
-      if (data.url) setWebhookUrl(data.url);
-    } catch {
-      /* leave as-is */
-    }
-  };
-
-  // eslint-disable-next-line no-restricted-syntax -- one-shot status fetch on mount; the refresh fns are re-created each render and must not re-trigger it
+  /*
+    Re-read whenever the stored keys change, which is what saving or clearing one
+    does: a key the user just added can be the one cleanup could adopt. The key
+    list owns that fetch now, so this watches its answer rather than being called
+    by it.
+  */
+  // eslint-disable-next-line no-restricted-syntax -- status fetch on mount and on a key change
   useEffect(() => {
-    void refreshKeyStatus();
     void refreshCleanupStatus();
-    void refreshWebhookStatus();
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot status fetch on mount; the refresh fns are re-created each render and must not re-trigger it
-  }, []);
+  }, [configuredKeys]);
 
-  const onDeliveryModeChange = async (mode: "native" | "external" | "both") => {
-    setVoiceDeliveryMode(mode);
+  // The key is server-side and never sent to the browser, so the browser cannot
+  // POST it to /api/credential-routes itself.
+  const adoptVoiceKey = async (providerId: string) => {
+    setAdoptBusy(true);
     try {
-      await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voiceDeliveryMode: mode }),
-      });
-    } catch (err) {
-      console.error("[settings] Failed to save voice delivery mode:", err);
-    }
-  };
-
-  const saveWebhook = async () => {
-    setWebhookBusy(true);
-    try {
-      const res = await fetch("/api/voice/webhook", {
+      const res = await fetch("/api/credential-routes/adopt-voice-key", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: webhookUrl.trim(), token: webhookToken.trim() }),
-      });
-      if (res.ok) {
-        setWebhookToken("");
-        await refreshWebhookStatus();
-      }
-    } catch (err) {
-      console.error("[settings] Failed to save voice webhook:", err);
-    } finally {
-      setWebhookBusy(false);
-    }
-  };
-
-  const clearWebhook = async () => {
-    setWebhookBusy(true);
-    try {
-      await fetch("/api/voice/webhook", { method: "DELETE" });
-      setWebhookUrl("");
-      setWebhookToken("");
-      setWebhookSavedUrl(null);
-      setVoiceWebhookConfigured(false);
-    } catch (err) {
-      console.error("[settings] Failed to clear voice webhook:", err);
-    } finally {
-      setWebhookBusy(false);
-    }
-  };
-
-  const onKeyChanged = async () => {
-    setTestState("idle");
-    setTestMessage(null);
-    await refreshKeyStatus();
-    await refreshCleanupStatus();
-  };
-
-  const sttList = sttProviders();
-  const ttsList = ttsProviders();
-  const voices = providerVoices(ttsProvider);
-  const speeds = providerSpeeds(ttsProvider);
-  const ttsProviderLabel = getVoiceProvider(ttsProvider)?.label ?? ttsProvider;
-  const ttsConfigured = configured.includes(ttsProvider);
-
-  // Verifies the selected playback provider's key by synthesizing one short
-  // sentence. A successful TTS round-trip confirms the credential without
-  // needing mic permission here.
-  const runTest = async () => {
-    setTestState("testing");
-    setTestMessage(null);
-    try {
-      const res = await fetch("/api/voice/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: "Voice is configured correctly.", voice: ttsVoice, speed: ttsSpeed, provider: ttsProvider }),
+        body: JSON.stringify({ provider: providerId }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.onended = () => URL.revokeObjectURL(url);
-      void audio.play().catch(() => undefined);
-      setTestState("ok");
-      setTestMessage("Key works — you should hear a test sentence.");
+      await refreshCleanupStatus();
     } catch (err) {
-      setTestState("error");
-      setTestMessage(err instanceof Error ? err.message : "Test failed");
+      useUiStore.getState().setToast({
+        message: err instanceof Error ? err.message : "Couldn't add the key as a model provider",
+      });
+    } finally {
+      setAdoptBusy(false);
     }
   };
 
-  return (
-    <div className="px-5 py-4 flex flex-col gap-6 overflow-y-auto h-full">
-      {/* Provider API keys */}
-      <div className="space-y-3">
-        <div>
-          <h3 className="text-sm font-medium text-(--color-text-primary)">Provider API keys</h3>
-          <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-            Add a key for each provider you use. Keys are stored server-side and never sent back to the browser.
-          </p>
-        </div>
-        {keyRequiringProviders().map((p) => (
-          <ProviderKeyField
-            key={p.id}
-            provider={p}
-            configured={configured.includes(p.id)}
-            onChanged={onKeyChanged}
-          />
-        ))}
-      </div>
+  // The offer stands alone: it already explains why cleanup cannot run, so the
+  // unavailable line beside it would say the same thing twice. Declining brings
+  // that line back, which is what makes the consequence of declining visible.
+  const cleanupOffer = cleanupStatus.state === "ready" && !offerDismissed ? cleanupStatus.offer : null;
 
-      <div className="border-t border-(--color-border-secondary)" />
-
-      {/* Voice input (dictation) */}
-      <div className="space-y-4">
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Voice input (dictation)</h3>
-
-        <div className="flex items-center justify-between gap-4 py-1">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Enable voice input</span>
-            <p className="text-xs text-(--color-text-tertiary)">Show the mic button and enable push-to-talk dictation.</p>
-          </div>
-          <ToggleSwitch enabled={voiceInputEnabled} onToggle={setVoiceInputEnabled} testId="voice-input-enabled" />
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="stt-provider">
-            Speech-to-text provider
-          </label>
-          <select
-            id="stt-provider"
-            value={sttProvider}
-            onChange={(e) => setSttProvider(e.target.value)}
-            className={`w-56 ${inputClass}`}
-            data-testid="stt-provider"
-          >
-            {sttList.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-          {!configured.includes(sttProvider) && (
-            <p className="text-xs text-(--color-text-tertiary)">
-              Add a {getVoiceProvider(sttProvider)?.label ?? sttProvider} key above to use this provider.
-            </p>
-          )}
-        </div>
-
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between gap-4 py-1">
-            <div>
-              <span className="text-sm text-(--color-text-primary)">Clean up transcripts with an LLM</span>
-              <p className="text-xs text-(--color-text-tertiary)">Fixes mis-hearings, fillers, and casing before the text lands in the box.</p>
-            </div>
-            <ToggleSwitch enabled={cleanupEnabled} onToggle={setCleanupEnabled} testId="voice-cleanup-enabled" />
-          </div>
-          {cleanupEnabled && (
-            <p className="text-xs text-(--color-text-tertiary)" data-testid="voice-cleanup-status">
-              {cleanupProvider
-                ? CLEANUP_STATUS_LABELS[cleanupProvider] ?? `Cleanup via ${cleanupProvider}`
-                : "No cleanup provider available — raw transcript will be inserted"}
-            </p>
-          )}
-        </div>
-
-        <p className="text-xs text-(--color-text-tertiary)">
-          Mic hotkeys (Mode A / Mode B) are configured in the{" "}
-          <button
-            type="button"
-            onClick={() => useUiStore.getState().setSettingsTab("keyboard")}
-            className="text-(--color-text-link) hover:text-(--color-accent) transition-colors"
-          >
-            Keyboard
-          </button>{" "}
-          settings.
+  const cleanupNote = (
+    <>
+      {cleanupEnabled && cleanupStatus.state !== "pending" && !cleanupOffer && (
+        <p className="text-xs text-(--color-text-tertiary)" data-testid="voice-cleanup-status">
+          {cleanupStatus.state === "unknown"
+            ? "Couldn't check whether cleanup is available."
+            : cleanupStatus.model
+              ? cleanupModelLine(cleanupStatus.model)
+              : CLEANUP_UNAVAILABLE}
         </p>
-
-        <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="voice-language">
-            Language
-          </label>
-          <select
-            id="voice-language"
-            value={voiceLanguage}
-            onChange={(e) => setVoiceLanguage(e.target.value)}
-            className={`w-56 ${inputClass}`}
-            data-testid="voice-language"
-          >
-            {VOICE_LANGUAGES.map((l) => (
-              <option key={l.code} value={l.code}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <div className="border-t border-(--color-border-secondary)" />
-
-      {/* Voice playback */}
-      <div className="space-y-4">
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Voice playback</h3>
-
-        <div className="flex items-center justify-between gap-4 py-1">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Enable voice playback</span>
-            <p className="text-xs text-(--color-text-tertiary)">Show a Play button on each completed assistant turn.</p>
-          </div>
-          <ToggleSwitch enabled={voicePlaybackEnabled} onToggle={setVoicePlaybackEnabled} testId="voice-playback-enabled" />
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="tts-provider">
-            Text-to-speech provider
-          </label>
-          <select
-            id="tts-provider"
-            value={ttsProvider}
-            onChange={(e) => setTtsProvider(e.target.value)}
-            className={`w-56 ${inputClass}`}
-            data-testid="tts-provider"
-          >
-            {ttsList.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-          {!ttsConfigured && (
-            <p className="text-xs text-(--color-text-tertiary)">
-              Add a {ttsProviderLabel} key above to use this provider.
-            </p>
-          )}
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="tts-voice">
-            Voice
-          </label>
-          <select
-            id="tts-voice"
-            value={ttsVoice}
-            onChange={(e) => setTtsVoice(e.target.value)}
-            className={`w-56 ${inputClass}`}
-            data-testid="tts-voice"
-          >
-            {voices.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="space-y-1.5">
-          <span className="block text-sm text-(--color-text-primary)">Playback speed</span>
-          <div className="flex items-center gap-2" data-testid="tts-speed">
-            {speeds.map((s) => (
-              <button
-                key={s}
-                onClick={() => setTtsSpeed(s)}
-                className={`rounded-md border px-3 py-1 text-sm transition-colors ${
-                  ttsSpeed === s
-                    ? "border-(--color-accent) bg-(--color-accent)/15 text-(--color-text-primary)"
-                    : "border-(--color-border-secondary) text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
-                }`}
-              >
-                {s}×
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="secondary"
-            size="md"
-            disabled={!ttsConfigured || testState === "testing"}
-            onClick={() => void runTest()}
-            data-testid="voice-key-test"
-          >
-            {testState === "testing" ? "Testing…" : "Test playback"}
-          </Button>
-          {testMessage && (
-            <p className={`text-xs ${testState === "error" ? "text-(--color-error)" : "text-(--color-success)"}`}>{testMessage}</p>
-          )}
-        </div>
-      </div>
-
-      <div className="border-t border-(--color-border-secondary)" />
-
-      {/* Voice notes (docs/163) */}
-      <div className="space-y-4">
-        <div>
-          <h3 className="text-sm font-medium text-(--color-text-primary)">Voice notes</h3>
-          <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-            Short spoken summaries the agent emits when it needs you. Choose how they're delivered.
+      )}
+      {cleanupEnabled && cleanupOffer && (
+        <div
+          className="space-y-2.5 rounded-lg border border-(--color-border-secondary) border-l-2 border-l-(--color-accent) bg-(--color-bg-secondary) p-3"
+          data-testid="voice-key-adoption-offer"
+        >
+          <p className="text-xs text-(--color-text-secondary)">
+            <span className="font-medium text-(--color-text-primary)">
+              Use your {cleanupOffer.providerLabel} key for cleanup too?
+            </span>
+            <br />
+            Cleanup now runs on your Background work model. Your {cleanupOffer.providerLabel} key
+            is stored for speech only, so adding it as a model provider lets it clean transcripts as
+            well. It stays visible and removable under Model providers like any other credential.
           </p>
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="voice-delivery-mode">
-            Delivery
-          </label>
-          <select
-            id="voice-delivery-mode"
-            value={voiceDeliveryMode}
-            onChange={(e) => void onDeliveryModeChange(e.target.value as "native" | "external" | "both")}
-            className={`w-56 ${inputClass}`}
-            data-testid="voice-delivery-mode"
-          >
-            <option value="native">Native — inline note in ShipIt</option>
-            <option value="external">External — webhook only</option>
-            <option value="both">Both</option>
-          </select>
-        </div>
-
-        <div className="flex items-center justify-between gap-4 py-1">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Hands-free</span>
-            <p className="text-xs text-(--color-text-tertiary)">Autoplay native voice notes (with a chime). Off by default — when off, notes show a tap-to-play prompt.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              size="md"
+              disabled={adoptBusy}
+              onClick={() => void adoptVoiceKey(cleanupOffer.providerId)}
+              data-testid="voice-key-adopt"
+            >
+              {adoptBusy ? "Adding…" : "Add it as a model provider"}
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={adoptBusy}
+              onClick={() => setOfferDismissed(true)}
+              data-testid="voice-key-adopt-decline"
+            >
+              Not now
+            </Button>
           </div>
-          <ToggleSwitch
-            enabled={voiceHandsFree}
-            onToggle={(v) => { setVoiceHandsFree(v); if (v) armAutoplay(); }}
-            testId="voice-hands-free"
-          />
         </div>
+      )}
+    </>
+  );
 
-        {(voiceDeliveryMode === "external" || voiceDeliveryMode === "both") && (
-          <div className="space-y-3 rounded-lg border border-(--color-border-secondary) p-3">
-            <div>
-              <span className="text-sm text-(--color-text-primary)">Webhook</span>
-              <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-                ShipIt POSTs {"{ v: 1, summary, needsAttention, context }"} with a bearer token. The token is stored server-side and never shown again.
-                {voiceWebhookConfigured && webhookSavedUrl ? ` Configured → ${webhookSavedUrl}` : ""}
-              </p>
-            </div>
-            <div className="space-y-1.5">
-              <label className="block text-xs text-(--color-text-secondary)" htmlFor="voice-webhook-url">URL</label>
-              <input
-                id="voice-webhook-url"
-                type="url"
-                value={webhookUrl}
-                onChange={(e) => setWebhookUrl(e.target.value)}
-                placeholder="https://example.com/voice-notes"
-                className={inputClass}
-                data-testid="voice-webhook-url"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="block text-xs text-(--color-text-secondary)" htmlFor="voice-webhook-token">Bearer token</label>
-              <input
-                id="voice-webhook-token"
-                type="password"
-                value={webhookToken}
-                onChange={(e) => setWebhookToken(e.target.value)}
-                placeholder={voiceWebhookConfigured ? "•••••• (leave blank to keep)" : "token"}
-                className={inputClass}
-                data-testid="voice-webhook-token"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                size="md"
-                disabled={webhookBusy || !webhookUrl.trim()}
-                onClick={() => void saveWebhook()}
-                data-testid="voice-webhook-save"
+  return (
+    <SettingsTabPane bodyClassName="gap-6">
+      <DeclaredSettings
+        tab="voice"
+        notes={{
+          "Voice input (dictation)": (
+            <p className="text-xs text-(--color-text-tertiary)">
+              Mic hotkeys (Mode A / Mode B) are configured in the{" "}
+              <button
+                type="button"
+                onClick={() => useUiStore.getState().setSettingsTab("keyboard")}
+                className="text-(--color-text-link) hover:text-(--color-accent) transition-colors"
               >
-                {webhookBusy ? "Saving…" : "Save webhook"}
-              </Button>
-              {voiceWebhookConfigured && (
-                <Button
-                  variant="secondary"
-                  size="md"
-                  disabled={webhookBusy}
-                  onClick={() => void clearWebhook()}
-                  data-testid="voice-webhook-clear"
-                >
-                  Remove
-                </Button>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+                Keyboard
+              </button>{" "}
+              settings.
+            </p>
+          ),
+        }}
+        rowNotes={{
+          "voice.sttProvider": !configuredKeys.includes(sttProvider) && (
+            <p className="text-xs text-(--color-text-tertiary)">
+              Add a {getVoiceProvider(sttProvider)?.label ?? sttProvider} key above to use this
+              provider.
+            </p>
+          ),
+          "voice.cleanupEnabled": cleanupNote,
+        }}
+      />
+    </SettingsTabPane>
   );
 }

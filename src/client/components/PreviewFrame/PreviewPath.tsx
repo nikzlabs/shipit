@@ -4,9 +4,9 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { ADDRESS_MEASURE_ATTR } from "../../hooks/usePreviewToolbarCollapse.js";
 
 interface PreviewPathProps {
-  /** Path + query + hash of the page the preview is on, or null when unknown. */
+
   path: string | null;
-  /** The same location as an absolute URL, used for click-to-copy. */
+
   fullUrl: string | null;
 }
 
@@ -30,15 +30,10 @@ export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Render the empty region anyway so the toolbar layout doesn't shift when a
   // path arrives (or never does — a non-proxied local preview has no injected
-  // script to report one). An empty *chip* would read as "this page has no URL".
+
   if (!path) return <div className="flex-1 min-w-0" />;
 
-  // Everything from the first "?" is the query string, shown dimmer: the route
-  // is what you actually read. Splitting on "?" rather than stripping
-  // `location.search` also does the right thing for hash routers, where the
-  // real route lives in the hash (`/#/orders?tab=open` → route `/#/orders`).
   const qIdx = path.indexOf("?");
   const route = qIdx === -1 ? path : path.slice(0, qIdx);
   const query = qIdx === -1 ? "" : path.slice(qIdx);
@@ -49,8 +44,7 @@ export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
     try {
       await navigator.clipboard.writeText(fullUrl);
     } catch {
-      // Rejects on a denied permission or an insecure context. The full URL is
-      // already in the tooltip, so there is nothing to recover or report.
+
       return;
     }
     setCopied(true);
@@ -59,13 +53,7 @@ export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
   };
 
   return (
-    // `min-w-7` is the copy button's floor and the reason it is not just a
-    // `shrink-0` icon. The icon has always been shrink-0, but it lives inside a
-    // region that was free to collapse to zero width, so it was clipped away
-    // together with the text it belongs to — losing the only way to recover the
-    // absolute URL exactly when the path had become too short to read. The
-    // region may now shrink to one icon button and no further, so the address
-    // text can disappear entirely while copy stays reachable.
+
     <div className="flex-1 min-w-7 flex items-center gap-1">
       <button
         onClick={() => void copy()}
@@ -85,9 +73,7 @@ export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
             {route}
           </span>
           {query && (
-            // Shrinks far more eagerly than the route, so a long query gives up
-            // its space first instead of both truncating proportionally and
-            // costing the user the part that says where they are.
+
             <span className="truncate min-w-0 shrink-[999] text-(--color-text-tertiary)">{query}</span>
           )}
         </span>

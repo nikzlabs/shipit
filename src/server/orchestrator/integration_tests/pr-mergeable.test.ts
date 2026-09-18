@@ -1,15 +1,3 @@
-/**
- * Integration tests for feature 113 — surfacing GitHub-reported mergeable state.
- *
- * Verifies the wire-format end-to-end: GraphQL `MERGEABLE` / `CONFLICTING` /
- * `UNKNOWN` enum values flow through the poller and out over the SSE broadcast
- * as the tri-state string the client UI now reads.
- *
- * The downstream rebase-trigger flow that the "Resolve conflicts" button kicks
- * off is already covered by rebase-flow.test.ts; this test focuses on the new
- * data path that lets the UI know the conflict exists in the first place.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -32,8 +20,6 @@ let sessionDir: string;
 let sessionManager: SessionManager;
 let prStatusPoller: PrStatusPoller;
 let dbManager: DatabaseManager;
-// Typed as the SseBroadcast signature so it can be passed straight into the
-// poller without an `as never` cast.
 let sseBroadcast: ReturnType<typeof vi.fn> & ((event: string, data: unknown) => void);
 
 function makeGraphqlPayload(mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN") {
@@ -73,9 +59,7 @@ beforeEach(async () => {
   githubAuth = new StubGitHubAuthManager();
   sseBroadcast = vi.fn() as typeof sseBroadcast;
 
-  // Side effect: points GIT_CONFIG_GLOBAL at a test-scoped file and sets
-  // user.name/user.email so `git commit` works on stock CI runners that
-  // have no global git identity configured.
+  // Initialize test-scoped Git identity.
   createTestCredentialStore(tmpDir);
 
   sessionId = crypto.randomUUID();
@@ -109,19 +93,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Defensive: if beforeEach threw partway through, some of these may be
-  // unset. Tear down whatever did get created so the real error surfaces
-  // instead of a cascading "cannot read properties of undefined".
   prStatusPoller?.destroy();
   dbManager?.close();
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/**
- * Pull the latest broadcast `pr_status` payload for a session out of the spy.
- * The poller may broadcast multiple times during the test lifetime; we want
- * the most recent so we can assert on the post-poll state.
- */
 function latestPrStatusPayload(sessionId: string) {
   const calls = sseBroadcast.mock.calls.filter(
     ([type, payload]) =>
@@ -139,7 +115,6 @@ describe("PR mergeable state — broadcast wire format", () => {
     githubAuth.setGraphqlResult(makeGraphqlPayload("MERGEABLE"));
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
 
-    // Initial poll fires immediately on trackSession; allow it to settle.
     await new Promise((r) => setTimeout(r, 100));
 
     const update = latestPrStatusPayload(sessionId);
@@ -147,10 +122,6 @@ describe("PR mergeable state — broadcast wire format", () => {
   });
 
   it("broadcasts mergeable: \"conflicting\" when GitHub reports CONFLICTING", async () => {
-    // This is the case that motivated feature 113 — base branch moved
-    // forward after the PR was pushed, GitHub flips mergeability to
-    // CONFLICTING, and the new tri-state lets the UI gate the merge button
-    // and surface the Resolve conflicts affordance.
     githubAuth.setGraphqlResult(makeGraphqlPayload("CONFLICTING"));
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
 
@@ -161,9 +132,6 @@ describe("PR mergeable state — broadcast wire format", () => {
   });
 
   it("broadcasts mergeable: \"unknown\" when GitHub reports UNKNOWN", async () => {
-    // The transient post-push state. Distinguishing it from "conflicting"
-    // is the entire point of widening the type — the UI must NOT gate the
-    // merge button on this value, or it will flicker every push.
     githubAuth.setGraphqlResult(makeGraphqlPayload("UNKNOWN"));
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
 

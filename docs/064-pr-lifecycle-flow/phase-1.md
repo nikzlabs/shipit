@@ -24,11 +24,11 @@ If a PR already exists for this session's branch (e.g. session resumed, or PR cr
 
 ```typescript
 type PrCardPhase =
-  | "ready"      // files changed, no PR yet (branch may already be pushed via auto-push)
-  | "creating"   // PR creation in progress
-  | "open"       // PR exists, shows CI status
-  | "merged"     // PR merged (rendered but non-actionable in phase 1)
-  | "error";     // creation failed
+  | "ready"
+  | "creating"
+  | "open"
+  | "merged"
+  | "error";
 ```
 
 ### Rendering by phase
@@ -258,11 +258,10 @@ interface PrStatusSummary {
 New SSE event type: `pr_status`
 
 ```typescript
-// Server → Client
 {
   event: "pr_status",
   data: {
-    updates: PrStatusSummary[]  // only changed entries
+    updates: PrStatusSummary[]
   }
 }
 ```

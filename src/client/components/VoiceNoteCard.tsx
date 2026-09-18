@@ -1,19 +1,7 @@
-/**
- * VoiceNoteCard (docs/163) — the inline rendering of a Native-sink voice note.
- *
- * Distinct from `PlayTurnButton` (which reads a finished turn's prose): a voice
- * note is an ear-shaped headline the agent emitted when it needs the user. The
- * card shows the headline text and a play control backed by the shared
- * playback-store (keyed by the note's synthetic id). When hands-free is off, or
- * autoplay isn't unlocked, this is the prominent tap-to-play prompt; tapping it
- * arms autoplay for subsequent notes.
- *
- * Every note means the agent needs the user, so there is one visual treatment.
- * (Cards persisted before the `needsAttention` gate was removed render the same
- * way — the stored flag is not read.)
- */
 
-import { PlayIcon, PauseIcon, SpinnerGapIcon, WarningCircleIcon, MegaphoneIcon } from "@phosphor-icons/react";
+
+import { PlayIcon, PauseIcon, WarningCircleIcon, MegaphoneIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useVoicePlayback } from "../voice/use-voice-playback.js";
 import { armAutoplay } from "../voice/voice-notes.js";
@@ -29,8 +17,7 @@ export function VoiceNoteCard({ id, headline }: { id: string; headline: string }
     } else if (state === "paused") {
       playback.resume();
     } else if (state !== "loading") {
-      // A tap is a user gesture — arm autoplay so later notes can play
-      // themselves, then (re)start this note.
+
       armAutoplay();
       void playback.play(id, headline);
     }
@@ -38,7 +25,7 @@ export function VoiceNoteCard({ id, headline }: { id: string; headline: string }
 
   const icon =
     state === "loading" ? (
-      <SpinnerGapIcon size={ICON_SIZE.SM} className="animate-spin" />
+      <Spinner size={ICON_SIZE.SM} />
     ) : state === "playing" ? (
       <PauseIcon size={ICON_SIZE.SM} weight="fill" />
     ) : state === "error" ? (

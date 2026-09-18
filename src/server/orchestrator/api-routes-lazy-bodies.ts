@@ -1,21 +1,3 @@
-/**
- * Fetch endpoints for the bodies the docs/244 projection strips from the
- * transcript payload (planning#269). Each one is hit when the user opens the view
- * that actually shows the body — "Show all N lines", the diff modal, an image,
- * or a sub-agent consult's output viewer (planning#299) — so the transcript itself
- * never carries them.
- *
- * These read `ChatHistoryManager.load()` directly rather than the projected
- * `getChatHistory`, because the whole point is to return what the projection
- * removed.
- *
- * A 404 here is not a state the UI designs around. A chat rewind deletes the
- * rows (`ChatHistoryManager.truncate`) and the client drops the same rows from
- * the transcript in the same handler, so the affordance disappears with the
- * row; a code rewind only sets `rolled_back = 1` and deletes nothing. A visible
- * row therefore always has a fetchable body, and a miss is an ordinary error.
- */
-
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import type { PersistedMessage } from "./chat-history.js";
@@ -23,7 +5,6 @@ import type { SubAgentConsultCard } from "../shared/types.js";
 import { imageHash, substituteResultImages } from "./transcript-projection.js";
 import type { ToolResultEntry } from "./session-runner.js";
 
-/** Every tool result in a message, including those nested under a subagent. */
 function* allToolResults(msg: PersistedMessage): Generator<ToolResultEntry> {
   for (const r of msg.toolResults ?? []) yield r;
   for (const ev of msg.subagentEvents ?? []) {
@@ -31,7 +12,6 @@ function* allToolResults(msg: PersistedMessage): Generator<ToolResultEntry> {
   }
 }
 
-/** Every tool_use block in a message, including those nested under a subagent. */
 function* allToolUses(msg: PersistedMessage): Generator<{ id: string; name: string; input: Record<string, unknown> }> {
   for (const t of msg.toolUse ?? []) yield t;
   for (const ev of msg.subagentEvents ?? []) {
@@ -39,27 +19,12 @@ function* allToolUses(msg: PersistedMessage): Generator<{ id: string; name: stri
   }
 }
 
-/**
- * Every base64 image in a message — user-attached rows and the image blocks
- * inside MCP tool results (Playwright screenshots), which are stored as a JSON
- * array of content blocks.
- */
 function* allImages(msg: PersistedMessage): Generator<{ data: string; mediaType: string }> {
   for (const img of msg.images ?? []) {
     if (img.data) yield { data: img.data, mediaType: img.mediaType };
   }
   for (const r of allToolResults(msg)) {
-    // This must recognise EXACTLY what the projection rewrites, or it hands the
-    // client an `/images/:hash` URL it can never resolve. The projection's test
-    // is semantic — parse the JSON, look for `b.type === "image"` with
-    // `source.data` — so any *lexical* pre-filter here is a different predicate
-    // wearing the same name, and the gap between them is a permanent 404. Two
-    // versions of this have already been wrong: `includes("base64")` missed
-    // blocks omitting `source.type`, and `includes("\"image\"")` misses
-    // `"image"`, which is valid JSON that parses to exactly the same
-    // block. So there is no content pre-filter at all — only the structural
-    // check that this could be a block array, after which we parse and ask the
-    // same question the projection asks.
+    // Match the projection's parsed image test; text filters miss valid JSON encodings.
     if (!r.content.startsWith("[")) continue;
     let blocks: unknown;
     try {
@@ -86,17 +51,6 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
     return deps.chatHistoryManager.load(sessionId);
   };
 
-  // GET /api/sessions/:id/tool-results/:toolUseId — the full result body.
-  //
-  // "Full" means the whole TEXT, not the base64 the projection already replaced
-  // with a URL. A caller reaches this endpoint because something wants to draw
-  // the body's text — "Show all N lines", the report modal — and the images in
-  // it are already on screen, painted from `/images/:hash` out of this same row.
-  // Serving the stored bytes verbatim re-sent every screenshot as base64 the
-  // moment a tool-call modal opened, which is exactly the transfer docs/244
-  // exists to remove, and put the raw JSON array in reach of the text preview.
-  // `substituteResultImages` is a no-op for the text-only results that are the
-  // overwhelming majority, so this costs a `startsWith` per fetch.
   app.get<{ Params: { id: string; toolUseId: string } }>(
     "/api/sessions/:id/tool-results/:toolUseId",
     async (request, reply) => {
@@ -120,13 +74,6 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
     },
   );
 
-  // GET /api/sessions/:id/tool-inputs/:toolUseId — the whole stored input.
-  //
-  // Returns the input verbatim rather than the three Edit/Write body fields it
-  // used to name (planning#298): the projection now shortens or removes keys for
-  // every tool, so what a caller needs back depends on the tool — a `Bash`
-  // command, a `Task` prompt, an MCP argument object. The persisted row always
-  // holds the whole thing, so the honest answer is all of it.
   app.get<{ Params: { id: string; toolUseId: string } }>(
     "/api/sessions/:id/tool-inputs/:toolUseId",
     async (request, reply) => {
@@ -147,13 +94,6 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
     },
   );
 
-  // GET /api/sessions/:id/sub-agent-consults/:cardId — the consult's full output.
-  //
-  // planning#299 — the card face draws a 140-character preview line and the rest is
-  // modal-only, so the wire copy carries only the preview. Served from the
-  // persisted card, which is always whole: `projectConsultCardForWire` runs on
-  // the serve path, and `updateSubAgentConsultCard` (a read-modify-write updater
-  // over `fromRow`) would otherwise write a preview back over the real output.
   app.get<{ Params: { id: string; cardId: string } }>(
     "/api/sessions/:id/sub-agent-consults/:cardId",
     async (request, reply) => {
@@ -161,11 +101,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
         reply.code(404).send({ error: "Session not found" });
         return;
       }
-      // planning#402 — prefer a terminal copy, the same rule `getSubAgentResult`
-      // applies. Duplicate rows for one `cardId` are prevented going forward,
-      // but sessions damaged before that fix still carry them, and taking the
-      // first match served the stale `pending` copy's empty output for a run
-      // whose review sat on the very next row.
+      // Older sessions can hold duplicate cards; prefer a completed copy.
       const copies = deps.chatHistoryManager
         .listSubAgentConsultCards(request.params.id)
         .filter((c: SubAgentConsultCard) => c.cardId === request.params.cardId);
@@ -179,12 +115,6 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
     },
   );
 
-  // GET /api/sessions/:id/images/:hash — the image at its stored resolution.
-  //
-  // Content-addressed, so the response is immutable by construction: the hash
-  // IS the content. That is what makes the scan below affordable — each
-  // distinct image is fetched at most once per browser, and a screenshot that
-  // appears in twenty rows is one request, not twenty.
   app.get<{ Params: { id: string; hash: string } }>(
     "/api/sessions/:id/images/:hash",
     async (request, reply) => {
@@ -193,9 +123,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
         reply.code(404).send({ error: "Session not found" });
         return;
       }
-      // The 304 short-circuit must come AFTER proving the hash resolves —
-      // matching on the request's own ETag alone would answer "not modified"
-      // for an image that does not exist, turning a 404 into a hit.
+      // Verify the image exists before returning 304 for its ETag.
       const revalidating = request.headers["if-none-match"] === `"${request.params.hash}"`;
       for (const msg of messages) {
         for (const img of allImages(msg)) {

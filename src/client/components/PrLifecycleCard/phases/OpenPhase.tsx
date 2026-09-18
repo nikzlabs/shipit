@@ -4,10 +4,13 @@ import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useCiDisplay } from "../../../hooks/useCiDisplay.js";
 import { useIsMobile } from "../../../hooks/useMediaQuery.js";
-import { WarningIcon } from "@phosphor-icons/react";
+import { useState } from "react";
+import { WarningIcon, XIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../../../design-tokens.js";
 import { PrStateBadge } from "../PrStateBadge.js";
 import { PrMergeActions, PrStatusActions } from "../PrStatusActions.js";
-import { BranchLabel, Spinner } from "../shared.js";
+import { BranchLabel } from "../shared.js";
+import { Spinner } from "../../Spinner.js";
 import { FailedChecksList, DeploymentStatusRow } from "../indicators/index.js";
 
 export function OpenPhase({
@@ -22,13 +25,10 @@ export function OpenPhase({
   const pr = card.pr;
   const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
   const ciDisplay = useCiDisplay(card.checks);
-  // The status chips and action controls live in this column on desktop, but
-  // are hoisted to a full-width row below the header on mobile — see
-  // PrStatusActions for why (the card's icon cluster narrows every row here).
+
   const isMobile = useIsMobile();
   // The arming that can still act on THIS pull request — never the raw card
-  // value, which can carry an arming the PR already outlived (docs/077). Read
-  // above the early return below: hooks run unconditionally.
+
   const autoMerge = useActiveAutoMerge(sessionId);
   if (!pr) return null;
 
@@ -37,19 +37,11 @@ export function OpenPhase({
   const isAutoFixExhausted = autoFix?.status === "exhausted";
   const isCiFailed = ciDisplay.kind === "failure";
   // "none" must come from the poller explicitly — `"unknown"` means we haven't
-  // heard from the poller yet, so we don't know whether CI exists. See
-  // PrStatusActions, which gates the merge button on the same distinction.
+
   const isCiNone = ciDisplay.kind === "none";
 
-  // Two-column layout so additional rows (auto-merge text, failed checks,
-  // deploys) and the wrapped badges row all align under the PR title rather
-  // than getting offset by ad-hoc `pl-5` padding under the icon. Each first-row
-  // anchor (left badge box, title line) is `h-6` and the parent is
-  // `items-start`, so when the block grows multiple rows tall the badge and
-  // title stay centered on the first line — matching the right-side action
-  // cluster (also `h-6`, top-anchored). The card's own `py-2` then provides
   // symmetric top/bottom padding so the last wrapped row never touches the
-  // bottom border.
+
   return (
     <div className="min-w-0 flex-1 flex items-start gap-x-3">
       <div className="h-6 flex items-center shrink-0">
@@ -109,7 +101,7 @@ export function OpenPhase({
         )}
         {isAutoFixRunning && (
           <div className="mt-1 flex items-center gap-2">
-            <Spinner />
+            <Spinner size={14} className="text-(--color-info) shrink-0" />
             <span className="text-xs text-(--color-warning)">
               Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
             </span>
@@ -128,24 +120,20 @@ export function OpenPhase({
   );
 }
 
-/**
- * docs/146 — failure banner for auto-resolve. Renders ONLY for
- * `outcome: "exhausted"` (the manager-terminal state). Per-attempt
- * `error` / `deferred` outcomes are transient and shouldn't flash the
- * banner up and down between retries — only the actionable terminal state
- * gets a UI surface.
- *
- * Gated on `settings.autoResolveConflicts === true` as well, so a user who
- * disabled the feature mid-loop doesn't see a stale banner. The server-side
- * `attachAutomationState` omits the block when disabled, but belt-and-
- * suspenders this on the client.
- */
 function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card: PrCardState }) {
   const enabled = useSettingsStore((s) => s.autoResolveConflicts);
   const setToast = useUiStore((s) => s.setToast);
+
+  const lastError =
+    card.autoResolve?.status === "exhausted" ? (card.autoResolve.lastError ?? "unknown error") : null;
+
+  // across the intervening reset genuinely sees, since it never rendered the
+
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
+  if (dismissedError !== null && dismissedError !== lastError) setDismissedError(null);
   if (!enabled) return null;
-  if (card.autoResolve?.status !== "exhausted") return null;
-  const lastError = card.autoResolve.lastError ?? "unknown error";
+  if (lastError === null) return null;
+  if (dismissedError === lastError) return null;
 
   const handleRetry = async () => {
     try {
@@ -166,17 +154,40 @@ function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card
   };
 
   return (
-    <div className="mt-1 flex items-center gap-2 pl-5 text-xs">
-      <span className="text-(--color-text-tertiary)">
+    <div className="mt-1 flex items-start gap-2 pl-5 text-xs">
+      {/* `max-h-20` + `overflow-y-auto` bound the height at ~5 lines; a short
+          error still renders as the single line it always was. `min-w-0` lets
+          the box shrink inside the flex row so long tokens wrap instead of
+          widening the card. `tabIndex` puts the clipped text in the tab order,
+          which is what makes a keyboard-only user able to scroll it. */}
+      <div
+        className="min-w-0 flex-1 max-h-20 overflow-y-auto whitespace-pre-wrap wrap-break-word text-(--color-text-tertiary)"
+        tabIndex={0}
+        role="group"
+        aria-label="Auto-resolve failure detail"
+        data-testid="auto-resolve-last-error"
+      >
         Auto-resolve couldn&rsquo;t finish. Last error: {lastError}.
-      </span>
+      </div>
       <button
         type="button"
         onClick={() => void handleRetry()}
-        className="text-(--color-text-primary) hover:underline cursor-pointer"
+        className="shrink-0 text-(--color-text-primary) hover:underline cursor-pointer"
         data-testid="auto-resolve-retry"
       >
         Retry
+      </button>
+      {/* `-my-1 p-1` widens the hit target to a comfortable tap size without
+          adding a row of height to the banner. */}
+      <button
+        type="button"
+        onClick={() => setDismissedError(lastError)}
+        aria-label="Dismiss auto-resolve failure"
+        title="Dismiss"
+        className="shrink-0 -my-1 p-1 text-(--color-text-tertiary) hover:text-(--color-text-primary) cursor-pointer"
+        data-testid="auto-resolve-dismiss"
+      >
+        <XIcon size={ICON_SIZE.SM} />
       </button>
     </div>
   );

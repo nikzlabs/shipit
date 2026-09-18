@@ -3,7 +3,6 @@ import { render, cleanup, fireEvent, act } from "@testing-library/react";
 import { LogView } from "./LogView.js";
 import { useLogStore } from "../stores/log-store.js";
 
-// ---- xterm + addon mocks (no DOM/canvas in jsdom) ----
 interface MockTerm {
   writes: string[];
   clears: number;
@@ -95,7 +94,6 @@ describe("LogView", () => {
     act(() => {
       useLogStore.getState().append("agent", [{ ts: "t", source: "stdout", text: "second" }]);
     });
-    // No extra clear/reset on a pure append — only the new record is written.
     expect(term.clears).toBe(clearsAfterSnapshot);
     expect(allWrites()).toContain("second");
   });
@@ -110,7 +108,6 @@ describe("LogView", () => {
     act(() => {
       useLogStore.getState().clearChannel("agent");
     });
-    // Epoch bumped → full rewrite path runs term.clear()/reset() again.
     expect(term.clears).toBeGreaterThan(clearsBefore);
   });
 

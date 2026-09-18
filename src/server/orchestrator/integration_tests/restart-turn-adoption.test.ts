@@ -1,31 +1,3 @@
-/**
- * Integration tests for turn adoption across an orchestrator restart (docs/240).
- *
- * The scenario, as observed in production: the orchestrator crashed and
- * restarted while agents were mid-turn. The session containers kept running —
- * the CLIs went on working and emitting into each worker's SSE ring buffer. The
- * restarted orchestrator rediscovered the containers and reconnected SSE, but
- * the `ProxyAgentProcess` every turn was bound to had died with the old process,
- * so every replayed event hit the `(no _agent)` drop branch. Sessions rendered
- * as stopped, the turns' transcript tails were never persisted, and
- * `postTurnCommit` → auto-push → PR card never ran.
- *
- * The harness models the restart honestly, with a REAL `SessionWorker` over
- * HTTP + SSE (no Docker):
- *
- *   1. Start a turn on the worker directly (`POST /agent/start`) and emit some
- *      of it — this is the pre-restart orchestrator's turn, and nothing is
- *      listening for it. Seed chat history with the partial `in_progress` rows
- *      that orchestrator had written before it died.
- *   2. Build a FRESH `ContainerSessionRunner` against the same worker — the
- *      restarted orchestrator — and reattach.
- *
- * Then assert the three things the bug cost us: the session comes back running,
- * the replayed turn lands in persisted history exactly once (the pre-crash
- * partial rows are replaced, not duplicated), and the post-turn commit flow
- * fires off the replayed `agent_result`.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { SessionWorker } from "../../session/session-worker.js";
@@ -43,10 +15,6 @@ import type {
   PermissionMode,
   WorkerAgentStatus,
 } from "../../shared/types.js";
-
-// ---------------------------------------------------------------------------
-// Worker-side fake agent
-// ---------------------------------------------------------------------------
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -83,10 +51,6 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 async function waitFor(fn: () => boolean, timeoutMs = 3000, label = "condition"): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -102,6 +66,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
   let worker: SessionWorker;
   let workerUrl: string;
   let lastAgent: FakeWorkerAgent;
+  let allAgents: FakeWorkerAgent[];
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
   let chatHistoryManager: ChatHistoryManager;
@@ -113,6 +78,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
 
   beforeEach(async () => {
     lastAgent = null as unknown as FakeWorkerAgent;
+    allAgents = [];
     runners = [];
     commits = [];
     pushes = [];
@@ -120,6 +86,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     worker = new SessionWorker({
       agentFactory: () => {
         lastAgent = new FakeWorkerAgent();
+        allAgents.push(lastAgent);
         return lastAgent;
       },
       port: 0,
@@ -143,8 +110,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  /** A restarted orchestrator's runner for this session, fully wired. */
-  function makeRunner(): ContainerSessionRunner {
+  function makeRunner(statusCard = false): ContainerSessionRunner {
     const runner = new ContainerSessionRunner({
       sessionId: SESSION_ID,
       sessionDir: "/tmp/restart-session",
@@ -163,6 +129,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
         return "commit-hash-1";
       },
       buildRunParams: async (_sessionId, _agentId, prompt) => ({ prompt, cwd: "/workspace" }),
+      statusCardEnabled: () => statusCard,
       listenerDeps: {
         sessionManager,
         chatHistoryManager,
@@ -177,10 +144,6 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     return runner;
   }
 
-  /**
-   * Start a turn on the worker the way the PRE-restart orchestrator would have,
-   * and emit its opening events into the ring buffer with nobody listening.
-   */
   async function startPreRestartTurn(runToken = "pre-restart-token"): Promise<void> {
     const res = await fetch(`${workerUrl}/agent/start`, {
       method: "POST",
@@ -206,7 +169,6 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     });
   }
 
-  /** The partial rows the crashed orchestrator had already written. */
   function seedPreCrashHistory(): void {
     chatHistoryManager.append(SESSION_ID, { role: "user", text: "refactor the parser" });
     chatHistoryManager.append(SESSION_ID, {
@@ -215,8 +177,6 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
       inProgress: true,
     });
   }
-
-  // ---- the worker's own report ----
 
   it("worker reports a turn as in flight until agent_result, separately from process residency", async () => {
     const idle = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
@@ -229,18 +189,13 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     expect(live.runToken).toBe("token-abc");
     expect(live.agentId).toBe("claude");
     expect(live.streaming).toBe(true);
-    // The replay anchor precedes the turn's own events.
     expect(live.turnStartSseSeq).toBeLessThan(live.latestSseSeq);
 
     lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
     const done = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
-    // The streaming process stays RESIDENT, but the turn is over — the
-    // distinction adoption depends on.
     expect(done.running).toBe(true);
     expect(done.turnActive).toBe(false);
   });
-
-  // ---- adoption ----
 
   it("reattaches a live turn: the session comes back running and the replay lands", async () => {
     await startPreRestartTurn();
@@ -251,8 +206,6 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
 
     expect(adopted).toBe(true);
     expect(runner.running).toBe(true);
-    // The replayed assistant event was routed into the adopted turn rather than
-    // dropped `(no _agent)`.
     await waitFor(() => runner.accumulatedText.includes("MIDTURN_TEXT"), 3000, "replayed assistant text");
     expect(sseEvents.some((e) => e.event === "session_agent_started")).toBe(true);
   });
@@ -266,8 +219,6 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     await runner.resumeInFlightTurn();
     await waitFor(() => runner.accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
 
-    // The agent finishes the turn AFTER the restart — the canonical signal the
-    // whole post-turn flow keys off.
     lastAgent.emit("event", {
       type: "agent_assistant",
       content: [{ type: "text", text: " and DONE_TEXT" }],
@@ -276,20 +227,15 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     await waitFor(() => !runner.running, 3000, "turn finished");
 
     const history = chatHistoryManager.load(SESSION_ID);
-    // One user row (never re-persisted by the adoption — the pre-crash
-    // orchestrator wrote it) and no duplicated assistant rows.
     expect(history.filter((m) => m.role === "user")).toHaveLength(1);
     const assistantText = history.filter((m) => m.role === "assistant").map((m) => m.text).join("");
     expect(assistantText).toContain("MIDTURN_TEXT");
     expect(assistantText).toContain("DONE_TEXT");
-    // "MIDTURN_TEXT" appears once across the whole transcript — the pre-crash
-    // in-progress row was replaced, not duplicated.
     const occurrences = history
       .map((m) => m.text ?? "")
       .join("\n")
       .split("MIDTURN_TEXT").length - 1;
     expect(occurrences).toBe(1);
-    // Nothing is left flagged in-progress once the turn is finalized.
     expect(history.some((m) => m.inProgress)).toBe(false);
   });
 
@@ -317,15 +263,10 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     await runner.resumeInFlightTurn();
     await waitFor(() => runner.accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
 
-    // The CLI exits (container restart / crash) — the worker stamps the ORIGINAL
-    // spawn's token onto `agent_done`. A freshly-minted token on the adopting
-    // proxy would make `isStaleSpawnEvent` drop this and strand `running=true`.
     lastAgent.emit("done", 0);
     await waitFor(() => !runner.running, 3000, "done handled");
     expect(runner.isStreamingActive).toBe(false);
   });
-
-  // ---- the cases adoption must NOT touch ----
 
   it("does not adopt (or replay) a turn that already finished before the restart", async () => {
     await startPreRestartTurn();
@@ -340,11 +281,62 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
 
     expect(adopted).toBe(false);
     expect(runner.running).toBe(false);
-    // The finished turn's buffered events were skipped, not re-attributed to
-    // this runner (the post-restart double-render bug).
     await new Promise((r) => setTimeout(r, 200));
     expect(runner.accumulatedText).toBe("");
     expect(commits).toHaveLength(0);
+  });
+
+  // docs/303 req 15 — one nudge per missing update, and a restart must not buy a second.
+  describe("the status-card nudge marker across a restart", () => {
+    async function startPreRestartTurnWith(statusNudge: boolean): Promise<void> {
+      const res = await fetch(`${workerUrl}/agent/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentId: "claude",
+          runToken: "nudge-token",
+          params: { prompt: "[ShipIt] update the status card", cwd: "/workspace", useStreaming: true },
+          ...(statusNudge ? { statusNudge: true } : {}),
+        }),
+      });
+      expect(res.status).toBe(200);
+      await waitFor(() => lastAgent?.runCalled, 2000, "worker started the agent");
+    }
+
+    // Finish the adopted turn without a session_status call: the settlement then decides.
+    async function adoptAndFinish(): Promise<ContainerSessionRunner> {
+      const runner = makeRunner(true);
+      expect(await runner.resumeInFlightTurn()).toBe(true);
+      lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "MIDTURN_TEXT" }] });
+      await waitFor(() => runner.accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      // The post-turn commit, not `running`: a dispatched nudge keeps the runner busy.
+      await waitFor(() => commits.length > 0, 3000, "the adopted turn's post-turn flow ran");
+      return runner;
+    }
+
+    it("nudges an adopted ordinary turn that ended without a status update", async () => {
+      await startPreRestartTurnWith(false);
+      await adoptAndFinish();
+
+      await waitFor(() => allAgents.length === 2, 3000, "the nudge turn started");
+      expect(allAgents[1]?.lastParams?.prompt).toContain("[ShipIt]");
+      // The other half of the carry: the worker now holds the marker, so a restart during
+      // THIS turn would adopt it as the nudge it is.
+      const live = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
+      expect(live.statusNudge).toBe(true);
+    });
+
+    it("does not nudge an adopted turn that was itself the nudge", async () => {
+      await startPreRestartTurnWith(true);
+      const runner = await adoptAndFinish();
+
+      // The terminal sequence holds the post-turn lease across the nudge decision and its
+      // dispatch, so an idle runner is the signal that the decision has been made and gone.
+      await waitFor(() => !runner.agentBusy, 3000, "the post-turn sequence finished");
+      expect(allAgents).toHaveLength(1);
+      expect(runner.running).toBe(false);
+    });
   });
 
   it("does not adopt a turn a live runner already owns (no double-wiring)", async () => {
@@ -352,12 +344,10 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     runner.attachViewer();
     await waitFor(() => !runner.running, 500).catch(() => {});
 
-    // This runner starts its own turn — the normal path.
     const proxy = runner.createAgent("claude");
     proxy.run({ prompt: "hello", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent started");
 
-    // A second resume must be a no-op: the slot is occupied by the live turn.
     const adopted = await runner.resumeInFlightTurn();
     expect(adopted).toBe(false);
     expect(runner.getAgent()).toBe(proxy);

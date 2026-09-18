@@ -63,7 +63,6 @@ describe("assembleAgentPrompt", () => {
         fileContext: FILE_CTX,
         imageContext: "",
       });
-      // Slash invocation ordering applies: user text first, then context.
       expect(result).toBe(`  /my-skill\n\n${FILE_CTX}`);
     });
 
@@ -82,7 +81,6 @@ describe("assembleAgentPrompt", () => {
         fileContext: FILE_CTX,
         imageContext: "",
       });
-      // Not a slash invocation → context prepended (legacy ordering).
       expect(result).toBe(`${FILE_CTX}\n\nwhat does a/b mean`);
     });
   });
@@ -125,8 +123,6 @@ describe("assembleAgentPrompt", () => {
     });
 
     it("APPENDS the note for a dictated slash command, keeping /skill at index 0", () => {
-      // A dictated `/review` must still resolve as a slash command — the CLI
-      // only honors it at index 0, which is why the note moves to the back.
       const result = assembleAgentPrompt({
         userText: "/review the auth module",
         fileContext: FILE_CTX,
@@ -138,9 +134,6 @@ describe("assembleAgentPrompt", () => {
     });
 
     it("names the artifacts the agent should expect, not just 'this was dictated'", () => {
-      // Structural, not prose: the note is useless if it doesn't tell the agent
-      // WHAT to be tolerant of, so assert the block wrapper and the two failure
-      // modes it exists for rather than any particular sentence.
       expect(DICTATION_CONTEXT).toMatch(/^<dictated_input>/);
       expect(DICTATION_CONTEXT).toMatch(/<\/dictated_input>$/);
       expect(DICTATION_CONTEXT.toLowerCase()).toContain("transcri");
@@ -174,7 +167,6 @@ describe("assembleAgentPrompt", () => {
     });
 
     it("changes nothing when the session is not on a role", () => {
-      // The overwhelmingly common case, and the one that must stay byte-identical.
       expect(
         assembleAgentPrompt({ userText: "fix the bug", fileContext: "", imageContext: "" }),
       ).toBe("fix the bug");

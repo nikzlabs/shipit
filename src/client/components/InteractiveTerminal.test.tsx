@@ -2,7 +2,6 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import { createRef } from "react";
 
-// Track calls through module-level arrays that survive vi.mock hoisting
 const terminalInstances: {
   write: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
@@ -50,10 +49,8 @@ vi.mock("@xterm/addon-web-links", () => {
   return { WebLinksAddon: MockWebLinksAddon };
 });
 
-// Mock the CSS import
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
-// Stub ResizeObserver since jsdom doesn't support it
 const observerInstances: {
   observe: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
@@ -79,7 +76,6 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-// Import after mocks are set up
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./InteractiveTerminal.js";
 
 describe("InteractiveTerminal", () => {
@@ -114,7 +110,7 @@ describe("InteractiveTerminal", () => {
 
     expect(terminalInstances).toHaveLength(1);
     expect(terminalInstances[0].open).toHaveBeenCalledOnce();
-    expect(terminalInstances[0].loadAddon).toHaveBeenCalledTimes(2); // FitAddon + WebLinksAddon
+    expect(terminalInstances[0].loadAddon).toHaveBeenCalledTimes(2);
   });
 
   it("writes received data to terminal instance via ref", () => {
@@ -149,7 +145,6 @@ describe("InteractiveTerminal", () => {
       />,
     );
 
-    // Get the callback passed to terminal.onData and invoke it
     const term = terminalInstances[0];
     expect(term.onData).toHaveBeenCalledOnce();
     const dataHandler = term.onData.mock.calls[0][0];
@@ -230,18 +225,14 @@ describe("InteractiveTerminal", () => {
 
     const observer = observerInstances[0];
 
-    // Simulate rapid resize events
     observer.callback();
     observer.callback();
     observer.callback();
 
-    // onResize should not have been called yet (debounced)
     expect(onResize).not.toHaveBeenCalled();
 
-    // Advance timer past the debounce period (150ms)
     vi.advanceTimersByTime(150);
 
-    // Now it should have been called exactly once
     expect(onResize).toHaveBeenCalledOnce();
 
     vi.useRealTimers();

@@ -15,7 +15,6 @@ interface KeepPreviewRuntimeDeps {
   setTimer?: typeof setTimeout;
 }
 
-/** Activate through the canonical runner factory; runner creation owns Compose startup. */
 export function activateReservedPreview(
   session: SessionInfo,
   deps: Pick<KeepPreviewRuntimeDeps, "runnerRegistry" | "defaultAgentId">,
@@ -29,22 +28,17 @@ export function activateReservedPreview(
   return true;
 }
 
-/** Restore durable reservations whose container did not survive startup. */
 export function restoreReservedPreviews(deps: KeepPreviewRuntimeDeps): string[] {
   const activated: string[] = [];
   for (const session of deps.sessionManager.listAll()) {
-    if (!session.keepPreviewRunning || deps.containerManager.get(session.id)?.status === "running") continue;
+    if (!session.keepPreviewRunning) continue;
+    // A surviving container still needs a runner to restore process-local preview routing.
+    if (deps.runnerRegistry.get(session.id)) continue;
     if (activateReservedPreview(session, deps)) activated.push(session.id);
   }
   return activated;
 }
 
-/**
- * Bounded crash recovery for reserved agent containers. Each attempt reuses the
- * normal runner factory. Successful `container_started` events cancel the
- * remaining budget; exhaustion leaves the durable flag set and logs a terminal
- * error for the existing Logs/session surfaces.
- */
 export function createKeepPreviewRestartSupervisor(deps: KeepPreviewRuntimeDeps): {
   handleUnexpectedExit: (sessionId: string) => void;
   dispose: () => void;

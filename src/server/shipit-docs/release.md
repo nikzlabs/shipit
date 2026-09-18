@@ -5,6 +5,30 @@ ShipIt lets you cut a versioned release of the current repo **from chat**. You
 the result as an inline **release lifecycle card** and tracks the gate/CI status
 and the published GitHub Release without anyone leaving ShipIt.
 
+## A release session is special: ShipIt owns the branch, you write nothing
+
+The moment you run `shipit release`, this session stops being an ordinary
+coding session. Two rules hold for the rest of it:
+
+- **ShipIt controls the branch — never change it.** `shipit release prepare`
+  checks out `release/<version>` and leaves you there on purpose. Do not
+  `git checkout`, `git switch`, or otherwise move off it, and do not "restore"
+  the branch you were on before. ShipIt resolves the session's pull request
+  **through the checked-out branch**, so moving off the release branch hides the
+  merge control for the release PR — the user can see the PR in the UI but can
+  no longer merge it, which is the one action the whole flow exists to reach.
+- **Do not write any files.** No source edits, no doc updates, no scratch files
+  in the repo. The post-turn auto-commit commits onto whatever `HEAD` points at
+  and the auto-push targets the checked-out branch, so a file written here is
+  committed and pushed onto the open release PR — silently changing what
+  merging it ships. **`RELEASE_NOTES.draft.md` is the one exception** (see
+  *Release notes* below): it is gitignored, so the auto-commit cannot reach it
+  and the reason for this rule does not apply.
+
+A release session's only output is the release itself: run the command, report
+what happened, stop. If the user asks for unrelated work mid-release, say why it
+can't happen here and offer a separate session for it.
+
 ## Two mechanisms
 
 How a repo publishes is set by `release.mechanism` in `shipit.yaml`:
@@ -51,6 +75,27 @@ below** (those are kept only to explain what the command does and as a fallback)
       or `--allow-empty` to cut a bump-only release on purpose. (`--bootstrap`
       implies this — the first release legitimately ships everything on the new
       branch.)
+    - **Dead-PR guard:** if `release/<version>`'s only pull request is already
+      merged or closed and cannot host new work, `prepare` **refuses** rather
+      than reporting that dead PR as an updated release. The error names the PR,
+      the branch it targeted, and the remedy — which differs by cause: re-run
+      with `--release-branch <that branch>` when this run targeted a different
+      one, pass `--from <branch>` when the release would carry no changes, or
+      release a different version (a fresh `release/<version>` branch) when the
+      old base is gone. The version bump has already been pushed to
+      `release/<version>` at that point; nothing publishes until a PR carries it.
+    - **Wrong-base guard:** ShipIt matches an existing pull request by branch
+      name alone, so an OPEN `release/<version>` PR into one maintenance branch
+      would otherwise be reused by a run targeting a different one — reporting
+      your requested branch beside a PR that does not target it, and publishing
+      through the wrong branch on merge. `prepare` **refuses** when the PR's base
+      isn't the release branch this run asked for, and checks this *before*
+      touching the branch, so a mistyped `--release-branch` doesn't cost the open
+      PR its diff and checks. Re-run with `--release-branch <the branch that PR
+      targets>` to continue that PR, or release a different version, which starts
+      from a fresh branch. **Closing the PR does not help** — a closed pull
+      request still blocks the branch (it lands on the dead-PR guard above);
+      retargeting it on GitHub does work.
 
     **Cold-start caveat — the merge-trigger workflow must be on the branch.**
     GitHub Actions evaluates a workflow as it exists *on the branch that was
@@ -95,7 +140,8 @@ When the user asks to cut/tag/publish a release:
 2. Compute the next [semver](https://semver.org) for the requested bump
    (`patch`/`minor`/`major`, or the explicit version the user named).
 3. Derive the tag: `v{version}` (e.g. `v0.3.0`).
-4. Draft a short notes preview.
+4. Draft a short notes preview, and write the full notes to
+   `RELEASE_NOTES.draft.md` — see *Release notes* below.
 5. **Emit a proposal marker** on its own line, then stop and wait:
 
 ```
@@ -138,11 +184,10 @@ push a tag. The equivalent by hand, if the command is unavailable:
 
 ```
 git fetch origin
-git checkout -B release/0.3.0 origin/stable     # release.branch (default: stable)
-# bring in what you're shipping:
+git checkout -B release/0.3.0 origin/stable
 #   release from main → git merge --no-ff origin/main
 #   hotfix            → git cherry-pick <sha-from-main> [<sha> …]
-# bump the version source (e.g. edit package.json "version" to 0.3.0)
+# Set the version to 0.3.0.
 git commit -am "Release v0.3.0"
 ```
 
@@ -169,11 +214,11 @@ confirmed release you take explicit control so the tag points at exactly the
 right commit:
 
 ```
-# bump the version source (e.g. edit package.json "version" to 0.3.0)
+# Set the version to 0.3.0.
 git add -A && git commit -m "Release v0.3.0"
-git tag -a v0.3.0 -m "Release v0.3.0"   # annotated, not lightweight
-git push origin HEAD          # the bump commit
-git push origin v0.3.0        # the tag — triggers the repo's release CI
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin HEAD
+git push origin v0.3.0
 ```
 
 Then emit a tagged marker including the tag's commit SHA:
@@ -213,23 +258,80 @@ rendered chat — they drive the card.
 | `{"action":"already-released","tag":…}` | Tag already exists | Card → "already released" |
 | `{"action":"cancelled"}` | User cancelled | Card dismissed |
 
+## Release notes
+
+By default the published GitHub Release body is whatever `gh release create
+--generate-notes` produces: one line per merged pull request since the previous
+tag. To publish something shorter, **write the notes yourself and let the user
+edit them** (docs/309-agent-authored-release-notes).
+
+**On a repo set up for it this is required, not optional** — `prepare` and CI
+both refuse a final release without notes. Two greps tell you whether a repo is
+set up: the release workflow must publish `.release-notes/<tag>.md`, and
+`RELEASE_NOTES.draft.md` must be in `.gitignore`. Where either is missing, skip
+this entirely — there a draft is only a stray file. ShipIt's own repo satisfies
+both. Then:
+
+1. **Before you emit the proposal marker** — there is one action, **Confirm &
+   publish**, and it accepts the notes as well as the release, so the draft has
+   to exist and be named in your message by the time the card appears.
+
+   **Summarize what this release ships, which is not `<release-branch>..<source>`.**
+   A squash-merged maintenance branch has release commits unreachable from the
+   source branch, so that range returns everything since the branches diverged,
+   already-released work included. Use the payload instead: for `--from
+   <branch>`, that branch's work since the previous release's point on it; for
+   `--pick`, exactly the picked commits; for `--bootstrap`, the branch as a
+   first release; for `--allow-empty`, say it ships no changes. Say in chat
+   which anchor you used, so the user can tell whether the summary covers the
+   right span. Write it to **`RELEASE_NOTES.draft.md`** at the repo root:
+   grouped highlights in the user's terms, not one line per commit or per PR,
+   which is the thing the generated notes already do.
+2. **Tell the user the draft is there** and that they can edit it before
+   confirming. They open it from the file tree. It is gitignored, so their edit
+   cannot dirty the working tree `prepare` refuses to run against, and it
+   survives the checkout onto the release branch.
+3. `shipit release prepare` commits it as **`.release-notes/<tag>.md`** beside
+   the version bump — so the notes are part of the diff the user merges — and
+   deletes the draft only once the PR exists. Re-running `prepare` for the same
+   version rebuilds the branch from scratch; it recovers the notes already on
+   the pushed release branch, so a retry never silently drops them.
+4. On merge, CI publishes that file **as it exists at the tag** verbatim with
+   `--notes-file`, appending the `**Full Changelog**` link (a supplied body gets
+   no link of its own).
+
+**There is no fallback.** A final release never publishes the generated per-PR
+list: `prepare` refuses a release with no notes (before touching the branch, so
+the fix costs nothing), and CI fails the publish if the tag carries no notes
+file. Write the draft or the release does not go out. **Release candidates are
+the sole exception** — an rc tags an existing commit and so cannot carry a file,
+and it reaches no install automatically, so it keeps generated notes.
+
+The file is version-stamped, so a release can never inherit the previous
+release's text.
+
+The same file is what **Settings → Update** shows as the changelog for a pending
+stable update, in place of its raw commit list — so a compact draft is what the
+user reads in-product as well as on GitHub.
+
 ## Per-repo configuration (shipit.yaml)
 
 ```yaml
 release:
   mechanism: release-branch      # tag-triggered (default) | release-branch | brokered
-  branch: stable                 # maintenance branch for release-branch; default: stable
+  branch: stable
   version-source: package.json   # package.json | Cargo.toml | pyproject.toml | VERSION | tag
-  version-source-path: packages/api/package.json  # monorepo: where the version file lives
-  tag-pattern: "v{version}"      # must contain {version}; default: "v{version}"
-  prerelease-pattern: "v{version}-rc.{n}"  # {n} auto-increments; default shown
-  notes: github-generated        # github-generated | commits | changelog:CHANGELOG.md
-  gate: "npm test"               # optional: local command the agent runs before tagging
-  workflow: .github/workflows/release.yml  # path used for existence checks / scaffolding
+  version-source-path: packages/api/package.json
 ```
 
-All fields are optional. `release-branch` requires a file-backed `version-source`
-(not `tag`) — a branch push has no tag to read the version from.
+Those four keys are the whole schema, and all of them are optional.
+`release-branch` requires a file-backed `version-source` (not `tag`) — a branch
+push has no tag to read the version from.
+
+Some fixed values are **not** configurable, so do not look for a key that sets
+them: the tag is always `v<version>`, a release candidate is always
+`v<version>-rc.<n>`, and the release workflow is always
+`.github/workflows/release.yml`.
 
 ## Monorepo disambiguation
 
@@ -246,14 +348,14 @@ On resolution, offer to write the `release:` block (`version-source` +
 If the repo has **no release workflow**, you can scaffold one and open a PR — CI
 still does the publish, so the repo gets the same hands-off auto-publish flow
 without anyone leaving ShipIt. Use this when the user asks to "set up releases",
-or when a release request hits a repo whose `.github/workflows/release.yml` (or
-the path in `release.workflow`) is absent.
+or when a release request hits a repo whose `.github/workflows/release.yml` is
+absent.
 
 ### Detect → offer → write → PR
 
 1. **Detect.** Check whether a release workflow already exists at
-   `.github/workflows/release.yml` (or `release.workflow` from `shipit.yaml`). If
-   one is present, don't scaffold — use the normal release flow above.
+   `.github/workflows/release.yml`. If one is present, don't scaffold — use the
+   normal release flow above.
 2. **Offer.** Tell the user you can scaffold a merge-triggered auto-publish
    workflow, and confirm the parameters before writing:
    - **version source** — auto-detect (`package.json` / `Cargo.toml` /
@@ -264,7 +366,8 @@ the path in `release.workflow`) is absent.
    - **release branch** — the long-lived maintenance branch a release is cut by
      merging into (default `stable`).
    - **gate** (optional) — a command to run before tag + publish (e.g.
-     `npm test`).
+     `npm test`). It is written into the workflow you scaffold, not into
+     `shipit.yaml`.
    - **prerelease** — whether to also accept `vX.Y.Z-rc.N` tags for release
      candidates.
 3. **Write** these four files into the workspace:

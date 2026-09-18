@@ -56,8 +56,6 @@ describe("ChangedDocsStrip", () => {
     );
   });
 
-  // ---- Related-issue chips (docs/206) ----
-
   const issueRefs: IssueChipRef[] = [
     { tracker: "linear", identifier: "SHI-90", issueId: "SHI-90", intent: "closes" },
     { tracker: "github", identifier: "o/r#5", issueId: "5", url: "https://github.com/o/r/issues/5", intent: "refs" },

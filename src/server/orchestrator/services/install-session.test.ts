@@ -1,15 +1,3 @@
-/**
- * install-session service tests (docs/149 v1c).
- *
- * Verifies the repo-targeted install spawns a dedicated session, writes the
- * skill + commits in THAT session's workspace, opens a PR, graduates the
- * session, and leaves a pre-existing "current" session completely untouched.
- *
- * `agentCreatePr` / `activatePendingAutoMergeForPr` are mocked so the test
- * doesn't push to a real remote; `installPlugin` runs for real against a
- * fixture catalog so the file-write + path-scoped commit are exercised.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -27,7 +15,6 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
-// Stub the PR-create glue so no real push/remote is needed.
 const agentCreatePrMock = vi.fn(async () => ({
   number: 7,
   url: "https://github.com/acme/widgets/pull/7",
@@ -47,7 +34,6 @@ vi.mock("./github.js", async (orig) => {
   };
 });
 
-// Imported AFTER the mock is registered.
 const { installPluginAsSession } = await import("./install-session.js");
 
 const PLUGIN_NAME = "commit-commands";
@@ -160,7 +146,6 @@ describe("installPluginAsSession (docs/149 v1c)", () => {
     expect(result.branch).toBe("shipit/install-commit-commands-rand123");
     expect(agentCreatePrMock).toHaveBeenCalledTimes(1);
 
-    // The skill landed in the NEW session's workspace, committed.
     const ws = path.join(tmp, "install-1", "workspace");
     const skillMd = path.join(ws, ".claude", "skills", `${PLUGIN_NAME}__commit`, "SKILL.md");
     expect(fs.existsSync(skillMd)).toBe(true);
@@ -168,8 +153,6 @@ describe("installPluginAsSession (docs/149 v1c)", () => {
     const log = await simpleGit(ws).log();
     expect(log.latest?.message).toMatch(/Install commit-commands/);
 
-    // Session graduated (no longer warm) and is on the install branch.
-    // `warm` is only present on the row when true, so graduated reads as falsy.
     const session = sessionManager.get("install-1");
     expect(session?.warm).not.toBe(true);
     expect(session?.branch).toBe("shipit/install-commit-commands-rand123");
@@ -199,7 +182,6 @@ describe("installPluginAsSession (docs/149 v1c)", () => {
   });
 
   it("leaves a pre-existing session untouched", async () => {
-    // A "current" session the user is working in.
     const currentWs = path.join(tmp, "current", "workspace");
     await initRepoOnBranch(currentWs, "shipit/current-work");
     sessionManager.track("current", "Current work", currentWs);
@@ -208,9 +190,7 @@ describe("installPluginAsSession (docs/149 v1c)", () => {
 
     await installPluginAsSession(deps(), { repoUrl, marketplaceId: "test-catalog", pluginName: PLUGIN_NAME });
 
-    // No skill files in the current session's workspace.
     expect(fs.existsSync(path.join(currentWs, ".claude", "skills"))).toBe(false);
-    // Current session row unchanged.
     const current = sessionManager.get("current");
     expect(current?.branch).toBe("shipit/current-work");
     expect(current?.workspaceDir).toBe(currentWs);

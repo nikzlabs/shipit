@@ -4,13 +4,6 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { SearchMatch } from "../hooks/useSearch.js";
 
-/**
- * SearchBar — slide-down search input for finding text in chat history.
- *
- * Includes a text input, match count display, prev/next buttons, and a
- * close button. Auto-focuses the input when opened. Supports keyboard
- * shortcuts: Enter / Shift+Enter for next/prev, Escape to close.
- */
 export function SearchBar({
   query,
   onQueryChange,

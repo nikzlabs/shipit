@@ -1,16 +1,3 @@
-/**
- * Unit tests for repo-aware PR brokering target resolution (docs/211).
- *
- * The critical invariants:
- *  - A repo-bound session with no override is UNCHANGED (session root + session
- *    remote) — a `--local` clone's bare-cache origin must never be read.
- *  - A sandbox (no remoteUrl) resolves the cwd's clone and reads its own origin.
- *  - `--repo` targets an explicit GitHub repo while still operating on the cwd
- *    clone.
- *  - cwd → host clone mapping clamps any path-traversal back to the session root.
- *  - The git-credential gate denies only a sandbox with `git` off.
- */
-
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import {
@@ -19,6 +6,7 @@ import {
   resolvePrTarget,
   gitCredentialAllowed,
   mergeDisposition,
+  agentMergeOwnership,
 } from "./pr-target.js";
 import type { SessionInfo } from "../shared/types.js";
 
@@ -82,6 +70,55 @@ describe("repoFlagToUrl", () => {
   });
 });
 
+describe("resolvePrTarget — an explicit --repo that means nothing", () => {
+  const session = { remoteUrl: "https://github.com/o/r.git" };
+
+  it.each([
+    ["a bare owner with no name", "octocat"],
+    ["a name with too many segments", "github.com/a/b/c"],
+    ["an embedded space", "octocat/hel lo"],
+  ])("refuses %s rather than falling back to the session repo", (_label, repo) => {
+    expect(() => resolvePrTarget(session, SESSION_DIR, { repo })).toThrow(/Invalid --repo/);
+  });
+
+  it("names the accepted spellings in the message", () => {
+    expect(() => resolvePrTarget(session, SESSION_DIR, { repo: "octocat" }))
+      .toThrow(/OWNER\/NAME/);
+  });
+
+  it("raises a 400, not a 500 — it is the caller's input that is wrong", () => {
+    try {
+      resolvePrTarget(session, SESSION_DIR, { repo: "octocat" });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect((err as { statusCode?: number }).statusCode).toBe(400);
+    }
+  });
+
+  it("still falls back to the session repo when --repo is absent", () => {
+    expect(resolvePrTarget(session, SESSION_DIR, { repo: undefined })).toEqual({
+      gitDir: SESSION_DIR,
+      remoteUrl: "https://github.com/o/r.git",
+    });
+  });
+
+  it.each([
+    ["an empty string", ""],
+    ["whitespace", "   "],
+  ])("refuses %s — supplied-and-empty is not absent", (_label, repo) => {
+    expect(() => resolvePrTarget(session, SESSION_DIR, { repo })).toThrow(/Invalid --repo/);
+  });
+
+  it.each([
+    ["a number", 5],
+    ["an array", ["o", "r"]],
+    ["an object", { owner: "o" }],
+  ])("refuses %s from a JSON body", (_label, repo) => {
+    expect(() => resolvePrTarget(session, SESSION_DIR, { repo } as unknown as { repo?: string }))
+      .toThrow(/Invalid --repo/);
+  });
+});
+
 describe("resolvePrTarget", () => {
   it("repo-bound session with no override is UNCHANGED (session root + remote)", () => {
     const session = { remoteUrl: "https://github.com/o/r.git" };
@@ -93,7 +130,6 @@ describe("resolvePrTarget", () => {
 
   it("repo-bound session ignores cwd (must not read the bare-cache origin)", () => {
     const session = { remoteUrl: "https://github.com/o/r.git" };
-    // Even with a cwd, a repo-bound session keeps its root + remote.
     expect(resolvePrTarget(session, SESSION_DIR, { cwd: "/workspace/sub" })).toEqual({
       gitDir: SESSION_DIR,
       remoteUrl: "https://github.com/o/r.git",
@@ -168,12 +204,9 @@ describe("gitCredentialAllowed", () => {
 });
 
 describe("mergeDisposition", () => {
-  it("treats a repo-bound session as not-sandbox (use the PR card)", () => {
-    expect(mergeDisposition({} as SessionInfo)).toBe("not-sandbox");
-  });
-
-  it("treats an ops session as not-sandbox", () => {
-    expect(mergeDisposition({ kind: "ops" } as SessionInfo)).toBe("not-sandbox");
+  it("treats an ops session as not-sandbox, whatever the repository grant says", () => {
+    expect(mergeDisposition({ kind: "ops" } as SessionInfo, true)).toBe("not-sandbox");
+    expect(mergeDisposition({ kind: "ops" } as SessionInfo, false)).toBe("not-sandbox");
   });
 
   it("allows a sandbox with the dangerousGitHubOps grant on", () => {
@@ -181,7 +214,7 @@ describe("mergeDisposition", () => {
       mergeDisposition({
         kind: "sandbox",
         capabilities: { git: true, docker: false, network: true, dangerousGitHubOps: true },
-      } as SessionInfo),
+      } as SessionInfo, false),
     ).toBe("allowed");
   });
 
@@ -190,11 +223,98 @@ describe("mergeDisposition", () => {
       mergeDisposition({
         kind: "sandbox",
         capabilities: { git: true, docker: false, network: true, dangerousGitHubOps: false },
-      } as SessionInfo),
+      } as SessionInfo, true),
     ).toBe("not-granted");
   });
 
   it("reports not-granted for a sandbox with capabilities missing entirely", () => {
-    expect(mergeDisposition({ kind: "sandbox" } as SessionInfo)).toBe("not-granted");
+    expect(mergeDisposition({ kind: "sandbox" } as SessionInfo, true)).toBe("not-granted");
+  });
+
+  it("lets a repo-bound session merge only where the user granted it", () => {
+    expect(mergeDisposition({} as SessionInfo, true)).toBe("allowed");
+    expect(mergeDisposition({} as SessionInfo, false)).toBe("not-granted-repo");
+  });
+});
+
+describe("agentMergeOwnership (docs/287 req 5)", () => {
+  const OK = {
+    session: {
+      remoteUrl: "https://github.com/acme/shipit.git",
+      branch: "shipit/feature",
+      prNumber: 7,
+      prRepoId: "github:acme/shipit",
+    },
+    requestedNumber: 7,
+    currentBranch: "shipit/feature",
+    repoOverride: undefined,
+  };
+
+  it("allows the session's own pull request", () => {
+    expect(agentMergeOwnership(OK)).toBeNull();
+  });
+
+  it("allows the ordinary call, which always carries a cwd", () => {
+    expect(agentMergeOwnership({ ...OK })).toBeNull();
+  });
+
+  it("refuses --repo, which would retarget the whole operation", () => {
+    const refusal = agentMergeOwnership({ ...OK, repoOverride: "other/repo" });
+    expect(refusal?.status).toBe(400);
+    expect(refusal?.error).toContain("--repo");
+  });
+
+  it("refuses a pull request number this session did not open", () => {
+    const refusal = agentMergeOwnership({ ...OK, requestedNumber: 8 });
+    expect(refusal?.status).toBe(403);
+    expect(refusal?.error).toContain("#7");
+  });
+
+  it("refuses when ShipIt recorded no pull request for the session", () => {
+    const refusal = agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, prNumber: undefined, prRepoId: undefined },
+    });
+    expect(refusal?.status).toBe(403);
+    expect(refusal?.error).toContain("no record");
+  });
+
+  it("refuses a recorded number whose repository is no longer the session's", () => {
+    const refusal = agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, remoteUrl: "https://github.com/acme/other.git" },
+    });
+    expect(refusal?.status).toBe(403);
+    expect(refusal?.error).toContain("different repository");
+  });
+
+  it("accepts another spelling of the same repository", () => {
+    expect(agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, remoteUrl: "git@GitHub.com:Acme/ShipIt.git" },
+    })).toBeNull();
+  });
+
+  it("refuses when the workspace is on a different branch", () => {
+    const refusal = agentMergeOwnership({ ...OK, currentBranch: "main" });
+    expect(refusal?.status).toBe(409);
+  });
+
+  it("refuses a detached HEAD instead of reading it as main", () => {
+    const refusal = agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, branch: "main" },
+      currentBranch: null,
+    });
+    expect(refusal?.status).toBe(409);
+    expect(refusal?.error).toContain("detached");
+  });
+
+  it("refuses a session whose remote has no GitHub identity", () => {
+    const refusal = agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, remoteUrl: "https://gitlab.com/acme/shipit.git" },
+    });
+    expect(refusal?.status).toBe(403);
   });
 });

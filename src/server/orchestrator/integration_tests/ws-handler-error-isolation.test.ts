@@ -1,22 +1,3 @@
-/**
- * Integration test: a WS handler that throws/rejects MUST NOT crash the
- * orchestrator.
- *
- * Production incident (docs/142): a `POST /terminal/start` call to a wedged
- * session worker timed out with a WorkerTimeoutError. The WS dispatcher used
- * `return handler(ctx, msg)` — so the rejection floated out of the async
- * `socket.on("message")` callback as an unhandled rejection, and Node's
- * default behavior took down the entire orchestrator (every live session with
- * it). The dispatcher now `await`s each handler inside a try/catch and degrades
- * to a per-session `error` message.
- *
- * This is the executable contract for that fix: drive a handler to reject and
- * assert the client gets an `error` (not a dead process). Under the old
- * dispatcher this same scenario surfaced as an unhandled rejection — which the
- * test runner reports as a failure — so the test genuinely distinguishes the
- * two behaviors.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -36,7 +17,6 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
-// Test assertions inspect heterogeneous ws messages at runtime.
 type AnyMsg = any;
 
 describe("Integration: WS handler error isolation", () => {
@@ -46,8 +26,6 @@ describe("Integration: WS handler error isolation", () => {
   let sessionManager: SessionManager;
   let chatHistoryManager: ChatHistoryManager;
   let dbManager: DatabaseManager;
-  // When set, the agent factory throws to simulate a handler-level failure
-  // (e.g. the worker HTTP timeout from the incident).
   let throwOnAgentCreate = false;
 
   beforeEach(async () => {
@@ -95,21 +73,15 @@ describe("Integration: WS handler error isolation", () => {
 
   it("a rejecting handler surfaces a client error instead of crashing the orchestrator", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     throwOnAgentCreate = true;
     client.send({ type: "send_message", text: "boom" });
 
-    // The dispatcher's try/catch converts the rejection into a client-visible
-    // error. Under the old `return handler(...)` dispatcher this floated out as
-    // an unhandled rejection (process death) and no error reached the client.
     const err = await drainUntil(client, (m) => m.type === "error");
     expect(err).toBeTruthy();
     expect(typeof err.message).toBe("string");
 
-    // The orchestrator is still up and the connection was not torn down:
-    // receiving the error at all proves the dispatcher caught the rejection
-    // rather than letting it crash the process. WebSocket.OPEN === 1.
     expect(client.readyState).toBe(1);
   });
 });

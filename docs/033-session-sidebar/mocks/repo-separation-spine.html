@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <title>4e extended — the accent edge spanning the whole repo group</title>
 <style>
-/* Tokens copied verbatim from src/client/themes/claude-light.css and claude.css. */
 .claude-light {
   --color-bg-primary: #faf5ef;
   --color-bg-secondary: #f0e8de;
@@ -44,8 +43,6 @@
   --wash-pct: 9%;
 }
 
-/* Per-repo hues, tuned for the terracotta-leaning Claude palettes. Eight of
-   them, because the dense toggle is the real test of a rail full of lines. */
 .claude-light [data-accent="a0"] { --a: #a8683c; }
 .claude-light [data-accent="a1"] { --a: #2f6f6a; }
 .claude-light [data-accent="a2"] { --a: #7a4f9c; }
@@ -105,7 +102,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .app.dense { height: 820px; }
 .flabel { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #7a6e62; margin-bottom: 5px; }
 
-/* ── App context ───────────────────────────────────────────────────────── */
 .app { display: flex; height: 560px; border-radius: 9px; overflow: hidden; border: 1px solid #2e2519; }
 .app .rail { width: 272px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--color-bg-primary); border-right: 1px solid var(--color-border-primary); }
 .app .railhead { height: 39px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--color-border-primary); font-size: 11.5px; color: var(--color-text-tertiary); }
@@ -119,10 +115,7 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .skel { height: 6px; border-radius: 999px; background: var(--color-border-primary); margin: 6px 0; }
 .skel.s2 { width: 70%; } .skel.s3 { width: 52%; }
 
-/* ── Sidebar skeleton — identical DOM in every option ──────────────────── */
 .grp { display: flex; flex-direction: column; position: relative; margin-bottom: 8px; }
-/* Sticky, like the real thing (SessionGroup.tsx:336). Opaque base under the
-   band fill — a translucent sticky header lets rows scroll through it. */
 .ghead {
   display: flex; align-items: center; gap: 6px; padding: 7px 12px 7px 11px;
   position: sticky; top: 0; z-index: 5;
@@ -150,22 +143,12 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .row.new .plus { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; opacity: .7; }
 .row.new .title { color: var(--color-text-secondary); }
 
-/* ═════════════════════════════════════════════════════════════════════════
-   The options. All of them keep 4e's tertiary band; they differ only in how
-   far the accent edge travels and what it does when it gets there.
-   ═════════════════════════════════════════════════════════════════════════ */
-
-/* ── 5a · 4e as-is: edge on the band only (reference) ──────────────────── */
 .e-bandonly .ghead { border-left: 3px solid var(--a); }
 .e-bandonly .gbody { padding-left: 3px; }
 
-/* ── 5b · Edge spans the group — the literal ask ───────────────────────── */
-/* Border on .grp, not on .ghead, so it also paints BEHIND the pinned header:
-   the line stays continuous while the band is stuck. */
 .e-full { }
 .e-full .grp { border-left: 3px solid var(--a); }
 
-/* ── 5c · Inset edge with rounded caps ─────────────────────────────────── */
 .e-inset .grp { padding-left: 9px; }
 .e-inset .grp::before {
   content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px;
@@ -173,23 +156,17 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 }
 .e-inset .ghead { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
 
-/* ── 5d · Edge + faint body wash ───────────────────────────────────────── */
-/* color-mix, not rgba() — it resolves to an OPAQUE color, which is what the
-   sticky-header lesson from the band mock demands, and it takes the hue
-   straight from --a without needing a second pre-tinted token per repo. */
 .e-wash .grp { border-left: 3px solid var(--a); }
 .e-wash .gbody {
   background: color-mix(in srgb, var(--a) var(--wash-pct), var(--color-bg-primary));
 }
 
-/* ── 5e · Edge fades out down the group ────────────────────────────────── */
 .e-fade .grp::before {
   content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; z-index: 6;
   background: linear-gradient(to bottom, var(--a) 0%, var(--a) 22%, transparent 100%);
 }
 .e-fade .grp { padding-left: 3px; }
 
-/* ── 5f · Edge + closed shell (line + outline, tab shape) ──────────────── */
 .e-shell .scroll { padding: 6px; }
 .e-shell .grp {
   border: 1px solid var(--color-border-primary); border-left: 3px solid var(--a);
@@ -198,7 +175,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .e-shell .ghead { border-bottom: 1px solid var(--color-border-primary); }
 .e-shell .row { margin: 0 4px; }
 
-/* ── 5g · Edge spans, but stops short of the group's last row ──────────── */
 .e-hang .grp::before {
   content: ""; position: absolute; left: 0; top: 0; bottom: 14px; width: 3px;
   border-radius: 0 0 999px 999px; background: var(--a); z-index: 6;

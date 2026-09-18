@@ -35,16 +35,12 @@ After each Claude turn completes (on `git_committed` event), the server computes
 #### New GitManager Methods
 
 ```typescript
-// src/server/git.ts — additions
-
-/** Get unified diff between two commits (or HEAD~1..HEAD if no args). */
 async diff(fromCommit?: string, toCommit?: string): Promise<string> {
   const from = fromCommit ?? "HEAD~1";
   const to = toCommit ?? "HEAD";
   return this.git.diff([from, to]);
 }
 
-/** Get list of changed files between two commits. */
 async diffStat(fromCommit?: string, toCommit?: string): Promise<DiffFileStat[]> {
   const from = fromCommit ?? "HEAD~1";
   const to = toCommit ?? "HEAD";
@@ -61,8 +57,6 @@ async diffStat(fromCommit?: string, toCommit?: string): Promise<DiffFileStat[]> 
 #### New Types
 
 ```typescript
-// src/server/types.ts — additions
-
 export interface DiffFileStat {
   path: string;
   insertions: number;
@@ -87,7 +81,7 @@ export interface DiffLine {
 
 export interface FileDiff {
   path: string;
-  oldPath?: string;          // for renames
+  oldPath?: string;
   insertions: number;
   deletions: number;
   binary: boolean;
@@ -95,26 +89,20 @@ export interface FileDiff {
   status: "added" | "modified" | "deleted" | "renamed";
 }
 
-// Client → Server
 export interface WsGetTurnDiff {
   type: "get_turn_diff";
-  /** Base commit hash (typically the commit before the turn). */
   fromCommit: string;
-  /** Target commit hash (typically the turn's auto-commit). */
   toCommit: string;
 }
 
 export interface WsRejectChanges {
   type: "reject_changes";
-  /** Files to reject (revert). Empty array = reject all. */
   files: string[];
-  /** Optional feedback message sent to Claude about why changes were rejected. */
   feedback?: string;
 }
 
 export interface WsDiffComment {
   type: "diff_comment";
-  /** Array of inline comments to send to Claude as a follow-up prompt. */
   comments: Array<{
     file: string;
     line: number;
@@ -122,7 +110,6 @@ export interface WsDiffComment {
   }>;
 }
 
-// Server → Client
 export interface WsTurnDiff {
   type: "turn_diff";
   fromCommit: string;
@@ -187,7 +174,6 @@ A new component rendered as a collapsible panel in the right column (alongside P
 #### State Management
 
 ```typescript
-// New state in App.tsx
 const [turnDiff, setTurnDiff] = useState<TurnDiff | null>(null);
 const [showDiffPanel, setShowDiffPanel] = useState(false);
 ```

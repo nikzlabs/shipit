@@ -1,29 +1,9 @@
-/**
- * docs/128 — Ops session template.
- *
- * The ops session is a privileged host-debugging session: the agent gets
- * read-only Docker access (via a hardened `docker-socket-proxy` sibling over
- * TCP) and read-only systemd journal mounts, so an operator can debug the
- * production ShipIt host without leaving the UI.
- *
- * This template only carries the *workspace contents* (README, shipit.yaml,
- * docker-compose.yml, prompts/). The privilege itself is gated on the
- * server-authoritative `session.kind === "ops"` field — set at creation by
- * `applyTemplate` (services/templates.ts), never by anything in the workspace.
- * A non-ops session that copies this `shipit.yaml` gets its host mounts
- * silently dropped (see container-lifecycle.ts).
- */
+// Ops privileges require the server-owned session kind; copying these files grants none.
 
 import type { ProjectTemplate } from "../shared/types.js";
 
 export const OPS_TEMPLATE_ID = "ops";
 
-/**
- * Hardened docker-socket-proxy compose service. The real `/var/run/docker.sock`
- * is mounted only into this sibling — never the agent container. Read-only API
- * surface: containers/events/images/info/networks/volumes are allowed; every
- * mutating or sensitive endpoint (POST, EXEC, secrets, swarm, build) is denied.
- */
 const DOCKER_COMPOSE_YML = `# docs/128 — read-only Docker access for the ops session.
 #
 # In Contained mode the agent remains contained. This server-authorized proxy
@@ -384,7 +364,8 @@ A large class of orchestrator events is written **per session** via
 \`broadcastLog\`, which writes to the durable log store and the in-memory ring and
 makes **no console call**. Those lines never appear in
 \`docker logs shipit-shipit-1\` or in the journal. Auto-push outcomes (including
-\`Auto-push rejected: branch has diverged from remote.\`), compose reconcile
+\`Auto-push rejected: this session's branch and its remote have diverged.\` and the
+\`Divergence shape: …\` line that follows it), compose reconcile
 failures, container re-adoption, idle disposal and OOM notices all live there.
 
 An event missing from the orchestrator log is therefore **not** evidence it
@@ -424,12 +405,25 @@ journalctl -D /var/log/journal --since "6 hours ago" --no-pager | grep <session-
   any orchestrator line that quotes workspace content or a raw error message
   (a compose validation error naming a value from the project's own
   \`docker-compose.yml\`, git's stderr, a provider error). No flag reaches them.
-- **Withheld lines are counted, not hidden.** \`withheld: N server line(s) …\`
-  means those lines exist in that window and were not returned. Most never will
-  be. But if N looks high for the incident you are chasing, the answer you need
-  may be in one of them: ask the operator to read the session's Logs panel for
-  that window rather than concluding nothing happened. The same applies if the
-  chat itself is what the question needs.
+- **Withheld lines are counted and shaped, not hidden.** \`withheld: N server
+  line(s) …\` means those lines exist in that window and were not returned, and
+  the \`by shape:\` line under it says which producers they came from — ShipIt's
+  own labels and counts, never any part of the lines. Use it as triage: one
+  label carrying nearly all of N is a chatty producer, while a big
+  \`unclassified ×N\` means a producer nobody has classified (or one whose
+  wording drifted off its template) — that is where a line you need is most
+  likely hiding. Either way the remedy is the same: ask the operator to read the
+  session's Logs panel for that window rather than concluding nothing happened.
+  The same applies if the chat itself is what the question needs.
+- **A push that WORKED says so.** \`Auto-push completed in Nms: N commit(s) were
+  ahead of the last known remote tip.\` — or \`nothing was ahead …\`. That is
+  what makes "did the last five turns push?" answerable: you are reading
+  positive confirmations, not inferring success from an absence of failures. The
+  push **completing** is a fact; the **count** is ShipIt's own pre-push
+  measurement against a local view of the remote that can be stale, so do not
+  quote it as what the remote received. A failure names its class
+  (\`Auto-push failed (<class>). …\`) and puts git's own message on a separate
+  \`Git said:\` line, which is withheld.
 - **Empty window vs pruned logs.** These look the same and mean opposite things,
   so the output states which one you got. A session's logs are removed when it is
   archived, deleted, or fully reset — for those, absence is not evidence.
@@ -494,17 +488,7 @@ source references and a recommended patch outline so someone with write access
 can land it.
 `;
 
-/**
- * docs/128 — seed prompt for an ops session opened *to investigate another
- * session* (the sidebar "Investigate in Ops session" entry point).
- *
- * The client bakes this into the new ops session's composer draft so the
- * operator lands with only the durable context already typed: which session
- * is being investigated and that the investigation is read-only. The operator
- * adds the incident-specific symptoms and request; prescribing Docker,
- * journal, resource, or reporting steps here made the draft confidently wrong
- * for investigations that did not need those surfaces.
- */
+// Seed only durable context; the operator supplies symptoms and the request.
 export function buildOpsInvestigationSeed(target: {
   id: string;
   title: string;

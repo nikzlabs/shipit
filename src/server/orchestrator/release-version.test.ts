@@ -273,7 +273,6 @@ describe("writeVersionToSource", () => {
     expect(JSON.parse(out).version).toBe("1.3.0");
     expect(out.endsWith("}\n")).toBe(true);
     expect(out).toContain(`  "version": "1.3.0"`);
-    // re-detect confirms write/read symmetry
     expect(detectVersionSource(dir)?.version).toBe("1.3.0");
   });
 

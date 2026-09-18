@@ -1,21 +1,18 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import type { ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../shared/types.js";
 import { wrapUntrustedContent } from "../shared/untrusted-input.js";
+import { getModel, getService, visionSupportFor } from "../shared/catalogue/index.js";
+import type { ModelSelection } from "../shared/catalogue/index.js";
 
-// Re-exported from shared for backward compatibility — prefer importing from "../shared/utils.js" directly.
 export { getErrorMessage } from "../shared/utils.js";
 
-// ---- Image validation constants ----
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB per image (decoded)
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGES_PER_MESSAGE = 5;
-const MAX_TOTAL_PAYLOAD_BYTES = 20 * 1024 * 1024; // 20 MB total
+const MAX_TOTAL_PAYLOAD_BYTES = 20 * 1024 * 1024;
 
-/**
- * Validate an array of image attachments. Returns an error message string
- * if validation fails, or null if all images are valid.
- */
 export function validateImages(images: ImageAttachment[]): string | null {
   if (images.length > MAX_IMAGES_PER_MESSAGE) {
     return `Too many images (max ${MAX_IMAGES_PER_MESSAGE}, got ${images.length})`;
@@ -34,12 +31,11 @@ export function validateImages(images: ImageAttachment[]): string | null {
       return `Image ${i + 1}: unsupported type "${img.mediaType}" (allowed: PNG, JPEG, GIF, WebP)`;
     }
 
-    // Validate base64 and check decoded size
     let decodedSize: number;
     try {
       const buf = Buffer.from(img.data, "base64");
       decodedSize = buf.byteLength;
-      // Verify the base64 round-trips (catches invalid base64)
+      // Buffer.from tolerates invalid base64; require a round trip.
       if (buf.toString("base64") !== img.data.replace(/\s/g, "")) {
         return `Image ${i + 1}: invalid base64 encoding`;
       }
@@ -61,30 +57,15 @@ export function validateImages(images: ImageAttachment[]): string | null {
   return null;
 }
 
-// ---- File attachment validation constants ----
-const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100 KB per file
-const MAX_TOTAL_FILE_SIZE_BYTES = 500 * 1024; // 500 KB total
+const MAX_FILE_SIZE_BYTES = 100 * 1024;
+const MAX_TOTAL_FILE_SIZE_BYTES = 500 * 1024;
 const MAX_FILES_PER_MESSAGE = 10;
 
-/**
- * Defang the `<file …>` / `</file>` delimiter inside attacker-influenced file
- * content so a malicious attached file can't fake a tag and break out of its
- * `<file>` element. Only the literal delimiter token is rewritten; everything
- * else is left byte-for-byte intact. Pairs with the envelope-marker defang in
- * `wrapUntrustedContent` (planning#100) for the same breakout class one level up.
- */
+// Prevent file content from closing its enclosing tag.
 function neutralizeFileTag(content: string): string {
   return content.replace(/<(\/?\s*file)\b/gi, "&lt;$1");
 }
 
-/**
- * Format file attachments for the agent's prompt context. Each file is a
- * `<file path="…">` element carrying its path/line metadata, and the whole
- * block is wrapped in the untrusted-input provenance envelope (planning#100 — Gap 4
- * of docs/172) so the agent treats attached file content (uploads and
- * cloned-repo files alike) as DATA, not instructions. See
- * `untrusted-input.ts` for the lens and its (deliberate) limits.
- */
 export function formatFileContext(files: FileAttachment[]): string {
   if (files.length === 0) return "";
   const inner = files.map(f => {
@@ -98,9 +79,42 @@ export function formatFileContext(files: FileAttachment[]): string {
 }
 
 /**
- * Validate and read file attachments from disk. The client sends only paths;
- * the server reads the content and validates sizes.
+ * Read an attachment, refusing anything that is not a regular file.
+ *
+ * `fs.readFile` opens before it reads, and opening a FIFO with no writer never
+ * returns — no timeout, no error, a wedged handler and one libuv thread fewer
+ * for the whole process. A workspace holds whatever the agent put in it, and
+ * attachment resolution runs inside the window that decides which message
+ * claims the turn (planning#575), so one such path would wedge every later send
+ * to the session.
+ *
+ * Checking the path and then reading it would resolve the path twice, leaving a
+ * window for the thing at that path to become a FIFO in between. So: open once
+ * with `O_NONBLOCK` — which returns a handle for a FIFO instead of waiting for a
+ * writer — judge THAT handle, and read through it. A symlink to a regular file
+ * still reads, which is what these callers have always done.
  */
+async function readRegularFile(
+  p: string,
+): Promise<{ content: Buffer } | { refusal: "missing" | "not-regular" }> {
+  let handle;
+  try {
+    handle = await fs.open(p, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch {
+    return { refusal: "missing" };
+  }
+  try {
+    if (!(await handle.stat()).isFile()) return { refusal: "not-regular" };
+    return { content: await handle.readFile() };
+  } catch {
+    return { refusal: "missing" };
+  } finally {
+    try {
+      await handle.close();
+    } catch { /* the read already has its answer */ }
+  }
+}
+
 export async function resolveFileAttachments(
   refs: FileContextRef[],
   sessionDir: string,
@@ -122,18 +136,18 @@ export async function resolveFileAttachments(
       return { files: [], error: "File path is required" };
     }
 
-    // Path traversal check
     const resolved = path.resolve(sessionDir, filePath);
     if (!resolved.startsWith(`${sessionDir  }/`) && resolved !== sessionDir) {
       return { files: [], error: `Invalid file path: ${filePath}` };
     }
 
-    let content: string;
-    try {
-      content = await fs.readFile(resolved, "utf-8");
-    } catch {
-      return { files: [], error: `File not found: ${filePath}` };
+    const read = await readRegularFile(resolved);
+    if ("refusal" in read) {
+      return read.refusal === "not-regular"
+        ? { files: [], error: `Not a readable file: ${filePath}` }
+        : { files: [], error: `File not found: ${filePath}` };
     }
+    const content = read.content.toString("utf-8");
 
     const size = Buffer.byteLength(content, "utf-8");
 
@@ -155,9 +169,6 @@ export async function resolveFileAttachments(
   return { files: validated, error: null };
 }
 
-// ---- Upload ref resolution ----
-
-/** Extensions for binary file detection based on extension. */
 const BINARY_EXTENSIONS = new Set([
   ".zip", ".gz", ".tar", ".bz2", ".7z", ".rar", ".xz",
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
@@ -168,16 +179,11 @@ const BINARY_EXTENSIONS = new Set([
   ".sqlite", ".db",
 ]);
 
-/** Image extensions that can be viewed natively via the Read tool. */
-export const IMAGE_UPLOAD_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
-
-/** Check if a file path refers to a likely binary file based on its extension. */
 function isBinaryUpload(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
   return BINARY_EXTENSIONS.has(ext);
 }
 
-/** Extension → MIME type mapping for image uploads. */
 const IMAGE_EXT_TO_MIME: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -186,32 +192,40 @@ const IMAGE_EXT_TO_MIME: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-/**
- * Resolve upload refs into FileAttachment entries (for text files) or
- * reference-only entries (for binary files). Image uploads (PNG, JPEG, GIF,
- * WebP) are returned separately as ImageAttachment objects with base64 data
- * so they can be shown as inline thumbnails in chat history.
- */
+/** Reject known text-only models; unknown vision support remains allowed. */
+export function imageAttachmentRefusal(
+  selection: ModelSelection | undefined,
+  images: ImageAttachment[] | undefined,
+  uploads: UploadRef[] | undefined,
+): string | null {
+  const carriesImage =
+    (images?.length ?? 0) > 0
+    || (uploads ?? []).some((u) => IMAGE_EXT_TO_MIME[path.extname(u.path).toLowerCase()] !== undefined);
+  if (!carriesImage) return null;
+  if (visionSupportFor(selection) !== "no") return null;
+
+  const label = (selection && getModel(selection)?.label) ?? selection?.modelId ?? "This model";
+  const service = selection && getService(selection.serviceId)?.name;
+  const where = service ? `${label} (${service})` : label;
+  return `${where} cannot read images — it takes text only. Remove the attachment, or switch this session to a model that can see, and send again.`;
+}
+
 export async function resolveUploadRefs(
   uploads: UploadRef[],
   workspaceDir: string,
 ): Promise<{ files: FileAttachment[]; images: ImageAttachment[]; imageHostPaths: string[]; error: string | null }> {
-  // Uploads live as a sibling of the workspace dir inside the session dir:
-  // {sessionDir}/workspace/ (workspaceDir) and {sessionDir}/uploads/
   const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
   const fileResult: FileAttachment[] = [];
   const imageResult: ImageAttachment[] = [];
   const imageHostPaths: string[] = [];
 
   for (const ref of uploads) {
-    // Validate path format
     if (!ref.path.startsWith("/uploads/")) {
       return { files: [], images: [], imageHostPaths: [], error: `Invalid upload path: ${ref.path}` };
     }
     const filename = path.basename(ref.path);
     const hostPath = path.join(uploadsDir, filename);
 
-    // Path traversal check
     if (!hostPath.startsWith(`${uploadsDir}/`)) {
       return { files: [], images: [], imageHostPaths: [], error: `Invalid upload path: ${ref.path}` };
     }
@@ -219,48 +233,42 @@ export async function resolveUploadRefs(
     const ext = path.extname(ref.path).toLowerCase();
     const imageMime = IMAGE_EXT_TO_MIME[ext];
 
+    // The binary branch never opens the upload, so it is the one that does not read.
+    const uploadRefusal = (refusal: "missing" | "not-regular") =>
+      ({
+        files: [], images: [], imageHostPaths: [],
+        error: refusal === "not-regular"
+          ? `Upload is not a readable file: ${ref.path}`
+          : `Upload not found: ${ref.path}`,
+      });
+
     if (imageMime) {
-      // Image upload — read binary data and return as ImageAttachment.
-      // `existingPath` records the live on-disk location so the orchestrator
-      // doesn't re-save the image with a different name. If the image were
-      // re-saved under a randomized filename and the original deleted, the
-      // chat history's `uploadPaths` (which records the original `/uploads/`
-      // path) would no longer match the file actually present on disk —
-      // breaking `hydrateUploads`'s "is this upload already sent?" check
-      // and causing the image to reappear as attached on next reload.
-      try {
-        const buf = await fs.readFile(hostPath);
-        imageResult.push({
-          data: buf.toString("base64"),
-          mediaType: imageMime,
-          filename,
-          existingPath: ref.path,
-        });
-        imageHostPaths.push(hostPath);
-      } catch {
-        return { files: [], images: [], imageHostPaths: [], error: `Upload not found: ${ref.path}` };
-      }
+      // Preserve the upload path so history recognizes it as already sent.
+      const read = await readRegularFile(hostPath);
+      if ("refusal" in read) return uploadRefusal(read.refusal);
+      imageResult.push({
+        data: read.content.toString("base64"),
+        mediaType: imageMime,
+        filename,
+        existingPath: ref.path,
+      });
+      imageHostPaths.push(hostPath);
     } else if (isBinaryUpload(ref.path)) {
-      // Non-image binary files — include a reference the agent can use
       fileResult.push({
         path: ref.path,
         content: `[Binary file uploaded at ${ref.path} — use Bash tool to read/process this file inside the container]`,
       });
     } else {
-      // For text files, read and include content
-      try {
-        const content = await fs.readFile(hostPath, "utf-8");
-        // Cap at 100KB per file (same as workspace file refs)
-        if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) {
-          fileResult.push({
-            path: ref.path,
-            content: `[File ${ref.path} is too large to include inline (>100KB). Use Bash tool to read it at ${ref.path}]`,
-          });
-        } else {
-          fileResult.push({ path: ref.path, content });
-        }
-      } catch {
-        return { files: [], images: [], imageHostPaths: [], error: `Upload not found: ${ref.path}` };
+      const read = await readRegularFile(hostPath);
+      if ("refusal" in read) return uploadRefusal(read.refusal);
+      const content = read.content.toString("utf-8");
+      if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) {
+        fileResult.push({
+          path: ref.path,
+          content: `[File ${ref.path} is too large to include inline (>100KB). Use Bash tool to read it at ${ref.path}]`,
+        });
+      } else {
+        fileResult.push({ path: ref.path, content });
       }
     }
   }

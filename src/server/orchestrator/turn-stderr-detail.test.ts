@@ -1,18 +1,3 @@
-/**
- * A turn whose agent process dies must say WHY, not just report an exit code.
- *
- * The persisted error row is the entire user-visible outcome of a turn that
- * produced nothing, and it used to read `Agent process exited with code 1` for
- * every distinct failure — a bad `--resume`, a missing binary, a Codex
- * cold-start collision. The CLI's own explanation was captured all along (both
- * adapters forward stderr as a `log` event) but routed only to the Logs panel
- * and `sessions/<id>/logs/agent.jsonl`, neither of which survives into the
- * transcript. Diagnosing the Codex cold-start failure needed a filesystem dig
- * for exactly this reason.
- *
- * These drive the real executor in-process against a real git repo, with a fake
- * agent standing in for the CLI.
- */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -94,7 +79,6 @@ describe("no-result error row carries the agent's stderr", () => {
     fs.rmSync(repoDir, { recursive: true, force: true });
   });
 
-  /** Run one turn whose agent emits `stderr` then exits, and return the error row's text. */
   async function runDyingTurn(
     stderr: { source: string; text: string }[],
     exitCode: number,
@@ -157,9 +141,7 @@ describe("no-result error row carries the agent's stderr", () => {
     );
 
     expect(message).toContain("Agent process exited with code 1");
-    // The whole point: the reason is in the row the user still has after a reload.
     expect(message).toContain("failed to initialize sqlite state runtime");
-    // …with the account path scrubbed on the way in.
     expect(message).not.toContain("acct_a8250731");
   });
 
@@ -173,7 +155,6 @@ describe("no-result error row carries the agent's stderr", () => {
 
   it("falls back to the bare message when the process wrote nothing to stderr", async () => {
     const message = await runDyingTurn([{ source: "codex", text: "spawning: codex app-server" }], 1);
-    // Non-stderr log sources must not leak into the row.
     expect(message).toBe("Agent process exited with code 1");
   });
 

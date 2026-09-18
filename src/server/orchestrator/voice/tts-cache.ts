@@ -1,26 +1,12 @@
-/**
- * Disk-backed LRU cache for synthesized TTS audio (docs/144).
- *
- * TTS is the expensive direction — re-pressing Play on the same turn must not
- * re-bill OpenAI. Keyed by `sha256(text + voice + speed + provider)`; the
- * value is the synthesized audio bytes. The cache survives orchestrator
- * restarts (it rebuilds its index from the files on disk) so re-pressing Play
- * across sessions is also free.
- *
- * Single-user self-hosted today, so the cache is global to the orchestrator
- * (plan open question #5).
- */
-
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { getErrorMessage } from "../../shared/utils.js";
 
-const DEFAULT_MAX_BYTES = 200 * 1024 * 1024; // 200 MB
+const DEFAULT_MAX_BYTES = 200 * 1024 * 1024;
 
 interface Entry {
   size: number;
-  /** Last-access timestamp (ms) for LRU ordering. */
   atime: number;
 }
 
@@ -44,7 +30,6 @@ export class TtsCache {
     return path.join(this.dir, `${key}.bin`);
   }
 
-  /** Rebuild the in-memory index from whatever audio files are on disk. */
   private rebuildIndex(): void {
     try {
       fs.mkdirSync(this.dir, { recursive: true });
@@ -72,7 +57,6 @@ export class TtsCache {
       entry.atime = Date.now();
       return buf;
     } catch {
-      // File vanished underneath us — drop the stale index entry.
       this.entries.delete(key);
       this.totalBytes -= entry.size;
       return null;
@@ -96,21 +80,19 @@ export class TtsCache {
 
   private evictIfNeeded(): void {
     if (this.totalBytes <= this.maxBytes) return;
-    // Evict least-recently-accessed entries until under the cap.
     const byAtime = [...this.entries.entries()].sort((a, b) => a[1].atime - b[1].atime);
     for (const [key, entry] of byAtime) {
       if (this.totalBytes <= this.maxBytes) break;
       try {
         fs.unlinkSync(this.filePath(key));
       } catch {
-        // Already gone — still drop the index entry.
+        // Drop the index entry even if deletion fails.
       }
       this.entries.delete(key);
       this.totalBytes -= entry.size;
     }
   }
 
-  /** Current byte total — used by tests. */
   get sizeBytes(): number {
     return this.totalBytes;
   }

@@ -62,14 +62,14 @@ plugins:
   repos:
     - repo: nicolasalt/game-tools # GitHub owner/name (v1; see Feedback below)
       name: game-tools            # explicit name: checkout path, feedback
-                                  # destination, plugin card, refresh target
+
       branch: main                # tracked branch (default: repo default branch)
-      # pin: v2.1.0               # tag or SHA; mutually exclusive with branch (req 8)
+
   use:
     - plugin: requirements        # selector: the exported plugin to activate
       from: game-tools            # references a declared repo by name
       alias: reqs                 # optional local name; default = plugin.
-                                  # Keys overrides/settings/skills namespacing and UI.
+
       overrides:                  # optional — flat: the entry IS one plugin
         services:
           requirements:           # per SERVICE (req 16)
@@ -229,13 +229,13 @@ Rules (review findings, both rounds):
   volumes that the agent container and the project's own compose services attach.
   A plugin's containers attached neither, so under `repo: self` both `/plugin`
   and `/project` held an empty directory exactly where the plugin's own
-  dependencies belong, and no entry point could start. One rule now covers both
-  surfaces: **a plugin sees the project's dependency directories precisely when
-  the project's tree is its own tree, and then it waits for the project's
-  install** — the nesting targets are empty for a tracked import, and
-  `dependsOnInstall` becomes `svc.self`.
+  dependencies belong, and no entry point could start. The first rule covering
+  both surfaces was **a plugin sees the project's dependency directories
+  precisely when the project's tree is its own tree, and then it waits for the
+  project's install** — the nesting targets empty for a tracked import, and
+  `dependsOnInstall` set to `svc.self`.
 
-  Two things about that rule are load-bearing rather than incidental. The
+  Two things about that rule were load-bearing rather than incidental. The
   **self-only narrowing came from review, not from design**: nesting uniformly
   would have given a *tracked* plugin's `/project` the project's real
   dependencies while it kept `dependsOnInstall: false`, so it would read
@@ -245,11 +245,64 @@ Rules (review findings, both rounds):
   writable handle on the tree the agent's own processes load code from. Under
   `repo: self` there is no such boundary to hold — the plugin IS the project.
 
+  **Amended 2026-09-16 (`nikzlabs/shipit#2870`) — the rule splits by surface,
+  and the command half becomes uniform.** A consuming project pinned a Blender
+  build into `.tools/blender` and a second `node_modules` into `game/`, declared
+  both in `agent.dep-dirs`, and every plugin command that read them found the
+  path present and empty. This is not a missing feature but the **storage
+  mechanism leaking into semantics**: with the overlay store off, a tracked
+  plugin's `/project/node_modules` is the real populated directory on the
+  workspace volume, so enabling docs/183 silently changed what a plugin command
+  could read. It is also the third path to show this defect, after the project's
+  own compose services (#2440) and the CLI's *choice of volume* (`ed6cf4bf`,
+  which made a self import read the agent's recorded mounts instead of
+  re-deriving them).
+
+  Neither original reason survives on the command path, and both still hold on
+  the service path, which is why the rule splits rather than reverses:
+
+  - **The install race is a property of services.** ShipIt *starts* a service,
+    without waiting for `agent.install`, so mounting the dep dirs would hand it
+    a tree mid-write — and ShipIt chose that moment. A command is *invoked*, by
+    the agent or the user, at a moment they chose. State that as the **ordering
+    assumption** it is rather than a guarantee: nothing stops a command run from
+    the terminal while `agent.install` is still writing, and it would then read
+    a half-written tree. What the mount does not do is introduce that race — the
+    same command reads the same half-written tree today on any session with the
+    store off. Services keep `dependsOnInstall: false` and keep the self-only
+    nesting, untouched.
+  - **The trust boundary is about the *writable* handle, and is kept by keeping
+    it.** A tracked import's dep-dir mounts are **read-only**; only `repo: self`
+    gets them read-write, and there the identical directory is already
+    read-write at `/project` anyway. A third-party plugin still gets no writable
+    handle on the tree the agent's own processes load code from, and gains
+    exactly the read the report asked for.
+
+  So the rule is now: **a plugin *command* sees the project's dependency
+  directories, read-only unless the project's tree is its own tree; a plugin
+  *service* sees them only when the project's tree is its own tree, and then it
+  waits for the project's install.**
+
+  **The service half is a known limitation, postponed rather than settled**
+  (user, 2026-09-16; tracked as planning#585). A tracked plugin's service finds
+  each declared dep dir present and empty, and that is inconsistent with itself
+  in exactly the way the command half was: with the store off, or in a pnpm
+  project where `prepareOverlaySpecs` returns `[]`, those same directories are
+  ordinary populated files that the service reads fine. Closing it means
+  settling the install gate first, and gating tracked plugin services on
+  `agent.install` would make a service that reads no project dependency wait for
+  an install it never uses — so the decision needs a real plugin service that
+  wants the project's dependencies, and none has asked yet. Until then the limit
+  is stated to plugin authors and to consumers rather than worked around, in
+  `shipit-docs/plugin-authoring.md` and `shipit-docs/plugins.md`.
+
   This is **not** a new requirement, and deliberately was not written as one. Req
   27 already says a plugin "works as a plugin inside its own repository", and a
   companion CLI that exits with `ERR_MODULE_NOT_FOUND` is not working; the
   outcome was always required. Which directories are mounted where is *how*, so
-  it belongs here rather than in `requirements.md`.
+  it belongs here rather than in `requirements.md`. The amendment is the same
+  shape: req 17 gives a consuming project a plugin's commands, and a command
+  that cannot read the project it was pointed at is not one.
 
 ### 1b. Plugin side — `exports.plugins:` (reqs 5, 17, 22, 23, 24, 26)
 
@@ -261,22 +314,57 @@ exports:
   plugins:
     requirements:
       compose: plugins/requirements/docker-compose.yml  # service definitions,
-                                                        # incl. per-service startup (reqs 5, 16)
+
       cli:
         reqs: plugins/requirements/cli                  # command name → entry (req 17)
       skills: plugins/requirements/skills               # dir shipped to sessions (req 22)
       install: npm --prefix . ci                        # see Install contract (req 7)
       install-inputs: [package-lock.json]                 # files whose content re-triggers install
       dep-dirs: [node_modules]                            # what install populates; shared via the
-                                                          # dependency store (req 28). This is the
-                                                          # default — an empty list opts out
+
       credentials: [FAL_KEY]        # names only — values live with each project (req 23)
       hosts: [fal.run]              # informational; grants nothing (req 24)
+
       settings:                     # declared settings + defaults (req 26)
         root:
           description: Directory inside the project the plugin reads and writes
           default: docs
 ```
+
+**Optional credentials and hosts (reqs 23, 24).** Both lists take either a bare
+string or a mapping, parsed by ONE function (`parseRequirementList` in
+`plugin-repos.ts`) into `PluginRequirement {name, optional}`:
+
+```yaml
+      credentials: [FAL_KEY, { name: PIXELLAB_KEY, optional: true }]
+      hosts:       [fal.run, { name: pixellab.ai,  optional: true }]
+```
+
+Three properties chose that grammar. It is a **widening** — a plain list of
+strings still means a plain list of REQUIRED names, so no manifest written
+before this is re-read, which is the regression that mattered most. It is **one
+grammar for both lists**, down to the key being `name:` for a host rather than
+`host:`, because req 24 defines its visibility as req 23's and a second parser
+is how two grammars drift. And it is **legible without a legend**, where a
+sigil (`FAL_KEY?`) would be terser, unsearchable, and invisible in a diff. The
+strictness of the surrounding parser is preserved: a mapping's name is
+validated exactly as a bare one (hostname shape, env-var shape, the reserved
+`PLUGIN_CONTRACT_ENV_NAMES`), a non-boolean `optional` drops the plugin the way
+a non-boolean `autostart` drops a use entry, and an unknown key inside an entry
+warns without dropping.
+
+What optionality does is bounded on purpose: it changes **how an unsatisfied
+name is reported**, and nothing else. It grants nothing (req 24's second
+sentence), it is not consulted by either delivery surface — `plugin-compose.ts`
+and `plugin-cli-run.ts` read the NAMES, so an optional credential the project
+has set arrives exactly as a required one does — and `resolvePluginHosts` still
+asks the egress predicate about every declared host, so a surface that asks
+directly gets the true answer. The three reporting surfaces that DO read it:
+the card (a quiet "`assetgen` can use `pixellab.ai`" row, keeping its Allow /
+Add key affordance, outside the needs chip), the tab's warn dot
+(`pluginsAttention`), and `blockedHostsClause` in `plugin-install.ts` (an
+install failure never blames a host the plugin works without). A name declared
+both ways resolves to required — over-reporting a gap beats hiding one.
 
 The manifest is versioned with the repo, so a refresh (req 12) can change it;
 parsing is fail-closed per plugin with the generation rule above (req 13).
@@ -370,9 +458,58 @@ plugin commit, the install string, or the content of the manifest's
 **What the container actually gets** (implemented — `plugin-install.ts`): the
 generation's overlay volume at `/plugin` as its ONLY mount, `cwd` there, the
 session-worker image for its toolchain with its ENTRYPOINT bypassed (that
-script prepares session mounts this container does not have), an environment
-of exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`, all capabilities dropped,
+script prepares session mounts this container does not have), `SHIPIT_PLUGIN_COMMIT`
+plus the writable-path overrides described next, all capabilities dropped,
 `no-new-privileges`, a memory and PID ceiling, and a timeout.
+
+**The image's `ENV` is inherited, and that had to be repaired rather than
+described away** (`plugin-container-env.ts`). This section used to say the
+environment was "exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`", which was true
+of the ORCHESTRATOR's environment and never true of the IMAGE's: Docker merges
+`createContainer.Env` over the image's own `ENV` and offers no way to unset an
+inherited name. The container runs as a per-session uid (docs/270), so every
+path the worker image bakes in for uid 1000 arrived unwritable — a plugin whose
+`install:` ran `playwright install` died at `EACCES … mkdir
+'/opt/playwright-browsers/__dirlock'` in production (2026-09-03, three
+sessions), and `NPM_CONFIG_PREFIX=/home/shipit/.npm-global` was the same bug one
+variable over. The fix OVERRIDES both onto `/plugin/.shipit-toolchain/…` — inside
+the generation's overlay, so what install fetches survives publish — and the
+**CLI invocation container sets the identical list**, or an install would
+succeed into a directory nothing at run time ever looks in. `/tmp` is the wrong
+target for these: it is a tmpfs discarded at container exit.
+
+Two consequences of that location, both found by review rather than by the
+incident. **A store hit clears the writable layer and runs nothing**, so the
+toolchain tree is appended to every store plan's dep dirs
+(`planPluginDepStore`) — otherwise a plugin that downloaded a browser would work
+on its first activation and silently lose it on the next commit sharing its dep
+state, which is the "succeeded but nothing can find it" outcome this whole change
+exists to avoid. And **`repo: self` does not get these overrides at all**: there
+`/plugin` IS the user's working tree, swept by the post-turn `git add -A`, and no
+exported install ran to put anything in it — so the image's own values stand,
+which also keeps the browser baked at `/opt/playwright-browsers` reachable.
+
+**A writable store is where ShipIt's obligation ends; the download is still
+req 24's business.** Downloading a browser inside a contained namespace is a
+first for ShipIt — the session's own is baked at image-build time, outside
+containment — so adding the Playwright mirrors to `EGRESS_DEFAULT_ALLOWLIST` was
+proposed and **rejected by the user**: that grants them to every session and
+every agent container on the host, permanently, for a need that arises only
+during a plugin install. req 24 already has the mechanism, and it was confirmed
+working end to end on a live session: the plugin **declares** its hosts
+(informational, granting nothing) and the user **grants** them per session, after
+which the install container is bound by the same `resolveEgress` allowlist its
+services are (`plugin-hosts.ts`).
+
+So a plugin that downloads a browser declares **both** `cdn.playwright.dev` and
+`playwright.download.prss.microsoft.com` — `playwright-core`'s
+`PLAYWRIGHT_CDN_MIRRORS` spans the two and falls back from the first to the
+second, so granting only the primary leaves a fallback denied and moves the
+failure to a retry. That pair is recorded here and in
+`shipit-docs/plugin-authoring.md` precisely so nobody has to reverse-engineer it
+from failing calls, which is what req 24 asks of a declared host — and it makes
+the install failure's blocked-hosts clause the main route by which a user learns
+what to grant.
 
 **And its own network — which is a security control, not tidiness** (review
 finding, this round). "Not the session's network" is not enough. Install needs
@@ -1126,7 +1263,9 @@ instead of a repeat.
   produced — under `repo: self` the session's own working tree instead, live and
   writable per req 27; the rule both surfaces follow is stated under "`/plugin`
   is writable exactly when it is the project" below), the project workspace at
-  `/project` and as the cwd, this
+  `/project` and as the cwd — **with each of the project's `agent.dep-dirs`
+  nested under it as its own overlay volume, read-only for a tracked import
+  (#2870)** — this
   import's state directory at `/plugin-state`, its validated settings file
   read-only at `/plugin-settings.json`, `SHIPIT_PROJECT_DIR` /
   `SHIPIT_PLUGIN_STATE` / `SHIPIT_SETTINGS` / `SHIPIT_PLUGIN_COMMIT` (the last
@@ -1838,6 +1977,22 @@ only the `shipit.yaml` key says `plugins:`.
 | Needs — hosts (req 24) ✓ | tab mock 1 | The plugin card's needs rows, over the existing `POST /api/egress/hosts` (global or session scope; browser-only) | **Built**, and the design-era text below was overtaken twice. All three execution surfaces are now bound by the same allowlist (`containComposeServices` for services, `plugin-egress.ts` for the CLI and install containers), so the row no longer hedges across them — though it still names the claiming plugin, because req 24 asks for req 23's grouping. The bigger change is that the card asks ONE predicate, `orchestrator/egress-host-reach.ts`: **can this host be made reachable at all, and by whom** — `allowed`, `grantable`, `blocked-by-session` (docs/211's Network-off sandbox, which carries no user hosts), `blocked-by-deployment` (`SESSION_EGRESS_DNS=0`, where the fixed Tier A floor is the whole reach of every contained session). The two `blocked-*` verdicts render as ONE row with **no button**, because there every grant writes a durable entry that changes nothing (planning#383). The same predicate answers the grant route's outcome report and the Tier C decision route's card rule, so the surface that offers a grant, the one that reports what it did, and the one that decides whether to prompt cannot disagree — the consolidation planning#377/#380/#383 argued for, each of which was one surface being optimistic about a different thing. Grant endpoints stay browser-only, so plugin code cannot self-grant. Original design-era note, kept because it records why the row names a claimant: "Host not allowed" was evaluated against the **agent container's** allowlist alone, since containment then lived only in the agent's netns (round-two finding 4) |
 | Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | **One card per declared repo, always** — simultaneous problems compose as multiple issue rows under one header whose status chip shows the worst state (round-two finding 8). Every card state, including degraded and collision, keeps the full `owner/repo` + ref @ commit identity visible (req 19 — the identity is what the standing grant trades approval for). **Degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the fix as "under the `use` entry whose alias is `<alias>`" (a `use` entry is a YAML sequence item, so there is no bracket path). A card states each fact **once**: a phase-2 failure names the selectors the declared version lacks, so the snapshot's own "not in this repository's `exports.plugins` manifest" line is suppressed for exactly those names (the failure carries them as `missingSelectors`) — it still fires when the attempt failed for another reason and the LIVE generation is what lacks the selector. Found by dogfooding the spine, not by review. Not transcript cards — no new DB columns, stores, or migrations |
 
+**The card's Refresh action is the same round, not a browser path** (req 12,
+user 2026-09-02). `PluginReposPanel` posts `POST /api/sessions/:id/plugin/refresh`
+— the route `shipit plugin refresh` already posts — so the trust gate, the
+settled hook that re-links `/plugins/<name>` and re-materializes skills, the
+per-repository serial queue, install-before-publish and req 15's
+failure-leaves-the-prior-generation-live all come with it. Two things are the
+card's own. It is gated on `PluginRepoCardView.pinned`, read off the
+**declaration** rather than the live generation's recorded ref (a repository
+pinned *after* a branch-built generation went live must stop offering an action
+that cannot move it — req 8), and a pinned card states what does move it instead
+of leaving the difference between two cards for the user to interpret. And the
+outcome is rendered on the card, because three of the four outcomes are
+invisible in the refetched snapshot: `unchanged` is byte-identical (the right
+answer at a branch tip), a re-install lands on the same commit by construction
+(docs/266 reqs 5, 6), and `activated` moves nine characters of a chip.
+
 **The credential boundary is held by construction, not by convention** (req 23,
 last sentence: a plugin's store "can never resolve ShipIt's own platform
 credentials"). There is exactly ONE producer of the satisfied-name set —
@@ -1893,9 +2048,29 @@ collector, which both surfaces share; the window is one request wide, the client
 is already polling while `activating` is true, and the next response is
 coherent. Recorded here rather than left for a reader to rediscover.
 
+**The card's host rows resolve TWO versions: what is live, and what the last
+attempt tried** (`orchestrator/plugin-hosts.ts`). Reading live generations alone
+made req 24's affordance unreachable in the one state that most needs it. A
+first activation whose install is denied the network the plugin declared
+publishes nothing, so the live reader answers "not knowable", the card rendered
+no host rows and no Allow buttons — while the install failure it *did* render
+told the user to press exactly those buttons (`blockedHostsClause`). The user's
+only way through was retyping the hostname into the global Settings editor,
+which is the "reverse-engineer them from failing calls" req 24 forbids. A failed
+attempt therefore carries its selected exports' declared hosts back out
+(`ActivationOutcome.declaredHosts`, in memory beside the failure reason —
+the staging checkout is deleted on that path, so nothing on disk remembers the
+version). The two versions are **unioned**, which also covers the second case:
+a refresh that adds a host and then fails, where the live manifest is the old
+commit's and does not name it. Reporting a host is still not granting it — reach
+is resolved per host by the same seam, so an attempted version can no more widen
+a session than a live one can.
+
 Settings → Network egress is **unchanged** (it is explicitly the global-only
 editor — `SettingsEgress.tsx:135`); the diagnostics panel addition and the
-multi-host `EgressPromptCard` variant were reviewed out of v1.
+multi-host `EgressPromptCard` variant were reviewed out of v1. It is the
+fallback, never the path: the card carries the affordance, and the failure text
+names the card.
 
 **How the client learns the declaration** — the `issues.trackers` precedent,
 copied: per-request config read behind `GET /api/plugin-repos`, the
@@ -2039,8 +2214,8 @@ coherent in one UI.
   `runInstall` is — the generation engine holds no Docker client.
 - ✓ `src/server/orchestrator/plugin-install.ts` — the throwaway install
   container: the generation's overlay volume at `/plugin` and nothing else, the
-  worker image for its toolchain with its entrypoint bypassed, no inherited
-  environment, capabilities dropped, bounded by a timeout, and its own network
+  worker image for its toolchain with its entrypoint bypassed, nothing inherited
+  from the orchestrator process, capabilities dropped, bounded by a timeout, and its own network
   whose subnet is denied at ShipIt's API (see §1b). Injected into
   `activateGeneration` as `runInstall` from `bootstrap-managers`, so neither the
   generation engine nor the activation service executes plugin-authored code.
@@ -2061,7 +2236,11 @@ coherent in one UI.
   and writes/sweeps `/plugin-bin`, marker-checked so nothing it did not write
   is ever touched. ✓ `src/server/orchestrator/plugin-cli-run.ts` is the
   invocation container; ✓ `plugin-container.ts` holds what it shares with
-  install (the untrusted network, the bounded wait).
+  install (the untrusted network, the bounded wait); ✓ `plugin-container-env.ts`
+  holds the other thing they must share — the overrides that make the borrowed
+  image's baked paths writable by a per-session uid, and that resolve to the
+  SAME `/plugin/.shipit-toolchain/…` directories on both surfaces so what
+  install fetches is what run time finds (see §1b).
 - ✓ `src/server/orchestrator/plugin-compose.ts` — the fragment edge (reqs 3, 5,
   16, 20): locate each import's fragment in whatever is live for it, validate it
   under the consuming session's own rules plus the plugin-edge allowlist, apply

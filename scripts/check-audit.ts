@@ -1,32 +1,4 @@
 #!/usr/bin/env tsx
-/**
- * Vulnerability gate.
- *
- * Policy: no advisory at or above FAIL_LEVEL may affect the dependency tree
- * unless it is explicitly allowlisted, with a reason and an expiry date.
- *
- * Why this exists: `package.json` carries an `overrides` block that lifts
- * vulnerable transitive dependencies onto patched versions. Nothing updates
- * that block automatically — Dependabot only manages dependencies /
- * devDependencies, and an override is absolute so `npm audit fix` and
- * `npm update` cannot move it either. In 2026 the block silently went stale for
- * roughly three months: six of its pins had become the exact vulnerable
- * versions being reported, and because CI ran lint/typecheck/check-deps/build/
- * test but never `npm audit`, nothing failed. This is the missing check.
- *
- * The escape hatch is the allowlist, not a lowered threshold. When an advisory
- * has no fix available yet — the case that would otherwise wedge every PR on
- * the repo — add an entry to .audit-allowlist.json saying so and set a date to
- * revisit. An expired entry fails the build on purpose: it is the reminder.
- *
- * Runs against the lockfile (`--package-lock-only`) so the result depends only
- * on committed state, not on what happens to be installed.
- *
- * Run:  npm run check-audit
- *
- * Exits non-zero on any un-allowlisted advisory at or above FAIL_LEVEL, and on
- * any expired allowlist entry.
- */
 import { readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -34,7 +6,6 @@ import { dirname, resolve } from "node:path";
 
 type Severity = "info" | "low" | "moderate" | "high" | "critical";
 
-/** Advisories at or above this rank fail the build. */
 const FAIL_LEVEL: Severity = "high";
 
 const SEVERITY_RANK: Record<Severity, number> = {
@@ -50,13 +21,10 @@ const repoRoot = resolve(__dirname, "..");
 const allowlistPath = resolve(repoRoot, ".audit-allowlist.json");
 
 interface AllowlistEntry {
-  /** GHSA identifier, e.g. "GHSA-qwww-vcr4-c8h2". */
   advisory: string;
-  /** Package the advisory is against — documentation only, not matched on. */
+  /** Display only; matching uses advisory. */
   package?: string;
-  /** Why this is tolerated. Required: an entry without one is not a decision. */
   reason: string;
-  /** ISO date (YYYY-MM-DD). Past this, the build fails until it is revisited. */
   expires: string;
 }
 
@@ -85,11 +53,7 @@ function runAudit(): Record<string, AuditVulnerability> {
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], cwd: repoRoot },
     );
   } catch (err) {
-    // `--audit-level=none` means findings never make npm exit non-zero
-    // (verified: a tree with 9 vulnerabilities still exits 0). So a non-zero
-    // exit here is always a genuine tool failure, never "it found something" —
-    // and salvaging a partial report from it would risk auditing less than the
-    // whole tree while reporting a pass.
+    // With --audit-level=none, a nonzero exit means the audit itself failed.
     const e = err as { message?: string };
     console.error(`npm audit failed to run: ${e.message ?? "unknown error"}`);
     console.error(
@@ -111,11 +75,6 @@ function runAudit(): Record<string, AuditVulnerability> {
     process.exit(2);
   }
 
-  // A failed audit still prints JSON, but it carries `message`/`error` and no
-  // `vulnerabilities` key — a registry outage or a proxy 5xx looks like this.
-  // Defaulting that to {} would report "0 advisories, policy passes" and exit
-  // 0, so a network blip would silently green-light a vulnerable tree. Treat a
-  // missing `vulnerabilities` key as a tool failure, never as a clean result.
   if (!parsed || typeof parsed !== "object" || !parsed.vulnerabilities) {
     console.error("npm audit did not return a vulnerability report.");
     const reason = parsed?.message ?? parsed?.error?.summary;
@@ -144,11 +103,6 @@ function loadAllowlist(): AllowlistEntry[] {
     console.error(".audit-allowlist.json must contain a JSON array.");
     process.exit(2);
   }
-  // Validate shape strictly, not just truthiness. A loose check here is a
-  // false-PASS vector: `"expires": "never"` or `true` compares as unexpired
-  // against an ISO date, so a malformed entry would suppress a real high
-  // advisory forever. Every field has to be the exact shape the comparison
-  // below assumes.
   const entries = parsed as AllowlistEntry[];
   const problems: string[] = [];
   for (const e of entries) {
@@ -179,12 +133,7 @@ function loadAllowlist(): AllowlistEntry[] {
 
 const GHSA_ID = /^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/i;
 
-/**
- * True only for a canonical YYYY-MM-DD that names a real day. The lexicographic
- * `expires < today` comparison below is sound only for canonical dates, so
- * "2026-8-09" and "2026-02-31" have to be rejected here rather than silently
- * mis-compared.
- */
+// Lexicographic expiry checks require real, canonical YYYY-MM-DD dates.
 function isCalendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -194,7 +143,6 @@ function isCalendarDate(value: string): boolean {
   );
 }
 
-/** Pull the GHSA id out of an advisory URL (…/advisories/GHSA-xxxx-…). */
 function ghsaId(advisory: AuditAdvisory): string {
   const match = /GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}/i.exec(
     advisory.url ?? "",
@@ -206,9 +154,6 @@ const vulnerabilities = runAudit();
 const allowlist = loadAllowlist();
 const today = new Date().toISOString().slice(0, 10);
 
-// One advisory can surface under several package entries (the vulnerable
-// package plus every ancestor that depends on it). Dedupe so the report counts
-// distinct advisories, not tree positions.
 const advisories = new Map<string, AuditAdvisory & { id: string }>();
 for (const vuln of Object.values(vulnerabilities)) {
   for (const via of vuln.via) {
@@ -220,9 +165,6 @@ for (const vuln of Object.values(vulnerabilities)) {
 
 const failThreshold = SEVERITY_RANK[FAIL_LEVEL];
 
-// Sanity-check the report shape. npm reporting vulnerabilities while yielding
-// no advisory objects at all means `via` is not the shape this parser assumes —
-// a schema change would otherwise read as "nothing found" and pass.
 if (Object.keys(vulnerabilities).length > 0 && advisories.size === 0) {
   console.error(
     `npm audit reported ${Object.keys(vulnerabilities).length} vulnerable package(s) but no advisory records could be read.`,
@@ -233,9 +175,6 @@ if (Object.keys(vulnerabilities).length > 0 && advisories.size === 0) {
   process.exit(2);
 }
 
-// An unrecognised severity ranks as unknown, and `undefined >= threshold` is
-// false — which would silently drop it. Fail closed instead: anything this
-// script cannot rank is treated as blocking.
 const relevant = [...advisories.values()].filter(
   (a) => (SEVERITY_RANK[a.severity] ?? Number.MAX_SAFE_INTEGER) >= failThreshold,
 );
@@ -244,10 +183,6 @@ const allowedById = new Map(allowlist.map((e) => [e.advisory, e]));
 const blocking: Array<AuditAdvisory & { id: string }> = [];
 const suppressed: Array<{ advisory: AuditAdvisory & { id: string }; entry: AllowlistEntry }> = [];
 
-// Expiry is a property of the entry, not of what is reported today. Checking it
-// only for currently-blocking advisories would let an expired entry sit
-// unnoticed while its advisory is dormant or below the threshold, and then
-// silently suppress it the day it comes back.
 const expired = allowlist.filter((e) => e.expires < today);
 
 for (const advisory of relevant) {
@@ -256,13 +191,10 @@ for (const advisory of relevant) {
     blocking.push(advisory);
     continue;
   }
-  if (entry.expires < today) continue; // already counted in `expired`
+  if (entry.expires < today) continue;
   suppressed.push({ advisory, entry });
 }
 
-// An allowlist entry that no longer matches anything is dead weight, but it is
-// not a reason to fail an unrelated PR — say so and move on. (An expired one is
-// reported as expired above regardless.)
 const stale = allowlist.filter((e) => !advisories.has(e.advisory));
 
 console.log(

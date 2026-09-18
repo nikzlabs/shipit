@@ -1,19 +1,3 @@
-/**
- * IssueLabelsEditor — the on-page, multi-select label editor for the inline
- * issue detail view (the follow-up to the label-colors foundation).
- *
- * Unlike the single-select status/priority inline editors (`IssueFieldControls`),
- * labels are a *set*, so this uses a `Popover` (which stays open across clicks)
- * with checkbox rows rather than a `DropdownMenu` (which closes on select). It's
- * a "pick from existing" editor: it lists the tracker's pickable label set and
- * toggles membership — it never creates a brand-new label.
- *
- * Each toggle commits immediately, posting the issue's COMPLETE new label-name
- * set (a wholesale replace). The committed issue patches the store in place, so
- * `current` flows back down and the checkboxes reflect the saved state — the
- * same immediate-write model the status/priority editors use, just multi-select.
- */
-
 import { useMemo, useState } from "react";
 import { CheckIcon, MagnifyingGlassIcon, PlusIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
@@ -22,16 +6,9 @@ import { ICON_SIZE } from "../design-tokens.js";
 import type { IssueLabel } from "../../server/shared/types.js";
 
 export interface IssueLabelsEditorProps {
-  /** The labels currently on the issue (the live, store-patched set). */
   current: IssueLabel[];
-  /** The tracker's full pickable label set (name + color). */
   available: IssueLabel[];
-  /** Fired when the popover opens — lazily fetch {@link available}. */
   onOpen: () => void;
-  /**
-   * Commit the issue's COMPLETE desired label-name set (wholesale replace).
-   * Resolves to an error message, or null on success.
-   */
   onCommit: (names: string[]) => Promise<string | null>;
 }
 

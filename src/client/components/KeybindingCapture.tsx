@@ -22,24 +22,21 @@ function KeyTokens({ chord }: { chord: string }) {
   );
 }
 
-/**
- * Press-keys capture field for a single keybinding (docs/180). Clicking
- * "Change" arms a one-shot global keydown listener; the next non-modifier key
- * (plus any modifiers held) becomes the new chord, normalized via
- * `chordFromEvent`. Esc cancels recording without changing anything.
- */
 export function KeybindingCapture({
+  label,
   value,
   onCapture,
   invalid,
 }: {
+  /** The command this chord is bound to, so the button names what it changes. */
+  label: string;
   value: string;
   onCapture: (chord: string) => void;
   invalid?: boolean;
 }) {
   const [recording, setRecording] = useState(false);
 
-  // Capture phase so we intercept before app-level shortcut handlers fire.
+  // Intercept before app shortcut handlers.
   useEventListener(recording ? window : null, "keydown", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -48,7 +45,7 @@ export function KeybindingCapture({
       return;
     }
     const chord = chordFromEvent(e);
-    if (!chord) return; // modifier-only press — keep waiting
+    if (!chord) return;
     onCapture(chord);
     setRecording(false);
   }, true);
@@ -73,7 +70,12 @@ export function KeybindingCapture({
           <KeyTokens chord={value} />
         )}
       </div>
-      <Button variant="secondary" size="md" onClick={() => setRecording((r) => !r)}>
+      <Button
+        variant="secondary"
+        size="md"
+        onClick={() => setRecording((r) => !r)}
+        aria-label={`${recording ? "Stop changing" : "Change"} the shortcut for ${label}`}
+      >
         {recording ? "Cancel" : "Change"}
       </Button>
     </div>

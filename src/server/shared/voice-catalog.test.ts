@@ -1,11 +1,3 @@
-/**
- * Tests for the shared voice provider catalog (docs/144).
- *
- * The catalog is the single source of truth both layers import, so these
- * assertions pin the selectors that drive Settings dropdowns and server-side
- * validation. Pure data — no mocks needed.
- */
-
 import { describe, it, expect } from "vitest";
 import {
   VOICE_PROVIDERS,
@@ -68,7 +60,6 @@ describe("voice helpers", () => {
   });
   it("isValidVoice only accepts voices that belong to the provider", () => {
     expect(isValidVoice("openai", "alloy")).toBe(true);
-    // ElevenLabs voice id is invalid for OpenAI.
     expect(isValidVoice("openai", "21m00Tcm4TlvDq8ikWAM")).toBe(false);
     expect(isValidVoice("elevenlabs", "21m00Tcm4TlvDq8ikWAM")).toBe(true);
     expect(isValidVoice("deepgram", "alloy")).toBe(false);

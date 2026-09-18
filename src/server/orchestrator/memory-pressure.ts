@@ -1,44 +1,77 @@
-/**
- * Memory pressure thresholds and helpers shared between the periodic
- * stats poller and the idle enforcer.
- *
- * Why two thresholds:
- *  - **Banner** fires earlier (80%) so the user sees a warning before
- *    the orchestrator starts evicting things underneath them.
- *  - **Eviction** fires later (85%) so we don't churn the warm pool on
- *    every minor spike.
- *
- * The 5-point gap is hysteresis: once the banner is up, the user has
- * a window to act (close a tab, archive a session) before automatic
- * eviction kicks in.
- */
-
 import type { DockerMemoryStats } from "../shared/types.js";
+import type { DeploymentMode } from "./deployment-mode.js";
 
-/** Above this fraction of host memory used, the client renders a memory-pressure banner. */
 export const MEMORY_PRESSURE_BANNER_THRESHOLD = 0.80;
-
-/**
- * Above this fraction of host memory used, the idle enforcer becomes
- * aggressive: bypasses the 60s grace period and drops effective
- * `maxIdleContainers` to 0. Set higher than the banner threshold so
- * users get a warning before automatic eviction starts.
- */
 export const MEMORY_PRESSURE_EVICT_THRESHOLD = 0.85;
+export const BUDGET_BANNER_THRESHOLD = 0.90;
+export const LOCAL_DEFAULT_BUDGET_FRACTION = 0.5;
 
-/**
- * Compute the fraction of host memory currently in use across all
- * running containers, or `null` when stats aren't available yet
- * (orchestrator just started, Docker unreachable, or `MemTotal` is 0).
- */
-export function memoryUsedFraction(stats: DockerMemoryStats | null): number | null {
-  if (!stats) return null;
-  if (stats.totalBytes <= 0) return null;
-  return stats.usedBytes / stats.totalBytes;
+export interface MemoryTargets {
+  budgetBytes: number;
+  warnAtBytes: number;
+  evictAtBytes: number;
 }
 
-/** True when memory usage has crossed the eviction threshold. */
+// Zero targets mean host memory is unknown, not a zero-byte budget.
+export function resolveMemoryTargets(
+  totalBytes: number,
+  budgetMb: number | null | undefined,
+  deployment: DeploymentMode = "server",
+): MemoryTargets {
+  if (totalBytes <= 0) return { budgetBytes: 0, warnAtBytes: 0, evictAtBytes: 0 };
+  const configured = budgetMb !== null && budgetMb !== undefined && budgetMb > 0
+    ? Math.min(totalBytes, Math.floor(budgetMb) * 1024 * 1024)
+    : null;
+  const explicit = configured
+    ?? (deployment === "local" ? totalBytes * LOCAL_DEFAULT_BUDGET_FRACTION : null);
+  if (explicit === null) {
+    return {
+      budgetBytes: totalBytes,
+      warnAtBytes: totalBytes * MEMORY_PRESSURE_BANNER_THRESHOLD,
+      evictAtBytes: totalBytes * MEMORY_PRESSURE_EVICT_THRESHOLD,
+    };
+  }
+  return {
+    budgetBytes: explicit,
+    warnAtBytes: explicit * BUDGET_BANNER_THRESHOLD,
+    evictAtBytes: explicit,
+  };
+}
+
+export function targetsOf(stats: DockerMemoryStats): MemoryTargets {
+  if (stats.evictAtBytes !== undefined && stats.warnAtBytes !== undefined) {
+    return {
+      budgetBytes: stats.budgetBytes && stats.budgetBytes > 0 ? stats.budgetBytes : stats.totalBytes,
+      warnAtBytes: stats.warnAtBytes,
+      evictAtBytes: stats.evictAtBytes,
+    };
+  }
+  return resolveMemoryTargets(stats.totalBytes, null);
+}
+
+export function memoryUsedFraction(stats: DockerMemoryStats | null): number | null {
+  if (!stats) return null;
+  const { budgetBytes } = targetsOf(stats);
+  if (budgetBytes <= 0) return null;
+  return stats.usedBytes / budgetBytes;
+}
+
+export function isUnderBannerPressure(stats: DockerMemoryStats | null): boolean {
+  if (!stats) return false;
+  const { warnAtBytes } = targetsOf(stats);
+  return warnAtBytes > 0 && stats.usedBytes >= warnAtBytes;
+}
+
+// At the limit, stop adding warm containers even though bytesOverBudget is still zero.
 export function isUnderEvictionPressure(stats: DockerMemoryStats | null): boolean {
-  const frac = memoryUsedFraction(stats);
-  return frac !== null && frac >= MEMORY_PRESSURE_EVICT_THRESHOLD;
+  if (!stats) return false;
+  const { evictAtBytes } = targetsOf(stats);
+  return evictAtBytes > 0 && stats.usedBytes >= evictAtBytes;
+}
+
+export function bytesOverBudget(stats: DockerMemoryStats | null): number {
+  if (!stats) return 0;
+  const { evictAtBytes } = targetsOf(stats);
+  if (evictAtBytes <= 0) return 0;
+  return Math.max(0, stats.usedBytes - evictAtBytes);
 }

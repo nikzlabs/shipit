@@ -197,11 +197,11 @@ container, and it returns the full PAT for the legitimate host:
 ```
 $ printf 'protocol=https\nhost=github.com\n\n' | git credential fill
 username=x-access-token
-password=ghp_…            # full 40-char token
+password=ghp_…
 
 $ printf 'protocol=https\nhost=github.com\n\n' | /usr/local/bin/shipit-git-credential get
 username=x-access-token
-password=ghp_…            # identical
+password=ghp_…
 ```
 
 The broker authorizes by **host**, not by **caller** — and the agent is indistinguishable

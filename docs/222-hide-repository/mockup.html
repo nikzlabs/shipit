@@ -22,7 +22,6 @@
   .cap{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--tt);font-weight:600}
   .capn{color:var(--ts);text-transform:none;letter-spacing:0;font-weight:400;font-size:11.5px}
 
-  /* sidebar */
   .sb{width:290px;background:var(--bg);border:1px solid var(--bd);border-radius:10px;overflow:hidden;
       display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.5)}
   .sbtop{display:flex;align-items:center;gap:8px;padding:0 12px;height:41px;border-bottom:1px solid var(--bd);color:var(--tt)}
@@ -43,7 +42,6 @@
   .srow:hover{background:var(--hover);color:var(--tp)}
   .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);margin-left:auto;flex:none}
 
-  /* dropdown menu */
   .menu{position:absolute;top:30px;right:6px;width:208px;background:var(--bg2);border:1px solid var(--bd2);
         border-radius:8px;padding:4px;box-shadow:0 12px 40px rgba(0,0,0,.6);z-index:5}
   .mi{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:6px;font-size:12.5px;color:var(--tp);cursor:default}
@@ -53,7 +51,6 @@
   .sep{height:1px;background:var(--bd);margin:4px 6px}
   .new-badge{margin-left:auto;font-size:9px;background:#1d3a5f;color:#7cc0ff;border-radius:4px;padding:1px 5px;font-weight:600}
 
-  /* hidden section */
   .hidsec{margin-top:4px;border-top:1px solid var(--bd)}
   .hidhdr{display:flex;align-items:center;gap:6px;padding:7px 12px 7px 14px;color:var(--tt);font-size:11.5px;font-weight:600;letter-spacing:.02em}
   .hidhdr:hover{color:var(--ts)}
@@ -66,7 +63,6 @@
   .hidrow:hover .showbtn{opacity:1}
   .hidrow:hover .showbtn:hover{background:#16314d}
 
-  /* add dialog */
   .modal{width:420px;background:var(--bg2);border:1px solid var(--bd2);border-radius:12px;
          box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden}
   .mh{padding:16px 18px 10px}
@@ -95,7 +91,6 @@
 
   <div class="row">
 
-    <!-- 1. dropdown -->
     <div class="panel">
       <div class="cap">1 · Dropdown menu <span class="capn">— Hide sits above Remove, normal styling</span></div>
       <div class="sb">
@@ -122,7 +117,6 @@
       </div>
     </div>
 
-    <!-- 2. hidden section -->
     <div class="panel">
       <div class="cap">2 · Sidebar reveal <span class="capn">— "Hidden · N" footer, expands to unhide inline</span></div>
       <div class="sb">
@@ -141,7 +135,6 @@
       </div>
     </div>
 
-    <!-- 3. add dialog detection -->
     <div class="panel">
       <div class="cap">3 · Add flow detection <span class="capn">— re-adding a hidden repo just shows it again</span></div>
       <div class="modal">

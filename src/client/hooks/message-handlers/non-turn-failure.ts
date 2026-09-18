@@ -2,17 +2,6 @@ import type { WsNonTurnFailureCard, WsNonTurnFailureDismissed } from "../../../s
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
-/**
- * docs/252 phase 7 (req 9) — render the notice that ShipIt's non-turn work
- * (naming this session, writing its pull-request description) failed.
- *
- * The card is BOTH persisted in chat history and buffered into the turn-event
- * log, so a reconnect can deliver it twice (once from `loadSessionHistory`,
- * once from the buffer replay) — dedupe by the stable `cardId`. That durability
- * is the requirement, not an implementation detail: naming is fire-and-forget
- * and routinely finishes with the user on another session, so a card that
- * vanished with the tab would be silent in exactly the case req 9 exists for.
- */
 export const handleNonTurnFailureCard: Handler<WsNonTurnFailureCard> = (_ctx, data) => {
   const session = useSessionStore.getState();
   if (session.messages.some((m) => m.nonTurnFailure?.cardId === data.card.cardId)) return;
@@ -42,11 +31,6 @@ export const handleNonTurnFailureCard: Handler<WsNonTurnFailureCard> = (_ctx, da
   );
 };
 
-/**
- * docs/252 phase 7 — the notice was dismissed (here or in another attached
- * viewer). Patches the row rather than removing it, matching what the server
- * persists: the record of the failure outlives the acknowledgement.
- */
 export const handleNonTurnFailureDismissed: Handler<WsNonTurnFailureDismissed> = (_ctx, data) => {
   useSessionStore.getState().setMessages((prev) =>
     prev.map((m) =>

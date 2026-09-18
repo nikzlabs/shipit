@@ -2,40 +2,29 @@ import type { LoginIntegrationId } from "../../server/shared/catalogue/types.js"
 import { create } from "zustand";
 import type { CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
+import type { EligibleModelOption } from "../agent-types.js";
 import {
-  getSavedNotifyOnFinish, saveNotifyOnFinish,
-  getSavedSoundOnFinish, saveSoundOnFinish,
-  getSavedVoiceInputEnabled, saveVoiceInputEnabled,
-  getSavedSttProvider, saveSttProvider,
-  getSavedCleanupEnabled, saveCleanupEnabled,
-  getSavedVoiceLanguage, saveVoiceLanguage,
-  getSavedVoicePlaybackEnabled, saveVoicePlaybackEnabled,
-  getSavedVoiceHandsFree, saveVoiceHandsFree,
-  getSavedTtsProvider, saveTtsProvider,
-  getSavedTtsVoice, saveTtsVoice,
-  getSavedTtsSpeed, saveTtsSpeed,
   getSavedKeybindings, saveKeybindings,
   getSavedPermissionModeBySession, savePermissionModeBySession,
 } from "../utils/local-storage.js";
-import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
+import {
+  initialSettingValues,
+  mirrorFieldOf,
+  recordHolds,
+  sameSettingValue,
+  settingRequest,
+  writeBrowserValue,
+} from "./setting-values.js";
+import { findSetting, type SettingKey } from "../../server/shared/settings-catalogue/index.js";
 import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js";
-import type { AgentAuthPhase } from "../../server/shared/types/ws-server-messages/auth.js";
+import type { AgentAuthPhase, WsAgentAuthLog } from "../../server/shared/types/ws-server-messages/auth.js";
 
-/**
- * An in-flight sign-in challenge for one connected account.
- *
- * docs/150-multiple-provider-subscriptions req 19 — this replaced a pair of provider-wide slots
- * (`codexDeviceAuth` for Codex's device code, `sessionStore.authUrl` for
- * Claude's paste URL) that could only ever describe *one* sign-in per
- * provider. Two rows connecting at once overwrote each other, and neither slot
- * could say which account it belonged to. Both are gone; every challenge is
- * keyed by {@link providerAccountAuthKey}.
- *
- * The server still pushes them as `agent_auth_pending` with `details.kind`
- * `"device-code"` (Codex) or `"code-paste-url"` (Claude), cleared on
- * `agent_auth_complete` / `agent_auth_failed`. See
- * docs/119-codex-subscription-auth/plan.md and docs/155 Phase 2b.
- */
+/** An uncommitted edit, and the stored value it started from. */
+export interface SettingDraft {
+  seed: unknown;
+  value: unknown;
+}
+
 /**
  * Keyed by the LOGIN FLOW that produced the challenge, not by the harness that
  * will consume the credential — matching the `agent_auth_*` wire shape. The
@@ -64,47 +53,45 @@ export function providerAccountAuthKey(loginId: LoginIntegrationId, accountId: s
   return `${loginId}:${accountId}`;
 }
 
-/** Immutably set `key` to `value`, or drop it entirely when `value` is null. */
 function withKey<T>(map: Record<string, T>, key: string, value: T | null): Record<string, T> {
   if (value === null) return Object.fromEntries(Object.entries(map).filter(([k]) => k !== key));
   return { ...map, [key]: value };
 }
 
-export interface ClaudeAuthDiagnosticEntry {
+/**
+ * One line of a sign-in's record, for **any** harness — the panel and these
+ * types carried a `claude` prefix until every other harness's login needed the
+ * same panel. `level` and `source` are taken from the wire message rather than
+ * restated, so a new source on the server cannot silently fail to arrive here.
+ */
+export interface AuthDiagnosticEntry {
   id: string;
   attemptId: string;
   timestamp: string;
-  level: "debug" | "info" | "warn" | "error";
-  source: "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
+  level: WsAgentAuthLog["level"];
+  source: WsAgentAuthLog["source"];
   message: string;
 }
 
-export interface ClaudeAuthDiagnostics {
+export interface AuthDiagnostics {
   attemptId: string | null;
   active: boolean;
   phase: AgentAuthPhase | null;
   message: string | null;
   elapsedMs?: number;
   failedMessage?: string;
-  entries: ClaudeAuthDiagnosticEntry[];
+  entries: AuthDiagnosticEntry[];
 }
 
-/**
- * The empty diagnostics an account with no sign-in attempt yet reads as.
- *
- * A module-level frozen constant, not an object literal in the selector: a
- * fresh object every render would give `useSyncExternalStore` a new snapshot
- * each time and loop forever.
- */
-export const EMPTY_CLAUDE_AUTH_DIAGNOSTICS: ClaudeAuthDiagnostics = Object.freeze({
+export const EMPTY_AUTH_DIAGNOSTICS: AuthDiagnostics = Object.freeze({
   attemptId: null,
   active: false,
   phase: null,
   message: null,
-  entries: [] as ClaudeAuthDiagnosticEntry[],
+  entries: [] as AuthDiagnosticEntry[],
 });
 
-const MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES = 200;
+const MAX_AUTH_DIAGNOSTIC_ENTRIES = 200;
 
 /**
  * docs/257 req 5 — an inline result or failure on a provider's accounts card.
@@ -119,6 +106,32 @@ export interface ProviderAccountNotice {
 }
 
 interface SettingsState {
+  /**
+   * docs/308-data-driven-settings — every generated row's value, keyed by
+   * `SettingKey`, hydrated from the settings payload by `wire` and from
+   * `localStorage` by `localStorageKey`.
+   *
+   * The named fields below are a view over it: {@link SettingsState.setSettingValue}
+   * writes both, and every setter for a generated setting goes through it, so
+   * the two cannot disagree (inventory.md P1, P18).
+   */
+  settingValues: Record<string, unknown>;
+  /**
+   * docs/308-data-driven-settings — what the user has typed into an
+   * explicit-commit row and not saved yet, keyed by `SettingKey`.
+   *
+   * It lives beside the values rather than inside the control because the Save
+   * that commits it is not the control's: one button commits every edited row
+   * on its tab in a single write, which is what the catalogue's own
+   * `instructions.commit` exclusion says the instruction boxes do.
+   *
+   * A draft exists from the first keystroke until the write carrying it lands or
+   * the dialog closes, and is never dropped for looking unchanged — so a box
+   * that was typed in always shows what was typed. `seed` is the stored value it
+   * started from, and it is what says whether a value that moved underneath the
+   * dialog moved because of somebody else (inventory.md P14).
+   */
+  settingDrafts: Record<string, SettingDraft>;
   /**
    * docs/257 req 8 — whether this install can actually run a turn, as computed
    * by the server (`computeCanRunTurns`). Never re-derived here from
@@ -165,8 +178,12 @@ interface SettingsState {
    *    component's state and setters are already gone.
    */
   providerAccountNotices: Partial<Record<LoginIntegrationId, ProviderAccountNotice>>;
+  /**
+   * Whether the user has instructions of their own — the only thing outside the
+   * Instructions tab that cares, and it only tints the settings button. The
+   * instruction TEXT is a generated row's value and lives in the record.
+   */
   hasSystemPrompt: boolean;
-  systemPromptContent: string;
   /**
    * Default permission mode used by the pre-session (new-session) view and
    * as a fallback for any session that hasn't made an explicit choice yet.
@@ -174,37 +191,20 @@ interface SettingsState {
    * persisted to localStorage — it resets to "auto" on page reload.
    */
   permissionMode: PermissionMode;
-  /**
-   * Per-session permission mode overrides. Keyed by session id. A session
-   * without an entry inherits `permissionMode`. This map is what prevents
-   * plan-mode state from leaking between sessions. Unlike the global default
-   * above, this IS persisted to localStorage (via `setPermissionMode`) so a
-   * page reload restores a session's true mode instead of falling back to
-   * "auto" — the silent-drift that wedged plan-pinned streaming sessions.
-   */
+
   permissionModeBySession: Record<string, PermissionMode>;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
-  /**
-   * GitHub API rate-limit state, pushed by the server via SSE
-   * (`gh_rate_limited` / `gh_rate_limited_cleared`). `resetAt` is epoch ms;
-   * `null` means the limit is active but the server didn't get a reset
-   * timestamp back from GitHub. `null` whole field means "not limited."
-   */
+
   githubRateLimit: { resetAt: number | null } | null;
   pendingFiles: FileContextRef[];
-  maxIdleContainers: number;
-  agentSystemInstructionsEnabled: boolean;
+  memoryBudgetMb: number | null;
   agentSystemInstructions: string;
+  compactConversation: boolean;
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
-  /**
-   * docs/180 — keyboard-shortcut overrides (binding id → chord). Only entries
-   * the user has customized are stored; everything else falls back to the
-   * registry default. Resolve with `getKeybinding(id)` or the `useKeybinding`
-   * hook.
-   */
+
   keybindings: Record<string, string>;
-  /** docs/144 — voice dictation + playback settings (non-credential; the API key is server-side only). */
+
   voiceInputEnabled: boolean;
   sttProvider: string;
   cleanupEnabled: boolean;
@@ -213,28 +213,19 @@ interface SettingsState {
   ttsProvider: string;
   ttsVoice: string;
   ttsSpeed: number;
-  /**
-   * docs/163 — voice-note delivery mode (native / external / both). Persisted
-   * server-side (it drives the router); mirrored here from global settings.
-   */
+
   voiceDeliveryMode: "native" | "external" | "both";
-  /** docs/163 — whether an external voice-note webhook is configured (server-side). */
-  voiceWebhookConfigured: boolean;
-  /**
-   * docs/163 — hands-free mode. OFF by default. When ON, native voice notes
-   * autoplay (with a debounced chime). Client-only (localStorage); the server
-   * always produces the note, the client decides whether to autoplay.
-   */
+
   voiceHandsFree: boolean;
-  autoCreatePr: boolean;
   liveSteering: boolean;
-  /** docs/146 — global gate for the auto-resolve-conflicts loop. */
+
   autoResolveConflicts: boolean;
-  /** docs/169 — global gate for the auto-fix-CI loop. */
+
   autoFixCi: boolean;
-  /** docs/218 — global gate for auto-resetting a merged session's branch on continue. */
+  sessionStatusCard: boolean;
+
   autoResetMergedBranch: boolean;
-  /** docs/144 — global gate for sub-agent spawning. */
+
   enableSubAgents: boolean;
   /**
    * docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
@@ -250,17 +241,8 @@ interface SettingsState {
    * `failoverCutoffs`, so the client never encodes the "strict" default.
    */
   accountSelectionMode: Record<string, "strict" | "balanced">;
-  /**
-   * Claude CLI sign-in diagnostics, keyed by provider account id (docs/150).
-   *
-   * One buffer per provider was correct only for as long as two things held at
-   * once: `startAccountAuth` refuses a second concurrent per-provider sign-in
-   * (409), and the buffer clears whenever `attemptId` changes. Under those, at
-   * most one Claude row is ever mid-challenge. Keying by account makes the
-   * scoping a property of the DATA instead of a consequence of that
-   * serialization guard, so a row can only render its own attempt's output.
-   */
-  claudeAuthDiagnostics: Record<string, ClaudeAuthDiagnostics>;
+
+  authDiagnostics: Record<string, AuthDiagnostics>;
   /**
    * Which accounts' output buffers the user has opened, keyed by account id.
    *
@@ -270,24 +252,16 @@ interface SettingsState {
    * the moment the code arrives. Uncontrolled, the buffer a user had open
    * snapped shut under them, and the panel jumped by the height of it.
    */
-  claudeAuthOutputOpen: Record<string, boolean>;
+  authOutputOpen: Record<string, boolean>;
   providerAccounts: CredentialRoute[];
-  /**
-   * docs/252 phase 2 — every credential the user holds, keyed by
-   * `(serviceId, billingMode)` and in selection order within each group.
-   * Carries no secret. A superset of `providerAccounts`, which stays while the
-   * docs/150 account flow still speaks the account shape.
-   */
+
   credentialRoutes: CredentialRoute[];
+
   /**
-   * docs/252 req 9 — the model non-turn work (session naming, pull-request
-   * descriptions) runs on.
-   *
-   * `null` only before the server has ever written one — it seeds the setting
-   * the first time the install can run something, so on any configured install
-   * this holds a triple. It stopped meaning "follow the install" on 2026-08-13:
-   * that was a second state, and no wording for it survived contact with a
-   * reader.
+   * The pin itself, which is `services.nonTurnModel`'s declared value — so this
+   * field is a view over the record and is written only by `setSettingValue`
+   * (docs/308 slice 6b, inventory.md P1). Its resolution below is not a setting
+   * and keeps a setter of its own.
    */
   nonTurnModel: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
   /**
@@ -303,10 +277,25 @@ interface SettingsState {
         modelId: string;
         serviceName: string;
         label: string;
-        harnessId: string;
+        // Absent where background work runs as a direct provider call (docs/299 req 2).
+        harnessId?: string;
+        /** Which of the two ran it, so the client never reads an absent harness as a state. */
+        execution?: "harness" | "direct";
         source: "pinned" | "default";
       }
     | null;
+  /**
+   * docs/299 req 3 — what the background-work selector may offer.
+   *
+   * NOT `eligibleModelsOf(agentList)`, and that is the whole point of the field:
+   * that list is the union over installed harnesses, so a model provider
+   * reachable only by a direct call is missing from it however well the server
+   * resolves one. Computed server-side from the same search the resolver runs,
+   * hydrated from `GET /api/bootstrap` and pushed on every `agent_list` SSE — so
+   * adding a credential fills the picker in an open Settings tab rather than on
+   * the next reload.
+   */
+  backgroundWorkModels: EligibleModelOption[];
   /**
    * docs/261 phase 3 (reqs 1, 5, 8) — both reviewer slots, in the user's order,
    * each labelled pinned or auto-configured and carrying what it resolves to.
@@ -337,73 +326,53 @@ interface SettingsState {
    * Empty only before bootstrap lands: the reviewer is always among them.
    */
   roles: RoleView[];
-  /**
-   * In-flight account-scoped sign-in challenges, keyed by
-   * {@link providerAccountAuthKey} so concurrent row sign-ins stay independent.
-   */
+
   providerAccountAuths: Record<string, ProviderAccountAuth>;
-  /** Last sign-in failure per account, same key space as `providerAccountAuths`. */
+
   providerAccountAuthErrors: Record<string, string>;
 
-  /** docs/257 — replace the server-computed runnable signal. */
   setCanRunTurns: (canRun: boolean) => void;
-  /** docs/257 req 9 — replace the server-persisted onboarding-completed stamp. */
+
   setHarnessOnboardingCompletedAt: (at: string | null) => void;
-  /** docs/257 req 5 — set or clear a provider's card-level notice. */
+
   setProviderAccountNotice: (loginId: LoginIntegrationId, notice: ProviderAccountNotice | null) => void;
   setHasSystemPrompt: (has: boolean) => void;
-  setSystemPromptContent: (content: string) => void;
-  setMaxIdleContainers: (n: number) => void;
-  setAgentSystemInstructionsEnabled: (enabled: boolean) => void;
   setAgentSystemInstructions: (text: string) => void;
-  setNotifyOnFinish: (enabled: boolean) => void;
-  setSoundOnFinish: (enabled: boolean) => void;
-  /** Resolve a binding to its chord (override or registry default). */
+  /** Update one generated setting's value in the browser, record and mirror alike. */
+  setSettingValue: (key: SettingKey, value: unknown) => void;
+  /** Hold an uncommitted edit. `seed` is used only when the draft is a new one. */
+  setSettingDraft: (key: SettingKey, value: unknown, seed: unknown) => void;
+  /** A committed write's effect on the drafts it wrote. */
+  settleSettingDrafts: (committed: readonly { key: SettingKey; value: unknown }[]) => void;
+  /** Discard every uncommitted edit, which is what closing the dialog does. */
+  clearSettingDrafts: () => void;
+
   getKeybinding: (id: KeybindingId) => string;
-  /** Set a custom chord for a binding (persisted). */
+
   setKeybinding: (id: KeybindingId, chord: string) => void;
-  /** Clear a binding's override, reverting to the registry default. */
+
   resetKeybinding: (id: KeybindingId) => void;
-  setVoiceInputEnabled: (enabled: boolean) => void;
-  setSttProvider: (provider: string) => void;
-  setCleanupEnabled: (enabled: boolean) => void;
-  setVoiceLanguage: (language: string) => void;
-  setVoicePlaybackEnabled: (enabled: boolean) => void;
-  setTtsProvider: (provider: string) => void;
-  setTtsVoice: (voice: string) => void;
-  setTtsSpeed: (speed: number) => void;
-  setVoiceDeliveryMode: (mode: "native" | "external" | "both") => void;
-  setVoiceWebhookConfigured: (configured: boolean) => void;
-  setVoiceHandsFree: (enabled: boolean) => void;
-  setAutoCreatePr: (enabled: boolean) => void;
-  setLiveSteering: (enabled: boolean) => void;
-  setAutoResolveConflicts: (enabled: boolean) => void;
-  setAutoFixCi: (enabled: boolean) => void;
-  /** `modeKey` is `credentialModeKey(serviceId, billingMode)` — docs/252 phase 2. */
+
   setFailoverCutoffs: (modeKey: string, cutoffs: { session: number; weekly: number }) => void;
   setAccountSelectionMode: (modeKey: string, mode: "strict" | "balanced") => void;
-  setAutoResetMergedBranch: (enabled: boolean) => void;
-  setEnableSubAgents: (enabled: boolean) => void;
-  setClaudeAuthProgress: (accountId: string, progress: {
+  setAuthProgress: (accountId: string, progress: {
     attemptId: string;
     phase: AgentAuthPhase;
     message: string;
     elapsedMs?: number;
   }) => void;
-  appendClaudeAuthLog: (accountId: string, entry: Omit<ClaudeAuthDiagnosticEntry, "id">) => void;
-  finishClaudeAuthDiagnostics: (
+  appendAuthLog: (accountId: string, entry: Omit<AuthDiagnosticEntry, "id">) => void;
+  finishAuthDiagnostics: (
     accountId: string,
     status: "complete" | "failed",
     message?: string,
   ) => void;
-  setClaudeAuthOutputOpen: (accountId: string, open: boolean) => void;
+  setAuthOutputOpen: (accountId: string, open: boolean) => void;
   setProviderAccounts: (accounts: CredentialRoute[]) => void;
   setCredentialRoutes: (routes: CredentialRoute[]) => void;
-  /** docs/252 phase 7 — apply a `/api/settings` response's non-turn fields. */
-  setNonTurnModel: (
-    pinned: SettingsState["nonTurnModel"],
-    resolved: SettingsState["nonTurnModelResolved"],
-  ) => void;
+
+  setNonTurnModelResolved: (resolved: SettingsState["nonTurnModelResolved"]) => void;
+  setBackgroundWorkModels: (models: EligibleModelOption[]) => void;
   /**
    * docs/261 phase 3 — replace both reviewer slots with the server's answer.
    *
@@ -421,17 +390,13 @@ interface SettingsState {
    * merge could leave the tab showing a set the server never produced.
    */
   setRoles: (roles: RoleView[]) => void;
-  /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
+
   setProviderAccountAuth: (loginId: LoginIntegrationId, accountId: string, auth: ProviderAccountAuth | null) => void;
-  /** Set (or clear, with `null`) one account's last sign-in failure message. */
+
   setProviderAccountAuthError: (loginId: LoginIntegrationId, accountId: string, message: string | null) => void;
-  /**
-   * Update the permission mode. When `sessionId` is provided, the change is
-   * scoped to that session only. When `sessionId` is undefined (e.g. on the
-   * pre-session new-session view), the default mode is updated.
-   */
+
   setPermissionMode: (sessionId: string | undefined, mode: PermissionMode) => void;
-  /** Resolve the effective permission mode for a session (or the default). */
+
   getPermissionMode: (sessionId: string | undefined) => PermissionMode;
   setGithubStatus: (status: { authenticated: boolean; username?: string; avatarUrl?: string }) => void;
   setGithubRateLimit: (state: { resetAt: number | null } | null) => void;
@@ -441,7 +406,6 @@ interface SettingsState {
   setPendingFiles: (files: FileContextRef[]) => void;
   reset: () => void;
 
-  saveInstructions: (content: string) => Promise<void>;
   submitGitHubToken: (token: string) => Promise<{
     repos: {
       fullName: string;
@@ -454,48 +418,72 @@ interface SettingsState {
   gitHubLogout: () => Promise<void>;
 }
 
+const INITIAL_SETTING_VALUES = initialSettingValues();
+
+/**
+ * A generated setting's seeded value, for the named field that mirrors it (P1).
+ *
+ * The record already holds what the browser had stored, decoded by the value
+ * kind's own codec, so a mirror reads it rather than the storage key a second
+ * time. The narrowing is for the field's type; the codec is what makes it true.
+ */
+function initial(key: SettingKey): boolean {
+  return INITIAL_SETTING_VALUES[key] === true;
+}
+
+function initialText(key: SettingKey): string {
+  const value = INITIAL_SETTING_VALUES[key];
+  return typeof value === "string" ? value : "";
+}
+
+function initialNumber(key: SettingKey): number {
+  const value = INITIAL_SETTING_VALUES[key];
+  return typeof value === "number" ? value : 1;
+}
+
 export const useSettingsStore = create<SettingsState>((set, get) => ({
+  settingValues: INITIAL_SETTING_VALUES,
+  settingDrafts: {},
   canRunTurns: false,
   harnessOnboardingCompletedAt: null,
   providerAccountNotices: {},
   hasSystemPrompt: false,
-  systemPromptContent: "",
   permissionMode: "auto",
   permissionModeBySession: getSavedPermissionModeBySession(),
   githubStatus: { authenticated: false },
   githubRateLimit: null,
   pendingFiles: [],
-  maxIdleContainers: 5,
-  agentSystemInstructionsEnabled: true,
+  memoryBudgetMb: null,
   agentSystemInstructions: "",
-  notifyOnFinish: getSavedNotifyOnFinish(),
-  soundOnFinish: getSavedSoundOnFinish(),
+  compactConversation: initial("advanced.compactConversation"),
+  notifyOnFinish: initial("advanced.notifyOnFinish"),
+  soundOnFinish: initial("advanced.soundOnFinish"),
   keybindings: getSavedKeybindings(),
-  voiceInputEnabled: getSavedVoiceInputEnabled(),
-  sttProvider: getSavedSttProvider(),
-  cleanupEnabled: getSavedCleanupEnabled(),
-  voiceLanguage: getSavedVoiceLanguage(),
-  voicePlaybackEnabled: getSavedVoicePlaybackEnabled(),
-  ttsProvider: getSavedTtsProvider(),
-  ttsVoice: getSavedTtsVoice(),
-  ttsSpeed: getSavedTtsSpeed(),
+  voiceInputEnabled: initial("voice.inputEnabled"),
+  sttProvider: initialText("voice.sttProvider"),
+  cleanupEnabled: initial("voice.cleanupEnabled"),
+  voiceLanguage: initialText("voice.language"),
+  voicePlaybackEnabled: initial("voice.playbackEnabled"),
+  ttsProvider: initialText("voice.ttsProvider"),
+  ttsVoice: initialText("voice.ttsVoice"),
+  ttsSpeed: initialNumber("voice.ttsSpeed"),
   voiceDeliveryMode: "native",
-  voiceWebhookConfigured: false,
-  voiceHandsFree: getSavedVoiceHandsFree(),
-  autoCreatePr: false,
-  liveSteering: true,
-  autoResolveConflicts: false,
-  autoFixCi: false,
-  autoResetMergedBranch: true,
-  enableSubAgents: true,
+  voiceHandsFree: initial("voice.handsFree"),
+  liveSteering: initial("advanced.liveSteering"),
+  autoResolveConflicts: initial("advanced.autoResolveConflicts"),
+  autoFixCi: initial("advanced.autoFixCi"),
+  sessionStatusCard: initial("advanced.sessionStatusCard"),
+  autoResetMergedBranch: initial("advanced.autoResetMergedBranch"),
+  enableSubAgents: initial("advanced.enableSubAgents"),
   failoverCutoffs: {},
   accountSelectionMode: {},
-  claudeAuthDiagnostics: {},
-  claudeAuthOutputOpen: {},
+  authDiagnostics: {},
+  authOutputOpen: {},
   providerAccounts: [],
   credentialRoutes: [],
   nonTurnModel: null,
   nonTurnModelResolved: null,
+  backgroundWorkModels: [],
   reviewers: [],
   roles: [],
   providerAccountAuths: {},
@@ -516,23 +504,60 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
-  setSystemPromptContent: (content) => set({ systemPromptContent: content }),
-
-  setMaxIdleContainers: (n) => set({ maxIdleContainers: n }),
-
-  setAgentSystemInstructionsEnabled: (enabled) => set({ agentSystemInstructionsEnabled: enabled }),
-
   setAgentSystemInstructions: (text) => set({ agentSystemInstructions: text }),
 
-  setNotifyOnFinish: (enabled) => {
-    saveNotifyOnFinish(enabled);
-    set({ notifyOnFinish: enabled });
+  setSettingValue: (key, value) => {
+    const declaration = findSetting(key);
+    if (!declaration) return;
+    // A browser setting's store IS `localStorage`, so the record and the disk
+    // move together and there is no second call anyone can forget to make.
+    if (declaration.store.kind === "browser") writeBrowserValue(declaration, value);
+    const field = mirrorFieldOf(declaration);
+    set((state) => ({
+      ...(recordHolds(key) ? { settingValues: { ...state.settingValues, [key]: value } } : {}),
+      // Only a field the store already holds: `wire` also names payload fields
+      // that other stores own, and writing one here would invent it.
+      ...(field && field in state ? { [field]: value } : {}),
+    }));
   },
 
-  setSoundOnFinish: (enabled) => {
-    saveSoundOnFinish(enabled);
-    set({ soundOnFinish: enabled });
-  },
+  setSettingDraft: (key, value, seed) =>
+    set((state) => ({
+      settingDrafts: {
+        ...state.settingDrafts,
+        // The seed is whatever the FIRST edit started from: re-seeding on every
+        // keystroke would make an outside change look like the user's own.
+        [key]: { seed: state.settingDrafts[key]?.seed ?? seed, value },
+      },
+    })),
+
+  /**
+   * What a successful write does to the drafts it carried.
+   *
+   * A draft still holding the value that was sent is **done** and goes. One the
+   * user has typed in since — a save is a round trip, and typing does not stop
+   * for it — is their unsaved work and stays; its seed advances to what is now
+   * stored, because this write is the user's own and not the outside change the
+   * seed exists to detect.
+   */
+  settleSettingDrafts: (committed) =>
+    set((state) => {
+      const done = new Set(
+        committed
+          .filter(({ key, value }) => sameSettingValue(state.settingDrafts[key]?.value, value))
+          .map(({ key }) => key as string),
+      );
+      const kept: Record<string, SettingDraft> = Object.fromEntries(
+        Object.entries(state.settingDrafts).filter(([key]) => !done.has(key)),
+      );
+      for (const { key } of committed) {
+        const draft = kept[key];
+        if (draft) kept[key] = { seed: state.settingValues[key], value: draft.value };
+      }
+      return { settingDrafts: kept };
+    }),
+
+  clearSettingDrafts: () => { set({ settingDrafts: {} }); },
 
   getKeybinding: (id) => get().keybindings[id] ?? getKeybindingDef(id).defaultBinding,
 
@@ -550,91 +575,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ keybindings: next });
   },
 
-  setVoiceInputEnabled: (enabled) => {
-    saveVoiceInputEnabled(enabled);
-    set({ voiceInputEnabled: enabled });
-  },
-
-  setSttProvider: (provider) => {
-    saveSttProvider(provider);
-    set({ sttProvider: provider });
-  },
-
-  setCleanupEnabled: (enabled) => {
-    saveCleanupEnabled(enabled);
-    set({ cleanupEnabled: enabled });
-  },
-
-  setVoiceLanguage: (language) => {
-    saveVoiceLanguage(language);
-    set({ voiceLanguage: language });
-  },
-
-  setVoicePlaybackEnabled: (enabled) => {
-    saveVoicePlaybackEnabled(enabled);
-    set({ voicePlaybackEnabled: enabled });
-  },
-
-  setTtsProvider: (provider) => {
-    saveTtsProvider(provider);
-    // The saved voice/speed may not exist for the new provider — snap them
-    // back to that provider's defaults so playback requests stay valid.
-    const { ttsVoice, ttsSpeed } = get();
-    const updates: { ttsProvider: string; ttsVoice?: string; ttsSpeed?: number } = { ttsProvider: provider };
-    if (!isValidVoice(provider, ttsVoice)) {
-      const nextVoice = defaultVoiceFor(provider);
-      saveTtsVoice(nextVoice);
-      updates.ttsVoice = nextVoice;
-    }
-    const speeds = providerSpeeds(provider);
-    if (!speeds.includes(ttsSpeed)) {
-      const nextSpeed = speeds.includes(1) ? 1 : speeds[0];
-      saveTtsSpeed(nextSpeed);
-      updates.ttsSpeed = nextSpeed;
-    }
-    set(updates);
-  },
-
-  setTtsVoice: (voice) => {
-    saveTtsVoice(voice);
-    set({ ttsVoice: voice });
-  },
-
-  setTtsSpeed: (speed) => {
-    saveTtsSpeed(speed);
-    set({ ttsSpeed: speed });
-  },
-
-  setVoiceDeliveryMode: (mode) => set({ voiceDeliveryMode: mode }),
-
-  setVoiceWebhookConfigured: (configured) => set({ voiceWebhookConfigured: configured }),
-
-  setVoiceHandsFree: (enabled) => {
-    saveVoiceHandsFree(enabled);
-    set({ voiceHandsFree: enabled });
-  },
-
-  setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
-
-  setLiveSteering: (enabled) => set({ liveSteering: enabled }),
-
-  setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
-
-  setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
   setFailoverCutoffs: (modeKey, cutoffs) =>
     set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [modeKey]: cutoffs } })),
   setAccountSelectionMode: (modeKey, mode) =>
     set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [modeKey]: mode } })),
-  setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
-  setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
-
-  setClaudeAuthProgress: (accountId, progress) =>
+  setAuthProgress: (accountId, progress) =>
     set((state) => {
-      const current = state.claudeAuthDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+      const current = state.authDiagnostics[accountId] ?? EMPTY_AUTH_DIAGNOSTICS;
       const isNewAttempt = current.attemptId !== progress.attemptId;
       return {
-        claudeAuthDiagnostics: {
-          ...state.claudeAuthDiagnostics,
+        authDiagnostics: {
+          ...state.authDiagnostics,
           [accountId]: {
             attemptId: progress.attemptId,
             active: progress.phase !== "complete" && progress.phase !== "failed",
@@ -646,18 +597,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         },
       };
     }),
-  appendClaudeAuthLog: (accountId, entry) =>
+  appendAuthLog: (accountId, entry) =>
     set((state) => {
-      const current = state.claudeAuthDiagnostics[accountId] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+      const current = state.authDiagnostics[accountId] ?? EMPTY_AUTH_DIAGNOSTICS;
       const isNewAttempt = current.attemptId !== entry.attemptId;
       const kept = isNewAttempt ? [] : current.entries;
       const entries = [
         ...kept,
         { ...entry, id: `${entry.attemptId}:${entry.timestamp}:${kept.length}` },
-      ].slice(-MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES);
+      ].slice(-MAX_AUTH_DIAGNOSTIC_ENTRIES);
       return {
-        claudeAuthDiagnostics: {
-          ...state.claudeAuthDiagnostics,
+        authDiagnostics: {
+          ...state.authDiagnostics,
           [accountId]: {
             ...current,
             attemptId: entry.attemptId,
@@ -667,34 +618,36 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         },
       };
     }),
-  finishClaudeAuthDiagnostics: (accountId, status, message) =>
+  finishAuthDiagnostics: (accountId, status, message) =>
     set((state) => {
-      const current = state.claudeAuthDiagnostics[accountId];
-      // Nothing was recorded for this account, so there is no attempt to
-      // finish — inventing one would render an empty diagnostics block on a row
+      const current = state.authDiagnostics[accountId];
+
       // that never ran a challenge.
       if (!current) return {};
       return {
-        claudeAuthDiagnostics: {
-          ...state.claudeAuthDiagnostics,
+        authDiagnostics: {
+          ...state.authDiagnostics,
           [accountId]: {
             ...current,
             active: false,
             phase: status,
-            message: message ?? (status === "complete" ? "Claude sign-in completed." : "Claude sign-in failed."),
+            // The provider's own wording arrives as `message`; this is the
+            // fallback for a login that has none, so it names no harness.
+            message: message ?? (status === "complete" ? "Sign-in completed." : "Sign-in failed."),
             ...(status === "failed" && message ? { failedMessage: message } : {}),
           },
         },
       };
     }),
-  setClaudeAuthOutputOpen: (accountId, open) =>
+  setAuthOutputOpen: (accountId, open) =>
     set((state) => ({
-      claudeAuthOutputOpen: { ...state.claudeAuthOutputOpen, [accountId]: open },
+      authOutputOpen: { ...state.authOutputOpen, [accountId]: open },
     })),
 
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
   setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
-  setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
+  setNonTurnModelResolved: (resolved) => set({ nonTurnModelResolved: resolved }),
+  setBackgroundWorkModels: (models) => set({ backgroundWorkModels: models }),
   setReviewers: (reviewers) => set({ reviewers }),
   setRoles: (roles) => set({ roles }),
   setProviderAccountAuth: (loginId, accountId, auth) =>
@@ -718,11 +671,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     if (sessionId) {
       set((state) => {
         const next = { ...state.permissionModeBySession, [sessionId]: mode };
-        // Persist per-session overrides so a reload restores the session's true
-        // mode. Without this the chip fell back to the global "auto" default on
-        // reload, sent on the wire as `undefined`, which silently left a
-        // plan-pinned persistent streaming CLI wedged ("can't exit plan mode").
-        // The global default (the `else` branch) stays unpersisted by design.
+
         savePermissionModeBySession(next);
         return { permissionModeBySession: next };
       });
@@ -761,27 +710,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   reset: () => set({ pendingFiles: [] }),
 
-  saveInstructions: async (content) => {
-    const res = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ systemPrompt: content }),
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to save instructions: ${res.status}`);
-    }
-    const result = await res.json() as { systemPrompt: string };
-    set({
-      systemPromptContent: result.systemPrompt,
-      hasSystemPrompt: !!result.systemPrompt,
-    });
-  },
-
+  /*
+    The address is `integrations.github.connection`'s, so this names neither the
+    path nor the field the token travels in (docs/308-data-driven-settings
+    req 1). It stays a store action because the first-run gate submits the same
+    token as the settings row, and because the answer seeds two things the
+    browser holds: the account, and the repositories the Add Repository dialog
+    lists.
+  */
   submitGitHubToken: async (token) => {
-    const res = await fetch("/api/github/token", {
-      method: "POST",
+    const declaration = findSetting("integrations.github.connection");
+    const request = declaration && settingRequest(declaration, token);
+    if (!request) return null;
+    const res = await fetch(request.path, {
+      method: request.method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify(request.body),
     });
     if (!res.ok) {
       return null;

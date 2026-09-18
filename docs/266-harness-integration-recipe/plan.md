@@ -331,6 +331,17 @@ are **silent**: no compile error and no existing test fails if you miss them.
   `ln -s /credentials/<dotfiles>` + `chown -h` — and `Dockerfile.prod`
   (~`:101`, root, symlinks only). Miss this and credentials never reach the
   CLI.
+- 🚩 **Link the credential ROOT as a directory, never the token file itself.**
+  A CLI's OAuth refresh is typically a rename, and `rename(2)` does not follow a
+  symlink on its destination — so a link *at* the token path is swapped for a
+  regular file, the path ShipIt watches never moves, publish-back silently
+  no-ops, and the next cleanup deletes the only live token (planning#448, grok:
+  its adapter built a throwaway `GROK_HOME` and linked `auth.json` file-to-file).
+  A link one level up is immune, because both the temp name and the final name
+  resolve through it into the same real directory. Claude, Codex and OpenCode
+  were cleared against this on 2026-08-23 (planning#475); the per-harness
+  evidence, and the reopening condition for OpenCode, is at `AGENT_TOKEN_FILES`
+  in `orchestrator/token-sync-manager.ts`.
 - `deployment/vps/setup.sh`: `HARNESS_ROWS` — one `"id|Label|hint"` row adds the
   harness to the picker AND to the validated set; guard-tested against the
   catalogue. Its preselection, `HARNESS_DEFAULT`, is the approved-set decision
@@ -346,7 +357,7 @@ One entry each: `AGENT_CREDENTIAL_PATHS`
 per-agent credential isolation and sub-agent provisioning both iterate it),
 `HARNESS_CREDENTIAL_VARS` (`shared/spawn-routing.ts:28` — env keys to scrub
 for scoped-home spawns; a miss silently bills the wrong route),
-`AGENT_TOOL_MAPS` (`session/agents/tool-map.ts:42`), `AUTH_ERROR`
+`<X>_TOOL_NAMES` (`shared/agent-tool-names.ts`), `AUTH_ERROR`
 (`services/agent-auth-gate.ts:5`), `AGENT_LIMIT_LABELS`
 (`ws-handlers/agent-rate-limits.ts:13`), `PROVIDER_LABEL` ×2
 (`provider-account-manager.ts:48`, `provider-route-preflight.ts:34`),
@@ -431,7 +442,10 @@ String-literal validators that **drop or reject a new id**:
 ### 6. The session adapter — `src/server/session/agents/<id>/`
 
 Mirror `claude/` or `codex/` per the shape table: `adapter.ts` implementing
-`AgentProcess`, `tool-map.ts`, tests. Specifics that bite:
+`AgentProcess`, a `<id>-tool-normalizer.ts` if the CLI's tool vocabulary
+differs from Claude's (`opencode/`, `grok/` are the templates — the
+`<X>_TRANSCRIPT_TOOL_NAMES` table plus its guard test), tests. Specifics
+that bite:
 
 - `writeMcpConfig(ctx)` bundles Playwright + the `shipit` bridge + user
   servers in the CLI's own wire format, returning
@@ -448,8 +462,7 @@ Mirror `claude/` or `codex/` per the shape table: `adapter.ts` implementing
   overlapping cache figures need an `<id>-token-usage.ts` normalizer
   (`shared/codex-token-usage.ts` is the template — it is imported directly,
   not dispatched, so `session-namer.ts` needs the import too).
-- Register in `session/agents/index.ts` (barrel), `tool-map.ts`
-  `AGENT_TOOL_MAPS`, and `createWorkerAgent`
+- Register in `createWorkerAgent`
   (`session/session-worker.ts:807`) — **the one factory where a miss
   silently runs the wrong CLI**; extend
   `session-worker-agent-factory.test.ts` in the same commit.
@@ -495,8 +508,8 @@ in `app-di.ts`.
 Build-breaking by design (good — they *are* the checklist):
 `agent-cli-install.test.ts` (catalogue↔installer↔Dockerfile parity),
 `catalogue.test.ts`, `session-worker-agent-factory.test.ts`,
-`session/agents/agent-registry.test.ts` (asserts exactly 2 agents and their
-order — will fail), `tool-map.test.ts`.
+`shared/agent-registry-runtime.test.ts` (asserts the exact agent list and
+its order — will fail).
 
 Want a new case or sibling file: `shared/agent-registry.test.ts` +
 `agent-registry-signout.test.ts` (or refactor them to iterate

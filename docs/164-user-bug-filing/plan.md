@@ -268,7 +268,7 @@ path was write-only.
 
 **The outcome rides as a prefix on the user's next turn — nothing wakes the
 session.** A wake-turn was the obvious mechanism (docs/196's merge card and
-docs/233's cohort report both use `wakeSessionWithTurn`) and it is the wrong one
+docs/233's child-to-parent report both use `wakeSessionWithTurn`) and it is the wrong one
 here: those wake for something *actionable*, whereas a filed bug report is a side
 errand, and interrupting the user and the agent to announce what the card on
 screen already says is the distraction, not the fix. Instead the resolution is

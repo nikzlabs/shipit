@@ -69,7 +69,7 @@ describe("Integration: Permission modes", () => {
 
   it("auto mode (default) passes no permissionMode to ClaudeProcess", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
@@ -82,7 +82,7 @@ describe("Integration: Permission modes", () => {
 
   it("plan mode passes permissionMode 'plan' to ClaudeProcess", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Analyze the codebase", permissionMode: "plan" });
     await waitForClaude(() => lastClaude);
@@ -95,7 +95,7 @@ describe("Integration: Permission modes", () => {
 
   it("guarded mode passes permissionMode 'guarded' to ClaudeProcess", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Build it safely", permissionMode: "guarded" });
     await waitForClaude(() => lastClaude);
@@ -108,10 +108,8 @@ describe("Integration: Permission modes", () => {
 
   it("falls back to auto + emits a notice when guarded is unavailable, then downgrades subsequent turns", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1: request guarded, but the CLI reports it didn't engage (init
-    // permissionMode is "default", not "auto").
     client.send({ type: "send_message", text: "Try guarded", permissionMode: "guarded" });
     await waitForClaude(() => lastClaude);
     expect(lastClaude.lastPermissionMode).toBe("guarded");
@@ -124,7 +122,6 @@ describe("Integration: Permission modes", () => {
       permissionMode: "default",
     });
 
-    // A system_notice explaining the fallback should reach the client.
     let sawNotice = false;
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
@@ -137,14 +134,11 @@ describe("Integration: Permission modes", () => {
 
     firstClaude.finish("guarded-fallback-session");
 
-    // Drain to end of turn 1.
     const drainTimeout = Date.now() + 1500;
     while (Date.now() < drainTimeout) {
       try { await client.receive(100); } catch { break; }
     }
 
-    // Turn 2: still requesting guarded, but the volatile flag now downgrades it
-    // to auto (no permissionMode flag passed to the CLI).
     const sessionId = sessionManager.list()[0]?.id;
     client.send({ type: "send_message", text: "Again", sessionId, permissionMode: "guarded" });
     await waitForClaude(() => lastClaude, firstClaude);
@@ -155,7 +149,7 @@ describe("Integration: Permission modes", () => {
 
   it("emits a notice summarizing classifier-blocked actions on the result event", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Do something risky", permissionMode: "guarded" });
     await waitForClaude(() => lastClaude);
@@ -190,14 +184,9 @@ describe("Integration: Permission modes", () => {
   });
 
   it("does NOT emit a guarded-blocked notice in auto mode when result carries permission_denials", async () => {
-    // Auto mode can still produce `permission_denials[]` for reasons unrelated
-    // to the classifier (e.g. headless `-p` auto-resolves AskUserQuestion when
-    // there's no human to answer). Surfacing those as "Guarded mode blocked"
-    // misattributes the cause — the classifier isn't engaged in auto mode.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // No permissionMode field ⇒ auto mode.
     client.send({ type: "send_message", text: "Ask me something" });
     await waitForClaude(() => lastClaude);
     expect(lastClaude.lastPermissionMode).toBeUndefined();
@@ -235,16 +224,14 @@ describe("Integration: Permission modes", () => {
 
   it("switching mode mid-session changes ClaudeProcess args", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // First message in plan mode
     client.send({ type: "send_message", text: "Plan first", permissionMode: "plan" });
     await waitForClaude(() => lastClaude);
     const planClaude = lastClaude;
 
     expect(planClaude.lastPermissionMode).toBe("plan");
 
-    // Emit init + result to complete the first turn
     planClaude.emit("event", {
       type: "system",
       subtype: "init",
@@ -252,7 +239,6 @@ describe("Integration: Permission modes", () => {
     });
     planClaude.finish("mode-switch-session");
 
-    // Drain messages
     const drainTimeout = Date.now() + 2000;
     while (Date.now() < drainTimeout) {
       try {
@@ -262,7 +248,6 @@ describe("Integration: Permission modes", () => {
       }
     }
 
-    // Second message in auto mode (no permissionMode field)
     const sessionId = sessionManager.list()[0]?.id;
     client.send({ type: "send_message", text: "Execute the plan", sessionId });
     await waitForClaude(() => lastClaude, planClaude);

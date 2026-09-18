@@ -1,20 +1,3 @@
-/**
- * `GET /api/sessions/:id/services` — the route a docs/262 end-to-end operator
- * read when they reported "`/services` returned `[]` with no error"
- * (planning#382).
- *
- * They were reading the right surface; it was the silent one. A compose file
- * ShipIt DECLINES — docs/263's containment rules decline a stock one, so this
- * is a first-run answer rather than an edge case — produced an empty service
- * map, and the route published that map and nothing else. The reason existed
- * (it reaches the Preview pane as `compose_error`), so the two surfaces
- * disagreed in the misleading direction: one said "refused, here is the line to
- * add", the other said what reads as "nothing is declared".
- *
- * The route is registered against a bare Fastify app with a fake manager,
- * because what is being pinned is the RESPONSE SHAPE, not the manager.
- */
-
 import { describe, it, expect, afterEach } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerPreviewRoutes } from "./api-routes-preview.js";
@@ -39,8 +22,6 @@ async function appWith(fake: FakeManager | null, gap: DependencyGap | null = nul
     : undefined;
   await registerPreviewRoutes(app, {
     sessionManager: { get: () => undefined },
-    // nikzlabs/shipit#2429 — the dependency gap is a fact about the session's
-    // INSTALL, so it is sourced from the runner rather than the manager.
     runnerRegistry: { get: () => (gap ? { dependencyGap: gap } : undefined) },
     serviceManagers: new Map(mgr ? [[SESSION, mgr]] : []),
     broadcastLog: () => {},
@@ -79,8 +60,6 @@ describe("GET /api/sessions/:id/services", () => {
       },
     });
 
-    // Still a 200 with a list: an empty list is a valid answer, and the caller
-    // gets both facts rather than having to infer one from a status code.
     expect(statusCode).toBe(200);
     expect(body.services).toEqual([]);
     expect(body.failure).toEqual({
@@ -109,13 +88,6 @@ describe("GET /api/sessions/:id/services", () => {
     expect(body.services).toHaveLength(1);
   });
 
-  /**
-   * nikzlabs/shipit#2429 — the same argument as `failure`, one layer down. A service
-   * row that reads `running` is exactly the case the reporter hit: the service
-   * was up and every request it served failed on an unresolvable import,
-   * because ShipIt had rebased the tree under a `node_modules` it did not
-   * re-install.
-   */
   it("carries the dependency gap alongside a service that reads as healthy", async () => {
     const { body } = await listServices(
       {
@@ -129,8 +101,6 @@ describe("GET /api/sessions/:id/services", () => {
 
     expect(body.services).toHaveLength(1);
     expect(body.dependencies?.reason).toBe("not-content-keyed");
-    // Rendered prose, not the raw label — the consumer is an agent shim that
-    // prints it verbatim, so the orchestrator owns the wording.
     expect(body.dependencies?.message).toContain("a sync onto the latest base");
   });
 

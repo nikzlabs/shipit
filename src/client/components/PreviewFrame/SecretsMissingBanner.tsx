@@ -5,16 +5,6 @@ import { usePreviewStore } from "../../stores/preview-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 
-/**
- * Banner shown above the preview when one or more `required: true` secrets
- * declared in the compose file have no configured value. Clicking the
- * "Configure" button opens the Secrets settings tab so the user can fill
- * them in without leaving the preview pane.
- *
- * The banner reads from the live `secrets_status` snapshot in preview-store —
- * when the user saves, the orchestrator emits a fresh snapshot with empty
- * `missingRequired` and the banner disappears automatically.
- */
 export function SecretsMissingBanner() {
   const missingRequired = usePreviewStore((s) => s.secrets.missingRequired);
   const setProjectSettingsRepoUrl = useUiStore((s) => s.setProjectSettingsRepoUrl);
@@ -27,7 +17,7 @@ export function SecretsMissingBanner() {
 
   const openSecrets = () => {
     if (!repoUrl) return;
-    // Open the per-repo Project Settings dialog straight to the Secrets tab.
+
     setProjectSettingsRepoUrl(repoUrl, "secrets");
   };
 

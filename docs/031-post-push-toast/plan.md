@@ -40,9 +40,7 @@ Use the existing toast/notification pattern in ShipIt (or add a minimal one if n
 #### Integration in App.tsx
 
 ```typescript
-// In the github_push_result handler:
 if (data.type === "github_push_result" && data.success) {
-  // Show toast with PR action
   if (githubStatus.authenticated && !prStatus?.pr) {
     showToast({
       message: `Pushed to origin/${currentBranch}`,
@@ -64,13 +62,11 @@ if (data.type === "github_push_result" && data.success) {
 If ShipIt doesn't already have a toast system, add a minimal one:
 
 ```typescript
-// State in App.tsx
 const [toast, setToast] = useState<{
   message: string;
   action?: { label: string; onClick: () => void };
 } | null>(null);
 
-// Auto-dismiss
 useEffect(() => {
   if (toast) {
     const timer = setTimeout(() => setToast(null), 8000);

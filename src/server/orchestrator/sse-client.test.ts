@@ -1,30 +1,12 @@
-/**
- * Tests for the minimal SSE client.
- *
- * Focus areas:
- * - Normal event parsing.
- * - `idleTimeoutMs`: connection treated as silently dead when no bytes
- *   arrive in time.
- * - `onActivity`: fires for every chunk, including server keepalive
- *   comments that the parser would otherwise discard.
- * - Explicit `close()` clears the idle timer.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import { connectSSE } from "./sse-client.js";
-
-// ---------------------------------------------------------------------------
-// Test SSE server helpers
-// ---------------------------------------------------------------------------
 
 interface TestServer {
   url: string;
   send: (chunk: string) => void;
   close: () => Promise<void>;
-  /** Number of clients currently connected to /events. */
   clientCount: () => number;
-  /** Resolve when the first client connects. */
   waitForClient: () => Promise<http.ServerResponse>;
 }
 
@@ -42,11 +24,7 @@ async function startTestServer(): Promise<TestServer> {
       "Cache-Control": "no-cache",
       "Connection": "keep-alive",
     });
-    // Flush headers immediately by writing an SSE comment. Without this,
-    // Node buffers headers until the first body write, so a server that
-    // wants to test "connection idle from the start" never actually
-    // hands the client a response. Real workers do the same — see
-    // `session-worker.ts` writing `: connected\n\n` on connect.
+    // Flush headers so an idle server still starts the client's timeout.
     res.write(": connected\n\n");
     activeRes = res;
     connectedCount++;
@@ -85,10 +63,6 @@ async function startTestServer(): Promise<TestServer> {
     waitForClient: () => firstClient,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe("connectSSE", () => {
   let server: TestServer;
@@ -139,7 +113,6 @@ describe("connectSSE", () => {
     );
 
     await server.waitForClient();
-    // Worker sends `id:` before each event so reconnects can pass `?since=N`
     server.send("id: 1\nevent: agent_event\ndata: {\"k\":\"v\"}\n\n");
     server.send("id: 42\nevent: agent_done\ndata: {\"exitCode\":0}\n\n");
 
@@ -167,7 +140,6 @@ describe("connectSSE", () => {
     );
 
     await server.waitForClient();
-    // Server keepalive comment — parser would normally drop it
     server.send(": keepalive\n\n");
     await waitFor(() => onActivity.mock.calls.length >= 1);
     expect(events).toHaveLength(0);
@@ -192,7 +164,6 @@ describe("connectSSE", () => {
     );
 
     await server.waitForClient();
-    // Don't send anything — wait for the idle timer to fire.
     await waitFor(() => errors.length === 1, 1000);
 
     expect(errors[0].message).toMatch(/stale/i);
@@ -215,8 +186,6 @@ describe("connectSSE", () => {
 
     await server.waitForClient();
 
-    // Send keepalives every 80ms for 400ms total — the idle timer is 200ms,
-    // so each keepalive should reset it before it fires.
     const keepaliveInterval = setInterval(() => {
       try { server.send(": keepalive\n\n"); } catch { /* server closed */ }
     }, 80);
@@ -244,10 +213,8 @@ describe("connectSSE", () => {
 
     await server.waitForClient();
 
-    // Close immediately — the idle timer should be cleared.
     conn.close();
 
-    // Wait longer than idleTimeoutMs to be sure no error fires.
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(errors).toHaveLength(0);
   });

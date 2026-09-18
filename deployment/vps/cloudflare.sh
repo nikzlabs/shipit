@@ -1,22 +1,5 @@
 #!/bin/bash
-# Cloudflare Tunnel access for an existing ShipIt VPS deployment.
-#
-# Usage:
-#   bash /opt/shipit/deployment/vps/cloudflare.sh
-#
-# Cloudflare Zero Trust is required by default because the tunnel publishes
-# ShipIt on $DOMAIN and *.$DOMAIN. For deliberate testing or when another
-# access layer is already in front of the hostname, opt out explicitly:
-#
-#   SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1 bash /opt/shipit/deployment/vps/cloudflare.sh
-#
-# Every question here can be answered in advance, so that an agent can collect
-# the answers from the person and run this without a stop (docs/276):
-#
-#   SHIPIT_CF_DOMAIN=shipit.example.com
-#   SHIPIT_CF_API_TOKEN=...            # secret: never logged, never stored
-#   SHIPIT_CF_ACCOUNT_ID=...
-#   SHIPIT_CF_ALLOWED_EMAIL=you@example.com
+# Configure Cloudflare Tunnel with Zero Trust required by default.
 set -euo pipefail
 
 CONFIG_FILE="/etc/shipit/setup.conf"
@@ -61,13 +44,7 @@ echo "     - A dedicated domain (e.g. ship-it.ai) where free-plan wildcards work
 echo "     - OR Advanced Certificate Manager (\$10/mo) for nested wildcards"
 echo ""
 
-# Every question below takes an answer from the environment (docs/276 req 10).
-# Without that, an agent-run install could set up everything EXCEPT the path that
-# produces a public HTTPS URL, and would stop here with no way to continue.
-#
 # ask_or_env <variable-name> <prompt> [--secret]
-# -> ANSWER holds the value. A missing answer with no terminal names the variable
-#    that would have supplied it, instead of `read` dying under `set -e`.
 ANSWER=""
 ask_or_env() {
   local var="$1" prompt="$2" secret="${3:-}"
@@ -97,8 +74,6 @@ if [ -n "${SHIPIT_CF_DOMAIN:-}" ]; then
   echo "  Domain: $DOMAIN (from the environment)"
 elif [ -n "$DOMAIN" ]; then
   echo "  Using saved domain: $DOMAIN"
-  # Only offered when someone is there to answer; with no terminal the saved
-  # domain stands, rather than `read` failing the script at EOF.
   if [ -t 0 ]; then
     read -rp "  Press Enter to keep, or type a new domain: " NEW_DOMAIN
     if [ -n "$NEW_DOMAIN" ]; then
@@ -145,8 +120,7 @@ else
   echo "  5. To deliberately publish without Zero Trust, rerun with:"
   echo "     SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1 bash /opt/shipit/deployment/vps/cloudflare.sh"
   echo ""
-  # The token is a secret: it is never echoed, never written to $CONFIG_FILE, and
-  # never passed as an argument the process table would show (docs/276 req 11).
+  # Keep the token out of output, files, and process arguments.
   ask_or_env SHIPIT_CF_API_TOKEN "Cloudflare API token: " --secret
   CF_API_TOKEN="$ANSWER"
   if [ -z "$CF_API_TOKEN" ]; then
@@ -329,20 +303,7 @@ else
   systemctl enable --now cloudflared
 fi
 
-# planning#378 — the orchestrator must answer to $DOMAIN.
-#
-# The origin guard proves a request's `Host` is ShipIt's own from the name's own
-# shape, which needs no configuration for every loopback / tailnet / MagicDNS /
-# sslip.io name (docs/254). A public domain is the one shape it cannot prove:
-# nothing about "$DOMAIN" distinguishes it from a name a DNS-rebinding attacker
-# owns, and cloudflared passes the browser's `Host` straight through. deploy.sh
-# and restart.sh derive SHIPIT_ALLOWED_ORIGINS from the DOMAIN in setup.conf,
-# which was just written above — but that only reaches the orchestrator when its
-# container is recreated, and setup.sh runs deploy.sh BEFORE this script. So on
-# a fresh install the stack is already up with the variable unset, and the
-# domain would be refused until something else happened to restart it.
-# restart.sh re-sources the env, re-derives, and recreates only the
-# orchestrator, with no rebuild.
+# Recreate the orchestrator so its origin guard accepts the new public domain.
 if docker compose -f /opt/shipit/deployment/vps/docker-compose.yml ps -q shipit 2>/dev/null | grep -q .; then
   echo "==> Restarting ShipIt so it answers to $DOMAIN..."
   bash /opt/shipit/deployment/vps/restart.sh

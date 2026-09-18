@@ -64,7 +64,7 @@ describe("deriveEffectivePreviewStatus", () => {
     ];
     const result = deriveEffectivePreviewStatus(preview, services, "session-abc");
     expect(result?.detectedPorts).toEqual([5173, 8080]);
-    // Picks the first running service's port as the primary
+
     expect(result?.port).toBe(5173);
   });
 

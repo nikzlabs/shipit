@@ -3,23 +3,17 @@ import { isPresentTool } from "./tool-names.js";
 import { TASK_LIST_TOOL_NAMES, isTaskListTool } from "../../server/shared/task-list-tools.js";
 import { foldTaskList, type TaskItem } from "./task-list.js";
 
-// Tools that render as standalone items outside the grouped container
 export const STANDALONE_TOOLS = new Set([
   "AskUserQuestion",
   "EnterPlanMode",
   "ExitPlanMode",
-  // The task-list tools draw nothing on their own — the panel draws them — so
+
   // they must never be folded into the clipped tool group either.
   ...TASK_LIST_TOOL_NAMES,
 ]);
 
-// Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
-//
-// Re-exported from shared rather than redeclared so the layout decision has one
-// definition. The narrower `SUBAGENT_REPORT_TOOL_NAMES` (Task/Agent) is what
-// `MessageToolUse` routes to `SubagentCall` and what the docs/244 projection
 // exempts from slicing — those two must not drift, which is why they read the
-// same set.
+
 export { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
 import { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
 
@@ -67,11 +61,14 @@ export const CARD_MESSAGE_FIELDS = [
   "compaction",
   "subAgentConsult",
   "actionChecklist",
+  "repoSessionProposal",
   "presentInline",
   "branchAutoReset",
   "branchSynced",
   "sessionRenamed",
   "sessionSettingsChange",
+  "sshHostKey",
+  "settingsProposal",
   "releaseCard",
   "spawnedSession",
   "spawnFailed",
@@ -107,7 +104,12 @@ export const CARD_MESSAGE_FIELDS = [
  * Adding a new flag of this kind? Add it here — one place, both merge branches.
  */
 export function isTerminalTranscriptEntry(msg: ChatMessage): boolean {
-  return CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined) || msg.notice === true;
+  return hasCardContent(msg) || msg.notice === true;
+}
+
+/** Whether the message's content IS a card, rather than prose carrying one. */
+export function hasCardContent(msg: ChatMessage): boolean {
+  return CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined);
 }
 
 export type VisualElement =
@@ -117,19 +119,6 @@ export type VisualElement =
   | { kind: "standalone-tool"; tool: ToolUseBlock; result?: ToolResultBlock; streaming: boolean; messageIndex: number }
   | { kind: "task-panel"; tasks: TaskItem[]; messageIndex: number };
 
-/**
- * Is `next` the same element as `prev`, such that the row rendering it would
- * draw exactly the same thing?
- *
- * Tool and result objects are compared by REFERENCE, not by value: they are the
- * very objects hanging off `ChatMessage`, so an unchanged message yields
- * unchanged refs and a changed one yields fresh ones. That is precisely the
- * signal we want, and it costs nothing.
- *
- * A `message` element deliberately carries no message content — the row takes
- * `messages[index]` as its own prop, so the message's identity (not this
- * element's) is what re-renders a bubble whose text just grew.
- */
 function sameElement(prev: VisualElement, next: VisualElement): boolean {
   if (prev.kind !== next.kind) return false;
   switch (next.kind) {
@@ -170,23 +159,6 @@ function sameElement(prev: VisualElement, next: VisualElement): boolean {
   }
 }
 
-/**
- * Reuse the previous run's object for every element that would render
- * identically (planning#375).
- *
- * `buildVisualElements` allocates a fresh object for every element on every
- * call, so before this pass NOTHING in the transcript was ever referentially
- * equal between two renders — which made `React.memo` on a row useless and left
- * every update re-rendering all ~2,000 rows at a measured 92 ms a time.
- *
- * Alignment is positional, and it does not have to be clever: during a
- * streaming turn elements are appended, so the whole prefix aligns and the
- * comparison is a handful of reference checks per element. An insertion in the
- * middle (a rewind, a card landing out of order) breaks alignment from that
- * point on, and everything after it is simply treated as new — correct, just
- * not free. This walk is O(n) in cheap comparisons; the 92 ms it replaces was
- * O(n) in React fiber work.
- */
 function reuseUnchanged(previous: VisualElement[], next: VisualElement[]): VisualElement[] {
   const out = next;
   const shared = Math.min(previous.length, next.length);
@@ -197,23 +169,9 @@ function reuseUnchanged(previous: VisualElement[], next: VisualElement[]): Visua
   return out;
 }
 
-/**
- * Build a flat list of visual elements from messages.
- * Extracts groupable tools from consecutive assistant messages into shared tool-groups.
- * Text/images/files render as separate message bubbles without tools.
- * Preserves original chronological order — tools from a message appear after that message's text.
- *
- * `previous` is the last result this caller got. When supplied, unchanged
- * elements come back as the SAME objects, so a memoized row can bail out — see
- * `reuseUnchanged`. Omit it and the function behaves exactly as it always did.
- */
 export function buildVisualElements(messages: ChatMessage[], previous?: VisualElement[]): VisualElement[] {
   const elements: VisualElement[] = [];
-  // The task panel is its own element, not something a message bubble draws.
-  // It has to be: the calls that build it carry no text, so the message holding
-  // the last one often produces no bubble at all — and when it also holds an
-  // ordinary tool it produces a tool-group instead. Anchoring the panel to a
-  // bubble made it vanish in exactly those cases.
+
   const taskList = foldTaskList(messages);
   let toolAccum: { tool: ToolUseBlock; result?: ToolResultBlock }[] = [];
   let toolMsgIndices: number[] = [];
@@ -233,28 +191,26 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    // Separate subagent tools (Task/Skill) — they get their own top-level elements
+
     const subagentTools = msg.toolUse?.filter((t) => SUBAGENT_TOOLS.has(t.name)) ?? [];
     const nonSubagentTools = msg.toolUse?.filter((t) => !SUBAGENT_TOOLS.has(t.name)) ?? [];
     const groupableTools = nonSubagentTools.filter((t) => !isStandaloneTool(t.name));
     const canGroupTools = msg.role === "assistant" && groupableTools.length > 0;
-    // Inline cards ride on a message whose `text` is empty and which carries no
+
     // tools — the card field IS the content. Such a message must still emit a
-    // `message` element, otherwise the grouping layer silently drops it and the
+
     // card never renders (the recurring "card vanishes" bug, docs/188). Driven
-    // by the single CARD_MESSAGE_FIELDS list below so adding a card is one edit.
-    const hasCardContent = CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined);
+
+    const carriesCard = hasCardContent(msg);
 
     if (canGroupTools) {
-      // Emit a bubble only if the message has visible non-tool content.
-      // Flush any accumulated tools first so they appear before this text.
+
       const hasVisibleContent = !!msg.text.trim() || !!msg.images?.length || !!msg.files?.length;
       if (hasVisibleContent) {
         flushTools();
         elements.push({ kind: "message", index: i, hideTools: true });
       }
 
-      // Extract groupable tools into the accumulator
       for (const tool of groupableTools) {
         const result = msg.toolResults?.find((r) => r.toolUseId === tool.id);
         toolAccum.push({ tool, result });
@@ -262,11 +218,6 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
       toolMsgIndices.push(i);
       lastToolMsgStreaming = !!msg.streaming;
 
-      // Extract standalone tools (ExitPlanMode, AskUserQuestion) as separate elements
-      // so they don't force the entire message out of the tool-group rendering path.
-      // Without this, force-merging a standalone tool into a message with groupable
-      // tools would change the rendering from tool-group → message bubble, causing
-      // the tool-group to disappear and the dialog to jump.
       const extractableStandalone = nonSubagentTools.filter(
         (t) => isStandaloneTool(t.name) && !isTaskListTool(t.name),
       );
@@ -277,15 +228,10 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
           elements.push({ kind: "standalone-tool", tool, result, streaming: !!msg.streaming, messageIndex: i });
         }
       }
-    } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user" || hasCardContent) {
+    } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user" || carriesCard) {
       flushTools();
       const hasVisibleContent = !!msg.text.trim() || !!msg.images?.length || !!msg.files?.length;
-      // When a message has ONLY standalone tools (ExitPlanMode, AskUserQuestion)
-      // and no visible text content, extract them as standalone elements instead
-      // of rendering an empty bubble. This handles history-loaded messages where
-      // ExitPlanMode was persisted in a separate message group from the plan text.
-      // Exclude the task-list tools — the panel draws those, so extracting them
-      // here would put an empty standalone element beside it.
+
       const extractableStandalone = nonSubagentTools.filter(
         (t) => isStandaloneTool(t.name) && !isTaskListTool(t.name),
       );
@@ -298,29 +244,20 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
           elements.push({ kind: "standalone-tool", tool, result, streaming: !!msg.streaming, messageIndex: i });
         }
       } else {
-        // Hide tools in the bubble when nothing left in it would draw anything:
-        // the subagent tools render as their own elements, and the task-list
-        // tools render as the panel. Leaving them visible drew the subagent
-        // twice — once as a generic tool line in the bubble, once as its card.
+
         const hideSubagentOnly = subagentTools.length > 0
           && nonSubagentTools.every((t) => isTaskListTool(t.name));
         elements.push({ kind: "message", index: i, hideTools: hideSubagentOnly });
       }
     } else {
-      // Message has only subagent tools and no other content — no bubble needed
+
       flushTools();
     }
 
-    // Emit subagent tools as their own top-level elements. Carry the message
-    // index so the renderer can dereference the parent's `subagentEvents` and
-    // `toolResults` for the nested-tree view (109).
     for (const tool of subagentTools) {
       elements.push({ kind: "subagent", tool, streaming: !!msg.streaming, messageIndex: i });
     }
 
-    // The panel goes where the list last changed, after that message's own
-    // tools. A read-only `TaskList`/`TaskGet` doesn't move it, so re-checking
-    // the list mid-turn leaves the panel where the user last saw it.
     if (i === taskList?.anchorIndex && taskList.tasks.length > 0) {
       flushTools();
       elements.push({ kind: "task-panel", tasks: taskList.tasks, messageIndex: i });
@@ -329,7 +266,6 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
 
   flushTools();
 
-  // Post-process: only the last streaming element should show active indicators.
   // Earlier tool-groups/subagents must not display spinners.
   let foundStreaming = false;
   for (let i = elements.length - 1; i >= 0; i--) {
@@ -343,8 +279,5 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
     }
   }
 
-  // Strictly after the post-process, which MUTATES `streaming` in place. Run it
-  // the other way round and the pass would rewrite an element the previous
-  // render is still holding.
   return previous ? reuseUnchanged(previous, elements) : elements;
 }

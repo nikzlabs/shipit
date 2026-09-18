@@ -35,13 +35,13 @@ A typed list of `KeybindingDef`:
 
 ```ts
 interface KeybindingDef {
-  id: KeybindingId;            // stable string union
-  label: string;               // human description
-  group: KeybindingGroup;      // "General" | "Sessions" | "Chat" | "Voice" | "Search"
-  defaultBinding: string;      // chord in "mod+alt+n" notation ("" for fixed keys)
-  editable: boolean;           // false → reference-only row
-  requiresSecondModifier?: boolean; // global hotkeys that fire while typing
-  fixedHint?: string;          // shown on non-editable rows ("Enter", "Esc", …)
+  id: KeybindingId;
+  label: string;
+  group: KeybindingGroup;
+  defaultBinding: string;
+  editable: boolean;
+  requiresSecondModifier?: boolean;
+  fixedHint?: string;
 }
 ```
 

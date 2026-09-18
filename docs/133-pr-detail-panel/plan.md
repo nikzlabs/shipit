@@ -195,15 +195,13 @@ Extend `PrStatusSummary` in `src/server/shared/types/github-types.ts`:
 
 ```ts
 interface PrStatusSummary {
-  // already present (declared, and populated by the poller)
   prTitle: string;
-  prBody: string;             // markdown source — already on the type
-  // new
-  prCreatedAt: string;        // ISO timestamp
+  prBody: string;
+  prCreatedAt: string;
   prAuthor: { login: string; avatarUrl: string };
-  reviewThreads: ReviewThread[];     // from docs/102
-  issueComments: IssueComment[];     // PR-level (not line) comments
-  timeline: TimelineItem[];          // unified activity feed
+  reviewThreads: ReviewThread[];
+  issueComments: IssueComment[];
+  timeline: TimelineItem[];
 }
 ```
 

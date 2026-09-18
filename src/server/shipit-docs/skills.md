@@ -15,8 +15,12 @@ ShipIt surfaces two kinds of skill directories under the workspace:
   `/`-invoked like Claude's. Grok also natively reads `.claude/skills/`
   (verified, docs/274), so on a Grok session both directories' skills are
   disclosed.
+- On an **Antigravity** session, `.claude/skills/` is the only skills directory:
+  the CLI reads no workspace skills at all (probed, docs/301), so ShipIt
+  discloses them through a per-spawn plugin instead. They invoke as
+  `/<name>`, like Claude's.
 - `<workspace>/<agent-dir>/skills/<plugin>__<skill>/SKILL.md` — skills the user
-  installed from a marketplace via **Settings → Skills → Discover**
+  installed from a marketplace via **Settings → Skills**
   (docs/149). These have a sentinel `.shipit-installed.json` file next to the
   `SKILL.md` and invoke under the catalog's namespace (e.g.
   `/commit-commands:commit` for Claude or `$commit-commands:commit` for Codex).
@@ -56,7 +60,10 @@ remove it, or fork into a new directory if you mean to customize it.
 
 **Install** from **Settings → Skills** is repo-targeted: ShipIt spawns a
 dedicated session that writes the skill files and opens a pull request titled
-`Install <plugin> skill`. The skill becomes available in a session once that
+`Install <plugin> skill`. That tab is discovery, not configuration: it holds no
+stored setting, so `shipit settings list` will not name one for it
+(`/shipit-docs/settings.md`). Which skills are installed you read from the
+directories above, not from ShipIt's settings. The skill becomes available in a session once that
 PR is merged and lands on the branch you're working from — it does not appear
 in an unrelated in-progress session.
 

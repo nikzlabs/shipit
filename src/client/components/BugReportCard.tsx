@@ -1,27 +1,3 @@
-/**
- * BugReportCard — inline consent card for filing a ShipIt bug (docs/164).
- *
- * Rendered at the chat-history position where the agent's `report_shipit_bug`
- * tool landed. Shows the EXACT redacted payload the user is about to file: an
- * editable title and a single editable body (WYSIWYG — what's in the box is
- * what gets posted). Nothing is sent until the user clicks "Submit report".
- *
- * The body is load-bearing for consent: the redacted transcript, evidence, and
- * the build/source footer are all pre-filled into the one editable field, so
- * if the user spots a redaction miss they delete it right here before
- * submitting. The author identity (`@you`) is the one thing NOT in the body —
- * it's inherent to filing as the user, shown for transparency.
- *
- * Lifecycle (from the bug-report store, keyed by cardId): draft → filing →
- * filed | dismissed | (failed drops back to draft with an error banner so the
- * user can fix their token / edit and retry).
- *
- * nikzlabs/shipit#2350 — Cancel is a server round-trip, not local state. It persists a
- * terminal `dismissed` phase (so a reload doesn't resurrect the card as an
- * editable draft) and tells the session's agent the report was declined, so it
- * stops treating a resolved card as still awaiting the user.
- */
-
 import { useState } from "react";
 import {
   ArrowSquareOutIcon,
@@ -39,12 +15,6 @@ export interface BugReportCardProps {
   onDismiss?: (cardId: string) => void;
 }
 
-/**
- * Augment the server-stamped footer with coarse, client-only browser context
- * (UA family + viewport). The server can't know these — they live only in the
- * browser — so we splice them into the editable body on first render. Coarse
- * by design: no fingerprinting, and the user can edit or delete the line.
- */
 function augmentBodyWithBrowser(body: string): string {
   if (typeof navigator === "undefined" || typeof window === "undefined") return body;
   const ua = navigator.userAgent;
@@ -55,7 +25,6 @@ function augmentBodyWithBrowser(body: string): string {
     : ua.includes("Safari/") ? "Safari"
     : "Browser";
   const viewport = `${window.innerWidth}×${window.innerHeight}`;
-  // Append to the server's "Filed via ShipIt · build … · source …" line.
   return body.replace(
     /^(Filed via ShipIt · build .+? · source \S+)$/m,
     `$1 · ${family} ${viewport}`,
@@ -67,15 +36,12 @@ export function BugReportCard({ cardId, onSubmit, onDismiss }: BugReportCardProp
   const setFiling = useBugReportStore((s) => s.setFiling);
   const setDismissed = useBugReportStore((s) => s.setDismissed);
 
-  // Local editable copies, seeded once from the store payload.
   const [title, setTitle] = useState(() => card?.title ?? "");
   const [body, setBody] = useState(() => augmentBodyWithBrowser(card?.body ?? ""));
 
   if (!card) return null;
 
   const handleDismiss = () => {
-    // Optimistic — the server echoes `bug_report_dismissed` and persists the
-    // phase, so the collapse survives a reload instead of being local state.
     setDismissed(cardId);
     onDismiss?.(cardId);
   };
@@ -94,7 +60,6 @@ export function BugReportCard({ cardId, onSubmit, onDismiss }: BugReportCardProp
   const phase = card.phase;
   const isFiling = phase === "filing";
 
-  // ── Terminal success ──
   if (phase === "filed" && card.issueUrl) {
     return (
       <div

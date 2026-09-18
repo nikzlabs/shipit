@@ -1,76 +1,3 @@
-/**
- * docs/252 phase 7 (req 9) — **running the work ShipIt does outside a turn**.
- *
- * `non-turn-model.ts` decides *what* to run on; this module runs it, records
- * what it cost, and says so when it fails. Three concerns, and the second and
- * third are the ones the requirement is emphatic about:
- *
- * ## 1. The execution path already existed
- *
- * Session naming shells out to a local CLI and only needed the resolved triple
- * threaded through (`session-namer.ts`). Pull-request description generation
- * had **no agent at all in production**: the orchestrator lives outside session
- * containers, so the default text generator returned the empty string and the
- * feature degraded silently (`app-di.ts`). Req 9 calls that half a *change*,
- * not a preserved behaviour.
- *
- * The fix is not a new spawn surface. `runner.spawnSubAgent` already posts to
- * the worker's `/agent/spawn`, runs a fresh adapter **outside** the resident
- * agent slot, and returns the accumulated text over the HTTP response — with an
- * in-process twin for `RUNTIME_MODE=local`. It is HTTP-only as CLAUDE.md
- * requires, and it is what `shipit agent run` already uses. It also solves the
- * lifecycle problem for free: an in-flight spawn registers in `_subAgentAborts`
- * and feeds `agentBusy`, so a generation in progress is already protected from
- * idle reclamation.
- *
- * Deliberately NOT `runSubAgent` (`services/sub-agent.ts`), which is the
- * user-facing `shipit agent run` primitive: that path is gated on the
- * "Multi-agent sessions" setting, on a pinned session agent, and on a per-turn
- * spawn cap — none of which describe ShipIt writing its own PR description.
- *
- * ## 2. Non-turn work spends money, so this phase records it
- *
- * A user can point session naming at a metered service and be charged for every
- * session they create. Naming used to discard its telemetry entirely, and the
- * brokered spawn returns a result whose recording happens one level up in the
- * sub-agent service — so the recording was at the wrong level, not absent. Both
- * halves now write a usage row with their own attribution, through the same
- * `turn-attribution.ts` rule the two turn writers share, so a naming turn and a
- * session turn on one credential cannot disagree about what a token costs.
- *
- * The row is written with `subAgentId` set to the derived harness. That is what
- * it is — a one-shot spawn of that harness, not the pinned agent's turn — and it
- * keeps the delta chain (`usage.record`, keyed by `(session, subAgentId)`) away
- * from the primary conversation's running total, and the consult out of the
- * context dial.
- *
- * **A row is written only when the harness reported telemetry.** A row with no
- * tokens would price at $0 through the rates, which is a *wrong* number rather
- * than a missing one — precisely the trap the cost rule's docstring is written
- * to avoid. A container-less PR generation attributes to the session whose PR
- * it is.
- *
- * Some non-turn work resolves **no model at all** — naming falling back when
- * nothing is eligible runs the session's own harness with no service, no
- * billing mode and therefore no rate table. Its tokens are real and its
- * attribution does not exist, so req 16 puts it in the legacy group: recorded
- * for its volume, and never priced. Not priced from rates, because there are
- * none; and not from the harness's own dollar figure either, which is the
- * default `resolveTurnCost` applies with no attribution — Codex reports none at
- * all, so that route lands the row at `$0` and asserts the run was free. See
- * {@link recordNonTurnUsage}.
- *
- * ## 3. Failure is never silent and never blocking
- *
- * The surrounding operation always completes with a fallback — a placeholder
- * session title, a generic PR description — and the user gets a **dismissible,
- * persisted** notice naming the service that failed. Persisted, not emitted:
- * naming is fire-and-forget and routinely finishes with the user on another
- * session or no viewer attached at all, which is exactly the case a transient
- * message cannot reach. Dismissal is state on the row (`dismissedAt`), so "I
- * read this" and "it never happened" stay distinguishable.
- */
-
 import { randomUUID } from "node:crypto";
 import type { AgentId, NonTurnFailureCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
@@ -94,29 +21,37 @@ import {
   releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   subAgentSpawnHomeContainerDir,
+  subAgentSpawnHomeDir,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
 } from "../session-credentials.js";
 import {
   resolveNonTurnModel,
+  unavailableFrom,
   type GenerateText,
+  type NonTurnCardPurpose,
+  type NonTurnDirectTarget,
+  type NonTurnHarnessTarget,
+  type NonTurnPinUnavailable,
   type NonTurnPurpose,
-  type NonTurnResolution,
   type NonTurnTarget,
+  type NonTurnUnavailable,
+  type NonTurnUnavailableCause,
 } from "../non-turn-model.js";
+import { DirectCallError, directCallForStyle, type DirectCallUsage } from "../direct-provider/index.js";
 
-/**
- * Wall-clock cap on a non-turn spawn. Far below the sub-agent default (30
- * minutes): nobody is waiting on a session title for half an hour, and a PR
- * description that has not arrived in three minutes is better replaced by the
- * generic fallback than left holding the create call open.
- */
 export const NON_TURN_SPAWN_TIMEOUT_MS = 3 * 60_000;
 
-/** Output cap. A PR description is prose, not a transcript. */
+/**
+ * A direct call is one HTTP request with no CLI to boot and no container to
+ * start, so it gets a far shorter budget than the harness spawn above. This is
+ * not req 9's end-to-end deadline, which docs/299 phase 4 owns for voice
+ * cleanup; it is the transport timeout for this one request.
+ */
+export const NON_TURN_DIRECT_TIMEOUT_MS = 60_000;
+
 export const NON_TURN_MAX_OUTPUT_CHARS = 8_000;
 
-/** The chat-history surface the notice needs: persist on emit, patch on dismiss. */
 export interface NonTurnFailurePersister extends InProgressPersister {
   updateNonTurnFailureCard(
     sessionId: string,
@@ -126,40 +61,21 @@ export interface NonTurnFailurePersister extends InProgressPersister {
 }
 
 export interface NonTurnWorkDeps {
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
   credentialStore: CredentialStore;
   providerAccountManager?: ProviderAccountManager | undefined;
-  /**
-   * Lazily resolved: the generator is constructed before the runner registry it
-   * spawns through (the registry is handed this generator as `generateText`).
-   * The same lazy-holder shape `getPrStatusPoller` already uses.
-   */
+  // The generator is constructed before the registry that uses it.
   getRunnerRegistry: () => SessionRunnerRegistry | undefined;
   chatHistoryManager: NonTurnFailurePersister;
   usageManager?: UsageManager | undefined;
-  /**
-   * Source-of-truth credentials root (`/credentials`). Omitted in local mode and
-   * in tests, where credential provisioning is a no-op (docs/138).
-   *
-   * Required for the case cross-backend review found: non-turn work is chosen
-   * **independently of the session**, so its derived harness is routinely not
-   * the session's, and its account is routinely not the one the session's
-   * container holds. Without provisioning, an account-backed background model
-   * spawns against missing or stale credentials — and Anthropic's subscription
-   * is the FIRST catalogue row, so that is the default install rather than a
-   * corner.
-   */
   credentialsDir?: string | undefined;
-  /**
-   * The session's own pinned account, so a same-harness spawn can put it back
-   * after borrowing the subtree. Mirrors `runSubAgent`'s restore step.
-   */
   sessionManager?: Pick<SessionManager, "get"> | undefined;
+  // Injection point for the direct clients' transport.
+  fetchImpl?: typeof fetch | undefined;
 }
 
-/** What a harness reported back about a non-turn run, when it reported anything. */
 export interface NonTurnTelemetry {
   durationMs: number;
-  /** The harness's own dollar figure, or `undefined` when it reported none. */
   costUsd?: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -168,50 +84,31 @@ export interface NonTurnTelemetry {
 }
 
 /**
- * Record what a non-turn run consumed, against the session it was done for.
+ * Unattributed runs record token volume without a price; absent telemetry creates
+ * no row, unless `spendUnknown` says the run was billed an amount nobody can read.
  *
- * Two shapes, and the difference is whether a model resolved at all:
- *
- * - **A resolved target** carries a service, a billing mode and the rates the
- *   catalogue holds for that model, so the row is attributed and priced under
- *   `turn-attribution.ts`'s rule — the same one the two turn writers share.
- * - **No target** is the `nothing_eligible` fallback (`non-turn-model.ts`): the
- *   session's own harness, no service, no billing mode, no rate table. Req 16
- *   puts that row in the legacy group — all six attribution columns NULL, which
- *   the table's `CHECK` already makes the only expressible shape — and it is
- *   **unpriced**: `cost_usd` is a hard zero rather than anything derived. It is
- *   volume whose attribution is unknown, not spend.
- *
- * The unpriced rule is deliberate and is why this does not simply hand
- * `attribution: undefined` to {@link resolveTurnCost}, whose no-attribution
- * default is the harness's own dollar figure. Codex reports none, so that
- * default writes `$0` under the name of a measurement — the trap this feature
- * has hit twice already (a metered consult recorded as free in phase 3, Codex's
- * absent telemetry in phase 6). A zero written *because there is no price* is a
- * different fact from a zero written *because the price was zero*, and only the
- * first is true here; what keeps it from reading as the second is that the row
- * carries no rates, so no reader can turn it into a figure.
- *
- * A no-op when the harness reported nothing at all: an all-zero row priced from
- * the catalogue's rates says "this was free", which is a claim, not an absence.
- * The caller logs the gap instead. An unattributed run needs *tokens*
- * specifically — its dollar figure is never consulted, so a run reporting only
- * a cost has nothing left to record.
+ * A null session id is install-level spend — background work belonging to no
+ * session, which is reported install-wide rather than charged to whichever
+ * session happened to be open (docs/299-direct-provider-calls req 7). An absent harness id means no
+ * harness ran the work; the row is still background work, and says so in its own
+ * field. Service and billing mode come from the *selection*, so a direct call on
+ * a subscription stays subscription usage with an at-API-rates comparison.
  */
 export function recordNonTurnUsage(
   deps: Pick<NonTurnWorkDeps, "usageManager">,
   args: {
-    sessionId: string;
-    /**
-     * The harness that actually ran it — `target.harnessId` when a model
-     * resolved, the session's own harness when none did. Stored as
-     * `subAgentId`, so it is required even in the unattributed case.
-     */
-    harnessId: AgentId;
-    /** Absent when the run resolved no model: req 16's legacy group. */
-    target?: NonTurnTarget | undefined;
+    sessionId: string | null;
+    harnessId?: AgentId | undefined;
+    // The selection alone: what the user chose is what usage reports.
+    target?: Pick<NonTurnTarget, "selection"> | undefined;
     purpose: NonTurnPurpose;
     telemetry: NonTurnTelemetry;
+    /**
+     * The run was billed but its amount cannot be read — a call cut off in
+     * flight. The row is written with no counts, so the run is visible without
+     * a figure being invented for it (docs/299-direct-provider-calls req 7).
+     */
+    spendUnknown?: boolean | undefined;
   },
 ): void {
   const { usageManager } = deps;
@@ -222,12 +119,12 @@ export function recordNonTurnUsage(
     || telemetry.outputTokens !== undefined
     || telemetry.cacheReadTokens !== undefined
     || telemetry.cacheCreateTokens !== undefined;
-  if (!hasTokens && (!target || telemetry.costUsd === undefined)) {
+  if (!hasTokens && !args.spendUnknown && (!target || telemetry.costUsd === undefined)) {
     const where = target
       ? `on ${target.selection.serviceId}/${target.selection.billingMode}`
       : "with no model resolved";
     console.warn(
-      `[non-turn] no token telemetry from ${harnessId} for ${args.purpose}`
+      `[non-turn] no token telemetry from ${harnessId ?? "a direct call"} for ${args.purpose}`
       + ` ${where}; nothing recorded`,
     );
     return;
@@ -238,9 +135,7 @@ export function recordNonTurnUsage(
         harnessId,
         attribution,
         reportedCostUsd: telemetry.costUsd,
-        // Already this run's own cost — a one-shot spawn has no running
-        // conversation total to diff against. Saying so explicitly is what keeps
-        // `record()` from inferring `cumulative` and subtracting a prior snapshot.
+        // One-shot usage is not a cumulative conversation total.
         reportedCostSource: "per-turn",
         tokens: {
           input: telemetry.inputTokens,
@@ -249,9 +144,6 @@ export function recordNonTurnUsage(
           cacheWrite: telemetry.cacheCreateTokens,
         },
       })
-    // Unattributed: nothing to price against, and the harness's own figure is
-    // not a substitute. `per-turn` keeps `record()` from treating this zero as
-    // a cumulative baseline the next run of the same harness would diff against.
     : { costUsd: 0, costSource: "per-turn" as const };
   usageManager.record(
     args.sessionId,
@@ -260,14 +152,11 @@ export function recordNonTurnUsage(
     telemetry.inputTokens,
     telemetry.outputTokens,
     {
-      // It IS a spawn of this harness rather than the pinned agent's turn, which
-      // is what keeps it out of the primary delta chain and out of the context
-      // dial (`usage.record`, `emitSubAgentUsageUpdate`).
-      subAgentId: harnessId,
+      // Keeps this run outside the primary agent's delta chain and context dial
+      // whether or not a harness ran it.
+      backgroundWork: true,
+      ...(harnessId ? { subAgentId: harnessId } : {}),
       costSource: cost.costSource,
-      // No selection means no model id to record either. The split's model list
-      // simply omits it — inventing the harness's default would be the same
-      // guess the legacy group exists to refuse.
       ...(target ? { model: target.selection.modelId } : {}),
       ...(attribution ? { attribution } : {}),
       ...(telemetry.cacheReadTokens !== undefined ? { cacheRead: telemetry.cacheReadTokens } : {}),
@@ -276,33 +165,47 @@ export function recordNonTurnUsage(
   );
 }
 
-/** What ShipIt did instead, per purpose — the fallback the notice reports. */
-const FALLBACK_TEXT: Record<NonTurnPurpose, string> = {
+const FALLBACK_TEXT: Record<NonTurnCardPurpose, string> = {
   "session-naming": "The session kept its placeholder title.",
   "pr-description": "The pull request got a generic description.",
 };
 
 /**
- * Surface a non-turn failure into `sessionId`'s transcript, durably.
- *
- * `emitChatCard` when a runner exists (live render + in-band record + persist);
- * a direct `append` when it does not, which is a real case here — naming can
- * finish after the session's container has gone away, and the notice must
- * survive that rather than depend on it.
+ * The notice's sentence comes from the cause the resolver reported, never from
+ * the caller. A fixed string stating a cause nothing checked sent users whose
+ * credential was working to Settings to repair it — which is the damaging half,
+ * since there is nothing there to fix (docs/299-direct-provider-calls req 3).
+ */
+const UNAVAILABLE_DETAIL: Record<NonTurnUnavailableCause, string> = {
+  credential_gone:
+    "ShipIt no longer has a credential for it. Add one under Model providers,"
+    + " or choose another model for background work in Settings.",
+  credential_unusable:
+    "Its sign-in is no longer usable. Reconnect that account under Model providers,"
+    + " or choose another model for background work in Settings.",
+  no_background_carrier:
+    "Its credential is still configured, but nothing on this install can run that model as"
+    + " background work. Choose another model for background work in Settings.",
+};
+
+/**
+ * Only a card purpose can reach this, so voice cleanup cannot persist a card by
+ * accident (docs/299-direct-provider-calls req 6) — the executors below report
+ * an outcome and leave the decision to emit to the caller that wants one.
  */
 export function emitNonTurnFailure(
   deps: Pick<NonTurnWorkDeps, "getRunnerRegistry" | "chatHistoryManager">,
   args: {
     sessionId: string;
-    purpose: NonTurnPurpose;
-    /** The resolved target, when one resolved and then failed at run time. */
+    purpose: NonTurnCardPurpose;
     target?: NonTurnTarget | undefined;
-    /** The service named by a pin the install can no longer run. */
-    unavailable?: { serviceName: string; serviceId: string; billingMode: "sub" | "key"; modelId: string } | undefined;
+    unavailable?: NonTurnUnavailable | undefined;
     detail?: string | undefined;
   },
 ): NonTurnFailureCard {
   const { sessionId, purpose } = args;
+  const detail = args.detail
+    ?? (args.unavailable ? UNAVAILABLE_DETAIL[args.unavailable.cause] : undefined);
   const named = args.target
     ? {
         serviceId: args.target.selection.serviceId,
@@ -326,7 +229,7 @@ export function emitNonTurnFailure(
     purpose,
     ...(named ?? {}),
     fallback: FALLBACK_TEXT[purpose],
-    ...(args.detail ? { detail: args.detail.slice(0, 300) } : {}),
+    ...(detail ? { detail: detail.slice(0, 300) } : {}),
     createdAt: new Date().toISOString(),
   };
   const persisted: PersistedMessage = { role: "assistant", text: "", nonTurnFailure: card };
@@ -339,32 +242,18 @@ export function emitNonTurnFailure(
       { chatHistoryManager: deps.chatHistoryManager, sessionId },
     );
   } else {
-    // No runner to emit through — the session's container is gone, or it never
-    // had one. The row is still written, which is the whole point of the notice
-    // being transcript content: the user finds it the next time they open the
-    // session rather than never.
+    // Background work can finish after its runner is gone; the notice must survive.
     deps.chatHistoryManager.append(sessionId, persisted);
   }
   console.warn(
     `[non-turn] ${purpose} failed session=${sessionId} `
     + `service=${named?.serviceId ?? "-"}/${named?.billingMode ?? "-"} `
-    + `model=${named?.modelId ?? "-"}: ${args.detail ?? "no detail"}`,
+    + `model=${named?.modelId ?? "-"}: ${detail ?? "no detail"}`,
   );
   return card;
 }
 
-/**
- * Mark a notice dismissed. Patches the persisted row and broadcasts, so a second
- * attached viewer stops showing it too. Returns false when no such card exists.
- *
- * Through `persistCardTransition`, never a bare `updateNonTurnFailureCard`. The
- * card can be recorded on a RUNNING turn — naming finishes inside the session's
- * first turn more often than not — and `recordedCards` is not cleared until the
- * next turn starts, so a database-only patch is rebuilt away when that turn
- * finalizes and the notice reappears on the next reload. That is the recurring
- * clobber docs/164, docs/177 and docs/193 each hit; cross-backend review caught
- * this one before it shipped.
- */
+// Patch recorded cards as well as the DB, or turn finalization can undo dismissal.
 export function dismissNonTurnFailure(
   deps: Pick<NonTurnWorkDeps, "getRunnerRegistry" | "chatHistoryManager">,
   sessionId: string,
@@ -394,60 +283,49 @@ export function dismissNonTurnFailure(
 }
 
 /**
- * Build the production `generateText`: resolve req 9's model, run it through
- * the session's brokered one-shot spawn, record the usage, and surface a durable
- * notice on failure.
+ * Failed resolved runs return blank for the caller's prose fallback, without
+ * changing models.
  *
- * Returns the empty string on every failure path rather than throwing. That is
- * deliberate and it is what makes the two halves symmetric: the caller's job is
- * to normalize a blank generation into its own fallback (`github.ts` does), and
- * a background failure must never block the operation around it.
- *
- * `fallback` is the pre-feature generator — app-di's in-process one in local
- * mode, a test's stub, and the degrade-to-empty default otherwise. It runs in
- * exactly two cases: a call with **no session** (the post-interrupt commit
- * message, which has nothing to attribute to and no notice to raise), and an
- * install with **no eligible model at all**, where req 9's rule has no answer to
- * apply and refusing to run would be a regression rather than a policy. It is
- * never consulted when a model WAS chosen and then failed — that is the
- * dependency req 9 exists to remove, and the notice is what reports it.
+ * Resolution and execution sit ABOVE the session and runner gates below, because
+ * a direct call needs neither (docs/299-direct-provider-calls req 4): it runs with no session open and
+ * with the session's container reclaimed. A session id, where one exists, is
+ * reporting context passed alongside — where to put a failure card, and which
+ * session's usage to charge — not a precondition.
  */
 export function makeNonTurnGenerateText(
-  // `GenerateText` rather than `(prompt, cwd) => …`: the fallback needs `opts`
-  // so it can record its own usage row when it actually spends tokens (see the
-  // `nothing_eligible` branch below and `app-di.ts`).
   deps: NonTurnWorkDeps & { fallback: GenerateText },
 ): GenerateText {
   return async (prompt, cwd, opts) => {
     const sessionId = opts?.sessionId;
     const purpose = opts?.purpose ?? "pr-description";
-    if (!sessionId) return deps.fallback(prompt, cwd, opts);
 
     const resolution = resolveNonTurnModel({
       credentialStore: deps.credentialStore,
       providerAccountManager: deps.providerAccountManager,
     });
-    // **Nothing eligible is "ShipIt has no opinion", not "do not run".** The
-    // requirement's default is about choosing among models the install can run;
-    // with none to choose from there is no choice to make, and refusing to run
-    // would be a regression rather than a policy. `listConfiguredCredentials`
-    // sees the credential store and the environment — not a CLI logged in on
-    // the host outside both — so a dev checkout and a hand-authenticated
-    // deployment both land here, and both named their sessions perfectly well
-    // before this feature. So fall back to exactly what they did before.
-    //
-    // A stale PIN is the opposite case and keeps its hard stop below: there the
-    // user chose a service and it went away, which is precisely what req 9's
-    // notice reports on.
-    //
-    // Req 16 wants that fallback's tokens in the legacy group too, and this
-    // function is the wrong place to write them: the fallback is a black box
-    // returning a string, and only IT knows whether a CLI ran. In container
-    // production none does (there is no in-process agent, so the call returns
-    // "" and costs nothing); in `RUNTIME_MODE=local` one does. So `opts` is
-    // forwarded and the recording lives with the producer, in `app-di.ts` —
-    // the same shape as naming, which shells out directly and records its own
-    // row in `graduate-session.ts`.
+
+    const resolved = resolution.ok ? resolution.target : undefined;
+    if (resolved?.execution === "direct") {
+      const outcome = await runNonTurnDirect(deps, {
+        sessionId: sessionId ?? null,
+        purpose,
+        target: resolved,
+        prompt,
+      });
+      if (outcome.ok) return outcome.text;
+      // Work belonging to no session has no transcript to carry the notice;
+      // runNonTurnDirect has already logged the reason.
+      if (sessionId) {
+        emitNonTurnFailure(deps, { sessionId, purpose, target: resolved, detail: outcome.detail });
+      }
+      return "";
+    }
+
+    // Everything below runs a harness inside the session's own container.
+    if (!sessionId) return deps.fallback(prompt, cwd, opts);
+
+    // Local CLI auth can exist outside the configured registry. Let the fallback try it.
+    // Forward opts so the fallback can record any usage it produces.
     if (!resolution.ok && resolution.reason === "nothing_eligible") {
       console.warn(
         `[non-turn] ${purpose} session=${sessionId}: no eligible model on any installed harness;`
@@ -455,19 +333,14 @@ export function makeNonTurnGenerateText(
       );
       return deps.fallback(prompt, cwd, opts);
     }
-    if (!resolution.ok) {
-      reportUnrunnable(deps, sessionId, purpose, resolution);
+    if (!resolved) {
+      if (!resolution.ok) reportUnrunnable(deps, sessionId, purpose, resolution);
       return "";
     }
 
-    const target = resolution.target;
+    const target = resolved;
     const runner = deps.getRunnerRegistry()?.get(sessionId);
     if (!runner) {
-      // Creating a pull request is a user action on a session, and ShipIt starts
-      // a session's container for user actions — so by the time this runs there
-      // is normally a live runner. When there is not, the honest answer is the
-      // generic description plus a notice, not booting a container as a side
-      // effect of formatting some prose.
       emitNonTurnFailure(deps, {
         sessionId,
         purpose,
@@ -482,73 +355,133 @@ export function makeNonTurnGenerateText(
 }
 
 /**
- * Emit the notice for a **pin** the install can no longer run.
- *
- * Only that case. "Nothing eligible" names no service — nothing failed, ShipIt
- * simply has no opinion — and a notice there would fire on every session of a
- * half-configured install while naming nothing the user can act on. The callers
- * fall back to their pre-feature path instead.
+ * Failure is returned, never rendered: voice cleanup shares this path and must
+ * write nothing to the chat transcript (docs/299-direct-provider-calls req 6).
+ * The caller that wants a card emits one; the union makes forgetting visible to
+ * the compiler.
  */
+export type NonTurnOutcome =
+  | { ok: true; text: string }
+  | { ok: false; detail: string };
+
+/**
+ * Background work as a direct provider call, and the usage it spent (docs/299
+ * reqs 2 and 7). The call and the recording are one entry point, because a
+ * caller that had to remember the second half eventually would not.
+ *
+ * A null session id is install-level spend. No harness id is written, and the
+ * service and billing mode come from the *selection*, so a direct call on a
+ * subscription stays subscription usage with an at-API-rates comparison rather
+ * than becoming metered spend.
+ */
+export async function runNonTurnDirect(
+  deps: Pick<NonTurnWorkDeps, "usageManager" | "fetchImpl">,
+  args: {
+    sessionId: string | null;
+    purpose: NonTurnPurpose;
+    target: NonTurnDirectTarget;
+    prompt: string;
+    signal?: AbortSignal | undefined;
+  },
+): Promise<NonTurnOutcome> {
+  const { target, purpose, sessionId } = args;
+  const startedAt = Date.now();
+  const record = (usage: DirectCallUsage): void => {
+    recordNonTurnUsage(deps, {
+      sessionId,
+      target,
+      purpose,
+      telemetry: {
+        durationMs: Date.now() - startedAt,
+        ...(usage.inputTokens !== undefined ? { inputTokens: usage.inputTokens } : {}),
+        ...(usage.outputTokens !== undefined ? { outputTokens: usage.outputTokens } : {}),
+        ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
+        ...(usage.cacheCreateTokens !== undefined ? { cacheCreateTokens: usage.cacheCreateTokens } : {}),
+      },
+    });
+  };
+  const recordSpendUnknown = (): void => {
+    recordNonTurnUsage(deps, {
+      sessionId,
+      target,
+      purpose,
+      spendUnknown: true,
+      telemetry: { durationMs: Date.now() - startedAt },
+    });
+  };
+  const fail = (detail: string): NonTurnOutcome => {
+    console.warn(
+      `[non-turn] ${purpose} direct call failed session=${sessionId ?? "-"} `
+      + `service=${target.selection.serviceId}/${target.selection.billingMode}: ${detail}`,
+    );
+    return { ok: false, detail };
+  };
+
+  const call = directCallForStyle(target.call.style, deps.fetchImpl ?? fetch);
+  if (!call) return fail(`No direct client speaks ${target.call.style}.`);
+
+  try {
+    const result = await call({
+      baseUrl: target.call.baseUrl,
+      apiModelId: target.call.apiModelId,
+      apiKey: target.apiKey,
+      ...(target.call.headers ? { headers: target.call.headers } : {}),
+      prompt: args.prompt,
+      signal: args.signal ?? AbortSignal.timeout(NON_TURN_DIRECT_TIMEOUT_MS),
+    });
+    record(result);
+    const text = result.text.trim();
+    // A provider can answer 200 with no content; every caller wants text.
+    return text ? { ok: true, text } : fail("The call returned no text.");
+  } catch (err) {
+    // A run that stopped on its output cap, or wrote only reasoning, fails and
+    // is billed. Record what it spent before reporting it (docs/299-direct-provider-calls req 7).
+    if (err instanceof DirectCallError && err.usage) record(err.usage);
+    // A call cut off before its body could be read may have been billed, and
+    // its counts were only ever going to arrive in that body. Record the run
+    // without them, rather than let cleanup's own deadline erase real spend
+    // from every total.
+    else if (err instanceof DirectCallError && err.spendUnknown) recordSpendUnknown();
+    return fail(getErrorMessage(err));
+  }
+}
+
 function reportUnrunnable(
   deps: Pick<NonTurnWorkDeps, "getRunnerRegistry" | "chatHistoryManager">,
   sessionId: string,
-  purpose: NonTurnPurpose,
-  resolution: Extract<NonTurnResolution, { ok: false; reason: "pin_unavailable" }>,
+  purpose: NonTurnCardPurpose,
+  resolution: NonTurnPinUnavailable,
 ): void {
-  emitNonTurnFailure(deps, {
-    sessionId,
-    purpose,
-    unavailable: {
-      serviceName: resolution.serviceName,
-      serviceId: resolution.selection.serviceId,
-      billingMode: resolution.selection.billingMode,
-      modelId: resolution.selection.modelId,
-    },
-    detail: "The chosen model is no longer available — its credential or harness is gone.",
-  });
+  emitNonTurnFailure(deps, { sessionId, purpose, unavailable: unavailableFrom(resolution) });
 }
 
-/** Run the spawn, record its usage, and turn a failed run into a notice. */
 async function runNonTurnSpawn(
   deps: NonTurnWorkDeps,
   args: {
     sessionId: string;
-    purpose: NonTurnPurpose;
-    target: NonTurnTarget;
+    // A session's own container runs only the card purposes; voice cleanup has
+    // its own runner and never reaches here.
+    purpose: NonTurnCardPurpose;
+    target: NonTurnHarnessTarget;
     prompt: string;
     runner: SessionRunnerInterface;
   },
 ): Promise<string> {
   const { sessionId, purpose, target, runner } = args;
   const spawnId = randomUUID();
-  // The credential window, exactly as `runSubAgent` opens it. Non-turn work is
-  // chosen independently of the session, so its harness and its account are
-  // routinely NOT the session's — which is the whole reason this is not
-  // optional: without it an account-backed background model spawns into a
-  // container that holds someone else's credentials, or none.
   const credentialsDir = deps.credentialsDir;
-  const provisioned = runner instanceof ContainerSessionRunner && !!credentialsDir;
+  const provisioned = (runner instanceof ContainerSessionRunner || target.harnessId === "opencode") && !!credentialsDir;
   const accountId = target.route?.kind === "account" ? target.route.id : undefined;
-  // Captured once, like `runSubAgent`'s flag: a spawn on the session's OWN
-  // harness must not write the session subtree — the primary CLI is routinely
-  // LIVE while non-turn work runs (session naming races the first turn), and a
-  // provision there swaps the credential file it re-reads mid-turn (the
-  // 2026-08-21 401 loop). Such a spawn gets an isolated per-spawn home instead;
-  // an unpinned or unknown session keeps the cross-harness path, where there is
-  // no live same-subtree reader to collide with.
-  const sameHarness = deps.sessionManager?.get(sessionId)?.agentId === target.harnessId;
+  // Isolate same-harness credentials from the live primary CLI, which can reread them mid-turn.
+  const sameHarness = deps.sessionManager?.get(sessionId)?.agentId === target.harnessId || target.harnessId === "opencode";
   try {
-    // Inside the try, so the `finally` always closes the borrow it opens
-    // (planning#445): a provisioning failure that threw past the cleanup used to
-    // leave the subtree lent out for the process's life, and a subtree lent out
-    // refuses the session's own token write-backs — the state this fix exists
-    // to end. `runSubAgent` opens its window in the same place, for the same
-    // reason.
+    // Provision inside try so partial failures still release the credential borrow.
+    if (target.harnessId === "opencode" && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new Error("ChatGPT account renewal failed.");
     if (provisioned && credentialsDir) {
       if (sameHarness) {
         provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);
       } else {
-        provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, accountId);
+        provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, spawnId, accountId);
       }
     }
     const result = await runner.spawnSubAgent({
@@ -559,7 +492,7 @@ async function runNonTurnSpawn(
       model: target.selection.modelId,
       ...(target.serviceRouting ? { serviceRouting: target.serviceRouting } : {}),
       ...(sameHarness && provisioned
-        ? { homeDir: subAgentSpawnHomeContainerDir(spawnId) }
+        ? { homeDir: runner instanceof ContainerSessionRunner ? subAgentSpawnHomeContainerDir(spawnId) : subAgentSpawnHomeDir(credentialsDir, sessionId, spawnId) }
         : {}),
       timeoutMs: NON_TURN_SPAWN_TIMEOUT_MS,
       maxOutputChars: NON_TURN_MAX_OUTPUT_CHARS,
@@ -571,8 +504,7 @@ async function runNonTurnSpawn(
       purpose,
       telemetry: {
         durationMs: result.durationMs,
-        // Not `result.costUsd`: that starts at zero and a harness reporting no
-        // dollar figure (Codex) is not a harness reporting free.
+        // The initial zero is not evidence that a cost was reported.
         ...(result.costReported ? { costUsd: result.costUsd } : {}),
         ...(result.inputTokens !== undefined ? { inputTokens: result.inputTokens } : {}),
         ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
@@ -594,13 +526,7 @@ async function runNonTurnSpawn(
     emitNonTurnFailure(deps, { sessionId, purpose, target, detail: getErrorMessage(err) });
     return "";
   } finally {
-    // Token-sync-back THEN wipe. A same-harness run closes its ISOLATED home
-    // (the sync-back to the account/flat root is inside the release) and never
-    // touched the session subtree, so there is nothing to restore. A
-    // cross-harness run closes the session-subtree borrow: `runSubAgent`'s
-    // `finally` in full, for the same reasons — a background generation must
-    // not leave a credential behind, and must not leave the session's next
-    // turn pointed at someone else's.
+    // Sync renewed tokens before removing borrowed credentials.
     if (provisioned && credentialsDir) {
       if (sameHarness) {
         releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
@@ -609,17 +535,10 @@ async function runNonTurnSpawn(
           if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, target.harnessId, accountId);
           else syncAgentTokenBack(credentialsDir, sessionId, target.harnessId);
         } catch {
-          // Best-effort: a failed sync-back at worst makes the next provision
-          // start from a slightly older token, which heals on its own refresh.
+          // Release the borrow even when token sync fails.
         }
-        // docs/260 — which account to put back is the credential subtree's own
-        // recorded identity (the marker), not a session row: the row records no
-        // route any more. planning#445 — and the borrow itself captured it, at the
-        // instant it overwrote the marker: reading it here would find the borrow's
-        // own account, and reading it *before* the borrow (what this used to do)
-        // could race a concurrent borrow's cleared window and restore nothing,
-        // stranding the session with no marker and every rotation refused.
-        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, target.harnessId);
+        // The borrow captured the prior account; reading the current marker would find the borrower.
+        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, target.harnessId, spawnId);
         const session = deps.sessionManager?.get(sessionId);
         if (session?.agentId === target.harnessId && restoreAccountId) {
           provisionProviderAccountCredentials(

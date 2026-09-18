@@ -1,24 +1,3 @@
-/**
- * ServicePoller — owns the `docker compose ps` poll loop, the per-container
- * `docker inspect` for IP resolution, and the state-transition diff that
- * fires the recovery/retry/OOM hooks on the parent ServiceManager.
- *
- * Extracted from `service-manager.ts` so polling can be tested in isolation
- * and so the manager's lifecycle methods (`start`, `stop`, `reconcile`)
- * don't need to know how often we poll or how IPs are resolved.
- *
- * The poller is intentionally callback-driven — it never touches the
- * services Map directly. The manager passes accessor and mutator hooks via
- * the constructor; the poller calls them on each state transition. This
- * keeps the manager's services map the single source of truth and avoids
- * the dual-write problem.
- */
-
-/**
- * Runs a docker compose command and returns stdout. Same shape as
- * `ComposeQuery` in `service-manager.ts` — duplicated here to avoid the
- * type-only back-import that would otherwise create a cycle.
- */
 export type ComposeQueryFn = (args: string[], cwd: string) => Promise<string>;
 
 export interface PollerService {
@@ -27,196 +6,46 @@ export interface PollerService {
   status: "stopped" | "starting" | "running" | "error";
 }
 
-/**
- * How long a known service may be absent from `docker compose ps -a` before
- * the poller reconciles it to `stopped` (planning#316). ~6 polls at the default 5s
- * interval.
- *
- * The window exists because "no row" is genuinely ambiguous for a short
- * moment: `compose up` recreating a container removes the old one before
- * creating the new one, so a poll landing in that gap sees nothing. It is NOT
- * the mechanism that protects a slow first start — a `compose up` that is
- * still building has no row for minutes, far longer than any sane grace, and
- * is excluded by the `isStartInFlight` check instead.
- */
+// Covers recreation gaps; isStartInFlight protects longer builds.
 export const MISSING_CONTAINER_GRACE_MS = 30_000;
-
-/**
- * How long a single `docker compose ps` / `docker inspect` may run before the
- * poller gives up on it (#2044).
- *
- * These are the *only* calls that ever move a service off `starting` or resolve
- * its container IP, and they were unbounded: `defaultComposeQuery` spawns the
- * docker CLI and resolves on `close`, so a docker CLI that hangs — a wedged
- * daemon, an unresponsive socket proxy — never resolves. `pollOnce` then never
- * returns, while `setInterval` keeps stacking further polls behind the same
- * wall, and the service registry is frozen for the rest of the session with
- * nothing recorded anywhere.
- *
- * A timeout converts that into the failure the poller already handles: `ps`
- * bails out for one pass and retries on the next tick, and a hung `inspect` for
- * one container no longer costs the other containers their IPs. Well above any
- * healthy call (these are local socket round-trips answering in milliseconds)
- * and below the poll interval's usefulness horizon.
- */
 export const COMPOSE_QUERY_TIMEOUT_MS = 30_000;
-
-/**
- * How long `docker compose ps` may keep failing before the poller stops
- * vouching for the services it can no longer see (docs/121 gap D, requirement 3).
- *
- * A failing `ps` says nothing about container state, so {@link ServicePoller.pollOnce}
- * bails out rather than reading "no rows" as "every container vanished" — but
- * bailing out froze the last reading in place indefinitely. A service that
- * crashed during a daemon outage kept reporting `running`, and because
- * `ServiceManager.getServices` publishes an address for a `running` service, the
- * preview proxy kept routing at a container nothing had evidence for.
- *
- * ~6 consecutive failures at the default 5s interval: long enough that a daemon
- * restart or a socket EAGAIN blip costs nobody a status flap, short enough that
- * the stale claim cannot outlive the user's patience.
- */
 export const DOCKER_UNREACHABLE_GRACE_MS = 30_000;
 
-/**
- * Reason recorded on a service whose status could not be confirmed for
- * {@link DOCKER_UNREACHABLE_GRACE_MS} (requirement 3). Written to
- * `ManagedService.error`, so it reaches the services drawer, `shipit service
- * list`, and `GET /api/sessions/:id/services`.
- *
- * `error` rather than a new `unknown` member of the status union, deliberately.
- * The requirement is that ShipIt stop reporting `running` for a container it has
- * no evidence for and stop routing the preview at it — and `error` already
- * delivers both: `updateServiceStatus` drops the container IP on the way in, so
- * `getServices` withholds the URL and `getContainerIpForPort` finds nothing. A
- * new status member would have to be taught to the client, the preview gating
- * and the agent-facing registry to buy the same behaviour.
- *
- * Like {@link STARTING_TIMEOUT_MESSAGE} in the manager, the wording says plainly
- * that the container may still be running. We are reporting a failure to
- * observe, not an observed failure, and telling the user their service is dead
- * when Docker is what broke would send them debugging the wrong thing.
- */
 export const DOCKER_UNREACHABLE_MESSAGE =
   `Docker has not answered \`docker compose ps\` for over ${Math.round(DOCKER_UNREACHABLE_GRACE_MS / 1000)}s, ` +
   "so this service's status can no longer be confirmed. The container may still be running. " +
   "The status recovers on its own as soon as Docker responds again.";
 
-/**
- * Container states that exist but tell us nothing usable about whether the
- * service is up, and are therefore fed into the missing-container
- * reconciliation pass rather than left to the forward pass (planning#316).
- *
- *  - `created` — the container exists but has never been started. Compose
- *    leaves one here when `up` created it and then failed to start it. It is
- *    not coming up on its own, and the forward pass has no branch for it, so
- *    before this the service stayed pinned at `starting` forever: exactly the
- *    planning#316 failure (no preview URL, no `containerIp`), reached through a row
- *    that exists rather than a row that is missing.
- *  - `removing` — on its way out. The next poll will find no row at all.
- *
- * Routing these through reconciliation rather than giving them a forward-pass
- * branch is the point: a container is also *briefly* `created` in the middle
- * of a healthy `compose up`, so a naive `created` → `stopped` mapping would
- * flap a starting service. Reconciliation already answers that exact question
- * correctly — it exempts an in-flight `compose up`, holds gated services, and
- * requires a continuous grace window before it acts.
- *
- * Deliberately an allow-list of states we understand, NOT "every state the
- * forward pass lacks a branch for". An unrecognized state — a future docker
- * state, a changed `ps` JSON shape — keeps today's leave-it-alone behavior,
- * because reinterpreting it as "no container" would let one parsing surprise
- * walk the entire stack to `stopped` while it is happily running. Same reason
- * the failing-`ps` path above bails out instead of reconciling.
- *
- * `paused` is deliberately absent — see the note in `reconcileMissingServices`.
- */
+// Preserve unknown and paused states; containment owns the paused transition.
 const INCONCLUSIVE_CONTAINER_STATES = new Set(["created", "removing"]);
 
 export interface ServicePollerOptions {
   sessionId: string;
   workspaceDir: string;
   composeQuery: ComposeQueryFn;
-  /** How often the periodic poll fires, in ms. 0 disables the timer. */
+  /** Zero disables periodic polling. */
   pollIntervalMs: number;
-  /** Build the common compose CLI args (manager owns the file/project flags). */
   composeArgs: (...extra: string[]) => string[];
-  /**
-   * Whether a service is currently held by the install gate (docs/137).
-   * Gated services are skipped entirely by the poll — their `starting`/
-   * `error` status is owned by the gate, so a transient `ps` reading (e.g.
-   * a container exiting during mid-session re-install teardown) must not
-   * clobber it. Optional — defaults to "never gated".
-   */
   isGated?: (name: string) => boolean;
-  /** Look up the current state of a service in the manager's map. */
   getService: (name: string) => PollerService | undefined;
-  /**
-   * Every service the manager currently knows about. Drives the
-   * missing-container reconciliation pass (planning#316) — the poll's forward pass
-   * can only react to services `ps` mentions, so the reverse question ("which
-   * services did `ps` NOT mention?") needs the full registry.
-   */
   listServices: () => PollerService[];
-  /**
-   * Whether a `docker compose up` is in flight for this service right now.
-   * Such a service legitimately has no container yet — possibly for minutes
-   * while an image builds — so it is exempt from missing-container
-   * reconciliation. Optional — defaults to "never in flight".
-   */
   isStartInFlight?: (name: string) => boolean;
-  /** Persist a resolved container IP back to the manager's service entry. */
   setContainerIp: (serviceName: string, ip: string) => void;
-  /** Update a service's status (delegates to the manager). */
   updateServiceStatus: (
     name: string,
     status: "stopped" | "starting" | "running" | "error",
     error?: string,
   ) => void;
-  // --- State-transition hooks (called from poll diff) ---
-  /**
-   * Service is `running`. Always invoked on a `running` poll (before any
-   * status update is emitted) so the manager can clear install-retry state
-   * and arm the OOM-stable-uptime timer.
-   */
+  /** Called on every running poll, before the status update. */
   onRunning: (name: string) => void;
-  /**
-   * Service has left `running` (exit code 0 or non-zero). Always invoked
-   * once per poll — the manager uses it to cancel the OOM-stable timer.
-   */
   onLeftRunning: (name: string) => void;
-  /**
-   * Service exited cleanly (exit 0). Invoked AFTER `onLeftRunning` on the
-   * same poll. The manager uses it to clear retry / OOM bookkeeping.
-   */
   onExitedCleanly: (name: string) => void;
-  /**
-   * Service exited non-zero. The manager decides the branch (install-window
-   * retry / OOM retry / terminal error) — the poller just dispatches.
-   *
-   * `oomKilled` is the container's authoritative `State.OOMKilled`, harvested
-   * from the `docker inspect` this poll already runs for IP resolution:
-   * `true`/`false` when the inspect answered, `undefined` when it didn't (or
-   * the daemon omitted the field). Exit 137 alone does NOT mean OOM — our own
-   * re-install teardown SIGKILLs a service that ignores SIGTERM, and that
-   * exits 137 with `OOMKilled: false`.
-   */
+  /** oomKilled comes from inspect; exit 137 alone does not prove OOM. */
   onExitedWithError: (name: string, exitCode: number, oomKilled?: boolean) => void;
-  /**
-   * Optional hook invoked at the end of each successful poll. Used to run the
-   * agent network-attachment self-heal on the poll heartbeat (docs/128 —
-   * stranded ops agent after a proxy/network recreate). Best-effort — its
-   * errors are swallowed so a heal failure never disrupts polling. Omitted in
-   * tests / non-container setups.
-   */
   afterPoll?: () => void | Promise<void>;
 }
 
-/**
- * Reject `promise` after {@link COMPOSE_QUERY_TIMEOUT_MS}. The underlying docker
- * spawn is not killed — we simply stop waiting on it, which is the point: the
- * poll loop must stay live even when one query does not come back.
- */
+// Bounds the wait without killing the underlying Docker process.
 function withQueryTimeout(promise: Promise<string>, message: string): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -247,26 +76,12 @@ export class ServicePoller {
   private readonly afterPoll?: () => void | Promise<void>;
 
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  /**
-   * `serviceName -> Date.now()` of the first poll that found the service
-   * absent from `ps` output while it was eligible for reconciliation. Cleared
-   * the moment the service reappears (or becomes ineligible), so the grace
-   * window measures a *continuous* absence rather than a cumulative one.
-   */
   private readonly missingSince = new Map<string, number>();
-  /**
-   * `Date.now()` of the first `docker compose ps` failure in the current run of
-   * failures, or `null` while `ps` is answering. Measures a CONTINUOUS outage —
-   * a single successful poll clears it — so an intermittently flaky daemon
-   * doesn't accumulate its way to a stale-status sweep.
-   */
   private psFailingSince: number | null = null;
 
   constructor(opts: ServicePollerOptions) {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
-    // Wrapped once here rather than at each call site so no future query can
-    // be added to the poll path unbounded. See COMPOSE_QUERY_TIMEOUT_MS.
     this.composeQuery = (args, cwd) => withQueryTimeout(
       opts.composeQuery(args, cwd),
       `docker ${args[0]} did not answer within ${COMPOSE_QUERY_TIMEOUT_MS}ms`,
@@ -286,41 +101,21 @@ export class ServicePoller {
     this.afterPoll = opts.afterPoll;
   }
 
-  /**
-   * Query `docker compose ps --format json` and update service statuses
-   * based on actual container state. Public so the manager can trigger
-   * an on-demand poll after `compose up`, `startService`, retries, etc.
-   */
   async pollOnce(): Promise<void> {
     const args = this.composeArgs("ps", "--format", "json", "-a");
     let stdout: string;
     try {
-      // A failing `ps` says nothing about container state, so we deliberately
-      // bail out entirely rather than letting the reconciliation pass below
-      // interpret "no rows" as "every container vanished" — a broken docker
-      // CLI would otherwise mark the whole stack `stopped`. Statuses stay
-      // frozen until `ps` answers again.
       stdout = await this.composeQuery(args, this.workspaceDir);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
-      // ...but freezing forever is its own lie (docs/121 gap D). Once the
-      // outage outlasts the grace window, withdraw the claims we can no longer
-      // support instead of letting them stand indefinitely.
+      // Query failure is not an empty container list; expire only sustained stale claims.
       this.expireUnconfirmedStatuses();
       return;
     }
-    // `ps` answered — whatever it says, the outage is over.
     this.psFailingSince = null;
 
-    // Parse container info and collect names for IP resolution
     const containerNames = new Map<string, string>();
     const statusUpdates: { name: string; state: string; exitCode: number }[] = [];
-    /**
-     * Services `ps` returned a *conclusive* row for — the input to the
-     * reconcile pass. A row in an {@link INCONCLUSIVE_CONTAINER_STATES} state
-     * counts as no container at all, so those services fall through to
-     * reconciliation alongside the ones with no row.
-     */
     const seen = new Set<string>();
 
     for (const line of stdout.split("\n")) {
@@ -334,16 +129,11 @@ export class ServicePoller {
       }
       const svc = entry.Service ? this.getService(entry.Service) : undefined;
       if (!svc) continue;
-      // Recorded before the gate check: a gated service with a container is
-      // still "present", and reconciliation must not reason about it at all.
       if (!INCONCLUSIVE_CONTAINER_STATES.has(entry.State ?? "")) seen.add(svc.name);
 
-      // Skip gated services — the install gate owns their status. A `ps`
-      // reading here (e.g. a container exiting during re-install teardown)
-      // must not overwrite the held `starting`/`error`. See docs/137.
+      // The install gate owns held service statuses.
       if (this.isGated(svc.name)) continue;
 
-      // Use container ID for inspect (more reliable than name)
       const containerRef = entry.ID ?? entry.Name;
       if (containerRef) containerNames.set(containerRef, svc.name);
       statusUpdates.push({
@@ -353,39 +143,25 @@ export class ServicePoller {
       });
     }
 
-    // Resolve container IPs *before* emitting status events so the preview
-    // proxy can route requests as soon as the client learns a service is running.
-    // The same inspect answers "was this container OOM-killed?", which the
-    // non-zero-exit branch below needs to tell a real OOM from a plain SIGKILL.
+    // Resolve IPs before announcing running so previews can route immediately.
     let oomFlags = new Map<string, boolean>();
     if (containerNames.size > 0) {
       oomFlags = await this.resolveContainerIps(containerNames);
     }
 
-    // Now emit status updates
     for (const { name, state, exitCode } of statusUpdates) {
       const svc = this.getService(name);
       if (!svc) continue;
       const prev = svc.status;
       if (state === "running") {
-        // Service recovered — clear any pending install-window retry state,
-        // and (if applicable) arm a stable-uptime timer that clears the OOM
-        // counter once the service has been healthy long enough.
         this.onRunning(name);
         if (prev !== "running") this.updateServiceStatus(name, "running");
       } else if (state === "exited" || state === "dead") {
-        // Whatever happens below, the service is no longer running — cancel
-        // any pending stable-uptime timer so a fresh `running` poll has to
-        // re-arm it.
         this.onLeftRunning(name);
         if (exitCode === 0) {
           this.onExitedCleanly(name);
           if (prev !== "stopped") this.updateServiceStatus(name, "stopped");
         } else {
-          // Branch between install-window retry / OOM auto-retry / terminal
-          // error is the manager's call — see `handleNonZeroExit` there. Pass
-          // the inspected `State.OOMKilled` so exit 137 can be classified
-          // rather than assumed.
           this.onExitedWithError(name, exitCode, oomFlags.get(name));
         }
       } else if (state === "restarting") {
@@ -393,14 +169,8 @@ export class ServicePoller {
       }
     }
 
-    // Reverse pass: services the registry knows about that `ps` never
-    // mentioned (planning#316).
     this.reconcileMissingServices(seen);
 
-    // Self-heal the agent's compose-network attachment on the poll heartbeat
-    // (docs/128). Membership-gated inside the hook, so the steady state is a
-    // single cheap `network inspect`. Best-effort — never let a heal failure
-    // disrupt the poll loop.
     if (this.afterPoll) {
       try {
         await this.afterPoll();
@@ -410,38 +180,6 @@ export class ServicePoller {
     }
   }
 
-  /**
-   * `docker compose ps` has been failing for {@link DOCKER_UNREACHABLE_GRACE_MS}
-   * — stop reporting `running` for containers nothing can vouch for any more
-   * (docs/121 gap D, requirement 3).
-   *
-   * Only `running` services are touched, and that is the whole point of the
-   * pass: `running` is the one status that makes a positive claim about a live
-   * container, and it is the status `getServices` publishes an address for. A
-   * `stopped`/`error` service claims nothing. A `starting` one is already
-   * bounded by the manager's own `starting` watchdog, which runs off its own
-   * timer and therefore keeps working while the poll loop is blind — adding a
-   * second mechanism for it here would be redundant.
-   *
-   * Gated services are excluded, exactly as in every other pass: their status
-   * belongs to the install gate (docs/137).
-   *
-   * An in-flight `compose up` is NOT an exclusion here, unlike in the
-   * missing-container pass. There, the `up` genuinely answers the question —
-   * "no container yet" is what a build looks like. Here the question is whether
-   * a container we last saw running is still there, and an `up` in flight is
-   * evidence of the opposite if anything: it may have removed that container to
-   * recreate it. `refreshSecrets` is the live case, since it `up`s services that
-   * stay `running` throughout, and exempting them meant a hung `up` during a
-   * docker outage could hold `running` — with no address behind it and no
-   * `starting` watchdog to catch it, because the status is not `starting` —
-   * indefinitely.
-   *
-   * Self-limiting rather than repeating: the sweep writes `error`, so the next
-   * failed poll finds nothing eligible. `psFailingSince` is deliberately left
-   * set — clearing it belongs to the first successful `ps`, which also restores
-   * the real statuses through the forward pass.
-   */
   private expireUnconfirmedStatuses(): void {
     const now = Date.now();
     if (this.psFailingSince === null) {
@@ -450,6 +188,7 @@ export class ServicePoller {
     }
     if (now - this.psFailingSince < DOCKER_UNREACHABLE_GRACE_MS) return;
 
+    // An in-flight up cannot confirm that a previously running container still exists.
     for (const svc of this.listServices()) {
       if (svc.status !== "running") continue;
       if (this.isGated(svc.name)) continue;
@@ -457,63 +196,11 @@ export class ServicePoller {
         `[compose:${this.sessionId}] service "${svc.name}" was last seen running but docker has not ` +
         `answered for ${Math.round((now - this.psFailingSince) / 1000)}s — status no longer confirmed`,
       );
-      // The service is no longer known to be up, so the stable-uptime timers
-      // must not keep accruing against an observation we can't make — same
-      // argument as the missing-container pass.
       this.onLeftRunning(svc.name);
       this.updateServiceStatus(svc.name, "error", DOCKER_UNREACHABLE_MESSAGE);
     }
   }
 
-  /**
-   * Reconcile services the registry knows about but `docker compose ps -a`
-   * did not return a row for (planning#316).
-   *
-   * The forward pass above can only ever react to rows `ps` produced, so a
-   * service whose container was *removed* — as opposed to merely exited, which
-   * `-a` still reports — produced no update at all and kept whatever status it
-   * last had. In practice that is the `"starting"` set by `startService`
-   * immediately before `compose up`, and it stuck forever: nothing else in the
-   * manager times a `starting` service out. That is not cosmetic — `getServices`
-   * only publishes a preview URL for a `running` service, so a pinned service
-   * silently costs the preview and the agent's `containerIp`. The usual trigger
-   * is a compose reconcile (editing `docker-compose.yml` while the stack is up),
-   * which tears the old container down.
-   *
-   * "No row" resolves to `"stopped"`, not `"error"`: no container exists, and
-   * we have no evidence of a failure — `error` would also feed the service into
-   * `flushPostInstallRetries`, which is for crashes, not disappearances.
-   *
-   * Three exclusions keep a healthy service from being flapped to `stopped`:
-   *
-   *  - **Gated services** (docs/137) are skipped exactly as the forward pass
-   *    skips them — the install gate owns their held `starting`/`error`, and a
-   *    mid-re-install teardown legitimately removes their containers.
-   *  - **A `compose up` in flight** means the service is entitled to have no
-   *    container yet, for however long the image takes to build. This is the
-   *    real answer to "is it legitimately mid-start?"; a wall-clock grace alone
-   *    could never distinguish a five-minute build from a vanished container.
-   *  - **Already `stopped`/`error`** services have nothing to reconcile, and
-   *    re-emitting their status every poll would be pure noise.
-   *
-   * The remaining grace window covers only the genuinely brief ambiguity: a
-   * container being *recreated* is removed before its replacement is created,
-   * so a poll landing in that gap sees no row for a service that is fine.
-   *
-   * A `paused` container is deliberately NOT routed here, and gets no forward
-   * branch either — it is left at whatever status it already had. ShipIt's
-   * Compose egress installer pauses services during its short fail-closed
-   * setup window and owns the transition back to running or removal. Neither
-   * answer the poller can express is true: `stopped` is
-   * wrong because the process is intact and `docker unpause` resumes it
-   * mid-instruction, while `running` is wrong because connections to it hang.
-   * The honest status is a `paused` member of the `ServiceStatus` union, which
-   * would ripple through the preview gating, the client and the agent's
-   * service registry for this short internal state. Leaving it alone is
-   * the cheap correct-enough answer; what matters is that it counts as a
-   * conclusive row, so reconciliation cannot walk a paused service to
-   * `stopped` 30 seconds later.
-   */
   private reconcileMissingServices(seen: Set<string>): void {
     const now = Date.now();
     const known = new Set<string>();
@@ -527,8 +214,7 @@ export class ServicePoller {
         svc.status !== "stopped" &&
         svc.status !== "error";
       if (!eligible) {
-        // Any reason to skip also resets the clock — the grace window must
-        // measure one continuous absence, not a sum of unrelated ones.
+        // Measure continuous absence, not the sum of separate gaps.
         this.missingSince.delete(svc.name);
         continue;
       }
@@ -545,24 +231,15 @@ export class ServicePoller {
         `[compose:${this.sessionId}] service "${svc.name}" has had no container for ` +
         `${Math.round((now - since) / 1000)}s while ${svc.status} — marking stopped`,
       );
-      // The service is not running, whatever it was doing before. Cancel the
-      // stable-uptime timers the same way an observed exit would, so a vanished
-      // container can't quietly clear the OOM budget it was accruing.
       this.onLeftRunning(svc.name);
       this.updateServiceStatus(svc.name, "stopped");
     }
 
-    // Drop bookkeeping for services that left the registry (e.g. renamed or
-    // deleted by a compose reconcile) so the map can't grow unboundedly.
     for (const name of this.missingSince.keys()) {
       if (!known.has(name)) this.missingSince.delete(name);
     }
   }
 
-  /**
-   * Start the periodic poll timer. Idempotent — calling twice replaces
-   * the existing timer with a fresh one.
-   */
   start(): void {
     this.stop();
     if (this.pollIntervalMs <= 0) return;
@@ -573,30 +250,16 @@ export class ServicePoller {
     }, this.pollIntervalMs);
   }
 
-  /** Stop the periodic poll timer. */
   stop(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
-    // `reconcile()` stops the poller, clears the services map and starts over;
-    // an absence observed against the *old* registry must not count toward the
-    // new one's grace window. Same for the docker-outage clock.
+    // Reconcile replaces the registry; its old outage clocks must not carry over.
     this.missingSince.clear();
     this.psFailingSince = null;
   }
 
-  /**
-   * Resolve container IPs via `docker inspect` on each container.
-   * Prefers the session network IP, falls back to any available IP.
-   *
-   * Also harvests each container's `State.OOMKilled` from the same inspect —
-   * the authoritative answer to "was this an OOM kill?", which the exit-137
-   * classification needs and which `docker compose ps` does not report. Free
-   * here: this inspect already runs on every poll. Returns a map keyed by
-   * SERVICE name; a service is absent when its inspect failed or the daemon
-   * omitted `State`, which the caller treats as "unknown", not "not an OOM".
-   */
   private async resolveContainerIps(
     containerNames: Map<string, string>,
   ): Promise<Map<string, boolean>> {
@@ -610,34 +273,28 @@ export class ServicePoller {
           this.workspaceDir,
         );
         const parsed = JSON.parse(stdout) as { State?: { OOMKilled?: boolean }; NetworkSettings?: { IPAddress?: string; Networks?: Record<string, { IPAddress?: string }> } }[];
-        // Record before the network bail-outs below — an exited container often
-        // has no networks left, and that is exactly the case we need the flag for.
+        // Exited containers may have no networks, but their OOM flag still matters.
         const oomKilled = parsed[0]?.State?.OOMKilled;
         if (typeof oomKilled === "boolean") oomFlags.set(serviceName, oomKilled);
         const netSettings = parsed[0]?.NetworkSettings;
         let nets = netSettings?.Networks;
 
-        // Docker Compose v5 on some platforms (e.g. WSL2) sets NetworkMode
-        // to the custom network but doesn't actually attach the container.
-        // Fix: explicitly connect the container if it has no networks.
         if (!nets || Object.keys(nets).length === 0) {
           try {
             await this.composeQuery(
               ["network", "connect", networkName, containerName],
               this.workspaceDir,
             );
-            // Re-inspect to get the IP
             const stdout2 = await this.composeQuery(["inspect", containerName], this.workspaceDir);
             const parsed2 = JSON.parse(stdout2) as typeof parsed;
             nets = parsed2[0]?.NetworkSettings?.Networks;
           } catch {
-            // Non-fatal
+            // Network repair is best effort.
           }
         }
 
         if (!nets) continue;
 
-        // Prefer the session network, fall back to any network with an IP
         let ip = nets[networkName]?.IPAddress;
         if (!ip) {
           for (const net of Object.values(nets)) {

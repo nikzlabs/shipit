@@ -1,13 +1,3 @@
-/**
- * Unit tests for `markMergedAndPruneExcess` — focused on the branch-cleanup
- * side effect added so feature branches don't linger on GitHub after the PR
- * merges.
- *
- * Integration coverage of the poller → callback wiring lives in
- * `integration_tests/pr-merge.test.ts`. This file exercises the service
- * function directly with stub dependencies.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import crypto from "node:crypto";
@@ -32,10 +22,6 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync("/tmp/shipit-session-merge-test-");
   dbManager = createTestDatabaseManager();
   sessionManager = new SessionManager(dbManager);
-  // Runner registry stub — markMergedAndPruneExcess only calls .get / .dispose
-  // during the excess-prune path, and only when we actually have excess
-  // sessions to archive. The tests below either don't trip that path or
-  // accept the no-op behaviour from a registry with no live runners.
   runnerRegistry = {
     get: () => undefined,
     dispose: () => undefined,
@@ -72,22 +58,21 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
     const createRepoGit = vi.fn().mockReturnValue(fakeRepoGit);
 
     const githubAuth = new StubGitHubAuthManager();
-    await githubAuth.setToken("test-token"); // authenticated → refresh path runs
+    await githubAuth.setToken("test-token");
 
     await markMergedAndPruneExcess(
       sessionManager,
       runnerRegistry,
       getBareCacheDir,
       sessionId,
-      undefined, // pruneVolumes
+      undefined,
       createRepoGit,
       githubAuth as any,
     );
 
     expect(createRepoGit).toHaveBeenCalledWith(cacheDir);
-    expect(setRemoteUrl).toHaveBeenCalledOnce(); // creds refreshed pre-push
+    expect(setRemoteUrl).toHaveBeenCalledOnce();
     expect(deleteBranch).toHaveBeenCalledWith("shipit/test-feature");
-    // Confirm the session was still marked merged (deletion happens after).
     expect(sessionManager.get(sessionId)?.mergedAt).toBeTruthy();
   });
 
@@ -100,7 +85,6 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
     const createRepoGit = vi.fn().mockReturnValue(fakeRepoGit);
 
     const githubAuth = new StubGitHubAuthManager();
-    // Not calling setToken — stays unauthenticated.
 
     await markMergedAndPruneExcess(
       sessionManager,
@@ -127,7 +111,6 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
     const createRepoGit = vi.fn().mockReturnValue(fakeRepoGit);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // Should not throw.
     await expect(
       markMergedAndPruneExcess(
         sessionManager,
@@ -146,9 +129,6 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
   });
 
   it("skips branch deletion entirely when createRepoGit is not provided", async () => {
-    // Mirrors the old call signature — defensive: callers that omit the new
-    // deps (e.g. legacy test harnesses) still get the original behavior with
-    // no surprise side effects.
     const sessionId = trackMergedSession({ branch: "shipit/legacy" });
 
     const result = await markMergedAndPruneExcess(
@@ -211,14 +191,7 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
 });
 
 describe("markMergedAndPruneExcess — no longer archives excess", () => {
-  // docs/161: demotion of excess merged sessions out of the sidebar is now a
-  // pure listing concern (`SessionManager.list()` → `filterVisibleInSidebar`),
-  // NOT an archive/disk operation. `markMergedAndPruneExcess` must therefore
-  // leave every other merged session untouched: no `archived` flag, no disk
-  // eviction, no runner disposal. The per-repo top-N cap is exercised directly
-  // against the predicate in `sessions.test.ts`.
   it("does not archive any merged session even when far beyond the per-repo cap", async () => {
-    // Seed six already-merged sessions in the same repo — well past the cap.
     const seeded: { id: string; mergedAt: string }[] = [];
     for (let i = 0; i < 6; i++) {
       const id = trackMergedSession({});
@@ -242,7 +215,6 @@ describe("markMergedAndPruneExcess — no longer archives excess", () => {
       triggerId,
     );
 
-    // Nothing got archived; no runner was disposed.
     for (const s of seeded) {
       expect(sessionManager.get(s.id)?.archived).toBeFalsy();
       expect(sessionManager.get(s.id)?.diskTier).toBe("hot");

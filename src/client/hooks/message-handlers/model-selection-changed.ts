@@ -1,5 +1,6 @@
 import type { WsModelSelectionChanged } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { useFileStore } from "../../stores/file-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { saveRoleName } from "../../utils/local-storage.js";
 import type { Handler } from "./types.js";
@@ -42,50 +43,36 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
             ...(data.reasoningEffort
               ? { reasoningEffort: data.reasoningEffort }
               : { reasoningEffort: undefined }),
-            // docs/272 reqs 13, 15 — the role in force. It rides this message
-            // because setting one and leaving one are the same event as the
-            // three fields above: `set_role` writes all four at once, and a
-            // harness/model/reasoning pick clears this one *because* it moved
-            // one of them. Applied unconditionally, null included — this is the
-            // only thing that un-names a role on screen.
+            // The server response must also clear a role that no longer applies.
             ...(data.roleName ? { roleName: data.roleName } : { roleName: undefined }),
           }
         : s,
     ),
   );
-  // docs/272-user-selectable-roles req 12 — **the seed follows the session's role
-  // until that session starts, and not after.**
-  //
-  // The seed decides what the NEXT new session starts on, and leaving a role is
-  // not an act of its own: it happens when a parameter moves, and only the
-  // server knows whether one actually did (re-selecting the value a role already
-  // set is not a change — req 15). So the seed is written from the server's
-  // answer here rather than cleared by each of the three handlers on the way
-  // out, which re-implemented that comparison and got it wrong in exactly the
-  // case the rule exists for.
-  //
-  // **The bound is `agentPinned`**, and it is where req 12's own words put it:
-  // the seed is "the role the user last SELECTED", and a role can only be
-  // selected before the first turn (req 4). Past that point this session's role
-  // is no longer an answer to "what should the next new session be" — nudging the
-  // model in a week-old session would otherwise clear the role the user picked
-  // for everything they start next, and a child session started by an agent on
-  // some role would silently make that role the user's default. Neither is
-  // something the user selected.
-  //
-  // Before the first turn the write is load-bearing in both directions, so it
-  // stays: on `/{repo}/new` the seed IS the composer's display (no session row
-  // exists for a warm session), and it is also the `?role=` the next connect
-  // applies — which overrides the harness, model and reasoning. A seed left
-  // naming a role the user has just moved away from would put it back.
-  //
-  // Only for the session the user is looking at: a background session's
-  // selection change says nothing about what the next new session should be.
+
+  // Before the first turn, persist both role selection and role removal — but
+  // only the user's own. A clear ShipIt decided (`roleAutoCleared`) is not a
+  // selection, and writing it here deleted the role the user starts every new
+  // session on (docs/272 req 12) because one session's parameters had to move.
   const started = !!useSessionStore
     .getState()
     .sessions.find((s) => s.id === data.sessionId)?.agentPinned;
-  if (session.sessionId === data.sessionId && !started) {
+  if (session.sessionId === data.sessionId && !started && !data.roleAutoCleared) {
     saveRoleName(data.roleName ?? undefined);
+  }
+  // docs/272 — on `/{repo}/new` the warm session has no row, so the pickers read
+  // `activeAgentId`, which `useConnectionSync` only syncs FROM a row. Not
+  // persisted: an internal sync must not move the new-session default. Skills are
+  // per-backend, so a harness that moved invalidates them.
+  if (session.sessionId === data.sessionId) {
+    const ui = useUiStore.getState();
+    if (ui.activeAgentId !== data.agentId) {
+      ui.setActiveAgentId(data.agentId);
+      void useFileStore
+        .getState()
+        .fetchSkills(data.sessionId, data.agentId)
+        .catch(() => {});
+    }
   }
   // The server has answered. Say so unconditionally — the composer's optimistic
   // pick has to be dropped whether the answer was "yes" or "no", and a REFUSED

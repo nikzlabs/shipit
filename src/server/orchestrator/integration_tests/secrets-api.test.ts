@@ -1,10 +1,3 @@
-/**
- * Integration tests for secrets API routes (GET/PUT /api/secrets).
- *
- * Uses buildApp() to create a real Fastify server with SecretStore backed
- * by an in-memory SQLite database.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -58,8 +51,6 @@ describe("Integration: Secrets API routes", () => {
     }
   });
 
-  // ---- GET /api/secrets ----
-
   it("GET /api/secrets returns 400 without repoUrl", async () => {
     const res = await app.inject({ method: "GET", url: "/api/secrets" });
     expect(res.statusCode).toBe(400);
@@ -89,12 +80,9 @@ describe("Integration: Secrets API routes", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().keys.sort()).toEqual(["API_KEY", "DB_URL"]);
-    // The plaintext value must never appear in the response body.
     expect(res.payload).not.toContain("supersecret");
     expect(res.json()).not.toHaveProperty("secrets");
   });
-
-  // ---- PUT /api/secrets ----
 
   it("PUT /api/secrets returns 400 without repoUrl", async () => {
     const res = await app.inject({
@@ -151,16 +139,12 @@ describe("Integration: Secrets API routes", () => {
   it("PUT /api/secrets keeps existing values via `keep` without resending them", async () => {
     const repoUrl = "https://github.com/org/repo";
 
-    // Seed two secrets.
     await app.inject({
       method: "PUT",
       url: "/api/secrets",
       payload: { repoUrl, set: { KEEP_ME: "v1", ALSO: "v2" } },
     });
 
-    // Second save: keep KEEP_ME (no value resent), change ALSO. Because ALSO is
-    // neither set nor kept on the *first* request's terms, dropping it here
-    // confirms keep-vs-delete semantics.
     await app.inject({
       method: "PUT",
       url: "/api/secrets",
@@ -172,7 +156,6 @@ describe("Integration: Secrets API routes", () => {
       url: `/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`,
     });
     expect(res.json().keys.sort()).toEqual(["KEEP_ME", "NEW_ONE"]);
-    // ALSO was neither set nor kept → deleted.
     expect(res.json().keys).not.toContain("ALSO");
   });
 
@@ -190,7 +173,6 @@ describe("Integration: Secrets API routes", () => {
       payload: { repoUrl, keep: ["TOKEN"], set: { TOKEN: "new" } },
     });
 
-    // Names don't reveal which won; assert via the server-side store instead.
     const res = await app.inject({
       method: "GET",
       url: `/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`,

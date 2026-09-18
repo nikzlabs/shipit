@@ -29,7 +29,7 @@ describe("Badge", () => {
   });
 
   it("lets a caller's className override conflicting variant utilities", () => {
-    // The metric/status header chips (UptimeBadge, DockerMemoryBadge,
+
     // SubscriptionLimitsBadge) ride on this: a custom background must win over
     // the variant default, which only works because Badge merges via twMerge.
     render(
@@ -41,8 +41,7 @@ describe("Badge", () => {
   });
 
   it("overrides the text color while keeping the variant background", () => {
-    // DockerMemoryBadge keeps a constant background and only swaps the text
-    // color by severity (e.g. text-(--color-error)).
+
     render(
       <Badge className="bg-(--color-bg-hover) text-(--color-error)">Mem</Badge>,
     );

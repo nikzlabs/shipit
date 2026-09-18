@@ -20,7 +20,6 @@ import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import type { SendCommentsPayload } from "./FilePreviewModal.js";
 import { SendReviewDialog } from "./SendReviewDialog.js";
 
-/** Map file extensions to Monaco language IDs. */
 function getLanguageFromPath(filePath: string): string {
   const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
   const map: Record<string, string> = {
@@ -91,7 +90,6 @@ interface DiffPanelProps {
   onSendComments?: (payload: SendCommentsPayload) => void;
 }
 
-/** Monaco DiffEditor options shared by all file sections. */
 const DIFF_EDITOR_OPTIONS = {
   readOnly: true,
   renderSideBySide: true,
@@ -100,18 +98,11 @@ const DIFF_EDITOR_OPTIONS = {
   fontSize: 12,
   lineNumbers: "on" as const,
   folding: false,
-  // Long lines wrap instead of scrolling sideways: a horizontal scrollbar per
-  // file section makes a stacked diff unreadable (you scroll one file at a time
-  // to see the ends of its lines), and side-by-side halves the width available.
-  // `diffWordWrap` is the diff-specific override and must agree, or the
-  // original/modified panes wrap differently and stop lining up.
+  // Keep both wrap settings equal so the original and modified rows align.
   wordWrap: "on" as const,
   renderOverviewRuler: false,
   diffWordWrap: "on" as const,
   glyphMargin: true,
-  // Wrap points depend on the editor's width, so a stale width now means wrong
-  // wrapping (and a wrong auto-height), not just a clipped viewport as it did
-  // when lines scrolled. Monaco re-layouts off its own ResizeObserver.
   automaticLayout: true,
   hideUnchangedRegions: { enabled: true },
   scrollbar: {
@@ -124,18 +115,10 @@ const DIFF_EDITOR_OPTIONS = {
 export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: DiffPanelProps) {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [collapsedFiles, setCollapsedFiles] = useState<Set<number>>(new Set());
-  // Per-file "rendered | source" mode for SVGs. Defaults to "source" (the text
-  // diff) so nothing changes until the user opts into the rendered comparison.
   const [svgViewModes, setSvgViewModes] = useState<Record<string, ViewMode>>({});
-  // Mobile master-detail: on narrow viewports we show either the file list or a
-  // single file's diff, not both. Desktop ignores this state entirely.
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
   const isMobile = useIsMobile();
-  // Paths whose inline comment editor (add input or in-card edit) is open.
-  // Send is held while any is open so an accidental click can't submit the
-  // review and silently drop the half-typed comment.
   const [composingPaths, setComposingPaths] = useState<ReadonlySet<string>>(() => new Set());
-  // docs/260 — send-confirmation dialog + its free-text note.
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
   const [note, setNote] = useState("");
   const fileSectionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -145,10 +128,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
   const sessionComments = useCommentStore((s) => s.commentsBySession[sessionId]);
   const prReviewThreads = usePrStore((s) => s.cardBySession[sessionId]?.reviewThreads);
-  // Memoized on the store slice: the `?? []` fallback would otherwise mint a
-  // fresh array on every render, so every memo/callback keyed on `allComments`
-  // below would recompute each time — exactly the memoization they exist to
-  // avoid, and only in the no-comments case where it is least obvious.
+  // Memoize the empty fallback so dependent callbacks stay stable.
   const allComments = useMemo(() => sessionComments ?? [], [sessionComments]);
   const githubComments = useMemo(
     () => githubReviewThreadsToLineComments(prReviewThreads),
@@ -159,7 +139,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     [allComments, githubComments],
   );
   const commentCount = allComments.length;
-  // What the draft comments are on, for the send dialog's "N comments on …".
   const commentFilePaths = useMemo(
     () => Array.from(new Set(allComments.map((c) => c.filePath))),
     [allComments],
@@ -172,7 +151,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
 
   const fileTree = useMemo(() => buildFileTree(diff.files), [diff.files]);
 
-  // Start with all directories expanded
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
     const dirs = new Set<string>();
     function collectDirKeys(nodes: FileTreeNode[], depth: number) {
@@ -196,8 +174,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     });
   }, []);
 
-  /** Sidebar click: highlight, expand if collapsed, scroll into view. On
-   * mobile, also flips from the file list to the single-file detail view. */
   const handleSelectFile = useCallback((index: number) => {
     setSelectedFileIndex(index);
     setCollapsedFiles((prev) => {
@@ -232,14 +208,10 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     });
   }, []);
 
-  // Clean up all comment managers on unmount. The ref-in-cleanup warning does
-  // not apply: `managersRef` holds a Map this component owns for its whole
-  // lifetime, not a DOM node React can swap out, so reading `.current` at
-  // unmount is exactly the set we need to dispose.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage; component-owned Map, see above
+  // eslint-disable-next-line no-restricted-syntax -- this Map stays stable for the component lifetime
   useEffect(() => {
     return () => {
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- `managersRef` holds a component-owned Map, not a DOM node, so reading `.current` at unmount is the correct set to dispose
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- the stable Map must be read at unmount
       for (const manager of managersRef.current.values()) {
         manager.dispose();
       }
@@ -247,7 +219,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     };
   }, []);
 
-  // Sync comments to all active managers
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     for (const [filePath, manager] of managersRef.current.entries()) {
@@ -255,12 +226,10 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     }
   }, [visibleComments]);
 
-  /** Called when each file's DiffEditor mounts. Sets up auto-height + comments. */
   const handleEditorMount = useCallback((editor: Parameters<DiffOnMount>[0], fileIndex: number) => {
     const file = diff.files[fileIndex];
     if (!file) return;
 
-    // --- Auto-height: resize container to fit content ---
     const containerEl = editorContainerRefs.current.get(fileIndex);
     const updateHeight = () => {
       if (!containerEl) return;
@@ -270,13 +239,9 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       editor.layout();
     };
     editor.getModifiedEditor().onDidContentSizeChange(updateHeight);
-    // Initial measurement after hideUnchangedRegions collapses sections
     requestAnimationFrame(() => setTimeout(updateHeight, 100));
 
-    // --- Dispose interceptor (prevents Monaco teardown race) ---
-    // We pass keepCurrentOriginalModel + keepCurrentModifiedModel to the
-    // DiffEditor so @monaco-editor/react won't dispose models before calling
-    // editor.dispose(). Instead we detach models first, then dispose them.
+    // Detach models before disposal to avoid Monaco's teardown race.
     const originalDispose = editor.dispose.bind(editor);
     editor.dispose = () => {
       const model = editor.getModel();
@@ -286,7 +251,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       originalDispose();
     };
 
-    // --- Comment widgets ---
     managersRef.current.get(file.path)?.dispose();
     const manager = createCommentWidgetManager(editor, {
       filePath: file.path,
@@ -302,24 +266,18 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     managersRef.current.set(file.path, manager);
   }, [diff.files, sessionId, addLineComment, editComment, deleteComment, setComposingForPath, visibleComments]);
 
-  // docs/260 — Send opens the confirmation dialog; `confirmSendComments` is the
-  // send itself. The note lives here (not in the dialog) so cancelling and
-  // reopening restores what was typed.
   const handleSendComments = useCallback(() => {
     if (commentCount === 0 || !onSendComments || composing) return;
     setSendDialogOpen(true);
   }, [commentCount, onSendComments, composing]);
 
   const confirmSendComments = useCallback(() => {
-    // Mirrors the disabled button: never send out from under an open editor.
     if (commentCount === 0 || !onSendComments || composing) return;
     const fileContents = new Map<string, string>();
     for (const file of diff.files) {
       fileContents.set(file.path, file.newContent);
     }
 
-    // The note is the first piece of feedback, before the anchored comments —
-    // the same placement the server's prompt builder uses (docs/260).
     const trimmedNote = note.trim();
     let prompt = "I have the following comments on the code:\n\n";
     if (trimmedNote) prompt += `${trimmedNote}\n\n`;
@@ -373,7 +331,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
 
   return (
     <div className="flex flex-col h-full bg-(--color-bg-primary)">
-      {/* Header */}
       {/* pr-10 clears the dialog's corner close button so the stats don't sit under it */}
       <div className="flex items-center px-3 py-1.5 pr-10 border-b border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-2">
         <div className="flex items-center gap-2 text-sm min-w-0">
@@ -396,12 +353,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
         </div>
       </div>
 
-      {/* Main area: file tree sidebar + stacked diffs.
-          - Desktop: both visible side-by-side.
-          - Mobile list view: only the sidebar, full width.
-          - Mobile detail view: only the selected file's diff, full width. */}
       <div className="flex flex-1 min-h-0">
-        {/* File tree sidebar */}
         {(!isMobile || mobileView === "list") && (
           <div className={`${isMobile ? "flex-1" : "w-56 shrink-0 border-r border-(--color-border-primary)"} overflow-y-auto bg-(--color-bg-secondary) py-1`}>
             {fileTree.map((node, i) => (
@@ -418,14 +370,11 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           </div>
         )}
 
-        {/* Files diff area. Desktop stacks all files; mobile detail shows
-            only the selected one. */}
         {(!isMobile || mobileView === "detail") && (
         <div className="flex-1 min-w-0 overflow-y-auto">
           {diff.files.map((file, i) => {
             if (isMobile && i !== selectedFileIndex) return null;
             const collapsed = !isMobile && collapsedFiles.has(i);
-            // SVGs are text (Monaco diff) but can also render side by side.
             const isSvg = !file.binary && isSvgPath(file.path);
             const svgMode = svgViewModes[file.path] ?? "source";
             return (
@@ -436,7 +385,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
                   else fileSectionRefs.current.delete(i);
                 }}
               >
-                {/* File section header */}
                 <div
                   className="flex items-center gap-2 px-3 py-1.5 bg-(--color-bg-secondary) cursor-pointer hover:bg-(--color-bg-hover) sticky top-0 z-10 border-y border-(--color-border-primary)"
                   onClick={() => { setSelectedFileIndex(i); if (!isMobile) toggleFileCollapse(i); }}
@@ -467,7 +415,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
                   </span>
                 </div>
 
-                {/* Diff editor (collapsible) */}
                 {!collapsed && (
                   file.image ? (
                     <ImageDiffView file={file} />
@@ -506,7 +453,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
         )}
       </div>
 
-      {/* Footer */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
         <Button
           variant="secondary"
@@ -536,9 +482,6 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           onSend={confirmSendComments}
           onClose={() => setSendDialogOpen(false)}
         />
-        {/* One trailing status slot: while a comment editor is open it explains
-            why Send is held, otherwise it shows the commit range. Reusing the
-            slot keeps the footer the same width on a phone either way. */}
         {composing ? (
           <span className="ml-auto text-xs text-(--color-text-tertiary) whitespace-nowrap">
             Finish your comment first

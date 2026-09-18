@@ -37,9 +37,8 @@ export function SkillsTab() {
 
   const agentId = useUiStore((s) => s.activeAgentId);
 
-  // Install destination is repo-targeted (docs/149 v1c) — the Skills tab is
   // app-wide and never reads/mutates the active session. Repos come from the
-  // app-wide repo store; default the picker to the active repo.
+
   const repos = useRepoStore((s) => s.repos);
   const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | null>(null);
@@ -62,16 +61,11 @@ export function SkillsTab() {
   const refreshMarketplace = useSkillsStore((s) => s.refreshMarketplace);
   const installToRepo = useSkillsStore((s) => s.installToRepo);
 
-  // Refetch catalogs whenever the active agent changes — store sync from
-  // the route-backed external system.
   // eslint-disable-next-line no-restricted-syntax -- effect for one-shot fetch when the active agent flips
   useEffect(() => {
     void fetchMarketplaces(agentId);
   }, [agentId, fetchMarketplaces]);
 
-  // After we know the catalogs, pull each one's plugin list. v1 ships with
-  // exactly one seeded catalog so this is fine inline; v2 paginates / lazy-
-  // loads as the user expands per-marketplace sections.
   // eslint-disable-next-line no-restricted-syntax -- effect to fan out per-marketplace fetches as the list arrives
   useEffect(() => {
     if (marketplaces.length === 0) return;

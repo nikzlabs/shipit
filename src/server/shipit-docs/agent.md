@@ -19,7 +19,11 @@ you supply is the name:
   --model X`. The role supplies everything you did not name. **Relay** an
   override the user asked for; never **decide** one yourself.
 
-If the role you need does not exist, say so — the user creates it in Settings.
+If the role you need does not exist, say so — the user creates it under
+Settings → Roles. `shipit agent roles` is what tells you which roles exist;
+`shipit settings list` indexes the settings around them, so you can say what is
+configured today rather than sending the user to go and look
+(`/shipit-docs/settings.md`).
 And if repository policy hands you a **complete target** (a command naming every
 parameter it runs on), pass it through **unchanged**: that is a different
 invocation and it stays available. A complete target names the harness, the
@@ -53,7 +57,7 @@ a reviewer you picked. Relaying it sets the distance guarantee aside (see
 the user's call. The line is between a value they said and a value you supplied —
 the second is you choosing a reviewer, whatever it is dressed up as.
 
-**Never reach for the raw `codex` / `claude` / `opencode` / `grok` CLI to do this.** Per-agent
+**Never reach for the raw `codex` / `claude` / `opencode` / `grok` / `antigravity` CLI to do this.** Per-agent
 credential isolation mounts only *your* pinned agent's credentials in this
 container, so invoking the other backend's bare CLI fails with **401
 Unauthorized**. `shipit agent run` is the only authenticated path — it brokers
@@ -141,8 +145,8 @@ to make for them.
 You can only name what you can see, so both are readable from inside the session:
 
 ```
-shipit agent roles     # every role on this install: name, what it is for, what it runs on
-shipit agent params    # every parameter an override may name here, and the flag that names each
+shipit agent roles
+shipit agent params
 ```
 
 `roles` is how you map an intent onto a role ("review the PR" → `reviewer`) and
@@ -274,8 +278,8 @@ If a run does get killed — or you truncated its output — the work is not los
 the spawn completes server-side and its output is persisted. Fetch it with:
 
 ```
-shipit agent result            # the most recent run in this session
-shipit agent result <RUN-ID>   # a specific run (a unique id prefix works)
+shipit agent result
+shipit agent result <RUN-ID>
 ```
 
 That prints the same artifact the user sees in the card. Use it to recover a
@@ -288,11 +292,20 @@ starts, shows an in-progress row for the duration, and turns into the finished
 record when the run ends. So a backgrounded consult is visible to the user the
 whole time, and neither of you has to guess whether it is still going.
 
+**If your turn ends before the consult does, ShipIt brings you back.** When a
+backgrounded run finishes and nothing else is going to hand you the result — your
+turn is over and there is no live process to surface it — ShipIt starts a turn
+naming the run id and telling you to read it with `shipit agent result <RUN-ID>`.
+So it is safe to end a turn with a consult still in flight; you do not have to
+hold the turn open, and the user does not have to prod you. You still get the
+output on stdout in the ordinary case, and this changes nothing about a run you
+`--wait` on.
+
 ### Waiting for a backgrounded run — use `--wait`, never a poll loop
 
 ```
-shipit agent result <RUN-ID> --wait                  # block up to 5 minutes
-shipit agent result <RUN-ID> --wait --timeout 600    # …or up to 10, max 30
+shipit agent result <RUN-ID> --wait
+shipit agent result <RUN-ID> --wait --timeout 600
 ```
 
 `--wait` returns as soon as the run reaches a terminal status. It absorbs
@@ -315,12 +328,11 @@ from the persisted card, so an interrupted wait has lost nothing. Pick a
 Do **not** write a `sleep`-and-`grep` loop:
 
 ```sh
-# WRONG — gives up after 45s on a run that can last 30 minutes, and a finished
-# review whose text happens to contain "pending" reads as still-running.
+# Wrong: stops after 45s and mistakes "pending" in a finished report for status.
 for i in 1 2 3; do sleep 15; shipit agent result "$ID" 2>&1 | tee /tmp/r.txt;
   if ! grep -q 'pending' /tmp/r.txt; then break; fi; done
 
-# RIGHT
+# Correct
 shipit agent result "$ID" --wait --timeout 540
 ```
 
@@ -356,8 +368,14 @@ id or a bad flag, since neither condition can ever clear.
 
 ## Limits
 
-- **Opt-in.** The feature only works when the user has enabled **Settings →
-  Multi-agent sessions**. Otherwise the command returns a clear "disabled" error.
+- **Opt-in.** The feature only works when the setting
+  `advanced.enableSubAgents` is on — **Settings → Advanced**, "Allow spawning
+  another agent for a sub-task". Otherwise the command returns a clear
+  "disabled" error. **Read it before you ask**: `shipit settings get
+  advanced.enableSubAgents` says whether it is already on, so a failure you are
+  looking at gets an explanation instead of a guess, and the user is never asked
+  to turn on something they turned on last week
+  (`/shipit-docs/settings.md`).
 - **Only harnesses this deployment installed.** Which agent CLIs an install has is
   chosen when ShipIt is deployed, so a harness a role names — or one you named as
   an override — may simply not be present here, and the command then fails with
@@ -385,5 +403,12 @@ id or a bad flag, since neither condition can ever clear.
   out permanently. A background job finishing does not refill it.
 - **Bounded run.** Each spawn has a wall-clock cap (~30 min) and an output cap; an
   over-limit run is truncated and flagged.
-- **Cancel is symmetric.** If the user cancels your turn while a sub-agent is
-  running, the sub-agent is cancelled too.
+- **The run's lifetime is its own.** Nothing about your turn ends a consult —
+  not an interrupt, not a Stop, not asking the user a question, not your turn
+  finishing. It ends only on its own ~30-minute cap or if the session container
+  goes away (Restart agent, Restart container, archive). So you can safely
+  background a review and then ask the user something while it runs; collect it
+  afterwards with `shipit agent result`. A consult whose card reads `cancelled`
+  always says why — including the one case that is not a termination: if ShipIt
+  itself restarts mid-consult the run usually keeps going, but nobody is left
+  holding its result, so the card is closed as lost rather than left pending.

@@ -38,7 +38,7 @@ const ICON_MAP: Record<string, string> = {
 
 export interface NewRepoDialogProps {
   username: string;
-  /** Organizations the user can create repos in. Empty = personal account only. */
+
   orgs?: string[];
   templates: TemplateInfo[];
   onSubmit: (name: string, description: string, isPrivate: boolean, templateId: string, owner: string | undefined) => void;
@@ -59,9 +59,7 @@ export function NewRepoDialog({
   const [isPrivate, setIsPrivate] = useState(true);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [filter, setFilter] = useState<TemplateInfo["category"] | "all">("all");
-  // The owner the repo is created under. Defaults to the personal account
-  // (empty string), which maps to POST /user/repos; any other value is an org
-  // login routed to POST /orgs/{owner}/repos by the server.
+
   const [owner, setOwner] = useState("");
 
   const trimmedName = name.trim();

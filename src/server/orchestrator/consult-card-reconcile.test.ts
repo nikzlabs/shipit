@@ -8,13 +8,6 @@ import {
 } from "./consult-card-reconcile.js";
 import type { SubAgentConsultCard } from "../shared/types.js";
 
-/**
- * planning#309 / docs/249 — the boot sweep that finishes consult cards the previous
- * orchestrator could not, because the only handle able to finish them died with
- * it. These run against a REAL `ChatHistoryManager` where the point is the DB
- * round-trip, and against stubs where the point is failure isolation.
- */
-
 const consult = (
   spawnId: string,
   over: Partial<SubAgentConsultCard> = {},
@@ -25,8 +18,6 @@ const consult = (
     cardId: `card-${spawnId}`,
     spawnId,
     subAgentId: "codex",
-    // docs/261 phase 4 — written at spawn time, so a stranded card carries it
-    // and the reconcile's patch must merge rather than replace.
     runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
     status: "pending",
     createdAt: "2026-08-04T09:00:00.000Z",
@@ -54,14 +45,9 @@ describe("reconcileOrphanedConsultCards (planning#309)", () => {
 
     expect(reconcileOrphanedConsultCards(mgr)).toEqual({ reconciled: 1 });
 
-    // Read back through a fresh manager — the reload / `shipit agent result` path.
     const [card] = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
     expect(card.status).toBe("cancelled");
     expect(card.statusDetail).toBe(ORPHANED_CONSULT_DETAIL);
-    // The identity of the run survives, so the user can still see WHICH consult
-    // was lost and the agent can still name it. docs/261 req 9 — including WHAT
-    // it was going to run on: a review the orchestrator lost is exactly the one
-    // whose provenance nothing else can reconstruct.
     expect(card).toMatchObject({
       spawnId: "spawn-a",
       subAgentId: "codex",
@@ -71,9 +57,6 @@ describe("reconcileOrphanedConsultCards (planning#309)", () => {
   });
 
   it("claims no telemetry at all — the run's real numbers died with the response", () => {
-    // Absent, not zero. A `--json` caller reads `costUsd: 0` as "this consult
-    // was free" and `truncated: false` as "the output was complete"; we know
-    // neither. Absent is the only honest encoding of unknown.
     const mgr = new ChatHistoryManager(dbManager);
     mgr.append("sess-1", consult("spawn-a"));
     reconcileOrphanedConsultCards(mgr);
@@ -114,12 +97,6 @@ describe("reconcileOrphanedConsultCards (planning#309)", () => {
   });
 
   it("survives an adopted turn's replaceInProgress (the foreground-consult strand)", () => {
-    // A foreground `shipit agent run` blocks its own turn, so the card is still
-    // an in_progress=1 row when the orchestrator dies. docs/240 then adopts that
-    // turn, and its finalize deletes every in-progress row in the session. The
-    // sweep must run BEFORE the adoption and must finalize the row, or the card
-    // is not merely still-pending — it is gone, and `shipit agent result` says
-    // "No sub-agent runs in this session yet".
     const mgr = new ChatHistoryManager(dbManager);
     mgr.replaceInProgress("sess-1", [
       { role: "assistant", text: "asking codex", inProgress: true },
@@ -127,7 +104,6 @@ describe("reconcileOrphanedConsultCards (planning#309)", () => {
     ]);
 
     reconcileOrphanedConsultCards(mgr);
-    // …then the adopted turn rebuilds its rows.
     mgr.replaceInProgress("sess-1", [{ role: "assistant", text: "adopted turn", inProgress: true }]);
 
     const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");

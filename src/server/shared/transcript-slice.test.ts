@@ -32,7 +32,6 @@ describe("sliceBody", () => {
   });
 
   it("applies the byte backstop to a single pathological line", () => {
-    // One line, no newline to cut on — only the byte cap can bound this.
     const body = "x".repeat(TRANSCRIPT_SLICE_BYTES * 4);
     const sliced = sliceBody(body)!;
     expect(sliced.content.length).toBe(TRANSCRIPT_SLICE_BYTES);
@@ -41,8 +40,6 @@ describe("sliceBody", () => {
   });
 
   it("never splits a UTF-8 codepoint at the byte boundary", () => {
-    // Multi-byte characters straddling the cap: a naive byte slice would emit
-    // U+FFFD, which would render as a mojibake tail in the preview.
     const body = "€".repeat(TRANSCRIPT_SLICE_BYTES);
     const sliced = sliceBody(body)!;
     expect(sliced.content).not.toContain("�");
@@ -51,8 +48,6 @@ describe("sliceBody", () => {
   });
 
   it("applies the byte backstop even when the line cap already cut", () => {
-    // 50 lines, each far over the byte cap: the line cut leaves 40 lines, still
-    // way too many bytes, so the backstop has to run on the result.
     const body = Array.from({ length: 50 }, () => "y".repeat(2000)).join("\n");
     const sliced = sliceBody(body)!;
     expect(Buffer.byteLength(sliced.content, "utf8")).toBeLessThanOrEqual(TRANSCRIPT_SLICE_BYTES);

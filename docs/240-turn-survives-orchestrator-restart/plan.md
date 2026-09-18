@@ -121,11 +121,17 @@ eventually evicts it, and its commit/push never happens.
 `restart-turn-reattach.ts` closes the window at boot: it probes each
 rediscovered container and materializes a runner **only** for those reporting a
 live turn. Runner creation then runs the identical adopt path
-(`resumeInFlightTurn`). Idle sessions are deliberately left alone — creating a
+(`resumeInFlightTurn`). Idle sessions are deliberately never *woken* — creating a
 runner starts compose stacks and installs, which must not happen for sessions
 the user never opened. Wired from `bootstrap-managers.ts` (where both the
 container manager and the runner registry are in scope), fire-and-forget, with
 each probe independently guarded.
+
+Since docs/242 the same sweep also *reclaims* a stale idle worker — destroying
+its agent container and not recreating it, so an update frees the memory it was
+holding. That never touches an adopted turn: the two branches are exclusive on
+`turnActive`, and the reclaim additionally consults the docs/235 liveness fields
+the worker now publishes, because a self-woken turn does not set `turnActive`.
 
 ### 4. Exactly-once persistence
 
@@ -163,7 +169,7 @@ auto-commit — which is what almost every turn needs anyway.
 | `src/server/orchestrator/turn-adoption.ts` | Wires an already-running worker turn into a runner + proxy via `executeAgentTurn` |
 | `src/server/orchestrator/turn-executor.ts` | `TurnInput.adopt` — skip env-prep + spawn, keep everything else |
 | `src/server/orchestrator/proxy-agent-process.ts` | Optional `runToken` so an adopting proxy inherits the worker's spawn epoch |
-| `src/server/orchestrator/restart-turn-reattach.ts` | Boot sweep: probe rediscovered containers, reattach the live ones |
+| `src/server/orchestrator/restart-turn-reattach.ts` | Boot sweep: probe rediscovered containers, reattach the live ones — and (docs/242) reclaim the stale idle ones |
 | `src/server/orchestrator/bootstrap-managers.ts` | Fires the sweep after the runner registry exists |
 | `src/server/orchestrator/integration_tests/restart-turn-adoption.test.ts` | Real worker + fresh runner: adoption, exactly-once persistence, post-turn flow, run-token correlation, and the two must-not-adopt cases |
 | `src/server/orchestrator/restart-turn-reattach.test.ts` | Sweep: adopts live turns, never wakes idle/standby/archived sessions, survives one dead worker |

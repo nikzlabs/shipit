@@ -30,16 +30,13 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { addPredictedQueueEntry, dropPredictedQueueEntry } from "./predicted-queue.js";
 import { randomId } from "./random-id.js";
 
 export interface SendUserMessageOptions {
-  /**
-   * Optimistic user bubble to append to the chat. Composed by the caller so
-   * each surface can attach its own metadata (files, uploads, images, the
-   * `userReview` card payload for doc/diff comment submissions, etc.).
-   */
+
   bubble: ChatMessage;
-  /** Activity label shown next to the spinner ("Thinking...", "Reviewing..."). */
+
   activity: string;
   /**
    * Closure that actually puts the message on the wire. Typically a thin
@@ -52,37 +49,39 @@ export interface SendUserMessageOptions {
    * re-introduces the silent-drop bug.
    */
   dispatch: (requestId: string) => boolean;
+  /**
+   * The frame's text, set only when this send is expected to be QUEUED rather
+   * than run — a compaction is about to take the turn ahead of it (docs/295).
+   * The optimistic state then opens in the queue strip instead of the
+   * transcript, so the message does not appear as a bubble and collapse into
+   * the strip a fraction of a second later. See `predicted-queue.ts`, which
+   * owns the entry and every way it is retired.
+   */
+  queuedAs?: string;
 }
 
-/**
- * @returns `true` if the message was accepted for delivery. On `false` the
- * optimistic state has already been rolled back and the user has been told.
- */
-export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageOptions): boolean {
+export function sendUserMessage(
+  { bubble, activity, dispatch, queuedAs }: SendUserMessageOptions,
+): boolean {
   const session = useSessionStore.getState();
-  // `randomId`, not `crypto.randomUUID` — the latter is undefined on a plain
-  // HTTP origin, and a throw here silently kills the send (see random-id.ts).
-  // Same silent-drop class as the undelivered-frame rollback below, one layer
+
   // earlier: this one never even reached `dispatch`.
   const requestId = randomId();
-  // Snapshot what the spinner looked like before we made it optimistic, so a
-  // failed send restores it rather than forcing it off — the send may have been
-  // a queued message typed while a turn was genuinely already running.
+
   const priorIsLoading = session.isLoading;
   const priorActivity = session.activity;
-  session.setMessages((prev) => [...prev, { ...bubble, clientRequestId: requestId }]);
+  const pending = { ...bubble, clientRequestId: requestId };
+  if (queuedAs !== undefined) {
+    addPredictedQueueEntry(requestId, queuedAs, pending);
+  } else {
+    session.setMessages((prev) => [...prev, pending]);
+  }
   session.setIsLoading(true);
   session.setActivity({ label: activity });
-  // Optimistically mark this session as running so the sidebar drops its
-  // "needs attention" marker the instant the user sends — without waiting for
-  // the `session_agent_started` SSE round-trip. The attention reason derives
-  // from `activeRunnerSessions.has(sessionId)` (see useAttentionInfo); until
-  // the server echoes back, the session would otherwise still read as "Waiting
-  // for your input". The server-pushed `session_agent_started` / `session_status`
-  // events and the periodic `active_runners` snapshot reconcile this set, so an
+
   // optimistic add self-heals if the turn never actually starts.
   const activeSessionId = session.sessionId;
-  // Whether WE are the ones who added the mark decides whether the failure path
+
   // may remove it — a session that was already running must keep its mark.
   const markedActiveRunner = !!activeSessionId && !session.activeRunnerSessions.has(activeSessionId);
   if (activeSessionId) {
@@ -96,9 +95,13 @@ export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageO
   if (dispatch(requestId)) return true;
 
   // The frame never left the browser. Undo the optimistic state in the same
-  // shape the error handler would have — otherwise the bubble and the spinner
+
   // sit there forever waiting for a turn that was never started.
-  session.setMessages((prev) => prev.filter((m) => m.clientRequestId !== requestId));
+  if (queuedAs !== undefined) {
+    dropPredictedQueueEntry(requestId);
+  } else {
+    session.setMessages((prev) => prev.filter((m) => m.clientRequestId !== requestId));
+  }
   session.setIsLoading(priorIsLoading);
   session.setActivity(priorActivity);
   if (activeSessionId && markedActiveRunner) {

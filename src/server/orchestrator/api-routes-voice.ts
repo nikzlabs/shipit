@@ -1,24 +1,9 @@
-/**
- * Voice API routes (docs/144).
- *
- * Surface:
- *   POST   /api/voice/credentials         { provider, apiKey } set a key (server-only)
- *   DELETE /api/voice/credentials         { provider } clear it
- *   GET    /api/voice/credentials/status  { configured: string[] } — never the key
- *   GET    /api/voice/cleanup/status      { provider } — which cleanup path runs
- *   POST   /api/voice/transcribe          multipart audio (+ sttProvider) → { text, rawText, ... }
- *   POST   /api/voice/speak               { text, voice, speed, provider } → audio | 204
- *
- * Keys live only on the server; audio flows browser→orchestrator→provider in
- * both directions so the browser never opens an authenticated provider
- * connection (plan threat model).
- */
-
 import path from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { getErrorMessage } from "./validation.js";
 import { ServiceError } from "./services/index.js";
+import { SETTINGS_CHANGED_EVENT } from "./services/settings-apply.js";
 import {
   setVoiceKey,
   clearVoiceKey,
@@ -27,37 +12,40 @@ import {
   transcribeVoice,
   speakVoice,
 } from "./services/voice.js";
+import type { VoiceCleanupDeps } from "./services/voice-cleanup.js";
 import { TtsCache } from "./voice/index.js";
 import { routeVoiceNote, sanitizeVoiceContext } from "./voice/voice-note-router.js";
 
+/** The stored webhook url, or the empty string — the value `voice.webhook.url` holds. */
+function storedUrl(credentialStore: ApiDeps["credentialStore"]): { url: string } {
+  return { url: credentialStore.getVoiceWebhook()?.url ?? "" };
+}
+
+/**
+ * Tell every viewer the webhook moved, as `PUT /api/settings` already does for
+ * the settings it carries (`services/settings-apply.ts`).
+ *
+ * The webhook is now a declared row read on the `settings_changed` refresh, and
+ * this route is the only thing that changes it — so without the broadcast a
+ * second browser's save reaches an open dialog nowhere. The Voice tab used to
+ * re-read the status whenever it was mounted, which covered less: it needed
+ * somebody to leave the tab and come back.
+ */
+function announceWebhookChange(deps: ApiDeps): void {
+  deps.sseBroadcast(SETTINGS_CHANGED_EVENT, { keys: ["voice.webhook.url", "voice.webhook.token"] });
+}
+
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
-  const { credentialStore, authManager } = deps;
+  const { credentialStore } = deps;
   const cacheDir = path.join(deps.stateDir ?? deps.workspaceDir, ".voice-cache");
   const ttsCache = new TtsCache(cacheDir);
-
-  /**
-   * docs/150-multiple-provider-subscriptions req 19 — transcript cleanup is a real Claude call, so it reads a
-   * real account: the same route a turn would pick. Resolved per request rather
-   * than once at registration because the user can connect, reorder, or
-   * disconnect accounts while the server is up. `undefined` for a reserved
-   * route (API key / env OAuth), which legitimately uses the singleton path.
-   *
-   * The account manager resolves the root itself rather than this composing one
-   * from `deps.credentialsDir`: that field is optional on `ApiDeps`, so an
-   * absent one would silently hand back `undefined` and drop cleanup to the
-   * unscoped read this exists to replace.
-   */
-  const cleanupCredentialRoot = (): string | undefined => {
-    try {
-      const route = deps.providerAccountManager?.selectRouteForTurn("anthropic");
-      if (route?.kind !== "account") return undefined;
-      return deps.providerAccountManager?.resolveCredentialRoot("claude", route.id);
-    } catch {
-      // Never fail a voice request on account resolution. `pickCleanupProvider`
-      // already treats a broken Claude path as "fall through to OpenAI"; an
-      // unguarded throw here would escape that and 500 the whole request.
-      return undefined;
-    }
+  // Cleanup runs on the background-work choice, which may be a direct API call
+  // or a harness in the always-on cleanup container (docs/299-direct-provider-calls reqs 5 and 8).
+  const cleanupDeps: VoiceCleanupDeps = {
+    credentialStore,
+    providerAccountManager: deps.providerAccountManager,
+    usageManager: deps.usageManager,
+    backgroundHarnessRunner: deps.backgroundHarnessRunner,
   };
 
   function handleError(reply: FastifyReply, err: unknown, genericMsg: string): void {
@@ -67,8 +55,6 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     }
     reply.code(500).send({ error: `${genericMsg}: ${getErrorMessage(err)}` });
   }
-
-  // ---- Credentials ----
 
   app.post<{ Body: { provider?: string; apiKey?: string } }>(
     "/api/voice/credentials",
@@ -94,10 +80,8 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   });
 
   app.get("/api/voice/cleanup/status", async () => {
-    return getCleanupStatus(credentialStore, authManager, fetch, cleanupCredentialRoot());
+    return getCleanupStatus(cleanupDeps);
   });
-
-  // ---- Transcription (STT + cleanup) ----
 
   app.post("/api/voice/transcribe", async (request, reply) => {
     let audio: Buffer | null = null;
@@ -134,19 +118,19 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     }
 
     try {
-      return await transcribeVoice(credentialStore, authManager, {
+      // No session id: the container cleanup may use is not the session's
+      // (docs/299), and a dictation's spend is install-level.
+      return await transcribeVoice(cleanupDeps, {
         audio,
         cleanup,
         ...(mimeType ? { mimeType } : {}),
         ...(language ? { language } : {}),
         ...(sttProvider ? { sttProvider } : {}),
-      }, fetch, cleanupCredentialRoot());
+      });
     } catch (err) {
       handleError(reply, err, "Failed to transcribe");
     }
   });
-
-  // ---- Speech (TTS) ----
 
   app.post<{ Body: { text?: string; voice?: string; speed?: number; provider?: string } }>(
     "/api/voice/speak",
@@ -174,9 +158,6 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     },
   );
 
-  // ---- Voice-note delivery (docs/163) ----
-
-  // Webhook config: URL + bearer token (server-side only, never echoed back).
   app.post<{ Body: { url?: string; token?: string } }>(
     "/api/voice/webhook",
     async (request, reply) => {
@@ -190,34 +171,33 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
         reply.code(400).send({ error: "url must be an http(s) URL" });
         return;
       }
-      // The token is write-only, so an empty field while editing an existing
-      // webhook means "keep the stored token". Clearing the whole webhook is
-      // handled explicitly by DELETE /api/voice/webhook.
+      // The browser cannot read the token; a blank field preserves the stored value.
       const storedToken = credentialStore.getVoiceWebhook()?.token ?? "";
       credentialStore.setVoiceWebhook(url, token || storedToken);
-      return { ok: true };
+      announceWebhookChange(deps);
+      // The stored url, echoed under the field the declaration writes it through,
+      // because the shared writer records what the server ACCEPTED rather than
+      // what was sent (docs/308-data-driven-settings). Nothing echoes the token:
+      // it is `configuredOnly`, and a route that answered it would be the one
+      // place the browser could read it back.
+      return storedUrl(credentialStore);
     },
   );
 
   app.delete("/api/voice/webhook", async () => {
     credentialStore.clearVoiceWebhook();
-    return { ok: true };
+    announceWebhookChange(deps);
+    return storedUrl(credentialStore);
   });
 
-  app.get("/api/voice/webhook/status", async () => {
-    const wh = credentialStore.getVoiceWebhook();
-    // Never return the token; only whether it's configured and the URL host.
-    return { configured: !!wh, url: wh?.url ?? null };
-  });
+  /*
+    The own-route READ for both webhook halves (inventory.md P2): a GET of the
+    same path, answering under the same body field. It replaced
+    `/api/voice/webhook/status`, whose `{ configured, url }` said the same thing
+    in a second shape — a webhook exists exactly when a url is stored.
+  */
+  app.get("/api/voice/webhook", async () => storedUrl(credentialStore));
 
-  // Built-in voice_note tool write-back. The `shipit` bridge → worker
-  // `/agent-ops/voice/note` relays here with the trusted session id.
-  //
-  // Event-stream observation remains the preferred low-latency delivery path,
-  // but not every agent adapter exposes MCP tool calls in an observable
-  // assistant event. The bridge therefore also routes the note as a reliability
-  // fallback. `routeVoiceNote` deduplicates identical authored payloads within
-  // the turn, so whichever path arrives second is a no-op.
   app.post<{
     Params: { sessionId: string };
     Body: { summary?: string; context?: unknown };

@@ -1,20 +1,3 @@
-/**
- * Integration: orchestrator in RUNTIME_MODE=local (feature 118).
- *
- * Boots the app with `runtimeMode: "local"` — the dogfooding ShipIt-in-ShipIt
- * path — and verifies the local seam works end-to-end:
- *   - `/api/bootstrap` reports `runtimeMode: "local"` so the client can render
- *     the local-mode banner and hide container-only affordances.
- *   - `buildRunnerFactory` produces an in-process `SessionRunner` (not a
- *     `ContainerSessionRunner`) and a turn runs to auto-commit using the
- *     injected agent factory.
- *
- * NOTE: like the rest of the integration suite, this injects `FakeClaudeProcess`
- * rather than the real `ClaudeAdapter`. The real adapter's PTY/subprocess
- * lifecycle is only first exercised by the manual smoke test in docs/118's
- * checklist — this test covers the orchestrator wiring, not the CLI subprocess.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -94,19 +77,17 @@ describe("Integration: RUNTIME_MODE=local", () => {
 
   it("runs a turn end-to-end through the in-process SessionRunner", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Make a file" });
     await waitForClaude(() => lastClaude);
     expect(lastClaude.lastPrompt).toBe("Make a file");
 
-    // Init establishes the session.
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "local-session" });
     const sessionMsg = await client.receiveType("session_started");
     const sessionDir = (sessionMsg as any).session.workspaceDir;
     expect(sessionDir).toBeTruthy();
 
-    // Drop a file so auto-commit has something to commit.
     fs.writeFileSync(path.join(sessionDir, "made-in-local-mode.txt"), "hello");
 
     lastClaude.emit("event", {

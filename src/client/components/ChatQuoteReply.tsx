@@ -7,34 +7,8 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { formatBlockquote } from "../utils/format-blockquote.js";
 
-/**
- * planning#12 — floating "Reply" button shown when the user highlights text inside a
- * chat message bubble. Clicking it appends the selected passage as a markdown
- * blockquote into the chat composer (via `session-store.quoteReplyText`, which
- * MessageInput consumes), so the user can quote-reply to a specific passage
- * from the agent.
- *
- * Scope: the button only appears for selections whose range is contained within
- * `containerRef` — the conversation/message-list scroll container. The composer
- * (a sibling of the message list) and every other panel are outside that
- * container, so a selection there never surfaces the button. This mirrors the
- * containment check `MarkdownSelectionComments` uses to keep its own popover
- * scoped to the rendered doc body.
- *
- * We deliberately keep this separate from `MarkdownSelectionComments`: that
- * component anchors persistent review comments to a doc and lives inside the
- * file-preview modal; this one is a transient, fire-and-forget quote action for
- * live chat. The shared mechanics (selectionchange listener + positioning a
- * floating button near the selection rect) are reimplemented here rather than
- * abstracted, because the two surfaces have different lifecycles and the shared
- * surface area would be a thin, leaky base.
- */
-
-/** Live snapshot of the selection used to position the floating button. */
 interface QuoteSnapshot {
-  /** Bounding rect of the selection, in viewport coordinates (for `position: fixed`). */
   rect: DOMRect;
-  /** The selected text, resolved eagerly so the click handler needn't re-read the selection. */
   text: string;
 }
 
@@ -47,10 +21,6 @@ export function ChatQuoteReply({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const isMobile = useIsMobile();
 
-  // Track the live selection inside the message list and surface a small
-  // "Reply" button near it. The selected text is captured on every change so
-  // the click handler doesn't have to re-read `window.getSelection()` (which
-  // can be collapsed or lost by the time the button is pressed).
   useEventListener(document, "selectionchange", () => {
     const container = containerRef.current;
     const sel = typeof window !== "undefined" ? window.getSelection() : null;
@@ -59,8 +29,6 @@ export function ChatQuoteReply({
       return;
     }
     const range = sel.getRangeAt(0);
-    // Only fire for selections wholly inside the conversation container —
-    // not the composer, not other panels.
     if (!container.contains(range.commonAncestorContainer)) {
       setSnapshot(null);
       return;
@@ -73,26 +41,6 @@ export function ChatQuoteReply({
     setSnapshot({ rect: range.getBoundingClientRect(), text });
   });
 
-  // Position the button (fixed, viewport-relative) near the selection, centred
-  // horizontally and clamped to the visible viewport. Runs in a layout effect
-  // so we can measure the button's own size before placing it.
-  //
-  // Vertical placement is platform-dependent:
-  //  - Desktop: above the selection (falling back to below when there isn't
-  //    room), which keeps it out of the text the user is reading.
-  //  - Touch (`isMobile`): *below* the selection. iOS/Android draw their own
-  //    Copy/Cut/Paste callout directly above the selection, and an above-
-  //    placement lands on top of it — the whole reason this branch exists.
-  //    (When the selection is close to the top of the screen the native callout
-  //    itself flips below; we accept the rarer overlap there rather than
-  //    guessing at another platform's layout.)
-  //
-  // Either way the final top is clamped into the visible viewport, so a
-  // selection at the very bottom of the conversation still gets a fully
-  // visible button — it floats over the composer instead of running off-screen.
-  // We measure against `visualViewport` when available so pinch-zoom and the
-  // on-screen keyboard (which shrink the visual viewport without changing
-  // `innerHeight`) don't push the button out of view.
   useLayoutEffect(() => {
     const el = buttonRef.current;
     if (!el || !snapshot) return;
@@ -108,6 +56,7 @@ export function ChatQuoteReply({
     const viewportTop = vv?.offsetTop ?? 0;
     const viewportLeft = vv?.offsetLeft ?? 0;
 
+    // Mobile selection menus usually occupy the space above the selection.
     const placeAbove = !isMobile && rect.top >= bH + margin + pad;
     const desiredTop = placeAbove ? rect.top - bH - margin : rect.bottom + margin;
     const minTop = viewportTop + pad;
@@ -131,8 +80,6 @@ export function ChatQuoteReply({
       return;
     }
     useSessionStore.getState().setQuoteReplyText(blockquote);
-    // Clear the native selection so the button disappears and the user's focus
-    // moves cleanly to the composer (which MessageInput focuses on consume).
     window.getSelection()?.removeAllRanges();
     setSnapshot(null);
   }, [snapshot]);
@@ -142,15 +89,12 @@ export function ChatQuoteReply({
   return (
     <button
       ref={buttonRef}
-      // mousedown rather than click: preventDefault stops the press from
-      // collapsing the selection before our handler reads it, and we still run
-      // the action synchronously on press.
+      // Prevent the press from clearing the selection before replying.
       onMouseDown={(e) => {
         e.preventDefault();
         e.stopPropagation();
         handleReply();
       }}
-      // Roomier hit target on touch, where the button is tapped rather than clicked.
       className={`fixed z-50 flex items-center gap-1 rounded-md bg-(--color-bg-elevated) border border-(--color-border-secondary) text-(--color-text-primary) shadow-lg hover:brightness-125 hover:border-(--color-border-primary) cursor-pointer ${
         isMobile ? "px-3 py-2 text-sm" : "px-2 py-1 text-xs"
       }`}

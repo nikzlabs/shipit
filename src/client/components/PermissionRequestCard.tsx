@@ -1,22 +1,4 @@
-/**
- * PermissionRequestCard — inline approve/deny card for a gated agent action
- * (docs/193 / planning#114).
- *
- * Rendered where an agent backend gated an action it can't auto-approve
- * headlessly and asked the user to approve it. The classification is the
- * BACKEND's, not ShipIt's — ShipIt has no sensitive-file matcher of its own; it
- * faithfully surfaces whatever the CLI routed through its permission gate (a
- * file it deems sensitive like `.npmrc` / `.env`, or any other action it won't
- * take unattended). The copy is deliberately generic ("needs your approval")
- * rather than asserting a specific reason ShipIt doesn't actually know.
- * Approving lets the agent's next write succeed; "Approve & remember" also stops
- * re-prompting for that file this session. Denying tells the agent to find
- * another path.
- *
- * Agent-agnostic: the same card renders for Claude (its `--permission-prompt-tool`
- * gate) and Codex (its app-server escalation approval). Lifecycle (from the
- * permission store, keyed by requestId): pending → approved | denied | expired.
- */
+
 
 import { useState } from "react";
 import {
@@ -37,15 +19,13 @@ export interface PermissionRequestCardProps {
 export function PermissionRequestCard({ requestId, onResolve }: PermissionRequestCardProps) {
   const card = usePermissionStore((s) => s.cards[requestId]);
   const setPending = usePermissionStore((s) => s.setPending);
-  // Hooks run before the early returns below — `card` can be absent on first
-  // render, and the terminal branch returns early.
+
   const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   if (!card) return null;
 
   const target = card.path ?? card.summary ?? card.toolName;
 
-  // ── Terminal states ──
   if (card.phase !== "pending") {
     const resolved = {
       approved: {
@@ -74,11 +54,10 @@ export function PermissionRequestCard({ requestId, onResolve }: PermissionReques
   }
 
   const resolve = (behavior: "allow" | "deny", remember?: boolean) => {
-    setPending(requestId); // keep optimistic; server flips to terminal on confirm
+    setPending(requestId);                                                        
     onResolve?.(requestId, behavior, remember);
   };
 
-  // Only file edits (a known path) can be remembered for the session.
   const canRemember = !!card.path;
 
   return (

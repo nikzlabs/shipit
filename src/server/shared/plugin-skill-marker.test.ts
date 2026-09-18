@@ -29,7 +29,6 @@ describe("pluginSkillLabel", () => {
   });
 
   it("returns null for anything that is not one of ours", () => {
-    // A user's or marketplace skill: no hash suffix, or no alias/skill split.
     expect(pluginSkillLabel("commit")).toBeNull();
     expect(pluginSkillLabel("plugins--acme__probe")).toBeNull();
     expect(pluginSkillLabel("plugins--assetgen--assetgen")).toBeNull();

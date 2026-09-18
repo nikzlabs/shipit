@@ -1,37 +1,7 @@
 import type { ProjectTemplate } from "../shared/types.js";
 import { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 
-// ---------------------------------------------------------------------------
-// Python web framework template definitions (docs/168)
-// ---------------------------------------------------------------------------
-//
-// Design note — the preview SERVICE owns its venv install, NOT `agent.install`.
-//
-// A Python virtualenv is hard-pinned to the interpreter that created it
-// (`.venv/bin/python` is an absolute symlink, `pyvenv.cfg` records the home, and
-// compiled wheels are ABI-pinned). `agent.install` runs in the agent container
-// (Debian `python3`), but the app runs in the `python:3.12` preview service —
-// two different interpreters at two different paths. A venv built by one is
-// broken for the other. So deps must be installed by the same python that runs
-// the app, which means the install lives in the preview service's `command`.
-//
-// This is a deliberate carve-out from compose.md's "don't install in a service
-// command" rule, and it's safe because it's SINGLE-WRITER: the agent never runs
-// pip, so only the preview service ever writes into `.venv` — there is no
-// two-writer race (that race is what the npm rule guards against). The
-// scaffolded `shipit.yaml` therefore has no Python `agent.install`.
-//
-// v1 is preview-only (B1): the running app sees source edits via the mounted
-// volume, but the agent's own shell cannot `import` project deps. Documented as
-// a known limitation in compose.md.
-
-// Bare package names (no pins) keep the starter robust against yanked/renamed
-// versions — pip resolves the latest compatible set. A user repo that wants a
-// lockfile brings its own (requirements.txt pins, uv.lock, poetry.lock).
-// The preview service creates its own venv with the interpreter that runs the
-// app, installs deps, then exec's the server. `test -d .venv` keeps the venv
-// across restarts; `pip install` is re-run each boot but is a fast no-op once
-// satisfied. `exec` hands the server PID 1 so signals/shutdown work.
+// The preview interpreter must create its own venv; the agent's interpreter differs.
 function pythonCompose(opts: { port: number; runCommand: string }): string {
   return `services:
   web:
@@ -92,13 +62,7 @@ numpy
       "shipit.yaml": SHIPIT_YAML,
       "docker-compose.yml": pythonCompose({
         port: 8501,
-        // --server.enableCORS false AND --server.enableXsrfProtection false are
-        // both required to run behind ShipIt's preview proxy. Streamlit's
-        // WebSocket handler rejects any origin that isn't its own host, and
-        // through the proxy the browser's origin is `<sessionId>--8501.localhost`
-        // ("Rejecting WebSocket connection from disallowed origin"). Disabling
-        // only CORS is not enough: with XSRF protection still on, Streamlit
-        // silently overrides enableCORS back to true, so both must be off.
+        // XSRF protection re-enables CORS; disable both for the preview proxy origin.
         runCommand:
           ".venv/bin/streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false",
       }),

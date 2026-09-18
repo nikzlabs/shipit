@@ -68,18 +68,15 @@ Even with only two providers in scope, the abstraction is load-bearing — agent
 interface IssueTrackerProvider {
   id: "linear" | "github";
 
-  // Tracker → ShipIt
   handleTriggerWebhook(payload, signature): Promise<TriggerResult>;
-  handleFollowUpWebhook?(payload, signature): Promise<void>; // Linear `prompted`; later: PR comments
+  handleFollowUpWebhook?(payload, signature): Promise<void>;
 
-  // ShipIt → tracker
   ackTrigger(ref, sessionUrl): Promise<void>;
   reportPrOpened(ref, pr): Promise<void>;
   reportPrMerged(ref, pr): Promise<void>;
   reportError(ref, message): Promise<void>;
 
-  // Helpers
-  formatClosingKeyword(ref): string; // "Fixes ENG-123" / "Closes #456"
+  formatClosingKeyword(ref): string;
 }
 ```
 

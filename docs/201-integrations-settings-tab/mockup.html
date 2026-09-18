@@ -41,7 +41,6 @@
     color: var(--text-tertiary);
   }
 
-  /* ---- modal shell ---- */
   .modal {
     width: 480px; max-width: 100%;
     background: var(--bg-modal);
@@ -61,7 +60,6 @@
   .x { color: var(--text-tertiary); cursor: default; font-size: 18px; line-height: 1; }
   .modal-body { display: flex; flex: 1; min-height: 0; }
 
-  /* ---- content ---- */
   .content { flex: 1; overflow-y: auto; padding: 20px 22px; }
   .section-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
   .section-head h3 { font-size: 13px; font-weight: 600; margin: 0; }
@@ -69,10 +67,6 @@
   .section-sub { font-size: 12px; color: var(--text-secondary); margin: 0 0 12px; line-height: 1.5; }
   .divider { height: 1px; background: var(--border-soft); margin: 22px 0; }
 
-  /* ---- curated rows ---- */
-  /* One self-contained card per integration: header row + (divider + settings)
-     all inside a single bordered card, so the integration and its related
-     settings read as one grouped unit. */
   .card {
     background: var(--bg-secondary);
     border: 1px solid var(--border-soft);
@@ -111,7 +105,6 @@
   }
   .badge svg { width: 11px; height: 11px; flex-shrink: 0; }
 
-  /* ---- buttons ---- */
   .btn {
     font-size: 12px; font-weight: 500; padding: 6px 12px;
     border-radius: 7px; border: 1px solid var(--border);
@@ -122,7 +115,6 @@
   .btn.ghost { background: transparent; border-color: transparent; color: var(--text-secondary); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-  /* ---- per-integration setting row (lives inside the card, below a divider) ---- */
   .nested {
     padding: 11px 14px;
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -137,7 +129,6 @@
     width: 14px; height: 14px; border-radius: 50%; background: #fff;
   }
 
-  /* ---- mcp cards ---- */
   .mcp-card {
     display: flex; align-items: center; gap: 12px;
     padding: 11px 14px;
@@ -169,17 +160,14 @@
     </div>
 
     <div class="modal-body">
-      <!-- content -->
       <div class="content">
 
-        <!-- ===== Section 1: Connected services ===== -->
         <div class="section-head">
           <h3>Connected services</h3>
           <span class="count">· managed by ShipIt</span>
         </div>
         <p class="section-sub">First-party integrations. Credentials are brokered by ShipIt and never enter the session container; their data renders inline in chat.</p>
 
-        <!-- GitHub — header + PR toggle inside ONE card -->
         <div class="card">
           <div class="row">
             <div class="logo">
@@ -203,8 +191,6 @@
           </div>
         </div>
 
-        <!-- Linear — header (Disconnect top-right) + connection detail inside ONE card.
-             "Change team" sits on the team's own line, not up in the header. -->
         <div class="card">
           <div class="row">
             <div class="logo">
@@ -232,14 +218,12 @@
 
         <div class="divider"></div>
 
-        <!-- ===== Section 2: MCP servers ===== -->
         <div class="section-head">
           <h3>MCP servers</h3>
           <span class="count">· bring your own tools</span>
         </div>
         <p class="section-sub">Extend the agent with your own tools via the Model Context Protocol. These run with the credentials you provide.</p>
 
-        <!-- Notion OAuth -->
         <div class="mcp-card">
           <div class="logo">
             <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" fill="#ececee"/><path d="M8 8.5 8.4 8l7.6.5v8l-.8.6-6.8-.4V9l1.2.2 4.6.3v6" stroke="#111" stroke-width="1.1" fill="none"/></svg>
@@ -253,7 +237,6 @@
           </div>
         </div>
 
-        <!-- custom server -->
         <div class="mcp-card">
           <div class="logo">
             <svg viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2"><path d="M8 6 4 12l4 6"/><path d="m16 6 4 6-4 6"/></svg>

@@ -1,122 +1,134 @@
-import { describe, it, expect, vi } from "vitest";
-import { pickCleanupProvider, cleanTranscript } from "./cleanup.js";
-import type { CleanupProvider } from "./providers/types.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
+import { describe, it, expect } from "vitest";
+import { acceptableCleanupLength, cleanTranscript, type CleanupRunner } from "./cleanup.js";
+import { CLEANUP_INSTRUCTIONS } from "./cleanup-prompt.js";
 
-function authStub(token: string | null): AuthManager {
-  return {
-    getAccessToken: vi.fn().mockResolvedValue({ token }),
-  } as unknown as AuthManager;
-}
-
-function authThrows(): AuthManager {
-  return {
-    getAccessToken: vi.fn().mockRejectedValue(new Error("oauth broken")),
-  } as unknown as AuthManager;
-}
-
-describe("pickCleanupProvider", () => {
-  it("prefers the Claude OAuth bearer when present", async () => {
-    const provider = await pickCleanupProvider(authStub("oauth-token"), "openai-key");
-    expect(provider?.id).toBe("claude-oauth");
-  });
-
-  it("falls back to OpenAI when no OAuth bearer", async () => {
-    const provider = await pickCleanupProvider(authStub(null), "openai-key");
-    expect(provider?.id).toBe("openai-cleanup");
-  });
-
-  it("falls back to OpenAI when the OAuth lookup throws", async () => {
-    const provider = await pickCleanupProvider(authThrows(), "openai-key");
-    expect(provider?.id).toBe("openai-cleanup");
-  });
-
-  it("returns null when neither path is available", async () => {
-    expect(await pickCleanupProvider(authStub(null), null)).toBeNull();
-  });
-
-  // docs/150-multiple-provider-subscriptions req 19 — the unscoped read lands on the singleton config root,
-  // which holds nothing once the legacy aliases are retired. Cleanup has to
-  // name the account, or every migrated install silently loses the Claude
-  // cleanup path and drops to the OpenAI fallback.
-  it("reads the OAuth bearer from the account root it was given", async () => {
-    const auth = authStub("oauth-token");
-    await pickCleanupProvider(auth, "openai-key", fetch, "/credentials/provider-accounts/claude/acct_work");
-    expect(auth.getAccessToken).toHaveBeenCalledWith("/credentials/provider-accounts/claude/acct_work");
-  });
-
-  it("leaves the read unscoped for a reserved route, which uses the singleton path", async () => {
-    const auth = authStub("env-token");
-    await pickCleanupProvider(auth, "openai-key");
-    expect(auth.getAccessToken).toHaveBeenCalledWith(undefined);
-  });
-});
-
-function fakeProvider(impl: (raw: string) => Promise<string> | string): CleanupProvider {
-  return {
-    id: "claude-oauth",
-    clean: async (raw) => impl(raw),
-  };
+function fakeRunner(impl: (prompt: string) => Promise<string> | string): CleanupRunner {
+  return { deadlineMs: 1000, run: async (req) => impl(req.prompt) };
 }
 
 describe("cleanTranscript", () => {
-  it("returns no-provider error when provider is null", async () => {
+  it("returns no-provider error when nothing can clean", async () => {
     const r = await cleanTranscript("hello", null);
     expect(r.text).toBe("hello");
     expect(r.cleanupErrorCode).toBe("no-provider");
-    expect(r.cleanupProvider).toBeUndefined();
   });
 
   it("returns the cleaned text on success", async () => {
-    const r = await cleanTranscript("um hello", fakeProvider(() => "Hello"));
+    const r = await cleanTranscript("um hello", fakeRunner(() => "Hello"));
     expect(r.text).toBe("Hello");
-    expect(r.cleanupProvider).toBe("claude-oauth");
     expect(r.cleanupErrorCode).toBeUndefined();
   });
 
+  it("hands the runner the cleanup instructions and the raw transcript", async () => {
+    let seen = "";
+    await cleanTranscript("um hello", fakeRunner((prompt) => {
+      seen = prompt;
+      return "Hello";
+    }));
+    expect(seen).toContain(CLEANUP_INSTRUCTIONS);
+    expect(seen).toContain("um hello");
+  });
+
   it("falls through to raw on empty output", async () => {
-    const r = await cleanTranscript("hello", fakeProvider(() => ""));
+    const r = await cleanTranscript("hello", fakeRunner(() => ""));
     expect(r.text).toBe("hello");
     expect(r.cleanupErrorCode).toBe("empty-output");
   });
 
   it("falls through to raw when output is implausibly long", async () => {
-    const r = await cleanTranscript("hi", fakeProvider(() => "x".repeat(200)));
+    const r = await cleanTranscript("hi", fakeRunner(() => "x".repeat(200)));
     expect(r.text).toBe("hi");
     expect(r.cleanupErrorCode).toBe("too-long");
   });
 
-  it("falls through to raw when output has a preamble", async () => {
-    const r = await cleanTranscript("hello", fakeProvider(() => "Here is the cleaned message: hello"));
-    expect(r.text).toBe("hello");
-    expect(r.cleanupErrorCode).toBe("preamble");
+  // The sole bound on an answer's length now that no runner is given an output
+  // budget: a cleaned transcript is the same message tidied, so its ceiling
+  // follows the transcript rather than a token cap nobody can size correctly.
+  it("accepts an answer at the acceptable length and rejects the next character", async () => {
+    const raw = "x".repeat(1234);
+    const limit = acceptableCleanupLength(raw);
+
+    expect((await cleanTranscript(raw, fakeRunner(() => "y".repeat(limit)))).cleanupErrorCode)
+      .toBeUndefined();
+    expect((await cleanTranscript(raw, fakeRunner(() => "y".repeat(limit + 1)))).cleanupErrorCode)
+      .toBe("too-long");
   });
 
-  it("falls through to raw with timeout code on abort", async () => {
-    const provider = fakeProvider(
-      () =>
-        new Promise<string>((_resolve, reject) => {
-          // Never resolves before the timeout; reject as the abort would.
-          setTimeout(() => {
-            const e = new Error("aborted");
-            e.name = "AbortError";
-            reject(e);
-          }, 5);
-        }),
-    );
-    const r = await cleanTranscript("hello", provider, { timeoutMs: 1 });
+  it("falls through to raw when output has a preamble", async () => {
+    const r = await cleanTranscript("hello", fakeRunner(() => "Here is the cleaned message: hello"));
     expect(r.text).toBe("hello");
-    expect(r.cleanupErrorCode).toBe("timeout");
+    expect(r.cleanupErrorCode).toBe("preamble");
   });
 
   it("falls through to raw with provider-error on other failures", async () => {
     const r = await cleanTranscript(
       "hello",
-      fakeProvider(() => {
+      fakeRunner(() => {
         throw new Error("500");
       }),
     );
     expect(r.text).toBe("hello");
     expect(r.cleanupErrorCode).toBe("provider-error");
+  });
+
+  /**
+   * docs/299-direct-provider-calls req 9. The run below never answers and never reacts to the abort —
+   * a harness that stopped answering, which is the case a timeout handed
+   * downstream cannot cover. Removing the deadline leaves this hanging.
+   */
+  it("returns the raw transcript on its own deadline, without waiting for the run", async () => {
+    let cancelled = false;
+    const runner: CleanupRunner = {
+      deadlineMs: 20,
+      run: ({ signal }) => {
+        signal.addEventListener("abort", () => { cancelled = true; });
+        return new Promise<string>(() => { /* never settles */ });
+      },
+    };
+
+    const r = await cleanTranscript("hello", runner);
+
+    expect(r.text).toBe("hello");
+    expect(r.cleanupErrorCode).toBe("timeout");
+    // Abandoning the run must cancel it, not merely stop waiting for it.
+    expect(cancelled).toBe(true);
+  });
+
+  it("reports a run that fails by abort as a timeout", async () => {
+    const runner: CleanupRunner = {
+      deadlineMs: 5,
+      run: ({ signal }) =>
+        new Promise<string>((resolve, reject) => {
+          const timer = setTimeout(() => resolve("Answered in time"), 500);
+          signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            const e = new Error("aborted");
+            e.name = "AbortError";
+            reject(e);
+          });
+        }),
+    };
+    const r = await cleanTranscript("hello", runner);
+    expect(r.text).toBe("hello");
+    expect(r.cleanupErrorCode).toBe("timeout");
+  });
+
+  it("leaves a rejection arriving after the deadline handled", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (err: unknown): void => { unhandled.push(err); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const runner: CleanupRunner = {
+        deadlineMs: 5,
+        run: () => new Promise<string>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("late failure")), 30);
+        }),
+      };
+      expect((await cleanTranscript("hello", runner)).cleanupErrorCode).toBe("timeout");
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
   });
 });

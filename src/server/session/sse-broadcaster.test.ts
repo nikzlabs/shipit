@@ -1,12 +1,3 @@
-/**
- * Tests for the worker's SseBroadcaster ring-buffer + replay behaviour.
- *
- * These cover the bug class fixed in the "spawned-child sessions stall
- * until opened" change: agent events MUST not be dropped when no SSE
- * client is attached, and a late-connecting client MUST be able to ask
- * for everything-since-seq-N so reconnects (and first-ever connects
- * after /agent/start) are lossless.
- */
 
 import { describe, it, expect } from "vitest";
 import { PassThrough } from "node:stream";
@@ -14,9 +5,6 @@ import type { ServerResponse } from "node:http";
 import { SseBroadcaster, serializeSSEEvent } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
 
-// A PassThrough is enough — we just need `.write()` and the event
-// surface that ServerResponse exposes. Casting once at the boundary
-// keeps the tests honest about what the broadcaster actually uses.
 function makeClient(): { client: SseClient; sink: PassThrough } {
   const sink = new PassThrough();
   const client: SseClient = { raw: sink as unknown as ServerResponse };
@@ -31,15 +19,12 @@ describe("SseBroadcaster ring buffer", () => {
   it("buffers events with no clients attached and replays them on attach", () => {
     const bc = new SseBroadcaster();
 
-    // Emit BEFORE anyone attaches — this is the spawned-child scenario.
     bc.broadcast({ type: "agent_event", data: { phase: "init" } });
     bc.broadcast({ type: "agent_done", data: { exitCode: 0 } });
 
     expect(bc.bufferSize).toBe(2);
     expect(bc.latestSeq).toBe(2);
 
-    // Late client attaches. `replaySince(0)` is the orchestrator-on-first-
-    // connect call — give me everything you've got.
     const { client, sink } = makeClient();
     bc.attach(client);
     bc.replaySince(client, 0);
@@ -109,7 +94,6 @@ describe("SseBroadcaster ring buffer", () => {
     bc.replaySince(client, 0);
 
     const wire = read(sink);
-    // Oldest 2 evicted; 3..5 remain.
     expect(wire).not.toContain('"i":1');
     expect(wire).not.toContain('"i":2');
     expect(wire).toContain('"i":3');

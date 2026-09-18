@@ -1,12 +1,3 @@
-/**
- * Unit tests for the dependency content hash (docs/197 Part 1).
- *
- * Three concerns: (1) the command allowlist — which `agent.install` commands are
- * recognized pure dependency installs and which inputs they consume; (2) the
- * resolution rule — `install-inputs` override vs command-derived default vs
- * commit-only fallback; (3) the hash itself — deterministic, busts on a dep-file
- * edit, `null` when there's nothing to hash.
- */
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,6 +6,7 @@ import {
   computeDepsHash,
   computeInstallDepsHash,
   depInputsForCommand,
+  hasInstallLifecycleScript,
   resolveDepsHashInputs,
 } from "./deps-hash.js";
 
@@ -68,14 +60,14 @@ describe("depInputsForCommand — allowlist", () => {
   });
 
   it("rejects non-pure / unrecognized commands (→ null, commit-only)", () => {
-    expect(depInputsForCommand("npm install lodash")).toBeNull(); // names a package
+    expect(depInputsForCommand("npm install lodash")).toBeNull();
     expect(depInputsForCommand("npm run build")).toBeNull();
     expect(depInputsForCommand("yarn add react")).toBeNull();
-    expect(depInputsForCommand("pip install flask")).toBeNull(); // no -r
-    expect(depInputsForCommand("pip install")).toBeNull(); // no requirements file
-    expect(depInputsForCommand("uv pip install foo")).toBeNull(); // ad-hoc package, no -r
-    expect(depInputsForCommand("uv pip install")).toBeNull(); // no requirements file
-    expect(depInputsForCommand("python3 app.py")).toBeNull(); // not venv creation
+    expect(depInputsForCommand("pip install flask")).toBeNull();
+    expect(depInputsForCommand("pip install")).toBeNull();
+    expect(depInputsForCommand("uv pip install foo")).toBeNull();
+    expect(depInputsForCommand("uv pip install")).toBeNull();
+    expect(depInputsForCommand("python3 app.py")).toBeNull();
     expect(depInputsForCommand("npx prisma generate")).toBeNull();
     expect(depInputsForCommand("./build.sh")).toBeNull();
     expect(depInputsForCommand("")).toBeNull();
@@ -92,8 +84,6 @@ describe("resolveDepsHashInputs — override vs default vs fallback", () => {
   });
 
   it("keeps content-keying when a venv-creation step precedes a recognized install (live canary)", () => {
-    // The prod canary's install: `uv venv .venv` then `uv pip install -r requirements.txt`.
-    // The input-free venv step must NOT disable the content path.
     expect(
       resolveDepsHashInputs(["uv venv .venv", "uv pip install -r requirements.txt"], null),
     ).toEqual(["requirements.txt"]);
@@ -104,7 +94,6 @@ describe("resolveDepsHashInputs — override vs default vs fallback", () => {
   });
 
   it("an explicit install-inputs override replaces the default and opts back in", () => {
-    // The command does codegen (would be null), but the override forces content-keying.
     expect(resolveDepsHashInputs(["npm run setup"], ["package.json", "prisma/schema.prisma"])).toEqual([
       "package.json",
       "prisma/schema.prisma",
@@ -156,11 +145,53 @@ describe("computeDepsHash + computeInstallDepsHash", () => {
 
   it("computeInstallDepsHash gates on the command allowlist", () => {
     fs.writeFileSync(path.join(dir, "package.json"), '{"name":"x"}');
-    // Recognized → hashes package.json.
     expect(computeInstallDepsHash(dir, ["npm install"], null)).not.toBeNull();
-    // Codegen command, no override → null (commit-only).
     expect(computeInstallDepsHash(dir, ["npm run build"], null)).toBeNull();
-    // Override opts back in even for the codegen command.
     expect(computeInstallDepsHash(dir, ["npm run build"], ["package.json"])).not.toBeNull();
+  });
+});
+
+describe("hasInstallLifecycleScript", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "lifecycle-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (pkg: unknown): void =>
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg));
+
+  it.each(["preinstall", "install", "postinstall", "prepare", "prepublish"])(
+    "detects %s — an install RUNS it, so its output is not a function of the hashed inputs",
+    (script) => {
+      write({ name: "x", scripts: { [script]: "node scripts/build.js" } });
+      expect(hasInstallLifecycleScript(dir)).toBe(true);
+    },
+  );
+
+  it("ignores scripts an install does NOT run", () => {
+    write({ name: "x", scripts: { build: "tsc", test: "vitest", start: "node ." } });
+    expect(hasInstallLifecycleScript(dir)).toBe(false);
+  });
+
+  it("an empty script value is not a lifecycle script", () => {
+    write({ name: "x", scripts: { postinstall: "" } });
+    expect(hasInstallLifecycleScript(dir)).toBe(false);
+  });
+
+  it.each([
+    ["no package.json at all", null],
+    ["no scripts block", { name: "x" } as unknown],
+    ["a non-object scripts value", { name: "x", scripts: "nope" } as unknown],
+  ])("reads %s as no — there is then no npm install to have a lifecycle", (_label, pkg) => {
+    if (pkg !== null) write(pkg);
+    expect(hasInstallLifecycleScript(dir)).toBe(false);
+  });
+
+  it("unparseable JSON reads as no rather than throwing", () => {
+    fs.writeFileSync(path.join(dir, "package.json"), "{not json");
+    expect(hasInstallLifecycleScript(dir)).toBe(false);
   });
 });

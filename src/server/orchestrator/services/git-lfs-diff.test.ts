@@ -1,20 +1,4 @@
-/**
- * End-to-end: `getTurnDiff` over a Git LFS repo must yield renderable images,
- * not checksums.
- *
- * This is the test that would have caught the original bug. The diff service
- * reads blobs at two commits, and an LFS repo's committed blob is *always* a
- * ~130-byte pointer stub — `git lfs pull` materializes the working tree, which
- * the diff viewer never reads. Worse, the conventional `.gitattributes` line
- * (`filter=lfs diff=lfs merge=lfs -text`) does NOT make git call the blob
- * binary: it sniffs ASCII and reports an ordinary +2/-2 **text** diff. So these
- * fixtures deliberately commit real pointer stubs through a real git, and assert
- * on the text path, not the binary one.
- *
- * No LFS server is involved: objects are seeded straight into
- * `.git/lfs/objects`, which is exactly the state provisioning leaves a session
- * clone in (docs/231 pull + docs/232 hardlinks from the shared cache).
- */
+// Commit real LFS pointers, which git reports as text; seed their objects locally.
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -27,7 +11,6 @@ import { getTurnDiff } from "./git.js";
 
 const LFS_ATTRS = "*.png filter=lfs diff=lfs merge=lfs -text\n*.svg filter=lfs diff=lfs merge=lfs\n";
 
-/** A PNG header plus filler — enough that a corrupted decode would be obvious. */
 function fakePng(marker: string): Buffer {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(marker.repeat(8))]);
 }
@@ -58,7 +41,6 @@ function makeLfsRepo(): string {
   return dir;
 }
 
-/** Commit `content` at `relPath` as a pointer stub, with the object seeded locally. */
 function commitLfsFile(dir: string, relPath: string, content: Buffer, message: string): void {
   fs.writeFileSync(path.join(dir, relPath), pointerFor(content));
   const oid = crypto.createHash("sha256").update(content).digest("hex");
@@ -95,7 +77,6 @@ describe("getTurnDiff over Git LFS files", () => {
   });
 
   it("never leaks the pointer stub into the rendered content", async () => {
-    // The regression in one assertion: what the user saw was the sha256.
     const dir = makeLfsRepo();
     const content = fakePng("ONLY____");
     commitLfsFile(dir, "logo.png", content, "add-logo");
@@ -124,9 +105,6 @@ describe("getTurnDiff over Git LFS files", () => {
   });
 
   it("renders image panes even when the objects can't be resolved", async () => {
-    // An old version whose object was never fetched locally and whose remote is
-    // unreachable: the pane must be empty (the client labels it "(Git LFS
-    // content unavailable)") rather than falling back to a pointer text diff.
     const dir = makeLfsRepo();
     const before = fakePng("GONE____");
     const after = fakePng("ALSOGONE");
@@ -153,7 +131,6 @@ describe("getTurnDiff over Git LFS files", () => {
     const diff = await getTurnDiff(new GitManager(dir), from, to);
     const file = diff.files.find((f) => f.path === "icon.svg")!;
 
-    // SVG stays text (Monaco diff + render toggle) — it just gets real source.
     expect(file.image).toBe(false);
     expect(file.lfs).toBe(true);
     expect(file.newContent).toBe(svg.toString("utf-8"));

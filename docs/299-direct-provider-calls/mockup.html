@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Direct provider calls — UI changes (docs/299)</title>
+<style>
+  :root {
+    --bg-page: #0a0a0b;
+    --bg-modal: #111113;
+    --bg-secondary: #18181b;
+    --bg-elevated: #1f1f23;
+    --bg-hover: #26262b;
+    --border: #2a2a30;
+    --border-soft: #1f1f24;
+    --text-primary: #ececee;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #6b6b74;
+    --accent: #6366f1;
+    --accent-soft: #818cf8;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, #15151a 0%, transparent 60%),
+      var(--bg-page);
+    color: var(--text-primary);
+    padding: 40px 24px 80px;
+  }
+  .page-title { max-width: 1060px; margin: 0 auto 6px; font-size: 20px; font-weight: 600; }
+  .page-sub {
+    max-width: 1060px; margin: 0 auto 34px; font-size: 13px; color: var(--text-secondary);
+    line-height: 1.6;
+  }
+  .page-sub code, .cap code {
+    background: var(--bg-secondary); border: 1px solid var(--border-soft);
+    padding: 1px 5px; border-radius: 4px; font-size: 12px;
+  }
+  .section-label {
+    max-width: 1060px; margin: 0 auto 12px;
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary);
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-label .n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 10px; letter-spacing: 0;
+  }
+  .stage { max-width: 1060px; margin: 0 auto 14px; }
+  .cap {
+    max-width: 1060px; margin: 0 auto 46px; font-size: 12px; color: var(--text-tertiary);
+    line-height: 1.65;
+    border-left: 2px solid var(--border); padding-left: 14px;
+  }
+  .cap b { color: var(--text-secondary); font-weight: 600; }
+  .panel {
+    background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 22px;
+  }
+  .panel + .panel { margin-top: 14px; }
+  .state-tag {
+    display: inline-block; margin-bottom: 14px;
+    font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--text-tertiary); background: var(--bg-secondary);
+    border: 1px solid var(--border-soft); border-radius: 4px; padding: 3px 7px;
+  }
+  .state-tag.new { color: var(--accent-soft); border-color: #33336a; background: #16162a; }
+
+  h3.sec { font-size: 14px; font-weight: 500; margin: 0 0 3px; }
+  p.desc { font-size: 12px; color: var(--text-tertiary); margin: 0; line-height: 1.55; }
+  p.derived { font-size: 11px; color: var(--text-tertiary); margin: 6px 0 0; }
+  p.derived.warn { color: var(--warning); }
+  .derived .dot { color: var(--text-tertiary); margin: 0 5px; }
+  .hl { color: var(--accent-soft); }
+
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+  .picker {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 10px; font-size: 12.5px; color: var(--text-primary);
+  }
+  .picker .caret { color: var(--text-tertiary); font-size: 9px; }
+  .logo {
+    width: 15px; height: 15px; border-radius: 3.5px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700; color: #0a0a0b;
+  }
+  .logo.anthropic { background: #d4a27f; }
+  .logo.openai { background: #e6e6e6; }
+  .logo.deepseek { background: #7aa2f7; }
+  .logo.zai { background: #9ece6a; }
+  .pill {
+    font-size: 9.5px; letter-spacing: .05em; text-transform: uppercase;
+    border-radius: 3px; padding: 2px 5px; border: 1px solid var(--border);
+    color: var(--text-tertiary); background: var(--bg-secondary);
+  }
+  .pill.sub { color: var(--success); border-color: #1e3b28; background: #101a13; }
+  .pill.key { color: var(--warning); border-color: #3d2f14; background: #1a150a; }
+
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .toggle {
+    width: 34px; height: 19px; border-radius: 999px; background: var(--accent);
+    position: relative; flex: none;
+  }
+  .toggle::after {
+    content: ""; position: absolute; top: 2px; right: 2px;
+    width: 15px; height: 15px; border-radius: 50%; background: #fff;
+  }
+  .toggle.off { background: var(--bg-hover); }
+  .toggle.off::after { right: auto; left: 2px; background: var(--text-tertiary); }
+
+  .status { font-size: 11.5px; color: var(--text-tertiary); margin: 9px 0 0; line-height: 1.6; }
+  .status a { color: var(--accent-soft); text-decoration: none; border-bottom: 1px dotted #44446e; }
+  .status .slow { color: var(--warning); }
+
+  .notice {
+    margin-top: 12px; background: var(--bg-secondary); border: 1px solid var(--border-soft);
+    border-left: 2px solid var(--accent); border-radius: 6px; padding: 11px 13px;
+  }
+  .notice p { margin: 0; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+  .notice .acts { display: flex; gap: 8px; margin-top: 10px; }
+  .btn {
+    font-size: 11.5px; border-radius: 6px; padding: 5px 11px; border: 1px solid var(--border);
+    background: var(--bg-elevated); color: var(--text-primary);
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .split-head { font-size: 13px; font-weight: 500; margin: 0 0 10px; }
+  .urow {
+    display: flex; align-items: flex-start; gap: 12px; font-size: 13px;
+    padding: 7px 0; border-bottom: 1px solid var(--border-soft);
+  }
+  .urow:last-child { border-bottom: none; }
+  .urow.legacy { opacity: .75; }
+  .urow.newrow { background: #101024; padding-left: 8px; padding-right: 8px; margin: 0 -8px; border-radius: 5px; }
+  .urow .name { flex: 1; min-width: 0; }
+  .urow .name .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .urow .models { display: block; font-size: 11.5px; color: var(--text-secondary); margin-top: 1px; }
+  .rpill {
+    font-size: 10px; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--text-secondary);
+  }
+  .urow .tok {
+    width: 100px; flex: none; text-align: right; font-size: 11.5px;
+    color: var(--text-secondary); padding-top: 2px; font-variant-numeric: tabular-nums;
+  }
+  .urow .money { width: 118px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+  .urow .money .sm { display: block; font-size: 10px; color: var(--text-secondary); }
+  .urow .money .xs { display: block; font-size: 12px; color: var(--text-primary); }
+  .qbar { display: block; margin-top: 4px; height: 3px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
+  .qbar i { display: block; height: 100%; background: var(--accent); }
+
+  .legend {
+    max-width: 1060px; margin: 0 auto 34px; display: flex; gap: 18px; flex-wrap: wrap;
+    font-size: 11.5px; color: var(--text-tertiary);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 9px; height: 9px; border-radius: 2px; background: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="page-title">Direct provider calls — UI changes</div>
+<div class="page-sub">
+  Prototype for <code>docs/299-direct-provider-calls</code>. Four surfaces change. Everything
+  marked in <span class="hl">indigo</span> is new or reworded; everything else is what ShipIt
+  renders today, drawn so the change can be judged in place.
+</div>
+<div class="legend">
+  <span><i class="swatch"></i> new or reworded</span>
+  <span><i class="swatch" style="background:var(--bg-hover)"></i> unchanged, for context</span>
+</div>
+
+<!-- 1 -->
+<div class="section-label"><i class="n">1</i> Settings → Models → Background work</div>
+<div class="stage">
+
+  <div class="panel">
+    <div class="state-tag">Today · subscription</div>
+    <h3 class="sec">Background work</h3>
+    <p class="desc">What ShipIt runs for its own work, such as naming a session or writing a pull-request description.</p>
+    <p class="derived">Runs on Claude Code</p>
+    <div class="controls">
+      <div class="picker"><i class="logo anthropic">A</i> Anthropic <span class="pill sub">Sub</span> <span class="caret">▾</span></div>
+      <div class="picker">Haiku 4.5 <span class="caret">▾</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="state-tag new">New · credential permits a direct call</div>
+    <h3 class="sec">Background work</h3>
+    <p class="desc">What ShipIt runs for its own work, such as naming a session or writing a pull-request description.</p>
+    <p class="derived"><span class="hl">Called directly<span class="dot">·</span>no harness, no container</span></p>
+    <div class="controls">
+      <div class="picker"><i class="logo anthropic">A</i> Anthropic <span class="pill key">Key</span> <span class="caret">▾</span></div>
+      <div class="picker">Haiku 4.5 <span class="caret">▾</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="state-tag new">New · model provider reachable with no harness installed</div>
+    <h3 class="sec">Background work</h3>
+    <p class="desc">What ShipIt runs for its own work, such as naming a session or writing a pull-request description.</p>
+    <p class="derived"><span class="hl">Called directly<span class="dot">·</span>no harness, no container</span></p>
+    <div class="controls">
+      <div class="picker"><i class="logo deepseek">D</i> DeepSeek <span class="pill key">Key</span> <span class="caret">▾</span></div>
+      <div class="picker">DeepSeek V4 Flash <span class="caret">▾</span></div>
+    </div>
+  </div>
+
+</div>
+<div class="cap">
+  <b>What changed.</b> One line, and the contents of the two pickers. The derived line already
+  carries the one fact the controls cannot state, so it carries this one too — the file's own
+  comment says that is its job. <b>Wording:</b> "Called directly" beats "Direct call to
+  Anthropic", which repeats the model provider the control beside it already names; the second clause
+  says why anyone should care, since it is the difference the user feels.
+  <b>Contents.</b> A model provider whose credential permits a direct call shows <i>no</i> harness
+  row for the same model (req 3), and a key-only provider now appears even when no harness that speaks
+  its style is installed — today <code>eligibleModelsOf</code> drops it, so the third panel is
+  currently unreachable.
+</div>
+
+<!-- 2 -->
+<div class="section-label"><i class="n">2</i> Settings → Voice → cleanup status</div>
+<div class="stage">
+
+  <div class="panel">
+    <div class="state-tag">Today</div>
+    <div class="row-between">
+      <div>
+        <div style="font-size:13px">Clean up transcripts with an LLM</div>
+        <p class="desc">Fixes mis-hearings, fillers, and casing before the text lands in the box.</p>
+      </div>
+      <i class="toggle"></i>
+    </div>
+    <p class="status">Cleanup via your Claude subscription</p>
+  </div>
+
+  <div class="panel">
+    <div class="state-tag new">New · background work is a direct call</div>
+    <div class="row-between">
+      <div>
+        <div style="font-size:13px">Clean up transcripts with an LLM</div>
+        <p class="desc">Fixes mis-hearings, fillers, and casing before the text lands in the box.</p>
+      </div>
+      <i class="toggle"></i>
+    </div>
+    <p class="status"><span class="hl">Cleaned by Haiku 4.5, your <a href="#">Background work</a> model. Called directly, so it is quick.</span></p>
+  </div>
+
+  <div class="panel">
+    <div class="state-tag new">New · background work runs a harness</div>
+    <div class="row-between">
+      <div>
+        <div style="font-size:13px">Clean up transcripts with an LLM</div>
+        <p class="desc">Fixes mis-hearings, fillers, and casing before the text lands in the box.</p>
+      </div>
+      <i class="toggle"></i>
+    </div>
+    <p class="status"><span class="hl">Cleaned by Haiku 4.5, your <a href="#">Background work</a> model. <span class="slow">Runs through Claude Code, so it takes a few seconds.</span> An API key for a model provider would make it quick.</span></p>
+  </div>
+
+  <div class="panel">
+    <div class="state-tag new">New · voice key not yet a model provider</div>
+    <div class="row-between">
+      <div>
+        <div style="font-size:13px">Clean up transcripts with an LLM</div>
+        <p class="desc">Fixes mis-hearings, fillers, and casing before the text lands in the box.</p>
+      </div>
+      <i class="toggle"></i>
+    </div>
+    <div class="notice">
+      <p><b style="color:var(--text-primary);font-weight:600">Use your OpenAI key for cleanup too?</b><br />
+      Cleanup now runs on your Background work model. Your OpenAI key is stored for speech only,
+      so adding it as a model provider lets it clean transcripts as well. It stays visible and
+      removable under Model providers like any other credential.</p>
+      <div class="acts">
+        <button class="btn primary">Add it as a model provider</button>
+        <button class="btn">Not now</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+<div class="cap">
+  <b>What changed.</b> The status line stops naming a provider ShipIt picked and names the
+  user's own choice, linking to it — the old line described a decision the user could not see or
+  change. The slow case says so plainly rather than letting a three-second pause look like a bug,
+  and names the one thing that fixes it. <b>The notice is the migration</b> the design owes: the
+  OpenAI voice key is not a model provider credential, so without this an install whose only key
+  is that one loses working cleanup. Declining leaves cleanup unavailable and says so, rather
+  than writing a Background work choice the user never made.
+</div>
+
+<!-- 3 -->
+<div class="section-label"><i class="n">3</i> Usage → all sessions</div>
+<div class="stage">
+  <div class="panel">
+    <div class="state-tag new">New row · work belonging to no session</div>
+    <h3 class="split-head">All sessions — by provider</h3>
+
+    <div class="urow">
+      <span class="name">
+        <span class="top">Anthropic <span class="rpill">Subscription</span></span>
+        <span class="models">Opus 5, Haiku 4.5</span>
+      </span>
+      <span class="tok">18.4M tokens</span>
+      <span class="money">
+        <span class="xs">Included</span>
+        <span class="qbar"><i style="width:62%"></i></span>
+        <span class="sm">62% of weekly</span>
+        <span class="sm">≈$131.58 at API rates</span>
+      </span>
+    </div>
+
+    <div class="urow">
+      <span class="name">
+        <span class="top">OpenAI <span class="rpill">API key</span></span>
+        <span class="models">GPT-5.6 Sol</span>
+      </span>
+      <span class="tok">402K tokens</span>
+      <span class="money">$4.11<span class="sm">metered</span></span>
+    </div>
+
+    <div class="urow newrow">
+      <span class="name">
+        <span class="top"><span class="hl">Anthropic</span> <span class="rpill">API key</span>
+          <span class="rpill" style="color:var(--accent-soft);border-color:#33336a">No session</span></span>
+        <span class="models">Haiku 4.5</span>
+      </span>
+      <span class="tok">96K tokens</span>
+      <span class="money">$0.31<span class="sm">metered</span></span>
+    </div>
+
+    <div class="urow legacy">
+      <span class="name">
+        <span class="top">No provider recorded <span class="rpill">Unattributed</span></span>
+      </span>
+      <span class="tok">1.2M tokens</span>
+      <span class="money">$31.70<span class="sm">earlier accounting</span></span>
+    </div>
+  </div>
+</div>
+<div class="cap">
+  <b>What changed.</b> One row, in the install-wide view only. A dictation cleaned with no session
+  open spends real money and today has nowhere to be recorded, because a usage row requires a
+  session id. It is <i>not</i> the existing <span style="color:var(--text-secondary)">Unattributed</span>
+  group: that group exists for volume whose provider and billing mode are unknown, and this row
+  knows both. <b>It never appears inside a single session's view</b>, where it would be reporting
+  spend that session did not incur.
+</div>
+
+<!-- 4 -->
+<div class="section-label"><i class="n">4</i> Composer context dial — no change, and that is the point</div>
+<div class="stage">
+  <div class="panel">
+    <div class="state-tag">Unchanged, if the fix lands</div>
+    <div class="controls" style="margin-top:0">
+      <div class="picker">Opus 5 <span class="caret">▾</span></div>
+      <div class="picker" style="color:var(--text-secondary)">◔ 34% of 1M</div>
+    </div>
+    <p class="derived" style="margin-top:12px">Session model and context occupancy, read from the session's own turns.</p>
+  </div>
+</div>
+<div class="cap">
+  <b>Why it is here.</b> Background work is kept out of the dial by one field —
+  <code>sub_agent_id</code> on the usage row — and the design removes the harness id that fills
+  it. Without an explicit replacement, a pull-request description written by a direct call would
+  count as a session turn, and this dial would show <i>Haiku 4.5</i> and the background model's
+  occupancy instead of the session's own. The prototype records the correct state so a regression
+  is recognisable.
+</div>
+
+</body>
+</html>

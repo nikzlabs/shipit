@@ -134,8 +134,9 @@ A new normalized method on the agent interface, implemented per-adapter:
 
 Both adapters map their native signals into one shared shape:
 
-- `agent_compaction_started` — **transient** progress (spinner / "Compacting
-  context…"). Emit-only; correctly disappears (it's not transcript content).
+- `agent_compaction_started` — **transient** progress (the agent status bar
+  says "Compacting context..."). Emit-only; correctly disappears (it's not
+  transcript content).
   - Claude ← `system/status status:"compacting"`
   - Codex ← `item/started` `type:"contextCompaction"`
 - `agent_compacted` — **persisted** transcript card. Shape:
@@ -312,35 +313,33 @@ Fix (client-side, no server/connect-contract change):
   replayed `compaction_status active:true`, while an ended turn stays cleared.
   Race-free by construction. Test: `useConnectionSync.test.ts` ("clears the
   transient compacting indicator on disconnect").
-- **`MessageList`** (defense in depth): the spinner renders only when
-  `compacting && isLoading`. A compaction only ever runs mid-turn, so the
-  indicator should never outlive the turn.
+- **Defense in depth**: the indicator renders only while the turn does. It was
+  `compacting && isLoading` in `MessageList`; since 2026-09-13 it is the
+  `AgentStatusBar`, which App renders only while `isLoading`. A compaction only
+  ever runs mid-turn, so the indicator should never outlive the turn.
 
 (An earlier attempt made the reconnect handler always send `session_status` even
 for idle runners; that broke the "`preview_status` is the last synchronous
 connect message" sentinel contract several integration tests rely on, so the fix
 moved entirely client-side.)
 
-## Fix (2026-08-12): "Compacting…" rendered below a message sent during the compaction
+## Change (2026-09-13): the in-flight indicator is the status bar, not a card
 
-Symptom (user-reported): send `/compact`, then immediately send another message
-while the compaction is still running — the "Compacting context…" row appears
-*below* the new message, reading as if the compaction had started after it. The
-server handles the ordering correctly (the message is steered into the live turn
-or queued behind it); only the transcript's visual order was wrong.
+A compaction is what the agent is *doing*, so it is now said where everything
+else the agent is doing is said: `AgentStatusBar` renders "Compacting
+context..." in place of the current activity while `compacting` is true. The
+bordered "Compacting context…" row in the transcript is gone. The persisted
+"Context compacted" card, with the token counts, is unchanged and is still the
+record that it ran.
 
-Cause: the indicator was rendered after the whole message list, so any message
-appended later — a steered one, or the optimistic bubble in the window before
-`message_queued` removes it — sorted above it. The spinner had no transcript
-position of its own.
-
-Fix (client-only): the indicator now has an anchor.
-`SessionState.compactingAnchor` records `messages.length` at the moment
-`compacting` goes true (captured inside `setCompacting`, so every path gets it;
-a repeated `active:true` from a reconnect replay keeps the original anchor), and
-`MessageList` splices the indicator into the rendered element stream at that
-position via `withCompactingIndicator` instead of appending it. A `null` anchor
-falls back to the old end-of-list placement. Key files:
-`src/client/stores/session-store.ts`, `src/client/components/MessageList/MessageList.tsx`.
-Tests: `MessageList.test.tsx` ("compacting indicator placement"),
-`message-handlers/compaction.test.ts` (anchor capture / replay / clear).
+This also deletes the anchor the row needed. A row rendered after the whole
+message list sorted *below* any message appended while the compaction ran — a
+steered one, or the optimistic bubble before `message_queued` removes it —
+reading as if the compaction had started after it. The fix for that
+(2026-08-12) was `SessionState.compactingAnchor`, capturing `messages.length`
+inside `setCompacting` and splicing the row in at that position. A status bar
+that sits below the transcript has no position to get wrong, so the anchor,
+`compactingIndicatorIndex`, and their tests are removed rather than kept.
+Key files: `src/client/components/AgentStatusBar.tsx`,
+`src/client/components/MessageList/MessageList.tsx`,
+`src/client/stores/session-store.ts`. Test: `AgentStatusBar.test.tsx`.

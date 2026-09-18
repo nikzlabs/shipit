@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect/useRef manage the Monaco editor lifecycle.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import type * as MonacoEditor from "monaco-editor";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
@@ -51,12 +51,7 @@ function EditableCodeEditor({
 
   onChangeRef.current = onChange;
 
-  // `content` seeds the editor's initial value but must NOT be an effect
-  // dependency. It changes on every keystroke (onChange → store → re-render),
-  // and re-running the effect would dispose and recreate the Monaco instance on
-  // each character — the editor visibly blinked and dropped focus/caret. The
-  // editor owns its own buffer after mount, so we only (re)create it when the
-  // file itself changes, reading the latest loaded content from a ref.
+  // Do not depend on content: rebuilding Monaco per keystroke drops its caret.
   const initialContentRef = useRef(content);
   initialContentRef.current = content;
 
@@ -138,7 +133,7 @@ export function FileEditModal({
     try {
       await onSave();
     } catch {
-      // The store owns the visible error state.
+      // Error state is external.
     }
   }, [canSave, onSave]);
 
@@ -153,7 +148,6 @@ export function FileEditModal({
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) requestClose(); }}>
       <DialogContent className="w-[92vw] max-w-5xl h-[86vh] flex flex-col overflow-hidden">
         <div className="border-b border-(--color-border-secondary) shrink-0">
-          {/* pr leaves room for the dialog's corner close button */}
           <div className="flex items-center px-6 py-4 gap-4 pr-14">
             <div className="min-w-0">
               <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
@@ -205,7 +199,7 @@ export function FileEditModal({
             Cancel
           </Button>
           <Button variant="primary" size="md" onClick={save} disabled={!canSave}>
-            {saving && <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />}
+            {saving && <Spinner size={ICON_SIZE.SM} />}
             Save
           </Button>
         </div>

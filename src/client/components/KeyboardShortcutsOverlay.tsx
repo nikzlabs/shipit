@@ -30,7 +30,6 @@ function KeyCombo({ keys }: { keys: string[] }) {
 }
 
 export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => void; onEdit?: () => void }) {
-  // Read overrides so the displayed chords reflect any customizations live.
   const keybindings = useSettingsStore((s) => s.keybindings);
 
   const displayKeys = (def: KeybindingDef): string[] => {
@@ -38,9 +37,7 @@ export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => v
     return chordToKeys(keybindings[def.id] ?? def.defaultBinding);
   };
 
-  // The shared Dialog handles Escape, the backdrop, the close button, and the
-  // Back button. This listener only adds the two app-specific toggles: "?" and
-  // the (rebindable) toggle-shortcuts chord both close the open overlay.
+  // Add the app-specific toggles not handled by Dialog.
   useEventListener(window, "keydown", (e) => {
     const toggle = keybindings["toggle-shortcuts"] ?? "mod+/";
     if (e.key === "?" || eventMatchesChord(e, toggle)) {
@@ -57,7 +54,6 @@ export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => v
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-lg w-full md:mx-4 md:max-h-[85vh] overflow-y-auto p-6 space-y-5">
-        {/* pr leaves room for the dialog's corner close button */}
         <div className="flex items-center justify-between pr-10">
           <DialogTitle className="text-lg font-semibold text-(--color-text-primary)">
             Keyboard Shortcuts

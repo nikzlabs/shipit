@@ -8,7 +8,7 @@ describe("serviceLabel (docs/252 req 16)", () => {
   });
 
   it("falls back to the raw id for a service the catalogue no longer carries", () => {
-    // A retired service's history stays valuable (its rows keep their persisted
+
     // rates), so the group must still render. An id is a worse label than a
     // name, but never a wrong one.
     expect(serviceLabel("some-retired-service")).toBe("some-retired-service");

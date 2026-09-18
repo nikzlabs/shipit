@@ -1,12 +1,3 @@
-/**
- * Unit tests for the stamped install marker (docs/183 Phase 3, docs/197 Part 1).
- *
- * The gate's correctness rests on `parseMarker` rejecting anything that isn't an
- * exact, current-version stamp, and `markerMatches` demanding runtime + commands
- * agree AND (commit matches OR depsHash matches). These cover the legacy/corrupt
- * rejection path, each field's mismatch, and the content-key OR widening — incl.
- * the invariant that a `null` depsHash can only ever cause a reinstall.
- */
 import { describe, it, expect } from "vitest";
 import {
   INSTALL_MARKER_VERSION,
@@ -62,7 +53,6 @@ describe("install-marker — parse rejection (skip-miss)", () => {
   });
 
   it("rejects a legacy v1 marker (no depsHash) so the version bump misses cleanly", () => {
-    // A pre-docs/197 marker: version 1, every other field valid, no depsHash.
     const v1 = JSON.stringify({
       version: 1,
       sourceCommit: STAMP.sourceCommit,
@@ -119,7 +109,6 @@ describe("install-marker — matching (commit path)", () => {
   });
 
   it("mismatches on a different source commit when the content key cannot rescue it", () => {
-    // depsHash null on both → only the commit path is available, and it differs.
     const noHash = makeMarker({ ...STAMP, depsHash: null }, "t");
     expect(markerMatches(noHash, { ...STAMP, sourceCommit: "b".repeat(40), depsHash: null })).toBe(false);
   });
@@ -129,7 +118,6 @@ describe("install-marker — matching (content-key OR path, docs/197)", () => {
   const marker = makeMarker(STAMP, "t");
 
   it("skips a DIFFERENT commit when the dep-file hash matches (the whole point)", () => {
-    // runtime + commands agree, commit differs, but the dep files hash the same.
     expect(markerMatches(marker, { ...STAMP, sourceCommit: "b".repeat(40) })).toBe(true);
   });
 
@@ -140,8 +128,6 @@ describe("install-marker — matching (content-key OR path, docs/197)", () => {
   });
 
   it("a null current hash never matches via the content path (reinstall, never wrong skip)", () => {
-    // Marker has a hash, current does not (codegen install / no inputs). Commit
-    // differs, so there is no commit-path rescue → miss.
     expect(markerMatches(marker, { ...STAMP, sourceCommit: "b".repeat(40), depsHash: null })).toBe(false);
   });
 
@@ -151,8 +137,6 @@ describe("install-marker — matching (content-key OR path, docs/197)", () => {
   });
 
   it("still matches via the commit path even when the hash differs", () => {
-    // Same commit, different hash (shouldn't happen in practice, but the commit
-    // path is independent and sufficient).
     expect(markerMatches(marker, { ...STAMP, depsHash: "f".repeat(64) })).toBe(true);
   });
 });

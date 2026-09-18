@@ -136,7 +136,7 @@ describe("changed-docs strip collapse state (docs/205)", () => {
   });
 
   it("falls back to the caller-supplied default when no preference is stored", () => {
-    // Desktop passes `true`, mobile passes `false`.
+
     expect(getSavedChangedDocsExpanded("s1", true)).toBe(true);
     expect(getSavedChangedDocsExpanded("s1", false)).toBe(false);
   });
@@ -151,7 +151,7 @@ describe("changed-docs strip collapse state (docs/205)", () => {
     saveChangedDocsExpanded("s2", false);
     expect(getSavedChangedDocsExpanded("s1")).toBe(true);
     expect(getSavedChangedDocsExpanded("s2")).toBe(false);
-    // A session with no entry still defaults to collapsed.
+
     expect(getSavedChangedDocsExpanded("s3")).toBe(false);
   });
 
@@ -208,7 +208,7 @@ describe("getSavedKeybindings (docs/180)", () => {
   it("prefers the blob over legacy keys once it exists", () => {
     localStorage.setItem("shipit-quick-capture-hotkey", "mod+alt+j");
     saveKeybindings({ "new-session": "mod+shift+k" });
-    // Blob present → legacy keys are ignored.
+
     expect(getSavedKeybindings()).toEqual({ "new-session": "mod+shift+k" });
   });
 
@@ -218,13 +218,6 @@ describe("getSavedKeybindings (docs/180)", () => {
   });
 });
 
-
-/**
- * docs/252 — `vibe-model-id` is the seed for every NEW session's model, so a
- * bare id there silently decides what a fresh session bills to the moment one id
- * belongs to two services. The slot holds the serialized triple, and a value
- * written by an older build migrates in place on first read.
- */
 describe("model selection seed (docs/252)", () => {
   const KEY = "vibe-model-id";
 
@@ -250,13 +243,13 @@ describe("model selection seed (docs/252)", () => {
       billingMode: "sub",
       modelId: "gpt-5.6-sol",
     });
-    // Written back, so the migration happens once rather than on every read.
+
     expect(localStorage.getItem(KEY)).toBe("openai:sub:gpt-5.6-sol");
   });
 
   it("leaves a legacy id the catalogue cannot place readable and unmigrated", () => {
     // A versioned slug the picker never surfaced. The seed must still work —
-    // degrading to today's behaviour — rather than being dropped.
+
     localStorage.setItem(KEY, "claude-sonnet-4-20250514");
     expect(getSavedModelSelection()).toBeUndefined();
     expect(getSavedModelId()).toBe("claude-sonnet-4-20250514");
@@ -264,7 +257,7 @@ describe("model selection seed (docs/252)", () => {
   });
 
   it("round-trips a selection the picker could not have expressed as an id", () => {
-    // The whole point of the triple: same model id, different service.
+
     saveModelSelection({
       serviceId: "openrouter",
       billingMode: "key",
@@ -275,9 +268,7 @@ describe("model selection seed (docs/252)", () => {
   });
 
   it("refuses a triple naming no catalogue row, on read and on write", () => {
-    // Syntax is not existence. A value written by a build whose catalogue carried
-    // a service this one has dropped still parses; returning it would seed a new
-    // session with a row nothing can resolve an endpoint from.
+
     localStorage.setItem(KEY, "obsolete:key:gpt-5.6-sol");
     expect(getSavedModelSelection()).toBeUndefined();
 

@@ -10,11 +10,6 @@ import {
   WorkerAbortedError,
 } from "./worker-http.js";
 
-/**
- * Spin up a throwaway HTTP server that responds to every request with the
- * given status + body, so we can exercise the shared response handler
- * (`attachWorkerResponseHandler`) through each verb without a real worker.
- */
 async function startWorker(
   status: number,
   body: string,
@@ -39,8 +34,6 @@ describe("worker HTTP response handling", () => {
     close = undefined;
   });
 
-  // The three verbs share `attachWorkerResponseHandler`, so run the same
-  // matrix across all of them to guarantee byte-identical behavior.
   const verbs: [string, (baseUrl: string) => Promise<unknown>][] = [
     ["workerGet", (baseUrl) => workerGet(baseUrl, "/x")],
     ["workerPost", (baseUrl) => workerPost(baseUrl, "/x", { a: 1 })],
@@ -78,15 +71,6 @@ describe("worker HTTP response handling", () => {
   }
 });
 
-/**
- * A runner holds `http://0.0.0.0:0` between construction and `setWorkerUrl()`.
- * `dispose()` resolves its worker-ready gate so pending awaiters don't leak,
- * which means a turn parked on that gate can reach the transport with the
- * placeholder still set. Dialing it produced `connect ECONNREFUSED 0.0.0.0`
- * (Node omits the `:0`) — a chat error that named neither the session
- * container nor the real failure. The guard lives at the transport so no call
- * site can forget it.
- */
 describe("placeholder worker URL is never dialed", () => {
   const verbs: [string, () => Promise<unknown>][] = [
     ["workerGet", () => workerGet(PLACEHOLDER_WORKER_URL, "/agent/status")],
@@ -97,8 +81,6 @@ describe("placeholder worker URL is never dialed", () => {
   for (const [name, call] of verbs) {
     it(`${name} rejects with WorkerUnavailableError instead of ECONNREFUSED`, async () => {
       await expect(call()).rejects.toBeInstanceOf(WorkerUnavailableError);
-      // The exact string users used to see. It must not survive anywhere in
-      // the message — that regression is the whole point of this guard.
       await expect(call()).rejects.not.toThrow(/ECONNREFUSED|0\.0\.0\.0/);
     });
   }
@@ -110,8 +92,6 @@ describe("placeholder worker URL is never dialed", () => {
   });
 
   it("rejects (not throws synchronously) so fire-and-forget call sites still swallow it", async () => {
-    // Dozens of call sites are `workerPost(url, path).catch(() => {})`. A
-    // synchronous throw would escape those handlers and take down `dispose()`.
     let threwSynchronously = false;
     try {
       void workerPost(PLACEHOLDER_WORKER_URL, "/agent/kill").catch(() => undefined);
@@ -127,11 +107,6 @@ describe("placeholder worker URL is never dialed", () => {
   });
 });
 
-/**
- * planning#280 — the abort channel that lets `ContainerSessionRunner.dispose` cancel
- * a long-lived `/agent/spawn` whose container is about to be destroyed. Without
- * it a torn-down consult leaves the caller pending on a socket nobody answers.
- */
 describe("workerPost — abort signal", () => {
   let close: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -139,7 +114,6 @@ describe("workerPost — abort signal", () => {
     close = undefined;
   });
 
-  /** A worker that accepts the request and never answers — the wedged case. */
   async function startSilentWorker(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
     const sockets: Socket[] = [];
     const server = http.createServer(() => { /* never respond */ });

@@ -1,16 +1,3 @@
-/**
- * Integration tests for worker file watcher endpoints, ContainerSessionRunner
- * file watcher proxy, viewer lifecycle, and worker resource cleanup.
- *
- * Tests cover:
- * 1. Worker file watcher HTTP endpoints (watch, unwatch) + SSE events
- * 2. ContainerSessionRunner file watcher proxy (SSE → emitMessage)
- * 3. Viewer attach/detach lifecycle (resource start/stop)
- * 4. Worker cleanup (terminal, preview, file watcher on stop)
- *
- * Uses in-process Fastify with stubs — no Docker or real processes.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
@@ -24,10 +11,6 @@ import {
   collectSSE,
   waitFor,
 } from "./container-test-helpers.js";
-
-// ---------------------------------------------------------------------------
-// Worker File Watcher Endpoints
-// ---------------------------------------------------------------------------
 
 describe("Worker File Watcher Endpoints", () => {
   let worker: SessionWorker;
@@ -93,10 +76,6 @@ describe("Worker File Watcher Endpoints", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// ContainerSessionRunner File Watcher Proxy
-// ---------------------------------------------------------------------------
-
 describe("ContainerSessionRunner File Watcher Proxy", () => {
   let worker: SessionWorker;
   let lastWatcher: StubWatcher;
@@ -140,10 +119,9 @@ describe("ContainerSessionRunner File Watcher Proxy", () => {
     runner.on("message", (msg) => messages.push(msg));
 
     runner.attachViewer();
-    // Wait for SSE connection + file watcher to start on worker
+    // Allow the SSE connection and watcher to start.
     await new Promise((r) => setTimeout(r, 300));
 
-    // Simulate file changes
     lastWatcher.simulateChanges(["src/App.tsx", "src/index.ts"]);
 
     await waitFor(
@@ -169,22 +147,17 @@ describe("ContainerSessionRunner File Watcher Proxy", () => {
       workerUrl,
     });
 
-    // First viewer — should start file watcher + preview
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 300));
 
-    // Verify file watcher was started on the worker
     expect(lastWatcher.startCalled).toBe(true);
 
-    // Second viewer — should not re-start
     runner.attachViewer();
     expect(runner.viewerCount).toBe(2);
 
-    // First viewer leaves — resources should stay
     runner.detachViewer();
     expect(runner.viewerCount).toBe(1);
 
-    // Last viewer leaves — resources should be stopped
     runner.detachViewer();
     expect(runner.viewerCount).toBe(0);
 
@@ -204,10 +177,6 @@ describe("ContainerSessionRunner File Watcher Proxy", () => {
     runner.dispose();
   });
 });
-
-// ---------------------------------------------------------------------------
-// Worker Cleanup
-// ---------------------------------------------------------------------------
 
 describe("Worker Cleanup", () => {
   it("cleans up terminal and file watcher on stop (session mode)", async () => {
@@ -230,14 +199,12 @@ describe("Worker Cleanup", () => {
 
     await worker.start();
 
-    // Start session-mode resources (terminal + file watcher)
     await worker.getApp().inject({ method: "POST", url: "/terminal/start", payload: {} });
     await worker.getApp().inject({ method: "POST", url: "/files/watch" });
 
     expect(terminal!.startCalled).toBe(true);
     expect(watcher!.startCalled).toBe(true);
 
-    // Stop worker — should clean up all resources
     await worker.stop();
 
     expect(terminal!.killed).toBe(true);

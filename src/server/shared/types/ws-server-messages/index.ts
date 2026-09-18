@@ -60,7 +60,7 @@ import type {
   WsServiceOom,
 } from "./service.js";
 import type { WsDocList, WsDocContent, WsFileTree, WsFileContent, WsFilesChanged } from "./files.js";
-import type { WsPreviewStatus, WsPreviewError } from "./preview.js";
+import type { WsPreviewStatus } from "./preview.js";
 import type {
   WsSessionList,
   WsSessionStarted,
@@ -117,11 +117,17 @@ import type {
   WsReleaseCard,
   WsSubAgentConsultCard,
   WsActionChecklistCard,
+  WsActionChecklistUpdate,
+  WsRepoSessionProposalCard,
+  WsRepoSessionProposalUpdate,
   WsPresentInlineCard,
   WsBranchAutoResetCard,
   WsBranchSyncedCard,
   WsSessionRenamedCard,
   WsSessionSettingsChangeCard,
+  WsSshHostKeyCard,
+  WsSettingsProposalCard,
+  WsSettingsProposalUpdate,
   WsNonTurnFailureCard,
   WsNonTurnFailureDismissed,
 } from "./cards.js";
@@ -156,11 +162,17 @@ export type WsServerMessage =
   | WsReleaseCard
   | WsSubAgentConsultCard
   | WsActionChecklistCard
+  | WsActionChecklistUpdate
+  | WsRepoSessionProposalCard
+  | WsRepoSessionProposalUpdate
   | WsPresentInlineCard
   | WsBranchAutoResetCard
   | WsBranchSyncedCard
   | WsSessionRenamedCard
   | WsSessionSettingsChangeCard
+  | WsSshHostKeyCard
+  | WsSettingsProposalCard
+  | WsSettingsProposalUpdate
   | WsNonTurnFailureCard
   | WsNonTurnFailureDismissed
   | WsBugReportCard
@@ -252,7 +264,6 @@ export type WsServerMessage =
   | WsServiceList
   | WsServiceOom
   | WsSessionMemoryExhausted
-  | WsPreviewError
   | WsComposeError
   | WsPluginReposUpdated
   | WsStackError

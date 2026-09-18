@@ -1,29 +1,3 @@
-/**
- * A dispatched SYSTEM turn must survive a busy session (planning#256 + planning#257).
- *
- * Both regressions below are about the same promise, made by docs/196's
- * notify-on-merge and relied on by every other `dispatch({ systemTurn: true,
- * onTurnComplete })` caller (the rebase driver, the CI auto-fix loop): a system
- * turn dispatched while the session is busy is QUEUED, later RUNS AS A SYSTEM
- * TURN, and fires its completion callback when it does.
- *
- * They slipped through because the existing coverage models a busy runner with a
- * fake (`merge-watch.test.ts`), which can't reproduce either failure: both live
- * in the real turn machinery. So these drive a REAL turn through the WS path,
- * with a real runner, a real queue, and the real drain.
- *
- *   • planning#256 — with live steering on, `trySteerDispatch` consulted only whether
- *     the RUNNING turn was a system turn, never whether the INCOMING dispatch
- *     was. A wake-turn arriving during an ordinary streaming user turn was
- *     therefore injected into that turn via `sendUserMessage`, and since the
- *     steer path returns before any enqueue, `onTurnComplete` was dropped
- *     entirely — the merge watch could never reach `delivered`.
- *
- *   • planning#257 — the WS drain re-entered `runAgentWithMessage` with only text,
- *     images, files, and the agent session id, so a queued system turn lost both
- *     `systemTurn` and `onTurnComplete` and ran as an ordinary interactive turn.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -47,6 +21,7 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "../turn-settlement.js";
+import { releaseQueuedTurn } from "../queue-drain.js";
 
 type AnyMsg = any;
 
@@ -94,7 +69,6 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     } catch { /* ignore cleanup errors */ }
   });
 
-  /** Drain client messages until `predicate` matches (or we run out). */
   async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30, timeoutMs = 2000): Promise<AnyMsg> {
     for (let i = 0; i < maxMsgs; i++) {
       const msg: AnyMsg = await client.receive(timeoutMs);
@@ -119,11 +93,8 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     credentialStore.setLiveSteering(true);
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // A REAL, streaming user turn is in flight — the precondition the fake busy
-    // runner could never model: `isStreamingActive` is true and the resident
-    // process is steerable, so `shouldSteerMessage` says "steer".
     client.send({ type: "send_message", text: "Refactor the parser" });
     const userTurn = await waitForClaude(() => lastClaude);
     userTurn.initSession("user-turn-session");
@@ -132,7 +103,6 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     const runner = runnerFor(client.sessionId);
     await waitUntil(() => runner.running && runner.isStreamingActive, "user turn running + streaming");
 
-    // The wake-turn arrives mid-turn.
     const completions: { errored: boolean }[] = [];
     runner.dispatch(testDispatch({
       text: WAKE_TEXT,
@@ -141,22 +111,16 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
       onTurnComplete: (outcome) => completions.push(outcome),
     }));
 
-    // It must QUEUE. Before the fix it was steered into the user's turn:
-    // `sendUserMessage` (captured by the fake as stdin) carried the wake text
-    // into someone else's context, nothing was enqueued, and the callback was
-    // dropped on the floor.
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: WAKE_TEXT });
     expect(runner.queueLength).toBe(1);
     expect(userTurn.stdinData.join("")).not.toContain("MERGED");
     expect(completions).toEqual([]);
 
-    // The user turn ends → the queued wake-turn drains and runs…
     userTurn.finish("user-turn-session");
     const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
     expect(wakeTurn.lastPrompt).toContain("merged");
 
-    // …and only when it completes does the callback fire — exactly once.
     wakeTurn.finish("wake-turn-session");
     await waitUntil(() => completions.length > 0, "onTurnComplete fired");
     expect(completions).toEqual([TURN_COMPLETED]);
@@ -166,9 +130,8 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
 
   it("planning#257: a wake-turn queued behind a real INTERACTIVE turn runs as a system turn and fires onTurnComplete (no restart)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // A real interactive (non-streaming) user turn — the common busy-parent case.
     client.send({ type: "send_message", text: "Write the docs" });
     const userTurn = await waitForClaude(() => lastClaude);
     userTurn.initSession("user-turn-session");
@@ -186,22 +149,13 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     await drainUntil(client, (m) => m.type === "message_queued");
     expect(runner.queueLength).toBe(1);
 
-    // The interactive turn's OWN drain shifts this entry. It used to re-enter
-    // `runAgentWithMessage` with text + attachments only, so the wake-turn ran
-    // as an ordinary interactive turn: no `systemTurn`, no `onTurnComplete`.
     userTurn.finish("user-turn-session");
     const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
     expect(wakeTurn.lastPrompt).toContain("merged");
 
-    // It runs AS A SYSTEM TURN: the flag is set for its duration (so a message
-    // arriving now is queued rather than steered into it), and it does not adopt
-    // the streaming/steerable shape of a user turn.
     expect(runner.systemTurnInProgress).toBe(true);
     expect(wakeTurn.lastUseStreaming).toBe(false);
 
-    // And it reaches its terminal state in-process — the callback fires, which
-    // is what advances a merge watch to `delivered` without an orchestrator
-    // restart. The system-turn flag is cleared on teardown.
     wakeTurn.finish("wake-turn-session");
     await waitUntil(() => completions.length > 0, "onTurnComplete fired");
     expect(completions).toEqual([TURN_COMPLETED]);
@@ -210,12 +164,238 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     client.close();
   });
 
-  it("an ordinary user message queued behind a running turn still drains on the interactive path (no server echo bubble)", async () => {
-    // The routing tag must not change what a user-typed queued message does: it
-    // stays interactive, so the drain does NOT emit a `system_user_message` echo
-    // on top of the client's optimistic bubble.
+  it("docs/288 req 6: a typed message is QUEUED while ShipIt is merging, then STARTS when the hold clears", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
+
+    client.send({ type: "send_message", text: "First" });
+    const first = await waitForClaude(() => lastClaude);
+    first.initSession("first-session");
+    first.finish("first-session");
+    const runner = runnerFor(client.sessionId);
+    await waitUntil(() => !runner.running, "first turn finished");
+
+    runner.mergeHold = true;
+    const before = lastClaude;
+    client.send({ type: "send_message", text: "typed during the merge" });
+    await drainUntil(client, (m) => m.type === "message_queued");
+    expect(runner.running).toBe(false);
+    expect(runner.queueLength).toBe(1);
+    expect(lastClaude).toBe(before);
+
+    runner.mergeHold = false;
+    expect(releaseQueuedTurn(runner)).toBe(true);
+    const resumed = await waitForClaude(() => lastClaude, before ?? undefined);
+    expect(resumed.lastPrompt).toContain("typed during the merge");
+    expect(runner.queueLength).toBe(0);
+    resumed.finish("resumed-session");
+
+    client.close();
+  });
+
+  it("docs/288 req 6: a message is queued even when the hold arrives DURING the send", async () => {
+    const claims = (app as unknown as { agentMergeClaims: { markMergeInFlight(id: string): void } })
+      .agentMergeClaims;
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    const registry = (app as unknown as {
+      runnerRegistry: { dispose(id: string, o?: { force?: boolean }): void; get(id: string): unknown };
+    }).runnerRegistry;
+    registry.dispose(client.sessionId, { force: true });
+    expect(registry.get(client.sessionId)).toBeUndefined();
+
+    claims.markMergeInFlight(client.sessionId);
+    const before = lastClaude;
+    client.send({ type: "send_message", text: "typed as the merge began" });
+    await drainUntil(client, (m) => m.type === "message_queued");
+
+    const runner = runnerFor(client.sessionId);
+    expect(runner.mergeHold).toBe(true);
+    expect(runner.running).toBe(false);
+    expect(runner.queueLength).toBe(1);
+    expect(lastClaude).toBe(before);
+
+    client.close();
+  });
+
+  it("docs/288 req 6: a resident streaming agent is not steered into during a merge", async () => {
+    credentialStore.setLiveSteering(true);
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "First" });
+    const first = await waitForClaude(() => lastClaude);
+    first.initSession("first-session");
+    first.finish("first-session");
+    const runner = runnerFor(client.sessionId);
+    await waitUntil(() => !runner.running, "first turn finished");
+    // Restore residency explicitly because finish() clears the fake agent.
+    runner.isStreamingActive = true;
+    runner.setAgent(first as never);
+    expect(runner.getAgent()).not.toBeNull();
+    expect(credentialStore.getLiveSteering()).toBe(true);
+
+    runner.mergeHold = true;
+    client.send({ type: "send_message", text: "steer me mid-merge" });
+    await drainUntil(client, (m) => m.type === "message_queued");
+
+    expect(first.stdinData).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+    expect(runner.running).toBe(false);
+
+    client.close();
+  });
+
+  it("docs/288 req 6: an AskUserQuestion answer is QUEUED while ShipIt is merging", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "First" });
+    const first = await waitForClaude(() => lastClaude);
+    first.initSession("first-session");
+    first.finish("first-session");
+    const runner = runnerFor(client.sessionId);
+    await waitUntil(() => !runner.running, "first turn finished");
+
+    runner.mergeHold = true;
+    const before = lastClaude;
+    client.send({
+      type: "answer_question", toolUseId: "tu1", answers: { q: "yes" }, text: "yes",
+      permissionMode: "plan",
+    });
+    await drainUntil(client, (m) => m.type === "message_queued");
+    expect(runner.running).toBe(false);
+    expect(runner.queueLength).toBe(1);
+    expect(lastClaude).toBe(before);
+
+    const queued = runner.dequeue();
+    expect(queued?.text).toContain("yes");
+    expect(queued?.permissionMode).toBe("plan");
+
+    client.close();
+  });
+
+  // The gate that keeps a system turn OUT of the queue's head must be re-read when the
+  // queue drains: the drain runs the entry directly, and the dispatched executor retires
+  // the resident CLI, taking its background work with it (planning#562).
+  for (const start of ["interactive", "dispatched"] as const) {
+    it(`planning#562: a queued system turn does not drain onto a resident agent with background work (after a ${start} turn)`, async () => {
+      credentialStore.setLiveSteering(true);
+
+      const client = await TestClient.connect(port);
+      await client.receive();
+
+      const runner = runnerFor(client.sessionId);
+      if (start === "interactive") {
+        client.send({ type: "send_message", text: "Review the branch" });
+      } else {
+        runner.dispatch(testDispatch({ text: "Review the branch" }));
+      }
+      const userTurn = await waitForClaude(() => lastClaude);
+      userTurn.initSession("user-turn-session");
+      await waitUntil(
+        () => runner.running && runner.isStreamingActive && runner.getAgent() !== null,
+        "resident streaming turn",
+      );
+
+      // The turn backgrounded a cross-agent review; retiring the CLI would destroy it.
+      runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
+      expect(runner.backgroundWorkDescriptions).toEqual(["Codex consult"]);
+
+      const completions: { errored: boolean }[] = [];
+      runner.dispatch(testDispatch({
+        text: WAKE_TEXT,
+        activity: "Resuming after child PR merged…",
+        systemTurn: true,
+        onTurnComplete: (outcome) => completions.push(outcome),
+      }));
+      await drainUntil(client, (m) => m.type === "message_queued");
+      expect(runner.queueLength).toBe(1);
+
+      // Settle the turn without exiting the process: the CLI stays resident, as it does
+      // in production while its backgrounded work runs.
+      userTurn.emit("event", { type: "result", subtype: "success", session_id: "user-turn-session" });
+      await waitUntil(() => !runner.running, "user turn settled");
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(runner.queueLength).toBe(1);
+      expect(userTurn.killed).toBe(false);
+      expect(runner.getAgent()).toBe(userTurn as never);
+      expect(lastClaude).toBe(userTurn);
+      expect(completions).toEqual([]);
+
+      // The background work finishing is what releases it.
+      runner.clearBackgroundTasks();
+      const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
+      expect(wakeTurn.lastPrompt).toContain("merged");
+      expect(runner.queueLength).toBe(0);
+
+      wakeTurn.finish("wake-turn-session");
+      await waitUntil(() => completions.length > 0, "onTurnComplete fired");
+      expect(completions).toEqual([TURN_COMPLETED]);
+
+      client.close();
+    });
+  }
+
+  // Deferring is only safe if something releases the entry. When the predecessor is itself a
+  // system turn, its CLI exits (clearing the background work) BEFORE its hold is released, so
+  // the background-work release fires against a held session and must not consume the entry.
+  it("planning#562: a system turn deferred behind a SYSTEM turn runs when the hold clears, and is queued only once", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const runner = runnerFor(client.sessionId);
+
+    runner.dispatch(testDispatch({ text: "CI is red — fix it", systemTurn: true }));
+    const systemA = await waitForClaude(() => lastClaude);
+    systemA.initSession("system-a-session");
+    await waitUntil(() => runner.running && runner.systemTurnInProgress, "system turn A running");
+
+    // A backgrounded a consult of its own.
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
+
+    const queuedTwice: string[] = [];
+    const completions: { errored: boolean }[] = [];
+    runner.dispatch(testDispatch({
+      text: WAKE_TEXT,
+      activity: "Resuming after child PR merged…",
+      systemTurn: true,
+      onTurnComplete: (outcome) => completions.push(outcome),
+    }));
+    void (async () => {
+      for (;;) {
+        const msg: AnyMsg = await client.receive(4000).catch(() => null);
+        if (!msg) return;
+        if (msg.type === "message_queued" && msg.text === WAKE_TEXT) queuedTwice.push(msg.text as string);
+      }
+    })();
+    await waitUntil(() => runner.queueLength === 1, "wake turn queued");
+
+    // A settles but its process has not exited yet — the drain defers the wake turn.
+    systemA.emit("event", { type: "result", subtype: "success", session_id: "system-a-session" });
+    await waitUntil(() => !runner.running, "system turn A settled");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(runner.queueLength).toBe(1);
+    expect(runner.getAgent()).toBe(systemA as never);
+
+    // The CLI exits: background work is cleared while A still holds the session.
+    systemA.emit("done", 0);
+
+    const wakeTurn = await waitForClaude(() => lastClaude, systemA);
+    expect(wakeTurn.lastPrompt).toContain("merged");
+    wakeTurn.finish("wake-turn-session");
+    await waitUntil(() => completions.length > 0, "wake turn settled");
+    expect(completions).toEqual([TURN_COMPLETED]);
+    expect(queuedTwice).toHaveLength(1);
+
+    client.close();
+  });
+
+  it("an ordinary user message queued behind a running turn still drains on the interactive path (no server echo bubble)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
 
     client.send({ type: "send_message", text: "First" });
     const first = await waitForClaude(() => lastClaude);

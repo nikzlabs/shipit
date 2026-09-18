@@ -19,10 +19,10 @@ session on the repository you are editing:
 ```yaml
 exports:
   plugins:
-    requirements: { ... }        # the manifest — schema in plugins.md
+    requirements: { ... }
 plugins:
   repos:
-    - repo: self                 # no `branch:` and no `pin:` — both are errors
+    - repo: self # branch and pin are not allowed.
       name: dev
   use:
     - plugin: requirements
@@ -66,7 +66,9 @@ session's own working tree.** So:
   Your dependency directories (`agent.dep-dirs`, `node_modules` by default) are
   the plugin's dependency directories: the same content the agent container
   sees, at `/plugin` and `/project` alike, since under `repo: self` they are one
-  tree. And a self-declared plugin's **services wait for `agent.install`** the
+  tree. The `/project` half is not a `repo: self` difference — a consuming
+  project's dep dirs reach a command there too (see below); `/plugin` is.
+  And a self-declared plugin's **services wait for `agent.install`** the
   way your own do — they read what it writes, so starting first would start them
   against a half-written tree.
 - The repository's issues are already this session's, so `self` registers no
@@ -86,6 +88,29 @@ for its author and fails on the first project that declares it.
 | a watcher on the source | sensible; you are editing it | pointless — the tree is one commit and cannot change |
 
 Everything below follows from those three rows.
+
+### The project's dependencies reach your command, not your service
+
+Your **command** runs against the consuming project's working tree at `/project`,
+including every directory that project declares in `agent.dep-dirs` — the same
+content its agent sees in its own shell. ShipIt usually keeps those directories
+outside the project's clone, so each one arrives as a mount ShipIt adds rather
+than as a directory that is simply there; without it you would find the path
+present and empty. A program that imports from the project's `node_modules`, or
+reads a pinned toolchain out of a declared directory, therefore behaves in your
+run the way it does in the project's own terminal.
+
+**Read them, do not write them.** Those mounts are read-only for a tracked
+import — the consuming project's agent loads code out of that tree — so a
+command that needs to write goes somewhere else under `/project`, which is
+writable. (Under `repo: self` they are read-write, because the identical
+directory is already read-write at `/project`.)
+
+Your **service** is not handed them. A service starts without waiting for the
+project's `agent.install`, so what it would read is a tree mid-write. It may
+still find them when ShipIt is not storing them outside the clone, which is not
+something your service can detect or rely on — so work that needs the project's
+installed dependencies belongs in a command.
 
 ### Your service does not choose its port
 
@@ -143,6 +168,102 @@ and the declared dependency directories, and nothing else
 So the same preparation is declared **twice** — once in the manifest for
 consumers, once under `agent:` for your own sessions — and only one of the two
 runs in the session you develop in. Change one, change the other.
+
+### What makes an install shareable, and how to find out when it is not
+
+ShipIt keeps **one copy of an installed dependency tree per repository, per
+runtime, per dep state**, and every consuming session mounts it read-only
+([plugins.md](plugins.md) → Install). When your install qualifies, the second
+session to declare your plugin — and every later commit that does not move your
+dependencies — runs no install container at all. When it does not, every session
+pays the whole download and keeps a private copy of the tree, for ever.
+
+An install is shared when **all** of these hold:
+
+- **Some selected plugin declares an `install:`**, and the plugins that do
+  declare **at least one `dep-dirs:` entry between them.** The directories are
+  collected across the *installing* exports only, so `dep-dirs` on an export
+  with no `install:` contributes nothing — and `dep-dirs: []` on every
+  installing export is a deliberate opt-out that turns the store off for the
+  whole repository.
+- **ShipIt can tell what the install reads.** It infers that from the command:
+  `npm ci`, `npm install`, `pip install -r <file>`, `uv pip install -r <file>`
+  and friends are recognized; anything else — a shell script, a chained
+  `./build.sh && npm ci`, or a flag that leaves a bare positional such as
+  `pip install --target vendor/py -r requirements.txt` — is not. Declare
+  **`install-inputs:`** to say what the install consumes and it qualifies again.
+- **At least one of those input files exists in the repository.** A lockfile
+  that is git-ignored, or an `install-inputs:` path with a typo, leaves nothing
+  to key on.
+- **Your `package.json` declares no install lifecycle script** (`preinstall`,
+  `install`, `postinstall`, `prepare`, `prepublish`) — unless you declare
+  `install-inputs:`. A lifecycle script makes the install a *build*, whose output
+  can change while the files ShipIt hashes do not. See the section above for
+  what a building install then has to declare.
+- **No declared dep dir is committed to the repository.** A `dep-dirs:` entry
+  ShipIt finds in the checkout names tracked source, not install output, and the
+  whole plan is dropped rather than half of it.
+- **The install actually creates every declared dep dir.** A directory the
+  install never creates pins nothing (an existing but empty one is fine), and
+  reuse is all-or-nothing: one missing directory keeps the repository installing
+  cold for ever. So declare only directories your install really creates — and a
+  symlink is not one of them.
+
+**When it is not shared, ShipIt says which of these it was.** The reason is a row
+on the repository's card in the consuming project's Plugins tab, and it is in
+`shipit plugin status` (with the raw record under `--json`, as
+`install.depStoreReason`) in any session that has your plugin. It is advisory:
+an install that shares nothing is a complete, correct install — just a slow and
+expensive one.
+
+### A toolchain your install downloads goes under `/plugin`, not into the image
+
+`install` borrows the session-worker image for its toolchain, but it runs as the
+**consuming session's own uid** — so every path that image bakes in for its own
+user is read-only to you. ShipIt redirects the two that a plugin actually
+installs into, at both install time and run time, so a tool fetched by `install`
+is still there when your CLI runs:
+
+| Variable | Points at |
+|---|---|
+| `PLAYWRIGHT_BROWSERS_PATH` | `/plugin/.shipit-toolchain/playwright-browsers` |
+| `NPM_CONFIG_PREFIX` | `/plugin/.shipit-toolchain/npm-global` (its `bin` is on `PATH`) |
+
+You do **not** declare that directory in `dep-dirs` — ShipIt adds it to the
+shared store itself, so a later commit that reuses your dependencies keeps the
+browser instead of losing it.
+
+**You DO have to declare the hosts it downloads from.** An install container is
+bound by the consuming session's egress allowlist, exactly like your services
+are, and nothing is granted just because an install wants it. Declare every
+download host in the plugin's `hosts:`; the consuming user then grants them from
+the Plugins tab. Playwright in particular needs **both** of its mirrors, because
+`playwright-core` falls back from the first to the second:
+
+```yaml
+exports:
+  plugins:
+    shots:
+      install: npm ci && npx playwright install chromium
+      hosts:
+        - cdn.playwright.dev
+        - playwright.download.prss.microsoft.com
+```
+
+Declaring only the primary leaves the fallback denied, and the install fails on
+the retry rather than the first attempt — which is much harder to read.
+
+Two limits of borrowing that image, both of which bite quietly:
+
+- **`NODE_ENV` is `production`**, so `npm ci` in an `install:` installs no
+  devDependencies. An install whose next step is `npm run build` then fails on a
+  missing bundler — and an install that merely *ships* a devDependency at runtime
+  exits 0 and fails much later. Pass `--include=dev` when you need them.
+- **A toolchain the image bakes no variable for does not move.** The Android SDK
+  at `/opt/android-sdk` is world-writable, so `sdkmanager` appears to work — but
+  it writes into the install container's own disposable layer, which no CLI or
+  service container shares. `HOME` is `/tmp`, a tmpfs the container discards, so
+  anything cached under `$HOME` is likewise gone before a consumer sees it.
 
 ### Nothing may write the checkout, including the tools you depend on
 
@@ -202,21 +323,19 @@ Ports do not collide, because **an exported fragment does not declare one**. See
 [Your service does not choose its port](#your-service-does-not-choose-its-port).
 
 ```yaml
-# the plugin repository's own shipit.yaml
+# shipit.yaml
 agent:
   install:
     - npm ci
-    - npm run build        # the same build the manifest's `install` runs
-  # a skipped install restores only these, so the build output is named too
+    - npm run build
   dep-dirs: [node_modules, plugins/web/dist]
-compose: docker-compose.yml        # the DEV service lives here
+compose: docker-compose.yml
 
 exports:
   plugins:
     web:
-      compose: plugins/web/docker-compose.yml   # the PRODUCTION service
+      compose: plugins/web/docker-compose.yml
       install: npm ci && npm run build
-      # `plugins/web/dist` is load-bearing the moment you add `install-inputs`
       dep-dirs: [node_modules, plugins/web/dist]
 
 plugins:
@@ -228,22 +347,17 @@ plugins:
       from: dev
       overrides:
         services:
-          web: { autostart: false }   # the dev service owns the preview here
+          web: { autostart: false }
 ```
 
 ```yaml
-# plugins/web/docker-compose.yml — what a consumer runs
+# plugins/web/docker-compose.yml
 services:
   web:
     image: node:22-alpine
-    # No `user:` — ShipIt supplies the consuming session's own uid, which is
-    # per-session and therefore not something a fragment could name. A pinned
-    # uid cannot own `/project`, so git and dependency caches fail there.
     working_dir: /app
-    command: node /app/serve.mjs     # reads SHIPIT_PLUGIN_PORT; no watcher
-    volumes: [".:/app:ro"]           # `.` is THIS FILE'S directory: plugins/web
-    # no `ports:` — the consuming project names it, and the server reads
-    # SHIPIT_PLUGIN_PORT. Declaring one here is refused.
+    command: node /app/serve.mjs
+    volumes: [".:/app:ro"]
 ```
 
 **A fragment's `.` is the fragment's own directory, not the repository root** —
@@ -255,15 +369,13 @@ repository root's `node_modules` finds nothing. The whole tree is mounted as
 well, at `/plugin`, for a service that would rather run from the root.
 
 ```yaml
-# docker-compose.yml — your own session only; never reaches a consumer
+# docker-compose.yml
 services:
-  web-dev:                       # a DIFFERENT name from the exported service
+  web-dev:
     image: node:22-alpine
-    # No `user:` needed, in a contained session either — ShipIt fills in this
-    # session's own identity, which is what lets the service write this mount.
     working_dir: /app
     command: npm run dev -- --host 0.0.0.0 --port 4301
-    volumes: [".:/app"]          # writable here; watching and hot reload are fine
+    volumes: [".:/app"]
     ports: ["4301:4301"]
     x-shipit-preview: auto
 ```

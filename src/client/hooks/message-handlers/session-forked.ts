@@ -1,16 +1,24 @@
 import type { WsSessionForked } from "../../../server/shared/types.js";
-import { useSessionStore } from "../../stores/session-store.js";
+import { resumeSessionInternal } from "../../stores/actions/session-actions.js";
 import type { Handler } from "./types.js";
 
-// Forks are non-destructive: the parent gets a `forkChild` breadcrumb and
-// the user is navigated to the child session — both already confirm the
-// action. No toast, no Undo affordance; if the user wants to back out,
-// they archive the child session. The server still emits snapshot data
-// (used by chat/code/both rewinds), which we deliberately ignore here.
 export const handleSessionForked: Handler<WsSessionForked> = (_ctx, data) => {
   const childSessionId = data.childSessionId ?? data.sessionId;
   if (!childSessionId) return;
-  useSessionStore.getState().setSessionId(childSessionId);
+
+  /**
+   * Adopt the child through the ordinary switch path (docs/144 D7 — "client
+   * auto-switches to the child"), not a bare `setSessionId`.
+   *
+   * The bare set moved the store id first, so the route effect in
+   * `useSessionActivation` found `urlSessionId === sessionId` and skipped
+   * `resumeSessionInternal` entirely — the child inherited the parent's whole
+   * session-scoped UI state. The dial's globals were the visible part: a fresh
+   * fork has no usage row, and `loadSessionHistory` only replaces `modelInfo`
+   * when a turn recorded a model, so the parent's model, context window and
+   * spend stayed on screen.
+   */
+  resumeSessionInternal(childSessionId);
   window.history.pushState({}, "", `/session/${childSessionId}`);
   window.dispatchEvent(new PopStateEvent("popstate"));
 };

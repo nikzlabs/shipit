@@ -1,7 +1,3 @@
-/**
- * Tests for the Tier B resolver launch wiring (docs/172 Gap 1, planning#92).
- */
-
 import os from "node:os";
 import { describe, it, expect, vi } from "vitest";
 import type Docker from "dockerode";
@@ -46,12 +42,9 @@ describe("orchestratorInternalNames", () => {
     } as NodeJS.ProcessEnv);
     expect(names).toContain("shipit-orch");
     expect(names).toContain("orch2");
-    expect(names).not.toContain("10.0.0.5"); // IP literal — no DNS needed
+    expect(names).not.toContain("10.0.0.5");
   });
   it("falls back to os.hostname() when *_ORCHESTRATOR_* is unset, matching SHIPIT_HOST", () => {
-    // The bug from planning#92 Tier B host verification: an unset SHIPIT_ORCHESTRATOR_HOST
-    // used to yield [] here while SHIPIT_HOST was still set to os.hostname(), so the
-    // resolver allowlisted nothing and the callback channel broke. Now they agree.
     expect(orchestratorInternalNames({} as NodeJS.ProcessEnv)).toEqual([os.hostname()]);
   });
 });
@@ -61,7 +54,6 @@ describe("sessionInternalNames", () => {
     const env = { SHIPIT_ORCHESTRATOR_HOST: "shipit-orch" } as NodeJS.ProcessEnv;
     expect(sessionInternalNames({ opsSession: true }, env)).toContain(OPS_DOCKER_PROXY_DNS_NAME);
     expect(sessionInternalNames({ opsSession: false }, env)).not.toContain(OPS_DOCKER_PROXY_DNS_NAME);
-    // Defaults (no flag) behave like a non-ops session — proxy alias absent.
     expect(sessionInternalNames({}, env)).not.toContain(OPS_DOCKER_PROXY_DNS_NAME);
   });
   it("still includes the orchestrator host for ops sessions (superset of orchestratorInternalNames)", () => {
@@ -79,7 +71,7 @@ describe("buildResolverConfigB64", () => {
     expect(cfg).toContain(`server=/platform.claude.com/${  EGRESS_DNS_DEFAULT_UPSTREAMS[0]}`);
     expect(cfg).not.toContain("server=/claude.com/");
     expect(cfg).toContain("server=/internal-registry.corp/");
-    expect(cfg).toContain("no-resolv"); // no default upstream → tunneling closed
+    expect(cfg).toContain("no-resolv");
   });
   it("includes internal names routed to Docker DNS without an ipset pin", () => {
     const cfg = Buffer.from(buildResolverConfigB64({ internalDomains: ["shipit-orch"] }), "base64").toString("utf-8");
@@ -92,7 +84,7 @@ describe("buildResolverConfigB64", () => {
       "base64",
     ).toString("utf-8");
     expect(cfg).toContain(`server=/${OPS_DOCKER_PROXY_DNS_NAME}/127.0.0.11`);
-    expect(cfg).not.toContain(`ipset=/${OPS_DOCKER_PROXY_DNS_NAME}/`); // internal — not pinned
+    expect(cfg).not.toContain(`ipset=/${OPS_DOCKER_PROXY_DNS_NAME}/`);
   });
   it("does NOT emit the proxy rule (nor any default server) for a non-ops session", () => {
     const cfg = Buffer.from(
@@ -100,7 +92,6 @@ describe("buildResolverConfigB64", () => {
       "base64",
     ).toString("utf-8");
     expect(cfg).not.toContain(OPS_DOCKER_PROXY_DNS_NAME);
-    // The anti-tunneling invariant: only per-domain server= lines, never a bare default.
     expect(cfg).not.toMatch(/^server=[^/]/m);
     expect(cfg).toContain("no-resolv");
   });
@@ -146,7 +137,6 @@ describe("launchEgressResolver", () => {
     expect(cfg.HostConfig.CapAdd).toEqual(["NET_ADMIN"]);
     expect(cfg.Env).toContain("EGRESS_DNSMASQ_CONFIG_B64=Y29uZmln");
     expect(cfg.Labels["shipit-parent-session"]).toBe("s1");
-    // Carries the distinct resolver label so killStaleContainers spares it.
     expect(cfg.Labels[EGRESS_RESOLVER_LABEL]).toBe("s1");
     expect(container.start).toHaveBeenCalled();
   });

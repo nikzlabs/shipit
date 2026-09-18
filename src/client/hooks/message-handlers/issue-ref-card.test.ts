@@ -43,7 +43,7 @@ describe("handleIssueRefCard (docs/188)", () => {
 
   it("is idempotent by cardId — a reconnect replay appends once", () => {
     handleIssueRefCard(ctx, event());
-    handleIssueRefCard(ctx, event()); // same cardId (history load + buffer replay)
+    handleIssueRefCard(ctx, event());                                              
     expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 

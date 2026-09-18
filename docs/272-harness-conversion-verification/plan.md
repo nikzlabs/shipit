@@ -59,8 +59,10 @@ shared/orchestrator/client decide every dedicated treatment (see the
 make this the dangerous layer:
 
 - **The canonical tool map is not on this path.** `canonicalizeTool`
-  (`session/agents/tool-map.ts`) has zero production call sites; it is a
-  guard vocabulary exercised only by `tool-map.test.ts`, and that test
+  (`session/agents/tool-map.ts`) had zero production call sites; it was a
+  guard vocabulary exercised only by `tool-map.test.ts` (2026-09-02: the map,
+  its per-harness slices and that test were deleted for exactly that
+  reason), and that test
   compares two hand-maintained constants (`<X>_TOOL_NAMES` ↔ the map) to
   each other, never to the CLI. Both files can agree and be jointly wrong.
 - **Unknown degrades benignly — mostly.** An unrecognized name gets the
@@ -157,11 +159,12 @@ observed **event types / system subtypes / item types**, and observed
 1. Every observed event type/subtype has an adapter case — anything that
    would hit `default: return null` is a red flag (Layer A silent drop).
 2. Every observed tool name is in `<X>_TOOL_NAMES`
-   (`shared/agent-tool-names.ts`) and maps in `AGENT_TOOL_MAPS` — and,
-   per surface, is a member of the registry that grants its treatment
+   (`shared/agent-tool-names.ts`) and, where the harness has a normalizer,
+   in its `<X>_TRANSCRIPT_TOOL_NAMES` table (or its named exclusion list)
+   — and, per surface, is a member of the registry that grants its treatment
    (`TASK_LIST_TOOL_NAMES`, `DIFF_INPUT_TOOLS`,
-   `SUBAGENT_REPORT_TOOL_NAMES`, …; see the appendix). Membership in the
-   tool map alone proves nothing — that was planning#337's half-adoption.
+   `SUBAGENT_REPORT_TOOL_NAMES`, …; see the appendix). Membership in a
+   name table alone proves nothing — that was planning#337's half-adoption.
 3. Every matrix surface has at least one observed driver. **A surface
    whose old driver disappeared from the stream is the rename tell**: on
    2.1.220 the tour would have shown `TodoWrite` gone and `TaskCreate`
@@ -298,16 +301,19 @@ define the assertions for.
    nowhere; diff it against `<X>_TOOL_NAMES` at spawn or in the contract
    test, so a wholly new tool name is flagged without a tour.
 3. **Unknown-name sentinel** — log (dev-warn) when a transcript carries a
-   tool name `canonicalizeTool` returns null for: the tool map's first
-   production call site, as a tripwire (planning#337 proposed exactly
-   this).
+   tool name no registry recognizes, as a tripwire (planning#337 proposed
+   exactly this; it was to be `canonicalizeTool`'s first production call
+   site, but the tool map was removed on 2026-09-02, so a sentinel would key on
+   `<X>_TOOL_NAMES` or the normalizer tables instead).
 4. **Recognition conformance harness** — replay captured turns through
    grouping + projection + the client folds and assert the matrix
    mechanically, so Step 4's assertions stop being manual.
 
-Shipped alongside this recipe: `tool-map.test.ts` now runs the
+Shipped alongside this recipe: `tool-map.test.ts` ran the
 advertised-name guard over `OPENCODE_TOOL_NAMES` too (it covered only
-claude and codex; OpenCode had zero coverage).
+claude and codex; OpenCode had zero coverage). 2026-09-02: that test went with
+the tool map; `opencode-tool-normalizer.test.ts` still covers every
+advertised OpenCode name.
 
 ## Appendix — the literal-name registries
 
@@ -317,8 +323,8 @@ land in any row. (Line numbers drift; the identifiers don't.)
 
 | Registry | File | Decides | Unknown-name behavior |
 |---|---|---|---|
-| `AGENT_TOOL_MAPS` / `canonicalizeTool` | `session/agents/tool-map.ts` + per-harness slices | nothing at runtime (guard vocabulary) | `null`, silent |
-| `<X>_TOOL_NAMES` | `shared/agent-tool-names.ts` | adapter `capabilities`, the tool-map guard | n/a (hand list) |
+| `AGENT_TOOL_MAPS` / `canonicalizeTool` | **removed 2026-09-02** (was `session/agents/tool-map.ts` + per-harness slices) | nothing — was guard vocabulary with no runtime caller | n/a |
+| `<X>_TOOL_NAMES` | `shared/agent-tool-names.ts` | adapter `capabilities`; the normalizer tests check `<X>_TRANSCRIPT_TOOL_NAMES` against it (opencode: full coverage; grok: every named tool is advertised) | n/a (hand list) |
 | `TASK_LIST_TOOL_NAMES` + `TASK_LIST_SUMMARY_KEYS` | `shared/task-list-tools.ts` | panel membership + which input keys survive | falls out of panel; keys **dropped** |
 | `inputKeyTreatment` (`WHOLE_INPUT_TOOL_NAMES`, `SUMMARY_KEYS`, plan-doc marker) | `shared/transcript-input-policy.ts` | which input fields reach the wire | **default `drop`** — data loss |
 | `rendersResultContentInline`, `SUBAGENT_TOOL_NAMES`, `SUBAGENT_REPORT_TOOL_NAMES`, `WHOLE_RESULT_TOOL_NAMES` | `shared/transcript-slice-tools.ts` | result-body projection, subagent layout/report | unknown → result **stripped** |
@@ -340,8 +346,8 @@ Also name-shaped but not tool names, same silent-drop class: Claude
 
 ## Key files
 
-- `src/server/session/agents/<id>/adapter.ts`, `tool-map.ts`,
-  `adapter.test.ts` — Layer A + the capture-backed conformance tests
+- `src/server/session/agents/<id>/adapter.ts`, `adapter.test.ts` — Layer A
+  + the capture-backed conformance tests (`tool-map.ts` removed 2026-09-02)
 - `src/server/shared/agent-tool-names.ts`, `task-list-tools.ts`,
   `transcript-input-policy.ts`, `transcript-slice-tools.ts`,
   `tool-names.ts` — Layer B registries (server-shared)

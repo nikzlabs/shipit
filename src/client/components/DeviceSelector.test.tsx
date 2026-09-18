@@ -34,11 +34,9 @@ describe("DeviceSelector", () => {
     const user = userEvent.setup();
     render(<DeviceSelector {...baseProps} />);
     await user.click(screen.getByLabelText("Select device viewport"));
-    // Should include all phone presets
     for (const p of DEVICE_PRESETS.filter((p) => p.category === "phone")) {
       expect(screen.getByText(p.label)).toBeInTheDocument();
     }
-    // Should include all tablet presets
     for (const p of DEVICE_PRESETS.filter((p) => p.category === "tablet")) {
       expect(screen.getByText(p.label)).toBeInTheDocument();
     }
@@ -214,8 +212,6 @@ describe("DeviceSelector", () => {
     await waitFor(() => {
       expect(screen.queryByLabelText("Custom width")).not.toBeInTheDocument();
     });
-    // A size applied elsewhere — a drag, the Freeform row, a session switch —
-    // arrives via props; the next open must show it, not the previous seed.
     rerender(<DeviceSelector {...baseProps} customSize={{ width: 612, height: 707 }} />);
     await user.click(screen.getByLabelText("Select device viewport"));
     expect(screen.getByLabelText("Custom width")).toHaveValue(612);
@@ -234,8 +230,6 @@ describe("DeviceSelector", () => {
       />,
     );
     await user.click(screen.getByLabelText("Select device viewport"));
-    // The applied viewport is landscape iPhone 16 (852×393) — the inputs must
-    // show that, not the panel size.
     expect(screen.getByLabelText("Custom width")).toHaveValue(852);
     expect(screen.getByLabelText("Custom height")).toHaveValue(393);
   });
@@ -285,9 +279,7 @@ describe("DeviceSelector", () => {
     );
     await user.click(screen.getByLabelText("Select device viewport"));
     expect(screen.getByText("Phones")).toBeInTheDocument();
-    // Radix listens for pointerdown outside the menu to close it.
-    // userEvent.click won't fire on elements with pointer-events: none (Radix's
-    // outside-overlay), so we dispatch the pointerdown directly.
+    // userEvent.click rejects the pointer-events:none set by Radix outside the menu.
     fireEvent.pointerDown(screen.getByTestId("outside"));
     await waitFor(() => {
       expect(screen.queryByText("Phones")).not.toBeInTheDocument();

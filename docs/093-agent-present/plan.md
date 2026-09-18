@@ -369,15 +369,12 @@ Tabs would work but are visually heavy for what's often 1–3 items. The `◀ 2/
 ### Agent API for revisions
 
 ```
-// First presentation — new entry
 present({ content: "...", title: "Schema v1" })
 → { presentId: "abc123" }
 
-// User gives feedback, agent revises — replace in-place
 present({ content: "...", title: "Schema v2", replaceId: "abc123" })
 → { presentId: "def456" }
 
-// Separate artifact in the same turn — new entry
 present({ content: "...", title: "Data Flow" })
 → { presentId: "ghi789" }
 ```
@@ -427,23 +424,21 @@ This connects the conversation to the visual output without rendering the full a
 > fetches bytes lazily. Current shape:
 
 ```typescript
-// ws-server-messages.ts (current — metadata only, no bytes)
 interface WsPresentContentMessage {
   type: "present_content";
   sessionId: string;
-  presentId: string;        // unique ID for this presentation
-  replaceId?: string;       // if set, replaces this existing presentation in-place
-  mimeType: string;         // "text/html", "image/svg+xml", "text/markdown", "image/png"
-  title?: string;           // display title for the header
-  filePath: string;         // the presented path (verbatim), shown in the header
-  createdAt: string;        // ISO8601
-  // No `content` — fetched on demand from /api/sessions/:id/present/:presentId/content
+  presentId: string;
+  replaceId?: string;
+  mimeType: string;
+  title?: string;
+  filePath: string;
+  createdAt: string;
 }
 
 interface WsPresentClearedMessage {
   type: "present_cleared";
   sessionId: string;
-  presentId?: string;       // set → drop one (a revision); otherwise clear all
+  presentId?: string;
 }
 ```
 
@@ -533,7 +528,7 @@ present({
     "style.css": "body { ... }",
     "app.js": "document.addEventListener(..."
   },
-  entry: "index.html",        // which file to load in the iframe
+  entry: "index.html",
   title: "Landing Page v2"
 })
 ```

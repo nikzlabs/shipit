@@ -1,11 +1,3 @@
-/**
- * docs/109 reqs 10–11 — retiring a finished background subagent's card.
- *
- * The fixtures here are lifted from a real CLI 2.1.219 run (the wire trace in
- * `subagent-completion.ts`): the acknowledgement is the exact block-array shape
- * the CLI writes, and the completion is the exact `task_notification` payload.
- */
-
 import { describe, it, expect } from "vitest";
 import {
   buildRetiredSubagentResult,
@@ -21,7 +13,7 @@ import { parseSubagentReport, parseReportMeta, isBackgroundLaunchAck } from "../
 
 const TOOL_ID = "toolu_013fUMwLfWGNwaaqVsj8ojXF";
 
-/** The CLI's launch acknowledgement, verbatim from the probe run. */
+// Launch acknowledgement captured from Claude CLI 2.1.219.
 const ACK = JSON.stringify([
   {
     type: "text",
@@ -51,10 +43,6 @@ describe("toTerminalStatus", () => {
     expect(toTerminalStatus("stopped")).toBe("stopped");
   });
 
-  /**
-   * A status we do not model is not evidence the subagent finished. Guessing
-   * would trade a card stuck on "running" for one that lies about being done.
-   */
   it("rejects anything else, including undefined", () => {
     expect(toTerminalStatus("running")).toBeNull();
     expect(toTerminalStatus(undefined)).toBeNull();
@@ -68,17 +56,12 @@ describe("buildRetiredSubagentResult", () => {
     expect(built.isError).toBeUndefined();
   });
 
-  /** The whole point: what replaces the ack must not still look like the ack. */
   it("produces content the launch-ack detector no longer matches", () => {
     expect(isBackgroundLaunchAck(parseSubagentReport(ACK).text)).toBe(true);
     const built = buildRetiredSubagentResult({ toolUseId: TOOL_ID, status: "completed", summary: REPORT });
     expect(isBackgroundLaunchAck(parseSubagentReport(built.content).text)).toBe(false);
   });
 
-  /**
-   * req 5 — the chips are parsed out of a `key: value` text block, so the
-   * accounting has to be emitted in that shape to render at all.
-   */
   it("emits the usage as a footer the chip parser reads", () => {
     const built = buildRetiredSubagentResult({
       toolUseId: TOOL_ID,
@@ -91,7 +74,6 @@ describe("buildRetiredSubagentResult", () => {
     expect(parseReportMeta(parsed.meta)).toEqual({ tokens: 10408, toolUses: 0, durationMs: 2757 });
   });
 
-  /** req 5 — the internal agent id must never reach the reader. */
   it("never writes an agentId into the payload", () => {
     const built = buildRetiredSubagentResult({
       toolUseId: TOOL_ID,
@@ -123,17 +105,12 @@ describe("buildRetiredSubagentResult", () => {
     expect(built.isError).toBe(true);
   });
 
-  /**
-   * A stop is not a fault. Marking it `isError` would draw the red "Subagent
-   * failed" panel and send the reader looking for a bug that is not there.
-   */
   it("says a stopped subagent was stopped, without calling it an error", () => {
     const built = buildRetiredSubagentResult({ toolUseId: TOOL_ID, status: "stopped", summary: "Review the diff" });
     expect(built.content).toBe(STOPPED_TEXT);
     expect(built.isError).toBeUndefined();
   });
 
-  /** req 11's second half — the promise must be closed out either way. */
   it("says so plainly when a subagent finished without a report", () => {
     const built = buildRetiredSubagentResult({ toolUseId: TOOL_ID, status: "completed", summary: "   " });
     expect(built.content).toBe(NO_REPORT_TEXT);
@@ -156,12 +133,6 @@ describe("retireBackgroundSubagentResult", () => {
     expect(retireBackgroundSubagentResult(c, completion, built())).not.toBeNull();
   });
 
-  /**
-   * The dangerous one. `task_notification` also fires for background *shell*
-   * commands, whose `tool_use_id` points at a Bash call holding real output —
-   * and whose summary is a one-liner. Rewriting that would destroy the command's
-   * result and replace it with `Background command "npm test" completed`.
-   */
   it("refuses to touch a result that is not a report tool's", () => {
     const c: SubagentResultCarrier = {
       toolUse: [{ id: TOOL_ID, name: "Bash" }],
@@ -171,11 +142,6 @@ describe("retireBackgroundSubagentResult", () => {
     expect(c.toolResults![0].content).toBe("total 48\ndrwxr-xr-x 12 root root");
   });
 
-  /**
-   * The CLI warns that "the same task-id may notify more than once" (an agent
-   * resumed with `SendMessage` notifies again). A second notification must not
-   * overwrite the report already sitting there — including with an older one.
-   */
   it("is idempotent: a repeat notification leaves the existing report alone", () => {
     const c = carrier();
     expect(retireBackgroundSubagentResult(c, completion, built())).not.toBeNull();

@@ -6,16 +6,10 @@ import {
 } from "./github.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
-/** Minimal stub exposing just the `getToken()` the service reads. */
 function stubAuth(token: string | null): GitHubAuthManager {
   return { getToken: () => token } as unknown as GitHubAuthManager;
 }
 
-/**
- * Stub with App-token support for the repo-scoped broker. `minted` is the
- * installation token returned by `mintRepoScopedToken` (null = mint failed);
- * `appEnabled` toggles whether App tokens are configured at all.
- */
 function stubAppAuth(opts: {
   token: string | null;
   appEnabled: boolean;
@@ -150,10 +144,6 @@ describe("resolveOrchestratorGitRemoteCredential (docs/266-orchestrator-git-trus
   });
 
   it("stops waiting on a stalled mint and uses the PAT", async () => {
-    // The mint is two api.github.com round-trips with no timeout of their own.
-    // Uncapped, a socket that accepts and then stalls would hold the post-turn
-    // auto-push behind it — the one path CLAUDE.md invariant 2 and docs/266
-    // req 6 say cannot acquire an availability dependency.
     const stalled = {
       getToken: () => "ghp_pat",
       appTokensEnabled: () => true,

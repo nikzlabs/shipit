@@ -1,16 +1,4 @@
-/**
- * docs/262 req 19 — `setGitRemote` is the one place a user hands ShipIt an
- * arbitrary remote string, and it writes it straight into the session's own
- * `.git/config` (`/project/.git/config` in the container, readable by the agent
- * and by every plugin CLI and plugin service) as well as into the session row.
- *
- * Every shape below was reachable and unguarded; the last two were found by the
- * independent review of the first fix, which only covered http(s) userinfo.
- *
- * Fixture note: passwords are deliberately short and generic — `secret-scan.ts`
- * flags `<user>:<8+ chars>@` in a URL, so a realistic-looking PAT here would
- * trip the scanner on every commit.
- */
+// Short fixture passwords avoid matching the secret scanner's eight-character threshold.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -49,14 +37,11 @@ describe("setGitRemote does not persist a credential (docs/262 req 19)", () => {
       "https://github.com/o/r.git",
     ],
     [
-      // A token in the query survived the http(s)-only strip.
       "a token in the query string",
       "https://github.com/o/r.git?access_token=pw",
       "https://github.com/o/r.git",
     ],
     [
-      // The ssh USER is a login identity, not a secret, so it stays — only the
-      // password goes. Stripping `git@` would break the remote outright.
       "an ssh password, keeping the ssh user",
       "ssh://git:pw@example.com/o/r.git",
       "ssh://git@example.com/o/r.git",
@@ -76,8 +61,6 @@ describe("setGitRemote does not persist a credential (docs/262 req 19)", () => {
   }
 
   it("leaves an ordinary remote exactly as typed", async () => {
-    // The strip must not normalize a clean URL — a stored URL that silently
-    // changes shape is a row key that stops matching itself.
     const url = "https://github.com/o/r.git";
     await setGitRemote(new GitManager(workspaceDir), sessionManager, "s1", "origin", url);
     expect(sessionManager.get("s1")?.remoteUrl).toBe(url);

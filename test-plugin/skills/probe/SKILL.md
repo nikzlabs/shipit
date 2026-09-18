@@ -12,7 +12,11 @@ under a `plugins--<alias>--probe` namespace.
 
 Run `probe` in the project workspace. It prints one JSON report and mutates
 nothing. Flags: `--bump` increments the shared counter before reporting;
-`--host-check` also tests HTTPS egress to the declared host (example.com).
+`--host-check` also tests HTTPS egress to the declared host (example.com),
+which the manifest declares **optional** (reqs 23, 24) — the probe reports
+whether it got through and exits 0 either way, so the Plugins card offers that
+host rather than counting it as an unmet need. `PROBE_TOKEN` stays required, so
+the fixture carries one of each.
 
 | Field | Verifies |
 |---|---|

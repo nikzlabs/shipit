@@ -1,207 +1,222 @@
-/**
- * docs/252 phase 7 (req 9) — **which model the work outside a turn runs on**.
- *
- * Naming a session and writing a pull-request description are ShipIt's own
- * work, not the session's, so they get their own `(service, billing mode,
- * model)` selection — chosen the same way every other model is (req 3) and
- * independently of whatever any session is running. The failure this exists to
- * prevent is on record: a lapsed Claude subscription broke session naming for a
- * user who had already moved to Codex, because naming silently assumed a
- * credential nobody had chosen for it.
- *
- * Three rules live here and nothing else:
- *
- *  - **The harness is derived, never chosen.** Running a model means spawning a
- *    CLI, and a model can be offered on more than one installed harness. Taking
- *    the first one in catalogue order keeps this a *model* setting rather than
- *    growing a second control that exists nowhere else in the product. The rule
- *    is arbitrary and that is acceptable here: the work is a session title and a
- *    PR description, every harness that can run a model runs it, and req 9's
- *    notice already covers the failure.
- *  - **The default is a rule, not a stored value** — *and since 2026-08-13 the
- *    rule runs once, not on every read.* It is still "the first eligible model
- *    in the picker's own ordering" (first service, first billing mode, first
- *    model), which is why a named default was refused: it would point at a
- *    vendor the install may have no credential for — exactly the install this
- *    feature exists to create, a user whose only credential is a DeepSeek key —
- *    and every session title would fail from day one. What changed is WHEN the
- *    rule is applied. `seedNonTurnModel` (`services/settings.ts`) writes its
- *    answer the first time the install can run something, and the setting is
- *    the user's from then on.
- *  - **There is one state, and this fallback is not a second one.** The `!pinned`
- *    branch below is what answers a caller that runs before the first settings
- *    read; it resolves to the same model the seed goes on to write. It is no
- *    longer reachable as a state the user is left in, which is why the screen no
- *    longer has a word for it. The cost is deliberate: a stored selection whose
- *    credential lapses is reported (`pin_unavailable`), where an unset one used
- *    to move quietly to whatever the install still had.
- *
- * Eligibility is the same conjunction the picker uses — an installed harness
- * (req 14) whose service holds a credential for that billing mode (req 8) — and
- * it is asked of `catalogue/index.ts` rather than reimplemented, so the setting
- * can never offer something the picker would not.
- */
-
 import type { AgentId, ServiceRouting } from "../shared/types.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import type { CredentialStore } from "./credential-store.js";
 import {
   allHarnesses,
   allServices,
+  getMode,
   getService,
   isSelectionEligible,
+  resolveDirectCall,
   retirementSuccessor,
+  type BillingMode,
   type ConfiguredCredential,
+  type DirectCallTarget,
   type HarnessDef,
   type ModelSelection,
 } from "../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
+import { toolsOffRefusal } from "../shared/agent-tools-off.js";
+import type { EligibleModel } from "../shared/agent-registry.js";
 import {
   credentialSecretForRoute,
   listConfiguredCredentials,
   selectRouteForSelection,
   serviceRoutingForSelection,
+  stringRouteForSelection,
   type ServiceRoutingCredentialSource,
 } from "./service-routing.js";
 
-/** Which piece of non-turn work is running — what the failure notice names. */
-export type NonTurnPurpose = "session-naming" | "pr-description";
-
-/** Human-facing label for a purpose, used in the failure notice's prose. */
-export const NON_TURN_PURPOSE_LABEL: Record<NonTurnPurpose, string> = {
-  "session-naming": "Session naming",
-  "pr-description": "Pull-request description",
-};
+/** The purposes that report a failure as a chat card, mirroring `NonTurnFailureCard`. */
+export type NonTurnCardPurpose = "session-naming" | "pr-description";
 
 /**
- * The signature every text-generating feature in the orchestrator is threaded
- * with (`generateText`).
- *
- * `opts.sessionId` is what makes a call non-turn *work* rather than an
- * unattributed prompt: it names the session the failure notice lands in and the
- * usage row is attributed to. A caller with no session — the post-interrupt
- * commit message — omits it and keeps the previous behaviour exactly.
- *
- * Lives here rather than beside the implementation so the many modules that
- * only need the *type* do not have to import the service that spawns agents.
+ * Voice cleanup is background work too, and is deliberately not a card purpose:
+ * a dictation is not an operation the user is watching, so its failure inserts
+ * the raw transcript and writes nothing to the transcript
+ * (docs/299-direct-provider-calls req 6).
  */
+export type NonTurnPurpose = NonTurnCardPurpose | "voice-cleanup";
+
 export type GenerateText = (
   prompt: string,
   cwd: string,
-  opts?: { sessionId?: string; purpose?: NonTurnPurpose },
+  opts?: { sessionId?: string; purpose?: NonTurnCardPurpose },
 ) => Promise<string>;
 
-/** Everything a non-turn spawn needs, once the setting has been resolved. */
-export interface NonTurnTarget {
-  /** Derived (req 9), never stored: the first installed harness offering `selection`. */
-  harnessId: AgentId;
+interface NonTurnTargetCommon {
   selection: ModelSelection;
-  /** The service's display name — what the failure notice tells the user broke. */
   serviceName: string;
-  /** Whether this came from the user's pin or from the derived default. */
   source: "pinned" | "default";
-  /** The credential route a spawn authenticates with, when one resolved. */
+}
+
+export interface NonTurnHarnessTarget extends NonTurnTargetCommon {
+  execution: "harness";
+  harnessId: AgentId;
   route: ProviderRoute | null;
-  /**
-   * Endpoint + credential shaping for a string-delivered credential, or
-   * `undefined` when there is nothing to shape (the harness on its own vendor
-   * through a login account — which must stay byte-identical to today's spawn).
-   */
   serviceRouting?: ServiceRouting;
-  /**
-   * The secret for `serviceRouting.credentialSourceEnv`, for a caller that has
-   * to build the process environment itself. Absent for an account-delivered
-   * credential, which is the CLI's own login and carries no secret to place.
-   */
   credentialSecret?: string;
+}
+
+/** No harness and no container: the orchestrator calls the provider's API itself. */
+export interface NonTurnDirectTarget extends NonTurnTargetCommon {
+  execution: "direct";
+  call: DirectCallTarget;
+  apiKey: string;
+}
+
+/**
+ * A union on `execution` rather than an always-present `harnessId`, so the
+ * compiler names every consumer that assumed a harness ran the work (docs/299
+ * req 2). A direct target carries no harness id at all, which is also what
+ * keeps usage honest: "ran directly" must not collapse into "metered".
+ */
+export type NonTurnTarget = NonTurnHarnessTarget | NonTurnDirectTarget;
+
+/**
+ * Why a pinned selection cannot run background work, answered where the search
+ * happened rather than guessed by each caller. The three ask different things
+ * of the user: a credential that is gone is theirs to add back, a sign-in that
+ * failed is theirs to reconnect, and a selection no carrier can run as
+ * background work is not repaired in Settings at all — a Google pin carried
+ * only by Antigravity, which refuses a tools-off run, is that last case
+ * (docs/299-direct-provider-calls req 3, `agent-tools-off.ts`).
+ */
+export type NonTurnUnavailableCause =
+  | "credential_gone"
+  | "credential_unusable"
+  | "no_background_carrier";
+
+export interface NonTurnPinUnavailable {
+  ok: false;
+  reason: "pin_unavailable";
+  cause: NonTurnUnavailableCause;
+  serviceName: string;
+  selection: ModelSelection;
 }
 
 export type NonTurnResolution =
   | { ok: true; target: NonTurnTarget }
-  /** A pin the install can no longer run — the one case req 9's notice reports. */
-  | { ok: false; reason: "pin_unavailable"; serviceName: string; selection: ModelSelection }
-  /**
-   * Nothing at all is runnable: no installed harness has a credentialed model.
-   * Not a *failure* of a service — there is no service to name — so callers fall
-   * back silently, exactly as an install with no credentials already does
-   * everywhere else.
-   */
+  | NonTurnPinUnavailable
   | { ok: false; reason: "nothing_eligible" };
+
+/** What a failure notice names, built from the resolution so the cause travels with it. */
+export interface NonTurnUnavailable {
+  serviceName: string;
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  cause: NonTurnUnavailableCause;
+}
+
+export function unavailableFrom(resolution: NonTurnPinUnavailable): NonTurnUnavailable {
+  return {
+    serviceName: resolution.serviceName,
+    serviceId: resolution.selection.serviceId,
+    billingMode: resolution.selection.billingMode,
+    modelId: resolution.selection.modelId,
+    cause: resolution.cause,
+  };
+}
 
 export interface NonTurnModelDeps {
   credentialStore: Pick<CredentialStore, "getNonTurnModel"> & ServiceRoutingCredentialSource;
-  /**
-   * Both members: `subscriptionLimitsFor` is what lets the string-delivered
-   * walk apply the same quota tiers the account walk does. Narrowing this to
-   * `selectAccountForTurn` alone would silently drop a failover tier for a
-   * supplied subscription credential.
-   */
   providerAccountManager?:
     | Pick<ProviderAccountManager, "selectAccountForTurn" | "subscriptionLimitsFor">
     | undefined;
   env?: NodeJS.ProcessEnv | undefined;
 }
 
-/** Options shared by the harness-eligibility walk and everything built on it. */
 export interface HarnessSearchOpts {
-  /**
-   * Move one harness to the BACK of the search without removing it — docs/261's
-   * reviewer derivation. See {@link harnessForSelection}.
-   */
   avoidHarnessId?: AgentId;
-  /**
-   * Override "is this harness installed?".
-   *
-   * The default, `isHarnessInstalled`, reads the deployment's install report and
-   * answers **true for everything when there is no report**
-   * (`installed-harnesses.ts`) — deliberately permissive, because a wrong answer
-   * there is corrected on the next read. One caller cannot accept that:
-   * `seedNonTurnModel` writes its answer down, so it passes the probed
-   * `AgentRegistry` instead. Cross-backend review found the first attempt at
-   * that guard *declining to write* when the two disagreed, which left such an
-   * install with no setting at all; the predicate belongs in the walk so it
-   * moves on to a harness that is actually there.
-   */
+  // Seeding uses the probed registry; the default allows all harnesses when no install report exists.
   isInstalled?: (harnessId: AgentId) => boolean;
 }
 
+export interface NonTurnSearchOpts extends HarnessSearchOpts {
+  /**
+   * Reads the credential a direct call would send. A caller that supplies one
+   * offers a direct call only where the key is readable, so the runner it gets
+   * back is one it can run; a caller asking about eligibility alone (seeding,
+   * the option list) omits it.
+   */
+  directKeyFor?: (selection: ModelSelection, call: DirectCallTarget) => string | undefined;
+}
+
+export type NonTurnRunner =
+  | { execution: "harness"; harnessId: AgentId; selection: ModelSelection }
+  | { execution: "direct"; selection: ModelSelection; call: DirectCallTarget; apiKey?: string };
+
 /**
- * The first installed harness that can run `selection` with these credentials,
- * in catalogue order — or `undefined` when none can.
- *
- * A retired model resolves through its successor here rather than being
- * refused. The setting is a fourth persisted selection (after the session's,
- * the browser slot's and the sub-agent defaults'), and it strands the same way:
- * a pin the catalogue has retired would fail on every session forever and fire
- * req 9's notice each time, when req 13 already says what to do. Resolved at
- * read time and NOT written back — unlike a session, nothing displays this
- * selection as "what is running right now", so there is no second precedence
- * rule to keep honest, and the user's pin stays the thing they typed.
+ * A direct call where the credential permits one, and no harness row for the
+ * same model (docs/299-direct-provider-calls req 3). A harness can reach that model too, but for
+ * background work it is slower, needs a container and arrives at the same
+ * place. The capability itself is the catalogue's answer — `resolveDirectCall`
+ * — never re-derived from the billing mode or from how the credential arrived.
  */
-export function harnessForNonTurnSelection(
+export function runnerForNonTurnSelection(
   selection: ModelSelection,
   credentials: readonly ConfiguredCredential[],
-  opts: HarnessSearchOpts = {},
-): { harnessId: AgentId; selection: ModelSelection } | undefined {
-  return harnessForSelection(selection, credentials, opts);
+  opts: NonTurnSearchOpts = {},
+): NonTurnRunner | undefined {
+  const direct = directRunnerFor(selection, credentials, opts.directKeyFor);
+  if (direct) return direct;
+  const harness = backgroundWorkHarnessFor(selection, credentials, opts);
+  return harness ? { execution: "harness", ...harness } : undefined;
 }
 
 /**
- * The generic behind {@link harnessForNonTurnSelection}: the first **installed**
- * harness that can run `selection` with these credentials, resolving a retired
- * model through its successor (req 13).
+ * Background work runs a harness one-shot with its tools off, so a harness with
+ * no measured way to do that cannot carry it — and must not be offered, rather
+ * than refused once the user has chosen it (`agent-tools-off.ts`).
  *
- * `opts.avoidHarnessId` moves one harness to the back of the search without
- * removing it — docs/261's reviewer derivation, where the harness is a ranking
- * axis rather than an arbitrary choice: if a reviewer's model runs on both
- * installed harnesses, catalogue order could hand it the implementer's own and
- * drop the reviewer a tier for no reason. It stays a *preference*, so a model
- * only the implementer's harness can run is still resolved rather than refused.
- *
- * Extracted rather than copied: eligibility plus retirement-successor handling
- * is the part a second implementation would get subtly wrong, and there is now a
- * second caller.
+ * Filtered here and NOT in `harnessesForSelection`, which the reviewer and the
+ * role resolver share: those run an ordinary turn with tools live, where the
+ * refusal says nothing about whether the harness can do the work.
  */
+function backgroundWorkHarnessFor(
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+  opts: HarnessSearchOpts,
+): { harnessId: AgentId; selection: ModelSelection } | undefined {
+  return harnessesForSelection(selection, credentials, opts)
+    .find((candidate) => !toolsOffRefusal(candidate.harnessId));
+}
+
+function directRunnerFor(
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+  readKey: NonTurnSearchOpts["directKeyFor"],
+): NonTurnRunner | undefined {
+  const configured = credentials.some(
+    (c) =>
+      c.via === "string"
+      && c.serviceId === selection.serviceId
+      && c.billingMode === selection.billingMode,
+  );
+  if (!configured) return undefined;
+  for (const candidate of [selection, ...directSuccessorsOf(selection)]) {
+    const call = resolveDirectCall(candidate);
+    if (!call) continue;
+    if (!readKey) return { execution: "direct", selection: candidate, call };
+    const apiKey = readKey(candidate, call);
+    if (apiKey) return { execution: "direct", selection: candidate, call, apiKey };
+  }
+  return undefined;
+}
+
+// Retirement has no harness here to pick the successor's style, so any declared
+// successor that is itself directly callable is the replacement.
+function directSuccessorsOf(selection: ModelSelection): ModelSelection[] {
+  const retired = getMode(selection.serviceId, selection.billingMode)
+    ?.retired.find((r) => r.id === selection.modelId);
+  if (!retired) return [];
+  return [...new Set(Object.values(retired.successors))].map((modelId) => ({
+    ...selection,
+    modelId,
+  }));
+}
+
 export function harnessForSelection(
   selection: ModelSelection,
   credentials: readonly ConfiguredCredential[],
@@ -210,18 +225,6 @@ export function harnessForSelection(
   return harnessesForSelection(selection, credentials, opts)[0];
 }
 
-/**
- * Every harness in catalogue order, with `avoidHarnessId` moved to the **back**
- * rather than removed.
- *
- * Exported for its own test. It cannot be exercised through
- * {@link harnessesForSelection} against today's rows — no shipped model runs on
- * both harnesses, so every selection has exactly one eligible harness and there
- * is nothing to order — which means a test at that level would pass just as
- * happily against an implementation that ignored the option entirely. Reviewing
- * this branch is what found that; the preference is load-bearing for docs/261's
- * ranking, so it gets a test that fails when it is removed.
- */
 export function harnessesPreferring(avoidHarnessId?: AgentId): readonly HarnessDef[] {
   const harnesses = allHarnesses();
   if (!avoidHarnessId) return harnesses;
@@ -231,17 +234,7 @@ export function harnessesPreferring(avoidHarnessId?: AgentId): readonly HarnessD
   ];
 }
 
-/**
- * Every installed harness that can run `selection`, in preference order — the
- * list {@link harnessForSelection} takes the head of.
- *
- * The list form exists for docs/261: a reviewer is ranked only if it has a
- * usable **route**, and "eligible" is not "runnable" (a subscription whose
- * accounts are all spent is eligible and returns `all_exhausted`). So the
- * reviewer resolver has to try the next harness rather than give up on the
- * first, and doing that by re-asking a single-answer function would mean
- * reproducing the eligibility and retirement-successor rules at the call site.
- */
+// Eligibility does not guarantee remaining quota; callers may need to try another returned route.
 export function harnessesForSelection(
   selection: ModelSelection,
   credentials: readonly ConfiguredCredential[],
@@ -263,22 +256,14 @@ export function harnessesForSelection(
   return out;
 }
 
-/**
- * Req 9's derived default: the first model this install can actually run, in
- * the picker's own ordering — first service, first billing mode, first model.
- *
- * Iterates the SERVICE catalogue rather than one harness's eligible list,
- * because the ordering the requirement names is the service one; the harness is
- * whatever that model turns out to be offered on.
- */
 export function firstEligibleNonTurnSelection(
   credentials: readonly ConfiguredCredential[],
-  opts: HarnessSearchOpts = {},
-): { harnessId: AgentId; selection: ModelSelection } | undefined {
+  opts: NonTurnSearchOpts = {},
+): NonTurnRunner | undefined {
   for (const service of allServices()) {
     for (const mode of service.modes) {
       for (const model of mode.models) {
-        const found = harnessForNonTurnSelection(
+        const found = runnerForNonTurnSelection(
           { serviceId: service.id, billingMode: mode.kind, modelId: model.id },
           credentials,
           opts,
@@ -291,53 +276,156 @@ export function firstEligibleNonTurnSelection(
 }
 
 /**
- * Resolve the setting into something runnable: the triple, the derived harness,
- * the credential route and the spawn shaping.
+ * Every triple background work can run on this install — a direct call where
+ * the credential permits one, a harness where it does not (docs/299 req 3).
  *
- * Pure with respect to the session — non-turn work belongs to ShipIt, not to
- * whichever session happens to be in front of the user — so nothing here reads
- * a session row.
+ * The selector cannot reuse `eligibleModelsOf(agentList)`: that is the union
+ * over INSTALLED harnesses, so a model provider reachable only by a direct call
+ * is invisible there however well the resolver answers. Built from the same
+ * `runnerForNonTurnSelection` the resolver uses, so the options offered and the
+ * thing that runs cannot disagree — including req 3's "only that call": one
+ * triple is one row, and which execution it gets is the resolver's answer, not
+ * a second row for the user to choose between.
+ *
+ * Eligibility only: no `directKeyFor`, so a provider whose key is configured is
+ * offered without reading the secret.
  */
+export function backgroundWorkOptions(
+  credentials: readonly ConfiguredCredential[],
+  opts: HarnessSearchOpts = {},
+): EligibleModel[] {
+  const out: EligibleModel[] = [];
+  for (const service of allServices()) {
+    for (const mode of service.modes) {
+      for (const model of mode.models) {
+        const selection = { serviceId: service.id, billingMode: mode.kind, modelId: model.id };
+        if (!runnerForNonTurnSelection(selection, credentials, opts)) continue;
+        out.push({
+          serviceId: service.id,
+          serviceName: service.name,
+          billingMode: mode.kind,
+          modelId: model.id,
+          label: model.label,
+          canonicalModelKey: model.canonicalModelKey,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
   const credentials = listConfiguredCredentials(deps.credentialStore, deps.env ?? process.env);
   const pinned = deps.credentialStore.getNonTurnModel();
-  const resolved = pinned
-    ? harnessForNonTurnSelection(pinned, credentials)
-    : firstEligibleNonTurnSelection(credentials);
-
-  if (!resolved) {
-    if (!pinned) return { ok: false, reason: "nothing_eligible" };
-    return {
-      ok: false,
-      reason: "pin_unavailable",
-      serviceName: getService(pinned.serviceId)?.name ?? pinned.serviceId,
-      selection: pinned,
-    };
-  }
-
-  const { harnessId, selection } = resolved;
   const routeDeps = {
     credentialStore: deps.credentialStore,
     ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
     ...(deps.env ? { env: deps.env } : {}),
   };
+  const search: NonTurnSearchOpts = {
+    directKeyFor: (selection, call) => directCallKey(deps, routeDeps, selection, call),
+  };
+  const resolved = pinned
+    ? runnerForNonTurnSelection(pinned, credentials, search)
+    : firstEligibleNonTurnSelection(credentials, search);
+
+  if (!resolved) {
+    if (!pinned) return { ok: false, reason: "nothing_eligible" };
+    return pinUnavailable(pinned, unavailableCause(deps, pinned, credentials));
+  }
+
+  const { selection } = resolved;
+  const common: NonTurnTargetCommon = {
+    selection,
+    serviceName: getService(selection.serviceId)?.name ?? selection.serviceId,
+    source: pinned ? "pinned" : "default",
+  };
+
+  if (resolved.execution === "direct" && resolved.apiKey) {
+    return {
+      ok: true,
+      target: { execution: "direct", ...common, call: resolved.call, apiKey: resolved.apiKey },
+    };
+  }
+
+  // A direct runner with no key means the credential went away between being
+  // listed and being read; a harness on the same selection still answers.
+  const harnessId = resolved.execution === "harness"
+    ? resolved.harnessId
+    : backgroundWorkHarnessFor(selection, credentials, {})?.harnessId;
+  if (!harnessId) {
+    // Only that unreadable-key case reaches here, so the credential really has gone.
+    return pinned
+      ? pinUnavailable(selection, "credential_gone")
+      : { ok: false, reason: "nothing_eligible" };
+  }
+
   const account = selectRouteForSelection(harnessId, selection, routeDeps);
   const route = account.ok ? account.route : null;
   const serviceRouting = serviceRoutingForSelection(harnessId, selection, route, deps.credentialStore);
-  const secret = serviceRouting
+  const secret = serviceRouting?.credentialSourceEnv
     ? credentialSecretForRoute(deps, selection, serviceRouting.credentialSourceEnv, route)
     : undefined;
 
   return {
     ok: true,
     target: {
+      execution: "harness",
       harnessId,
-      selection,
-      serviceName: getService(selection.serviceId)?.name ?? selection.serviceId,
-      source: pinned ? "pinned" : "default",
+      ...common,
       route,
       ...(serviceRouting ? { serviceRouting } : {}),
       ...(secret ? { credentialSecret: secret } : {}),
     },
   };
+}
+
+function pinUnavailable(
+  selection: ModelSelection,
+  cause: NonTurnUnavailableCause,
+): NonTurnPinUnavailable {
+  return {
+    ok: false,
+    reason: "pin_unavailable",
+    cause,
+    serviceName: getService(selection.serviceId)?.name ?? selection.serviceId,
+    selection,
+  };
+}
+
+/**
+ * A credential the user still has is never reported as gone. Since background
+ * work skips a harness that cannot run with its tools off, a pin whose
+ * credential is present and whose harness is installed can fail here too, and
+ * telling that user to repair a credential sends them to fix nothing.
+ *
+ * Absence from the configured list is not enough to say "gone" either: it drops
+ * an account whose sign-in failed (`listConfiguredCredentials`), and that
+ * account is still there to be reconnected.
+ */
+function unavailableCause(
+  deps: NonTurnModelDeps,
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+): NonTurnUnavailableCause {
+  const configured = credentials.some(
+    (c) => c.serviceId === selection.serviceId && c.billingMode === selection.billingMode,
+  );
+  if (configured) return "no_background_carrier";
+  const signIn = deps.credentialStore
+    .listCredentialRoutes(selection.serviceId, selection.billingMode)
+    .some((r) => r.via === "account");
+  return signIn ? "credential_unusable" : "credential_gone";
+}
+
+// Optimistic: a benched subscription key is still the credential this call must
+// send, and a direct call has no second route to fail over to.
+function directCallKey(
+  deps: NonTurnModelDeps,
+  routeDeps: Parameters<typeof stringRouteForSelection>[1],
+  selection: ModelSelection,
+  call: DirectCallTarget,
+): string | undefined {
+  const route = stringRouteForSelection(selection, routeDeps, { optimistic: true });
+  return credentialSecretForRoute(deps, selection, call.storageEnv, route.ok ? route.route : null);
 }

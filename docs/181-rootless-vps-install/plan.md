@@ -118,8 +118,8 @@ compose except the socket mount source:
     volumes:
       - workspace:/workspace
       - credentials:/credentials
-      - ${XDG_RUNTIME_DIR}/docker.sock:/var/run/docker.sock   # rootless socket → in-container path unchanged
-      - ${SHIPIT_HOME}:/opt/shipit                            # host repo at ~/.shipit, container view stays /opt/shipit
+      - ${XDG_RUNTIME_DIR}/docker.sock:/var/run/docker.sock
+      - ${SHIPIT_HOME}:/opt/shipit
 ```
 The in-container `/opt/shipit` view is preserved (same trick docs/180 used for local), so
 `HOST_REPO_DIR` and all update-check logic in `src/server/orchestrator/services/updates.ts` keep

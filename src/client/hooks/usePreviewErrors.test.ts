@@ -24,7 +24,6 @@ function postConsoleError(args: string[], level: "error" | "warn" = "error") {
   );
 }
 
-// postMessage is async — we need to flush the event loop
 async function flush() {
   await new Promise((r) => setTimeout(r, 0));
 }
@@ -32,7 +31,7 @@ async function flush() {
 describe("usePreviewErrors", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    // Reset store and dedup state between tests
+
     usePreviewStore.getState().clearErrors();
     resetDedupState();
   });
@@ -137,7 +136,6 @@ describe("usePreviewErrors", () => {
 
     expect(result.current.errors).toHaveLength(1);
 
-    // Advance past the dedup window (1000ms)
     await act(async () => {
       vi.advanceTimersByTime(1100);
       postPreviewError({ message: "Same error" });
@@ -158,7 +156,7 @@ describe("usePreviewErrors", () => {
     }
 
     expect(result.current.errors.length).toBeLessThanOrEqual(50);
-    // Oldest errors should have been dropped
+
     expect(result.current.errors[0].message).toBe("Error 5");
   });
 
@@ -179,7 +177,6 @@ describe("usePreviewErrors", () => {
     expect(result.current.errors).toHaveLength(0);
     expect(result.current.hasErrors).toBe(false);
 
-    // Same error should be allowed again after clear
     await act(async () => {
       postPreviewError({ message: "An error" });
       await flush();

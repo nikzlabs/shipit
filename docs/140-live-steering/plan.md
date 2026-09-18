@@ -631,16 +631,104 @@ in which that state is not this turn's:
 - **No re-dispatch.** The quota failover and the auth-heal retry re-run
   `input.prompt` on a fresh credential. That prompt is the USER's; re-running it
   because an adopted turn hit a limit repeats work the agent already did and
-  still doesn't retry what failed. Both stand down. (Reasoned from the code and
-  **not** pinned by a test — reaching the failover needs the credential-selection
-  harness on a streaming *dispatched* turn, which no existing harness builds, and
-  a test against the executor harness alone passes with the guard removed.)
+  still doesn't retry what failed. Both stand down.
+
+  **But standing down is not the whole obligation, and reading it that way cost
+  a user a silent turn and a garbage commit** — see Phase 6.12. The parenthesis
+  that used to close this bullet claimed the quota half could not be tested
+  because reaching the failover "needs the credential-selection harness on a
+  streaming *dispatched* turn". That was wrong twice over: the WS streaming path
+  reaches the same gate, and `turn-self-wake-commit.test.ts` already wires the
+  `prepareAgentEnv` + `routeProfile` pair that gate reads. Both halves are pinned
+  now.
+
+  **"No re-dispatch" is the whole rule, and reading it as "no recovery" cost a
+  user a false sign-in card.** `willRecoverAuth` used to return `false` here, and
+  the auth listener treats `false` as "no heal is possible, so this failure is
+  terminal" — so when a sibling container rotated the shared single-use Claude
+  refresh token (production 2026-09-02, session e683868e), the session serving a
+  self-wake was told to sign in while two siblings on the same account healed
+  silently within the minute. Whether the OAuth token can be healed has nothing
+  to do with whose prompt is running. The two questions are now separate:
+  `willRecoverAuth` answers only "can the credential be healed", and
+  `recoverAuth` skips the re-run for an adopted turn, ending it through the same
+  terminal teardown the failed-heal path uses. For a turn that reaches recovery
+  at all, the card is reserved for a heal that was attempted and refused (the
+  listener still decides the rest on its own: a metered key, a non-vendor
+  subscription, a turn with no healer wired). Pinned by `turn-self-wake-commit.test.ts`.
+
+  **And the flag is read after the hand-over, not before it.** `servingAdoptedTurn`
+  is set at the END of `rearmForCliStartedTurn`, which first awaits the finished
+  turn's whole post-turn sequence — a commit plus a PR round-trip. For those
+  seconds the flag reads false while the turn actually running belongs to the
+  CLI, so a 401 in that window was judged by a flag describing the wrong turn and
+  re-dispatched the user's prompt in full, side effects included — a worse
+  outcome than the card. `recoverAuth` therefore awaits `rearmInFlight` before
+  asking. That await costs an ordinary turn nothing: a re-arm exists only once
+  the invoking turn has had its own `agent_result`.
 - **The partial-turn finalize must still fire.** It is gated on
   `!receivedResult`, which deliberately survives an adoption — so an adopted turn
   that died on a bare `done` had its streamed rows left `in_progress` for the
   next turn's `replaceInProgress` to delete. That is this phase's own bug, one
   path over. Only the row finalize is widened; the no-result hook stays disarmed,
   because arming it would re-run the user's original prompt.
+
+**And one thing an adopted turn must inherit but could not: its own turn-start
+HEAD.** `turnStartHeadHash` is read once, before the agent spawns, and frozen on
+`TurnInput`, so it named the head of whatever turn the *orchestrator* last
+started — hours old on a session that self-wakes for a consult repeatedly.
+
+What that cost, in production: `postTurnCommit`'s clean-tree branch reads
+`currentHead !== turnStartHead` as "the agent moved HEAD itself this turn", and
+an adopted turn that reads a review and answers changes no files, so that branch
+was entered on every one of them. It re-scanned the whole already-pushed
+`turnStartHead..HEAD` range for secrets — a range that grows with each turn, so
+a finding anywhere in shipped history would have false-blocked the push — and it
+pushed a head the remote already holds. That push moves nothing but still emits
+the `Auto-pushed to origin/<branch>` card, which is the reported symptom: the
+same commit announced again once per self-wake, with no error on any surface
+because every step believed it had succeeded.
+
+It is now an executor-local mutable value that `rearmForCliStartedTurn` samples
+per adoption through a new optional `TurnInput.readTurnStartHeadHash`, wired on
+the WS path only. Two things about *when* it samples:
+
+- **At the adoption edge, before the re-arm waits the predecessor's post-turn
+  sequence out.** There is no instant at which the orchestrator can read HEAD
+  and be sure the adopted turn has not already moved it — the CLI opened that
+  turn before it told us — so the best available sample is the earliest one.
+  Reading after the predecessor's commit *and* PR round-trip instead widens that
+  gap to seconds, and an adopted turn that runs its own `git commit` in the
+  window then has its own commit sampled AS the baseline: `postTurnCommit` sees
+  `currentHead === turnStartHead` and neither scans nor pushes it, so the commit
+  sits local and unscanned. The predecessor's own commit hash was considered as
+  a baseline instead — a value rather than a sample, so nothing concurrent can
+  overtake it — and rejected: a wake landing *before* the predecessor's
+  auto-commit makes an adopted-turn commit an ancestor of it, and a baseline at
+  the predecessor's commit skips that content entirely. The earliest reading is
+  never narrower than the adopted turn's true start. It is over-wide in that one
+  window (it re-scans the predecessor's single commit and re-arms one redundant
+  push of it) — one commit, in a window this section already lists as a known
+  residual, against the unbounded every-turn range it replaces.
+- **`null` on every failure path.** Callers that pass `turnStartHeadHash: null`
+  (dispatch, docs/240 restart adoption) wire no reader; a reader that throws is
+  contained by `postTurnStep`. Both land on `null`, which skips the clean-tree
+  heuristic and leaves the turn to the ordinary working-tree auto-commit — the
+  docs/240 value, and strictly better than a stale head. Not free, though, and
+  worth saying rather than calling simply correct: a commit the AGENT makes
+  during such a turn is then neither scanned nor pushed until a later turn moves
+  it, and a reader that threw says so only in the server log. The scope is also
+  narrower than it could be — a dispatched turn on a resident streaming process
+  can be adopted too, and gets no reader.
+
+**One adopted turn gets one re-arm.** `agent_self_wake` and the adopted turn's
+first `agent_assistant` are separate frames and both reach `beginRearm`. Each
+used to build a re-arm of its own, because the winner's flag clearing happens
+after an await, so the loser passed the same `streamingPostTurnFired` check. The
+loser stood down harmlessly — but its `.finally` had already overwritten
+`rearmInFlight`, so on settling it nulled the handle while the winner was still
+working, and every terminal path waits by reading exactly that handle.
+`beginRearm` now returns the in-flight promise rather than racing it.
 
 **Known residual, accepted.** An adopted turn that edits the tree BEFORE the
 finished turn's `git add -A` has those edits swept into the finished turn's
@@ -654,8 +742,123 @@ Coverage: `turn-self-wake-commit.test.ts` (a late-acked steer's CLI-started turn
 commits its own work under its own summary; a bare post-`result` init does NOT
 adopt; mid-turn output and a backgrounded subagent's output do not adopt; the
 drain stands down after an adoption; an adopted turn that ends before the re-arm
-settles still runs its post-turn flow) and `live-steering.test.ts` (the session
+settles still runs its post-turn flow; an adopted turn gets its own turn-start
+head, so a no-op wake re-scans no already-pushed range and re-pushes no
+already-held head; that head is sampled at the adoption edge, so a commit the
+adopted turn makes itself is still scanned and pushed; two adoption edges build
+one re-arm and take one sample) and `live-steering.test.ts` (the session
 reads busy, the accumulator is clean, and each turn persists once).
+
+**Phase 6.12 — a stand-down that said nothing (quota, adopted turn).**
+Production 2026-09-06, session `cdde30c2`, deployed commit `4a68ad1`. The Claude
+CLI reported a spent subscription as an ordinary assistant message
+(`You've hit your session limit · resets 6:40pm (UTC)`) and ended the turn
+`subtype: "success"` — the shape `detectHardExhaustionInTurnText` exists for.
+Detection worked and the req-7 bench worked. The turn was an **adopted** one, so
+`quotaRetryAllowed()` correctly declined the req-14 failover; the rule is right
+and is unchanged. What was wrong is that declining was implemented as a bare
+`return false`, so the turn retired through the ordinary post-turn path and three
+things followed:
+
+- **No explanation anywhere.** The retry is what posts the req-11 notice, and the
+  listener had already suppressed the terminal error row *on the premise that the
+  retry would run*. An adopted turn that streamed nothing visible therefore ended
+  with the user told nothing at all.
+- **The provider's notice became the commit subject.** `turnSummary` still held
+  it, so `postTurnCommit` labelled the turn's work with it and the auto-push
+  shipped `7d15650 "You've hit your session limit · resets 6:40pm (UTC)"`. This is
+  the exact symptom `detectHardExhaustionInTurnText`'s docstring records as its
+  reason for existing; the detector only ever fixed it for turns that go on to
+  retry, because there the retry owns the commit.
+- **The account hop cost a user round-trip.** The bench is correct, so the *next*
+  turn routes elsewhere on its own (`residentRouteNeedsRelease` releases the
+  resident process, env-prep posts "Continuing on Y") — but with nothing said,
+  the user's only signal was a session that had gone quiet.
+
+The correlation was exact in the incident's own logs: six sessions on the same
+account in the same minutes, the two inside an adopted-turn window failed over,
+the four outside it did.
+
+Fix, deliberately **not** "carry the adopted turn's prompt so a retry is safe".
+That direction cannot work for the general case — a self-wake has no prompt of
+its own at all — so it would fix one adoption edge and leave the other. Instead
+`retireOnSpentAccount` (`turn-executor.ts`) makes the stand-down complete:
+
+- the turn ends with a persisted, req-11-shaped account notice naming the
+  credential and saying the next message continues elsewhere. It promises no
+  account, because selection has not run — the wording follows
+  `credentialSetAsideMessage`'s "if you have one";
+- `turnSummary` and the `agent_result` snapshot `runCommit` falls back to are
+  cleared **when the summary IS the notice** (exhaustion read from turn text, not
+  from an error), so the subject drops to the activity label / "Agent turn". The
+  commit itself still runs — CLAUDE.md's "every terminal path runs the commit" is
+  untouched, only its label is;
+- the notice half is gated **twice** — the turn is adopted, AND the credential
+  could have failed over at all. Adoption is a harness capability
+  (`startsOwnTurns`), not a billing one, so a **metered key** reaches this branch
+  too; a key never fails over (req 12) and `markCredentialRouteExhausted` refuses
+  to bench one, so "ShipIt has set that account aside — your next message will
+  continue on another account" would be false twice over. That user's explanation
+  is the terminal error row the listener keeps for them (planning#453). The
+  second gate is `quotaRefusalCanFailOver` asked again *without* the adoption
+  argument. The summary half is not gated at all — a limit notice is never a
+  description of work, whoever the credential belongs to. (Both raised by the
+  docs/261 reviewer; the first draft gated on adoption alone.)
+- the whole stand-down runs through `postTurnStep`. It fires BEFORE the terminal
+  sequence, inside an un-awaited async listener, and it writes to SQLite and the
+  viewer transports — planning#279's un-skippable-commit invariant exactly. An
+  unguarded throw would have abandoned the drain, the commit and the push as an
+  unhandled rejection, with no `done` coming from a resident streaming process to
+  pick the turn up: the fix for a silent turn would have cost the turn its work.
+  Also the reviewer's finding.
+
+**And the second module was asking a different question.**
+`quotaRefusalCanFailOver` had no knowledge of `servingAdoptedTurn`, and its
+docstring called the asymmetry safe: "it can only make the listener *keep* a row
+the executor then declines to replace". That has the direction backwards — the
+listener DROPS a row on `true`. So the adopted turn got the suppression *and* no
+retry, which is precisely the over-suppression the docstring said was impossible.
+The condition is now the function's third argument, so both modules ask with the
+same three inputs; the listener receives it through a new `isServingAdoptedTurn`
+opt.
+
+Both gates read `servingCliStartedTurn()` — `servingAdoptedTurn || rearmInFlight
+!== null` — rather than the flag alone. `servingAdoptedTurn` is set at the END of
+`rearmForCliStartedTurn`, so for the seconds the predecessor's commit + PR
+round-trip takes it describes the wrong turn. `recoverAuth` closes that window by
+awaiting `rearmInFlight`; the listener's suppression decision and
+`willRetryOnQuotaError` are synchronous by contract and cannot, so they read the
+same fact synchronously instead. That also closes the same window on the
+adapter-`error` quota path, which had it unguarded.
+
+**Superseded in part by docs/306-quota-continuation (2026-09-14).** PR 2677
+decided that a CLI-started turn refused for quota does not fail over, and gave
+one reason: the failover mechanism is `retryOnNextAccount`, which replays
+`input.prompt`, and a self-wake has no prompt. That reason is still correct and
+`retryOnNextAccount` is still not called here. What the reasoning missed is that
+replay is not the only way to continue: `wakeSessionWithTurn` starts a **fresh**
+turn of ShipIt's own, and its per-turn account selection is exactly the hop the
+stand-down was standing down from — so "no prompt to replay" never implied "the
+user must send the next message". Production 2026-09-14 (session `e4be6129`)
+showed the cost: a second healthy account served other sessions for 45 minutes
+while that one waited for a human. So the notice no longer asks for a message and
+`retireOnSpentAccount` now asks the router whether any credential is free, then
+either wakes a continuation turn or records the session for resumption when a
+bench ends. Everything else on this phase stands: the two gates, the cleared
+summary, and the `postTurnStep` wrapping are unchanged, and the continuation runs
+LAST in the terminal sequence so it cannot displace the drain, the commit or the
+push.
+
+Coverage, every assertion verified red on its own: `turn-self-wake-commit.test.ts`
+— "does not re-dispatch a CLI-started turn whose quota limit leaves no credential
+free" (no second `run`, a persisted notice, `Agent turn` as the subject with the
+work still committed, the req-7 bench still stamped); "does not promise an account
+move to a CLI-started turn billed to a metered key"; "still commits the adopted
+turn when persisting the quota notice throws"; and "keeps the limit notice out of
+the commit even when a second turn is adopted first", which is what pins the
+`resultTurnSummary` half — the other cases commit while `turnIsCurrent()` is
+still true and so never read the snapshot. Plus `agent-listeners.test.ts` ("DOES
+add a row for a quota refusal on a CLI-started turn").
 
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends

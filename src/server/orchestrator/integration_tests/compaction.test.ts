@@ -1,17 +1,3 @@
-/**
- * Integration tests for the `/compact` interception (docs/178).
- *
- * `/compact` is an agent-agnostic ShipIt command, not a literal prompt. When the
- * active agent advertises `supportsCompaction`, the send-message handler routes
- * it to the agent's compaction trigger instead of the model:
- *   - no live turn → a fresh spawn runs with `compact: true` (the prompt is
- *     `/compact`, which Claude's CLI honors as a slash command);
- *   - a live in-flight turn → `agent.compact()` on the resident process, plus a
- *     transient "Compacting…" indicator.
- *
- * These pin the routing contract using `FakeClaudeProcess`, which records both
- * the `compact` run-param and any `compact()` call.
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -93,13 +79,11 @@ describe("Integration: /compact interception (docs/178)", () => {
 
   it("spawns a compaction turn (compact run-param + /compact prompt) when no turn is live", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "/compact" });
     const claude = await waitForClaude(() => lastClaude);
 
-    // Routed as a compaction request: the spawn carries compact:true and the
-    // CLI receives the `/compact` slash command as its prompt.
     expect(claude.lastCompact).toBe(true);
     expect(claude.lastPrompt).toBe("/compact");
 
@@ -108,14 +92,12 @@ describe("Integration: /compact interception (docs/178)", () => {
 
   it("recognizes `/compact <args>` and forwards the custom instructions (docs/178 §4)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // First turn — leave it running.
     client.send({ type: "send_message", text: "Hello" });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("compact-session-args");
 
-    // Mid-turn `/compact` with custom-compaction instructions.
     client.send({ type: "send_message", text: "/compact keep the API design notes" });
 
     await drainUntil(client, (m) => m.type === "compaction_status" && m.active === true);
@@ -127,15 +109,12 @@ describe("Integration: /compact interception (docs/178)", () => {
 
   it("triggers agent.compact() and a transient indicator when a turn is live", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // First turn — leave it running (the fake doesn't auto-finish).
     client.send({ type: "send_message", text: "Hello" });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("compact-session-1");
 
-    // Mid-turn `/compact` → compaction trigger on the resident process, not a
-    // queued literal message.
     client.send({ type: "send_message", text: "/compact" });
 
     const status = await drainUntil(

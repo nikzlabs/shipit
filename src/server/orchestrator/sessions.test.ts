@@ -24,14 +24,6 @@ describe("SessionManager", () => {
     dbManager.close();
   });
 
-  /**
-   * docs/264-agent-roles req 14 — provenance for a child started from a role.
-   *
-   * Write-once by construction (`WHERE origin_role_name IS NULL`), because it is
-   * read long after the fact — by a user asking what a session in their sidebar
-   * came from — and provenance that could be rewritten answers a different
-   * question every time it is asked.
-   */
   describe("originRoleName (docs/264-agent-roles req 14)", () => {
     it("records the role a session was created from, and reads it back", () => {
       const mgr = new SessionManager(dbManager);
@@ -142,7 +134,6 @@ describe("SessionManager", () => {
     mgr.setLastTurnErrored("sess-1", true);
     expect(new SessionManager(dbManager).get("sess-1")!.lastTurnErrored).toBe(true);
 
-    // A subsequent clean turn clears it.
     mgr.setLastTurnErrored("sess-1", false);
     expect(new SessionManager(dbManager).get("sess-1")!.lastTurnErrored).toBeUndefined();
   });
@@ -153,7 +144,6 @@ describe("SessionManager", () => {
     expect(mgr.get("sess-1")!.autoFixCiPaused).toBeUndefined();
 
     mgr.setAutoFixCiPaused("sess-1", true);
-    // Survives a fresh manager instance (persisted on the row).
     expect(new SessionManager(dbManager).get("sess-1")!.autoFixCiPaused).toBe(true);
 
     mgr.setAutoFixCiPaused("sess-1", false);
@@ -211,7 +201,6 @@ describe("SessionManager", () => {
     it("resets createdAt to the current time", async () => {
       const mgr = new SessionManager(dbManager);
       const original = mgr.track("sess-1", "Warm session");
-      // Wait long enough to guarantee a different ISO timestamp.
       await new Promise((r) => setTimeout(r, 5));
       mgr.markStarted("sess-1");
       const updated = mgr.get("sess-1")!;
@@ -221,7 +210,6 @@ describe("SessionManager", () => {
 
     it("is a no-op for unknown ids", () => {
       const mgr = new SessionManager(dbManager);
-      // Should not throw or insert anything.
       mgr.markStarted("nonexistent");
       expect(mgr.list()).toEqual([]);
     });
@@ -257,16 +245,12 @@ describe("SessionManager", () => {
       expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git", "warm-1")).toBeUndefined();
     });
 
-    // docs/262 req 19 — this column is written into the session clone's
-    // `remote.origin.url` (`cloneFromCache`, the fork path), i.e. into
-    // `/project/.git/config`, which the agent and every plugin CLI can read.
     it("stores a remote URL without the credential someone embedded in it", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "S");
       mgr.setRemoteUrl("sess-1", "https://x-access-token:pw@github.com/user/repo.git");
 
       expect(mgr.get("sess-1")?.remoteUrl).toBe("https://github.com/user/repo.git");
-      // And the row itself, not just the projection.
       expect(
         dbManager.db.prepare("SELECT remote_url FROM sessions WHERE id = ?").get("sess-1"),
       ).toEqual({ remote_url: "https://github.com/user/repo.git" });
@@ -323,7 +307,6 @@ describe("SessionManager", () => {
 
       mgr.archive("sess-1");
 
-      // Active list excludes archived sessions, but the snapshot survives
       expect(mgr.list()).toHaveLength(0);
       const all = mgr.getAllPrStatuses();
       expect(all).toHaveLength(1);
@@ -353,7 +336,6 @@ describe("SessionManager", () => {
     it("ignores corrupt JSON without crashing", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "Test");
-      // Bypass the typed setter to inject malformed JSON
       dbManager.db.prepare("UPDATE sessions SET pr_status = ? WHERE id = ?").run("{not-json", "sess-1");
       expect(() => mgr.getAllPrStatuses()).not.toThrow();
       expect(mgr.getAllPrStatuses()).toEqual([]);
@@ -376,9 +358,7 @@ describe("SessionManager", () => {
       mgr.track("sess-2", "Test");
       mgr.markAppliedMergeIssueEffect("sess-1", "7:42:completed");
 
-      // Different effect key on the same session.
       expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:42:resolved-comment")).toBe(false);
-      // Same key on a different session.
       expect(mgr.hasAppliedMergeIssueEffect("sess-2", "7:42:completed")).toBe(false);
     });
 
@@ -387,7 +367,7 @@ describe("SessionManager", () => {
       mgr.track("sess-1", "Test");
       mgr.markAppliedMergeIssueEffect("sess-1", "7:1:completed");
       mgr.markAppliedMergeIssueEffect("sess-1", "7:2:completed");
-      mgr.markAppliedMergeIssueEffect("sess-1", "7:1:completed"); // duplicate — no-op
+      mgr.markAppliedMergeIssueEffect("sess-1", "7:1:completed");
 
       expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:1:completed")).toBe(true);
       expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:2:completed")).toBe(true);
@@ -411,7 +391,6 @@ describe("SessionManager", () => {
       mgr.track("sess-1", "Test");
       dbManager.db.prepare("UPDATE sessions SET merge_issue_effects = ? WHERE id = ?").run("{not-json", "sess-1");
       expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:42:completed")).toBe(false);
-      // A subsequent mark recovers (overwrites the corrupt value).
       expect(() => mgr.markAppliedMergeIssueEffect("sess-1", "7:42:completed")).not.toThrow();
       expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:42:completed")).toBe(true);
     });
@@ -444,7 +423,6 @@ describe("SessionManager", () => {
       mgr.markClosed("sess-1");
       expect(mgr.get("sess-1")?.closedAt).toBeTruthy();
 
-      // Persisting an OPEN status (poller saw the PR reopen) clears the close.
       mgr.setPrStatus("sess-1", {
         sessionId: "sess-1", prNumber: 7, prUrl: "u", prTitle: "t", prBody: "",
         prState: "open", baseBranch: "main", headBranch: "shipit/x",
@@ -477,15 +455,12 @@ describe("SessionManager", () => {
       mgr.track("sess-1", "Test");
       mgr.setRemoteUrl("sess-1", "https://github.com/o/r.git");
       mgr.markMerged("sess-1");
-      // Merged sessions still list (within the cap), but resolvedAt() is set.
       expect(mgr.get("sess-1")?.mergedAt).toBeTruthy();
 
       mgr.clearMerged("sess-1", breadcrumb);
       const s = mgr.get("sess-1")!;
-      // resolvedAt() keys off merged_at ?? closed_at — both now null → Active.
       expect(s.mergedAt).toBeUndefined();
       expect(s.closedAt).toBeUndefined();
-      // The display-only breadcrumb must NOT resurrect a resolved state.
       expect(filterVisibleInSidebar([s]).map((x) => x.id)).toEqual(["sess-1"]);
     });
 
@@ -505,6 +480,18 @@ describe("SessionManager", () => {
       expect(s?.mergedAt).toBeFalsy();
       expect(s?.previousMergedPr).toBeUndefined();
     });
+
+    // docs/218 req 6 — a decline answers ONE merge. Retiring that merge has to
+    // drop it, or the next merge inherits a refusal the user never gave.
+    it("drops a recorded merge-continuation decline", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      mgr.setMergeContinueDeclined("sess-1", "anchor-of-the-first-merge");
+
+      expect(mgr.clearMerged("sess-1", breadcrumb)).toBe(true);
+      expect(mgr.get("sess-1")?.mergeContinueDeclinedAnchor).toBeUndefined();
+    });
   });
 
   describe("clearPriorPrRecord (unarchive drops the previous PR entirely)", () => {
@@ -516,22 +503,24 @@ describe("SessionManager", () => {
       mgr.markMerged("sess-1");
       mgr.setMergedHeadSha("sess-1", "abc123def456");
 
+      mgr.setMergeContinueDeclined("sess-1", "anchor-of-the-first-merge");
+
       mgr.clearPriorPrRecord("sess-1");
       const s = mgr.get("sess-1");
       expect(s?.mergedAt).toBeUndefined();
       expect(s?.mergedHeadSha).toBeUndefined();
       expect(s?.previousMergedPr).toBeUndefined();
+      // docs/218 req 6 — as with clearMerged: the decline dies with its merge.
+      expect(s?.mergeContinueDeclinedAnchor).toBeUndefined();
     });
 
     it("clears a breadcrumb left by an earlier re-arm, which clearMerged cannot", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "Test");
       mgr.markMerged("sess-1");
-      mgr.clearMerged("sess-1", breadcrumb); // docs/202 re-arm, then archived
+      mgr.clearMerged("sess-1", breadcrumb);
       expect(mgr.get("sess-1")?.previousMergedPr).toEqual(breadcrumb);
 
-      // `clearMerged` is guarded on `merged_at IS NOT NULL`, so it would no-op
-      // here and leave the breadcrumb feeding computeResetBlocker's fallback.
       expect(mgr.clearMerged("sess-1", null)).toBe(false);
       expect(mgr.get("sess-1")?.previousMergedPr).toEqual(breadcrumb);
 
@@ -544,8 +533,6 @@ describe("SessionManager", () => {
       mgr.track("sess-1", "Test");
       mgr.markMerged("sess-1");
       mgr.clearPriorPrRecord("sess-1");
-      // The new branch is cut off the default branch and carries none of the old
-      // PR's work, so the old PR's base is not a safe reset target.
       expect(mgr.get("sess-1")?.previousMergedPr).toBeUndefined();
     });
   });
@@ -567,12 +554,36 @@ describe("SessionManager", () => {
       mgr.setMergedHeadSha("sess-1", "abc123def456");
       expect(mgr.get("sess-1")?.mergedHeadSha).toBe("abc123def456");
 
-      // docs/202 re-arm: un-merging must also drop the stale merged tip so the
-      // auto-reset feature can never fire against a no-longer-merged session.
       expect(mgr.clearMerged("sess-1", null)).toBe(true);
       const s = mgr.get("sess-1");
       expect(s?.mergedAt).toBeFalsy();
       expect(s?.mergedHeadSha).toBeUndefined();
+    });
+  });
+
+  describe("docs/298: workspace block", () => {
+    it("round-trips, and reports only real changes so a stuck session stays quiet", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      expect(mgr.get("sess-1")?.workspaceBlock).toBeUndefined();
+      expect(mgr.setWorkspaceBlock("sess-1", null)).toBe(false);
+
+      expect(mgr.setWorkspaceBlock("sess-1", "conflict")).toBe(true);
+      expect(mgr.get("sess-1")?.workspaceBlock).toBe("conflict");
+
+      // Re-observing the same block every janitor pass must stay silent.
+      expect(mgr.setWorkspaceBlock("sess-1", "conflict")).toBe(false);
+
+      expect(mgr.setWorkspaceBlock("sess-1", "secret")).toBe(true);
+      expect(mgr.get("sess-1")?.workspaceBlock).toBe("secret");
+
+      expect(mgr.setWorkspaceBlock("sess-1", null)).toBe(true);
+      expect(mgr.get("sess-1")?.workspaceBlock).toBeUndefined();
+    });
+
+    it("reports no change for an unknown session", () => {
+      const mgr = new SessionManager(dbManager);
+      expect(mgr.setWorkspaceBlock("missing", "conflict")).toBe(false);
     });
   });
 
@@ -586,8 +597,6 @@ describe("SessionManager", () => {
       mgr.setPendingAgentNotice("sess-1", "[System] your branch moved");
       expect(mgr.get("sess-1")?.pendingAgentNotice).toBe("[System] your branch moved");
 
-      // Read-and-clear: the turn that reads it owns it, so a later turn can't
-      // be told a second time about a sync it already heard about.
       expect(mgr.consumePendingAgentNotice("sess-1")).toBe("[System] your branch moved");
       expect(mgr.consumePendingAgentNotice("sess-1")).toBeUndefined();
       expect(mgr.get("sess-1")?.pendingAgentNotice).toBeUndefined();
@@ -601,9 +610,6 @@ describe("SessionManager", () => {
       expect(mgr.consumePendingAgentNotice("sess-1")).toBe("second");
     });
 
-    // planning#426 — the slot now carries a SECOND fact class (a fork's LFS content
-    // is unresolved). For two writers describing DIFFERENT facts, last-write-wins
-    // is data loss rather than supersession, so that class appends. Review finding.
     it("append preserves a notice describing a different fact", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "Test");
@@ -622,8 +628,6 @@ describe("SessionManager", () => {
     });
 
     it("append does not stack an identical notice twice", () => {
-      // A fork-time report that somehow ran twice must not deliver the same
-      // paragraph two times over.
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "Test");
       mgr.appendPendingAgentNotice("sess-1", "[System] LFS unresolved");
@@ -664,7 +668,6 @@ describe("SessionManager", () => {
       mgr.track("sess-1", "Test");
       mgr.setDiskTier("sess-1", "light");
       mgr.setPinned("sess-1", "2024-06-01T00:00:00.000Z");
-      // Pinning records the pin but must not lie about what's on disk.
       expect(mgr.get("sess-1")?.diskTier).toBe("light");
     });
 
@@ -681,9 +684,6 @@ describe("SessionManager", () => {
     });
 
     it("docs/241: releases the always-on preview reservation on archive", () => {
-      // A reservation surviving archive held the capped slot (default 1) from a
-      // row whose release toggle is never rendered — an unreachable, permanent
-      // "capacity is full".
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "Test");
       mgr.setKeepPreviewRunning("sess-1", true);
@@ -691,20 +691,15 @@ describe("SessionManager", () => {
 
       expect(mgr.archive("sess-1")).toBe(true);
       expect(mgr.get("sess-1")?.keepPreviewRunning).toBeUndefined();
-      // Restoring does not silently re-reserve: the slot was genuinely released.
       expect(mgr.unarchive("sess-1")).toBe(true);
       expect(mgr.get("sess-1")?.keepPreviewRunning).toBeUndefined();
     });
 
     it("docs/241: restoring a legacy archived row does not resurrect its reservation", () => {
-      // A row archived BEFORE archive() cleared the flag still carries it.
-      // Admission ignores it while archived, so another session may hold the
-      // slot by now; restoring it must not create a second reservation behind
-      // the cap's back.
       const mgr = new SessionManager(dbManager);
       mgr.track("legacy", "Legacy");
       mgr.archive("legacy");
-      mgr.setKeepPreviewRunning("legacy", true); // simulate the pre-fix row
+      mgr.setKeepPreviewRunning("legacy", true);
       expect(mgr.get("legacy")?.keepPreviewRunning).toBe(true);
 
       expect(mgr.unarchive("legacy")).toBe(true);
@@ -720,7 +715,6 @@ describe("SessionManager", () => {
       expect(holdsActiveReservation({ ...base, keepPreviewRunning: true })).toBe(true);
       expect(holdsActiveReservation({ ...base })).toBe(false);
       expect(holdsActiveReservation(undefined)).toBe(false);
-      // The cases that let admission and the runtime guards disagree.
       expect(holdsActiveReservation({ ...base, keepPreviewRunning: true, userArchived: true })).toBe(false);
       expect(holdsActiveReservation({ ...base, keepPreviewRunning: true, archived: true })).toBe(false);
       expect(holdsActiveReservation({ ...base, keepPreviewRunning: true, warm: true })).toBe(false);
@@ -745,7 +739,6 @@ describe("SessionManager", () => {
       }
       mgr.reorderPins(repo, ["c", "a", "b"]);
       expect(pinnedOrder(mgr)).toEqual(["c", "a", "b"]);
-      // And it round-trips to any order.
       mgr.reorderPins(repo, ["b", "c", "a"]);
       expect(pinnedOrder(mgr)).toEqual(["b", "c", "a"]);
     });
@@ -753,14 +746,12 @@ describe("SessionManager", () => {
     it("only touches pinned rows in the named repo (ignores stale/cross-repo ids)", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("pinned", "pinned"); mgr.setRemoteUrl("pinned", repo); mgr.setPinned("pinned", "2024-01-01T00:00:00.000Z");
-      mgr.track("unpinned", "unpinned"); mgr.setRemoteUrl("unpinned", repo); // not pinned
+      mgr.track("unpinned", "unpinned"); mgr.setRemoteUrl("unpinned", repo);
       mgr.track("otherRepo", "otherRepo"); mgr.setRemoteUrl("otherRepo", "https://github.com/o/x.git"); mgr.setPinned("otherRepo", "2024-01-01T00:00:00.000Z");
 
       mgr.reorderPins(repo, ["unpinned", "otherRepo", "pinned", "ghost"]);
 
-      // unpinned stays unpinned (the reorder never pins a row)...
       expect(mgr.get("unpinned")?.pinnedAt).toBeUndefined();
-      // ...and a pin in another repo is untouched.
       expect(mgr.get("otherRepo")?.pinnedAt).toBe("2024-01-01T00:00:00.000Z");
       expect(mgr.get("pinned")?.pinnedAt).toBeTruthy();
     });
@@ -789,7 +780,6 @@ describe("SessionManager", () => {
       const chat = new ChatHistoryManager(dbManager);
       const usage = new UsageManager(dbManager);
 
-      // Add data for a different session
       sessions.track("sess-2", "Keep");
       chat.append("sess-2", { role: "user", text: "Kept" });
       usage.record("sess-2", 0.10, 5000);
@@ -797,7 +787,6 @@ describe("SessionManager", () => {
       const deleted = deleteSession(sessions, "nonexistent", chat, usage);
 
       expect(deleted).toBe(false);
-      // Other session data untouched
       expect(chat.load("sess-2")).toHaveLength(1);
       expect(usage.getSessionUsage("sess-2")).toBeDefined();
     });
@@ -819,7 +808,7 @@ describe("SessionManager", () => {
       mgr.archive("sess-1");
       const s = mgr.get("sess-1")!;
       expect(s.userArchived).toBe(true);
-      expect(s.archived).toBe(true); // back-compat alias
+      expect(s.archived).toBe(true);
       expect(s.diskTier).toBe("evicted");
       expect(mgr.list()).toHaveLength(0);
     });
@@ -846,6 +835,20 @@ describe("SessionManager", () => {
       expect(mgr.listAll().map((s) => s.id).sort()).toEqual(["active", "hidden"]);
       expect(mgr.list().map((s) => s.id)).toEqual(["active"]);
     });
+
+    // The boot sweep passes this set: an archived session in it is a container spared and
+    // re-adopted at every deploy, since nothing else ever reclaims one.
+    it("unarchivedIds() drops archived sessions that allIds() still reports", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("active", "Active");
+      mgr.track("hidden", "Hidden");
+      mgr.archive("hidden");
+
+      expect(mgr.allIds().sort()).toEqual(["active", "hidden"]);
+      expect(mgr.unarchivedIds()).toEqual(["active"]);
+      mgr.unarchive("hidden");
+      expect(mgr.unarchivedIds().sort()).toEqual(["active", "hidden"]);
+    });
   });
 
   describe("docs/161: terminal PR resolution predicate", () => {
@@ -865,8 +868,6 @@ describe("SessionManager", () => {
     });
 
     it("is true when last activity predates the merge", () => {
-      // merged_at uses SQLite datetime() format; last_used_at uses ISO. The
-      // predicate normalizes both rather than comparing lexically.
       expect(isTerminalPrResolved(make({
         mergedAt: "2024-06-01 12:00:00",
         lastUsedAt: "2024-05-01T00:00:00.000Z",
@@ -881,13 +882,7 @@ describe("SessionManager", () => {
     });
 
     it("is true when the merge follows the last turn by seconds (the typical merge flow)", () => {
-      // Regression: the last turn lands moments before the PR merges. Both
-      // timestamps are UTC, but `merged_at` is the suffix-less SQLite form and
-      // `last_used_at` is ISO. A naive `Date.parse` reads `merged_at` as LOCAL
-      // time, so in a UTC+ timezone it lands *before* `last_used_at` and the
-      // session is wrongly treated as reopened — promoting a just-merged
-      // session back above active ones in the sidebar. UTC-normalized parsing
-      // keeps it correctly demoted regardless of host timezone.
+      // Both formats represent UTC, even when the host timezone differs.
       expect(isTerminalPrResolved(make({
         lastUsedAt: "2024-06-01T11:59:55.000Z",
         mergedAt: "2024-06-01 12:00:00",
@@ -895,7 +890,6 @@ describe("SessionManager", () => {
     });
 
     it("treats a closed-without-merge session the same as a merged one", () => {
-      // closed_at is the close analogue of merged_at; both demote the session.
       expect(isTerminalPrResolved(make({
         closedAt: "2024-06-01 12:00:00",
         lastUsedAt: "2024-05-01T00:00:00.000Z",
@@ -944,8 +938,6 @@ describe("SessionManager", () => {
     });
 
     it("docs/241: keeps a reserved session visible through the merged cap", () => {
-      // The reserved session holds the deployment's capped slot, and its row is
-      // the only place the user is told so. The cap must not hide it.
       const sessions = [
         merged("m1", "2024-01-01 09:00:00"),
         merged("m2", "2024-01-02 09:00:00"),
@@ -963,7 +955,6 @@ describe("SessionManager", () => {
         merged("m4", "2024-01-04 09:00:00"),
       ];
       const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id).sort();
-      // The three newest merges survive; the oldest (m1) drops off.
       expect(visible).toEqual(["m2", "m3", "m4"]);
     });
 
@@ -976,7 +967,6 @@ describe("SessionManager", () => {
         merged("b1", "2024-01-01 09:00:00", "2024-01-01 09:00:00", repoB),
         merged("b2", "2024-01-02 09:00:00", "2024-01-02 09:00:00", repoB),
       ];
-      // Cap of 1 per repo keeps the newest in each.
       expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort()).toEqual(["a2", "b2"]);
     });
 
@@ -988,13 +978,10 @@ describe("SessionManager", () => {
         merged("m4", "2024-01-04 09:00:00"),
       ];
       const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id);
-      // `reopened` has the oldest merge time but recent activity → never pruned.
       expect(visible).toContain("reopened");
     });
 
     it("treats closed-without-merge sessions as resolved: capped and demoted like merges", () => {
-      // Closed sessions share the resolved ranking with merges; the cap applies
-      // to the combined set so the "Recently resolved" group can't grow unbounded.
       const sessions = [
         closed("c1", "2024-01-01 09:00:00"),
         merged("m2", "2024-01-02 09:00:00"),
@@ -1002,7 +989,6 @@ describe("SessionManager", () => {
         merged("m4", "2024-01-04 09:00:00"),
       ];
       const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id).sort();
-      // The three newest resolutions survive; the oldest (c1) drops off.
       expect(visible).toEqual(["c3", "m2", "m4"]);
     });
 
@@ -1014,7 +1000,6 @@ describe("SessionManager", () => {
         merged("m4", "2024-01-04 09:00:00"),
       ];
       const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id);
-      // Recent activity floats it back into Active → never pruned by the cap.
       expect(visible).toContain("reopened");
     });
 
@@ -1032,7 +1017,6 @@ describe("SessionManager", () => {
 
     it("docs/110: keeps a pinned session even when it is beyond the merged cap", () => {
       const sessions = [
-        // m1 is the oldest merge (would drop past a cap of 3) but is pinned.
         { ...merged("m1", "2024-01-01 09:00:00"), pinnedAt: "2024-06-01T00:00:00.000Z" },
         merged("m2", "2024-01-02 09:00:00"),
         merged("m3", "2024-01-03 09:00:00"),
@@ -1042,44 +1026,61 @@ describe("SessionManager", () => {
       expect(visible).toEqual(["m1", "m2", "m3", "m4"]);
     });
 
+    describe("docs/298: broken-workspace exemption", () => {
+      it("keeps a session whose workspace is blocked, however far past the cap it is", () => {
+        const sessions = [
+          { ...merged("stuck", "2024-01-01 09:00:00"), workspaceBlock: "conflict" as const },
+          merged("m2", "2024-01-02 09:00:00"),
+          merged("m3", "2024-01-03 09:00:00"),
+          merged("m4", "2024-01-04 09:00:00"),
+        ];
+        const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
+        expect(visible).toEqual(["m4", "stuck"]);
+      });
+
+      it("keeps it at the default cap too, with the cap otherwise full", () => {
+        const sessions = [
+          { ...merged("stuck", "2024-01-01 09:00:00"), workspaceBlock: "conflict" as const },
+          ...Array.from({ length: MAX_MERGED_SESSIONS_PER_REPO }, (_, i) =>
+            merged(`m${i}`, `2025-01-0${i + 1} 09:00:00`)),
+        ];
+        expect(filterVisibleInSidebar(sessions).map((s) => s.id)).toContain("stuck");
+        expect(filterVisibleInSidebar(sessions)).toHaveLength(MAX_MERGED_SESSIONS_PER_REPO + 1);
+      });
+
+      it("still drops it once the user archives it", () => {
+        const sessions = [
+          { ...merged("stuck", "2024-01-01 09:00:00"), workspaceBlock: "conflict" as const, userArchived: true },
+          merged("m2", "2024-01-02 09:00:00"),
+        ];
+        expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id)).toEqual(["m2"]);
+      });
+    });
+
     it("archiving a visible merged session does not promote a demoted one", () => {
-      // m4,m3,m2 are within the cap of 3; m1 is demoted (oldest merge).
       const sessions = [
         merged("m1", "2024-01-01 09:00:00"),
         merged("m2", "2024-01-02 09:00:00"),
         merged("m3", "2024-01-03 09:00:00"),
         merged("m4", "2024-01-04 09:00:00"),
       ];
-      // Archive m3 (one of the three visible). It keeps its ranking slot, so the
-      // freed view goes to N-1 rather than pulling m1 back up.
       const withArchive = sessions.map((s) => (s.id === "m3" ? { ...s, userArchived: true } : s));
       const visible = filterVisibleInSidebar(withArchive, 3).map((s) => s.id).sort();
       expect(visible).toEqual(["m2", "m4"]);
     });
 
     it("releases the slot once newer merges push the archived session past the cap", () => {
-      // m1 archived but newest; two newer merges (m2, m3) arrive after it. With a
-      // cap of 2, m1's slot is consumed by the newer m3/m2, so m1 stops holding it.
       const sessions = [
         { ...merged("m1", "2024-01-03 09:00:00"), userArchived: true },
         merged("m2", "2024-01-02 09:00:00"),
         merged("m3", "2024-01-04 09:00:00"),
         merged("m4", "2024-01-01 09:00:00"),
       ];
-      // Ranking incl. archived: m3, m1(archived), m2, m4. Cap 2 → top = m3, m1.
-      // m1 is archived → hidden; only m3 shows. m2/m4 stay demoted.
       expect(filterVisibleInSidebar(sessions, 2).map((s) => s.id)).toEqual(["m3"]);
     });
 
-    // docs/117 + docs/201 — the merged view cap is automatic archiving, and
-    // spawned clusters are exempt from it (they leave only via a manual archive
-    // that cascades a root through its whole brood). The exemption keys off the
-    // ROOT ancestor (`rootSessionId`), so a real direct child carries
-    // `rootSessionId = <parentId>` (the spawn path + migration guarantee this).
     describe("parent/child exemption from the merged cap", () => {
       it("never demotes a merged parent that still has a live child", () => {
-        // parent would be the oldest merge → past a cap of 1, but its live child
-        // pins it in the sidebar.
         const sessions = [
           merged("parent", "2024-01-01 09:00:00"),
           merged("other", "2024-01-02 09:00:00"),
@@ -1090,7 +1091,6 @@ describe("SessionManager", () => {
       });
 
       it("never demotes a merged child while its parent is still live", () => {
-        // child is the oldest merge → past a cap of 1, but its live parent keeps it.
         const sessions = [
           active("parent"),
           merged("other", "2024-01-02 09:00:00"),
@@ -1101,8 +1101,6 @@ describe("SessionManager", () => {
       });
 
       it("does not pin a parent open via a user-archived child", () => {
-        // The only child is user-archived → it shouldn't rescue the parent from
-        // the cap, and it is itself excluded from the result.
         const sessions = [
           merged("parent", "2024-01-01 09:00:00"),
           merged("other", "2024-01-02 09:00:00"),
@@ -1113,48 +1111,27 @@ describe("SessionManager", () => {
       });
 
       it("does not pin a child open once its parent is gone", () => {
-        // Parent is user-archived (cascade would normally take the child too, but
-        // if the child outlives it the cap should reclaim it normally).
         const sessions = [
           { ...merged("parent", "2024-01-03 09:00:00"), userArchived: true },
           merged("other", "2024-01-02 09:00:00"),
           { ...merged("child", "2024-01-01 09:00:00"), parentSessionId: "parent", rootSessionId: "parent" },
         ];
-        // Cap of 2: ranking incl. archived is parent, other, child → top-2 holds
-        // parent (hidden, archived) + other. child falls past the cap and is no
-        // longer pinned because its root isn't live.
         const visible = filterVisibleInSidebar(sessions, 2).map((s) => s.id).sort();
         expect(visible).toEqual(["other"]);
       });
 
-      // docs/201 — the regression that motivated the root-ancestor field: a
-      // grandchild must stay visible while its ROOT is live, even after the
-      // intermediate child it was spawned from has merged. The pre-docs/201
-      // one-level (`parentSessionId`) exemption dropped the grandchild here
-      // because its immediate parent was no longer "live + active".
       it("keeps a merged grandchild visible while its root is live", () => {
         const sessions = [
           active("root"),
           merged("filler1", "2024-01-05 09:00:00"),
-          // intermediate child: spawned by root, now merged.
           { ...merged("child", "2024-01-02 09:00:00"), parentSessionId: "root", rootSessionId: "root" },
-          // grandchild: spawned by `child`, root is still `root`.
           { ...merged("grandchild", "2024-01-01 09:00:00"), parentSessionId: "child", rootSessionId: "root" },
         ];
-        // Cap of 1: only `filler1` would survive the resolved ranking on its own,
-        // but the whole `root` brood is exempt because `root` is live.
         const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
         expect(visible).toEqual(["child", "filler1", "grandchild", "root"]);
       });
 
       it("reclaims a grandchild once its root is user-archived", () => {
-        // Mirror of "does not pin a child open once its parent is gone" at depth
-        // 2: with the root user-archived, the cascade would normally take the
-        // brood too; if a grandchild outlives it the cap reclaims it normally.
-        // Cap of 2: resolved ranking (incl. archived) is root, other, child,
-        // grandchild → top-2 holds root (hidden, archived) + other. The
-        // grandchild falls past the cap and is no longer pinned because its root
-        // isn't live.
         const sessions = [
           { ...merged("root", "2024-01-05 09:00:00"), userArchived: true },
           merged("other", "2024-01-04 09:00:00"),
@@ -1167,20 +1144,12 @@ describe("SessionManager", () => {
     });
   });
 
-  // docs/161 — exercises the full visibility path through SessionManager.list()
-  // (the SQL `user_archived = 0 AND warm = 0` filter + fromRow + the
-  // filterVisibleInSidebar derivation), not just the predicate in isolation.
   describe("docs/161: a reopened merged session reappears in list()", () => {
     const repo = "https://github.com/o/r.git";
 
-    /** Insert a merged session beyond the view cap via direct DB writes so the
-     *  merged_at / last_used_at timestamps are deterministic (no same-second
-     *  flakiness from datetime('now') vs toISOString()). */
     function seedMerged(mgr: SessionManager, id: string, mergedAt: string, lastUsedAt: string) {
       mgr.track(id, id);
       mgr.setRemoteUrl(id, repo);
-      // merged_at is stored in SQLite datetime() format; last_used_at in ISO —
-      // exactly the format mismatch reopenedAfterResolve normalizes with Date.parse.
       dbManager.db
         .prepare("UPDATE sessions SET merged_at = ?, last_used_at = ? WHERE id = ?")
         .run(mergedAt, lastUsedAt, id);
@@ -1188,30 +1157,23 @@ describe("SessionManager", () => {
 
     it("excludes an old merged session beyond the cap, then includes it once reopened", () => {
       const mgr = new SessionManager(dbManager);
-      // cap+1 merged sessions in one repo; `target` has the oldest merge, so it
-      // falls beyond the top-N merged cap (whatever the cap is set to).
       seedMerged(mgr, "target", "2024-01-01 09:00:00", "2024-01-01 09:00:00");
       for (let i = 0; i < MAX_MERGED_SESSIONS_PER_REPO; i++) {
         const day = String(i + 2).padStart(2, "0");
         seedMerged(mgr, `m${i + 2}`, `2024-01-${day} 09:00:00`, `2024-01-${day} 09:00:00`);
       }
 
-      // Before reopening: target is beyond the top-N merged cap → not listed.
       expect(mgr.list().map((s) => s.id)).not.toContain("target");
 
-      // Simulate a new turn in the merged session — track() bumps last_used_at
-      // to a time after merged_at, making reopenedAfterResolve true.
       dbManager.db
         .prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?")
         .run("2024-06-01T00:00:00.000Z", "target");
 
-      // After reopening: target rejoins the active listing regardless of the cap.
       expect(mgr.list().map((s) => s.id)).toContain("target");
     });
 
     it("archiving a visible merged session lowers the count without surfacing a demoted one", () => {
       const mgr = new SessionManager(dbManager);
-      // cap+1 merged in one repo; m1 has the oldest merge → demoted beyond the cap.
       const ids: string[] = [];
       for (let i = 0; i <= MAX_MERGED_SESSIONS_PER_REPO; i++) {
         const day = String(i + 1).padStart(2, "0");
@@ -1219,12 +1181,9 @@ describe("SessionManager", () => {
         ids.push(id);
         seedMerged(mgr, id, `2024-01-${day} 09:00:00`, `2024-01-${day} 09:00:00`);
       }
-      // Visible = the newest `cap` (everything except the oldest, m1).
       const visible = ids.slice(1);
       expect(mgr.list().map((s) => s.id).sort()).toEqual([...visible].sort());
 
-      // Archive one visible session → count drops by one; the demoted m1 stays
-      // demoted (archiving must NOT promote a session past the cap).
       const archived = visible[1];
       mgr.archive(archived);
       const remaining = visible.filter((id) => id !== archived);
@@ -1233,11 +1192,6 @@ describe("SessionManager", () => {
   });
 });
 
-/**
- * docs/252 phase 1 — the selected model is the triple
- * `(serviceId, billingMode, modelId)`, and the write path owns the pinned
- * credential route's lifetime.
- */
 describe("SessionManager — model selection (docs/252)", () => {
   let dbManager: DatabaseManager;
   let mgr: SessionManager;
@@ -1266,8 +1220,6 @@ describe("SessionManager — model selection (docs/252)", () => {
   });
 
   it("persists a model the catalogue cannot place WITHOUT inventing a service", () => {
-    // A versioned slug the picker never surfaced. The old behaviour — store the
-    // model — is preserved; what must not happen is a fabricated triple.
     mgr.setModel("s1", "claude-sonnet-4-20250514");
     const session = mgr.get("s1");
     expect(session?.model).toBe("claude-sonnet-4-20250514");
@@ -1276,10 +1228,6 @@ describe("SessionManager — model selection (docs/252)", () => {
   });
 
   it("CLEARS a previous service/mode when the new model cannot be placed", () => {
-    // The invariant: a stored row's triple either names a real catalogue row or
-    // carries no service and mode at all. Keeping the old pair would leave
-    // `(anthropic, sub, claude-sonnet-4-20250514)` on disk — a triple nothing
-    // can resolve an endpoint from, which is worse than saying nothing.
     mgr.setModel("s1", "claude-opus-5");
     mgr.setProviderRoute("s1", "account", "acct_1");
     mgr.setModel("s1", "claude-sonnet-4-20250514");
@@ -1287,14 +1235,10 @@ describe("SessionManager — model selection (docs/252)", () => {
     expect(session?.model).toBe("claude-sonnet-4-20250514");
     expect(session?.serviceId).toBeUndefined();
     expect(session?.billingMode).toBeUndefined();
-    // …and the route goes too: with no service we cannot prove it still fits.
     expect(session?.providerRouteId).toBeUndefined();
   });
 
   it("never stores a triple naming a row the catalogue does not contain", () => {
-    // Stated as an invariant over both write paths, because it is the property
-    // every later phase reads back: `resolveEndpoint` and eligibility both
-    // assume the stored triple resolves.
     for (const model of ["claude-opus-5", "sonnet", "opus", "claude-opus-4-8", "gpt-5.6-sol"]) {
       mgr.setModel("s1", model);
       const session = mgr.get("s1");
@@ -1321,11 +1265,6 @@ describe("SessionManager — model selection (docs/252)", () => {
   });
 
   it("stamps the ROUTE's billing mode, not the selection's", () => {
-    // These can disagree today: route selection does not yet consult the billing
-    // mode (phase 3), so a session whose selection says `sub` still lands on
-    // `claude-api-key` when no subscription account is connected. Stamping the
-    // selection there would record a metered key route as subscription-owned —
-    // a durable falsehood the later phases read back.
     mgr.setModel("s1", "claude-opus-5");
     expect(mgr.get("s1")?.billingMode).toBe("sub");
     mgr.setProviderRoute("s1", "reserved", "claude-api-key");
@@ -1333,8 +1272,6 @@ describe("SessionManager — model selection (docs/252)", () => {
   });
 
   it("treats an env-delivered OAuth token as the subscription it is", () => {
-    // `claude-env-oauth` is the counter-example the `kind` vs `via` split exists
-    // for: a `reserved` route carrying a quota-bearing subscription token.
     mgr.setModel("s1", "claude-opus-5");
     mgr.setProviderRoute("s1", "reserved", "claude-env-oauth");
     expect(mgr.get("s1")?.providerRouteBillingMode).toBe("sub");
@@ -1344,15 +1281,13 @@ describe("SessionManager — model selection (docs/252)", () => {
     mgr.setModelSelection("s1", {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     mgr.setProviderRoute("s1", "reserved", "deepseek-api-key");
     expect(mgr.get("s1")?.providerRouteBillingMode).toBe("key");
   });
 
   it("KEEPS the route across a plain model change inside one billing mode", () => {
-    // The case that makes mid-session model switching free: same credential
-    // owner, so the pinned route is still the right one.
     mgr.setModel("s1", "claude-opus-5");
     mgr.setProviderRoute("s1", "account", "acct_1");
     mgr.setModelSelection("s1", {
@@ -1366,9 +1301,6 @@ describe("SessionManager — model selection (docs/252)", () => {
   });
 
   it("CLEARS the route when the billing mode changes", () => {
-    // "Charge me, keep working" — the subscription's account cannot authenticate
-    // a metered key turn, and reusing it would bill the wrong thing rather than
-    // fail. The next turn's preflight re-pins.
     mgr.setModel("s1", "claude-opus-5");
     mgr.setProviderRoute("s1", "account", "acct_1");
     mgr.setModelSelection("s1", {
@@ -1385,13 +1317,10 @@ describe("SessionManager — model selection (docs/252)", () => {
   });
 
   it("CLEARS the route when the service changes, even at the same model id", () => {
-    // The sharpest edge: two services offering the same id. Without this the
-    // turn respawns against the new endpoint and authenticates with the old
-    // service's credential — a turn billed to the wrong account, not a failure.
     mgr.setModelSelection("s1", {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     mgr.setProviderRoute("s1", "reserved", "deepseek-api-key");
     mgr.setModelSelection("s1", {
@@ -1413,5 +1342,129 @@ describe("SessionManager — model selection (docs/252)", () => {
     });
     expect(mgr.get("s1")?.providerRouteId).toBeUndefined();
     expect(mgr.get("s1")?.billingMode).toBe("key");
+  });
+});
+
+describe("setSessionStatus (docs/303 req 10)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const card = {
+    status: "Routes done; PR ready to merge.",
+    needsYou: ["Add the Stripe test key."],
+    actions: [{
+      id: "webhook",
+      label: "Wire the webhook",
+      payload: "Add the route.",
+      offerId: "offer-1",
+      offeredAt: "2026-09-15T00:00:00.000Z",
+      takenAt: "2026-09-15T00:01:00.000Z",
+    }],
+    fresh: true,
+    writeSeq: 2,
+  };
+
+  it("round-trips the whole card through a second manager", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    mgr.setSessionStatus("c1", card);
+    // A fresh manager, because the card has to survive an orchestrator restart.
+    expect(new SessionManager(dbManager).get("c1")?.sessionStatus).toEqual(card);
+  });
+
+  it("round-trips the last-turn line, and reads a card written before it existed", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    mgr.setSessionStatus("c1", { ...card, lastTurn: "Wired the webhook route." });
+    expect(new SessionManager(dbManager).get("c1")?.sessionStatus)
+      .toEqual({ ...card, lastTurn: "Wired the webhook route." });
+
+    // A card stored before req 31 has no line, and neither has one the agent
+    // cleared: the field is absent rather than empty.
+    mgr.setSessionStatus("c1", card);
+    expect(new SessionManager(dbManager).get("c1")?.sessionStatus?.lastTurn).toBeUndefined();
+  });
+
+  it("has no card before the first write, and none after a clear", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
+    expect(mgr.sessionIdsWithStatus()).toEqual([]);
+    mgr.setSessionStatus("c1", card);
+    expect(mgr.sessionIdsWithStatus()).toEqual(["c1"]);
+    mgr.setSessionStatus("c1", null);
+    expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
+  });
+
+  it("marks the card stale when the conversation is reset or rewound, and says it changed", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    mgr.setSessionStatus("c1", card);
+    mgr.setAgentSessionId("c1", "thread-1");
+
+    // The card is kept, not cleared: a rewind can remove the work it describes.
+    expect(mgr.clearAgentSessionId("c1")).toBe(true);
+    expect(mgr.get("c1")?.sessionStatus).toEqual({ ...card, fresh: false });
+
+    // Nothing to broadcast the second time, and nothing at all without a card.
+    expect(mgr.clearAgentSessionId("c1")).toBe(false);
+    mgr.track("c2");
+    expect(mgr.clearAgentSessionId("c2")).toBe(false);
+  });
+
+  it("reads a corrupt or shapeless card as no card", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    for (const raw of ["not json", '{"needsYou":"x"}']) {
+      dbManager.db.prepare("UPDATE sessions SET session_status = ? WHERE id = ?").run(raw, "c1");
+      expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
+    }
+  });
+});
+
+describe("setAgentGoal (docs/154 req 6)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const goal = { objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1 };
+
+  it("persists the goal and reports only changes the chip shows", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("g1");
+    expect(mgr.setAgentGoal("g1", goal)).toBe(true);
+    expect(new SessionManager(dbManager).get("g1")?.agentGoal).toEqual(goal);
+    expect(mgr.setAgentGoal("g1", { ...goal, tokensUsed: 500, updatedAt: 2 })).toBe(false);
+    expect(mgr.setAgentGoal("g1", { ...goal, status: "paused" })).toBe(true);
+    expect(mgr.get("g1")?.agentGoal?.status).toBe("paused");
+  });
+
+  it("clears the goal", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("g1");
+    mgr.setAgentGoal("g1", goal);
+    expect(mgr.setAgentGoal("g1", null)).toBe(true);
+    expect(mgr.get("g1")?.agentGoal).toBeUndefined();
+    expect(mgr.setAgentGoal("g1", null)).toBe(false);
+  });
+
+  it("tells a never-read goal from a read absence of one", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("g1");
+    expect(mgr.agentGoalChecked("g1")).toBe(false);
+    // The first read is written even when it finds nothing, so it is not repeated.
+    expect(mgr.setAgentGoal("g1", null)).toBe(true);
+    expect(mgr.agentGoalChecked("g1")).toBe(true);
+  });
+
+  it("forgets the goal with the conversation", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("g1");
+    mgr.setAgentSessionId("g1", "thread-1");
+    mgr.setAgentGoal("g1", goal);
+    mgr.clearAgentSessionId("g1");
+    expect(mgr.get("g1")?.agentGoal).toBeUndefined();
+    expect(mgr.agentGoalChecked("g1")).toBe(false);
   });
 });

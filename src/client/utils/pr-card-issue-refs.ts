@@ -29,19 +29,13 @@ import { resolveParsedIssueRef } from "../../server/shared/issue-ref-resolution.
 import type { TrackerDestination } from "../../server/shared/declared-tracker.js";
 import type { TrackerId } from "../../server/shared/types.js";
 
-/** Where a chip's reference came from, in increasing strength. */
 export type IssueIntent = "origin" | "refs" | "closes";
 
 export interface IssueChipRef {
   intent: IssueIntent;
-  /** Display form — the name form when the destination has one (req 15). */
+
   identifier: string;
-  /**
-   * The resolved destination. Absent when the reference names nothing this
-   * repository declares: the chip then renders as a static badge (or an external
-   * link when the reference carried a URL) rather than opening an inline view
-   * that would fail (req 11).
-   */
+
   tracker?: TrackerId;
   issueId?: string;
   url?: string;
@@ -58,9 +52,6 @@ export function collectPrCardIssueRefs(args: {
   const origin = extractIssueRefsFromText(args.firstUserMessage);
   const destinations = args.destinations ?? [];
 
-  // Map preserves first-insertion order even when a key is re-set, so iterating
-  // closes → refs → origin yields that display order; the rank guard prevents a
-  // weaker later source from downgrading a stronger earlier one.
   const byKey = new Map<string, IssueChipRef>();
   const consider = (ref: ParsedIssueRef, intent: IssueIntent) => {
     if (!ref.issueId) return;

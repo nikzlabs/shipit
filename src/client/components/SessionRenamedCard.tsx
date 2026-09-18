@@ -1,17 +1,4 @@
-/**
- * SessionRenamedCard — inline record that the agent retitled this session
- * (docs/250, requirement 9).
- *
- * A session's title comes from its first message, so a session that keeps
- * working past its first PR ends up named after work it finished long ago. The
- * agent renames it at those points; this card is why the user isn't left
- * wondering when the name in the sidebar changed underneath them. It shows the
- * old → new title so the change is explainable after the fact.
- *
- * No lifecycle and no undo — the user renaming from the sidebar is the override,
- * and doing so locks the title permanently — so the full payload arrives on the
- * chat message and the component renders straight from props (no store).
- */
+
 
 import { PencilSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";

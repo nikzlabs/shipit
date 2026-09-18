@@ -1,10 +1,3 @@
-/**
- * Unit tests for `parsePrBodyIssueRefs` (docs/194) — the pure parser that maps a
- * merged PR body to its closing / non-closing issue pointers. The merge-path
- * behavior (status flip vs. progress comment vs. no-op) is driven entirely by
- * what this returns, so it's the contract worth pinning.
- */
-
 import { describe, it, expect } from "vitest";
 import { parsePrBodyIssueRefs } from "./pr-issue-refs.js";
 
@@ -65,7 +58,6 @@ describe("parsePrBodyIssueRefs", () => {
 
   it("de-dupes a pointer named twice, and prefers closing over refs", () => {
     const { closes, refs } = parsePrBodyIssueRefs("Refs SHI-7\nCloses SHI-7");
-    // Closing pass runs first and claims planning#9; the refs pass skips the dup.
     expect(closes.map((r) => r.identifier)).toEqual(["SHI-7"]);
     expect(refs).toEqual([]);
   });
@@ -81,23 +73,17 @@ describe("parsePrBodyIssueRefs", () => {
   });
 
   it("ignores unresolvable tokens (bare #N, plain words)", () => {
-    // Bare `#42` is tracker-ambiguous and unsupported by parseIssueRef.
     expect(parsePrBodyIssueRefs("Closes #42")).toEqual({ closes: [], refs: [] });
     expect(parsePrBodyIssueRefs("Fixes the bug where it broke")).toEqual({ closes: [], refs: [] });
   });
 
   it("does not treat substrings inside words as keywords", () => {
-    // "disclose" / "prefixes" must not trip the close/fix matchers.
     const { closes } = parsePrBodyIssueRefs("This discloses SHI-1 prefixes SHI-2");
     expect(closes).toEqual([]);
   });
 });
 
 describe("parsePrBodyIssueRefs — docs/248 name forms", () => {
-  // The regression the resolver split nearly introduced: a name form parses with
-  // NO tracker (only the declarations can resolve one), so a parser that filtered
-  // on `tracker` would drop every `Closes planning#42` before anything could
-  // resolve it — silently disabling the headline reference form on merge.
   it("keeps a `name#number` reference for the caller to resolve", () => {
     const { closes } = parsePrBodyIssueRefs("Closes planning#42");
     expect(closes).toHaveLength(1);

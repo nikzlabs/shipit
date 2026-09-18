@@ -15,7 +15,6 @@ const emptySnapshot: SecretsStatusInternalSnapshot = {
 function makeSource(overrides: {
   startError?: string;
   services?: ManagedService[];
-  /** Providing this implies a sync has run; omit it for a not-yet-synced manager. */
   secrets?: Partial<SecretsStatusInternalSnapshot>;
   secretsSynced?: boolean;
 } = {}): ComposeReplaySource {
@@ -51,8 +50,6 @@ describe("buildComposeAttachReplay", () => {
     });
   });
 
-  // The manager's snapshot is the INTERNAL variant — it carries resolved secret
-  // values for the agent-container push. The wire message must not.
   it("never puts resolved secret values on the wire", () => {
     const msgs = buildComposeAttachReplay(
       makeSource({
@@ -79,10 +76,6 @@ describe("buildComposeAttachReplay", () => {
     expect(msgs.map((m) => m.type)).toEqual(["secrets_status"]);
   });
 
-  // The client restores its own per-session snapshot on a switch, so an empty
-  // replay is not neutral. Once a sync has run, an empty declared list is a
-  // real answer — the compose file dropped its `x-shipit-secrets` — and the
-  // client must be told so it clears the stale declared rows.
   it("replays an empty declared list once a sync has run", () => {
     const msgs = buildComposeAttachReplay(makeSource({ secrets: {} }), "s1");
     expect(msgs).toEqual([
@@ -101,9 +94,6 @@ describe("buildComposeAttachReplay", () => {
     expect(buildComposeAttachReplay(makeSource(), "s1")).toEqual([]);
   });
 
-  // `setServices` clears `composeError` on the client, so a `service_list` sent
-  // after the error would swallow the banner — the exact case a reconcile
-  // failure on an already-running stack produces.
   it("orders compose_error after service_list so it isn't swallowed", () => {
     const msgs = buildComposeAttachReplay(
       makeSource({

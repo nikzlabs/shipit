@@ -1,34 +1,3 @@
-/**
- * Egress reload — apply a newly-added allowlist host to a RUNNING session
- * without a container restart (docs/172 Gap 1, planning#92).
- *
- * "Add to allowlist" persists durably (EgressAllowlistStore), but a contained
- * session that is already running was launched with the OLD resolver config +
- * proxy allowlist. For a brand-new host the resolver refuses the name (so the
- * agent never gets an IP) and the proxy would reject its SNI — until the next
- * container start. This reload closes that gap live:
- *
- *   - **DNS opens.** Relaunch the Tier B resolver with a regenerated dnsmasq
- *     config that now lists the new host. dnsmasq's per-domain `ipset=` directive
- *     means that as soon as the agent resolves the host through it, the returned
- *     IP is auto-inserted into the existing Tier A ipset — so "DNS opens" and
- *     "IP permitted" are the same action (no separate ipset poke, no touching the
- *     verified `init-firewall.sh`).
- *   - **SNI permitted.** Relaunch the Tier C SNI proxy with the regenerated
- *     allowlist so its hostname check passes for the new host.
- *
- * Both sidecars listen on fixed loopback ports inside the agent's netns, so the
- * old instance is removed and a fresh one started on the same address — the
- * iptables REDIRECTs installed at session start keep pointing at it. Best-effort
- * and fail-safe: any error is logged, not thrown — the durable add already
- * persisted, so a failed live reload degrades to "takes effect on next restart."
- *
- * This module is the orchestration seam (find-old → remove → relaunch). The pure
- * config composition lives in `egress-allowlist.ts` / `egress-dns-install.ts` /
- * `egress-proxy-install.ts`; it is unit-tested here against a fake Docker. The
- * actual in-netns dnsmasq/proxy swap is verified on a live host.
- */
-
 import type Docker from "dockerode";
 import { buildProxyAllowed, launchEgressProxy, EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 import {
@@ -41,36 +10,19 @@ import {
 
 export interface ReloadEgressOpts {
   docker: Docker;
-  /** Docker id of the running agent container (shared netns target). */
   agentContainerId: string;
   sessionId: string;
   sidecarImage: string;
-  /**
-   * docs/128 — ops/docker-capable session. When true the regenerated resolver
-   * config also allowlists the `docker-socket-proxy` compose alias, so a live
-   * allowlist reload doesn't drop the rule that lets the agent resolve DOCKER_HOST.
-   */
   opsSession?: boolean;
-  /** Composed extra-host allowlist (env + MCP + durable) for this session. */
   extraHosts: string[];
-  /** Effective built-in base (defaults minus user-removed). Defaults to the full base. */
   base?: string[];
-  /** Base labels (parent-session etc.) stamped on the relaunched sidecars. */
   baseLabels: Record<string, string>;
-  /** Reload the Tier B resolver (only when DNS enforcement is on). */
   reloadResolver: boolean;
-  /** Reload the Tier C proxy (only when proxy enforcement is on). */
   reloadProxy: boolean;
-  /**
-   * docs/172 Phase 2 — SNI-scoped identity rules JSON, carried through so a
-   * live allowlist reload doesn't drop the relaunched proxy's identity scoping.
-   */
   identityRules?: string;
-  /** Orchestrator port for the proxy's decision endpoint. */
   orchPort?: string;
 }
 
-/** Remove the matching sidecar for one network-namespace parent. */
 async function removeByLabel(docker: Docker, label: string, parentId: string): Promise<void> {
   let list: { Id: string }[];
   try {
@@ -79,8 +31,7 @@ async function removeByLabel(docker: Docker, label: string, parentId: string): P
       filters: { label: [label, `shipit-egress-parent=${parentId}`] },
     });
     if (list.length === 0) {
-      // Upgrade compatibility: old sidecars have no parent label. Remove the
-      // legacy session-scoped listener so the replacement can bind its port.
+      // Legacy sidecars lack parent labels; remove their listeners before rebinding.
       const legacy = await docker.listContainers({ all: true, filters: { label: [label] } });
       list = [];
       for (const entry of legacy) {
@@ -100,10 +51,6 @@ async function removeByLabel(docker: Docker, label: string, parentId: string): P
   }
 }
 
-/**
- * Reload the Tier B resolver and/or Tier C proxy for a running, contained
- * session so a just-added allowlist host takes effect without a restart.
- */
 export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void> {
   const { docker, sessionId, agentContainerId, sidecarImage, extraHosts, base, baseLabels } = opts;
   const labels = { ...baseLabels, "shipit-parent-session": sessionId };

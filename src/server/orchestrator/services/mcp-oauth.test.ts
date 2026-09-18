@@ -1,21 +1,3 @@
-/**
- * Unit tests for the MCP OAuth service (docs/088 Phase 2, docs/139 DCR).
- *
- * Covers:
- *   - PKCE start: returns a well-formed authorize URL, persists state.
- *   - Discovery-driven endpoints + RFC 7591 dynamic client registration
- *     (docs/139): register on first connect, cache, reuse, env override wins,
- *     exchange at the *discovered* token endpoint (the actual bug fixed).
- *   - Callback: exchanges code, normalizes the token response, persists tokens.
- *   - Refresh: uses the stored refresh token, carries it forward when the
- *     provider doesn't reissue.
- *   - Background refresh: only touches tokens within the safety margin,
- *     reports refreshed + failed.
- *   - Disconnect: removes tokens, keeps the cached client.
- *
- * The `fetch` boundary is faked — none of the tests touch the network.
- */
-
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -34,16 +16,9 @@ import {
 import { _clearDiscoveryCache } from "./mcp-oauth-discovery.js";
 import { ServiceError } from "./types.js";
 
-/**
- * Build a `fetch` stub that serves the Notion DCR discovery chain + a
- * registration response, recording every request URL. Token exchange is left
- * to the caller's `handleOAuthCallback` fetch.
- */
 function makeNotionDiscoveryFetch(opts?: {
   clientId?: string;
-  /** Override the registration response status (default 201). */
   registerStatus?: number;
-  /** Override the registration response body. */
   registerBody?: unknown;
 }): { fetchImpl: typeof fetch; urls: string[] } {
   const urls: string[] = [];
@@ -52,7 +27,6 @@ function makeNotionDiscoveryFetch(opts?: {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     urls.push(url);
-    // 1. Unauthenticated probe → 401 with WWW-Authenticate.
     if (url === "https://mcp.notion.com/mcp" && init?.method === "POST") {
       return new Response("unauthorized", {
         status: 401,
@@ -62,7 +36,6 @@ function makeNotionDiscoveryFetch(opts?: {
         },
       });
     }
-    // 2. Protected-resource metadata.
     if (url === "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp") {
       return new Response(
         JSON.stringify({
@@ -72,7 +45,6 @@ function makeNotionDiscoveryFetch(opts?: {
         { status: 200 },
       );
     }
-    // 3. Authorization-server metadata (RFC 8414).
     if (url === "https://mcp.notion.com/.well-known/oauth-authorization-server") {
       return new Response(
         JSON.stringify({
@@ -85,7 +57,6 @@ function makeNotionDiscoveryFetch(opts?: {
         { status: 200 },
       );
     }
-    // 4. Dynamic client registration.
     if (url === "https://mcp.notion.com/register") {
       return new Response(
         JSON.stringify(opts?.registerBody ?? { client_id: clientId }),
@@ -115,12 +86,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
   });
 
   describe("startOAuthFlow", () => {
-    // The PKCE authorize-URL + state-persistence happy path is covered by the
-    // DCR test below ("discovers endpoints, registers a client, …"), which is
-    // the shape every currently-seeded provider (Notion) uses. The old
-    // no-DCR / operator-env-required variant (Linear) was removed with the
-    // Linear preset (docs/190); that code path still exists in startOAuthFlow
-    // for a future no-DCR provider but is no longer exercised by a fixture.
     it("throws 404 for unknown provider", async () => {
       await expect(
         startOAuthFlow({
@@ -146,19 +111,14 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
         fetchImpl,
       });
       const url = new URL(result.authorizeUrl);
-      // Authorize URL points at the *discovered* endpoint.
       expect(url.origin + url.pathname).toBe("https://mcp.notion.com/authorize");
       expect(url.searchParams.get("client_id")).toBe("dcr_cid");
-      // PKCE challenge + opaque state present and self-consistent.
       expect(url.searchParams.get("response_type")).toBe("code");
       expect(url.searchParams.get("code_challenge_method")).toBe("S256");
       expect(url.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]+$/);
       expect(url.searchParams.get("state")).toBe(result.state);
-      // Registration was performed.
       expect(urls).toContain("https://mcp.notion.com/register");
-      // Client cached for reuse.
       expect(store.getMcpOAuthClient("notion_oauth")?.clientId).toBe("dcr_cid");
-      // Flow state persisted for the callback to consume.
       expect(stateStore.size()).toBe(1);
     });
 
@@ -192,7 +152,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       });
       expect(new URL(result.authorizeUrl).searchParams.get("client_id")).toBe("operator_cid");
       expect(urls).not.toContain("https://mcp.notion.com/register");
-      // No client persisted to the cache — the override is per-process.
       expect(store.getMcpOAuthClient("notion_oauth")).toBeUndefined();
     });
 
@@ -214,7 +173,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       } catch (err) {
         expect(err).toBeInstanceOf(ServiceError);
         expect((err as ServiceError).statusCode).toBe(502);
-        // Hints at the env-var fallback.
         expect((err as ServiceError).message).toContain("NOTION_OAUTH_CLIENT_ID");
       }
     });
@@ -235,7 +193,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       const exchangeFetch: typeof fetch = async (input: unknown, init: unknown) => {
         const body = ((init as { body?: string })?.body ?? "") as string;
         const params = new URLSearchParams(body);
-        // Exchanges at the DISCOVERED token endpoint, with the DCR client id.
         expect(input).toBe("https://mcp.notion.com/token");
         expect(params.get("grant_type")).toBe("authorization_code");
         expect(params.get("code")).toBe("the-code");
@@ -266,9 +223,7 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       expect(persisted?.scope).toBe("read write");
       expect(persisted?.clientId).toBe("dcr_cid");
       expect(persisted?.obtainedAt).toBeTruthy();
-      // expires_in: 3600 → expiresAt ~ now + 1h
       expect(persisted?.expiresAt).toBeGreaterThan(Date.now() + 30 * 60 * 1000);
-      // State was consumed (single-use)
       expect(stateStore.size()).toBe(0);
     });
 
@@ -297,11 +252,9 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
         credentialStore: store,
         fetchImpl: exchangeFetch,
       });
-      // The discovered mcp.notion.com/token — never the old api.notion.com one.
       expect(exchangedAt).toBe("https://mcp.notion.com/token");
       expect(exchangedAt).not.toContain("api.notion.com");
       expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("notion_at");
-      // clientId carried into the stored tokens for the refresh path.
       expect(store.getMcpOAuthTokens("notion_oauth")?.clientId).toBe("dcr_cid");
     });
 
@@ -356,7 +309,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
         return new Response(
           JSON.stringify({
             access_token: "new_at",
-            // Notion-style: no refresh_token reissued
             expires_in: 7200,
             token_type: "Bearer",
           }),
@@ -369,7 +321,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
         fetchImpl: fakeFetch,
       });
       expect(next.accessToken).toBe("new_at");
-      // Old refresh token carries forward when provider didn't reissue.
       expect(next.refreshToken).toBe("rt1");
       const persisted = store.getMcpOAuthTokens("notion_oauth");
       expect(persisted?.accessToken).toBe("new_at");
@@ -428,20 +379,18 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
   describe("refreshExpiredMcpOAuthTokens", () => {
     it("only refreshes tokens within the safety margin; reports both buckets", async () => {
       const now = 1_700_000_000_000;
-      // A safe token (outside the margin) is skipped before its source is ever
-      // validated against the registry, so it can use any source id; an
-      // in-margin token IS refreshed, so it must be a real provider (notion).
+      // Unexpired tokens skip provider lookup; only the refreshed fixture needs a real provider.
       store.setMcpOAuthTokens("sentry_oauth", {
         accessToken: "fresh",
         refreshToken: "rt-fresh",
         clientId: "cid",
-        expiresAt: now + 60 * 60 * 1000, // 1h out — safe
+        expiresAt: now + 60 * 60 * 1000,
       });
       store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "old",
         refreshToken: "rt-old",
         clientId: "cid2",
-        expiresAt: now + 60 * 1000, // 1min out — within safety margin
+        expiresAt: now + 60 * 1000,
       });
       let calls = 0;
       const fakeFetch: typeof fetch = async () => {
@@ -483,7 +432,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
     it("records failed sources without throwing", async () => {
       store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "x",
-        // No refresh token — refresh path is going to fail.
         clientId: "cid",
         expiresAt: Date.now() - 1000,
       });
@@ -512,7 +460,7 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
     it("handles expires_at as unix seconds", () => {
       const t = normalizeTokenResponse({
         access_token: "x",
-        expires_at: 1_700_000_000, // year 2023, unambiguously seconds
+        expires_at: 1_700_000_000,
       });
       expect(t.expiresAt).toBe(1_700_000_000_000);
     });
@@ -552,13 +500,10 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       const notion = list.find((p) => p.provider.id === "notion_oauth");
       expect(notion?.status.connected).toBe(true);
       expect(notion?.status.scope).toBe("read");
-      // Linear was removed as a built-in OAuth provider (docs/190).
       expect(list.find((p) => p.provider.id === "linear_oauth")).toBeUndefined();
     });
 
     it("a cached registered client alone does NOT show as connected", () => {
-      // docs/139: client storage is separate from token storage precisely so
-      // a registered-but-not-authorized client never shows "Connected".
       store.setMcpOAuthClient("notion_oauth", {
         clientId: "cid",
         registeredAt: Date.now(),
@@ -577,7 +522,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       store.setMcpOAuthTokens("notion_oauth", { accessToken: "x", clientId: "cid" });
       disconnectMcpOAuth(store, "notion_oauth");
       expect(store.getMcpOAuthTokens("notion_oauth")).toBeUndefined();
-      // Client survives so a reconnect reuses it.
       expect(store.getMcpOAuthClient("notion_oauth")?.clientId).toBe("cid");
     });
 
@@ -601,7 +545,7 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
         clientId: "cid",
         authorizationEndpoint: "https://mcp.notion.com/authorize",
         tokenEndpoint: "https://mcp.notion.com/token",
-        createdAt: Date.now() - 11 * 60 * 1000, // older than 10min TTL
+        createdAt: Date.now() - 11 * 60 * 1000,
       });
       stateStore.put("s2", {
         source: "notion_oauth",
@@ -612,7 +556,6 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
         tokenEndpoint: "https://mcp.notion.com/token",
         createdAt: Date.now(),
       });
-      // s1 should be gone after eviction
       expect(stateStore.take("s1")).toBeUndefined();
       expect(stateStore.take("s2")).toBeTruthy();
     });

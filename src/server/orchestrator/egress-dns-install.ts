@@ -1,100 +1,31 @@
-/**
- * Egress DNS install — Tier B resolver launch (docs/172 Gap 1, planning#92).
- *
- * Builds the dnsmasq config (via `egress-dns.ts`) and launches the long-lived
- * controlled-resolver sidecar in the agent's netns. Sequencing in
- * `createContainer`: agent starts → Tier A installer
- * runs (creates the ipset + locks DNS to the resolver uid) → THIS launches the
- * resolver → health check → ready.
- *
- * Enabled by default (requires Tier A enforcement too); only `SESSION_EGRESS_DNS=0`
- * disables it. The resolver is labeled `shipit-parent-session=<id>` so the existing
- * `cleanupSessionDockerResources` tears it down with the session — no separate
- * teardown bookkeeping needed.
- *
- * Unit-tested seams: domain derivation, config base64 encoding, the flag gate,
- * and the sidecar launch config (fake Docker). The actual dnsmasq behavior +
- * iptables interaction is verified on a live host (the planning#92 Tier B checklist).
- */
-
 import os from "node:os";
 import type Docker from "dockerode";
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
 import { buildDnsmasqConfig, EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { egressEnforceEnabled } from "./egress-firewall-install.js";
 
-/** Default public upstream resolvers for allowlisted domains (overridable). */
 export const EGRESS_DNS_DEFAULT_UPSTREAMS = ["1.1.1.1", "1.0.0.1"];
-
-/**
- * Distinct label stamped on the long-lived resolver sidecar (in ADDITION to
- * `shipit-parent-session`, which it keeps so destroy-time cleanup reaps it). The
- * compose pre-start stale-container sweep (`killStaleContainers`) filters by
- * `shipit-parent-session` and would otherwise SIGKILL the resolver ~1s after
- * launch; it excludes anything carrying this label. Value is the session id.
- */
+// Exempts the resolver from the Compose stale-container sweep.
 export const EGRESS_RESOLVER_LABEL = "shipit-egress-resolver";
 
-/**
- * Is Tier B (controlled DNS) enabled? Default ON — only `SESSION_EGRESS_DNS=0`
- * disables it. Still requires Tier A enforcement (the tier-stacking invariant:
- * B requires A), so disabling enforcement disables the resolver too.
- */
 export function egressDnsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.SESSION_EGRESS_DNS !== "0" && egressEnforceEnabled(env);
 }
 
-/**
- * The orchestrator host written into the agent's `SHIPIT_HOST` (the worker's
- * callback target). MUST stay in lockstep with `buildOrchestratorCallbackEnv` in
- * `container-lifecycle.ts`: `SHIPIT_ORCHESTRATOR_HOST` if set, else the
- * orchestrator's own hostname (Docker resolves it as a name on the bridge). The
- * Tier B resolver allowlist is derived from this so it always permits exactly the
- * name the worker dials — see {@link orchestratorInternalNames}.
- */
+// Must match the worker's SHIPIT_HOST from buildOrchestratorCallbackEnv.
 export function orchestratorCallbackHost(env: NodeJS.ProcessEnv = process.env): string {
   return env.SHIPIT_ORCHESTRATOR_HOST || os.hostname();
 }
 
-/**
- * Internal names the agent must still resolve under Tier B (forwarded to Docker's
- * embedded DNS, not pinned). Primarily the orchestrator host — the worker reaches
- * it by `SHIPIT_HOST`, which may be a Docker service name rather than an IP.
- *
- * It derives the orchestrator host from {@link orchestratorCallbackHost} — the SAME
- * source `SHIPIT_HOST` is set from — NOT just `SHIPIT_ORCHESTRATOR_HOST`. Without
- * this, an environment that leaves `SHIPIT_ORCHESTRATOR_HOST` unset (e.g. the dev
- * compose) sets `SHIPIT_HOST=<os.hostname()>` but allowlists nothing, so dnsmasq
- * refuses the orchestrator name and the worker→orchestrator callback channel breaks
- * under Tier B (found in planning#92 Tier B host verification). IP literals are skipped
- * (no DNS needed); the bridge subnet they live on is already allowed by Tier A.
- */
 export function orchestratorInternalNames(env: NodeJS.ProcessEnv = process.env): string[] {
   const names = [orchestratorCallbackHost(env), ...(env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS?.split(/[\s,]+/) ?? [])];
   return names
     .map((n) => (n ?? "").trim())
-    .filter((n) => n && !/^\d+\.\d+\.\d+\.\d+$/.test(n)); // skip IP literals (no DNS needed)
+    .filter((n) => n && !/^\d+\.\d+\.\d+\.\d+$/.test(n));
 }
 
-/**
- * docs/128 — compose service alias an ops/docker-capable session's agent dials
- * for read-only Docker (`DOCKER_HOST=tcp://docker-socket-proxy:2375`). Single
- * source of truth: `container-lifecycle.ts` builds `OPS_DOCKER_HOST` from this,
- * and the Tier B resolver allowlists it via {@link sessionInternalNames}.
- */
 export const OPS_DOCKER_PROXY_DNS_NAME = "docker-socket-proxy";
 
-/**
- * Internal names a session must resolve under Tier B — {@link orchestratorInternalNames}
- * plus, for an ops/docker-capable session, its `docker-socket-proxy` compose sibling.
- *
- * Docker's embedded DNS (127.0.0.11) knows the per-session proxy alias, but the
- * Tier B resolver REFUSES any name not on its allowlist (the deliberate
- * anti-DNS-tunneling design — no default server), so without this rule an ops
- * agent's `DOCKER_HOST` lookup is refused even though L3 connectivity is fine
- * (planning#92 Tier B host verification: `getent hosts docker-socket-proxy` → REFUSED).
- * Added ONLY for ops sessions so ordinary sessions still can't resolve it.
- */
 export function sessionInternalNames(
   opts: { opsSession?: boolean } = {},
   env: NodeJS.ProcessEnv = process.env,
@@ -105,22 +36,13 @@ export function sessionInternalNames(
 }
 
 export interface ResolverConfigOpts {
-  /** Operator extra allowlisted domains (e.g. SESSION_EGRESS_ALLOWLIST). */
   extraDomains?: string[];
-  /** Internal names → Docker embedded DNS. */
   internalDomains?: string[];
-  /** Forward unqualified Compose service names without embedding repo names in directives. */
   unqualifiedInternalNames?: boolean;
   upstreams?: string[];
-  /**
-   * Built-in base domains (defaults to {@link EGRESS_DEFAULT_ALLOWLIST}). The
-   * caller passes the *effective* base — defaults minus any the user removed in
-   * Settings — so a removed default isn't resolvable.
-   */
   base?: readonly string[];
 }
 
-/** Build the resolver's dnsmasq config and base64-encode it for env transport. */
 export function buildResolverConfigB64(opts: ResolverConfigOpts = {}): string {
   const publicDomains = [...(opts.base ?? EGRESS_DEFAULT_ALLOWLIST), ...(opts.extraDomains ?? [])];
   const config = buildDnsmasqConfig({
@@ -135,18 +57,10 @@ export function buildResolverConfigB64(opts: ResolverConfigOpts = {}): string {
 export interface LaunchResolverOpts {
   agentContainerId: string;
   sidecarImage: string;
-  /** base64-encoded dnsmasq config from {@link buildResolverConfigB64}. */
   configB64: string;
   labels?: Record<string, string>;
 }
 
-/**
- * Launch the long-lived resolver sidecar in the agent's netns. Returns once the
- * container is started (NOT waited — it runs for the agent's lifetime). Throws on
- * start failure → the caller fails closed (a broken resolver means the agent
- * can't resolve, so running it would just break the session). Readiness is
- * implicitly gated by the subsequent worker health check.
- */
 export async function launchEgressResolver(docker: Docker, opts: LaunchResolverOpts): Promise<string> {
   const container = await docker.createContainer({
     Image: opts.sidecarImage,

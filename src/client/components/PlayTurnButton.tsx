@@ -1,25 +1,18 @@
-/**
- * Per-turn Play/Pause control (docs/144).
- *
- * Lives on the assistant turn footer. Reads playback state from the shared
- * store, so only the turn that is actually playing shows the playing/paused
- * UI — every other button reads as idle. Includes a thin progress bar and a
- * speed dropdown (persisted in settings; applied to the next synthesis, since
- * OpenAI bakes speed into the audio).
- */
 
-import { PlayIcon, PauseIcon, SpinnerGapIcon, StopIcon, WarningCircleIcon } from "@phosphor-icons/react";
+
+import { PlayIcon, PauseIcon, StopIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { useVoicePlayback } from "../voice/use-voice-playback.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { saveSetting } from "./Settings/declared-setting.js";
 
 const SPEEDS = [1, 1.25, 1.5, 2] as const;
 
 export function PlayTurnButton({ turnId, text }: { turnId: string; text: string }) {
   const playback = useVoicePlayback();
   const ttsSpeed = useSettingsStore((s) => s.ttsSpeed);
-  const setTtsSpeed = useSettingsStore((s) => s.setTtsSpeed);
 
   const isActive = playback.playingTurnId === turnId;
   const state = isActive ? playback.state : "idle";
@@ -34,14 +27,14 @@ export function PlayTurnButton({ turnId, text }: { turnId: string; text: string 
     } else if (state === "paused") {
       playback.resume();
     } else {
-      // idle, loading (ignored below), or error → (re)start this turn
+
       if (state !== "loading") void playback.play(turnId, text);
     }
   };
 
   const mainIcon =
     state === "loading" ? (
-      <SpinnerGapIcon size={ICON_SIZE.SM} className="animate-spin" />
+      <Spinner size={ICON_SIZE.SM} />
     ) : state === "playing" ? (
       <PauseIcon size={ICON_SIZE.SM} weight="fill" />
     ) : state === "error" ? (
@@ -95,7 +88,7 @@ export function PlayTurnButton({ turnId, text }: { turnId: string; text: string 
       {/* Speed — persisted; applied to the next synthesis. */}
       <select
         value={ttsSpeed}
-        onChange={(e) => setTtsSpeed(Number(e.target.value))}
+        onChange={(e) => { void saveSetting("voice.ttsSpeed", Number(e.target.value)); }}
         className="bg-transparent text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) rounded px-1 py-0.5 cursor-pointer focus:outline-none"
         aria-label="Playback speed"
         data-testid="play-turn-speed"

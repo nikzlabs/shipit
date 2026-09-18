@@ -11,7 +11,6 @@ import {
   resolveCacheFetchRef,
 } from "./git-lfs-store.js";
 
-/** `<ab>/<cd>/<oid>` — the two-level fanout git-lfs writes. */
 function writeCacheObject(cacheDir: string, oid: string, content: string): string {
   const p = path.join(lfsObjectsDir(cacheDir, true), oid.slice(0, 2), oid.slice(2, 4), oid);
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -51,8 +50,6 @@ describe("git-lfs-store", () => {
       expect(lfsSharedStoreEnabled()).toBe(true);
     });
 
-    // An empty value is what a compose "VAR:-" passthrough supplies when the
-    // operator has set nothing, so it must read as the default, not as off.
     it("is ON for an empty value", () => {
       process.env.SHIPIT_GIT_LFS_SHARED_STORE = "";
       expect(lfsSharedStoreEnabled()).toBe(true);
@@ -91,8 +88,6 @@ describe("git-lfs-store", () => {
       expect(stats).toMatchObject({ linked: 1, copied: 0, failed: 0 });
       const dstPath = clonePathFor(sessionDir, oid);
       expect(fs.readFileSync(dstPath, "utf8")).toBe("REAL-ASSET-BYTES");
-      // The point of the exercise: one inode, so the bytes cost disk once and
-      // the object survives in the clone even if the cache later drops its link.
       expect(fs.statSync(dstPath).ino).toBe(fs.statSync(srcPath).ino);
     });
 
@@ -113,8 +108,6 @@ describe("git-lfs-store", () => {
       const srcPath = writeCacheObject(cacheDir, oid, "still-here");
       linkLfsObjectsIntoClone(cacheDir, sessionDir);
 
-      // This is what a cache-side `git lfs prune` does. It must not be able to
-      // pull content out from under a live session.
       fs.rmSync(srcPath);
 
       expect(fs.readFileSync(clonePathFor(sessionDir, oid), "utf8")).toBe("still-here");
@@ -185,11 +178,7 @@ describe("git-lfs-store", () => {
 
     it("never throws, and reports failures, when the destination can't be created", () => {
       writeCacheObject(cacheDir, "aabbccddeeff0011", "x");
-      // A regular file as the session dir makes every mkdir under it ENOTDIR —
-      // an unwritable destination that fails fast on any platform. (Do NOT reach
-      // for a /proc path here: `fs.mkdirSync(recursive)` under /proc spins
-      // instead of erroring in a container, which hangs the run rather than
-      // failing it.)
+      // A regular file gives ENOTDIR; recursive mkdir under /proc can hang.
       const notADir = path.join(tmpDir, "sessions", "a-file-not-a-dir");
       fs.writeFileSync(notADir, "");
 
@@ -200,11 +189,6 @@ describe("git-lfs-store", () => {
   });
 
   describe("resolveCacheFetchRef", () => {
-    /**
-     * A bare repo with one branch. `headRef` sets the HEAD symref — pass a
-     * nonexistent branch to reproduce the dangling-HEAD case that makes the
-     * no-ref `git lfs fetch origin` fail outright.
-     */
     function makeBareRepo(name: string, branch: string | null, headRef?: string): string {
       const bare = path.join(tmpDir, name);
       const work = path.join(tmpDir, `${name}-work`);
@@ -233,10 +217,6 @@ describe("git-lfs-store", () => {
     });
 
     it("falls back to an existing branch when HEAD dangles", async () => {
-      // The regression this guards: `git init --bare` leaves HEAD on
-      // refs/heads/master, and a repo whose only branch is `main` (or whose
-      // default branch was renamed and pruned) has an unresolvable HEAD. The
-      // no-ref `git lfs fetch origin` fails hard there and fetches nothing.
       const bare = makeBareRepo("dangling", "main", "refs/heads/does-not-exist");
       await expect(resolveCacheFetchRef(bare)).resolves.toBe("main");
     });
@@ -254,8 +234,6 @@ describe("git-lfs-store", () => {
   describe("fetchLfsIntoCache", () => {
     it("does not shell out at all when explicitly disabled", async () => {
       process.env.SHIPIT_GIT_LFS_SHARED_STORE = "off";
-      // No git repo here, so any real `git grep`/`git lfs fetch` would fail —
-      // returning false without touching git is the observable contract.
       await expect(fetchLfsIntoCache(cacheDir)).resolves.toBe(false);
     });
 
@@ -264,9 +242,7 @@ describe("git-lfs-store", () => {
     });
 
     it("reports false when the git-lfs binary is unavailable", async () => {
-      // `repoDeclaresLfs` runs first and answers "no" for a non-repo, so this
-      // asserts the no-throw contract of the unavailable path rather than
-      // reaching the probe — the binary branch is covered in git-lfs.test.ts.
+      // This non-repo exits before the availability probe.
       await expect(fetchLfsIntoCache(cacheDir, { isAvailable: async () => false })).resolves.toBe(false);
     });
   });

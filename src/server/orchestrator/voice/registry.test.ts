@@ -1,10 +1,3 @@
-/**
- * Tests for the server-side voice provider registry (docs/144).
- *
- * Asserts the dispatch table wires the right adapter factories per provider so
- * the service layer never hardcodes OpenAI.
- */
-
 import { describe, it, expect } from "vitest";
 import { getVoiceAdapters } from "./registry.js";
 

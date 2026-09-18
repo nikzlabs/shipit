@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { adaptColorForSurface, luminanceOfCssColor } from "./status-color.js";
 
-const LIGHT = luminanceOfCssColor("#ffffff"); // 1.0
-const DARK = luminanceOfCssColor("#111827"); // ~0.01
+const LIGHT = luminanceOfCssColor("#ffffff");       
+const DARK = luminanceOfCssColor("#111827");         
 
 function lum(hex: string): number {
   return luminanceOfCssColor(hex);
@@ -33,7 +33,7 @@ describe("adaptColorForSurface", () => {
   });
 
   it("leaves an already-dark status unchanged on a light surface", () => {
-    // Indigo "Done" already clears the contrast bar against white.
+
     expect(adaptColorForSurface("#5e6ad2", LIGHT)).toBe("#5e6ad2");
   });
 
@@ -43,7 +43,7 @@ describe("adaptColorForSurface", () => {
   });
 
   it("leaves a light status unchanged on a dark surface", () => {
-    // A near-white gray already pops on dark.
+
     expect(adaptColorForSurface("#e2e2e2", DARK)).toBe("#e2e2e2");
   });
 

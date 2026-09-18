@@ -69,11 +69,9 @@ The single biggest hidden cost of a Rust server is **not** the rewrite itself â€
 Today the client imports server types directly:
 
 ```ts
-// src/client/App.tsx
 import type { TurnUsage } from "../server/shared/types.js";
 import type { AgentId, DocEntry, ProviderAccount } from "../server/shared/types.js";
 
-// src/client/AppLayout.tsx
 import type { SessionInfo, RepoInfo, DockerMemoryStats, SubscriptionLimitsMap } from "../server/shared/types.js";
 ```
 

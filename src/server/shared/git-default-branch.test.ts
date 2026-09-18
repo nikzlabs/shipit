@@ -1,10 +1,3 @@
-/**
- * `GitManager.getDefaultBranch` — the server-side answer to "what is this
- * repo's base branch?" that replaced a hard-coded "main" in the ready-card
- * diff-stat, changed-docs, and diff-route paths. A `master` (or `trunk`) repo
- * must report its own branch, not the guess.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -33,10 +26,6 @@ describe("GitManager: getDefaultBranch", () => {
   const git = (cwd: string, ...args: string[]) =>
     execFileSync("git", args, { cwd, stdio: "pipe" }).toString();
 
-  /**
-   * An "origin" repo whose default branch is `branchName`, cloned into `clone/`
-   * — i.e. exactly the shape a session's working copy has.
-   */
   function makeOriginAndClone(branchName: string): string {
     const origin = path.join(tmpDir, "origin");
     fs.mkdirSync(origin);
@@ -67,7 +56,6 @@ describe("GitManager: getDefaultBranch", () => {
 
   it("probes origin/* when origin/HEAD is missing (older clone)", async () => {
     const clone = makeOriginAndClone("master");
-    // Older clones (and some fetch-only setups) have no refs/remotes/origin/HEAD.
     git(clone, "remote", "set-head", "origin", "--delete");
     expect(await new GitManager(clone).getDefaultBranch()).toBe("master");
   });
@@ -75,7 +63,6 @@ describe("GitManager: getDefaultBranch", () => {
   it("falls back to main for a repo with no remote at all", async () => {
     const local = new GitManager(tmpDir);
     await local.init();
-    // Nothing to read — degrade to the pre-existing guess rather than throwing.
     expect(await local.getDefaultBranch()).toBe("main");
   });
 });

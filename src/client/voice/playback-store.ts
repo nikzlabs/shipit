@@ -30,13 +30,9 @@ interface PlaybackStore {
   stop: () => void;
 }
 
-// Module-level singletons — deliberately NOT React state. There is exactly
-// one audio element in the app; the blob cache survives turn switches so
-// replays are free.
 let audioEl: HTMLAudioElement | null = null;
 const blobCache = new Map<string, string>();
-// Bound the cache so a long session replaying many turns/speeds doesn't leak
-// object URLs — each entry pins its audio blob in memory until revoked.
+
 const MAX_CACHED_BLOBS = 32;
 
 function cacheKey(turnId: string, voice: string, speed: number): string {
@@ -92,14 +88,14 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
 
     play: async (turnId, text) => {
       const { ttsProvider, ttsVoice, ttsSpeed } = useSettingsStore.getState();
-      // Switching turns stops and frees the previous element.
+
       teardownAudio();
       set({ state: "loading", playingTurnId: turnId, positionMs: 0, durationMs: 0, errorMessage: null });
 
       const key = cacheKey(turnId, `${ttsProvider}:${ttsVoice}`, ttsSpeed);
       let url = blobCache.get(key);
       if (url) {
-        // LRU touch: move to most-recently-used so it survives eviction.
+
         blobCache.delete(key);
         blobCache.set(key, url);
       }
@@ -132,7 +128,6 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
         }
       }
 
-      // A newer play() may have superseded this one while we awaited.
       if (get().playingTurnId !== turnId) return;
 
       const el = new Audio(url);

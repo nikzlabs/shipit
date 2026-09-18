@@ -58,22 +58,16 @@ describe("service messages are scoped to their session", () => {
       port: 42000,
       preview: "auto",
     });
-    // `updateService` APPENDS an unknown name, so a foreign status is not merely
-    // a wrong status — it invents a row, and its port with it.
+
     expect(usePreviewStore.getState().services.map((s) => s.name)).toEqual(["web"]);
   });
 
   it("drops a service list that arrives while no session is active", () => {
-    // The window a claim leaves open: `/{slug}/new` resets every store and only
-    // sets the new id when the claim RESOLVES, and nothing resets the preview
-    // store again afterwards. A message accepted here is one the incoming
-    // session then adopts as its own — names, ports and all.
+
     useSessionStore.setState({ sessionId: undefined });
     dispatchMessage(ctx, list("outgoing", "probe", 42000));
     expect(usePreviewStore.getState().services).toEqual([]);
 
-    // …and the session that is then claimed starts empty, not holding the
-    // outgoing session's rows.
     useSessionStore.setState({ sessionId: "claimed" });
     expect(usePreviewStore.getState().services).toEqual([]);
   });
@@ -97,9 +91,9 @@ describe("service messages are scoped to their session", () => {
   });
 
   it("does not clear the next session's startup overlay from a delayed callback", () => {
-    // The overlay is cleared 800ms after a service reports `running` — long
+
     // enough to switch sessions, and the dispatch-time guard cannot see a
-    // callback that fires later. Only the callback can re-check.
+
     vi.useFakeTimers();
     usePreviewStore.setState({
       startupSteps: [{ stepId: "dev_server", status: "running", logLines: [] }],
@@ -113,7 +107,6 @@ describe("service messages are scoped to their session", () => {
       preview: "auto",
     });
 
-    // The user switches away inside the window.
     useSessionStore.setState({ sessionId: "other" });
     usePreviewStore.setState({
       startupSteps: [{ stepId: "install", status: "running", logLines: [] }],

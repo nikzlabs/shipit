@@ -49,7 +49,6 @@ describe("worker-uid-guard (docs/150 Rollout)", () => {
     expect(() =>
       assertWorkerUidConsistency({ stateDir, currentUid: null, hasPersistedSessions: true }),
     ).toThrow(/config rollback/i);
-    // Marker is NOT overwritten on a fatal — a re-set on the next boot recovers.
     expect(readMarker()).toBe("1000");
   });
 
@@ -88,11 +87,6 @@ describe("worker-uid-guard (docs/150 Rollout)", () => {
     }
   });
 
-  // docs/263 — this guard covers rollback drift and deliberately knows nothing
-  // about the reserved egress uids: it resolves the current uid through
-  // `sessionWorkerUid()`, so it INHERITS that refusal. Two range checks that can
-  // disagree would be worse than one. Before the parse-site guard this test's
-  // call returned uid 911 and wrote it to the marker instead of throwing.
   it("inherits the reserved-uid refusal from the parse site (no second range check)", () => {
     const prev = process.env.SHIPIT_SESSION_WORKER_UID;
     process.env.SHIPIT_SESSION_WORKER_UID = "911";

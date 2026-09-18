@@ -18,14 +18,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import type { IssueLabel, IssuePriorityLevel, TrackerId, TrackerIssue } from "../../server/shared/types.js";
 
-/**
- * Stable empty references. Returning a fresh `[]`/`{}` literal from a Zustand
- * selector (or recomputing a derived array on every render) makes
- * `useSyncExternalStore` see a new snapshot each render, which loops into React
- * error #185 ("Maximum update depth exceeded") — exactly the state on tab open,
- * before the first fetch populates `issuesByTracker`. We select raw store state
- * and derive with `useMemo`, falling back to these shared constants when empty.
- */
+// Zustand selectors require stable empty references to avoid React error #185.
 const EMPTY_ISSUES: TrackerIssue[] = [];
 const EMPTY_STATUSES: StatusOption[] = [];
 const EMPTY_ASSIGNEES: AssigneeOption[] = [];
@@ -42,15 +35,6 @@ const ZERO_PRIORITY_COUNTS: Record<IssuePriorityLevel, number> = {
   none: 0,
 };
 
-/**
- * Connected wrapper around {@link IssuesViewer} (docs/170 + docs/173). Resolves
- * the repo to start a session on (the current session's remote, falling back to
- * the active sidebar repo) to gate the Start-session action, and delegates the
- * action itself to the parent. Owns the client-side filter plumbing: it derives
- * the filtered list + distinct status/assignee facet options with stable
- * memoized references (see the EMPTY_* note above) and wires the store's filter
- * actions to the presentational viewer.
- */
 export function IssuesPanel({
   onStartSession,
   onConnect,
@@ -82,17 +66,11 @@ export function IssuesPanel({
   const commentsLoading = useIssuesStore((s) => s.commentsLoading);
   const commentsError = useIssuesStore((s) => s.commentsError);
 
-  // Derived, memoized so references stay stable across renders (React #185).
   const filteredIssues = useMemo(() => {
     const result = filterIssues(issues, filters);
     return result.length === 0 ? EMPTY_ISSUES : result;
   }, [issues, filters]);
 
-  // Build the nested render plan (docs/206): sort + group + collapse applied to
-  // the filtered set, client-side. Two variants — the wide (table) layout
-  // defaults parents EXPANDED, the narrow (card) layout defaults them COLLAPSED
-  // — and the viewer picks one by its measured width. Memoized so the viewer
-  // re-renders only when an input actually changes.
   const desktopSections = useMemo(() => {
     if (filteredIssues.length === 0) return EMPTY_SECTIONS;
     return buildSections(filteredIssues, sortPrefs, collapsePredicate(collapseById, false));
@@ -125,9 +103,6 @@ export function IssuesPanel({
     return counts;
   }, [issues]);
 
-  // Repo to seed the session on: prefer the current session's remote so the
-  // issue lands in the repo the user is already looking at; fall back to the
-  // active sidebar repo when there's no session context yet.
   const repoUrl = useSessionStore((s) => {
     const current = s.sessions.find((sess) => sess.id === s.sessionId);
     return current?.remoteUrl;
@@ -136,10 +111,6 @@ export function IssuesPanel({
   const allRepos = useRepoStore((s) => s.repos);
   const effectiveRepoUrl = repoUrl || activeRepoUrl;
 
-  // Repos offered by the Start-session picker (docs/236). Hidden repos are
-  // excluded for the same reason the sidebar drops them — the user has said
-  // they don't want to see that project — except when it's the current target,
-  // which must stay visible so the checkmark has something to land on.
   const pickerRepos = useMemo(
     () => allRepos.filter((r) => !r.hidden || r.url === effectiveRepoUrl),
     [allRepos, effectiveRepoUrl],
@@ -150,22 +121,11 @@ export function IssuesPanel({
     void useIssuesStore.getState().fetchIssues(id);
   };
 
-  // `repoUrl` is set when the user picked an explicit repo from the split
-  // button's caret menu; otherwise the parent falls back to `effectiveRepoUrl`.
-  // The guard only covers the implicit path — an explicit pick is always
-  // startable, even before any repo has become "active".
   const handleStartSession = (issue: TrackerIssue, targetRepoUrl?: string) => {
     if (!targetRepoUrl && !effectiveRepoUrl) return;
-    // planning#322 — the tracker the issue was read from travels with it, so the new
-    // session can carry a resolvable `IssueRef` (branch pin + `→ started`).
-    // `selected` wins because the detail view can outlive a tab switch.
     onStartSession(issue, selected?.tracker ?? activeTracker, targetRepoUrl);
   };
 
-  // Master-detail (docs/189): a selected issue replaces the list with the
-  // inline detail view. Filter state lives in the store, so the filtered view
-  // survives the round-trip; the list's scroll offset doesn't (the viewer
-  // unmounts), so we stash/restore it via `listScrollTop` (wired below).
   if (selected) {
     const detailTracker = selected.tracker;
     return (
@@ -195,15 +155,13 @@ export function IssuesPanel({
         }}
         onBack={() => useIssuesStore.getState().closeIssue()}
         onRefresh={() => {
-          // Refresh re-fetches both the issue body and its comment thread.
           void useIssuesStore.getState().fetchDetail();
           void useIssuesStore.getState().fetchComments();
         }}
         onStartSession={handleStartSession}
         onPostComment={(body) => useIssuesStore.getState().postComment(body)}
         onSetStatus={(status) => {
-          // Read the live issue from the store so a refetch between renders
-          // doesn't write against a stale snapshot.
+          // A refetch can replace the issue between render and selection.
           const open = useIssuesStore.getState().detail;
           if (!open) return Promise.resolve("No issue is open");
           return useIssuesStore.getState().setIssueStatus(detailTracker, open, status);

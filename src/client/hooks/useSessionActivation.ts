@@ -47,9 +47,6 @@ export function useSessionActivation(params: {
   const claimAbortRef = useRef<AbortController | null>(null);
   const previousNewSessionRouteRef = useRef<string | undefined>(undefined);
 
-  // Initialize sessionId from URL on mount. Mount-only by design: the URL→store
-  // sync for every later change is the separate effect below, and re-running
-  // this one would re-open the templates panel mid-session.
   // eslint-disable-next-line no-restricted-syntax -- existing usage; mount-only, see above
   useEffect(() => {
     if (urlSessionId) {
@@ -61,10 +58,8 @@ export function useSessionActivation(params: {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only by design — the URL->store sync for later changes is the separate effect below (see above)
   }, []);
 
-  // Sync session state with the URL. Keep `sessionId` in the dependency list:
-  // late async writers (claim-session/history paths) can update the store
   // after the route is already on a different session, and the URL must win.
-  // WS auto-connects/disconnects via useSessionWebSocket(wsSessionId)
+
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const newSessionRouteKey = isNewSessionRoute ? newSessionRepoSlug : undefined;
@@ -85,7 +80,7 @@ export function useSessionActivation(params: {
       resumeSessionInternal(urlSessionId);
       disableAutoFix();
     } else if (!urlSessionId && !isNewSessionRoute && sessionId) {
-      // Clear stale sessionId — prevents WS from connecting to old session.
+
       useSessionStore.getState().setSessionId(undefined);
       resetSessionState();
       disableAutoFix();
@@ -93,7 +88,6 @@ export function useSessionActivation(params: {
     }
   }, [urlSessionId, sessionId, isNewSessionRoute, newSessionRepoSlug, disableAutoFix]);
 
-  // Auto-claim session when landing on /{slug}/new (direct URL navigation or page refresh)
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!isNewSessionRoute || !newSessionRepoUrl || sessionId) return;
@@ -105,7 +99,6 @@ export function useSessionActivation(params: {
     return () => ac.abort();
   }, [isNewSessionRoute, newSessionRepoUrl, sessionId]);
 
-  // Redirect to home if /{slug}/new doesn't match any known repo
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (isNewSessionRoute && !newSessionRepoUrl && bootstrapLoaded && reposLength > 0) {
@@ -115,40 +108,25 @@ export function useSessionActivation(params: {
 
   const handleNewSessionForRepo = useCallback(
     async (repoUrl: string, opts?: { preserveMobileView?: boolean }) => {
-      // Abort any in-flight claim from a previous "New Session" click
+
       claimAbortRef.current?.abort();
       const ac = new AbortController();
       claimAbortRef.current = ac;
 
-      // 1. Reset state for a fresh view
       useSessionStore.getState().setSessionId(undefined);
       resetSessionState();
       useUiStore.getState().setShowTemplates(false);
       // On mobile, a new session must land in the chat panel — otherwise the
-      // session-list drawer (or the Workspace panel) stays in front of the
-      // fresh session. No-op on desktop, where these states are unused.
-      //
-      // EXCEPT when archiving the active session: the user is in the session-list
-      // drawer and wants to stay there (to archive more / switch sessions), so the
-      // caller passes preserveMobileView to keep the drawer and current panel.
+
       if (!opts?.preserveMobileView) {
         useUiStore.getState().setMobileSidebarOpen(false);
         useUiStore.getState().setMobilePanel("chat");
       }
 
-      // 2. Navigate instantly (before API call) — user sees /{owner}/{repo}/new
       void navigate(repoLabelToNewPath(repoUrl));
 
-      // 3. Claim session in background — sets sessionId, triggers WS connect + preview
       const result = await useRepoStore.getState().claimSession(repoUrl, ac.signal);
-      // Guard against a late-resolving claim clobbering the active session.
-      // `ac` is only aborted by a *subsequent* "New Session" click — NOT by the
-      // user navigating to an existing session (handleSessionResume) while the
-      // claim is in flight. Without the URL check, a claim that resolves after
-      // such a navigation would overwrite the store's sessionId with the
-      // freshly-claimed warm session, and the user's next message would
-      // graduate that warm session into a brand-new session instead of going
-      // to the session they switched to. See shouldAdoptClaimedSession.
+
       if (
         shouldAdoptClaimedSession({
           claimed: !!result,
@@ -163,8 +141,6 @@ export function useSessionActivation(params: {
     [navigate],
   );
 
-  // Keyboard shortcut: Cmd/Ctrl+Shift+O. Prefers the current session's repo,
-  // then the active repo, then falls back to navigating home.
   const handleNewSessionShortcut = useCallback(() => {
     const session = useSessionStore.getState();
     const currentRepo = session.sessions.find((s) => s.id === session.sessionId)?.remoteUrl;
@@ -176,15 +152,10 @@ export function useSessionActivation(params: {
     }
   }, [handleNewSessionForRepo, navigate]);
 
-  // Quick-capture (the lightning / lightning+mic buttons) always spawns a
-  // *background* session and does NOT navigate — docs/145. It leaves your
-  // current `/{slug}/new` draft untouched: the headless claim sets
   // `skipReuse: true`, so the server always mints a fresh session and never
-  // recycles the ungraduated draft you're typing in (that hijack-the-draft
+
   // bug is exactly what `skipReuse` fixes). The returned id therefore never
-  // equals the session we're viewing, so the guard below is a defensive
-  // no-op kept only against a future claim path that could reuse — if one
-  // ever did, we'd graduate the URL to /session/{id} as a normal send does.
+
   const handleQuickSessionCreated = useCallback(
     (session: SessionInfo) => {
       if (isNewSessionRoute && session.id === useSessionStore.getState().sessionId) {

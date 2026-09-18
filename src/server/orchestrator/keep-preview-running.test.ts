@@ -11,7 +11,7 @@ const session = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
   remoteUrl: "", workspaceDir: "/workspace/s1", keepPreviewRunning: true, ...overrides,
 });
 
-function deps(current = session()) {
+function deps(current = session(), runners: Record<string, object> = {}) {
   const emitter = new EventEmitter();
   const containers = new Map<string, { status: string }>();
   const getOrCreate = vi.fn();
@@ -21,7 +21,7 @@ function deps(current = session()) {
     getOrCreate,
     value: {
       sessionManager: { listAll: () => [current], get: () => current },
-      runnerRegistry: { getOrCreate },
+      runnerRegistry: { getOrCreate, get: (id: string) => runners[id] },
       containerManager: Object.assign(emitter, { get: (id: string) => containers.get(id) }),
       defaultAgentId: "claude" as const,
       broadcastLog: vi.fn(),
@@ -37,18 +37,23 @@ describe("keep-preview-running lifecycle", () => {
   });
 
   it("skips an archived session whose reservation flag was never cleared", () => {
-    // An archived session has no workspace left (archive evicts it), so a stale
-    // flag must not resurrect its container at every startup.
     const d = deps(session({ userArchived: true, archived: true }));
     expect(restoreReservedPreviews(d.value)).toEqual([]);
     expect(d.getOrCreate).not.toHaveBeenCalled();
   });
 
-  it("does not duplicate a rediscovered running container", () => {
-    const d = deps();
+  it("does not duplicate a session that already has a runner", () => {
+    const d = deps(session(), { s1: {} });
     d.containers.set("s1", { status: "running" });
     expect(restoreReservedPreviews(d.value)).toEqual([]);
     expect(d.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("restores routing for a reserved session whose container survived the restart", () => {
+    const d = deps();
+    d.containers.set("s1", { status: "running" });
+    expect(restoreReservedPreviews(d.value)).toEqual(["s1"]);
+    expect(d.getOrCreate).toHaveBeenCalledWith("s1", "/workspace/s1", "claude");
   });
 
   it("bounds unexpected-exit recovery and reports exhaustion", () => {

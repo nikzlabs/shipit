@@ -1,10 +1,3 @@
-/**
- * Barrel re-export for the service layer.
- *
- * Import from "./services/index.js" (or just "./services/") to get all
- * service functions and types.
- */
-
 export * from "./types.js";
 export * from "./files.js";
 export * from "./skills.js";
@@ -23,6 +16,11 @@ export * from "./git.js";
 export * from "./github.js";
 export * from "./github-pr-comments.js";
 export * from "./settings.js";
+export * from "./settings-apply.js";
+export * from "./settings-baseline.js";
+export * from "./settings-conflict-domain.js";
+export * from "./settings-derivation.js";
+export * from "./settings-read.js";
 export * from "./credential-routes.js";
 export * from "./issues.js";
 export * from "./mcp.js";
@@ -33,6 +31,7 @@ export * from "./repos.js";
 export * from "./repo-default-branch.js";
 export * from "./reviews.js";
 export * from "./rebase-driver.js";
+export * from "./rebase-followup.js";
 export * from "./health.js";
 export * from "./recovery.js";
 export * from "./diagnostics.js";
@@ -46,6 +45,7 @@ export * from "./post-interrupt-commit.js";
 export * from "./agent.js";
 export * from "./sub-agent.js";
 export * from "./sub-agent-commit.js";
+export * from "./consult-result-delivery.js";
 export * from "./sub-agent-target.js";
 export * from "./spawn-inventory.js";
 export * from "./voice.js";

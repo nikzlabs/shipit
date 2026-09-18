@@ -1,0 +1,70 @@
+.antigravity {
+
+  --color-bg-primary: #0a0c14;
+  --color-bg-secondary: #11141f;
+  --color-bg-tertiary: #181c2b;
+  --color-bg-elevated: #181c2b;
+  --color-bg-overlay: rgba(6, 8, 14, 0.80);
+  --color-bg-hover: rgba(150, 175, 255, 0.06);
+  --color-bg-active: rgba(150, 175, 255, 0.12);
+
+  --color-text-primary: #eef1fa;
+  --color-text-secondary: #a2a9c0;
+  --color-text-tertiary: #6b7288;
+  --color-text-inverse: #0a0c14;
+  --color-text-link: #8ab4f8;
+
+  --color-border-primary: #262b3d;
+  --color-border-secondary: #333952;
+  --color-border-focus: #8ab4f8;
+
+  --color-accent: #8ab4f8;
+  --color-accent-hover: #a8c7fa;
+  --color-accent-text: #0a0c14;
+  --color-accent-subtle: rgba(138, 180, 248, 0.14);
+
+  --color-success: #57d38c;
+  --color-success-subtle: rgba(87, 211, 140, 0.15);
+  --color-success-border: rgba(87, 211, 140, 0.3);
+  --color-error: #f2564d;
+  --color-error-subtle: rgba(242, 86, 77, 0.15);
+  --color-warning: #e6b53c;
+  --color-warning-subtle: rgba(230, 181, 60, 0.15);
+  --color-info: #8ab4f8;
+  --color-info-subtle: rgba(138, 180, 248, 0.15);
+
+  --color-pr: #b39ef5;
+  --color-pr-subtle: rgba(179, 158, 245, 0.15);
+  --color-pr-border: rgba(179, 158, 245, 0.3);
+  --color-folder: #8f9ec4;
+  --color-autofix: #6fa8ec;
+  --color-attention: #f59e0b;
+  --color-attention-text: #f59e0b;
+
+  --color-context-ok: #57d38c;
+  --color-context-mid: #e6b53c;
+  --color-context-high: #ec8a3c;
+  --color-context-full: #f2564d;
+
+  --color-scrollbar-thumb: rgba(140, 152, 190, 0.35);
+  --color-scrollbar-thumb-hover: rgba(180, 192, 230, 0.5);
+
+  --color-syntax-base: #dfe4f2;
+  --color-syntax-bg: #070910;
+  --color-syntax-keyword: #b39ef5;
+  --color-syntax-title: #8ab4f8;
+  --color-syntax-attr: #a8c7fa;
+  --color-syntax-string: #8ed5a8;
+  --color-syntax-string-regexp: #a8c7fa;
+  --color-syntax-builtin: #e6b53c;
+  --color-syntax-comment: #636a82;
+  --color-syntax-tag: #b39ef5;
+  --color-syntax-section: #8ab4f8;
+  --color-syntax-bullet: #a8c7fa;
+  --color-syntax-addition: #6fd48c;
+  --color-syntax-addition-bg: #0c1d14;
+  --color-syntax-deletion: #f2564d;
+  --color-syntax-deletion-bg: #1f0d0e;
+
+  --font-size-code: 13px;
+}

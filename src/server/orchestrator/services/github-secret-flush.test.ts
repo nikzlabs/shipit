@@ -4,10 +4,6 @@ import type { GitManager } from "../../shared/git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { AutoCommitResult } from "../../shared/git.js";
 
-// docs/213 — flushPendingTurnCommit must report `secretBlocked` so the
-// agent-driven PR path can abort instead of silently pushing the prior (stale)
-// branch state when the just-made edit was refused for a secret.
-
 function fakeGit(result: AutoCommitResult): GitManager {
   return {
     getHeadHash: vi.fn(async () => "parent"),
@@ -43,30 +39,96 @@ describe("flushPendingTurnCommit — secret refusal", () => {
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
 
-    expect(res.secretBlocked).toBe(true);
-    expect(res.commitHash).toBeNull();
+    expect(res).toEqual({ kind: "blocked-secret" });
     expect(runner.emitMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: "system_notice", level: "warn" }),
     );
   });
 
-  it("returns secretBlocked=false on a normal commit", async () => {
+  it("reports a plain `committed` on a normal commit", async () => {
     const runner = fakeRunner();
     const git = fakeGit({ commitHash: "abc123", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null });
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
 
-    expect(res.secretBlocked).toBe(false);
-    expect(res.commitHash).toBe("abc123");
+    expect(res).toEqual({ kind: "committed", commitHash: "abc123" });
   });
 });
 
-/**
- * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — this flush ignored the `unreadable`
- * field entirely, so a `blocked` add returned the same null hash as "nothing to
- * commit" and the caller went on to push and open a PR without the work the
- * flush existed to include. Silently.
- */
+describe("flushPendingTurnCommit — the states the booleans could not carry", () => {
+  it("distinguishes an unresolved conflict from a clean tree", async () => {
+    const runner = fakeRunner();
+    const conflicted = await flushPendingTurnCommit(
+      fakeGit({
+        commitHash: null,
+        conflictedFiles: ["src/a.ts"],
+        rebaseInProgress: false,
+        secretFindings: [],
+        unreadable: null,
+      }),
+      { sessionId: "s1", runnerRegistry: registryFor(runner) },
+    );
+    expect(conflicted).toEqual({
+      kind: "blocked-conflict",
+      conflictedFiles: ["src/a.ts"],
+      rebaseInProgress: false,
+    });
+
+    const clean = await flushPendingTurnCommit(
+      fakeGit({
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
+      }),
+      { sessionId: "s1", runnerRegistry: registryFor(runner) },
+    );
+    expect(clean).toEqual({ kind: "nothing-to-commit" });
+  });
+
+  it("reports a mid-rebase tree as blocked even with no unmerged paths", async () => {
+    const runner = fakeRunner();
+    const res = await flushPendingTurnCommit(
+      fakeGit({
+        commitHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: true,
+        secretFindings: [],
+        unreadable: null,
+      }),
+      { sessionId: "s1", runnerRegistry: registryFor(runner) },
+    );
+    expect(res.kind).toBe("blocked-conflict");
+  });
+
+  it("reports a commit that omitted an unreadable path as partial, not committed", async () => {
+    const runner = fakeRunner();
+    const res = await flushPendingTurnCommit(
+      fakeGit({
+        commitHash: "abc123",
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+        unreadable: { kind: "omitted", detail: "pgdata/" },
+      }),
+      { sessionId: "s1", runnerRegistry: registryFor(runner) },
+    );
+    expect(res).toEqual({ kind: "partial-unreadable", commitHash: "abc123" });
+  });
+
+  it("reports a `clean` tree whose only changes were unreadable as partial", async () => {
+    const runner = fakeRunner();
+    const res = await flushPendingTurnCommit(
+      fakeGit({
+        commitHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+        unreadable: { kind: "omitted", detail: "pgdata/" },
+      }),
+      { sessionId: "s1", runnerRegistry: registryFor(runner) },
+    );
+    expect(res).toEqual({ kind: "partial-unreadable", commitHash: null });
+  });
+});
+
 describe("flushPendingTurnCommit — unreadable workspace content", () => {
   it("warns that nothing was committed when a file could not be read", async () => {
     const runner = fakeRunner();
@@ -80,16 +142,13 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
 
-    expect(res.commitHash).toBeNull();
+    expect(res.kind).toBe("blocked-unreadable");
     const notices = runner.emitMessage.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
     expect(notices).toContain("server.key");
     expect(notices).toContain("NOT committed");
   });
 
-  it("reports `unreadableBlocked` so the PR path can abort, like the secret one", async () => {
-    // The caller-facing half. `commitHash: null` alone cannot carry this: it is
-    // also the ordinary "nothing to commit" answer, and aborting on that would
-    // refuse every PR opened on an already-clean tree.
+  it("reports `blocked-unreadable` so the PR path can abort, like the secret one", async () => {
     const runner = fakeRunner();
     const blocked = await flushPendingTurnCommit(
       fakeGit({
@@ -101,7 +160,7 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
-    expect(blocked.unreadableBlocked).toBe(true);
+    expect(blocked.kind).toBe("blocked-unreadable");
 
     const nothingToCommit = await flushPendingTurnCommit(
       fakeGit({
@@ -109,13 +168,10 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
-    expect(nothingToCommit.unreadableBlocked).toBe(false);
+    expect(nothingToCommit.kind).toBe("nothing-to-commit");
   });
 
   it("persists the notice when there is no runner to emit through", async () => {
-    // A consult landing after its parent turn can find no runner. The runner is
-    // the live transport, not the record — and "your work is not on the branch"
-    // is exactly the fact that has to survive to the transcript.
     const appended: { sessionId: string; text: unknown }[] = [];
     const chatHistory = {
       append: (sessionId: string, message: { text?: string }) => {
@@ -154,8 +210,7 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
 
-    // The commit still lands — the notice is about what is missing FROM it.
-    expect(res.commitHash).toBe("abc123");
+    expect(res).toEqual({ kind: "partial-unreadable", commitHash: "abc123" });
     const notices = runner.emitMessage.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
     expect(notices).toContain("pgdata/");
     expect(notices).toContain("short");

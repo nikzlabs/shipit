@@ -1,21 +1,4 @@
-/**
- * SubagentCall — renders a Task tool invocation as a collapsible nested
- * message group showing the subagent's prompt, work timeline, and final
- * report. Replaces the legacy opaque "Task: <description>" line so users
- * can see what their subagents are actually doing. (109 — subagent
- * transparency)
- *
- * Disclosure layers:
- *   1. Header (always visible): description + status indicator
- *   2. Prompt (collapsed; click to expand): the prompt sent to the subagent.
- *      The transcript carries only its character count — a subagent prompt is
- *      routinely kilobytes and is behind a click, so docs/244's projection drops
- *      it and expanding fetches it (planning#298).
- *   3. Subagent's work (collapsed; click to expand): nested tool calls in
- *      order, with a live action count on the toggle
- *   4. Final report (always visible when present): the markdown the
- *      subagent returned to the parent agent
- */
+
 
 import { useState } from "react";
 import { CaretRightIcon, RobotIcon, CheckCircleIcon, WarningCircleIcon, ClockIcon } from "@phosphor-icons/react";
@@ -34,13 +17,13 @@ import {
 import type { ToolUseBlock, ToolResultBlock, SubagentEvent } from "./MessageList.js";
 
 interface SubagentCallProps {
-  /** The Task tool's tool_use block (carries the description and prompt). */
+
   tool: ToolUseBlock;
-  /** All subagent events from the parent message (filtered internally by tool.id). */
+
   subagentEvents?: SubagentEvent[];
-  /** Tool results from the parent message — used to find the final report. */
+
   parentToolResults?: ToolResultBlock[];
-  /** True while the parent assistant message is still streaming. */
+
   isStreaming: boolean;
 }
 
@@ -49,37 +32,24 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
   const prompt = typeof tool.input.prompt === "string" ? tool.input.prompt : "";
   const subagentType = typeof tool.input.subagent_type === "string" ? tool.input.subagent_type : "";
 
-  // Find this Task's nested events and final report. groupEventsByParent
-  // handles filtering by parentToolUseId for us.
   const grouped = groupEventsByParent(subagentEvents);
   const tree = grouped.get(tool.id);
   const steps: SubagentStep[] = tree?.steps ?? [];
   const finalReport = findSubagentFinalReport(tool.id, parentToolResults);
-  // req 1/2 — a `run_in_background` Task's "result" is the CLI's launch
-  // acknowledgement, so the subagent has NOT finished. The badge has to know,
+
   // because a result block arriving is otherwise the whole definition of done.
   const backgrounded = !!finalReport
     && !finalReport.isError
     && isBackgroundLaunchAck(parseSubagentReport(finalReport.content).text);
 
   const [promptExpanded, setPromptExpanded] = useState(false);
-  // docs/244 — the prompt may have been dropped on the serve path, leaving only
-  // its length behind. The toggle's label is drawn from that length so the
-  // header is identical either way; the body arrives when the user expands.
+
   const promptChars = typeof tool.inputChars?.prompt === "number" ? tool.inputChars.prompt : prompt.length;
   const promptDeferred = !prompt && promptChars > 0;
   const lazyPrompt = useLazyToolInput(tool.id, promptExpanded && promptDeferred);
   const fetchedPrompt = typeof lazyPrompt.input?.prompt === "string" ? lazyPrompt.input.prompt : "";
   const promptBody = prompt || fetchedPrompt;
-  // "Work" is collapsed by default — while streaming AND after the final
-  // report arrives. A subagent's timeline is long and mostly uninteresting to
-  // the reader (it's the *parent's* conversation they're following), and two
-  // or three concurrent subagents expanded at once bury the main transcript.
-  // The toggle carries a live action count, so the collapsed state still
-  // shows that something is happening; the caret opens it on demand. Earlier
-  // revisions defaulted to expanded (and before that, auto-collapsed on the
-  // final report) — both traded the transcript's readability for detail
-  // nobody had asked to see yet.
+
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
   const workExpanded = userOverride ?? false;
 
@@ -153,7 +123,6 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
   );
 }
 
-/** Compact disclosure caret + label + slot for content. */
 function Disclosure({
   label,
   open,
@@ -186,7 +155,6 @@ function Disclosure({
   );
 }
 
-/** Status indicator on the header — spinner / check / error / background. */
 function StatusBadge({
   inProgress,
   isError,
@@ -198,9 +166,7 @@ function StatusBadge({
   hasReport: boolean;
   backgrounded: boolean;
 }) {
-  // req 2 — checked before `hasReport`, which is otherwise true here: the
-  // acknowledgement arrives as an ordinary tool result and used to stamp the
-  // card `done` while the subagent was still working.
+
   if (backgrounded) {
     return (
       <span data-testid="subagent-background" className="ml-auto flex items-center gap-1 text-xs text-(--color-warning)">
@@ -236,7 +202,6 @@ function StatusBadge({
   return null;
 }
 
-/** Render a single step in the subagent's work timeline. */
 function SubagentStepView({
   step,
   resultsByToolId,
@@ -249,8 +214,7 @@ function SubagentStepView({
   isStreaming: boolean;
 }) {
   if (step.kind === "tool_result") {
-    // Tool results render inline next to their tool calls (via resultsByToolId)
-    // — we don't show a standalone bubble for them.
+
     return null;
   }
   return (
@@ -274,7 +238,6 @@ function SubagentStepView({
   );
 }
 
-/** Build a map of toolUseId → result across all steps. */
 function collectToolResults(steps: SubagentStep[]): Map<string, ToolResultBlock> {
   const out = new Map<string, ToolResultBlock>();
   for (const step of steps) {
@@ -287,7 +250,6 @@ function collectToolResults(steps: SubagentStep[]): Map<string, ToolResultBlock>
   return out;
 }
 
-/** Count the user-visible actions (assistant text or tool calls) in the timeline. */
 function countSteps(steps: SubagentStep[]): number {
   let n = 0;
   for (const s of steps) {

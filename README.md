@@ -14,11 +14,6 @@
   <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
 
-<!-- TODO: 60-second demo video / live demo link. Installing means building Docker images, so a video
-     lets people evaluate ShipIt before they spend that. Host it
-     (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
-     or a clickable thumbnail right under the hero image. -->
-
 ShipIt is a browser-based, chat-driven IDE for running coding agents through your
 **real engineering loop**.
 
@@ -28,11 +23,17 @@ ShipIt is a browser-based, chat-driven IDE for running coding agents through you
   stack, so the agent can build, run, and fix before you preview and merge.
 - **Bring your own agent** — on the subscription or API key you already have (Anthropic, OpenAI,
   DeepSeek, OpenRouter, etc.).
-  - Supported harnesses: Claude Code, Codex, OpenCode, and Grok Build.
+  - Supported harnesses: Claude Code, Codex, OpenCode, Grok Build, and Antigravity.
 - **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving
   ShipIt.
 - **Runs on Linux, macOS, and Windows (WSL2)** — in isolated Docker containers.
 - **Ship from your phone** — mobile-first, with voice.
+
+**Everything it can do, in detail:**
+[`src/server/shipit-docs/wiki/`](src/server/shipit-docs/wiki/README.md) — a
+feature-by-feature reference written for an agent to answer from, and shipped
+inside every session. Ask the agent you're already talking to instead of reading
+it.
 
 ## Quickstart
 

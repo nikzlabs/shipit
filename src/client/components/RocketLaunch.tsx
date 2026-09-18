@@ -1,9 +1,4 @@
-/**
- * RocketLaunch — animated empty-state for new sessions.
- *
- * The rocket sits at the bottom (just above the input bar), fires ignite
- * sideways first, then it smoothly accelerates upward and off-screen.
- */
+
 
 export function RocketLaunch() {
   return (

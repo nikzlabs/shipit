@@ -2,9 +2,11 @@ import { describe, it, expect } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 import { AgentStatusBar } from "./AgentStatusBar.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 afterEach(() => {
   cleanup();
+  useSessionStore.setState({ compacting: false });
 });
 
 describe("AgentStatusBar", () => {
@@ -18,9 +20,15 @@ describe("AgentStatusBar", () => {
     expect(screen.getByText("Editing src/foo.ts")).toBeInTheDocument();
   });
 
-  it("renders a spinning icon", () => {
+  it("says the compaction instead of the activity while one runs (docs/178)", () => {
+    useSessionStore.setState({ compacting: true });
+    render(<AgentStatusBar activity={{ label: "Thinking..." }} />);
+    expect(screen.getByText("Compacting context...")).toBeInTheDocument();
+    expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
+  });
+
+  it("renders a spinner", () => {
     const { container } = render(<AgentStatusBar />);
-    const spinner = container.querySelector(".animate-spin");
-    expect(spinner).toBeInTheDocument();
+    expect(container.querySelector(".spinner")).toBeInTheDocument();
   });
 });

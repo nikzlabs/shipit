@@ -7,11 +7,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/**
- * Reproduces the insecure-context environment: `crypto` exists, but the
- * secure-context-only `randomUUID` does not. This is exactly what a browser
- * hands a page served over plain HTTP from a non-localhost origin.
- */
 function stubInsecureContextCrypto(): void {
   vi.stubGlobal("crypto", {
     getRandomValues: <T extends ArrayBufferView>(arr: T): T => {

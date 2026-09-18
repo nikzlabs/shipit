@@ -1,19 +1,3 @@
-/**
- * planning#333 — a programmatic message continues on the SAME fresh base a typed
- * message would.
- *
- * docs/218 wired the merged-branch auto-reset into the interactive path only,
- * on the reasoning that a destructive reset underneath an automated message
- * would surprise. The Agent Interface SDK (docs/242) made that boundary wrong:
- * a click inside a page the agent built is the user continuing the session, it
- * arrives as a dispatch, and the turn ran on a branch still sitting on
- * already-merged commits — no reset, no prefix, and no "Branch updated" card.
- *
- * These drive the REAL `SessionRunner.dispatch` → `runDispatchedTurn` path with
- * a stubbed hook, so what is under test is the wiring: called once per message,
- * prefix in front of the prompt the agent actually runs, and the transcript
- * record delivered on both the healthy and the dying turn.
- */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunner } from "./session-runner.js";
 import type { AgentId } from "../shared/types.js";
@@ -29,7 +13,6 @@ function makeRunner(): SessionRunner {
   return new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
 }
 
-/** A stub hook that records its calls and reports both delivery triggers. */
 function makeResetHook(over: Partial<PreTurnResetHookResult> = {}): {
   hook: (runner: unknown, sessionId: string, sessionDir: string) => Promise<PreTurnResetHookResult>;
   calls: { sessionId: string; sessionDir: string }[];
@@ -62,7 +45,6 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
     const { deps } = makeDispatchTurnDeps(agents, []);
     const { hook, calls } = makeResetHook();
     deps.preTurnReset = hook;
-    // The prompt the agent runs is whatever the adapter hands `buildRunParams`.
     let promptSeen = "";
     deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
       promptSeen = prompt;
@@ -93,16 +75,12 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
     runner.dispatch(testDispatch({ text: "keep going" }));
     await flushTurn();
 
-    // Both triggers run (anchor during the turn, `ensureRecorded` in the
-    // `finally`); the real hook latches, so this asserts the wiring calls both
-    // rather than that either is skipped.
+    // The real hook deduplicates delivery; this stub checks both triggers.
     expect(delivered).toContain("anchor");
     expect(delivered).toContain("ensure");
   });
 
   it("still delivers the record when the turn dies during setup", async () => {
-    // The card is the only durable evidence a destructive reset happened, so a
-    // turn that never reaches the user row must not swallow it.
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
     const { hook, delivered } = makeResetHook();
@@ -127,20 +105,14 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
     runner.setSystemTurnDeps(deps);
     runner.dispatch(testDispatch({ text: "keep going" }));
     await flushTurn();
-    // Exit with no result → the adapter retries once inside the same dispatch.
     agents[0]?.emit("done", 0);
     await flushTurn();
 
-    expect(agents.length).toBeGreaterThan(1); // the retry did happen
+    expect(agents.length).toBeGreaterThan(1);
     expect(calls).toHaveLength(1);
   });
 
   it("skips a `postTurn: \"none\"` turn — a step inside the driver's own git operation", async () => {
-    // docs/146's rebase-conflict resolution turn. No reset could fire (the gate
-    // refuses a conflicted tree), but the planning#297 skip machinery would still
-    // persist "this branch still sits on the already-merged commits" and tell
-    // the agent to consider `shipit branch reset-to-base` — while its actual job
-    // is to edit the conflicted files and let the driver `rebase --continue`.
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
     const { hook, calls } = makeResetHook();
@@ -178,18 +150,6 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
   });
 });
 
-/**
- * docs/221 / nikzlabs/shipit#2349 — the parked "your working tree was rewritten"
- * notice reaches a DISPATCHED turn too.
- *
- * docs/221 consumed it in `agent-execution.ts` alone and described it as drained
- * by "the next interactive turn". A message sent while a sync is still settling
- * is queued (the flow holds `systemTurnInProgress` through its own teardown) and
- * `releaseQueuedTurn` releases every queued entry, interactive ones included,
- * onto `runner.dispatch` — so the turn most likely to need the notice was the
- * one that could never get it. Found because the #2349 LFS restore widened that
- * window enough to make the drop deterministic in an integration test.
- */
 describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#2349)", () => {
   let runner: SessionRunner;
   afterEach(() => { runner?.dispose({ force: true }); vi.restoreAllMocks(); });
@@ -204,7 +164,7 @@ describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#
     deps.consumePendingAgentNotice = (sessionId) => {
       consumed.push(sessionId);
       const value = remaining;
-      remaining = undefined; // read-and-clear, like the real transactional consume
+      remaining = undefined;
       return value;
     };
     let promptSeen = "";
@@ -245,9 +205,6 @@ describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#
   });
 
   it("does NOT consume it for a rebase-resolution turn (postTurn: none)", async () => {
-    // That turn is a step INSIDE the git operation that produced the notice.
-    // Handing it "your branch was rebased" would both misdirect it and burn the
-    // notice the user's next real turn is owed.
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
     const consumed: string[] = [];
@@ -268,10 +225,6 @@ describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#
   });
 
   it("puts the notice BACK when the turn dies before the agent sees it", async () => {
-    // The consume is read-and-clear, so without this a spawn failure burns the
-    // only warning that the tree was rewritten: the branch stays rewritten and
-    // nothing ever says so again. Same hazard docs/218 solved for its card with
-    // `ensureRecorded`.
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
     deps.consumePendingAgentNotice = () => NOTICE;
@@ -288,9 +241,6 @@ describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#
   });
 
   it("does NOT put it back once the agent has the prompt", async () => {
-    // A turn that failed AFTER being handed the notice was told; re-parking there
-    // would re-deliver a sync the agent already heard about, which is exactly
-    // what read-and-clear exists to prevent.
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
     deps.consumePendingAgentNotice = () => NOTICE;
@@ -338,12 +288,6 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
     issueUrl: "https://github.com/nikzlabs/shipit/issues/1234",
   }];
 
-  /**
-   * An SDK click and a `shipit session message` are the user speaking, so a
-   * session driven entirely programmatically must be told the outcome too —
-   * otherwise it sits pending forever, despite the tool description promising
-   * unconditionally that the agent will be told.
-   */
   it("prefixes the prompt with the outcome and consumes it exactly once", async () => {
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
@@ -352,7 +296,7 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
     deps.consumeBugOutcomes = (sessionId) => {
       consumed.push(sessionId);
       const value = remaining;
-      remaining = []; // read-and-mark, like the real transactional consume
+      remaining = [];
       return value;
     };
     let promptSeen = "";
@@ -384,8 +328,6 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
 
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    // A CI fix / merge wake must neither be handed the status line nor burn the
-    // outcome the user's own next turn is owed.
     runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
     await flushTurn();
 

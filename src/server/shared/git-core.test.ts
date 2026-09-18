@@ -23,16 +23,12 @@ describe("GitManager: init & autoCommit", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // ---- init ----
-
   it("initializes a new git repo with an initial commit", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
 
-    // Should have created a .git directory
     expect(fs.existsSync(path.join(tmpDir, ".git"))).toBe(true);
 
-    // Should have one commit
     const log = await git.log();
     expect(log).toHaveLength(1);
     expect(log[0].message).toBe("Initial commit");
@@ -43,13 +39,10 @@ describe("GitManager: init & autoCommit", () => {
     await git.init();
     const log1 = await git.log();
 
-    // Re-init should not create another commit
     await git.init();
     const log2 = await git.log();
     expect(log2).toHaveLength(log1.length);
   });
-
-  // ---- autoCommit ----
 
   it("commits new files with the given summary", async () => {
     const git = new GitManager(tmpDir);
@@ -118,14 +111,6 @@ describe("GitManager: init & autoCommit", () => {
     expect(log[0].message).toBe("Claude turn");
   });
 
-  // ---- unresolved git conflict state ----
-
-  /**
-   * Set up a real merge conflict on `file.txt`: main has "main 2", feature
-   * has "feature 1", both descend from a common ancestor. After calling
-   * `git merge feature`, git leaves the working tree in an unmerged state
-   * with the standard `<<<<<<< / ======= / >>>>>>>` markers in the file.
-   */
   async function createMergeConflict(): Promise<GitManager> {
     const git = new GitManager(tmpDir);
     await git.init();
@@ -159,7 +144,6 @@ describe("GitManager: init & autoCommit", () => {
     expect(result.commitHash).toBeNull();
     expect(result.conflictedFiles).toEqual(["file.txt"]);
     expect(result.rebaseInProgress).toBe(false);
-    // HEAD must not have advanced — no commit was created.
     expect(await git.getHeadHash()).toBe(headBeforeAutoCommit);
   });
 
@@ -180,7 +164,6 @@ describe("GitManager: init & autoCommit", () => {
     await git.autoCommit("main");
 
     await sg.checkout("feature");
-    // Rebase will conflict; GitManager.rebase() leaves the rebase in progress.
     const rebaseResult = await git.rebase("main");
     expect(rebaseResult.status).toBe("conflicts");
     expect(await git.isRebaseInProgress()).toBe(true);
@@ -195,10 +178,6 @@ describe("GitManager: init & autoCommit", () => {
   });
 
   it("commits files that contain marker-shaped text when git reports no conflict", async () => {
-    // ShipIt's own test suite + docs reference the literal marker strings
-    // (`<<<<<<<`, `=======`, `>>>>>>>`). Those edits must still get
-    // committed — we trust git's `status.conflicted` instead of scanning
-    // file contents.
     const git = new GitManager(tmpDir);
     await git.init();
 
@@ -221,8 +200,6 @@ describe("GitManager: init & autoCommit", () => {
     expect(result.rebaseInProgress).toBe(false);
   });
 
-  // ---- docs/198 — pnpm relocated store excluded from git ----
-
   function readExclude(): string {
     return fs.readFileSync(path.join(tmpDir, ".git", "info", "exclude"), "utf-8");
   }
@@ -237,15 +214,12 @@ describe("GitManager: init & autoCommit", () => {
     const occurrences1 = after1.split("\n").filter((l) => l.trim() === ".pnpm-store/").length;
     expect(occurrences1).toBe(1);
 
-    // Second call must not append a duplicate.
     ensurePnpmStoreGitExcluded(tmpDir);
     const after2 = readExclude();
     const occurrences2 = after2.split("\n").filter((l) => l.trim() === ".pnpm-store/").length;
     expect(occurrences2).toBe(1);
   });
 
-  // docs/262 — a plugin's materialized skills use the same mechanism, so the
-  // generalized helper must add each pattern once and never re-add one.
   it("ensureGitExcluded appends only the entries that are missing", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
@@ -259,9 +233,6 @@ describe("GitManager: init & autoCommit", () => {
     }
   });
 
-  // docs/262 — the managed block is rewritten as a plugin declaration changes.
-  // Losing a user's own ignore rule here is the worst outcome available: a rule
-  // that was keeping a secret out of a commit would stop doing so.
   describe("ensureGitExcludedBlock", () => {
     const BLOCK = "shipit plugin skills";
 
@@ -295,9 +266,6 @@ describe("GitManager: init & autoCommit", () => {
     });
 
     it("does not swallow user lines after an orphaned BEGIN marker", async () => {
-      // An interrupted write can leave a BEGIN with no END. Searching the whole
-      // file for an END then treated everything up to the NEXT run's END as
-      // managed — deleting the user's rules in between.
       await new GitManager(tmpDir).init();
       const excludePath = path.join(tmpDir, ".git", "info", "exclude");
       fs.writeFileSync(
@@ -317,7 +285,6 @@ describe("GitManager: init & autoCommit", () => {
   it("ensurePnpmStoreGitExcluded is best-effort on a missing .git (no throw)", () => {
     const noRepo = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-no-repo-"));
     try {
-      // No .git dir — must not throw; creates info/exclude under the (new) .git path.
       expect(() => ensurePnpmStoreGitExcluded(noRepo)).not.toThrow();
     } finally {
       fs.rmSync(noRepo, { recursive: true, force: true });
@@ -328,18 +295,14 @@ describe("GitManager: init & autoCommit", () => {
     const git = new GitManager(tmpDir);
     await git.init();
 
-    // Simulate pnpm 11 relocating its content-addressable store into the workspace
-    // root (the mountpoint), exactly as it does inside a session container.
     const storeDir = path.join(tmpDir, ".pnpm-store", "v11");
     fs.mkdirSync(storeDir, { recursive: true });
     fs.writeFileSync(path.join(storeDir, "index.db"), "binary-ish store internals");
-    // A real, intended change alongside it.
     fs.writeFileSync(path.join(tmpDir, "src.txt"), "real change");
 
     const result = await git.autoCommit("turn with pnpm install");
     expect(result.commitHash).toBeTruthy();
 
-    // The committed tree must contain src.txt but NOT anything under .pnpm-store.
     const tracked = await simpleGit(tmpDir).raw(["ls-files"]);
     expect(tracked).toContain("src.txt");
     expect(tracked).not.toContain(".pnpm-store");

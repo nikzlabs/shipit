@@ -35,6 +35,15 @@ automatically as you edit files.
 
 ## Keeping a preview running
 
+A preview does **not** stop just because its session went idle. ShipIt keeps
+idle previews running while it is inside its memory budget, and when it has to
+reclaim, an idle session gives up its agent container first and its preview only
+if that was not enough. So an ordinary session's preview normally survives idle
+periods on its own.
+
+**Keep preview running** is the stronger, explicit guarantee: a reserved session
+is exempt from reclaim entirely, including under memory pressure.
+
 The session overflow menu has a checked **Keep preview running** action. Enabling
 it immediately activates the ordinary session runtime and the same `auto`
 Compose-service reconciliation described above. The reservation survives idle
@@ -126,7 +135,7 @@ migrate against, a cache to flush, an emulator to drive. Don't tell the user to
 click Start:
 
 ```bash
-shipit service list           # what exists, what's running, each service's url
+shipit service list
 shipit service start db
 shipit service logs db --lines 200
 ```
@@ -152,7 +161,7 @@ services:
     command: npm run dev -- --host 0.0.0.0 --port 3000
     ports: ["3000:3000"]
     x-shipit-preview: auto
-    x-shipit-depends-on-install: true   # default for auto — gate on install
+    x-shipit-depends-on-install: true
 ```
 
 Set it to `false` only when a preview service genuinely does not depend on
@@ -213,6 +222,27 @@ services:
 ShipIt patches dev-server WebSocket URLs so HMR works through the reverse
 proxy. No configuration needed — Vite, Next.js, and other frameworks work
 out of the box.
+
+## Renderer isolation — `Origin-Agent-Cluster` is ShipIt's to set
+
+Every preview response carries **`Origin-Agent-Cluster: ?1`**, replacing
+whatever your app sent. Preview origins are all subdomains of one domain, and
+browsers group same-site documents into a single renderer process — so without
+this header every open session's preview shares one main thread and one budget
+of 16 WebGL contexts, and the oldest contexts get force-lost. A user with a 3D
+or canvas app sees a blank canvas, caused by sessions they aren't even looking
+at. Because the damage lands in a *different* session from the app that caused
+it, this is not a per-app choice.
+
+Two consequences for your app, both narrow: `document.domain` relaxation does
+not work (it is off by default in current browsers anyway), and a
+`SharedArrayBuffer` or `WebAssembly.Module` cannot be passed between two
+*different* preview origins. Frames on the same origin are unaffected.
+
+One thing you can still break: if a **service worker** answers a navigation
+from cache without reaching ShipIt's proxy, that response carries no header,
+and the first document an origin serves is what fixes its process keying. A
+cache-first preview can therefore opt itself out by accident.
 
 ## Restart triggers
 

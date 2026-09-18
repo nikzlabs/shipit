@@ -36,9 +36,6 @@ describe("Integration: Interrupt and Redirect", () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-interrupt-"));
 
-    // Session workspaces inherit `user.name` / `user.email` from this global
-    // config — without it, the post-interrupt commit fallback's `git commit`
-    // fails the "Please tell me who you are" check.
     initGlobalGitConfig(path.join(tmpDir, "credentials"));
     setGitIdentity("Test User", "test@example.com");
 
@@ -77,19 +74,16 @@ describe("Integration: Interrupt and Redirect", () => {
 
   it("sends agent_interrupted when interrupting an active agent process", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start a Claude process
     client.send({ type: "send_message", text: "do something" });
     await waitForClaude(() => lastClaude);
 
-    // Send interrupt
     client.send({ type: "interrupt_agent" });
 
     const interrupted = await client.receiveType("agent_interrupted");
     expect(interrupted).toMatchObject({ type: "agent_interrupted" });
 
-    // The FakeClaudeProcess should have been interrupted
     expect(lastClaude.interrupted).toBe(true);
 
     client.close();
@@ -97,9 +91,8 @@ describe("Integration: Interrupt and Redirect", () => {
 
   it("returns error when interrupting with no active process", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Send interrupt with no active process
     client.send({ type: "interrupt_agent" });
 
     const response = await client.receiveType("error");
@@ -110,23 +103,18 @@ describe("Integration: Interrupt and Redirect", () => {
 
   it("does not send spurious error after interrupt", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start a Claude process
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Send interrupt — this triggers agent_interrupted immediately,
-    // and FakeClaudeProcess.interrupt() emits "done" with code 1 after 10ms.
     client.send({ type: "interrupt_agent" });
 
     const interrupted = await client.receiveType("agent_interrupted");
     expect(interrupted).toMatchObject({ type: "agent_interrupted" });
 
-    // Wait for the process to finish (FakeClaudeProcess emits done after 10ms)
     await new Promise((r) => setTimeout(r, 200));
 
-    // Collect any remaining non-log messages
     const remaining: WsServerMessage[] = [];
     try {
       while (true) {
@@ -137,7 +125,6 @@ describe("Integration: Interrupt and Redirect", () => {
       // Expected timeout — no more messages
     }
 
-    // There should be no "error" message about process exit
     const errors = remaining.filter((m) => m.type === "error");
     expect(errors).toHaveLength(0);
 
@@ -146,26 +133,21 @@ describe("Integration: Interrupt and Redirect", () => {
 
   it("clears message queue on interrupt", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start a Claude process
     client.send({ type: "send_message", text: "first message" });
     await waitForClaude(() => lastClaude);
 
-    // Queue a second message while Claude is busy
     client.send({ type: "send_message", text: "queued message" });
     const queued = await client.receiveType("message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "queued message" });
 
-    // Interrupt — should clear the queue
     client.send({ type: "interrupt_agent" });
 
     await client.receiveType("agent_interrupted");
 
-    // Wait for done handler to fire and clear queue
     await new Promise((r) => setTimeout(r, 200));
 
-    // Should receive queue_updated with empty queue
     const remaining: WsServerMessage[] = [];
     try {
       while (true) {
@@ -186,10 +168,8 @@ describe("Integration: Interrupt and Redirect", () => {
 
   it("commits partial work after interrupt (deferred fallback)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Resolve the session's workspace dir so we can plant a file the
-    // post-interrupt commit fallback should pick up.
     const session = sessionManager.get(client.sessionId);
     expect(session?.workspaceDir).toBeTruthy();
     const sessionDir = session!.workspaceDir!;
@@ -197,7 +177,6 @@ describe("Integration: Interrupt and Redirect", () => {
     client.send({ type: "send_message", text: "edit a file" });
     await waitForClaude(() => lastClaude);
 
-    // Establish the session so the post-turn flow has the agent's session_id.
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
@@ -205,17 +184,11 @@ describe("Integration: Interrupt and Redirect", () => {
     });
     await client.receiveType("session_started");
 
-    // Simulate the agent writing a file partway through the turn — this is
-    // exactly the partial work that used to be lost on interrupt in streaming
-    // mode.
     fs.writeFileSync(path.join(sessionDir, "partial-work.txt"), "in progress");
 
-    // Interrupt before the agent emits agent_result.
     client.send({ type: "interrupt_agent" });
     await client.receiveType("agent_interrupted");
 
-    // The fallback fires after INTERRUPT_COMMIT_FALLBACK_DELAY_MS (2s); allow
-    // a generous wait for the deferred commit to land.
     const committed = await client.receiveType("git_committed", 5000);
     expect((committed as { hash?: string }).hash).toBeTruthy();
     expect((committed as { message?: string }).message).toBeTruthy();
@@ -224,15 +197,8 @@ describe("Integration: Interrupt and Redirect", () => {
   });
 
   it("commits partial work when a STREAMING interrupt leaves the process resident", async () => {
-    // The case the fallback actually exists for. The test above lets
-    // FakeClaudeProcess exit on interrupt, so `done` fires and the abnormal-exit
-    // path in turn-executor commits within ~10ms — the 2s fallback never
-    // matters. Under live steering the CLI does NOT exit on a control_request
-    // interrupt and may never emit a `result` for the aborted turn, so NEITHER
-    // `agent_result` nor `done` runs and `scheduleInterruptCommit` is the only
-    // thing that can commit the partial work.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const session = sessionManager.get(client.sessionId);
     const sessionDir = session!.workspaceDir!;
@@ -242,8 +208,7 @@ describe("Integration: Interrupt and Redirect", () => {
     claude.emit("event", { type: "system", subtype: "init", session_id: "streaming-interrupt" });
     await client.receiveType("session_started");
 
-    // Resident process: interrupt ends the turn but never exits, and the test
-    // deliberately never emits a `result`.
+    // Emit neither done nor result, leaving only the deferred commit fallback.
     claude.streamingInterrupt = true;
 
     fs.writeFileSync(path.join(sessionDir, "partial-work.txt"), "in progress");
@@ -253,30 +218,21 @@ describe("Integration: Interrupt and Redirect", () => {
 
     const committed = await client.receiveType("git_committed", 8000);
     expect((committed as { hash?: string }).hash).toBeTruthy();
-    // The process was never killed and never exited — only the fallback ran.
     expect(claude.killed).toBe(false);
     expect(
       fs.readFileSync(path.join(sessionDir, "partial-work.txt"), "utf8"),
     ).toBe("in progress");
 
     client.close();
-    // The fallback is deliberately deferred by 2s, so this one needs more than
-    // the 5s default.
   }, 20000);
 
   it("preserves the interrupted turn's assistant work in chat history", async () => {
-    // Regression: when the user interrupted mid-turn the agent exited without
-    // an `agent_result`, leaving in_progress=1 rows. The next turn's first
-    // replaceInProgress wiped them — so the work the user just SAW the agent
-    // do disappeared from the chat history on reload.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "design a new enemy" });
     const claude = await waitForClaude(() => lastClaude);
 
-    // Agent emits some progress (assistant text + a tool call) before the
-    // user interrupts. agent-listeners persists these as in_progress=1 rows.
     claude.emit("event", {
       type: "system",
       subtype: "init",
@@ -299,24 +255,18 @@ describe("Integration: Interrupt and Redirect", () => {
       },
     });
 
-    // Wait for the in-progress rows to settle.
     await new Promise((r) => setTimeout(r, 100));
 
-    // Interrupt — FakeClaudeProcess emits done(1) without agent_result.
     client.send({ type: "interrupt_agent" });
     await client.receiveType("agent_interrupted");
     await new Promise((r) => setTimeout(r, 200));
 
-    // Send a second message, which kicks off a new turn whose first
-    // replaceInProgress would have wiped the interrupted turn under the
-    // pre-fix behavior.
     client.send({ type: "send_message", text: "continue" });
     await waitForClaude(() => lastClaude, claude);
     await new Promise((r) => setTimeout(r, 50));
 
     const history = chatHistoryManager.load(client.sessionId);
     const assistantTexts = history.filter((m) => m.role === "assistant").map((m) => m.text);
-    // The interrupted turn's text must still be visible after the new turn began.
     expect(assistantTexts).toContain("I'll add a Bomber enemy.");
 
     client.close();
@@ -324,20 +274,16 @@ describe("Integration: Interrupt and Redirect", () => {
 
   it("allows sending a new message after interrupt (redirect)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start a Claude process
     client.send({ type: "send_message", text: "wrong approach" });
     const firstClaude = await waitForClaude(() => lastClaude);
 
-    // Interrupt
     client.send({ type: "interrupt_agent" });
     await client.receiveType("agent_interrupted");
 
-    // Wait for done handler to complete
     await new Promise((r) => setTimeout(r, 200));
 
-    // Drain any remaining messages before sending redirect
     try {
       while (true) {
         await client.receive(200);
@@ -346,15 +292,12 @@ describe("Integration: Interrupt and Redirect", () => {
       // Expected timeout
     }
 
-    // Now send a redirect message
     client.send({ type: "send_message", text: "try this instead" });
 
-    // A new Claude process should be created
     const secondClaude = await waitForClaude(() => lastClaude, firstClaude);
     expect(secondClaude).not.toBe(firstClaude);
     expect(secondClaude.runCalled).toBe(true);
 
-    // Clean up
     secondClaude.finish("redirect-session");
     client.close();
   });

@@ -4,8 +4,6 @@ import { FileContentView } from "./FileContentView.js";
 import { svgToMarkup } from "./RenderedFrame.js";
 import { AGENT_INTERFACE_SDK_MARKER } from "../../../server/shared/agent-interface-sdk/bootstrap.js";
 
-// Monaco uses dynamic import("monaco-editor") and won't run in jsdom — stub it
-// so the source/code views render their mount div.
 vi.mock("monaco-editor", () => ({
   editor: {
     create: () => ({
@@ -13,8 +11,6 @@ vi.mock("monaco-editor", () => ({
       onMouseDown: () => ({ dispose: vi.fn() }),
       onMouseMove: () => ({ dispose: vi.fn() }),
       onMouseLeave: () => ({ dispose: vi.fn() }),
-      // The comment widget keeps its cards sized to, and aligned with, the
-      // visible content area, so it subscribes to scroll and layout too.
       onDidScrollChange: () => ({ dispose: vi.fn() }),
       onDidLayoutChange: () => ({ dispose: vi.fn() }),
       getLayoutInfo: () => ({ contentWidth: 800 }),
@@ -87,6 +83,21 @@ describe("FileContentView dispatch", () => {
     expect(srcdoc).toContain("connect-src 'none'");
   });
 
+  it("keeps ShipIt pointers inert in a repo file, and live in a presented one (req 14)", () => {
+    const md = "See [run 1](shipit-preview://web/runs/1).";
+    render(<FileContentView {...base} filePath="docs/x.md" content={md} kind="markdown" viewMode="rendered" />);
+    // The file-preview dialog renders repository text, which ShipIt did not
+    // author — a pointer there could start a Compose service on click.
+    expect(screen.queryByRole("button", { name: "run 1" })).toBeNull();
+    expect(screen.getByText("run 1")).toBeInTheDocument();
+
+    cleanup();
+    render(
+      <FileContentView {...base} filePath="/persist/x.md" content={md} kind="markdown" viewMode="rendered" shipitLinks />,
+    );
+    expect(screen.getByRole("button", { name: "run 1" })).toBeInTheDocument();
+  });
+
   it("shows the Monaco mount when HTML is toggled to source", () => {
     render(
       <FileContentView {...base} filePath="m.html" content="<h1>Hi</h1>" kind="html" viewMode="source" />,
@@ -96,7 +107,6 @@ describe("FileContentView dispatch", () => {
   });
 
   it("decodes a base64 data-URI SVG into raw markup for the rendered frame", () => {
-    // "<svg></svg>" base64-encoded.
     const dataUri = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=";
     render(
       <FileContentView {...base} filePath="i.svg" content={dataUri} kind="svg" viewMode="rendered" />,

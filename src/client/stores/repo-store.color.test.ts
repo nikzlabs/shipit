@@ -16,7 +16,6 @@ const base: RepoInfo = { url, status: "ready", addedAt: now, lastUsedAt: now, co
 
 const colorOf = () => useRepoStore.getState().repos.find((r) => r.url === url)?.colorIndex;
 
-/** A fetch stub whose responses are resolved by hand, in any order. */
 function deferredFetch() {
   const pending: { colorIndex: number; settle: (ok: boolean) => void }[] = [];
   const stub = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -71,13 +70,6 @@ describe("setRepoColorIndex", () => {
     expect(colorOf()).toBe(0);
   });
 
-  /**
-   * The regression this guards: click 1, then 2. Request 2 succeeds and is the
-   * value the server now holds; request 1 then fails. An unconditional rollback
-   * would restore 0 — discarding a newer, server-confirmed colour — and the
-   * authoritative `repo_list` SSE has already been consumed, so nothing would
-   * correct it until the next reload.
-   */
   it("does not let a stale failure stomp a newer successful color", async () => {
     const f = deferredFetch();
     vi.stubGlobal("fetch", f.stub);
@@ -90,12 +82,11 @@ describe("setRepoColorIndex", () => {
     expect(colorOf()).toBe(2);
   });
 
-  // Same hazard, arriving from the server instead of from another click.
   it("does not stomp an authoritative repo_list update that landed first", async () => {
     const f = deferredFetch();
     vi.stubGlobal("fetch", f.stub);
     const p = useRepoStore.getState().setRepoColorIndex(url, 7);
-    // SSE broadcast re-sets the list while our PATCH is still in flight.
+
     useRepoStore.setState({ repos: [{ ...base, colorIndex: 12 }] });
     f.settle(7, false);
     await p;

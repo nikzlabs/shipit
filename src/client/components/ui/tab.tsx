@@ -1,18 +1,6 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 
-/**
- * Tab — a single tab button for the right-panel tab bar (Preview / Docs / …).
- *
- * Renders a Phosphor icon followed by a label, with an accent underline on the
- * active tab. The label hides when an ancestor `group/tabs` has
- * `data-collapsed="true"` — driven by `useTabLabelCollapse`, which measures
- * real overflow so a narrowed panel collapses to icon-only instead of
- * overflowing. The `aria-label`/`title` keep it accessible when collapsed.
- *
- * The `pr` tone recolors the active underline + icon with `--color-pr` so the
- * contextual PR tab reads as distinct from the persistent views.
- */
 const tabVariants = cva(
   "relative inline-flex items-center gap-1.5 h-full px-3 text-xs sm:text-sm font-medium border-b-2 transition-[color,border-color] duration-[var(--duration-fast)] whitespace-nowrap",
   {
@@ -38,11 +26,11 @@ const tabVariants = cva(
 export interface TabProps
   extends ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof tabVariants> {
-  /** Phosphor icon element rendered before the label. */
+
   icon: ReactNode;
-  /** Tab label; also the accessible name when collapsed to icon-only. */
+
   label: string;
-  /** Optional trailing badge (e.g. an unseen count). */
+
   badge?: ReactNode;
 }
 

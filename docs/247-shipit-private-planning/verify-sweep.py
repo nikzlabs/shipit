@@ -6,8 +6,6 @@ line must differ from its original ONLY where a Linear reference was replaced by
 its mapped `planning#M`. Blank the reference tokens out of both sides, and the
 remainders must be byte-identical.
 
-## What it does NOT prove — read this before trusting it
-
 **It cannot tell a pointer from text that teaches what a pointer looks like.**
 `(…/issue/SHI-28/redesign-the-auth-flow)` is an example of a Linear URL's *shape*;
 rewriting the key inside it produces `…/issue/planning#30/redesign-the-auth-flow`,
@@ -44,8 +42,7 @@ if len(set(mapping.values())) != len(mapping):
 
 MD_LINK = re.compile(r"\[([^\]]*)\]\((https://linear\.app/[^/\s]+/issue/(SHI-\d+)[^\s)]*)\)")
 # A markdown autolink `<https://…>` loses its angle brackets too, because
-# `<planning#166>` is not a valid autolink. Absorb them with the URL, or the
-# remainders differ by exactly those two characters.
+
 ANGLE = re.compile(r"<https://linear\.app/[^/\s]+/issue/(SHI-\d+)[^\s>]*>")
 URL = re.compile(r"""https://linear\.app/[^/\s]+/issue/(SHI-\d+)[^\s)"'`<>\],]*""")
 NAME = re.compile(r"(?<![A-Za-z0-9_])roadmap#(SHI-\d+)(?![A-Za-z0-9_])")
@@ -54,18 +51,15 @@ NEW = re.compile(r"(?<![A-Za-z0-9_])planning#(\d+)(?![A-Za-z0-9_])")
 TOK = "\x00REF\x00"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
 
-
 def blank_old(s):
     keys = []
     for pat, grp in ((MD_LINK, 3), (ANGLE, 1), (URL, 1), (NAME, 1), (KEY, 1)):
         s = pat.sub(lambda m: (keys.append(m.group(grp)), TOK)[1], s)
     return s, keys
 
-
 def blank_new(s):
     nums = []
     return NEW.sub(lambda m: (nums.append(int(m.group(1))), TOK)[1], s), nums
-
 
 proc = subprocess.run(
     ["git", "diff", "-U0", "--text", "--no-renames", BASE, "--", ".",

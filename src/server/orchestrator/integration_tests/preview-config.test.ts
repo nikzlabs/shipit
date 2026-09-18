@@ -1,12 +1,3 @@
-/**
- * Integration tests for preview config resolution and session switch cleanup.
- *
- * Tests the new WS message types:
- * - preview_config_missing: sent when no config found
- * - preview_config_error: sent when shipit.yaml is malformed
- * - clear_logs: broadcast during session switch
- */
-
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -71,30 +62,24 @@ describe("Integration: Preview config and session-switch cleanup", () => {
   });
 
   it("two sessions get independent preview state", async () => {
-    // Session A
     const clientA = await TestClient.connect(port);
-    await clientA.receive(); // initial preview_status
+    await clientA.receive();
 
-    // Start agent in session A
     clientA.send({ type: "send_message", text: "hello" });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
 
-    // Drain messages to settle
     try {
       while (true) await clientA.receive(200);
     } catch { /* done */ }
 
-    // Session B — new connection to a new session
     const clientB = await TestClient.connect(port);
-    await clientB.receive(); // initial preview_status
+    await clientB.receive();
 
-    // Start agent in session B
     clientB.send({ type: "send_message", text: "world" });
     const claude2 = await waitForClaude(() => lastClaude, claude1);
     claude2.finish();
 
-    // Drain all messages from session B
     try {
       while (true) await clientB.receive(200);
     } catch { /* done */ }
@@ -105,23 +90,19 @@ describe("Integration: Preview config and session-switch cleanup", () => {
 
   it("init_preview_config sends a message to Claude", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Create a session first
     client.send({ type: "send_message", text: "hello" });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.finish();
 
-    // Drain messages
     try {
       while (true) await client.receive(200);
     } catch { /* done */ }
 
-    // Send init_preview_config
     client.send({ type: "init_preview_config" });
     const claude2 = await waitForClaude(() => lastClaude, claude1);
 
-    // Claude should have been started with a prompt about shipit.yaml
     expect(claude2.runCalled).toBe(true);
     claude2.finish();
 

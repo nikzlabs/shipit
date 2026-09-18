@@ -34,7 +34,6 @@ describe("normalizeAskQuestions", () => {
         {
           question: "Pick a framework",
           header: "Framework",
-          // multiSelect omitted; options missing descriptions
           options: [{ label: "React" }, { label: "Vue" }],
         },
       ]),

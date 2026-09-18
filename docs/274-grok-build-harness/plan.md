@@ -270,11 +270,33 @@ session-title side-call rides every run (OpenCode-class cost noise); on
 
 ## Adapter design (`session/agents/grok/`, Claude-shaped)
 
-- Spawn per turn: `grok -p <prompt> --output-format streaming-messages-json
-  --always-approve --no-auto-update -m <modelId> [-s <newUuid> | -r
-  <resumeId>] --cwd <workspace>` (prompt as argv, spawn array, no shell).
-  ShipIt **pre-assigns** the session UUID via `-s` on first turn, resumes
-  with `-r` after.
+- Spawn per turn: `grok --prompt-file <file> --output-format
+  streaming-messages-json --always-approve --no-auto-update --trust -m
+  <modelId> [-s <newUuid> | -r <resumeId>] --cwd <workspace>` (spawn array, no
+  shell). The prompt travels as a FILE, never on argv — a long one blows the
+  128 KiB argv ceiling. ShipIt **pre-assigns** the session UUID via `-s` on
+  first turn, resumes with `-r` after.
+- **Folder trust (`--trust`)**: Grok gates a checkout's own project-local
+  surfaces on per-folder trust, and an untrusted folder skips them *silently* —
+  the repo's `.grok/hooks`, its repo-local MCP/LSP servers, and its project
+  permission rules from `.grok/config.toml` and the `.claude/settings.json`
+  compat layer. Skills are NOT gated, which is why ShipIt's plugin skills always
+  worked and the gap never showed as a symptom. Measured on the pinned 1.0.12:
+  `grok inspect` (its own "what did I discover here" command) reports
+  `Project trusted: no` in an untrusted workspace; `--trust` on a headless run
+  flips it to yes and records `[folders."<cwd>"] trusted = true` in
+  `$GROK_HOME/trusted_folders.toml`; and in a checkout carrying a
+  `.claude/settings.json`, `inspect` goes from `Permissions → Source: (none), 0
+  loaded` to naming that file with its rules loaded. Passed as a flag, not
+  written as a file, so the CLI owns the format; the per-turn spawn home is
+  discarded each turn, so re-granting on every spawn is both necessary and
+  self-healing. Same decision ShipIt takes for Claude
+  (`hasTrustDialogAccepted`) and Codex (`session/agents/codex/project-trust.ts`).
+  **The grant is wider than a quieter log**: `--always-approve` does not make
+  project policy inert (the repo's deny rules and hooks still apply, and under
+  `guarded` its allow rules change what gets classified), and upstream also
+  gates `.claude/settings*.json` environment injection on the same flag —
+  reported in review from upstream source, not reproduced against 1.0.12.
 - Env: `resolveAgentHome()` (`grokHome()` helper on `GROK_HOME` —
   relocation verified) → `scrubEnvAuthForScopedHome` → `applyServiceRouting`
   (order per `claude/process.ts`), plus `GROK_DISABLE_AUTOUPDATER=1`,
@@ -1146,6 +1168,24 @@ planning#449's fail-safe (an unorderable reader must not overwrite) is a
 separate guard on that path; it is not a substitute for the copy-back, and it
 did not cause this miss.
 
+**Where that quarantine goes when the shared root is itself disposable
+(planning#475).** `publishSpawnAuthBack` writes a refused rotation beside its
+destination as `<dest>.stranded-<ts>`, and `dest` is `$HOME/.grok/auth.json`.
+For an ordinary turn that is the durable session credentials mount. For a
+**same-harness sub-agent spawn** it is the isolated per-spawn home (docs/236 /
+`provisionSubAgentSpawnHome`), which `releaseSubAgentSpawnHome` deletes moments
+later — so the rescue landed in the one directory it could not survive, and the
+refusal is self-concealing besides: `auth.json` still holds the pre-rotation
+copy, so the orchestrator's own publish sees nothing to do and reports success.
+The orchestrator side now carries any `.stranded-` file out of a spawn home
+before removing it (`rescueAdapterQuarantines`, `token-sync-manager.ts`). The
+adapter keeps deciding *when* to quarantine — it cannot tell a throwaway home
+from a durable one, and the party that deletes the directory is the right one
+to empty it first — but the suffix is no longer its own private spelling: both
+sides now read `STRANDED_CREDENTIAL_MARKER` from `shared/fs-constants.ts`. Two
+independent literals in two processes is a contract that can be renamed on one
+side with both suites still green and the rescue deleted for real.
+
 **3. The old refresh token was still accepted ~4 minutes after rotation.**
 The sibling rotated the 06:46Z token at 13:19:08Z (new `refresh_token`
 sha256 `6a127259…`). This session, four minutes later, still held that
@@ -1274,15 +1314,103 @@ established. If subscription mode turns out to have real levels (planning#435),
 `--effort` becomes part of a complete Grok target with nothing further to
 change.
 
-## Exhaustion is the only spent-plan signal (req 16)
+## Exhaustion as a spent-plan signal (req 16)
 
-The `sub` mode declares `quota: null` — an explicit arm of `BillingModeDef`,
-not a fourth `QuotaIntegrationId` nothing implements. xAI publishes no
-per-account usage API (every candidate route 404s; probed with planning#435).
-The usage pill is therefore empty on purpose: an honest absence, not an
-invented indicator. For Claude and Codex the exhaustion classifier is a
-*second* signal beside a meter. For a SuperGrok subscription it is the
-**only** signal that the plan is spent.
+> **Superseded opening, kept because the reversal is the point.** This section
+> used to read "Exhaustion is the **only** spent-plan signal", on the premise
+> that `sub` declared `quota: null` and xAI published no usage API. planning#454
+> reversed both: `GET /v1/billing?format=credits` returns the weekly pool,
+> `xai:sub` declares `xai-plan-usage`, and `XaiLimitsProvider` reads it (see
+> "Quota: the empty pill, and the reader that turned out to exist" above). So
+> Grok is now like Claude and Codex — the classifier is a **second** signal
+> beside a meter, and a miss here no longer leaves the user with nothing.
+> The premise outlived its own correction by two phases; planning#453 was filed
+> against it and inherited the overstatement.
+
+### The channel was open and the adapter was not reading it (planning#453)
+
+Everything below about *matchers* stands. What did not stand is the sentence
+this section used to state as fact, and which the issue was reasoned from:
+
+> On an errored turn the adapter copies `raw.result` onto `error`.
+
+**It does not, because Grok does not put it there.** Probed 2026-08-23 against
+CLI 1.0.1 at a local HTTP recorder answering `429` on `POST /v1/responses` (no
+plan spent). The terminal event:
+
+```jsonc
+{"type":"result","subtype":"error_during_execution","is_error":true,
+ "duration_ms":120012,
+ "errors":["Out of credits: Your team has either used all available credits …"],
+ …}
+```
+
+`result` and `errors` are **disjoint per event**: a success carries `result`
+and no `errors`, an error carries `errors` and no `result`. Claude reuses one
+field for both and the adapter was written to that contract, so every errored
+Grok turn reported the placeholder `Grok ended the turn with subtype
+"error_during_execution"` — a string no pattern matches. Nothing had caught it
+because every vendored fixture is a successful tool tour: the test suite could
+not fail on it.
+
+So the pattern list was never the binding constraint. `Out of credits: …`
+already matches `EXHAUSTION_PATTERNS`' `/out of (?:quota|credits)/i`; the text
+simply never reached the classifier. The adapter now reads `errors[]`
+(`grokResultErrorText` in `stream.ts`), and the fatal
+`{"type":"error","message":…}` shape forwards its `message_text` onto the
+synthesized result instead of naming only the exit code. Capture vendored at
+`__fixtures__/rate-limited-429-grok-4.5.ndjson`.
+
+#### What the CLI does to the service's words, measured
+
+Six bodies through the same recorder, one variable each (2026-08-23, CLI
+1.0.1). The transform matters because it decides what the matcher sees:
+
+| Service response | `result.errors[0]` |
+|---|---|
+| `429` `{"code":"Out of credits","error":"…"}` | `Out of credits: …` |
+| `429` `{"error":"usage balance exhausted"}` | `usage balance exhausted` |
+| `429` `{"code":"usage limit reached","error":"You've reached your SuperGrok usage limit. It resets at …"}` | `usage limit reached: You've reached your SuperGrok usage limit. It resets at …` |
+| `429` `{"error":{"message":"usage limit reached","type":"rate_limit_error"}}` | `rate_limit_error: usage limit reached` |
+| `429` non-JSON body | `Request failed (HTTP 429).` — **the service's text is dropped** |
+| `402` `{"code":"spending limit","error":"…"}` | `Internal error: {"message":"API error (status 402 Payment Required): spending limit: …","http_status":402}` |
+
+Four things follow.
+
+**The vendor's wording reaches ShipIt verbatim** on any JSON body — the CLI
+joins `code`/`type` and `message`/`error` with `": "` and adds nothing. So a
+real SuperGrok notice will arrive as xAI wrote it, and the matcher is the only
+thing standing between it and a benched account.
+
+**A 429 is retried for ~120 s** before the CLI gives up (two attempts a minute
+apart, visible as `duration_ms: 120014` in every 429 row). A 402 fails in
+16 ms. A quota-refused Grok turn therefore takes two minutes to report.
+
+**A 429 does not carry its status in the message**, where other 4xx do
+(`http_status: 402`). So the non-JSON 429 degrades to `Request failed (HTTP
+429).`, which names no cause. Deliberately still unmatched: a bare 429 is also
+how short-term throttling arrives, and `EXHAUSTION_PATTERNS`' docstring
+excludes it for exactly that reason.
+
+**The channel question (planning#453 item 3) is now answered by probe, not by
+reading.** A Grok quota refusal arrives on the **error** channel: the CLI ends
+the turn `is_error: true` with no assistant text at all, so `turnSummary` is
+empty and `detectHardExhaustionInTurnText` is never reached. The anchored text
+matcher is not the one to widen for this harness.
+
+### `agent_rate_limits`: probed, and not available from this wire
+
+Grok emits no window telemetry, so the badge cannot be fed from the stream the
+way Claude's `rate_limit_event` and Codex's `account/rateLimits/updated` feed
+it. The terminal event carries cost and tokens; no percentage, no window
+length, no reset instant. Corroborated from the binary: the **only** reader of
+a `Retry-After` header anywhere in 1.0.1 is the GCS file uploader
+(`xai-file-utils/src/storage_client.rs`) — the inference client has none, so a
+429's reset time is dropped before the CLI formats anything. The recorder above
+returned `Retry-After: 3600` and `x-ratelimit-*`; none of it reached stdout.
+
+This costs nothing, because `XaiLimitsProvider` already supplies the meter by a
+different route. Recorded in the adapter's own header per docs/266 item 13.
 
 ### Two channels, and they do not share a matcher (planning#453)
 
@@ -1294,22 +1422,25 @@ sites (`agent-listeners.ts` req-7 stamp, `turn-executor.ts` req-14 retry,
 
 | Channel | When | Matcher | How Grok can populate it |
 |---|---|---|---|
-| **Turn error** | `agent_result.error` is set | `detectHardExhaustion` → unanchored `EXHAUSTION_PATTERNS` | A `result` event with `is_error: true` (or a non-success `subtype`). The adapter copies `raw.result` onto `error`. Generic API language (`quota exceeded`, `out of credits`) is in this list. |
+| **Turn error** | `agent_result.error` is set | `detectHardExhaustion` → unanchored `EXHAUSTION_PATTERNS` | A `result` event with `is_error: true` (or a non-success `subtype`). The adapter takes the reason from `errors[]` (`grokResultErrorText`) — **not** from `raw.result`, which an errored event does not carry; see the correction above. Generic API language (`quota exceeded`, `out of credits`) is in this list. |
 | **Conversation text** | there is **no** error | `detectHardExhaustionInTurnText` → anchored `TURN_TEXT_NOTICE_PATTERNS`, ≤ `MAX_LIMIT_NOTICE_CHARS` (240) | The last `agent_assistant` text (`runner.turnSummary`). The error is checked *instead of*, never before-falling-through-to, the text. |
 
 A third site, independent of `agent_result`: `willRetryOnQuotaError`
 (`turn-executor.ts`) runs the unanchored error matcher on the adapter's
 `error` **event** message. That is spawn/process failure, not a CLI result.
-Grok's fatal stream `{"type":"error","message":…}` currently does **not**
-take this path — it is logged, then the close handler synthesizes an
-`agent_result` whose wording is `Grok exited with code N…`. Forwarding
-`message_text` could go via an adapter `error` emit *or* `agent_result.error`.
+Grok's fatal stream `{"type":"error","message":…}` does not take that path —
+it is held and forwarded onto the synthesized `agent_result.error` instead
+(planning#453), which is the channel the table above describes. Before that it
+was logged and dropped, and the close handler's `Grok exited with code N…` was
+all the matcher saw.
 
-On an errored turn the adapter copies `raw.result` onto `error` — the same
-field that carries the model's summary on success (identical to Claude). A
-`subtype: "error_max_turns"` turn whose trailing text mentions "out of
-credits" would therefore hit the unanchored error-channel patterns.
-Pre-existing, not Grok-specific, not repaired here.
+The `raw.result` hazard this section used to name — a `subtype:
+"error_max_turns"` turn whose trailing *model* text mentions "out of credits"
+reaching the unanchored patterns — is narrowed rather than removed.
+`grokResultErrorText` reads `errors[]` first, so the CLI-authored field now
+wins over the model-authored one; `result` survives only as a fallback for a
+shape Grok has never been observed producing. Still pre-existing, still not
+Grok-specific.
 
 The text matcher is the PROVIDER_NOTICE-style one: it must be the *start* of
 a short message (`^[^a-z0-9]*`, so a bullet or emoji may precede it but no
@@ -1380,11 +1511,13 @@ skipped test then fails until the matcher covers that exact string; the
 always-on negatives pin the free-tier and credit-balance copy that a
 loosening must still refuse. How to obtain the string is a human decision.
 
-### Related gap, not repaired here
+### Related gap — repaired (planning#453)
 
 A fatal `{"type":"error","message":…}` event (the unauthenticated shape,
-verified) is logged and then dropped. The close handler synthesizes
-`Grok exited with code N before producing a result`, so neither matcher
-ever sees the provider's wording. Forwarding `message_text` onto
-`agent_result.error` would still need a captured string to match against;
-it is a separate change.
+verified) used to be logged and then dropped, leaving the close handler's
+`Grok exited with code N before producing a result` as the only thing either
+matcher saw. The adapter now holds `message_text` and forwards it onto the
+synthesized `agent_result.error`, cleared per `run()` so it cannot cross into
+the next turn. The exit-code wording remains for a turn that died saying
+nothing at all — which must stay unmatched, since it describes a dead process
+and not a spent plan.

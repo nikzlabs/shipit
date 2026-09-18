@@ -20,8 +20,6 @@ android {
     buildFeatures {
         compose = true
     }
-    // With Kotlin 2.0 the Compose compiler is configured by the
-    // org.jetbrains.kotlin.plugin.compose plugin, not composeOptions.
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -37,8 +35,6 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    // Launchable Activity (MainActivity) so the app can be installed + started on
-    // the emulator, not just rendered headlessly by Paparazzi.
     implementation("androidx.activity:activity-compose:1.9.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

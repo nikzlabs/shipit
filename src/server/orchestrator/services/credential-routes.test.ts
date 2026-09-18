@@ -1,12 +1,3 @@
-/**
- * docs/252 phase 2 — the credential-route service.
- *
- * The rules under test are the ones the catalogue decides and the UI must not
- * be trusted to enforce: which modes accept a supplied secret, how many
- * credentials a mode may hold, and that a secret never leaves through the read
- * path.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -33,10 +24,7 @@ let store: CredentialStore;
 
 beforeEach(() => {
   store = new CredentialStore(tmpDir());
-  // Creating a credential assigns the mode's variable in THIS process, so a
-  // test would otherwise inherit the previous test's value and the "only touch
-  // what we put there" rule would (correctly) refuse to write. Empty counts as
-  // absent everywhere these are read.
+  // Isolate variables written by credential creation from prior tests and deployment values.
   for (const name of credentialStorageEnvNames()) vi.stubEnv(name, "");
 });
 
@@ -62,8 +50,6 @@ describe("createStringCredential", () => {
       billingMode: "key",
       secret: "sk-or-secret",
     });
-    // The whole point of keeping secrets out of `CredentialRoute`: this record
-    // is returned verbatim through Settings, so a secret field here would leak.
     expect(JSON.stringify(route)).not.toContain("sk-or-secret");
     expect(JSON.stringify(listCredentialRoutes(store))).not.toContain("sk-or-secret");
   });
@@ -73,18 +59,13 @@ describe("createStringCredential", () => {
     expect(() =>
       createStringCredential(store, { serviceId: "deepseek", billingMode: "key", secret: "sk-2" }),
     ).toThrow(ServiceError);
-    // And the first one is untouched — a rejected add must not have replaced it.
     expect(store.listCredentialRoutes("deepseek", "key")).toHaveLength(1);
   });
 
   it("accepts several credentials for a string-delivered subscription (req 12)", () => {
-    // GLM's coding plan: a subscription authenticated by a supplied key, and
-    // the case the multi-instance storage exists for.
     const first = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "k1" });
     const second = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "k2" });
     expect(store.listCredentialRoutes("zai", "sub")).toHaveLength(2);
-    // Appended, not inserted: adding one must never change which credential
-    // existing work runs on.
     expect(first.route.priority).toBe(0);
     expect(second.route.priority).toBe(1);
     expect(store.getCredentialSecret(first.route.id)).toBe("k1");
@@ -92,8 +73,6 @@ describe("createStringCredential", () => {
   });
 
   it("refuses a mode that accepts no supplied secret", () => {
-    // OpenAI's subscription is account-backed only — it has a login flow and a
-    // credential root, neither of which a pasted string has.
     expect(() =>
       createStringCredential(store, { serviceId: "openai", billingMode: "sub", secret: "sk-x" }),
     ).toThrow(/not authenticated by a supplied secret/);
@@ -145,7 +124,6 @@ describe("deleteCredentialRoute", () => {
     });
     deleteCredentialRoute(store, route.id);
     expect(store.getCredentialRoute(route.id)).toBeUndefined();
-    // A secret with no record naming it is one nothing would ever clean up.
     expect(store.getCredentialSecret(route.id)).toBeUndefined();
   });
 });
@@ -185,8 +163,6 @@ describe("collectServiceCredentialEnv", () => {
     expect(collectServiceCredentialEnv(store)).toEqual({
       DEEPSEEK_API_KEY: "sk-ds",
       OPENROUTER_API_KEY: "sk-or",
-      // docs/252 phase 5 — plus a name per credential, which is what lets spawn
-      // shaping source the one a session is actually pinned to.
       [credentialRouteEnvName(ds.id)]: "sk-ds",
       [credentialRouteEnvName(or.id)]: "sk-or",
     });
@@ -196,16 +172,11 @@ describe("collectServiceCredentialEnv", () => {
     const first = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-1" }).route;
     const second = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-2" }).route;
     expect(collectServiceCredentialEnv(store).ZAI_CODING_PLAN_KEY).toBe("plan-1");
-    // Reordering moves delivery with it — the order IS the selection order.
     reorderCredentialRoutes(store, "zai", "sub", [second.id, first.id]);
     expect(collectServiceCredentialEnv(store).ZAI_CODING_PLAN_KEY).toBe("plan-2");
   });
 
   it("delivers EVERY credential of a subscription under its own name (docs/252 phase 5)", () => {
-    // The group name can carry only one, which was fine while nothing could
-    // choose a different one. req 12's failover is exactly that reason: a
-    // session moved onto the second key would otherwise keep authenticating
-    // with the first, because it is the only one in the environment.
     const first = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-1" }).route;
     const second = createStringCredential(store, { serviceId: "zai", billingMode: "sub", secret: "plan-2" }).route;
     const env = collectServiceCredentialEnv(store);
@@ -223,9 +194,6 @@ describe("collectServiceCredentialEnv", () => {
 });
 
 describe("process.env is kept in step with what a mode delivers", () => {
-  // Load-bearing because `reservedRouteFor` and `AgentRegistry.isAuthConfigured`
-  // answer from `process.env`: a revoked credential that stays there is one the
-  // orchestrator keeps counting as authentication until a restart.
   const ENV = "DEEPSEEK_API_KEY";
   const PLAN_ENV = "ZAI_CODING_PLAN_KEY";
 
@@ -243,10 +211,6 @@ describe("process.env is kept in step with what a mode delivers", () => {
   });
 
   it("never touches a value the deployment set", () => {
-    // Boot seeding skips a name that is already present, so a deployment-set
-    // value is not ours to overwrite — and therefore not ours to clear either.
-    // An earlier cut wrote over it on create and then deleted it on remove,
-    // leaving the deployment unauthenticated until a restart.
     vi.stubEnv(ENV, "deployment-supplied");
     const { route } = createStringCredential(store, {
       serviceId: "deepseek", billingMode: "key", secret: "sk-user",
@@ -254,8 +218,6 @@ describe("process.env is kept in step with what a mode delivers", () => {
     expect(process.env[ENV]).toBe("deployment-supplied");
     deleteCredentialRoute(store, route.id);
     expect(process.env[ENV]).toBe("deployment-supplied");
-    // The session still receives the user's credential while it exists — these
-    // probes ask whether one is present, never which one.
     expect(collectServiceCredentialEnv(store)[ENV]).toBeUndefined();
   });
 

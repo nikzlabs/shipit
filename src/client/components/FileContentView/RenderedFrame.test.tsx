@@ -1,13 +1,6 @@
-/**
- * The injected fragment-scroll script (docs/258 req 9). A presented HTML
- * artifact is mounted from `srcDoc` on an opaque origin — there is no
- * `location.hash` to set and no channel to send one over — so the fragment is
- * baked into the document ShipIt assembles. That makes this the ONE place a
- * pointer's data enters such a document, and the only place it could break out.
- */
 import { describe, it, expect, afterEach } from "vitest";
 import { render, cleanup, screen } from "@testing-library/react";
-import { RenderedFrame } from "./RenderedFrame.js";
+import { LINK_CLICK_SCRIPT, RenderedFrame } from "./RenderedFrame.js";
 
 afterEach(cleanup);
 
@@ -32,16 +25,10 @@ describe("RenderedFrame — fragment scrolling", () => {
     const html = srcDoc("req-7");
     expect(html).toContain('"req-7"');
     expect(html).toContain("scrollIntoView");
-    // The click is what mounts the frame, so the element does not exist when
-    // the script runs in <head> — firing on receipt would silently do nothing.
     expect(html).toContain("DOMContentLoaded");
   });
 
   it("remounts for a different fragment, and not for the same one", () => {
-    // A changed fragment must rebuild the document so the new scroll runs. An
-    // identical one must NOT: remounting would discard whatever state the
-    // artifact's own scripts hold, to re-run a scroll the requirements already
-    // accept a repeat click need not perform.
     expect(srcDoc("req-7")).not.toBe(srcDoc("req-9"));
     expect(srcDoc("req-7")).toBe(srcDoc("req-7"));
   });
@@ -54,8 +41,6 @@ describe("RenderedFrame — fragment scrolling", () => {
 
   describe("a fragment cannot break out of the script", () => {
     it("escapes a closing script tag", () => {
-      // `JSON.stringify` alone leaves this a valid JS string but still closes
-      // the script element as far as the HTML parser is concerned.
       const html = srcDoc("x</script><img src=x onerror=alert(1)>");
       expect(html).not.toContain("</script><img");
       expect(html).toContain("\\u003c/script\\u003e");
@@ -65,7 +50,6 @@ describe("RenderedFrame — fragment scrolling", () => {
       const html = srcDoc('a"b\\c');
       expect(html).toContain('\\"');
       expect(html).toContain("\\\\");
-      // The `<script>` we opened is still closed exactly once.
       expect(html.match(/<\/script>/g)?.length).toBe(1);
     });
 
@@ -82,8 +66,130 @@ describe("RenderedFrame — fragment scrolling", () => {
       .not.toContain("scrollIntoView");
   });
 
-  // docs/280 — the inline chat card has to SIZE the frame, and the frame is on an
-  // opaque origin, so the document reports its own height.
+  describe("ShipIt pointers inside an artifact (req 14)", () => {
+    function srcDocFor(shipitLinks: boolean, kind: "html" | "svg" = "html") {
+      cleanup();
+      render(
+        <RenderedFrame kind={kind} content="<html><head></head><body>x</body></html>" shipitLinks={shipitLinks} />,
+      );
+      return screen.getByTitle("Rendered content").getAttribute("srcdoc") ?? "";
+    }
+
+    it("is off by default — a repo file rendered in the dialog is not agent-authored", () => {
+      expect(srcDocFor(false)).not.toContain("link_click");
+    });
+
+    it("injects the interceptor inside <head> when the surface opts in", () => {
+      const html = srcDocFor(true);
+      expect(html).toContain("link_click");
+      expect(html.indexOf("link_click")).toBeLessThan(html.indexOf("</head>"));
+      expect(html).toContain("Content-Security-Policy");
+    });
+
+    it("leaves SVG alone — only HTML and markdown artifacts carry pointers", () => {
+      expect(srcDocFor(true, "svg")).not.toContain("link_click");
+    });
+  });
+
+  /**
+   * The interceptor runs inside a sandboxed frame jsdom never executes, so the
+   * script is evaluated here against a real DOM. A string assertion could not
+   * fail on a broken anchor walk or a scheme pattern that matches nothing.
+   */
+  describe("the injected interceptor, executed", () => {
+    /**
+     * A fresh document per case: the script installs document-level listeners,
+     * and a shared one would let an earlier case's listener answer for a later
+     * one's — which is how a repeat-count assertion stops meaning anything.
+     */
+    function mount(body: string) {
+      const doc = document.implementation.createHTMLDocument("artifact");
+      doc.body.innerHTML = body;
+      const posted: unknown[] = [];
+      const targets: unknown[] = [];
+      const js = LINK_CLICK_SCRIPT.replace(/^<script>/, "").replace(/<\/script>$/, "");
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval -- runs the very script shipped into the frame, against a document this test owns
+      const run = new Function("document", "parent", js) as (d: Document, p: unknown) => void;
+      run(doc, {
+        postMessage: (msg: unknown, target: unknown) => {
+          posted.push(msg);
+          targets.push(target);
+        },
+      });
+      const fire = (type: "click" | "auxclick", button = 0) => {
+        const target = doc.querySelector("[data-hit]") ?? doc.querySelector("a");
+        const event = new MouseEvent(type, { bubbles: true, cancelable: true, button });
+        target?.dispatchEvent(event);
+        return event;
+      };
+      return { doc, posted, targets, fire };
+    }
+
+    it("reports a preview pointer and stops the frame navigating to a scheme it cannot load", () => {
+      const { posted, targets, fire } = mount('<a href="shipit-preview://web/runs/1?focus=7#s">go</a>');
+      const event = fire("click");
+      expect(posted).toEqual([
+        { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/runs/1?focus=7#s" },
+      ]);
+      // The href is the artifact's own text, and `parent` reaches only the
+      // embedder — matching the height report beside it.
+      expect(targets).toEqual(["*"]);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("trims an href the way the HTML URL parser does", () => {
+      // The browser resolves ` shipit-preview://web/x ` — so an untrimmed match
+      // leaves the pointer dead, and an untrimmed forward addresses "/x ".
+      const { posted, fire } = mount('<a href=" shipit-preview://web/x ">go</a>');
+      const event = fire("click");
+      expect(posted).toEqual([
+        { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+      ]);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("finds an anchor inside an open shadow root, where the target is the host", () => {
+      const { doc, posted } = mount("<my-card></my-card>");
+      const host = doc.querySelector("my-card")!;
+      host.attachShadow({ mode: "open" }).innerHTML =
+        '<a href="shipit-preview://web/x"><span>go</span></a>';
+      const inner = host.shadowRoot!.querySelector("span")!;
+      inner.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+      expect(posted).toHaveLength(1);
+    });
+
+    it("reports a click on an element nested inside the anchor", () => {
+      const { posted, fire } = mount(
+        '<a href="shipit-present:/persist/r.html#req-7"><span data-hit>REQ-7</span></a>',
+      );
+      fire("click");
+      expect(posted).toHaveLength(1);
+    });
+
+    it("leaves the artifact's own links completely alone", () => {
+      for (const href of ["https://example.com", "#section", "/local/path"]) {
+        const { posted, fire } = mount(`<a href="${href}">x</a>`);
+        const event = fire("click");
+        expect(posted, href).toEqual([]);
+        expect(event.defaultPrevented, href).toBe(false);
+      }
+    });
+
+    it("blocks a middle-click without opening it — a custom scheme must not reach the OS handler", () => {
+      const { posted, fire } = mount('<a href="shipit-preview://web/x">go</a>');
+      const event = fire("auxclick", 1);
+      expect(event.defaultPrevented).toBe(true);
+      expect(posted).toEqual([]);
+    });
+
+    it("survives a page that stops propagation on its own links", () => {
+      const { doc, posted, fire } = mount('<a href="shipit-preview://web/x">go</a>');
+      doc.querySelector("a")?.addEventListener("click", (e) => e.stopPropagation());
+      fire("click");
+      expect(posted).toHaveLength(1);
+    });
+  });
+
   describe("height reporting", () => {
     function srcDocFor(props: { kind: "html" | "svg"; reportHeight?: boolean }) {
       const { unmount } = render(
@@ -102,17 +208,12 @@ describe("RenderedFrame — fragment scrolling", () => {
     it("measures the BODY box, never documentElement.scrollHeight", () => {
       const html = srcDocFor({ kind: "html", reportHeight: true });
       expect(html).toContain("content_height");
-      // The bug a browser check caught: `scrollHeight` is max(content, viewport),
-      // so a one-line artifact in a 220px frame reported 220 and could never
-      // shrink to fit. The body's box is independent of the frame it sits in.
       expect(html).toContain("document.body");
       expect(html).toContain("getBoundingClientRect");
       expect(html).not.toContain("document.documentElement.scrollHeight)");
     });
 
     it("drops the viewport-height SVG host, which would echo the frame back", () => {
-      // Without this, `svg` measures 100vh — whatever the embedder last set —
-      // and the height can only ever grow.
       expect(srcDocFor({ kind: "svg", reportHeight: true })).not.toContain("100vh");
       expect(srcDocFor({ kind: "svg" })).toContain("100vh");
     });

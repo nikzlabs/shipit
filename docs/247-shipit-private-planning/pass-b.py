@@ -38,18 +38,15 @@ BARE_KEY = re.compile(r"(?<![\w-])(SHI-\d+)(?![\w-])")
 BARE_NUM = re.compile(r"(?<![\w/#])#(\d+)(?![\w])")
 CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 
-
 WRITE_SLEEP = 8.0        # ~450 writes/hour, under GitHub's secondary limit
 BACKOFF = 900            # 15 min, on a secondary-rate-limit 403
 MAX_RETRIES = 8
-
 
 def sh(args, stdin=None):
     r = subprocess.run(args, capture_output=True, text=True, input=stdin)
     if r.returncode != 0:
         raise RuntimeError(f"{' '.join(args)}\n{r.stdout}\n{r.stderr}")
     return r.stdout
-
 
 def sh_retry(args, stdin=None):
     """A write that survives GitHub's secondary rate limit.
@@ -69,7 +66,6 @@ def sh_retry(args, stdin=None):
                   f"[{attempt + 1}/{MAX_RETRIES - 1}]", flush=True)
             time.sleep(BACKOFF)
 
-
 def load_mapping():
     m = {}
     for line in open(MAPPING):
@@ -77,7 +73,6 @@ def load_mapping():
             k, v = line.split("\t")
             m[k] = int(v)
     return m
-
 
 def rewrite(text, mapping):
     """Apply all three rewrites outside code spans. Returns (text, counts)."""
@@ -121,7 +116,6 @@ def rewrite(text, mapping):
     out.append(apply(text[last:]))
     return "".join(out), counts
 
-
 def rewrite_body(body, mapping):
     """Same, but the migration header is preserved verbatim (req 9)."""
     if "\n\n---\n\n" not in body:
@@ -130,11 +124,9 @@ def rewrite_body(body, mapping):
     new, counts = rewrite(rest, mapping)
     return f"{head}\n\n---\n\n{new}", counts
 
-
 def keys_in_order():
     ps = glob.glob(f"{EXPORT}/SHI-*.json")
     return sorted(ps, key=lambda p: int(re.search(r"SHI-(\d+)", os.path.basename(p)).group(1)))
-
 
 def main():
     dry = "--dry-run" in sys.argv
@@ -180,7 +172,6 @@ def main():
             for k in tot:
                 tot[k] += tc[k]
 
-        # Linear returns comments newest-first; replay in conversation order.
         comments = list(reversed(d.get("comments") or []))
         rendered = []
         for cm in comments:
@@ -200,11 +191,8 @@ def main():
         if dry:
             continue
 
-        # The done-file records an issue only once ALL its comments land, but a
-        # failure happens mid-issue — so the first issue of a resumed run may be
         # partially written. Everything after it was never touched, so this read
-        # is needed exactly once per run. Matching on the rendered body makes the
-        # skip idempotent rather than trusting a count.
+
         already = set()
         if first_of_run:
             first_of_run = False
@@ -234,7 +222,6 @@ def main():
         print(f"titles rewritten: {ntitles}")
         print(f"rewrites — SHI-N keys: {tot['key']}, linear.app issue URLs: {tot['url']}, "
               f"bare #N: {tot['num']}")
-
 
 if __name__ == "__main__":
     main()

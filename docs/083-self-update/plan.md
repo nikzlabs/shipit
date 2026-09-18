@@ -13,13 +13,16 @@ ShipIt checks for upstream updates and applies them from the UI — no fork, no 
 
 ### Apply update
 
-1. Server endpoint `POST /api/updates/apply` triggers the update
-2. The update runs **on the host** via a helper script (`deployment/hetzner/update.sh`) that:
-   - `git fetch origin main && git reset --hard origin/main`
-   - `docker compose build session-worker shipit`
-   - `docker compose up -d --no-build shipit`
-   - `docker image prune -f`
-3. The orchestrator container cannot rebuild itself from inside — the script runs on the host via a lightweight sidecar or `docker exec` on the host
+1. Server endpoint `POST /api/updates/apply` writes the `.update-requested`
+   trigger file
+2. A systemd path unit picks it up and runs **on the host**
+   (`deployment/vps/update.sh` — Option A below, as built), which:
+   - `git fetch origin --tags --prune` (once, retried, time-bounded), then
+     resolves the channel's target COMMIT and `git reset --hard`s to it
+   - runs `deployment/vps/deploy.sh`: build the images, `docker compose up -d`,
+     prune the build artifacts from an EXIT trap
+3. The orchestrator container cannot rebuild itself from inside, which is why
+   the script runs on the host rather than in a container
 
 ### The restart problem
 
@@ -82,6 +85,50 @@ regardless of build outcome**.
   the checkout back to `PRIOR_SHA` on any failure and writes a `.update-failed`
   JSON breadcrumb; on success it drops the breadcrumb. The window where the
   checkout is "ahead" lasts only as long as the build.
+- **No step of a systemd-run update is unbounded.** (A manual
+  `bash update.sh` gets the fetch bounds but no whole-run bound — the unit is
+  what supplies that.) Each `git fetch` attempt runs under
+  `timeout -k` (`SHIPIT_FETCH_TIMEOUT_SECONDS`, default 120, then SIGKILL after
+  `SHIPIT_FETCH_KILL_GRACE_SECONDS`, default 15) so a stalled connection is
+  retried like a refusal instead of hanging forever — the `-k` is what makes it
+  a bound rather than a request, since plain `timeout` sends TERM and then waits
+  on whatever ignored it. The run as a whole is bounded by
+  `TimeoutStartSec=90min` on `shipit-updater.service`: `Type=oneshot` has NO
+  start timeout by default, and a hung activation blocks every later one behind
+  it, so one hang stopped the host updating at all. 90min is a backstop for a
+  hang, not a build budget — it sits above the worst honest run because killing
+  a legitimate slow build costs an update cycle.
+- **A kill leaves a coherent host in the cases it can.** The timeout kill
+  reaches the whole control group, and `update.sh` traps `TERM`/`INT` so it
+  rolls back and records exit 143 (an untrapped kill ran the `EXIT` trap with
+  `$?` of 0 and wrote a breadcrumb claiming "exit 0"). One exception, and it is
+  the important one: `deploy.sh` writes a `.deploy-restarted` marker the moment
+  `docker compose up -d` returns, because it keeps working after that (its EXIT
+  trap prunes the build cache, which can run for minutes). A kill past that
+  point must NOT roll back — the new container is already running, so rolling
+  back would leave the checkout BEHIND it, the mirror of the bug the rollback
+  exists to prevent. **The marker's presence, not the exit status, is what
+  decides**, which is safe only because everything that can fail runs before the
+  restart and the prune swallows its own failures. Two residuals, both
+  deliberate: a kill in the millisecond between `compose up` returning and the
+  marker appearing still rolls back (closing it would mean interrogating a
+  possibly-wedged Docker from inside the cleanup path); and if the build is
+  wedged deeply enough that SIGTERM does not reach it, systemd escalates to
+  SIGKILL after `TimeoutStopSec` and no rollback runs at all. In that last case
+  `resolveVersion()`'s `mismatch` flag reports the incoherence — it does not
+  repair it.
+- **`deploy.sh` re-installs drifted systemd units** (`deployment/lib/sync-systemd-units.sh`),
+  because `setup.sh` copied them at provisioning only: every unit change since
+  sat in the repo and never reached a host that was already running. Same
+  reasoning as the hostname derivation — existing installs update through
+  `update.sh` → `deploy.sh` and are asked nothing. It runs AFTER the restart, so
+  a build that fails and rolls back cannot leave units from a commit that never
+  shipped; it installs via a rename so a unit is never half-written; it reloads
+  systemd unconditionally, since a reload that failed once would otherwise never
+  be retried; and it is a silent no-op where the units cannot be written. The
+  reload does not re-bound the RUNNING job — systemd keeps a running job on the
+  config it started with — so a new unit setting applies from the next
+  activation, which for the updater means the update after this one.
 - **`deploy.sh`** moves the prune commands into `prune_build_artifacts()` fired
   from an `EXIT` trap, so a failed build still reclaims its cache. It also
   pre-flights a free-disk check (`SHIPIT_MIN_FREE_GB`, default 5) and fails fast
@@ -105,9 +152,10 @@ regardless of build outcome**.
 | `src/server/orchestrator/api-routes-updates.ts` | HTTP endpoints |
 | `src/server/orchestrator/api-routes.ts` | Route registration |
 | `src/client/components/Settings.tsx` | UI in Advanced tab — version label, mismatch note, failure banner |
-| `deployment/vps/update.sh` | Host-side update script — rollback-on-failure trap + failure breadcrumb |
-| `deployment/vps/deploy.sh` | Build + restart — prune-on-EXIT trap + pre-flight disk check |
-| `deployment/vps/shipit-updater.service` | Systemd oneshot service |
+| `deployment/vps/update.sh` | Host-side update script — rollback-on-failure trap + failure breadcrumb, bounded+retried fetch |
+| `deployment/vps/deploy.sh` | Build + restart — prune-on-EXIT trap, pre-flight disk check, unit sync, restart marker |
+| `deployment/lib/sync-systemd-units.sh` | Re-install units that drifted from the checkout (tested: `sync-systemd-units.test.ts`) |
+| `deployment/vps/shipit-updater.service` | Systemd oneshot service — `TimeoutStartSec=90min` backstop |
 | `deployment/vps/shipit-updater.path` | Systemd path watcher |
 | `deployment/vps/setup.sh` | Install systemd units |
 | `deployment/vps/docker-compose.yml` | Bind-mount /opt/shipit |

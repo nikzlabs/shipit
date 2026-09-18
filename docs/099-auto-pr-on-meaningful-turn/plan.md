@@ -31,10 +31,8 @@ Once a PR exists for the branch, `claude-execution.ts:257` short-circuits the au
 ### The change
 
 ```diff
-- // No PR yet — check if auto-create PR is enabled for new sessions
 - const shouldAutoCreate = isNewSession
 -   && ctx.credentialStore.getAutoCreatePr()
-+ // No PR yet — check if auto-create PR is enabled
 + const shouldAutoCreate = ctx.credentialStore.getAutoCreatePr()
     && ctx.githubAuthManager.authenticated;
 ```

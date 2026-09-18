@@ -2,14 +2,6 @@
 import { useEffect, useRef } from "react";
 import { useEventListeners } from "./useEventListener.js";
 
-/**
- * How long after a resume/resize to re-measure. The event that tells us the app
- * is back does NOT guarantee the window geometry has settled — a browser can
- * fire `pageshow`/`focus` and then finish resizing a frame or two later, at
- * which point our snapshot is the stale value we were trying to replace. So
- * every trigger measures three times: now, next frame, and once more after the
- * window has had time to stop moving.
- */
 const SETTLE_MS = 300;
 
 /**
@@ -59,8 +51,7 @@ const SETTLE_MS = 300;
  * back under the keyboard mid-typing).
  */
 export function useAppViewportHeight(): void {
-  // One pending frame and one pending timer, both coalesced: a burst of resize
-  // events schedules one settle-check, not hundreds.
+
   const frameRef = useRef<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -92,38 +83,28 @@ export function useAppViewportHeight(): void {
   useEventListeners([
     { target: window, type: "resize", handler: resync },
     { target: window, type: "orientationchange", handler: resync },
-    // The resume signals. `pageshow` covers a bfcache restore, `focus` a
-    // standalone-PWA app switch, `visibilitychange` a plain tab return — the
-    // same set the WS/SSE reconnect paths listen for, and for the same reason:
-    // no single one of them fires on every platform's resume.
+
     { target: window, type: "pageshow", handler: resync },
     { target: window, type: "focus", handler: resync },
     { target: document, type: "visibilitychange", handler: resync },
-    // Fires on soft-keyboard show/hide and pinch-zoom. Measuring here is a
-    // no-op on platforms where `innerHeight` didn't move; it matters on the
-    // ones that resize the layout viewport a frame after the visual one.
+
     { target: typeof window === "undefined" ? null : window.visualViewport, type: "resize", handler: resync },
   ]);
 }
 
-/** Write the current viewport height into `--app-height` and unpark the document. */
 export function syncAppViewportHeight(): void {
   if (typeof window === "undefined") return;
   const height = window.innerHeight;
-  // A zero/NaN reading (some browsers report it mid-resume) would collapse the
-  // whole shell. Leave the previous value — or the CSS default — in place.
+
   if (Number.isFinite(height) && height > 0) {
     document.documentElement.style.setProperty("--app-height", `${height}px`);
   }
   if (isViewportParked() && !isFocusHoldingScroll()) window.scrollTo(0, 0);
 }
 
-/** Is the viewport showing something other than the top of the shell? */
 function isViewportParked(): boolean {
   const vv = window.visualViewport;
-  // A pinch-zoomed viewport is panned on purpose — leave it alone. (Note
-  // `visualViewport` fires `resize` on a zoom change, so without this a pinch
-  // would yank the user back to the top of the page.)
+
   if (vv && vv.scale > 1) return false;
   if (window.scrollY !== 0) return true;
   return !!vv && vv.offsetTop > 0;

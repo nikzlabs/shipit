@@ -97,7 +97,7 @@ describe("parseSubagentReport", () => {
   it("extracts the report text from the CLI's real block-array shape", () => {
     const parsed = parseSubagentReport(REAL_REPORT);
     expect(parsed.text).toBe("File: /workspace/README.md\n- Words: 2145\n- Lines: 264\n- Bytes: 15379");
-    // No JSON punctuation survives into what the user reads.
+
     expect(parsed.text).not.toContain('"type"');
     expect(parsed.text).not.toContain("\\n");
   });
@@ -118,7 +118,7 @@ describe("parseSubagentReport", () => {
   });
 
   it("returns content untouched when it starts with [ but is not JSON", () => {
-    // A markdown report may legitimately open with a link or a checkbox.
+
     const md = "[the linked doc](http://example.com) explains the rest";
     expect(parseSubagentReport(md)).toEqual({ text: md, meta: null });
   });
@@ -137,12 +137,6 @@ describe("parseSubagentReport", () => {
     expect(parsed.meta).toBeNull();
   });
 
-  /**
-   * The footer has no structural marker — it is an ordinary `type: "text"`
-   * block — so recognition is deliberately narrow. A false positive would eat
-   * someone's report; a false negative just renders it as text, which is what
-   * happened before this function existed.
-   */
   it("does not mistake a report that merely contains colons for the footer", () => {
     const content = JSON.stringify([
       { type: "text", text: "Summary" },
@@ -153,15 +147,6 @@ describe("parseSubagentReport", () => {
     expect(parsed.text).toContain("Result: everything passed");
   });
 
-  /**
-   * docs/109 req 5 — this used to assert the opposite ("a one-block reply IS
-   * the report; stripping it would blank the card"), which meant a subagent
-   * that returned nothing but accounting had its internal `agentId` rendered to
-   * the user as prose. The `texts.length > 1` guard was protecting against a
-   * case the recognizer already excludes: a block only gets here if EVERY line
-   * is a `key: value` with a key the CLI emits, which no prose report is. An
-   * empty report body is the truthful rendering of a reply that carried none.
-   */
   it("treats a lone footer-shaped block as the footer, not as the report", () => {
     const content = JSON.stringify([{ type: "text", text: "agentId: abc\ntool_uses: 0" }]);
     const parsed = parseSubagentReport(content);
@@ -179,10 +164,6 @@ describe("parseSubagentReport", () => {
     expect(parsed.text).toContain("agentId: abc");
   });
 
-  /**
-   * A block array with no text at all tells us nothing renderable; returning
-   * "" would blank a report that does exist in some shape we don't model.
-   */
   it("falls back to the raw content when a parsed array holds no text blocks", () => {
     const content = JSON.stringify([{ type: "image", source: { data: "iVBOR", media_type: "image/png" } }]);
     expect(parseSubagentReport(content).text).toBe(content);

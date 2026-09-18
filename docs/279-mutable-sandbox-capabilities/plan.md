@@ -57,7 +57,7 @@ rediscovered / re-adopted container after an orchestrator restart, and unknown
 reports no pending diff rather than a false one.
 
 ```ts
-// orchestrator/sandbox-capabilities.ts
+
 capabilitiesPendingRestart(started, current) =>
   !!started && (started.docker !== current.docker
              || started.network !== current.network

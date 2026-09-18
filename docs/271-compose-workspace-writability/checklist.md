@@ -30,3 +30,17 @@
       deployed orchestrator accepts a contained service with no `user:` — before
       removing anything. `emulator`'s `1300:1301` stays: a baked-in image account
       that writes no workspace, kept working by half B's `group_add`.
+- [x] Close §3's residual (planning#420): a POSIX default ACL on every workspace
+      directory, so what a foreign-UID service creates is group-writable too.
+      Orchestrator pass (`applyDefaultGroupAcl`), entrypoint pass, `acl` in the
+      five images, `HANDOFF_SCHEME` 2 → 3 so already-claimed trees are repaired.
+- [x] Silence the dropped-uid git's `/root/.config/git/ignore` warning
+      (`pinGlobalExcludesFile`) — it was the first line of the stderr that
+      reported the §3 rebase failure and made the banner name the wrong cause.
+      Leaves an operator's own `core.excludesFile` alone.
+- [x] Make the scheme bump actually reach an existing workspace: the mount
+      loop's `[ -w "$d" ]` probe ran ahead of the sentinel, and a handed-over
+      workspace is unwritable to the entrypoint's root, so a bump reached no
+      existing session. The workspace now has its own stat-gated branch above
+      the probe, with the sentinel written through `gosu` after the walk.
+      (Independent review finding.)

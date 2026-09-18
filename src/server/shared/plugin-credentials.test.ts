@@ -11,7 +11,6 @@ import {
 
 const NO_TRACKERS: never[] = [];
 
-/** Parse a `plugins:` block the way `shipit-config` does. */
 function declare(raw: unknown) {
   const warnings: string[] = [];
   return parsePluginRepos(raw, NO_TRACKERS, warnings);
@@ -19,6 +18,10 @@ function declare(raw: unknown) {
 
 function manifest(raw: unknown): PluginExport[] {
   return parsePluginExports(raw, []);
+}
+
+function req(name: string, optional = false) {
+  return { name, optional };
 }
 
 describe("declaredPluginCredentials (docs/262 req 23)", () => {
@@ -41,14 +44,41 @@ describe("declaredPluginCredentials (docs/262 req 23)", () => {
     );
 
     expect(groups).toEqual([
-      { repo: "dev", plugin: "probe", alias: "probe", credentials: ["PROBE_KEY"] },
-      { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY", "OPENAI_API_KEY"] },
+      { repo: "dev", plugin: "probe", alias: "probe", credentials: [req("PROBE_KEY")] },
+      {
+        repo: "art-kit",
+        plugin: "palette",
+        alias: "artk",
+        credentials: [req("FAL_KEY"), req("OPENAI_API_KEY")],
+      },
     ]);
   });
 
+  it("carries each name's optionality through the collector", () => {
+    const groups = declaredPluginCredentials(
+      declare({ repos: [{ repo: "self", name: "dev" }], use: [{ plugin: "probe", from: "dev" }] }),
+      () =>
+        manifest({
+          plugins: {
+            probe: { credentials: ["PROBE_KEY", { name: "EXTRA_KEY", optional: true }] },
+          },
+        }),
+    );
+    expect(groups[0]?.credentials).toEqual([req("PROBE_KEY"), req("EXTRA_KEY", true)]);
+  });
+
+  it("resolves a name declared both ways to REQUIRED, whichever order", () => {
+    const collect = (credentials: unknown) =>
+      declaredPluginCredentials(
+        declare({ repos: [{ repo: "self", name: "dev" }], use: [{ plugin: "probe", from: "dev" }] }),
+        () => manifest({ plugins: { probe: { credentials } } }),
+      )[0]?.credentials;
+
+    expect(collect([{ name: "K", optional: true }, "K"])).toEqual([req("K")]);
+    expect(collect(["K", { name: "K", optional: true }])).toEqual([req("K")]);
+  });
+
   it("reports nothing for a repository with no live manifest — not 'needs nothing'", () => {
-    // req 13: a repository that never activated is unavailable, and an empty
-    // needs list there would read as "this plugin requires no keys".
     const groups = declaredPluginCredentials(plugins, (repo) =>
       repo === "dev" ? manifest({ plugins: { probe: { credentials: ["PROBE_KEY"] } } }) : null,
     );
@@ -88,20 +118,25 @@ describe("declaredPluginCredentials (docs/262 req 23)", () => {
 
 describe("resolvePluginCredentials", () => {
   const declarations = [
-    { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY", "OPENAI_API_KEY"] },
+    {
+      repo: "art-kit",
+      plugin: "palette",
+      alias: "artk",
+      credentials: [req("FAL_KEY"), req("OPENAI_API_KEY")],
+    },
   ];
 
   it("marks a name satisfied only when the project's store has it", () => {
     const [group] = resolvePluginCredentials(declarations, new Set(["FAL_KEY"]));
     expect(group.credentials).toEqual([
-      { name: "FAL_KEY", satisfied: true },
-      { name: "OPENAI_API_KEY", satisfied: false },
+      { name: "FAL_KEY", satisfied: true, optional: false },
+      { name: "OPENAI_API_KEY", satisfied: false, optional: false },
     ]);
   });
 
   it("matches names exactly — a credential name is an environment variable name", () => {
     const [group] = resolvePluginCredentials(declarations, new Set(["fal_key"]));
-    expect(group.credentials[0]).toEqual({ name: "FAL_KEY", satisfied: false });
+    expect(group.credentials[0]).toEqual({ name: "FAL_KEY", satisfied: false, optional: false });
   });
 
   it("with an empty store every declared name is a visible gap, never an omission", () => {
@@ -109,12 +144,23 @@ describe("resolvePluginCredentials", () => {
     expect(group.credentials.every((c) => !c.satisfied)).toBe(true);
     expect(group.credentials).toHaveLength(2);
   });
+
+  it("carries optionality onto the resolved need, and resolves it the same way", () => {
+    const [group] = resolvePluginCredentials(
+      [{ repo: "r", plugin: "p", alias: "a", credentials: [req("SET_KEY", true), req("UNSET_KEY", true)] }],
+      new Set(["SET_KEY"]),
+    );
+    expect(group.credentials).toEqual([
+      { name: "SET_KEY", satisfied: true, optional: true },
+      { name: "UNSET_KEY", satisfied: false, optional: true },
+    ]);
+  });
 });
 
 describe("claimant projection (plan §3 — one stored secret, many claimants)", () => {
   const declarations = [
-    { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] },
-    { repo: "dev", plugin: "probe", alias: "probe", credentials: ["FAL_KEY", "PROBE_KEY"] },
+    { repo: "art-kit", plugin: "palette", alias: "artk", credentials: [req("FAL_KEY")] },
+    { repo: "dev", plugin: "probe", alias: "probe", credentials: [req("FAL_KEY"), req("PROBE_KEY")] },
   ];
 
   it("de-duplicates names across plugins", () => {
@@ -126,13 +172,16 @@ describe("claimant projection (plan §3 — one stored secret, many claimants)",
     expect(pluginClaimantsOf(declarations, "PROBE_KEY")).toEqual(["probe"]);
     expect(pluginClaimantsOf(declarations, "NOBODY")).toEqual([]);
   });
+
+  it("counts an OPTIONAL name too — the settings row is where a key is set", () => {
+    const withOptional = [
+      { repo: "dev", plugin: "probe", alias: "probe", credentials: [req("EXTRA_KEY", true)] },
+    ];
+    expect(pluginCredentialNames(withOptional)).toEqual(["EXTRA_KEY"]);
+    expect(pluginClaimantsOf(withOptional, "EXTRA_KEY")).toEqual(["probe"]);
+  });
 });
 
-/**
- * docs/262 req 23 — the ONE rule that decides whether a stored value satisfies a
- * declared credential. Both the card's verdict and what a plugin container is
- * given are computed from it, which is what makes them the same answer.
- */
 describe("the satisfaction rule (req 23)", () => {
   it("a non-empty single-line value satisfies its name", () => {
     expect([...satisfiedCredentialNames({ FAL_KEY: "sk-live" })]).toEqual(["FAL_KEY"]);
@@ -143,10 +192,6 @@ describe("the satisfaction rule (req 23)", () => {
   });
 
   it("an arbitrary string value satisfies its name", () => {
-    // No narrower rule: every delivery surface carries an arbitrary string —
-    // the override's `environment` for a plugin service, the invocation
-    // container's `Env` for a companion CLI — so excluding a shape here would
-    // report a working credential as missing.
     const awkward = {
       PEM: "-----BEGIN-----\nx\n-----END-----",
       DOLLARS: `a$b$\{HOME}`,

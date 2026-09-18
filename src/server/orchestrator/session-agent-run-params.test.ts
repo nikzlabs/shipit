@@ -1,13 +1,9 @@
-/**
- * Tests for `buildAgentRunParams` — specifically the runtime flags it derives
- * from the session row and hands to the per-agent prep hook
- * (`PrepareRunParamsInput`). The hook itself is covered by
- * `agent-run-params-prep.test.ts`; here we assert what the assembler *computes*,
- * using a capturing prep hook so the assertions don't depend on Claude's
- * particular field names.
- */
-
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import {
+  forgetStatusCardSpawn,
+  statusCardSpawnValue,
+} from "./session-status-spawn-record.js";
 import type { AgentId, SessionInfo } from "../shared/types.js";
 import {
   buildAgentRunParams,
@@ -26,14 +22,11 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   } as SessionInfo;
 }
 
-/**
- * Build deps around one session row, plus a prep hook that records the
- * `PrepareRunParamsInput` it was called with.
- */
 function setup(
   session: SessionInfo | undefined,
   connectionModel?: string,
   connectionReasoning?: string,
+  opts: { sessionStatusCard?: boolean; agentInstructions?: boolean } = {},
 ) {
   const captured: PrepareRunParamsInput[] = [];
   const prep: PrepareRunParamsFn = (params, input) => {
@@ -42,9 +35,10 @@ function setup(
   };
   const deps = {
     credentialStore: {
-      getAgentSystemInstructionsEnabled: () => false,
+      getAgentSystemInstructionsEnabled: () => opts.agentInstructions === true,
       getAllMcpServers: () => ({}),
       getAutoCreatePr: () => true,
+      getSessionStatusCard: () => opts.sessionStatusCard === true,
     },
     githubAuthManager: { authenticated: true },
     sessionManager: {
@@ -85,8 +79,6 @@ describe("buildAgentRunParams — planning#267 destructive-git guard", () => {
   });
 
   it("leaves the guard off once mergedHeadSha is cleared (post-reset / clearMerged)", async () => {
-    // The anchor is dropped by a successful reset and by `clearMerged`, so the
-    // guard disarms itself rather than sticking for the session's lifetime.
     const { run, captured } = setup(makeSession({ mergedAt: new Date().toISOString() }));
     await run();
     expect(captured[0]?.guardDestructiveGitActive).toBe(false);
@@ -99,7 +91,6 @@ describe("buildAgentRunParams — planning#267 destructive-git guard", () => {
   });
 
   it("a sandbox session carries no merged anchor, so the guard stays off", async () => {
-    // Belt-and-braces: the hook also self-gates off on SHIPIT_SANDBOX (docs/211).
     const { run, captured } = setup(makeSession({ kind: "sandbox" }));
     await run();
     expect(captured[0]?.guardDestructiveGitActive).toBe(false);
@@ -107,18 +98,6 @@ describe("buildAgentRunParams — planning#267 destructive-git guard", () => {
   });
 });
 
-/**
- * docs/252 phase 4 — the model and the service shaping must come from ONE
- * source, and cross-backend review found they did not.
- *
- * `getSelectedModel` is per-CONNECTION on the user path, while the service,
- * billing mode and credential are read from the session row. With two viewers
- * on one session, a switch in tab A leaves tab B's closure holding the previous
- * model — so a turn sent from B spawned model X against service Y's endpoint,
- * and the resident process was then stamped with Y's identity even though it was
- * spawned with X, so a later switch back to X reused a process running the wrong
- * model.
- */
 describe("buildAgentRunParams — the model comes from the session row", () => {
   it("prefers the row over a stale per-connection selection", async () => {
     const { run } = setup(
@@ -127,7 +106,7 @@ describe("buildAgentRunParams — the model comes from the session row", () => {
         serviceId: "vercel",
         billingMode: "key",
       }),
-      "claude-sonnet-5", // what the OTHER tab's connection still holds
+      "claude-sonnet-5",
     );
     const params = await run();
     expect(params.model).toBe("anthropic/claude-opus-5");
@@ -140,31 +119,56 @@ describe("buildAgentRunParams — the model comes from the session row", () => {
   });
 });
 
-/**
- * docs/217 — the reasoning level had the shape the model was fixed out of.
- *
- * `getSelectedReasoning` is per-CONNECTION, resolved once at connect for the
- * session the socket was opened on. A `send_message` carrying an explicit
- * `sessionId` retargets that socket without recomputing it, so the turn ran at
- * the other session's depth — the level being an argument to the CLI, not
- * something the row is consulted for. Found by cross-backend review (Codex).
- */
 describe("buildAgentRunParams — the reasoning level comes from the session row", () => {
   it("prefers the row over a stale per-connection selection", async () => {
     const { run } = setup(
       makeSession({ reasoningEffort: "high" }),
       undefined,
-      "low", // what the connection still holds for the session it was opened on
+      "low",
     );
     const params = await run();
     expect(params.reasoningEffort).toBe("high");
   });
 
   it("falls back to the connection when the row holds no level yet", async () => {
-    // The connect param seeds an as-yet-unpinned session, so the fallback is
-    // still load-bearing for the very first turn.
     const { run } = setup(makeSession({}), undefined, "low");
     const params = await run();
     expect(params.reasoningEffort).toBe("low");
+  });
+});
+
+const promptSection = (name: string): string =>
+  fs.readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8").trim();
+
+describe("buildAgentRunParams — docs/303 session status card", () => {
+  it("records the value this spawn carries, for the resident-reuse check", async () => {
+    forgetStatusCardSpawn("s1");
+    const { run } = setup(makeSession(), undefined, undefined, { sessionStatusCard: true });
+    await run();
+    expect(statusCardSpawnValue("s1")).toBe(true);
+
+    const off = setup(makeSession());
+    await off.run();
+    expect(statusCardSpawnValue("s1")).toBe(false);
+    forgetStatusCardSpawn("s1");
+  });
+
+  it("carries the setting to the agent and picks the status-card prompt", async () => {
+    const { run } = setup(makeSession(), undefined, undefined, {
+      sessionStatusCard: true,
+      agentInstructions: true,
+    });
+    const params = await run();
+    expect(params.sessionStatusCard).toBe(true);
+    expect(params.systemPrompt).toContain(promptSection("session-status.md"));
+    expect(params.systemPrompt).not.toContain(promptSection("propose-actions.md"));
+  });
+
+  it("omits the flag and keeps the action-card prompt while the setting is off", async () => {
+    const { run } = setup(makeSession(), undefined, undefined, { agentInstructions: true });
+    const params = await run();
+    expect(params.sessionStatusCard).toBeUndefined();
+    expect(params.systemPrompt).toContain(promptSection("propose-actions.md"));
+    expect(params.systemPrompt).not.toContain(promptSection("session-status.md"));
   });
 });

@@ -4,15 +4,6 @@ import { SpawnedSessionCard } from "./SpawnedSessionCard.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
-/**
- * Tests for the in-chat `SpawnedSessionCard` (docs/117 Phase 2).
- *
- * The card renders inline in the parent's chat at the point where the
- * running agent spawned a sibling session. It reads the child's status
- * (running / idle / archived / missing) live from the session store, so the
- * tests seed `useSessionStore` and exercise the matrix of states.
- */
-
 function seedSessions(sessions: SessionInfo[]): void {
   useSessionStore.setState({
     sessions,
@@ -47,8 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  // Reset between tests so a leftover sessions list doesn't bleed into the
-  // next test's missing-child fallback assertions.
+
   seedSessions([]);
 });
 
@@ -88,7 +78,7 @@ describe("SpawnedSessionCard", () => {
     seedSessions([]);
     render(<SpawnedSessionCard {...BASE_PROPS} />);
     expect(screen.getByTestId("spawned-session-status")).toHaveTextContent(/not found/i);
-    // The card itself still renders so the user sees what was spawned.
+
     expect(screen.getByText("Port API to TypeScript")).toBeInTheDocument();
   });
 
@@ -126,7 +116,7 @@ describe("SpawnedSessionCard", () => {
     const onOpen = vi.fn();
     render(<SpawnedSessionCard {...BASE_PROPS} onOpen={onOpen} />);
     fireEvent.click(screen.getByRole("button", { name: /open/i }));
-    // The button is disabled, so React's synthetic event shouldn't reach the handler.
+
     expect(onOpen).not.toHaveBeenCalled();
   });
 
@@ -143,7 +133,6 @@ describe("SpawnedSessionCard", () => {
     expect(screen.queryByText("port-api-ts")).not.toBeInTheDocument();
   });
 
-  // docs/162 — Ops "ShipIt fix session" variant.
   describe("shipitFix variant", () => {
     it("renders the ShipIt-fix header, source ref, target repo, and diagnosis", () => {
       seedSessions([mkSession({ id: "child-1" })]);
@@ -161,7 +150,7 @@ describe("SpawnedSessionCard", () => {
       );
       expect(screen.getByText("ShipIt fix session")).toBeInTheDocument();
       const fix = screen.getByTestId("spawned-session-shipit-fix");
-      // Source ref is rendered short (12 chars).
+
       expect(fix).toHaveTextContent("abc123def456");
       expect(fix).toHaveTextContent("shipit-hq/shipit");
       expect(fix).toHaveTextContent("Container stuck in a SIGTERM recreate loop.");

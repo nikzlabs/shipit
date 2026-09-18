@@ -1,31 +1,3 @@
-/**
- * Regression tests for docs/163 — the quick-session / warm-standby "first turn
- * silently never ran" bug.
- *
- * Symptom (distinct from docs/162): on the warm-reconnect dispatch path the
- * worker accepts `/agent/start`, env-prep + run-params are fast, `agent.run()`
- * fires — and yet the CLI exits with code 0 having produced NO `agent_result`:
- * no edits, no commit, no PR, and crucially NO error surfaced. The user's only
- * workaround was resending the prompt.
- *
- * Root cause of the MASKING: `emitErrorOnNoResult` was wired ONLY on the WS
- * turn path. The dispatched (quick / headless / child / CI-fix) path left it
- * unset, so the executor's `done` handler fell straight through to the normal
- * drain → commit → finished teardown and reported a *completed* turn for a turn
- * that did nothing.
- *
- * Fix: the dispatch path now treats a no-result exit as a non-completed turn —
- * it auto-retries once (the user's "resend" workaround, automated) and, if that
- * still produces nothing, surfaces a visible error via the agent's `error`
- * event instead of silently finishing.
- *
- * These tests drive the real `SessionRunner.dispatch` → `runDispatchedTurn` →
- * `executeAgentTurn` path in-process (no Docker) with a fake agent that we
- * make exit without a result, mirroring the wedged worker. Reverting either the
- * `onNoResultExit` hook (turn-executor.ts) or its dispatch wiring
- * (dispatched-turn.ts) makes these bite: only one agent is ever spawned and the
- * turn finishes with no error.
- */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunner } from "../session-runner.js";
 import type { AgentId } from "../../shared/types.js";
@@ -51,16 +23,12 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
 
     runner.dispatch(testDispatch({ text: "do work" }));
 
-    // First agent spawns.
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
-    // The wedged worker case: the process exits 0 with no agent_result.
     agents[0]!.emit("done", 0);
 
-    // The fix retries the turn with a fresh agent rather than reporting success.
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
 
-    // The retry is announced to the user (not silent).
     expect(messages.some((m) => m.type === "system_notice" && /retry/i.test(String(m.message)))).toBe(true);
 
     runner.dispose({ force: true });
@@ -78,34 +46,24 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
-    agents[0]!.emit("done", 0); // no result → retry
+    agents[0]!.emit("done", 0);
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
 
-    agents[1]!.emit("done", 0); // retry ALSO produces no result → must surface an error
+    agents[1]!.emit("done", 0);
 
-    // An error row is persisted to chat history — the failure is no longer silent.
     await waitFor(
       () => appended.some((m) => m.role === "assistant" && m.isError === true),
       "error chat row",
     );
-    // The client gets a visible `error` message and the turn is finished + reset.
     expect(messages.some((m) => m.type === "error")).toBe(true);
     expect(sseBroadcast).toHaveBeenCalledWith("session_agent_finished", { sessionId: "s1" });
     expect(runner.running).toBe(false);
-    // Bounded: no third attempt.
     expect(agents).toHaveLength(2);
 
     runner.dispose({ force: true });
   });
 
   it("preserves partial work and does NOT retry when a turn streams content then exits with no result (OOM/SIGHUP)", async () => {
-    // Regression for the "agent did the work but the turns disappeared" bug.
-    // A dispatched turn (e.g. an agent-spawned / cross-session message) streams
-    // assistant rows as `in_progress=1`, then the CLI is SIGHUP'd/OOM-pressured to
-    // exit 129 WITHOUT an `agent_result`. Retrying would reset the in-memory groups
-    // and the eventual surfaced error would `replaceInProgress([])` the partial rows
-    // out of history. So this turn must finalize its partial work and surface an
-    // error WITHOUT retrying.
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     const appended: { role?: string; isError?: boolean; text?: string }[] = [];
@@ -121,35 +79,27 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
-    // The turn streams a visible assistant message (populates chatMessageGroups)…
     agents[0]!.emit("event", {
       type: "agent_assistant",
       content: [{ type: "text", text: "The batch got OOM-killed (exit 137). Let me run smaller batches." }],
       sessionId: "agent-sid",
     });
-    // …then the process dies without ever producing an `agent_result`.
     agents[0]!.emit("done", 129);
 
-    // An error row is persisted — the failure is surfaced, not swallowed.
     await waitFor(
       () => appended.some((m) => m.role === "assistant" && m.isError === true),
       "error chat row",
     );
 
-    // No retry: the turn already ran, so re-running is unsafe and would erase the work.
     expect(agents).toHaveLength(1);
-    // The retry notice must NOT appear (the turn did start).
     expect(messages.some((m) => m.type === "system_notice" && /retry/i.test(String(m.message)))).toBe(false);
 
-    // The partial turn is preserved: the final `replaceInProgress` carried the
-    // streamed assistant text (not an empty wipe) and was finalized.
     const lastReplace = histMgr.replaceInProgress.mock.calls.at(-1);
     const persistedMessages = (lastReplace?.[1] ?? []) as { role?: string; text?: string }[];
     expect(persistedMessages.length).toBeGreaterThan(0);
     expect(persistedMessages.some((m) => m.text?.includes("OOM-killed"))).toBe(true);
     expect(histMgr.finalizeInProgress).toHaveBeenCalledWith("s1");
 
-    // The surfaced error tells the user the work is preserved.
     const errorMsg = messages.find((m) => m.type === "error");
     expect(String(errorMsg?.message)).toMatch(/preserved/i);
 
@@ -166,13 +116,11 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
-    // Healthy turn: a result, then the process exits.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agents[0]!.emit("done", 0);
 
     await waitFor(() => sseBroadcast.mock.calls.some((c) => c[0] === "session_agent_finished"), "finished");
 
-    // No retry, no error row.
     expect(agents).toHaveLength(1);
     expect(appended.some((m) => m.isError === true)).toBe(false);
     expect(runner.running).toBe(false);
@@ -193,7 +141,6 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     agents[0]!.emit("auth_required");
     agents[0]!.emit("done", 0);
 
-    // Give any (incorrect) retry a chance to fire, then assert it did not.
     await flush();
     await flush();
     expect(agents).toHaveLength(1);

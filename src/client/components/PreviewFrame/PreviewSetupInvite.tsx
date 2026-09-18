@@ -18,17 +18,6 @@ export const PREVIEW_SETUP_PROMPT =
   + "Check whether the repo contains a web app or an Android app, and configure whichever you find. "
   + "If there is nothing here that a preview would show, say so instead of adding configuration.";
 
-/**
- * The empty preview panel's illustration: a browser window and a phone drawn as
- * empty slots, with a chat bubble pointing at them.
- *
- * Bespoke line art rather than composed Phosphor glyphs, under the illustration
- * exception in the design-language skill — no glyph carries the two facts this
- * state has to land at a glance: these are the app *kinds* that can appear here,
- * and *chat* is what puts them there. Purely decorative, so it is hidden from
- * assistive tech: the copy beside it already says everything it says. Motion
- * stops under `prefers-reduced-motion` (index.css).
- */
 function PreviewSetupArt() {
   return (
     <svg
@@ -36,8 +25,7 @@ function PreviewSetupArt() {
       height="144"
       viewBox="0 0 200 144"
       fill="none"
-      // `max-w-full h-auto` so the art shrinks with the pane instead of being
-      // clipped: the right panel is user-resizable well below 200px.
+
       className="mx-auto max-w-full h-auto overflow-visible"
       aria-hidden="true"
       focusable="false"
@@ -124,7 +112,7 @@ function PreviewSetupArt() {
 }
 
 interface PreviewSetupInviteProps {
-  /** Called when the user asks the agent to set a preview up. */
+
   onSendToAgent?: () => void;
 }
 
@@ -140,8 +128,7 @@ interface PreviewSetupInviteProps {
  */
 export function PreviewSetupInvite({ onSendToAgent }: PreviewSetupInviteProps) {
   return (
-    // `max-h-full overflow-y-auto` keeps the button reachable rather than
-    // clipped when the pane is short or the user has zoomed the browser in.
+
     <div className="text-center max-w-sm px-4 max-h-full overflow-y-auto">
       <PreviewSetupArt />
       {/* text-lg font-semibold is the documented heading step (design-language

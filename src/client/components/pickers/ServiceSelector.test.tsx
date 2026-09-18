@@ -73,9 +73,7 @@ describe("ServiceSelector marks", () => {
   });
 
   it("draws no mark when the selection is not in the list", () => {
-    // A pin whose credential went away. The trigger names it — a control that
-    // read as empty while the server still held a pin is the bug `fallbackLabel`
-    // exists for — but there is no service here to draw.
+
     render(
       <ServiceSelector
         services={services}
@@ -88,8 +86,7 @@ describe("ServiceSelector marks", () => {
 
     const trigger = screen.getByTestId("test-service-trigger");
     expect(trigger).toHaveTextContent("gone");
-    // The caret is still there and is an svg too — hence the mark query rather
-    // than a count, which would break the day the trigger grows another glyph.
+
     expect(queryServiceMark(trigger)).toBeNull();
   });
 });

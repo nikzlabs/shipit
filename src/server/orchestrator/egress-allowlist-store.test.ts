@@ -1,10 +1,7 @@
-/**
- * Tests for the durable egress allowlist + containment store (docs/172, planning#92).
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
+import { normalizeHost } from "./egress-allowlist.js";
 
 describe("EgressAllowlistStore", () => {
   let dbManager: DatabaseManager;
@@ -35,6 +32,33 @@ describe("EgressAllowlistStore", () => {
       expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual(["api.example.com", ".sub.example.com"]);
     });
 
+    it("stores a host the settings read can address back, however many trailing dots it had", () => {
+      // The settings read normalizes the stored row AGAIN on the way out
+      // (`buildEffectiveAllowlist`), so a stripping pass that is not idempotent
+      // advertises an address this store no longer holds
+      // (docs/299-agent-settings-access req 1).
+      store.addHost(EGRESS_GLOBAL_SCOPE, "review-example.test..");
+      const [stored] = store.listHosts(EGRESS_GLOBAL_SCOPE);
+
+      expect(stored).toBe(normalizeHost(stored!));
+      expect(store.removeHost(EGRESS_GLOBAL_SCOPE, stored!)).toBe(true);
+      expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
+    });
+
+    it("removes a row an older normalizer left un-normalized, by the address the read shows", () => {
+      // Written before `normalizeHost` stripped every trailing dot. Nothing
+      // migrates it, and every reader normalizes it again on the way out — so
+      // removal has to match the row the advertised address names, not the
+      // string that happens to be stored.
+      dbManager.db
+        .prepare("INSERT INTO egress_allowlist (scope, host, created_at) VALUES (?, ?, ?)")
+        .run(EGRESS_GLOBAL_SCOPE, "legacy-example.test.", new Date().toISOString());
+      const advertised = normalizeHost("legacy-example.test.");
+
+      expect(store.removeHost(EGRESS_GLOBAL_SCOPE, advertised)).toBe(true);
+      expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
+    });
+
     it("is idempotent — re-adding a host returns false and does not duplicate", () => {
       expect(store.addHost(EGRESS_GLOBAL_SCOPE, "x.com")).toBe(true);
       expect(store.addHost(EGRESS_GLOBAL_SCOPE, "x.com")).toBe(false);
@@ -53,7 +77,6 @@ describe("EgressAllowlistStore", () => {
 
       expect(store.listHosts("session-1")).toEqual(["session.example.com"]);
       expect(store.effectiveHosts("session-1")).toEqual(["global.example.com", "session.example.com"]);
-      // session-2's host is not visible to session-1.
       expect(store.effectiveHosts("session-1")).not.toContain("other.example.com");
     });
 
@@ -101,19 +124,18 @@ describe("EgressAllowlistStore", () => {
     });
 
     it("lets a session override win over the global switch in both directions", () => {
-      store.setGlobalEnabled(false); // global Open
-      store.setSessionOverride("session-1", true); // force Contained
+      store.setGlobalEnabled(false);
+      store.setSessionOverride("session-1", true);
       expect(store.resolveContained("session-1")).toBe(true);
 
-      store.setGlobalEnabled(true); // global Contained
-      store.setSessionOverride("session-2", false); // force Open
+      store.setGlobalEnabled(true);
+      store.setSessionOverride("session-2", false);
       expect(store.resolveContained("session-2")).toBe(false);
     });
   });
 
   describe("overridable built-in defaults", () => {
     it("suppresses + restores defaults, and effectiveBase reflects suppression", () => {
-      // Pick a host that's actually a built-in default.
       const aDefault = store.effectiveBase()[0];
       expect(store.hasSuppressedDefaults()).toBe(false);
       expect(store.effectiveBase()).toContain(aDefault);
@@ -123,7 +145,6 @@ describe("EgressAllowlistStore", () => {
       expect(store.hasSuppressedDefaults()).toBe(true);
       expect(store.effectiveBase()).not.toContain(aDefault);
 
-      // Un-suppress one.
       expect(store.unsuppressDefault(aDefault)).toBe(true);
       expect(store.effectiveBase()).toContain(aDefault);
     });
@@ -142,7 +163,6 @@ describe("EgressAllowlistStore", () => {
     it("suppression lives in a reserved scope, never leaking into effectiveHosts", () => {
       store.suppressDefault(store.effectiveBase()[0]);
       store.addHost(EGRESS_GLOBAL_SCOPE, "user.example.com");
-      // effectiveHosts is the user allowlist (global + session) — not suppressions.
       expect(store.effectiveHosts("s1")).toEqual(["user.example.com"]);
     });
   });

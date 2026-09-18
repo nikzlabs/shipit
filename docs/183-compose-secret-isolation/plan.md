@@ -62,9 +62,9 @@ The current default therefore violates the `x-shipit-secrets` contract:
 ```yaml
 x-shipit-secrets:
   - name: DATABASE_URL
-    agent: true     # agent may see it
+    agent: true
   - name: STRIPE_KEY
-                    # service only, but still readable from .shipit/.env.api today
+
 ```
 
 Any service-only secret the user provides — a database URL, an API key, a third-party

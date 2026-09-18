@@ -1,0 +1,9 @@
+{
+  "auth_method": "consumer",
+  "token": {
+    "access_token": "ya29.REDACTED-FIXTURE-ACCESS-TOKEN",
+    "token_type": "Bearer",
+    "refresh_token": "1//REDACTED-FIXTURE-REFRESH-TOKEN",
+    "expiry": "2026-09-14T13:45:34.180907488Z"
+  }
+}

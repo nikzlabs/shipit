@@ -4,19 +4,15 @@ import { Button, type ButtonProps } from "./button.js";
 import { ICON_SIZE } from "../../design-tokens.js";
 
 export type CopyButtonProps = Omit<ButtonProps, "onClick" | "children" | "type"> & {
-  /**
-   * Text to copy. Pass a function to compute it lazily at click time — useful
-   * when the value depends on state captured at the moment of the click (e.g. a
-   * payload stamped with the current timestamp).
-   */
+
   text: string | (() => string);
-  /** Idle label. Default "Copy". Pass an empty string to render icon-only. */
+
   label?: string;
-  /** Label shown briefly after a successful copy. Default "Copied". */
+
   copiedLabel?: string;
-  /** Milliseconds before reverting to the idle state. Default 2000. */
+
   timeout?: number;
-  /** Phosphor icon size. Default `ICON_SIZE.SM`. */
+
   iconSize?: number;
 };
 
@@ -55,13 +51,11 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(
       try {
         await navigator.clipboard.writeText(value);
         setCopied(true);
-        // Clear any in-flight reset so rapid re-clicks don't revert early; a
-        // reset firing after unmount is a harmless no-op under React 18+.
+
         if (timerRef.current) clearTimeout(timerRef.current);
         timerRef.current = setTimeout(() => setCopied(false), timeout);
       } catch {
-        // Clipboard unavailable (insecure context / permission policy) — swallow
-        // so the surrounding UI doesn't crash.
+        // Clipboard access can fail without permission.
       }
     }, [text, timeout]);
 

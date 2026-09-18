@@ -35,7 +35,7 @@ When the idle count exceeds the limit, the oldest idle containers are stopped vi
 
 ```
 enforceIdleContainerLimit():
-  maxIdle = credentialStore.getMaxIdleContainers()   // default 5
+  maxIdle = credentialStore.getMaxIdleContainers()
   idleContainers = []
 
   for (sessionId, container) in containerManager.containers:
@@ -44,11 +44,10 @@ enforceIdleContainerLimit():
       idleContainers.push(sessionId)
 
   if idleContainers.length > maxIdle:
-    // Map preserves insertion order → oldest containers first
     excess = idleContainers.slice(0, idleContainers.length - maxIdle)
     for sessionId in excess:
-      containerManager.destroy(sessionId)    // stops Docker container
-      runnerRegistry.dispose(sessionId)      // cleans up runner if exists
+      containerManager.destroy(sessionId)
+      runnerRegistry.dispose(sessionId)
 ```
 
 **Trigger points** (two transitions make a container idle):
@@ -69,11 +68,10 @@ enforceIdleContainerLimit():
 Add to `CredentialStore` (already persists JSON to disk, survives resets):
 
 ```typescript
-// credential-store.ts
 interface CredentialData {
   agentEnv?: Record<string, string>;
   githubToken?: string;
-  maxIdleContainers?: number;             // NEW
+  maxIdleContainers?: number;
 }
 
 getMaxIdleContainers(): number {
@@ -91,7 +89,6 @@ setMaxIdleContainers(n: number): void {
 Extend existing `PUT /api/settings` endpoint (already handles `gitIdentity` and `systemPrompt`):
 
 ```typescript
-// api-routes.ts — PUT /api/settings
 const { gitIdentity, systemPrompt, maxIdleContainers } = request.body;
 if (maxIdleContainers !== undefined) {
   validate: integer, >= 0
@@ -102,13 +99,12 @@ if (maxIdleContainers !== undefined) {
 Add `maxIdleContainers` to `GlobalSettings` type so it flows through bootstrap:
 
 ```typescript
-// services/types.ts
 interface GlobalSettings {
   gitIdentity: { name: string; email: string };
   systemPrompt: string;
   agents: AgentInfo[];
   defaultAgentId: AgentId;
-  maxIdleContainers: number;              // NEW
+  maxIdleContainers: number;
 }
 ```
 

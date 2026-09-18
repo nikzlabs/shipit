@@ -36,10 +36,8 @@ describe("GitManager: rollback", () => {
     fs.writeFileSync(filePath, "modified");
     await git.autoCommit("Modified");
 
-    // Verify modification
     expect(fs.readFileSync(filePath, "utf-8")).toBe("modified");
 
-    // Rollback
     await git.rollback(originalHash);
     expect(fs.readFileSync(filePath, "utf-8")).toBe("original");
   });

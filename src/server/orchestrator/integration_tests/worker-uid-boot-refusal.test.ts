@@ -1,23 +1,3 @@
-/**
- * docs/263 — `buildApp` refuses a reserved egress UID before it initializes
- * anything.
- *
- * The unit tests in `session-worker-uid.test.ts` pin the parse-site refusal
- * itself. This one pins the two things only the composition root can prove:
- *
- *  1. the refusal is actually WIRED into `buildApp` (an exported assertion
- *     nobody calls is not a guard), and
- *  2. it runs BEFORE `initializeManagers`, which migrates the SQLite database,
- *     adopts environment credentials and writes the global gitconfig. A boot the
- *     orchestrator is about to refuse must not mutate durable state on its way
- *     out, and the absence of `<stateDir>/.shipit.db` is the cheapest observable
- *     proof that it did not.
- *
- * `buildApp` is called with no dependency stubs on purpose: if the assertion is
- * first, none are reached. A regression that moves the call later fails this
- * test by needing them.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -51,8 +31,6 @@ describe("Integration: buildApp refuses a reserved worker UID (docs/263)", () =>
         ReservedWorkerUidError,
       );
 
-      // No database, no worker-UID marker: the refusal preceded every durable
-      // write, so a corrected env can boot into untouched state.
       expect(fs.readdirSync(tmpDir)).toEqual([]);
     });
   }

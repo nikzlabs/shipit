@@ -89,7 +89,7 @@ describe("Integration: PR creation — happy path", () => {
 
   it("GET /api/sessions/:id/git/branches returns current branch and remote branches", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await createSession(client);
 

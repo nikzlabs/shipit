@@ -1,16 +1,14 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect/useLayoutEffect: DOM scroll sync, window keydown listener, xterm auto-scroll
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import type { SearchMatch } from "../../../hooks/useSearch.js";
 import type { ChatMessage } from "../types.js";
 
 const BOTTOM_THRESHOLD_PX = 40;
-// Keep re-pinning to the bottom until the content height has been stable for
+
 // this many consecutive frames (layout settled), or until the safety cap.
 const STABLE_FRAMES = 3;
 const MAX_SCROLL_SETTLE_MS = 1000;
-// How long after the last gesture event we keep standing down. A touch drag ends
-// with the finger lifting, but the scroll does not — momentum carries on with no
-// further `touchmove`, and writing `scrollTop` during it kills the momentum dead.
+
 const GESTURE_GRACE_MS = 400;
 
 function isNearBottom(container: HTMLElement): boolean {
@@ -22,13 +20,6 @@ function scrollToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
 }
 
-/**
- * Is the user selecting text inside the transcript? Scrolling while they drag
- * moves the content out from under the pointer and wrecks the selection, so
- * EVERY auto-scroll path has to stand down until it is gone — the streaming
- * re-pin and the content observer alike, since during streaming both fire on
- * roughly every token.
- */
 function hasActiveSelectionInside(container: HTMLElement | null): boolean {
   if (!container || typeof window === "undefined") return false;
   const selection = window.getSelection();
@@ -37,9 +28,8 @@ function hasActiveSelectionInside(container: HTMLElement | null): boolean {
   );
 }
 
-// `Date.now()` rather than a constant fallback: a frozen clock would make the
 // settle loop's safety cap unreachable and leave every gesture grace window
-// permanently open.
+
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
@@ -112,38 +102,33 @@ function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => bo
   };
 }
 
-/**
- * Scroll behavior for the message transcript: keep the conversation pinned to
- * the bottom while the user is near it, anchor on a newly-appended user message,
- * and scroll the current search match into view. Returns the container ref (the
- * scroll element), the content ref (the element wrapping the messages, whose
- * height is watched) and the current-match ref (handed to `HighlightedText` so
- * the active match can be scrolled to).
- */
 export function useMessageScroll(
   messages: ChatMessage[],
   isLoading: boolean,
   currentMatch: SearchMatch | undefined,
+  sessionId: string | null,
 ): {
   containerRef: React.RefObject<HTMLDivElement | null>;
   contentRef: React.RefObject<HTMLDivElement | null>;
   currentMatchRef: React.RefObject<HTMLElement | null>;
+  canRestoreReadingAnchor: () => boolean;
+  canPreserveAcrossCardMove: () => boolean;
 } {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const previousMessageCountRef = useRef(0);
   const currentMatchRef = useRef<HTMLElement | null>(null);
-  // Canceller for the in-flight post-send settle loop, so a manual scroll can
-  // halt it the instant the user takes control (see the gesture listeners below).
+
   const cancelSettleRef = useRef<(() => void) | null>(null);
-  // Is a finger currently dragging the transcript, and when did the last gesture
+
   // event land? `-Infinity` so a freshly-mounted hook is never inside the grace
-  // window. See `userIsDriving` for why this gates every auto-scroll path.
+
   const touchDraggingRef = useRef(false);
   const lastGestureAtRef = useRef(-Infinity);
 
-  // Track whether the user has scrolled away from the bottom, and let any manual
+  const shownSessionRef = useRef<string | null>(sessionId);
+
   // scroll take authoritative control — we must never fight a user's scroll.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -153,38 +138,26 @@ export function useMessageScroll(
     const handleScroll = () => {
       const near = isNearBottom(container);
       autoScrollRef.current = near;
-      // Moving away from the bottom (scrollbar drag, keyboard, momentum) cancels
-      // any forced scroll immediately.
+
       if (!near) cancelSettleRef.current?.();
     };
 
     // `wheel`/`touchmove` fire only from genuine user input — never from a
-    // programmatic `scrollTop` write — so they are an unambiguous "user took
-    // control" signal. Halt the in-flight settle loop on the very first gesture,
-    // even before it crosses the near-bottom threshold, so a manual scroll is
+
     // never overridden, and stamp the gesture so the OTHER two auto-scroll paths
-    // (the layout effect's re-pin, the observer's) stand down for its duration.
+
     const handleManualScroll = () => {
       lastGestureAtRef.current = now();
       cancelSettleRef.current?.();
     };
 
-    // `wheel` deliberately gets the timestamp and NOT the drag flag below: it has
     // no end event, so a sticky flag set here would never clear and would suppress
-    // auto-follow for the rest of the session. A trackpad emits `wheel` densely
-    // enough through a gesture to keep refreshing the stamp; a discrete mouse
-    // notch is a scroll that genuinely finished, so re-arming after it is right.
-    //
-    // The drag flag comes from `touchmove`, not `touchstart`: a bare tap on the
-    // transcript scrolls nothing, and letting it suppress auto-follow would strand
-    // a streaming message for the whole grace window over a stray thumb.
+
     const handleTouchMove = () => {
       touchDraggingRef.current = true;
       handleManualScroll();
     };
-    // The finger lifting does not end the scroll — momentum runs on with no
-    // further `touchmove` — so clearing the flag hands over to the timestamp
-    // grace rather than resuming auto-follow immediately.
+
     const handleTouchEnd = () => {
       touchDraggingRef.current = false;
       lastGestureAtRef.current = now();
@@ -197,21 +170,11 @@ export function useMessageScroll(
     container.addEventListener("touchend", handleTouchEnd, { passive: true });
     container.addEventListener("touchcancel", handleTouchEnd, { passive: true });
 
-    // Two things move the bottom out from under us, and neither fires a scroll
-    // event: the container getting shorter (the composer growing), and the
-    // transcript getting taller. The second is the one that stranded the view —
-    // a message renders as an 80px `content-visibility` placeholder and grows
     // when it paints, which the container's own box never reflects, so watching
-    // only the container missed it. Watching the content element catches every
-    // height change whenever it lands, including a card that expands long after
-    // the settle loop has given up. It also lands in the same rendering update
-    // as the growth, i.e. BEFORE the scroll event that growth would otherwise
+
     // produce, so `handleScroll` never sees a position stranded by our own pin
     // and never mistakes it for the user scrolling away.
-    //
-    // It stands down mid-gesture, though: on mobile the address bar collapses as
-    // the user scrolls, which resizes the container and lands here as a resize
-    // indistinguishable from the transcript growing.
+
     const observer = typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
           if (userIsDriving(touchDraggingRef, lastGestureAtRef)) return;
@@ -231,23 +194,54 @@ export function useMessageScroll(
     };
   }, []);
 
-  // Auto-scroll to bottom only if user hasn't scrolled up.
-  // A newly appended user message is an explicit send action, so it anchors the
-  // conversation even if layout/keyboard/input-height changes briefly made the
-  // old bottom look stale.
-  // Skip while the user has an active selection inside the message list —
-  // otherwise streaming tokens trigger scrollIntoView on every render and
-  // continuously cancel the in-progress text selection.
   useLayoutEffect(() => {
+    /**
+     * planning#595 — a session that opens lands at the end of its conversation,
+     * whatever the reader had done to the PREVIOUS one.
+     *
+     * These refs describe one reader in one transcript, and the hook is never
+     * remounted across a switch. Left alone they carry the outgoing reader's
+     * position in: `autoScrollRef` false makes this effect bail AND the
+     * observer decline, so nothing pins the incoming transcript. The clamp that
+     * used to repair that by accident needs a scroll position to clamp from,
+     * and the status card is content the transcript's clearing does not remove
+     * — it renders from the session record — so the loading view stays
+     * scrollable as far as the card is tall and no clamp happens. Measured both
+     * ways; docs/303-session-status-card/plan.md has the numbers.
+     *
+     * Keyed on the session's identity rather than on observing the switch, so a
+     * viewer that misses an intermediate render still resets (docs/095) — and
+     * done HERE rather than during render, because a deferred render can be
+     * abandoned: these refs drive listeners that are live on the transcript
+     * still displayed, and writing them from a render that never commits pins
+     * the OUTGOING session to its bottom under a reader who did not ask for it.
+     */
+    if (shownSessionRef.current !== sessionId) {
+      shownSessionRef.current = sessionId;
+      autoScrollRef.current = true;
+      touchDraggingRef.current = false;
+      lastGestureAtRef.current = -Infinity;
+      previousMessageCountRef.current = 0;
+      // And the reader's SELECTION, which every pinning path stands down for.
+      // Clearing the transcript does not end one: the card keeps its DOM across
+      // the switch, so a selection made inside it is still inside the container
+      // afterwards and would hold the incoming conversation off its end for as
+      // long as it lasts. A click normally collapses a selection, which is why
+      // this only shows up when the session is opened without one — the back
+      // button, a keyboard switch, a link. It belongs to a conversation that is
+      // no longer on screen either way.
+      if (hasActiveSelectionInside(containerRef.current)) {
+        window.getSelection()?.removeAllRanges();
+      }
+    }
+
     const previousMessageCount = previousMessageCountRef.current;
     previousMessageCountRef.current = messages.length;
     const latestMessage = messages[messages.length - 1];
     const appendedUserMessage = messages.length > previousMessageCount && latestMessage?.role === "user";
 
     if (!autoScrollRef.current && !appendedUserMessage) return;
-    // A live gesture outranks auto-follow — but NOT an explicit send, which is
-    // newer user intent than the drag and re-anchors the conversation. Sending
-    // also ends the gesture: the tap landed on the composer, not the transcript.
+
     if (appendedUserMessage) {
       touchDraggingRef.current = false;
       lastGestureAtRef.current = -Infinity;
@@ -271,15 +265,78 @@ export function useMessageScroll(
       cancel();
       if (cancelSettleRef.current === cancel) cancelSettleRef.current = null;
     };
-  }, [messages, isLoading]);
+  }, [messages, isLoading, sessionId]);
 
-  // Scroll to the current search match when it changes
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // auto` sits on GROUPS of 20 rows, and a group that has never been on screen
+
+  // Bottom-pinning never had this problem because its ResizeObserver corrects
+
+  // eslint-disable-next-line no-restricted-syntax -- scroll settle loop with cleanup
   useEffect(() => {
-    if (currentMatch && currentMatchRef.current) {
-      currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    if (!currentMatch || !currentMatchRef.current) return;
+    currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+
+    let cancelled = false;
+    let lastHeight = -1;
+    let stableFrames = 0;
+    const start = now();
+
+    const tick = () => {
+      if (cancelled) return;
+      const container = containerRef.current;
+
+      const target = currentMatchRef.current;
+      if (!container || !target || userIsDriving(touchDraggingRef, lastGestureAtRef)) return;
+
+      const height = container.scrollHeight;
+      if (height === lastHeight) {
+        stableFrames += 1;
+      } else {
+        stableFrames = 0;
+        lastHeight = height;
+
+        target.scrollIntoView({ block: "center" });
+      }
+
+      if (stableFrames < STABLE_FRAMES && now() - start < MAX_SCROLL_SETTLE_MS) {
+        window.requestAnimationFrame(tick);
+      }
+    };
+
+    window.requestAnimationFrame(tick);
+    return () => { cancelled = true; };
   }, [currentMatch]);
 
-  return { containerRef, contentRef, currentMatchRef };
+  const canRestoreReadingAnchor = useCallback(() => !autoScrollRef.current
+    && !hasActiveSelectionInside(containerRef.current)
+    && !userIsDriving(touchDraggingRef, lastGestureAtRef), []);
+
+  /**
+   * docs/303-session-status-card req 30 — whether the status card returning to
+   * the end of the conversation must keep the reader's row where it is.
+   *
+   * It asks the container, not `autoScrollRef`. The flag is deliberately sticky
+   * — an appended user message sets it true and pins, so that the settle loop
+   * can keep pinning while a tall row paints — and a dispatched turn's own user
+   * row goes through that path too. So it can read true while the view sits
+   * thousands of pixels above the bottom, and the card's move changes no
+   * height, so no ResizeObserver corrects it: the reader's row would simply
+   * jump by the card's height. Near the bottom nothing is needed, since the
+   * move leaves `scrollHeight` alone.
+   *
+   * A live text SELECTION is not a reason to stand down, unlike the auto-scroll
+   * paths: those would move content the user is holding still, while this one
+   * cancels a displacement they did not ask for — a selection below the card is
+   * exactly what the card's departure drags out from under the cursor. A live
+   * scroll GESTURE still is: writing `scrollTop` into a fling fights it, and a
+   * reader mid-fling is not holding a row.
+   */
+  const canPreserveAcrossCardMove = useCallback(() => {
+    const container = containerRef.current;
+    return !!container
+      && !isNearBottom(container)
+      && !userIsDriving(touchDraggingRef, lastGestureAtRef);
+  }, []);
+
+  return { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor, canPreserveAcrossCardMove };
 }

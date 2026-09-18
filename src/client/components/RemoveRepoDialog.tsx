@@ -15,17 +15,6 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
-/**
- * Confirmation dialog for removing a repository (docs/059).
- *
- * Repo removal is more consequential than the old two-click idiom let on: the
- * backend now archives every session for the repo and reclaims their disk
- * (working copies, containers, compose volumes, logs) — see services/session.ts
- * `archiveSession` invoked from the DELETE /api/repos/:url handler. The only
- * unrecoverable loss is uncommitted/unpushed work; everything else (history,
- * pushed branches) survives and the sessions come back archived on re-add. A
- * plain "click again to confirm" can't convey that, so we spell it out here.
- */
 export function RemoveRepoDialog({
   open,
   repoName,
@@ -35,7 +24,7 @@ export function RemoveRepoDialog({
 }: {
   open: boolean;
   repoName: string;
-  /** Number of visible (non-archived) sessions that will be archived. */
+
   sessionCount: number;
   onConfirm: () => void;
   onClose: () => void;

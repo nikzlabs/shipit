@@ -36,7 +36,6 @@
   .tradeoff{font-size:12px;color:var(--color-text-tertiary);margin:8px 2px 0}
   .tradeoff .good{color:var(--color-success)} .tradeoff .bad{color:var(--color-warning)}
 
-  /* ---- PR card chrome (faithful to PrLifecycleCard) ---- */
   .card{border:1px solid var(--color-border-primary);border-radius:12px;overflow:hidden;background:var(--color-bg-primary)}
   .pr-bar{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--color-border-primary)}
   .pr-badge{width:22px;height:22px;border-radius:7px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;
@@ -51,12 +50,10 @@
   .toolbtn.plain{color:var(--color-text-tertiary);background:transparent;border-color:transparent}
   .dots{color:var(--color-text-tertiary);padding:4px 6px;cursor:pointer}
 
-  /* ---- the expandable panel ---- */
   .panel{padding:9px 14px;border-bottom:1px solid var(--color-border-primary);background:rgba(17,24,39,.45)}
   .panel:last-child{border-bottom:none}
   .chiprow{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 
-  /* file chip (existing) */
   .fchip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 9px 4px 8px;border-radius:999px;
     font-size:12px;cursor:pointer;color:var(--color-text-primary);background:var(--color-bg-tertiary);
     border:1px solid var(--color-border-secondary)}
@@ -64,7 +61,6 @@
   .fchip .dot.m{background:var(--color-warning)} .fchip .dot.a{background:var(--color-success)}
   .fchip svg{flex:0 0 auto}
 
-  /* issue chip variants */
   .ichip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 10px 4px 8px;border-radius:999px;
     font-size:12px;cursor:pointer;color:var(--color-text-primary);background:var(--color-bg-tertiary);
     border:1px solid var(--color-border-secondary);white-space:nowrap}
@@ -72,7 +68,6 @@
   .ichip .id{font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-text-primary)}
   .ichip .ttl{color:var(--color-text-secondary);overflow:hidden;text-overflow:ellipsis;max-width:180px}
   .ichip svg{flex:0 0 auto}
-  /* intent-tinted variant */
   .ichip.closes{border-color:var(--color-success-border);background:var(--color-success-subtle)}
   .ichip.closes .verb{color:var(--color-success)}
   .ichip.refs .verb{color:var(--color-text-tertiary)}
@@ -103,7 +98,6 @@
     <span><b>Trackers:</b> Linear <svg width="11" height="11" viewBox="0 0 100 100"><path fill="var(--linear)" d="M1.2 61a49 49 0 0 0 37.8 37.8L1.2 61Zm-1.1-15.7 54.6 54.6a49.6 49.6 0 0 0 10-2.6L2.7 35.3a49.6 49.6 0 0 0-2.6 10Zm6.4-18.4 65.6 65.6a50 50 0 0 0 7-5.1L11.6 19.9a50 50 0 0 0-5.1 7Zm10.7-13.3 60.9 60.9A50 50 0 1 0 17.2 13.6Z"/></svg> &amp; GitHub <svg width="12" height="12" viewBox="0 0 16 16"><path fill="var(--github)" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.3c-2.23.49-2.7-1.08-2.7-1.08-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></span>
   </div>
 
-  <!-- ============ OPTION 1 ============ -->
   <div class="opt">
     <div class="opt-head"><span class="num">1</span><h2>Inline, issues first, divider</h2></div>
     <p class="opt-note">Issue chips lead the same wrapping row, separated from file chips by a thin divider. One row, minimal new concept.</p>
@@ -137,7 +131,6 @@
     <p class="tradeoff"><span class="good">+</span> Fewest moving parts; reuses the row verbatim. &nbsp; <span class="bad">−</span> With many files, issues can wrap away from the top and lose prominence.</p>
   </div>
 
-  <!-- ============ OPTION 2 ============ -->
   <div class="opt">
     <div class="opt-head"><span class="num">2</span><h2>Labeled sub-rows</h2></div>
     <p class="opt-note">The panel splits into two labeled mini-sections. Issues always sit on their own line above the files, so they never get buried.</p>
@@ -178,7 +171,6 @@
     <p class="tradeoff"><span class="good">+</span> Issues stay prominent; labels read as plain English. &nbsp; <span class="bad">−</span> Taller panel; the “Closes” label folds intent into the section instead of the chip.</p>
   </div>
 
-  <!-- ============ OPTION 3 ============ -->
   <div class="opt">
     <div class="opt-head"><span class="num">3</span><h2>Intent-led pill, single row</h2></div>
     <p class="opt-note">Each chip carries its own verb segment (<b>Closes</b> / <b>Refs</b> / <b>From session</b>), so source &amp; intent travel with the chip and order doesn’t matter. Files follow after a divider.</p>
@@ -218,7 +210,6 @@
     <p class="tradeoff"><span class="good">+</span> Self-describing; surfaces the <b>session-origin</b> issue even before any PR body exists. &nbsp; <span class="bad">−</span> Verb text widens chips; titles dropped to keep them compact (full title in tooltip).</p>
   </div>
 
-  <!-- ============ OPTION 4 ============ -->
   <div class="opt">
     <div class="opt-head"><span class="num">4</span><h2>One issue chip in the header + full list in panel</h2></div>
     <p class="opt-note">The single primary issue (the <code>Closes</code>, or the session origin) rides in the always-visible header next to the title; the rest live in the expandable panel. Glanceable without expanding.</p>

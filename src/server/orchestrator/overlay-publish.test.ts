@@ -16,17 +16,9 @@ import { readBasePointer, type OverlayScope } from "./overlay-base.js";
 import { overlayRuntimeKey } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
 
-/**
- * Phase 4b (docs/183) — publish-after-install orchestration. The worker pull and
- * tar extraction are injected (`fetchSnapshot`/`extract`) so the test drives real
- * publishes against a real `stateDir` without an HTTP worker; the git oracle is a
- * fake so eligibility/ordering are controlled directly.
- */
-
 const REPO_URL = "https://github.com/acme/widgets.git";
 const HEAD = "c0ffee".padEnd(40, "0");
 
-/** A workspace git repo with the given dep dirs created on disk + git-ignored. */
 function makeWorkspace(depDirs: string[], opts: { ignore?: boolean; shipitDepDirs?: string[] } = {}): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-pub-ws-"));
   execFileSync("git", ["-C", dir, "init", "-q"]);
@@ -50,13 +42,11 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   let env: NodeJS.ProcessEnv;
   let runtimeKey: string;
 
-  /** Oracle whose default branch is HEAD (→ sourceIsDefaultBranch true); forward-advances. */
   const oracle: AncestryOracle = {
     isAncestor: (a, b) => Promise.resolve(a !== b),
     resolveDefaultBranchCommit: () => Promise.resolve(HEAD),
   };
 
-  /** `fetchSnapshot` carries the dep dir name; `extract` writes it as the base's sole file. */
   function depsWith(over: Partial<OverlayPublishDeps> = {}): OverlayPublishDeps {
     return {
       stateDir,
@@ -76,7 +66,6 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   }
 
   function baseContentFor(depDir: string): string | null {
-    // Bases are generational — the pointer names the current generation's dir.
     const ptr = pointerFor(depDir);
     if (!ptr) return null;
     const f = path.join(ptr.baseDir, "content");
@@ -107,7 +96,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     expect(pointerFor("node_modules")).toMatchObject({ commit: HEAD, depth: 1 });
     expect(baseContentFor("node_modules")).toBe("node_modules");
   });
@@ -122,9 +111,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
-    // This workspace has no package.json/lockfile, so there is nothing to
-    // content-key: the marker records a null depsHash (docs/198, commit-only).
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     expect(pointerFor("node_modules")?.marker).toEqual({
       runtimeKey: "img|x64|glibc|node24",
       installCommands: ["npm install"],
@@ -133,9 +120,6 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   });
 
   it("propagates the dependency content key (depsHash) into the pointer marker (docs/198)", async () => {
-    // Dep input files present → the marker carries a real content hash, so a
-    // later session on a different commit with byte-identical files can content-
-    // key pre-stamp against this base.
     fs.writeFileSync(path.join(workspaceDir, "package.json"), '{"name":"x"}');
     fs.writeFileSync(path.join(workspaceDir, "package-lock.json"), '{"lockfileVersion":3}');
     const out = await publishDepDirOverlayBases(
@@ -147,7 +131,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     const marker = pointerFor("node_modules")?.marker;
     expect(marker?.runtimeKey).toBe("img|x64|glibc|node24");
     expect(marker?.installCommands).toEqual(["npm install"]);
@@ -156,8 +140,6 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   });
 
   it("disables content-keying (null depsHash) when the install isn't a recognized pure dep install (docs/198)", async () => {
-    // A codegen step taints the content key — even with dep files present, the
-    // pointer records depsHash:null so no later session can content-skip.
     fs.writeFileSync(path.join(workspaceDir, "package.json"), '{"name":"x"}');
     fs.writeFileSync(path.join(workspaceDir, "package-lock.json"), '{"lockfileVersion":3}');
     const out = await publishDepDirOverlayBases(
@@ -169,7 +151,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     expect(pointerFor("node_modules")?.marker?.depsHash).toBeNull();
   });
 
@@ -196,10 +178,9 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       depsWith(),
     );
     expect(out).toEqual([
-      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1 },
-      { depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1 },
+      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+      { depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
     ]);
-    // Each base holds ONLY its own dep dir's snapshot — distinct scope hashes.
     expect(baseContentFor("node_modules")).toBe("node_modules");
     expect(baseContentFor("packages/app/node_modules")).toBe("packages/app/node_modules");
     expect(overlayScopeHash(REPO_URL, runtimeKey, "node_modules")).not.toBe(
@@ -210,7 +191,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   it("propagates the climbing overlay depth on an advance (the depth-cap signal)", async () => {
     const c1 = "c1".padEnd(40, "0");
     const c2 = "c2".padEnd(40, "0");
-    let head = c1; // the current default-branch tip; advances to c2 between publishes
+    let head = c1;
     const oracle2: AncestryOracle = {
       isAncestor: (a, b) => Promise.resolve(a === c1 && b === c2),
       resolveDefaultBranchCommit: () => Promise.resolve(head),
@@ -219,11 +200,11 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     const session = { remoteUrl: REPO_URL, kind: undefined, workspaceDir };
 
     const first = await publishDepDirOverlayBases({ session, workerUrl: "http://w", installOk: true }, deps);
-    expect(first).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(first).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
 
-    head = c2; // main advanced with a dep change
+    head = c2;
     const second = await publishDepDirOverlayBases({ session, workerUrl: "http://w", installOk: true }, deps);
-    expect(second).toEqual([{ depDir: "node_modules", outcome: "advanced", depth: 2, generation: 2 }]);
+    expect(second).toEqual([{ depDir: "node_modules", outcome: "advanced", depth: 2, generation: 2, attempts: 1 }]);
   });
 
   it("no-ops when the kill switch is set (OVERLAY_DEP_STORE=0)", async () => {
@@ -251,11 +232,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(out).toEqual([]);
   });
 
-  // docs/198 — pnpm repos never overlay, so the publish hook must skip them at the
-  // same `isPnpmRepo` decision point the mount side uses. Otherwise it exports +
-  // publishes a never-mounted base generation (480 MB leak observed on the canary).
   it("no-ops for a pnpm repo (no base published), while an npm repo still publishes", async () => {
-    // pnpm repo: a root pnpm-lock.yaml is the conventional signal.
     fs.writeFileSync(path.join(workspaceDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
@@ -265,14 +242,13 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(pointerFor("node_modules")).toBeNull();
     expect(baseContentFor("node_modules")).toBeNull();
 
-    // An otherwise-identical npm repo (no pnpm signal) still publishes its base.
     const npmWs = makeWorkspace(["node_modules"]);
     try {
       const npmOut = await publishDepDirOverlayBases(
         { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir: npmWs }, workerUrl: "http://w", installOk: true },
         depsWith(),
       );
-      expect(npmOut).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+      expect(npmOut).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     } finally {
       fs.rmSync(npmWs, { recursive: true, force: true });
     }
@@ -305,8 +281,9 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith({ createRepoGit: () => other }),
     );
-    // publishBase classifies a non-default source as ineligible — no base written.
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-ineligible" }]);
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "skipped-ineligible", depth: undefined, generation: undefined, attempts: 1 },
+    ]);
     expect(pointerFor("node_modules")).toBeNull();
   });
 
@@ -315,27 +292,55 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       ignore: false,
       shipitDepDirs: ["node_modules", "src/vendored"],
     });
-    // Only node_modules is ignored; src/vendored is tracked source.
     fs.writeFileSync(path.join(workspaceDir, ".gitignore"), "node_modules/\n");
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+      { depDir: "src/vendored", outcome: "dropped", dropReason: "not-git-ignored" },
+    ]);
     expect(baseContentFor("node_modules")).toBe("node_modules");
     expect(baseContentFor("src/vendored")).toBeNull();
+  });
+
+  // The incident: `.tools/` is ignored so no clone has it, and requiring the parent dropped the
+  // dep dir silently — the measurement line simply omitted it (docs/183 FINDINGS, 2026-09-15).
+  it("publishes a dep dir whose parent is itself git-ignored and absent on the clone", async () => {
+    workspaceDir = makeWorkspace(["node_modules"], { shipitDepDirs: ["node_modules", ".tools/blender"] });
+    fs.writeFileSync(path.join(workspaceDir, ".gitignore"), "node_modules/\n.tools/\n");
+    // `.tools` must NOT exist: creating it is what made the old parent-exists check accept this.
+    expect(fs.existsSync(path.join(workspaceDir, ".tools"))).toBe(false);
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith(),
+    );
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+      { depDir: ".tools/blender", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+    ]);
+    expect(baseContentFor(".tools/blender")).toBe(".tools/blender");
+  });
+
+  it("reports a dropped dep dir even when nothing is left to publish", async () => {
+    workspaceDir = makeWorkspace([], { ignore: false, shipitDepDirs: ["src/vendored"] });
+    fs.writeFileSync(path.join(workspaceDir, ".gitignore"), "node_modules/\n");
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith(),
+    );
+    expect(out).toEqual([{ depDir: "src/vendored", outcome: "dropped", dropReason: "not-git-ignored" }]);
   });
 
   it("declines to publish an empty snapshot (no base, no pointer)", async () => {
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith({
-        // The export yields a valid-but-empty archive — the signature of a
-        // broken/empty merged view. Nothing may be published from it.
         extract: async (stream) => { for await (const _ of stream) { /* drain */ } },
       }),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-empty" }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-empty", attempts: 1 }]);
     expect(pointerFor("node_modules")).toBeNull();
     expect(baseContentFor("node_modules")).toBeNull();
   });
@@ -354,13 +359,10 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       }),
     );
     expect(out[0]).toMatchObject({ depDir: "node_modules", outcome: "error" });
-    expect(out[1]).toEqual({ depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1 });
-    // The failing dir wrote no base; the healthy dir did.
+    expect(out[1]).toEqual({ depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 });
     expect(pointerFor("node_modules")).toBeNull();
     expect(baseContentFor("packages/app/node_modules")).toBe("packages/app/node_modules");
   });
-
-  // --- abort on session disposal (prod crash 2026-07-30) ---------------------
 
   it("threads the abort signal into the worker pull and head fetch", async () => {
     const controller = new AbortController();
@@ -387,8 +389,6 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   });
 
   it("records an error (never throws) when the pull dies mid-stream", async () => {
-    // The archive-during-publish race: the container is SIGKILLed and the
-    // snapshot stream dies half-way. Worst case is a logged per-dir error.
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith({
@@ -402,9 +402,100 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       }),
     );
     expect(out).toEqual([
-      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("terminated") },
+      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("terminated"), attempts: 2 },
     ]);
     expect(pointerFor("node_modules")).toBeNull();
+  });
+
+  it("retries a raced snapshot once, and publishes the clean attempt", async () => {
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        fetchSnapshot: (_url, depDir) => {
+          attempts.push(depDir);
+          if (attempts.length === 1) {
+            return Promise.reject(new Error(
+              "tar exited with code 1 while snapshotting /workspace/node_modules: tar: .: file changed as we read it",
+            ));
+          }
+          return Promise.resolve(Readable.from([Buffer.from(depDir)]));
+        },
+      }),
+    );
+    expect(attempts).toEqual(["node_modules", "node_modules"]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 2 }]);
+    expect(baseContentFor("node_modules")).toBe("node_modules");
+  });
+
+  it("gives up after the retry rather than publishing a dep dir that never read clean", async () => {
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        fetchSnapshot: (_url, depDir) => {
+          attempts.push(depDir);
+          return Promise.reject(new Error("tar exited with code 1: tar: .: file changed as we read it"));
+        },
+      }),
+    );
+    expect(attempts).toHaveLength(2);
+    expect(out).toEqual([
+      {
+        depDir: "node_modules",
+        outcome: "error",
+        error: expect.stringContaining("file changed as we read it"),
+        attempts: 2,
+      },
+    ]);
+    expect(pointerFor("node_modules")).toBeNull();
+  });
+
+  it("does NOT retry a pull the session's disposal aborted", async () => {
+    const controller = new AbortController();
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        signal: controller.signal,
+      },
+      depsWith({
+        fetchSnapshot: () => {
+          attempts.push("pull");
+          controller.abort(new Error("session runner disposed"));
+          return Promise.reject(new Error("terminated"));
+        },
+      }),
+    );
+    expect(attempts).toHaveLength(1);
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("terminated"), attempts: 1 },
+    ]);
+  });
+
+  it("does not mix a failed attempt's partial tree into the retry's", async () => {
+    let call = 0;
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        extract: async (stream, destDir) => {
+          for await (const _ of stream) { /* drain */ }
+          fs.mkdirSync(destDir, { recursive: true });
+          if (++call === 1) {
+            fs.writeFileSync(path.join(destDir, "half-written"), "from the raced attempt");
+            throw new Error("tar -x exited with code 1");
+          }
+          fs.writeFileSync(path.join(destDir, "content"), "clean");
+        },
+      }),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 2 }]);
+    const ptr = pointerFor("node_modules");
+    expect(ptr).not.toBeNull();
+    expect(fs.readdirSync(ptr?.baseDir ?? "").sort()).toEqual(["content"]);
+    expect(baseContentFor("node_modules")).toBe("clean");
   });
 
   it("stops pulling remaining dep dirs once the signal aborts", async () => {
@@ -423,7 +514,6 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       depsWith({
         fetchSnapshot: (_url, depDir) => {
           pulled.push(depDir);
-          // The runner is disposed while the first dir is streaming.
           controller.abort(new Error("session runner disposed"));
           return Promise.resolve(Readable.from([Buffer.from(depDir)]));
         },
@@ -444,7 +534,7 @@ describe("formatOverlayMeasurement", () => {
       installDurationMs: 1843,
       outcomes: [
         { depDir: "node_modules", outcome: "advanced", depth: 3, generation: 4 },
-        { depDir: "packages/api/node_modules", outcome: "created", depth: 1, generation: 1 },
+        { depDir: "packages/api/node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
       ],
     });
     expect(line).toBe(
@@ -463,6 +553,53 @@ describe("formatOverlayMeasurement", () => {
     });
     expect(line).toBe(
       "[overlay-measure] session=s repo=r install_ok=false install_ms=12 dirs=node_modules:skipped-ineligible",
+    );
+  });
+
+  it("adds `a<attempts>` ONLY when the retry fired, so an ordinary line is unchanged", () => {
+    const line = formatOverlayMeasurement({
+      sessionId: "s",
+      repoUrl: "r",
+      installOk: true,
+      installDurationMs: 900,
+      outcomes: [
+        { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+        { depDir: "game/node_modules", outcome: "advanced", depth: 2, generation: 5, attempts: 2 },
+      ],
+    });
+    expect(line).toBe(
+      "[overlay-measure] session=s repo=r install_ok=true install_ms=900 " +
+        "dirs=node_modules:created:d1g1,game/node_modules:advanced:d2g5:a2",
+    );
+  });
+
+  it("carries `a<attempts>` on an error, which has no depth segment before it", () => {
+    const line = formatOverlayMeasurement({
+      sessionId: "s",
+      repoUrl: "r",
+      installOk: true,
+      installDurationMs: 900,
+      outcomes: [{ depDir: "node_modules", outcome: "error", error: "tar exited with code 1", attempts: 2 }],
+    });
+    expect(line).toBe(
+      "[overlay-measure] session=s repo=r install_ok=true install_ms=900 dirs=node_modules:error:a2",
+    );
+  });
+
+  it("names the reason a declared dep dir was dropped, so a silent omission is visible", () => {
+    const line = formatOverlayMeasurement({
+      sessionId: "s",
+      repoUrl: "r",
+      installOk: true,
+      installDurationMs: 900,
+      outcomes: [
+        { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+        { depDir: ".tools/blender", outcome: "dropped", dropReason: "missing-tracked-parent" },
+      ],
+    });
+    expect(line).toBe(
+      "[overlay-measure] session=s repo=r install_ok=true install_ms=900 " +
+        "dirs=node_modules:created:d1g1,.tools/blender:dropped:missing-tracked-parent",
     );
   });
 });

@@ -9,22 +9,6 @@ import { ICON_SIZE } from "../design-tokens.js";
 import type { WsClientMessage, WsLogRecord, LogSource } from "../../server/shared/types.js";
 import { useLogStore, EMPTY_CHANNEL } from "../stores/log-store.js";
 
-/**
- * Unified read-only xterm log viewer (docs/192).
- *
- * One component renders BOTH the agent-container Logs tab
- * (`channel="agent" showSource`) and every preview-service panel
- * (`channel={`service:${name}`}`). It is a pure function of the channel's
- * `useLogStore` state: a `log_snapshot` resets the model (full rewrite), a
- * `log_append` extends it (incremental write). Search (⌘/Ctrl-F) replaces the
- * old per-source filter chips and works identically for both channels.
- *
- * Replaces the former `ServiceLogViewer` (deleted) and the bespoke DOM list
- * inside `TerminalPanel` — so the agent tab now gets true ANSI, terminal
- * scrollback, web-links, copy, and search for free.
- */
-
-/** ANSI prefix colors per agent source (only used when `showSource`). */
 const SOURCE_ANSI: Record<LogSource, string> = {
   stderr: "\x1b[31m", // red
   stdout: "", // default fg
@@ -53,8 +37,6 @@ function formatTime(iso: string): string {
   }
 }
 
-/** Write one record to xterm. Agent records get a dim-ts + colored-source
- *  prefix; service records (no `showSource`) are written raw, ANSI preserved. */
 function writeRecord(term: Terminal, rec: WsLogRecord, showSource: boolean): void {
   if (!showSource) {
     term.write(rec.text);
@@ -65,8 +47,6 @@ function writeRecord(term: Terminal, rec: WsLogRecord, showSource: boolean): voi
   const label = src ? SOURCE_LABELS[src] : "";
   const color = src ? SOURCE_ANSI[src] : "";
   const prefix = `${DIM}${ts}${RESET} ${color}[${label}]${RESET} `;
-  // Each agent record is one logical line; ensure it ends with a newline so
-  // the next record starts fresh. (Service raw chunks bring their own EOLs.)
   const body = rec.text.endsWith("\n") ? rec.text : `${rec.text}\n`;
   term.write(prefix + body);
 }
@@ -93,8 +73,7 @@ export function LogView({
   const searchRef = useRef<SearchAddon | null>(null);
   const autoScrollRef = useRef(true);
 
-  // Track what we've already written to xterm so an append writes only the
-  // delta and a snapshot/clear/trim (epoch bump) triggers a full rewrite.
+  // Epoch changes require a full rewrite; normal appends write only the delta.
   const writtenCountRef = useRef(0);
   const writtenEpochRef = useRef(-1);
 
@@ -104,7 +83,6 @@ export function LogView({
 
   const channelState = useLogStore((s) => s.channels[channel] ?? EMPTY_CHANNEL);
 
-  // ---- xterm lifecycle (per channel) ----
   // eslint-disable-next-line no-restricted-syntax -- xterm init + observers
   useEffect(() => {
     const container = containerRef.current;
@@ -147,8 +125,7 @@ export function LogView({
       setMatches({ index: resultIndex, count: resultCount });
     });
 
-    // Follow the tail only while the user is parked at the bottom — scrolling
-    // up to read history pauses auto-scroll until they return to the bottom.
+    // Pause tail-following while the user reads earlier output.
     const onScroll = term.onScroll(() => {
       const b = term.buffer.active;
       autoScrollRef.current = b.viewportY >= b.baseY;
@@ -161,9 +138,6 @@ export function LogView({
     });
     observer.observe(container);
 
-    // Subscribe on mount (and on channel change). The agent channel is ALSO
-    // re-seeded proactively by the server on every WS (re)connect; both paths
-    // send an idempotent `log_snapshot`.
     send({ type: "subscribe_logs", channel });
 
     return () => {
@@ -178,7 +152,6 @@ export function LogView({
     };
   }, [channel, send]);
 
-  // ---- store → xterm ----
   // eslint-disable-next-line no-restricted-syntax -- drive xterm from store state
   useEffect(() => {
     const term = termRef.current;
@@ -187,7 +160,6 @@ export function LogView({
 
     const wasAtBottom = autoScrollRef.current;
     if (epoch !== writtenEpochRef.current) {
-      // Snapshot / clear / trim — rewrite from scratch.
       term.clear();
       term.reset();
       for (const rec of records) writeRecord(term, rec, showSource);
@@ -204,7 +176,6 @@ export function LogView({
     if (wasAtBottom) term.scrollToBottom();
   }, [channelState, showSource]);
 
-  // ---- search ----
   const runSearch = useCallback((q: string, dir: "next" | "prev") => {
     const addon = searchRef.current;
     if (!addon || !q) { setMatches({ index: -1, count: 0 }); return; }
@@ -223,7 +194,6 @@ export function LogView({
     runSearch(q, "next");
   }, [runSearch]);
 
-  // ⌘/Ctrl-F focuses the search box.
   // eslint-disable-next-line no-restricted-syntax -- keyboard shortcut listener
   useEffect(() => {
     const root = containerRef.current?.parentElement;
@@ -241,7 +211,6 @@ export function LogView({
 
   return (
     <div className="flex flex-col h-full w-full" style={{ backgroundColor: "#030712" }}>
-      {/* Search bar */}
       <div className="flex items-center gap-1.5 px-2 py-1 border-b border-(--color-border-secondary) bg-(--color-bg-secondary)">
         <MagnifyingGlassIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary) shrink-0" />
         <input
@@ -288,7 +257,6 @@ export function LogView({
           </button>
         )}
       </div>
-      {/* xterm */}
       <div ref={containerRef} className="flex-1 min-h-0 w-full" />
     </div>
   );

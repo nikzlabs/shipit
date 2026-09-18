@@ -55,50 +55,39 @@ describe("FileTree", () => {
 
   it("does not auto-expand root-level directories (everything collapsed)", () => {
     render(<FileTree tree={sampleTree} onRefresh={() => {}} />);
-    // Root-level src directory is collapsed by default
     expect(screen.queryByText("index.ts")).not.toBeInTheDocument();
     expect(screen.queryByText("components")).not.toBeInTheDocument();
   });
 
   it("does not auto-expand nested directories", () => {
     render(<FileTree tree={sampleTree} onRefresh={() => {}} />);
-    // components dir is nested, and also hidden because src is collapsed
     expect(screen.queryByText("App.tsx")).not.toBeInTheDocument();
   });
 
   it("toggles directory expansion on click", () => {
     render(<FileTree tree={sampleTree} onRefresh={() => {}} />);
-    // src is collapsed, expand it to reveal components
     fireEvent.click(screen.getByText("src"));
-    // components is collapsed, App.tsx not visible
     expect(screen.queryByText("App.tsx")).not.toBeInTheDocument();
 
-    // Click to expand
     fireEvent.click(screen.getByText("components"));
     expect(screen.getByText("App.tsx")).toBeInTheDocument();
 
-    // Click to collapse
     fireEvent.click(screen.getByText("components"));
     expect(screen.queryByText("App.tsx")).not.toBeInTheDocument();
   });
 
   it("expands root directory on click", () => {
     render(<FileTree tree={sampleTree} onRefresh={() => {}} />);
-    // src is collapsed, index.ts not visible
     expect(screen.queryByText("index.ts")).not.toBeInTheDocument();
 
-    // Click to expand
     fireEvent.click(screen.getByText("src"));
     expect(screen.getByText("index.ts")).toBeInTheDocument();
   });
 
   it("renders SVG icons for files and directories", () => {
     const { container } = render(<FileTree tree={sampleTree} onRefresh={() => {}} />);
-    // Expand src to surface nested icons
     fireEvent.click(screen.getByText("src"));
     const svgs = container.querySelectorAll("svg");
-    // At minimum: chevron + folder for src, chevron + folder for components,
-    // file icon for index.ts, file icons for package.json and README.md
     expect(svgs.length).toBeGreaterThanOrEqual(5);
   });
 
@@ -113,7 +102,6 @@ describe("FileTree", () => {
   it("calls onFileClick when a file is clicked", () => {
     const onFileClick = vi.fn();
     render(<FileTree tree={sampleTree} onRefresh={() => {}} onFileClick={onFileClick} />);
-    // src is collapsed by default — expand it first to reveal index.ts
     fireEvent.click(screen.getByText("src"));
     fireEvent.click(screen.getByText("index.ts"));
     expect(onFileClick).toHaveBeenCalledWith("src/index.ts");
@@ -147,7 +135,6 @@ describe("FileTree", () => {
       <FileTree tree={sampleTree} onRefresh={() => {}} selectedFile="src/index.ts" />
     );
     fireEvent.click(screen.getByText("src"));
-    // The highlight class is on the wrapper div, not the inner button
     const fileRow = screen.getByText("index.ts").closest("div[draggable]") ?? screen.getByText("index.ts").closest("button")?.parentElement;
     expect(fileRow?.className).toContain("bg-(--color-accent-subtle)");
   });
@@ -209,7 +196,6 @@ describe("FileTree", () => {
     ];
     render(<FileTree tree={sampleTree} onRefresh={() => {}} uploads={uploads} onEdit={() => {}} onDownload={() => {}} onAddToChat={() => {}} onDeleteUpload={() => {}} />);
 
-    // Rows stay compact — no reserved min height that would make them taller at rest.
     fireEvent.click(screen.getByText("src"));
     const fileRow = screen.getByText("index.ts").closest("div[draggable]");
     expect(fileRow?.className).not.toContain("min-h-7");
@@ -218,8 +204,6 @@ describe("FileTree", () => {
     const uploadRow = screen.getByText("data.csv").closest("button")?.parentElement;
     expect(uploadRow?.className).not.toContain("min-h-7");
 
-    // The 28px (h-7) hover action buttons carry a negative vertical margin so their
-    // margin-box doesn't stretch the flex row — the row height is unchanged on hover.
     for (const label of ["Edit index.ts", "Download index.ts", "Add index.ts to chat", "Add data.csv to chat", "Delete data.csv"]) {
       const btn = screen.getByLabelText(label);
       expect(btn.className).toContain("h-7");

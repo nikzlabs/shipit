@@ -21,7 +21,6 @@ describe("useNotification", () => {
       get: () => hiddenValue,
     });
 
-    // Intercept visibilitychange listeners
     const origAdd = document.addEventListener.bind(document);
     const origRemove = document.removeEventListener.bind(document);
     vi.spyOn(document, "addEventListener").mockImplementation((type, handler, options?) => {
@@ -184,15 +183,14 @@ describe("useNotification", () => {
   });
 
   it("requestPermission does nothing when Notification API is unavailable", () => {
-    // In jsdom, Notification may not exist by default — make sure it's absent
+
     const original = (globalThis as any).Notification;
     delete (globalThis as any).Notification;
 
     const { result } = renderHook(() => useNotification());
-    // Should not throw
+
     act(() => result.current.requestPermission());
 
-    // Restore
     if (original) (globalThis as any).Notification = original;
   });
 
