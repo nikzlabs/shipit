@@ -34,20 +34,13 @@ requirement and belongs in `plan.md`.
    Claude models on OpenCode Zen, and GPT-5.5 on the ChatGPT subscription.
 7. Where a GPT model genuinely cannot run on OpenCode, ShipIt does not offer
    it, and the reason is recorded.
-8. On OpenCode, a GPT model reachable by more than one request shape uses the
-   same shape Codex uses, rather than the older one. **Not yet delivered** —
-   see the open question below.
+8. ~~On OpenCode, a GPT model reachable by more than one request shape uses the
+   same shape Codex uses, rather than the older one.~~ **Dropped 2026-09-18**;
+   see the receipt below. The number is kept so earlier citations still resolve.
 
 ## Open questions
 
-- Req 8 has no lever that hits only GPT models. Both global orderings were
-  measured and both carry collateral the user did not ask for: preferring
-  Responses on the OpenCode harness moved 12 unrelated gateway combinations and
-  re-pointed a retired DeepSeek model's successor to a different vendor's model;
-  preferring each model row's own declared order instead moved 22 gateway rows
-  onto Anthropic Messages. Delivering req 8 therefore needs a per-row
-  preference, which is new mechanism. Is that worth building now, or is req 8
-  worth dropping given GPT models already reach OpenCode without it?
+- (none)
 
 ## Resolved questions
 
@@ -63,3 +56,12 @@ requirement and belongs in `plan.md`.
   constraint that an already-working path changes shape, so the existing
   OpenAI API-key GPT combinations need re-checking rather than being assumed
   unaffected.
+- 2026-09-18 — Build a per-row style preference to deliver req 8, or drop it?
+  The user: "req 8: drop it." Two facts led there. Both global levers were
+  measured and both changed combinations nobody asked about (see `plan.md`).
+  And the requirement was scoped wider than it ever applied: the OpenAI
+  subscription route does not use ShipIt's synthetic provider at all, so it was
+  already on Responses, leaving req 8 to govern only the API-key and gateway
+  routes. Carries the constraint that `resolveStyle` keeps harness-order
+  preference, and that GPT models on those routes stay on Chat Completions
+  where they offer both.

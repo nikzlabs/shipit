@@ -20,11 +20,13 @@
       `main`.
 - [x] Full suite, lint, typecheck.
 
-## Parked
+## Dropped
 
-- [ ] Req 8 — prefer Responses for GPT models on OpenCode. Both global levers
-      were built, measured and reverted for collateral; see `plan.md`. Needs a
-      per-row preference, and a decision on whether that is worth building.
+- [x] Req 8 — prefer Responses for GPT models on OpenCode. Both global levers
+      were built, measured and reverted for collateral; see `plan.md`. The user
+      dropped the requirement on 2026-09-18, once it was clear it never covered
+      the subscription route, which uses OpenCode's native provider and was
+      already on Responses.
 
 ## Verification
 

@@ -76,7 +76,7 @@ now resolves to `openai-responses`. No combination that already worked changes
 shape. That was verified by dumping `resolveStyle` and `retirementSuccessor`
 for every harness × service × model on `main` and on this branch and diffing.
 
-## Req 8 is not delivered, and why
+## Req 8 was dropped, and why
 
 Preferring Responses for GPT models has no lever that hits only GPT models.
 Both global orderings were built and measured, and both were reverted:
@@ -88,9 +88,16 @@ Both global orderings were built and measured, and both were reverted:
 
 The harness list is global per harness and the row order is written for a
 different harness, so neither encodes "this model, on this harness, prefers
-this shape". A per-row preference is the mechanism that would, and it is not
-built here. GPT models reach OpenCode without it, so the requirement is parked
-rather than worked around.
+this shape". A per-row preference is the mechanism that would.
+
+It was not built, and on 2026-09-18 the user dropped the requirement. The
+deciding fact is that req 8 never covered the route it was asked about. The
+OpenAI **subscription** path does not use ShipIt's synthetic provider at all —
+`adapter.ts` branches on `isOpenCodeAccountRouting` and writes
+`enabled_providers: ["openai"]`, so OpenCode's native provider handles it and
+it was already on Responses. Req 8 therefore governed only the API-key and
+gateway routes, where GPT models keep Chat Completions. `resolveStyle` keeps
+harness-order preference.
 
 ## A pre-existing inconsistency this surfaced
 
