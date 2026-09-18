@@ -113,7 +113,10 @@ jobs:
       - run: npm ci
       - run: npm ci --ignore-scripts --dry-run
         working-directory: docker/agent-cli
+      # Same heap as ci.yml: 3072 GC-thrashed for 140 s and then exhausted the heap.
       - run: npm run lint
+        env:
+          LINT_HEAP_MB: 6144
       - run: npm run typecheck
       - run: npm run check-deps
       - run: npm run check-audit
