@@ -9,6 +9,7 @@ import type { ReleaseBumpType } from "../../shared/types/release-types.js";
 import type { ReleaseProposeInput } from "../release-status-poller.js";
 import { ServiceError } from "./types.js";
 import { agentCreatePr, findBranchPullRequest } from "./github.js";
+import { workflowPublishesAuthoredNotes } from "../release-autopublish-check.js";
 import {
   computeNextVersion,
   detectAllVersionSources,
@@ -298,24 +299,39 @@ async function prepareFinalRelease(
   }
 
   /*
-    A final release never publishes GitHub's generated per-PR list (docs/309
-    req 6), so notes are a precondition rather than an extra. Resolved and
-    enforced here, before the branch is touched: refusing after the checkout
-    would leave the session on a rewritten tree for a fixable mistake.
+    A release whose workflow publishes authored notes never publishes GitHub's
+    generated per-PR list (docs/309 req 6), so notes are a precondition there
+    rather than an extra. Gated on the workflow the release will actually run,
+    not unconditionally: a repo that never adopted the flow must stay
+    releasable (req 9), and a `--pick` hotfix onto a maintenance branch still
+    carrying the old workflow would otherwise commit notes nothing publishes.
+
+    Enforced before the branch is touched — refusing after the checkout would
+    leave the session on a rewritten tree for a mistake one file fixes.
 
     Re-running prepare resets this branch to the release branch and rebuilds it,
     and the draft is gone once a previous run consumed it — so with no draft the
     notes already on the pushed branch are what the release keeps.
   */
+  const payloadRef = await resolvePayloadRef(git, args.from, releaseBranch, remoteBranches);
+  const notesPublished = await workflowPublishesAuthoredNotes(git, payloadRef);
   const notesBody = draftNotes ?? (await git.showFileAtRef(`origin/${headBranch}`, notesRelPath(tag)));
-  if (!notesBody?.trim()) {
+  if (notesPublished && !notesBody?.trim()) {
     throw new ServiceError(
       400,
-      `This release has no notes, and a release never publishes GitHub's generated per-PR list. ` +
-        `Write a compact summary of what ${tag} contains to "${NOTES_DRAFT_FILE}" at the repo root, ` +
-        `then re-run. (It is gitignored, so it will not dirty the tree this command checks.)`,
+      `This release has no notes, and its release workflow publishes authored notes rather than ` +
+        `GitHub's generated per-PR list — so it would fail to publish. Write a compact summary of ` +
+        `what ${tag} contains to "${NOTES_DRAFT_FILE}" at the repo root, then re-run. ` +
+        `(It is gitignored, so it will not dirty the tree this command checks.)`,
     );
   }
+  const notesWarning =
+    !notesPublished && notesBody?.trim()
+      ? `⚠ These release notes will NOT be published: the \`.github/workflows/release.yml\` this release ships ` +
+        `(from \`${payloadRef}\`) does not read \`.release-notes/<tag>.md\`, so ${tag} publishes GitHub's ` +
+        `generated per-PR list instead. Bring the notes-aware workflow into the release (e.g. \`--from main\`) ` +
+        `to publish authored notes.`
+      : undefined;
 
   let startPoint = `origin/${releaseBranch}`;
   if (!remoteBranches.includes(releaseBranch)) {
@@ -390,11 +406,11 @@ async function prepareFinalRelease(
   writeVersionToSource(detected, version);
   const relPath = path.relative(args.dir, detected.path!);
   const lockRel = detected.source === "package.json" ? path.join(path.dirname(relPath), "package-lock.json") : null;
-  const notesRel = await writeNotesFile(args.dir, tag, notesBody);
+  const notesRel = notesBody?.trim() ? await writeNotesFile(args.dir, tag, notesBody) : null;
 
   const message = `Release ${tag}\n\n${BUMP_TRAILER}: ${version}`;
   const commitHash = await git.commitPaths(
-    [relPath, ...(lockRel ? [lockRel] : []), notesRel],
+    [relPath, ...(lockRel ? [lockRel] : []), ...(notesRel ? [notesRel] : [])],
     message,
   );
   if (!commitHash) {
@@ -428,10 +444,11 @@ async function prepareFinalRelease(
 
   // Last: until the notes are on a pushed branch carrying a live PR, the draft
   // is the only copy, and every path above can still fail.
-  if (draftNotes) await rm(path.join(args.dir, NOTES_DRAFT_FILE), { force: true });
+  if (draftNotes && notesRel) await rm(path.join(args.dir, NOTES_DRAFT_FILE), { force: true });
 
   return {
     kind: "pr-opened",
+    ...(notesWarning ? { warning: notesWarning } : {}),
     version,
     tag,
     bumpType,
@@ -528,6 +545,18 @@ function deadReleasePrMessage(
 
 function notesRelPath(tag: string): string {
   return path.join(NOTES_DIR, `${tag}.md`);
+}
+
+/** The ref whose tree the release ships — and so whose workflow will run. Mirrors the branch selection below. */
+async function resolvePayloadRef(
+  git: GitManager,
+  from: string | undefined,
+  releaseBranch: string,
+  remoteBranches: string[],
+): Promise<string> {
+  if (from) return remoteBranches.includes(from) ? `origin/${from}` : from;
+  if (remoteBranches.includes(releaseBranch)) return `origin/${releaseBranch}`;
+  return `origin/${await git.getDefaultBranch()}`;
 }
 
 /** Read before any branch work: a checkout must never be what decides whether the user's text survives. */

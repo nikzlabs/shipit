@@ -41,12 +41,21 @@ requirement is a candidate: it can be struck without argument.
    as they stand — the user does not have to have edited them for them to count
    as accepted. Drafting notes is therefore a **precondition** for cutting a
    release, not an optional extra.
-   - 6a. *[stated]* **Release candidates are the one named gap.** An rc tags an
+   - 6a. *[stated]* **Prereleases are the one named gap.** A prerelease tags an
      existing commit and so cannot carry a notes file; it keeps the generated
-     list. This is recorded, not hidden — an rc reaches no install
+     list. This is recorded, not hidden — a prerelease reaches no install
      automatically, so it is never the notes anyone reads to decide whether to
      update. Every **final** release is covered with no exception, including a
-     hand-pushed final tag.
+     hand-pushed final tag. The user's answer named release candidates, which is
+     the prerelease form this repo cuts (`prerelease-pattern` defaults to
+     `v{version}-rc.{n}`); the gap is stated as *prerelease* because that is the
+     classification the workflow actually branches on — any `vX.Y.Z-<suffix>`
+     tag — and a narrower wording would describe something the code does not do.
+   - 6b. *[agent]* A repo whose release workflow does **not** publish authored
+     notes is not blocked from releasing (req 9): the precondition is enforced
+     only where the workflow the release ships reads `.release-notes/<tag>.md`.
+     Authoring notes that such a workflow would ignore produces a warning rather
+     than a silent no-op.
 7. *[stated]* The draft is a **file** the user opens and edits in ShipIt's own
    editor — chosen over an editable chat card, for simplicity.
 8. *[stated]* Settings → Update shows the notes for the version it is offering

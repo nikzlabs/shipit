@@ -274,13 +274,19 @@ both. Then:
 
 1. **Before you emit the proposal marker** — there is one action, **Confirm &
    publish**, and it accepts the notes as well as the release, so the draft has
-   to exist and be named in your message by the time the card appears. Read what
-   the release contains —
-   `git log <release-branch>..<source-branch>`, e.g.
-   `git log origin/stable..origin/main` — and write a compact summary to
-   **`RELEASE_NOTES.draft.md`** at the repo root. Grouped highlights in the
-   user's terms; not one line per commit or per PR, which is the thing the
-   generated notes already do.
+   to exist and be named in your message by the time the card appears.
+
+   **Summarize what this release ships, which is not `<release-branch>..<source>`.**
+   A squash-merged maintenance branch has release commits unreachable from the
+   source branch, so that range returns everything since the branches diverged,
+   already-released work included. Use the payload instead: for `--from
+   <branch>`, that branch's work since the previous release's point on it; for
+   `--pick`, exactly the picked commits; for `--bootstrap`, the branch as a
+   first release; for `--allow-empty`, say it ships no changes. Say in chat
+   which anchor you used, so the user can tell whether the summary covers the
+   right span. Write it to **`RELEASE_NOTES.draft.md`** at the repo root:
+   grouped highlights in the user's terms, not one line per commit or per PR,
+   which is the thing the generated notes already do.
 2. **Tell the user the draft is there** and that they can edit it before
    confirming. They open it from the file tree. It is gitignored, so their edit
    cannot dirty the working tree `prepare` refuses to run against, and it

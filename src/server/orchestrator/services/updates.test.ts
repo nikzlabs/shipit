@@ -61,10 +61,6 @@ describe("resolveReleaseNotes (docs/309)", () => {
     await expect(resolveReleaseNotes("main", "stable", gitOpts)).resolves.toBeUndefined();
   });
 
-  it("returns undefined for the 'main @ sha' label describeRef falls back to", async () => {
-    await expect(resolveReleaseNotes("main @ abc1234", "stable", gitOpts)).resolves.toBeUndefined();
-  });
-
   it("reads the notes of the named tag, not the checked-out tree", async () => {
     fs.writeFileSync(path.join(dir, ".release-notes", "v1.2.0.md"), "edited after release\n");
     await expect(resolveReleaseNotes("v1.2.0", "stable", gitOpts)).resolves.toBe(

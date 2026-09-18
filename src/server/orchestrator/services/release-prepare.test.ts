@@ -24,7 +24,12 @@ interface GitOverrides {
   isClean?: boolean;
   stableVersion?: string | null;
   remoteNotes?: string | null;
+  /** Whether the workflow the release ships reads `.release-notes/` (docs/309). */
+  notesWorkflow?: boolean;
 }
+
+const NOTES_AWARE_WORKFLOW = "on:\n  push:\n    branches: [stable]\njobs:\n  publish:\n    steps:\n      - run: cat .release-notes/$TAG.md\n";
+const LEGACY_WORKFLOW = "on:\n  push:\n    tags: ['v*']\njobs:\n  publish:\n    steps:\n      - run: gh release create --generate-notes\n";
 
 function makeGit(over: GitOverrides = {}) {
   const calls = {
@@ -45,10 +50,12 @@ function makeGit(over: GitOverrides = {}) {
     tipCommitMessage: vi.fn(async () => null),
     createAndPushTag: vi.fn(async () => {}),
     getHeadHash: vi.fn(async () => "abc123def456"),
-    // Version lookup and notes recovery both land here; a fake that answered
-    // both with the same value could not fail on reading the wrong one.
+    // Three different reads land here — version lookup, notes recovery, and the
+    // workflow probe. A fake answering them alike could not fail on reading the
+    // wrong one.
     showFileAtRef: vi.fn(async (_ref: string, file: string) => {
       if (file.startsWith(".release-notes/")) return over.remoteNotes ?? null;
+      if (file.endsWith("release.yml")) return over.notesWorkflow === false ? LEGACY_WORKFLOW : NOTES_AWARE_WORKFLOW;
       return over.stableVersion ? JSON.stringify({ name: "x", version: over.stableVersion }) : null;
     }),
   };
@@ -618,6 +625,41 @@ describe("prepareRelease — authored release notes (docs/309)", () => {
     expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/release/0.2.1", path.join(".release-notes", "v0.2.1.md"));
     expect(fs.readFileSync(published(), "utf-8")).toBe("## Highlights\n\nFrom the first run.\n");
     expect(calls.commitPaths.mock.calls[0]![0]).toContain(path.join(".release-notes", "v0.2.1.md"));
+  });
+
+  it("does not gate a repo whose release workflow publishes generated notes", async () => {
+    fs.rmSync(draft());
+    const { git, calls } = makeGit({ diffFiles: 4, notesWorkflow: false });
+
+    const res = await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(res.kind).toBe("pr-opened");
+    expect(calls.commitPaths.mock.calls[0]![0]).toEqual(["package.json", "package-lock.json"]);
+  });
+
+  it("warns when notes were written but the workflow the release ships ignores them", async () => {
+    const { git } = makeGit({ diffFiles: 4, notesWorkflow: false });
+
+    const res = await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(res).toMatchObject({ kind: "pr-opened" });
+    expect((res as { warning?: string }).warning).toMatch(/will NOT be published/i);
+  });
+
+  it("probes the workflow on the ref the release ships, not the maintenance branch", async () => {
+    const { git, calls } = makeGit({ diffFiles: 4 });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/main", ".github/workflows/release.yml");
+  });
+
+  it("probes the maintenance branch's workflow for a --pick hotfix, which keeps that tree", async () => {
+    const { git, calls } = makeGit({ commitsAhead: 1 });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", pick: ["abc123"] });
+
+    expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/stable", ".github/workflows/release.yml");
   });
 
   it("prefers a fresh draft over the notes already on the release branch", async () => {

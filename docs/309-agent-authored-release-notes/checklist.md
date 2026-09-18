@@ -28,6 +28,13 @@
 - [x] Req 6a — rc's keep generated notes, the one named gap
 - [x] Refusal guards proven red alone (4 of them)
 - [x] Docs rewritten off the fallback: `prompts/releases.md`, `shipit-docs/release.md`, `RELEASING.md`
+- [x] Second review (post-inversion) — 4 P1s, 3 P2s
+- [x] Gate made conditional on the workflow the release ships (unblocks req 9 repos, fixes the `--pick` false promise, and the two broken integration tests)
+- [x] CI gate moved **before** the tag push — a failed publish no longer strands an installable tag
+- [x] CI content test is `grep -q '[^[:space:]]'`, not `[ -s ]`
+- [x] Req 6a restated as *prerelease*, matching what the workflow branches on
+- [x] Drafting instructions no longer prescribe `stable..main`, which over-reports under squash
+- [x] Full suite run: 20581 pass
 - [ ] Known gap: `checkForUpdates()`'s `releaseNotes` wiring is uncovered — it reads the
       fixed `HOST_REPO_DIR` (`/opt/shipit`), which no test can supply. `resolveReleaseNotes`
       is tested directly instead.

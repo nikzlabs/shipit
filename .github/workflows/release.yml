@@ -152,6 +152,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Before the tag, never after: a tag pushed and then failed on is a
+      # release the stable channel already offers (it resolves reachable final
+      # tags without checking the Release exists), and the notes cannot be added
+      # to that immutable commit afterwards. Fail while nothing is published.
+      - name: Require authored notes for a final release
+        if: needs.resolve.outputs.prerelease != 'true'
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          IS_BRANCH: ${{ needs.resolve.outputs.is_branch }}
+        run: |
+          set -euo pipefail
+          # The tag may not exist yet on the branch path; the commit it will
+          # point at is this checkout.
+          if [ "$IS_BRANCH" = "true" ]; then REF="$GITHUB_SHA"; else REF="$TAG"; fi
+          NOTES_PATH=".release-notes/${TAG}.md"
+          if git show "${REF}:${NOTES_PATH}" 2>/dev/null | grep -q '[^[:space:]]'; then
+            echo "OK: $REF carries $NOTES_PATH."
+            exit 0
+          fi
+          echo "::error title=Release $TAG has no notes::A final release publishes agent-authored notes, never GitHub's generated per-PR list (docs/309). The commit for $TAG carries no non-empty $NOTES_PATH, so nothing has been tagged or published. Cut releases with 'shipit release prepare', which refuses without notes; a hand-pushed final tag must carry that file on its own commit."
+          exit 1
+
       - name: Create and push the release tag
         if: needs.resolve.outputs.is_branch == 'true'
         env:
@@ -194,7 +216,9 @@ jobs:
           # notes for the same version.
           NOTES_PATH=".release-notes/${TAG}.md"
           BODY_FILE="$(mktemp)"
-          if git show "${TAG}:${NOTES_PATH}" > "$BODY_FILE" 2>/dev/null && [ -s "$BODY_FILE" ]; then
+          # grep, not [ -s ]: a whitespace-only file has bytes but no notes, and
+          # `prepare` and the update panel both treat it as absent.
+          if git show "${TAG}:${NOTES_PATH}" > "$BODY_FILE" 2>/dev/null && grep -q '[^[:space:]]' "$BODY_FILE"; then
             # A supplied body is published verbatim, so the history link
             # --generate-notes would have added is appended here.
             # Final tags only: -v:refname sorts v1.2.3-rc.1 ahead of v1.2.3.
@@ -216,10 +240,12 @@ jobs:
             exit 0
           fi
 
-          # An rc tags an existing commit, so it cannot carry a notes file. That
-          # is the one named gap (docs/309 req 6a): it reaches no install
-          # automatically, so its body is never what anyone reads to decide
-          # whether to update.
+          # A prerelease tags an existing commit, so it cannot carry a notes
+          # file. That is the one named gap (docs/309 req 6a): it reaches no
+          # install automatically — the stable channel resolves the latest FINAL
+          # tag — so its body is never what anyone reads to decide whether to
+          # update. A final release cannot reach here: the gate before the tag
+          # already failed the job.
           if [ "$PRERELEASE" = "true" ]; then
             echo "No $NOTES_PATH at $TAG — prerelease, publishing generated notes."
             gh release create "$TAG" \

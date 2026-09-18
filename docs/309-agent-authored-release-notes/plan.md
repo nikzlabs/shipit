@@ -79,10 +79,21 @@ before the branch is touched, written to `.release-notes/<tag>.md` after the
 bump, added to the commit, and unlinked **only once the PR exists**.
 
 The requirement is a refusal, not a fallback (req 6): with no draft and nothing
-recoverable, `prepare` throws a 400 naming `RELEASE_NOTES.draft.md`. It is
-checked **before** `createBranchFrom` so a fixable omission never costs the
-session a rewritten tree, and CI fails the publish for the same reason on the
-other side. Three further failure cases drove the ordering, all raised by review:
+recoverable, `prepare` throws a 400 naming `RELEASE_NOTES.draft.md`, **before**
+`createBranchFrom` so a fixable omission never costs the session a rewritten
+tree.
+
+**The gate is conditional on the workflow the release will actually run**
+(`workflowPublishesAuthoredNotes`, probing `.github/workflows/release.yml` on
+the payload ref). Unconditional was wrong twice over: a repo that never adopted
+the flow could not release at all (req 9), and a `--pick` hotfix onto a
+maintenance branch still carrying the old workflow would commit notes that
+nothing publishes — the release-branch form of the cold-start problem. The
+payload ref mirrors the branch selection: `--from <branch>` ships that branch's
+workflow, `--pick` and a bare bump keep the maintenance branch's. Writing notes
+a workflow will ignore produces a warning rather than a silent no-op (req 6b).
+
+Three further failure cases drove the ordering, all raised by review:
 
 - *Retry.* `prepare` is documented to "open **or update**" the PR, and an update
   resets `release/<version>` to the release branch and rebuilds it. With the
@@ -95,10 +106,19 @@ other side. Three further failure cases drove the ordering, all raised by review
 - *Checkout.* Reading before the branch work means no checkout can decide
   whether the text survives, which also contains the gap below.
 
-**`.github/workflows/release.yml`** (publish step) — publish with `--notes-file`
-when `.release-notes/<TAG>.md` exists **at the tag**. With no such file the job
-**fails** for a final release, and keeps `--generate-notes` only for a
-prerelease (req 6a). Reading from the tag rather than the checkout is what the
+**`.github/workflows/release.yml`** — a **separate gate runs before the tag is
+created**, failing a final release whose commit carries no non-empty notes. It
+has to precede the tag: `resolveLatestStableTag` offers any reachable final tag
+without checking that its Release exists, so a tag pushed and then failed on is
+a release the stable channel already advertises — and the notes can never be
+added to that immutable commit afterwards. Failing first leaves nothing
+published and the branch's next attempt clean. The content test is
+`grep -q '[^[:space:]]'`, not `[ -s ]`: a whitespace-only file has bytes but no
+notes, and `prepare` and the update panel both treat it as absent.
+
+The publish step then uses `--notes-file` with the notes **at the tag**, and
+keeps `--generate-notes` only for a prerelease (req 6a) — a final release can no
+longer reach it. Reading from the tag rather than the checkout is what the
 **repair path** needs: it republishes an older tag while the checkout is a later
 `stable` commit that can carry different notes for the same version, and
 `resolveReleaseNotes` reads the tag — so a checkout-sourced body would make reqs
