@@ -479,16 +479,35 @@ carries twelve `@keyframes` blocks rather than one plus a delay: the delay spell
 anyone would write, and it is the expensive one.
 
 **What this cost in code.** `animate-spin` was on ~50 Phosphor `<svg>` icons. They are now a
-single `<Spinner />` (`components/Spinner.tsx`, styled by `.spinner` in `index.css`): twelve
-fixed spokes whose opacity is animated so a bright head travels the ring. Sampling it frame by
-frame is what answers requirement 14 directly — across eight consecutive frames of a 120 Hz
-display (less than ONE step of the old spinner) the old one renders a single repeated image and
-this one renders eight distinct ones, because adjacent spokes crossfade every frame. What is
-quantised is how many spoke *positions* the ring has, not how often it updates.
+single `<Spinner />` (`components/Spinner.tsx`, styled by `.spinner` in `index.css`): fixed ring
+wedges whose opacity is animated so a bright head travels the ring.
 
-Under `prefers-reduced-motion` the travelling head is dropped for a uniform breath. No box moves
-either way, but the design deliberately creates *perceived* rotation, and "it is only opacity"
-argues about the implementation rather than about what the user sees. `--animate-pulse` drops its
+**Counting distinct frames is the wrong measure of that, and taking it cost a visibly stepped
+spinner for months.** The first build lit twelve *separated* bars, each jumping straight to full
+opacity at its turn. It does render a distinct image every frame — the tail brightnesses all
+change — so a frame-by-frame sample says "smooth", and requirement 14 was recorded as met on
+that basis. What the eye tracks is not frame novelty but the bright HEAD, and the head sat
+motionless for 100 ms and then moved a whole 30°. Measured as the luminance centroid of the ring,
+it advanced up to ~100× its own average step. Users reported it as a stepper, correctly.
+
+The measure that matches perception, and the two properties it forced:
+
+- **The wedges must touch.** Separated bars read as a ring of dashes however they are lit; the lit
+  run has to be one continuous arc. The ring is now 36 contiguous conic-gradient wedges under a
+  radial mask, drawing the 270° arc `CircleNotchIcon` drew.
+- **Each wedge must fade IN over the width of its neighbour.** That is what makes the centroid
+  interpolate between two wedges instead of teleporting, and it is the whole difference between
+  ~100× and 1.00×. Nothing else changed to achieve it.
+
+`Spinner.smoothness.test.ts` measures both out of the shipped CSS, because neither is visible in
+a rendered-output assertion. Cost is unaffected — still 0 main-thread frames/s, and 1.7 ms/s for
+twelve spinners against 32 ms/s for twelve of the rotating icons.
+
+Under `prefers-reduced-motion` the wedge animations are *paused* rather than replaced: a paused
+animation rests on its 0% frame, and across the wedges those frames are the arc, so the comet
+holds still instead of flattening into a plain ring, and the ring as a whole breathes. No box
+moves either way, but the design deliberately creates *perceived* rotation, and "it is only
+opacity" argues about the implementation rather than about what the user sees. `--animate-pulse` drops its
 `steps()` and goes back to Tailwind's smooth default — it already animated opacity only, so it
 was the one utility paying the choppiness for no reason at all. `--animate-spin` and
 `--animate-ping` are no longer declared: both animate transform, and no infinite use of either
