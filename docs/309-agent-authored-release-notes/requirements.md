@@ -72,10 +72,22 @@ requirement is a candidate: it can be struck without argument.
      The guard is written for the detection once that is fixed.
 9. *[stated]* ShipIt's own `release-branch` flow is the scope. Other repos and
    the `tag-triggered` mechanism keep today's generated notes.
+10. *[stated]* The confirmation card appears only once the release it offers is
+    ready to confirm. Computing a version is not proposing a release: the card
+    appears when the agent proposes one, not when it works out what the next
+    version would be. Where notes will be published (req 6), a release whose
+    notes have not been drafted raises no card.
+    - 10a. *[stated]* Where no notes will be published — a prerelease (req 6a) or
+      a repo whose workflow does not read them (req 6b, req 9) — the release is
+      ready to confirm without them, so the card appears.
+11. *[stated]* The card shows the notes that would be published: the draft
+    itself. It never shows a summary written separately from the draft, and
+    where no notes will be published it shows none rather than a stand-in.
 
 ## Open questions
 
-- (none)
+- Req 11 — the user edits the draft after the card is up. Does the card have to
+  track the file from then on, or is showing the draft as proposed enough?
 
 ## Resolved questions
 
