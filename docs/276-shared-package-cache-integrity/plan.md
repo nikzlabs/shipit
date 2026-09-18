@@ -244,8 +244,8 @@ npm/yarn dep dirs has the same positional-trust gap: it is seeded from a tar of
 an untrusted session's merged tree, `preUserInstall` is asserted by the
 publisher rather than checked, the only content gate is `sourceIsDefaultBranch`,
 and the finished base is group-writable to the shared session gid. The
-verify-and-admit lifecycle above is the same fix for it, but that is a separate
-issue to file, not this one.
+verify-and-admit lifecycle above is the same fix for it. Filed as
+**planning#599**, separate from this issue.
 
 ### Sequencing
 
