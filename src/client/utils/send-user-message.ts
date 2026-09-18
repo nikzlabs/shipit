@@ -30,6 +30,7 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { addPredictedQueueEntry, dropPredictedQueueEntry } from "./predicted-queue.js";
 import { randomId } from "./random-id.js";
 
 export interface SendUserMessageOptions {
@@ -48,9 +49,20 @@ export interface SendUserMessageOptions {
    * re-introduces the silent-drop bug.
    */
   dispatch: (requestId: string) => boolean;
+  /**
+   * The frame's text, set only when this send is expected to be QUEUED rather
+   * than run — a compaction is about to take the turn ahead of it (docs/295).
+   * The optimistic state then opens in the queue strip instead of the
+   * transcript, so the message does not appear as a bubble and collapse into
+   * the strip a fraction of a second later. See `predicted-queue.ts`, which
+   * owns the entry and every way it is retired.
+   */
+  queuedAs?: string;
 }
 
-export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageOptions): boolean {
+export function sendUserMessage(
+  { bubble, activity, dispatch, queuedAs }: SendUserMessageOptions,
+): boolean {
   const session = useSessionStore.getState();
 
   // earlier: this one never even reached `dispatch`.
@@ -58,7 +70,12 @@ export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageO
 
   const priorIsLoading = session.isLoading;
   const priorActivity = session.activity;
-  session.setMessages((prev) => [...prev, { ...bubble, clientRequestId: requestId }]);
+  const pending = { ...bubble, clientRequestId: requestId };
+  if (queuedAs !== undefined) {
+    addPredictedQueueEntry(requestId, queuedAs, pending);
+  } else {
+    session.setMessages((prev) => [...prev, pending]);
+  }
   session.setIsLoading(true);
   session.setActivity({ label: activity });
 
@@ -80,7 +97,11 @@ export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageO
   // The frame never left the browser. Undo the optimistic state in the same
 
   // sit there forever waiting for a turn that was never started.
-  session.setMessages((prev) => prev.filter((m) => m.clientRequestId !== requestId));
+  if (queuedAs !== undefined) {
+    dropPredictedQueueEntry(requestId);
+  } else {
+    session.setMessages((prev) => prev.filter((m) => m.clientRequestId !== requestId));
+  }
   session.setIsLoading(priorIsLoading);
   session.setActivity(priorActivity);
   if (activeSessionId && markedActiveRunner) {

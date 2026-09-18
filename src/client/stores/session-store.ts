@@ -17,6 +17,21 @@ export interface SubAgentSpawnChip {
   subAgentId: AgentId;
 }
 
+/**
+ * A row in the queue strip above the composer.
+ *
+ * `requestId` and `bubble` are set on a **predicted** entry only — one this
+ * browser added at send time because a compaction is about to run ahead of the
+ * message (`utils/predicted-queue.ts`). A server-authoritative entry carries
+ * neither, which is what tells the two apart.
+ */
+export interface QueuedMessageEntry {
+  text: string;
+  position: number;
+  requestId?: string;
+  bubble?: ChatMessage;
+}
+
 export interface RescueState {
   phase: RescuePhase;
   reason?: string;
@@ -105,7 +120,7 @@ interface SessionState {
    * long gone. Keeping them here means the marker and its label can't drift.
    */
   backgroundTaskSessions: Map<string, string[]>;
-  queuedMessages: { text: string; position: number }[];
+  queuedMessages: QueuedMessageEntry[];
   rewindPreviews: Record<string, WsRewindPreview>;
   rewindRecoveries: Record<string, RewindRecovery>;
 
@@ -210,11 +225,7 @@ interface SessionState {
     updater: (prev: Map<string, string[]>) => Map<string, string[]>,
   ) => void;
   setQueuedMessages: (
-    messages:
-      | { text: string; position: number }[]
-      | ((
-          prev: { text: string; position: number }[],
-        ) => { text: string; position: number }[]),
+    messages: QueuedMessageEntry[] | ((prev: QueuedMessageEntry[]) => QueuedMessageEntry[]),
   ) => void;
   setRewindPreview: (preview: WsRewindPreview) => void;
   setRewindRecovery: (recovery: RewindRecovery | null) => void;
@@ -263,7 +274,7 @@ const initialResettableState = {
   subAgentSpawns: {},
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
-  queuedMessages: [] as { text: string; position: number }[],
+  queuedMessages: [] as QueuedMessageEntry[],
   rewindPreviews: {} as Record<string, WsRewindPreview>,
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
   prefillText: undefined as string | undefined,

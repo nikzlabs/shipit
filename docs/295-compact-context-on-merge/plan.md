@@ -349,6 +349,55 @@ now ends the offer at the first answer, and `shouldCompactBeforeTurn` reads the
 same `isResetEligible` predicate, so the compaction stands down with the reset.
 One merge, one offer, one compaction.
 
+## The send opens queued, not running
+
+A compacted-ahead message does not start a turn: it goes to the front of the
+queue and waits (above). The composer did not know that at send time, so it
+rendered the ordinary optimistic bubble and the bubble collapsed into the queue
+strip once `message_queued` arrived — a visible hiccup, because the decision
+costs a git read and a PR re-verification. Nothing about the message changed in
+that window; only what the browser knew. The bubble was the UI guessing "no
+compaction" by default, and guessing loudly.
+
+So the browser guesses the other way, from the only evidence the user has:
+`compactRunsBeforeTurn` is true exactly when the composer is offering the
+compaction control with its box still ticked, reading the tick through
+`mergeContinueFrameFields` so the prediction and the frame cannot disagree. The
+send then opens as a queue row (`utils/predicted-queue.ts`) carrying the
+`clientRequestId` and the composed bubble.
+
+**`!isLoading` is part of the condition, not just inherited from
+`showCompactControl`.** A send made while a turn runs never reaches the
+compaction decision: the handler queues it behind the running turn, or — with
+live steering — feeds it into the running process and answers `message_steered`,
+which puts the message in the transcript. Predicting there would put it in both
+places. The sequence is reachable with the offer still standing, because a
+manual `/compact` leaves the session eligible.
+
+**A predicted row has exactly two exits, and both are server-driven.** It
+becomes a server row, or it becomes a transcript bubble:
+
+| Server says | Row becomes | Why |
+|---|---|---|
+| `message_queued` | a server row | Confirmed. Its bubble goes to `queuedMessageStash`, which is where a queued message's bubble has always waited, so the dequeue restores attachments. |
+| a queue snapshot naming it | a server row | Same, for the reconnect that misses `message_queued` — `runCompactionAhead` emits it before the compaction, and the executor then clears the event buffer. A snapshot that does **not** name the row leaves it standing: a snapshot can predate the send. |
+| `system_user_message` with this `clientRequestId` | a bubble | The server ran the message. The same handler appends the bubble. |
+| `message_steered` with this text | a bubble | Fed into the running turn. Restoring first is what lets that handler's own dedupe recognise it. |
+| `error` | a bubble, above the error | Most refusals carry no request id, so every unacknowledged row is restored. `repository_untrusted` is the one refusal that deletes the message instead. |
+| nothing — the frame never left | dropped | Neither presentation is owed. |
+
+Restoring is safe even when it is the wrong guess: a later `message_queued`
+finds the bubble by text and takes it out of the transcript again, which is the
+path every un-predicted send already takes.
+
+The server's own extra clauses — a replay seed, background work the resident
+process would lose, a merge that will not settle, an eligibility gone stale —
+are invisible to the browser, and are exactly what the echo row above corrects.
+
+**An unacknowledged row carries no cancel control.** Cancelling is by position
+in the *server's* queue, so a cancel aimed at a row the server does not hold yet
+would clear it while the message went on to run.
+
 ## The shared setting (req 11)
 
 No new setting. `autoResetMergedBranch` governs both actions; the Settings →
@@ -368,7 +417,9 @@ Advanced description names both.
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
 | `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the untick outlives the composer. |
 | `client/utils/send-user-turn.ts` | `sendUserTurn` / `sendControlFrame` — the ONLY place a `send_message` frame is built. |
-| `client/utils/merge-continue-intent.ts` | Read, consume, and the cross-tab sync. |
+| `client/utils/merge-continue-intent.ts` | Read, consume, the cross-tab sync, and `compactRunsBeforeTurn`. |
+| `client/utils/predicted-queue.ts` | The predicted queue row and every exit from it; `send-user-message.ts` writes it, and `message-queued` / `queue-updated` / `system-user-message` / `message-steered` / `error` reconcile it. |
+| `client/components/QueueIndicator.tsx` | Cancel controls only for rows the server has acknowledged. |
 | `client/utils/dispatch-agent-message.ts`, `orchestrator/services/agent.ts`, `api-routes-agent.ts` | The HTTP dispatch carries it for a user-clicked send. |
 | `client/utils/send-handler.ts`, `client/App.tsx` | Every producer, through that one boundary. |
 | `client/components/Settings/tabs/AdvancedTab.tsx` | Description names both actions. |
