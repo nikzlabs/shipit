@@ -22,6 +22,10 @@ function npmPackageForStyle(style: ServiceRouting["style"]): string | undefined 
       return "@ai-sdk/openai-compatible";
     case "anthropic-messages":
       return "@ai-sdk/anthropic";
+    // Measured 2026-09-18 against opencode 1.18.30: this package on a custom
+    // baseURL posts to <base>/responses, which openai-compatible never does.
+    case "openai-responses":
+      return "@ai-sdk/openai";
     default:
       return undefined;
   }

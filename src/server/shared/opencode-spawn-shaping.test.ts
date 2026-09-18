@@ -78,7 +78,27 @@ describe("opencodeProviderConfig", () => {
   });
 
   it("refuses a style the harness cannot speak instead of shaping a wrong spawn", () => {
-    expect(opencodeProviderConfig({ ...ROUTING, style: "openai-responses" }, "gpt-5.6-sol")).toBeUndefined();
+    expect(opencodeProviderConfig({ ...ROUTING, style: "gemini-generate-content" }, "gemini-3-pro")).toBeUndefined();
+  });
+
+  // Uses a style that IS supported, so only the credential branch can refuse;
+  // with openai-responses the result would be undefined either way.
+  it("refuses a credential the spawn cannot carry as an env var", () => {
+    const target = { kind: "config-file", path: "auth.json", pointer: "/key" } as const;
+    expect(opencodeProviderConfig({ ...ROUTING, credentialTarget: target }, "claude-haiku-4-5")).toBeUndefined();
+    expect(opencodeProviderConfig(ROUTING, "claude-haiku-4-5")).toBeDefined();
+  });
+
+  // @ai-sdk/openai is the package that posts to <base>/responses; the
+  // openai-compatible one never does, whatever baseURL it is given.
+  it("shapes openai-responses onto the Responses-capable provider package", () => {
+    const shaped = block(
+      { ...ROUTING, style: "openai-responses", baseUrl: "https://opencode.ai/zen/v1" },
+      "gpt-6-astra",
+    );
+    expect(shaped.npm).toBe("@ai-sdk/openai");
+    expect(shaped.options?.baseURL).toBe("https://opencode.ai/zen/v1");
+    expect(shaped.models?.["gpt-6-astra"]?.variants?.medium).toEqual({ reasoningEffort: "medium" });
   });
 
   it("names the model in ShipIt's own provider namespace", () => {

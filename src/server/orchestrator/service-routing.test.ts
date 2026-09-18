@@ -717,8 +717,15 @@ describe("residentRouteNeedsRelease — moving a live session back (docs/260-tur
   });
 });
 
-it("captures a checked OpenCode account route and refuses a filtered native model", () => {
+it("captures an OpenCode account route and refuses a model OpenCode's filter rejects", () => {
   const selection = { serviceId: "openai", billingMode: "sub" as const, modelId: "gpt-5.5" };
-  expect(serviceRoutingForSelection("opencode", selection, { kind: "account", id: "account-a" }, storeHolding())).toMatchObject({ style: "openai-responses", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } });
-  expect(serviceRoutingForSelection("opencode", { ...selection, modelId: "gpt-6-astra" }, { kind: "account", id: "account-a" }, storeHolding())).toBeUndefined();
+  const account = { kind: "account" as const, id: "account-a" };
+  for (const modelId of ["gpt-5.5", "gpt-6-astra"]) {
+    expect(serviceRoutingForSelection("opencode", { ...selection, modelId }, account, storeHolding())).toMatchObject({
+      style: "openai-responses",
+      credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" },
+    });
+  }
+  // gpt-5.2 is refused by id inside the CLI, so no route may be captured for it.
+  expect(serviceRoutingForSelection("opencode", { ...selection, modelId: "gpt-5.2" }, account, storeHolding())).toBeUndefined();
 });

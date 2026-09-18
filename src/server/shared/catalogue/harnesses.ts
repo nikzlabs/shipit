@@ -114,7 +114,7 @@ export const HARNESSES = [
     styles: ["openai-chat-completions", "anthropic-messages", "openai-responses"],
     spawn: {
       credential: {
-        string: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY", styles: ["openai-chat-completions", "anthropic-messages"] },
+        string: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY", styles: ["openai-chat-completions", "anthropic-messages", "openai-responses"] },
         account: { kind: "scoped-home", styles: ["openai-responses"] },
       },
       // String routes use shipit/<modelId>; ChatGPT accounts use openai/<modelId>.
