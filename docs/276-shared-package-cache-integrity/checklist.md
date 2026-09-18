@@ -120,9 +120,9 @@ recorded in [requirements.md](./requirements.md); none is open.
 - [ ] Dependency: section 1 (H1) lands first — `npm_config_cache=/dep-cache/npm`
       is forwarded to every session (`container-lifecycle.ts:367`), pnpm repos
       included.
-- [ ] Dependency: the Docker-proxy mount-path check has a documented symlink
-      race between check and mount (`docker-proxy-auth.ts:66`); the
-      group-writable base relies on mount confinement, so close it (own issue).
+- [ ] Dependency: the Docker-proxy mount-path check is TOCTOU
+      (`docker-proxy-auth.ts:66` → `docker-proxy-sanitize.ts:112`); the
+      group-writable base relies on mount confinement. Filed as **planning#601**.
 - [ ] Later refinement: a partial base for repos with a git/`file:`/private-
       registry dependency, which all-or-nothing leaves with no base (req 2 /
       req 10 not met for them).

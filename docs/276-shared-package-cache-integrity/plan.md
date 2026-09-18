@@ -419,9 +419,11 @@ npm: section 1 lands first. The base is group-writable to the session gid by
 design (`shareOne`): overlay copy-up preserves the lower's ownership and modes,
 and a session must be able to edit a copied-up file (req 11). So the base's
 safety is **mount confinement**, and the Docker-proxy path check
-(`docker-proxy-auth.ts:66`) documents a symlink race between check and mount
-that a Docker-enabled hostile session could use to reach the base directory —
-a dependency inherited from docs/183, to be closed on its own.
+(`docker-proxy-auth.ts:66`, called from `docker-proxy-sanitize.ts:112`) is
+TOCTOU — it `realpath`-checks the requested bind but Docker mounts the original
+string, so a Docker-enabled hostile session can swap a symlink between check and
+mount to bind the base directory read-write. Filed as **planning#601**; a
+dependency inherited from docs/183, to be closed on its own.
 `verify-store-integrity=true` (section 4) is a local check on the session's
 private store, not a cross-session guarantee.
 
