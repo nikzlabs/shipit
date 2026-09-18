@@ -54,7 +54,10 @@ back to today's generated notes (req 6).
 1. User: "cut a patch release."
 2. Agent reads `git log origin/stable..origin/main`, writes a compact summary to
    `RELEASE_NOTES.draft.md`, runs `shipit release plan patch`, and stops at the
-   `proposed` card — pointing the user at the file.
+   `proposed` card — pointing the user at the file. The draft is written **before
+   the card appears**, because **Confirm & publish** is the only action and it
+   accepts the notes too (req 4); a card offered ahead of the draft would make
+   that click uninformed.
 3. User opens the draft in ShipIt's editor, edits it, says go.
 4. Agent runs `shipit release prepare patch --from main`. `prepare` reads the
    draft, commits it as `.release-notes/v<version>.md` next to the version bump,

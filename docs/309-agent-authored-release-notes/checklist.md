@@ -20,7 +20,9 @@
 - [x] Review fix — first release links `commits/<tag>` when no previous final tag exists
 - [x] Review fix — drafting scoped to repos whose workflow and `.gitignore` support it
 - [x] Review fix — strengthen the two tests that could not fail
-- [ ] **Open with the user:** req 4's distinct acceptance act, and req 8's downgrade case
+- [x] Req 4 resolved — one action, "confirm release"; no separate acceptance step
+- [x] Req 8a resolved — a downgrade is not an offered update, so req 8 does not reach it
+- [x] Requirements marked *[stated]* vs *[agent]* after the user noted invented requirements
 - [ ] Known gap: `checkForUpdates()`'s `releaseNotes` wiring is uncovered — it reads the
       fixed `HOST_REPO_DIR` (`/opt/shipit`), which no test can supply. `resolveReleaseNotes`
       is tested directly instead.

@@ -256,8 +256,9 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
     );
     const commitMessages = logOutput.trim().split("\n").filter(Boolean);
 
-    // A downgrade's commit list is what you would lose, which the target's own
-    // notes do not describe — leave that case on the commit list.
+    // A downgrade is not an offered update — `update-notice.ts` computes
+    // `available && !isDowngrade` — and its commit list is what you would lose,
+    // which the target's own notes do not describe (docs/309 req 8a).
     const releaseNotes = isDowngrade
       ? undefined
       : await resolveReleaseNotes(latestVersion, channel, gitOpts);

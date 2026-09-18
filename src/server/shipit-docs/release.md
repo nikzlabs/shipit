@@ -271,7 +271,10 @@ must be in `.gitignore`. Where either is missing, skip this entirely: a draft th
 workflow ignores is a stray file, and one the ignore rule doesn't cover is
 auto-committed onto the release PR. ShipIt's own repo satisfies both. Then:
 
-1. **In the propose turn**, read what the release contains —
+1. **Before you emit the proposal marker** — there is one action, **Confirm &
+   publish**, and it accepts the notes as well as the release, so the draft has
+   to exist and be named in your message by the time the card appears. Read what
+   the release contains —
    `git log <release-branch>..<source-branch>`, e.g.
    `git log origin/stable..origin/main` — and write a compact summary to
    **`RELEASE_NOTES.draft.md`** at the repo root. Grouped highlights in the
