@@ -15,7 +15,12 @@
  *   opacity,   linear            0 main frames/s,  2.0 ms/s
  *
  * So the rule needs no step-rate band: smooth opacity is cheaper than the
- * stepped transform the previous rule prescribed, and it is not choppy.
+ * stepped transform the previous rule prescribed.
+ *
+ * Cheap is not the same as smooth, and this file only enforces cheap. An
+ * opacity animation can still be a visibly stepped one — the first spinner
+ * built under this rule was — so what the user sees is measured separately, in
+ * `components/Spinner.smoothness.test.ts`.
  *
  * The rule this replaced allowed a stepped `transform`, and that was wrong
  * twice: a 10 fps spinner is visibly choppy, and steps() did not even hold the
@@ -51,6 +56,9 @@ const css = cssFiles.find((c) => c.path.endsWith("index.css"))!.text;
 
 const tailwindCss = fs.readFileSync(path.join(here, "../../node_modules/tailwindcss/theme.css"), "utf8");
 const allCss = cssFiles.map((c) => c.text).join("\n");
+
+const spinnerComponent = fs.readFileSync(path.join(here, "components/Spinner.tsx"), "utf8");
+const SPOKE_COUNT = Number(/const SPOKE_COUNT = (\d+)/.exec(spinnerComponent)?.[1]);
 
 const FREE_WHILE_INFINITE = new Set(["opacity"]);
 
@@ -143,9 +151,8 @@ describe("infinite animation stays cheap", () => {
     expect(names).toEqual([
       "pulse",
       "spinner-breathe",
-      "spoke-0", "spoke-1", "spoke-10", "spoke-11", "spoke-2", "spoke-3",
-      "spoke-4", "spoke-5", "spoke-6", "spoke-7", "spoke-8", "spoke-9",
-    ]);
+      ...Array.from({ length: SPOKE_COUNT }, (_, i) => `spoke-${i}`),
+    ].sort());
 
     for (const a of unboundedAnimations()) {
       expect(a.keyframes, `could not match \`${a.decl}\` in ${a.file} to a @keyframes block`)
@@ -228,12 +235,9 @@ describe("infinite animation stays cheap", () => {
 
   it("Spinner.tsx renders exactly as many spokes as index.css styles", () => {
 
-    const component = fs.readFileSync(path.join(here, "components/Spinner.tsx"), "utf8");
-    const spokes = /const SPOKES = \[([^\]]*)\]/.exec(component)?.[1].split(",").length;
     const styled = [...css.matchAll(/\.spinner > i:nth-child\((\d+)\)/g)].length;
-    expect(spokes, "could not read SPOKES out of Spinner.tsx").toBeGreaterThan(0);
-    expect(styled, `Spinner.tsx renders ${spokes} spokes but index.css styles ${styled}. `
-      + `An unstyled spoke renders as a static dot in the middle of the ring.`).toBe(spokes);
+    expect(styled, `Spinner.tsx renders ${SPOKE_COUNT} wedges but index.css styles ${styled}. `
+      + `An unstyled wedge renders as an invisible gap in the ring.`).toBe(SPOKE_COUNT);
   });
 
   it("no component reaches a transform animation around the stylesheet", () => {

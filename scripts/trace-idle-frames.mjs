@@ -6,8 +6,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const CHROME = process.env.CHROME_PATH
-  ?? "/opt/playwright-browsers/chromium-1237/chrome-linux64/chrome";
+/** Resolved, not pinned: the browser directory carries Playwright's build number,
+ *  so a hardcoded one stops existing the next time that dependency moves. */
+function findChrome() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+  const roots = ["/opt/playwright-browsers", path.join(os.homedir(), ".cache/ms-playwright")];
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    const builds = fs.readdirSync(root).filter((d) => d.startsWith("chromium-"))
+      .sort((a, b) => Number(b.split("-")[1]) - Number(a.split("-")[1]));
+    for (const build of builds) {
+      const exe = path.join(root, build, "chrome-linux64", "chrome");
+      if (fs.existsSync(exe)) return exe;
+    }
+  }
+  throw new Error("no Playwright chromium found — set CHROME_PATH");
+}
+
+const CHROME = findChrome();
 
 const args = process.argv.slice(2);
 const url = args[0];

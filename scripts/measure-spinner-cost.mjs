@@ -26,11 +26,14 @@ function block(header) {
   throw new Error(`unbalanced braces after \`${header}\``);
 }
 
+const SPOKES = [...css.matchAll(/\.spinner > i:nth-child\((\d+)\)/g)].length;
+if (!SPOKES) throw new Error("index.css no longer styles `.spinner > i:nth-child(n)` — update this script");
+
 const SPINNER_CSS = [
-  ...Array.from({ length: 12 }, (_, i) => block(`@keyframes spoke-${i} `)),
+  ...Array.from({ length: SPOKES }, (_, i) => block(`@keyframes spoke-${i} `)),
   block(".spinner {"),
   block(".spinner > i {"),
-  ...Array.from({ length: 12 }, (_, i) => block(`.spinner > i:nth-child(${i + 1}) `)),
+  ...Array.from({ length: SPOKES }, (_, i) => block(`.spinner > i:nth-child(${i + 1}) `)),
 ].join("\n");
 
 const ROWS = Array.from({ length: 30 }, (_, i) => `<p class="cv">row ${i}</p>`).join("");
@@ -56,7 +59,6 @@ svg { display:block; vertical-align:middle }
 const beforeIcons = (n) => Array.from({ length: n }, () =>
   `<svg class="pending" width="16" height="16" viewBox="0 0 256 256"><path fill="#4af" d="M232 128a104 104 0 1 1-104-104"/></svg>`).join("");
 
-const SPOKES = 12;
 const afterSpinner = () => `<span class="spinner pending" style="width:16px;height:16px;color:#8b95a5">${
   Array.from({ length: SPOKES }, () => "<i></i>").join("")}</span>`;
 const afterSpinners = (n) => Array.from({ length: n }, () => afterSpinner()).join("");

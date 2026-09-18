@@ -440,18 +440,42 @@ html, body {
    Sizes are proportional so one rule serves every ICON_SIZE — the component sets
    only width/height. `currentColor` is what lets a spinner take the same
    `text-(--color-*)` token the icon it replaced took. */
-@keyframes spoke-0 { 0% { opacity: 1 } 100% { opacity: 0.12 } }
-@keyframes spoke-1 { 0% { opacity: 0.1933 } 8.3233% { opacity: 0.12 } 8.3333% { opacity: 1 } 100% { opacity: 0.1933 } }
-@keyframes spoke-2 { 0% { opacity: 0.2667 } 16.6567% { opacity: 0.12 } 16.6667% { opacity: 1 } 100% { opacity: 0.2667 } }
-@keyframes spoke-3 { 0% { opacity: 0.34 } 24.99% { opacity: 0.12 } 25% { opacity: 1 } 100% { opacity: 0.34 } }
-@keyframes spoke-4 { 0% { opacity: 0.4133 } 33.3233% { opacity: 0.12 } 33.3333% { opacity: 1 } 100% { opacity: 0.4133 } }
-@keyframes spoke-5 { 0% { opacity: 0.4867 } 41.6567% { opacity: 0.12 } 41.6667% { opacity: 1 } 100% { opacity: 0.4867 } }
-@keyframes spoke-6 { 0% { opacity: 0.56 } 49.99% { opacity: 0.12 } 50% { opacity: 1 } 100% { opacity: 0.56 } }
-@keyframes spoke-7 { 0% { opacity: 0.6333 } 58.3233% { opacity: 0.12 } 58.3333% { opacity: 1 } 100% { opacity: 0.6333 } }
-@keyframes spoke-8 { 0% { opacity: 0.7067 } 66.6567% { opacity: 0.12 } 66.6667% { opacity: 1 } 100% { opacity: 0.7067 } }
-@keyframes spoke-9 { 0% { opacity: 0.78 } 74.99% { opacity: 0.12 } 75% { opacity: 1 } 100% { opacity: 0.78 } }
-@keyframes spoke-10 { 0% { opacity: 0.8533 } 83.3233% { opacity: 0.12 } 83.3333% { opacity: 1 } 100% { opacity: 0.8533 } }
-@keyframes spoke-11 { 0% { opacity: 0.9267 } 91.6567% { opacity: 0.12 } 91.6667% { opacity: 1 } 100% { opacity: 0.9267 } }
+@keyframes spoke-0 { 0% { opacity: 1 } 75% { opacity: 0 } 97.222% { opacity: 0 } 100% { opacity: 1 } }
+@keyframes spoke-1 { 0% { opacity: 0 } 2.778% { opacity: 1 } 77.778% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-2 { 0% { opacity: 0 } 2.778% { opacity: 0 } 5.556% { opacity: 1 } 80.556% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-3 { 0% { opacity: 0 } 5.556% { opacity: 0 } 8.333% { opacity: 1 } 83.333% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-4 { 0% { opacity: 0 } 8.333% { opacity: 0 } 11.111% { opacity: 1 } 86.111% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-5 { 0% { opacity: 0 } 11.111% { opacity: 0 } 13.889% { opacity: 1 } 88.889% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-6 { 0% { opacity: 0 } 13.889% { opacity: 0 } 16.667% { opacity: 1 } 91.667% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-7 { 0% { opacity: 0 } 16.667% { opacity: 0 } 19.444% { opacity: 1 } 94.444% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-8 { 0% { opacity: 0 } 19.444% { opacity: 0 } 22.222% { opacity: 1 } 97.222% { opacity: 0 } 100% { opacity: 0 } }
+@keyframes spoke-9 { 0% { opacity: 0 } 22.222% { opacity: 0 } 25% { opacity: 1 } 100% { opacity: 0 } }
+@keyframes spoke-10 { 0% { opacity: 0.037 } 2.778% { opacity: 0 } 25% { opacity: 0 } 27.778% { opacity: 1 } 100% { opacity: 0.037 } }
+@keyframes spoke-11 { 0% { opacity: 0.0741 } 5.556% { opacity: 0 } 27.778% { opacity: 0 } 30.556% { opacity: 1 } 100% { opacity: 0.0741 } }
+@keyframes spoke-12 { 0% { opacity: 0.1111 } 8.333% { opacity: 0 } 30.556% { opacity: 0 } 33.333% { opacity: 1 } 100% { opacity: 0.1111 } }
+@keyframes spoke-13 { 0% { opacity: 0.1481 } 11.111% { opacity: 0 } 33.333% { opacity: 0 } 36.111% { opacity: 1 } 100% { opacity: 0.1481 } }
+@keyframes spoke-14 { 0% { opacity: 0.1852 } 13.889% { opacity: 0 } 36.111% { opacity: 0 } 38.889% { opacity: 1 } 100% { opacity: 0.1852 } }
+@keyframes spoke-15 { 0% { opacity: 0.2222 } 16.667% { opacity: 0 } 38.889% { opacity: 0 } 41.667% { opacity: 1 } 100% { opacity: 0.2222 } }
+@keyframes spoke-16 { 0% { opacity: 0.2593 } 19.444% { opacity: 0 } 41.667% { opacity: 0 } 44.444% { opacity: 1 } 100% { opacity: 0.2593 } }
+@keyframes spoke-17 { 0% { opacity: 0.2963 } 22.222% { opacity: 0 } 44.444% { opacity: 0 } 47.222% { opacity: 1 } 100% { opacity: 0.2963 } }
+@keyframes spoke-18 { 0% { opacity: 0.3333 } 25% { opacity: 0 } 47.222% { opacity: 0 } 50% { opacity: 1 } 100% { opacity: 0.3333 } }
+@keyframes spoke-19 { 0% { opacity: 0.3704 } 27.778% { opacity: 0 } 50% { opacity: 0 } 52.778% { opacity: 1 } 100% { opacity: 0.3704 } }
+@keyframes spoke-20 { 0% { opacity: 0.4074 } 30.556% { opacity: 0 } 52.778% { opacity: 0 } 55.556% { opacity: 1 } 100% { opacity: 0.4074 } }
+@keyframes spoke-21 { 0% { opacity: 0.4444 } 33.333% { opacity: 0 } 55.556% { opacity: 0 } 58.333% { opacity: 1 } 100% { opacity: 0.4444 } }
+@keyframes spoke-22 { 0% { opacity: 0.4815 } 36.111% { opacity: 0 } 58.333% { opacity: 0 } 61.111% { opacity: 1 } 100% { opacity: 0.4815 } }
+@keyframes spoke-23 { 0% { opacity: 0.5185 } 38.889% { opacity: 0 } 61.111% { opacity: 0 } 63.889% { opacity: 1 } 100% { opacity: 0.5185 } }
+@keyframes spoke-24 { 0% { opacity: 0.5556 } 41.667% { opacity: 0 } 63.889% { opacity: 0 } 66.667% { opacity: 1 } 100% { opacity: 0.5556 } }
+@keyframes spoke-25 { 0% { opacity: 0.5926 } 44.444% { opacity: 0 } 66.667% { opacity: 0 } 69.444% { opacity: 1 } 100% { opacity: 0.5926 } }
+@keyframes spoke-26 { 0% { opacity: 0.6296 } 47.222% { opacity: 0 } 69.444% { opacity: 0 } 72.222% { opacity: 1 } 100% { opacity: 0.6296 } }
+@keyframes spoke-27 { 0% { opacity: 0.6667 } 50% { opacity: 0 } 72.222% { opacity: 0 } 75% { opacity: 1 } 100% { opacity: 0.6667 } }
+@keyframes spoke-28 { 0% { opacity: 0.7037 } 52.778% { opacity: 0 } 75% { opacity: 0 } 77.778% { opacity: 1 } 100% { opacity: 0.7037 } }
+@keyframes spoke-29 { 0% { opacity: 0.7407 } 55.556% { opacity: 0 } 77.778% { opacity: 0 } 80.556% { opacity: 1 } 100% { opacity: 0.7407 } }
+@keyframes spoke-30 { 0% { opacity: 0.7778 } 58.333% { opacity: 0 } 80.556% { opacity: 0 } 83.333% { opacity: 1 } 100% { opacity: 0.7778 } }
+@keyframes spoke-31 { 0% { opacity: 0.8148 } 61.111% { opacity: 0 } 83.333% { opacity: 0 } 86.111% { opacity: 1 } 100% { opacity: 0.8148 } }
+@keyframes spoke-32 { 0% { opacity: 0.8519 } 63.889% { opacity: 0 } 86.111% { opacity: 0 } 88.889% { opacity: 1 } 100% { opacity: 0.8519 } }
+@keyframes spoke-33 { 0% { opacity: 0.8889 } 66.667% { opacity: 0 } 88.889% { opacity: 0 } 91.667% { opacity: 1 } 100% { opacity: 0.8889 } }
+@keyframes spoke-34 { 0% { opacity: 0.9259 } 69.444% { opacity: 0 } 91.667% { opacity: 0 } 94.444% { opacity: 1 } 100% { opacity: 0.9259 } }
+@keyframes spoke-35 { 0% { opacity: 0.963 } 72.222% { opacity: 0 } 94.444% { opacity: 0 } 97.222% { opacity: 1 } 100% { opacity: 0.963 } }
 
 .spinner {
   position: relative;
@@ -461,31 +485,59 @@ html, body {
 
 .spinner > i {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 12%;
-  height: 26%;
-  margin: -13% 0 0 -6%;
-  border-radius: 999px;
-  background: currentColor;
+  inset: 0;
+  border-radius: 50%;
+  -webkit-mask: radial-gradient(closest-side, transparent 75%, #000 76%);
+  mask: radial-gradient(closest-side, transparent 75%, #000 76%);
 }
 
-.spinner > i:nth-child(1) { transform: rotate(0deg) translateY(-140%); animation: spoke-0 1.2s linear infinite }
-.spinner > i:nth-child(2) { transform: rotate(-30deg) translateY(-140%); animation: spoke-1 1.2s linear infinite }
-.spinner > i:nth-child(3) { transform: rotate(-60deg) translateY(-140%); animation: spoke-2 1.2s linear infinite }
-.spinner > i:nth-child(4) { transform: rotate(-90deg) translateY(-140%); animation: spoke-3 1.2s linear infinite }
-.spinner > i:nth-child(5) { transform: rotate(-120deg) translateY(-140%); animation: spoke-4 1.2s linear infinite }
-.spinner > i:nth-child(6) { transform: rotate(-150deg) translateY(-140%); animation: spoke-5 1.2s linear infinite }
-.spinner > i:nth-child(7) { transform: rotate(-180deg) translateY(-140%); animation: spoke-6 1.2s linear infinite }
-.spinner > i:nth-child(8) { transform: rotate(-210deg) translateY(-140%); animation: spoke-7 1.2s linear infinite }
-.spinner > i:nth-child(9) { transform: rotate(-240deg) translateY(-140%); animation: spoke-8 1.2s linear infinite }
-.spinner > i:nth-child(10) { transform: rotate(-270deg) translateY(-140%); animation: spoke-9 1.2s linear infinite }
-.spinner > i:nth-child(11) { transform: rotate(-300deg) translateY(-140%); animation: spoke-10 1.2s linear infinite }
-.spinner > i:nth-child(12) { transform: rotate(-330deg) translateY(-140%); animation: spoke-11 1.2s linear infinite }
+.spinner > i:nth-child(1) { background: conic-gradient(from 0deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-0 1.1s linear infinite }
+.spinner > i:nth-child(2) { background: conic-gradient(from 10deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-1 1.1s linear infinite }
+.spinner > i:nth-child(3) { background: conic-gradient(from 20deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-2 1.1s linear infinite }
+.spinner > i:nth-child(4) { background: conic-gradient(from 30deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-3 1.1s linear infinite }
+.spinner > i:nth-child(5) { background: conic-gradient(from 40deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-4 1.1s linear infinite }
+.spinner > i:nth-child(6) { background: conic-gradient(from 50deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-5 1.1s linear infinite }
+.spinner > i:nth-child(7) { background: conic-gradient(from 60deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-6 1.1s linear infinite }
+.spinner > i:nth-child(8) { background: conic-gradient(from 70deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-7 1.1s linear infinite }
+.spinner > i:nth-child(9) { background: conic-gradient(from 80deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-8 1.1s linear infinite }
+.spinner > i:nth-child(10) { background: conic-gradient(from 90deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-9 1.1s linear infinite }
+.spinner > i:nth-child(11) { background: conic-gradient(from 100deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-10 1.1s linear infinite }
+.spinner > i:nth-child(12) { background: conic-gradient(from 110deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-11 1.1s linear infinite }
+.spinner > i:nth-child(13) { background: conic-gradient(from 120deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-12 1.1s linear infinite }
+.spinner > i:nth-child(14) { background: conic-gradient(from 130deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-13 1.1s linear infinite }
+.spinner > i:nth-child(15) { background: conic-gradient(from 140deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-14 1.1s linear infinite }
+.spinner > i:nth-child(16) { background: conic-gradient(from 150deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-15 1.1s linear infinite }
+.spinner > i:nth-child(17) { background: conic-gradient(from 160deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-16 1.1s linear infinite }
+.spinner > i:nth-child(18) { background: conic-gradient(from 170deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-17 1.1s linear infinite }
+.spinner > i:nth-child(19) { background: conic-gradient(from 180deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-18 1.1s linear infinite }
+.spinner > i:nth-child(20) { background: conic-gradient(from 190deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-19 1.1s linear infinite }
+.spinner > i:nth-child(21) { background: conic-gradient(from 200deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-20 1.1s linear infinite }
+.spinner > i:nth-child(22) { background: conic-gradient(from 210deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-21 1.1s linear infinite }
+.spinner > i:nth-child(23) { background: conic-gradient(from 220deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-22 1.1s linear infinite }
+.spinner > i:nth-child(24) { background: conic-gradient(from 230deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-23 1.1s linear infinite }
+.spinner > i:nth-child(25) { background: conic-gradient(from 240deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-24 1.1s linear infinite }
+.spinner > i:nth-child(26) { background: conic-gradient(from 250deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-25 1.1s linear infinite }
+.spinner > i:nth-child(27) { background: conic-gradient(from 260deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-26 1.1s linear infinite }
+.spinner > i:nth-child(28) { background: conic-gradient(from 270deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-27 1.1s linear infinite }
+.spinner > i:nth-child(29) { background: conic-gradient(from 280deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-28 1.1s linear infinite }
+.spinner > i:nth-child(30) { background: conic-gradient(from 290deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-29 1.1s linear infinite }
+.spinner > i:nth-child(31) { background: conic-gradient(from 300deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-30 1.1s linear infinite }
+.spinner > i:nth-child(32) { background: conic-gradient(from 310deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-31 1.1s linear infinite }
+.spinner > i:nth-child(33) { background: conic-gradient(from 320deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-32 1.1s linear infinite }
+.spinner > i:nth-child(34) { background: conic-gradient(from 330deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-33 1.1s linear infinite }
+.spinner > i:nth-child(35) { background: conic-gradient(from 340deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-34 1.1s linear infinite }
+.spinner > i:nth-child(36) { background: conic-gradient(from 350deg, currentColor 0 10.5deg, transparent 10.5deg); animation: spoke-35 1.1s linear infinite }
 
 @media (prefers-reduced-motion: reduce) {
 
+  /* A paused animation rests on its 0% frame, and across the wedges those frames
+     ARE the arc — so pausing them holds the comet still instead of flattening it
+     into a plain ring, and the whole ring breathes in one animation. */
   .spinner > i:nth-child(n) {
+    animation-play-state: paused;
+  }
+
+  .spinner {
     animation: spinner-breathe 2.4s ease-in-out infinite alternate;
   }
 }

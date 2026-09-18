@@ -1,21 +1,31 @@
 /**
  * Spinner — the one in-flight indicator (docs/265).
  *
- * Twelve fixed spokes with a rotating opacity stagger, styled by `.spinner` in
- * `index.css`. It replaced `<CircleNotchIcon className="animate-spin" />` at
- * every call site for a measured reason, not a visual one: a `transform`
- * animation forces Chrome to recompute every live IntersectionObserver, so it
- * costs a full main-thread rendering pass per frame it produces, while an
- * `opacity` animation costs none at all. Smooth here is cheaper than the stepped
- * rotation it replaced — see the rule comment above `@theme` in `index.css`.
+ * A 270° comet arc that rotates, styled by `.spinner` in `index.css`. It draws
+ * the shape `<CircleNotchIcon className="animate-spin" />` drew, but it may not
+ * rotate the way that did: a `transform` animation forces Chrome to recompute
+ * every live IntersectionObserver, so it costs a full main-thread rendering pass
+ * per frame it produces, while an `opacity` animation costs none at all — the
+ * rule comment above `@theme` in `index.css` has the measurements.
+ *
+ * So the arc is built from contiguous ring wedges that never move. Each holds a
+ * fixed slice of the circle and only fades, and the arc is the envelope of their
+ * opacities. Two things make that read as rotation rather than as flickering,
+ * and both are load-bearing: the wedges TOUCH, so the lit run is one arc and not
+ * a ring of dashes, and each one fades IN over the width of its neighbour, so
+ * the bright head glides continuously instead of jumping from wedge to wedge.
+ * The first opacity spinner had neither, and read as a 10 fps stepper even
+ * though it drew at display rate. `Spinner.smoothness.test.ts` measures both out
+ * of the shipped CSS, so neither can regress quietly.
  *
  * It takes the same `size` numbers as the Phosphor icons (`ICON_SIZE`) and the
- * same `text-(--color-*)` classes, because the spokes paint in `currentColor`.
+ * same `text-(--color-*)` classes, because the wedges paint in `currentColor`.
  */
 
 import { ICON_SIZE } from "../design-tokens.js";
 
-const SPOKES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+const SPOKE_COUNT = 36;
+const SPOKES = Array.from({ length: SPOKE_COUNT }, (_, i) => i);
 
 interface SpinnerProps {
 
