@@ -1,4 +1,8 @@
 import { usePrStore } from "../stores/pr-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
+import { isCompactCommand } from "../../server/shared/compact-command.js";
+import { isGoalCommand } from "../../server/shared/goal-command.js";
 import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-storage.js";
 
 /**
@@ -50,6 +54,42 @@ export function mergeContinueFrameFields(
     ...(optOut.reset ? { resetMergedBranch: false } : {}),
     ...(optOut.compact ? { compactContext: false } : {}),
   };
+}
+
+/**
+ * Will ShipIt compact the context before this message's turn runs? The client's
+ * prediction, and the whole reason it is worth making is that the answer
+ * changes what the send looks like: a compacted-ahead message is queued, not
+ * running, so it belongs in the queue strip from the first frame rather than as
+ * a bubble that collapses into one (`utils/predicted-queue.ts`).
+ *
+ * It answers from the only evidence the user has — the state of the controls
+ * they are looking at — so it is true exactly when the composer is offering the
+ * compaction control (`MessageInput`'s `showCompactControl`) with its box still
+ * ticked. It reads that tick through `mergeContinueFrameFields` rather than the
+ * store, so the prediction and the frame cannot disagree about it.
+ *
+ * The server decides for real, in `shouldCompactBeforeTurn`, and the clauses it
+ * adds are invisible here: a replay seed, background work the resident process
+ * would lose, a merge whose state will not settle, and an eligibility that has
+ * gone stale since it was last pushed. Those make this answer wrong sometimes,
+ * which is survivable because every wrong answer is corrected by a server
+ * message that was already being sent — see `predicted-queue.ts`.
+ *
+ * A `/compact` and a `/goal` are excluded for the reason the optimistic hide in
+ * `MessageInput` excludes them: the server skips the whole hook for both.
+ */
+export function compactRunsBeforeTurn(sessionId: string | undefined, text: string): boolean {
+  if (!sessionId) return false;
+  const trimmed = text.trim();
+  if (isCompactCommand(trimmed) || isGoalCommand(trimmed)) return false;
+  if (!usePrStore.getState().resetEligibleBySession[sessionId]) return false;
+  if (!useSettingsStore.getState().autoResetMergedBranch) return false;
+  const ui = useUiStore.getState();
+  const supportsCompaction =
+    ui.agentList.find((a) => a.id === ui.activeAgentId)?.supportsCompaction ?? false;
+  if (!supportsCompaction) return false;
+  return mergeContinueFrameFields(sessionId).compactContext !== false;
 }
 
 /**

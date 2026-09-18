@@ -21,7 +21,11 @@
  */
 
 import { sendUserMessage } from "./send-user-message.js";
-import { consumeMergeContinueIntent, mergeContinueFrameFields } from "./merge-continue-intent.js";
+import {
+  compactRunsBeforeTurn,
+  consumeMergeContinueIntent,
+  mergeContinueFrameFields,
+} from "./merge-continue-intent.js";
 import type { ChatMessage } from "../components/MessageList.js";
 
 /** Everything a producer supplies; `type`, `requestId` and the intent are ours. */
@@ -48,9 +52,13 @@ export interface SendUserTurnOptions {
 export function sendUserTurn(opts: SendUserTurnOptions): boolean {
   const { sessionId, frame, bubble, activity, dispatch } = opts;
   const carried = mergeContinueFrameFields(sessionId);
+  // Read before the intent is spent below: after that, the untick this send
+  // carried is gone and the prediction would read the wrong tick state.
+  const queuedByCompaction = compactRunsBeforeTurn(sessionId, frame.text);
   const sent = sendUserMessage({
     bubble,
     activity,
+    ...(queuedByCompaction ? { queuedAs: frame.text } : {}),
     dispatch: (requestId) => dispatch({ type: "send_message", requestId, ...frame, ...carried }),
   });
   // The boundary is the FRAME LEAVING THE BROWSER, and only what this frame

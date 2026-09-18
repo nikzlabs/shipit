@@ -1,5 +1,6 @@
 import type { WsSystemUserMessage } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { dropPredictedQueueEntry } from "../../utils/predicted-queue.js";
 import type { Handler } from "./types.js";
 
 /**
@@ -31,6 +32,10 @@ import type { Handler } from "./types.js";
 export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data) => {
   const session = useSessionStore.getState();
   const echoedRequestId = data.clientRequestId;
+  // This echo means the turn is running THIS message, so a prediction that it
+  // would queue behind a compaction was wrong. Retire the row before the append
+  // below puts the bubble where it belongs (`utils/predicted-queue.ts`).
+  if (echoedRequestId !== undefined) dropPredictedQueueEntry(echoedRequestId);
   if (echoedRequestId !== undefined
     && session.messages.some((m) => m.clientRequestId === echoedRequestId)) {
 

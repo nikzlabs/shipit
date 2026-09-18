@@ -1,5 +1,6 @@
 import type { WsError } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { dropPredictedQueueEntry } from "../../utils/predicted-queue.js";
 import type { Handler } from "./types.js";
 
 export const handleError: Handler<WsError> = (_ctx, data) => {
@@ -19,6 +20,9 @@ export const handleError: Handler<WsError> = (_ctx, data) => {
     ];
   });
   if (data.code === "repository_untrusted" && data.requestId) {
+    // The message was refused, so a queue row predicted for it has nothing left
+    // to reconcile against and would otherwise sit above the composer forever.
+    dropPredictedQueueEntry(data.requestId);
     session.setPendingWsMessage(undefined);
     if (data.sessionId) {
       session.setActiveRunnerSessions((prev) => {

@@ -11,6 +11,7 @@ import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
 import { useIssuesStore } from "../issues-store.js";
 import { usePluginReposStore } from "../plugin-repos-store.js";
+import { dropPredictedQueueEntry } from "../../utils/predicted-queue.js";
 import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
 
 function sessionRepoUrl(sessionId?: string): string | null {
@@ -69,6 +70,9 @@ export function discardHeldFirstMessage(reason: string) {
   const requestId = held.requestId;
   session.setPendingWsMessage(undefined);
   session.setMessages((prev) => prev.filter((m) => m.clientRequestId !== requestId));
+  // The optimistic state is a queue row instead of a bubble when a compaction
+  // was predicted to run first; undo whichever one this send made.
+  if (typeof requestId === "string") dropPredictedQueueEntry(requestId);
   session.setIsLoading(false);
   session.setActivity(undefined);
   useUiStore.getState().setToast({ message: reason });

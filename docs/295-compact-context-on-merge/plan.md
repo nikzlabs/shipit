@@ -349,6 +349,33 @@ now ends the offer at the first answer, and `shouldCompactBeforeTurn` reads the
 same `isResetEligible` predicate, so the compaction stands down with the reset.
 One merge, one offer, one compaction.
 
+## The send opens queued, not running
+
+A compacted-ahead message does not start a turn: it goes to the front of the
+queue and waits (above). The composer did not know that at send time, so it
+rendered the ordinary optimistic bubble and the bubble collapsed into the queue
+strip once `message_queued` arrived — a visible hiccup, because the decision
+costs a git read and a PR re-verification. Nothing about the message changed in
+that window; only what the browser knew. The bubble was the UI guessing "no
+compaction" by default, and guessing loudly.
+
+So the browser guesses the other way, from the only evidence the user has:
+`compactRunsBeforeTurn` is true exactly when the composer is offering the
+compaction control with its box still ticked, reading the tick through
+`mergeContinueFrameFields` so the prediction and the frame cannot disagree. The
+send then opens as a queue row (`utils/predicted-queue.ts`) carrying the
+`clientRequestId` and the composed bubble.
+
+**Every predicted row is retired by a server message that was already being
+sent**, which is what makes predicting safe here rather than a second authority:
+`message_queued` adopts it (handing the bubble to the stash the dequeue restores
+from, so attachments survive), the turn's `system_user_message` echo drops it
+(that echo means the server ran the message instead — the prediction was wrong,
+and the same handler appends the bubble), and a refused or undelivered send
+takes it straight back out. The server's extra clauses — a replay seed,
+background work on the resident process, a merge that will not settle — are
+invisible to the browser and are exactly the cases the echo corrects.
+
 ## The shared setting (req 11)
 
 No new setting. `autoResetMergedBranch` governs both actions; the Settings →
@@ -368,7 +395,8 @@ Advanced description names both.
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
 | `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the untick outlives the composer. |
 | `client/utils/send-user-turn.ts` | `sendUserTurn` / `sendControlFrame` — the ONLY place a `send_message` frame is built. |
-| `client/utils/merge-continue-intent.ts` | Read, consume, and the cross-tab sync. |
+| `client/utils/merge-continue-intent.ts` | Read, consume, the cross-tab sync, and `compactRunsBeforeTurn`. |
+| `client/utils/predicted-queue.ts` | The predicted queue row and the three ways it is retired; `send-user-message.ts` writes it, `message-queued` / `system-user-message` / `error` reconcile it. |
 | `client/utils/dispatch-agent-message.ts`, `orchestrator/services/agent.ts`, `api-routes-agent.ts` | The HTTP dispatch carries it for a user-clicked send. |
 | `client/utils/send-handler.ts`, `client/App.tsx` | Every producer, through that one boundary. |
 | `client/components/Settings/tabs/AdvancedTab.tsx` | Description names both actions. |
