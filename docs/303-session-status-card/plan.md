@@ -706,6 +706,63 @@ performance-critical and covered by contracts of its own (planning#491,
 docs/299); it is not worth that for a row shape only a dispatched turn
 produces.
 
+### The card is on screen while the transcript is not (req 6, planning#595)
+
+The card renders from the **session record**, not from the transcript, so it
+survives the gap a session switch opens: the messages are cleared and the new
+ones have not arrived, and the card is the whole of the scrolling content. That
+is by design — it is the one thing worth reading while a long history loads —
+but it changes what the open path measures, and it broke that path.
+
+Landing at the end of the conversation is the responsibility of
+`useMessageScroll`, whose `autoScrollRef` says whether to follow the bottom. The
+hook is never remounted across a switch, so that flag — and the two gesture refs
+beside it — described the reader of the session being **left**. A reader who had
+scrolled back left it false, and both correcting paths read it: the layout
+effect bails and the `ResizeObserver` declines, so nothing pins the incoming
+transcript.
+
+It survived review and shipping because a clamp repaired it by accident.
+Clearing the transcript shrinks the content under the scroll position, the
+browser clamps `scrollTop`, and the resulting `scroll` event re-reads
+`isNearBottom` as true. That repair needs a position to clamp **from** — and the
+card is exactly what removes it, because the loading view can now be scrolled as
+far as the card is tall. Measured in the dogfood instance, a 1336px card in a
+625px viewport: every outgoing position from 0 to 711 opened the next session at
+the top of a 43,000px transcript. With the setting off the same path failed only
+at exactly 0, which is why the card correlates with the report without being its
+cause.
+
+So the follow-the-bottom and gesture refs are reset when the **displayed**
+session changes, keyed on the deferred session id — the same generation the rows
+are built from — and on identity rather than on observing the switch, so a
+viewer that misses an intermediate render still resets (docs/095).
+
+**The reset is in the pinning layout effect, not in the render.** These refs
+drive listeners that are live on the transcript still on screen, and a deferred
+render can be abandoned: a reset written from a render that never commits leaves
+the OUTGOING session following its bottom, and the observer then drags a reader
+who did not ask for it. A layout effect runs only on a commit. `sessionId` joins
+its dependencies so an identity change pins even when the message array does
+not.
+
+**A selection outlives the switch, and is cleared with them.** Every pinning
+path stands down for a text selection inside the container — and the card keeps
+its DOM, so a selection made in the card is still inside the container after the
+transcript has gone, holding the incoming conversation off its end. A click
+collapses a selection, so this is reachable only when the session is opened
+without one: the back button, a keyboard switch, a link. Verified in the dogfood
+instance with the back button, where the selection survived the switch intact.
+The selection belongs to a conversation that is no longer on screen, so the
+session change collapses it rather than obeying it.
+
+Guard: `src/client/components/MessageList/session-open-scroll.test.tsx`, which
+mounts the real list and walks the whole open sequence, loading gap included.
+The follow flag, the two gesture refs and the selection clearing were each
+removed on their own and watched fail; the message-count reset and the effect's
+`sessionId` dependency are consistency rather than separately guarded
+behaviour, and the fixture says so.
+
 ### A card that waits for an answer goes last (req 32)
 
 The status card is not moved for this; the **answer card is lifted out of the
@@ -1105,6 +1162,7 @@ card, submission, the toggle — and the call itself is the route's own tests.
 - `src/server/orchestrator/prompts/skeleton.md` (the `{{FOLLOW_UP_ACTIONS}}` slot), `prompts/propose-actions.md`, `prompts/session-status.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
 - `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation.
 - `src/client/components/MessageList/pending-answer.ts` — which elements render a card the user answers, and which one the conversation ends with (req 32).
+- `src/client/components/MessageList/hooks/useMessageScroll.ts` — follow-the-bottom state, reset on the displayed session (planning#595).
 
 ## Rejected alternatives
 
