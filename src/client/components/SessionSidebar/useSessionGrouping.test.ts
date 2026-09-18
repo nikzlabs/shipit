@@ -1,8 +1,4 @@
-/**
- * docs/211 — sandbox sessions form their own pinned sidebar group, keyed on
- * `kind === "sandbox"` and kept OUT of the `remoteUrl ?? ""` orphan bucket so
- * unrelated no-remote sessions aren't lumped in with them.
- */
+
 
 import { describe, it, expect } from "vitest";
 import { computeRepoGroups } from "./useSessionGrouping.js";
@@ -32,26 +28,54 @@ describe("computeRepoGroups — sandbox group", () => {
     const sandbox = groups.find((g) => g.kind === "sandbox");
     expect(sandbox).toBeDefined();
     expect(sandbox?.sessions.map((s) => s.id)).toEqual(["sb1"]);
-    // Sandbox group is pinned first.
+
     expect(groups[0].kind).toBe("sandbox");
   });
 
   it("does NOT lump an ordinary no-remote (orphan) session into the sandbox group", () => {
     const sessions = [
       session({ id: "sb1", kind: "sandbox" }),
-      // A repo-less standalone session — empty remoteUrl, but NOT a sandbox.
+
       session({ id: "orphan1", remoteUrl: "" }),
     ];
     const groups = computeRepoGroups([], sessions);
     const sandbox = groups.find((g) => g.kind === "sandbox");
     const orphan = groups.find((g) => g.kind === "orphan");
     expect(sandbox?.sessions.map((s) => s.id)).toEqual(["sb1"]);
-    // The orphan session lands in its own "Local sessions" bucket, not sandbox.
+
     expect(orphan?.sessions.map((s) => s.id)).toEqual(["orphan1"]);
   });
 
   it("omits the sandbox group entirely when there are no sandbox sessions", () => {
     const groups = computeRepoGroups([], [session({ id: "x", remoteUrl: "" })]);
     expect(groups.some((g) => g.kind === "sandbox")).toBe(false);
+  });
+});
+
+describe("computeRepoGroups — resolved demotion", () => {
+  const REPO = "https://github.com/o/r.git";
+  const repos: RepoInfo[] = [{ url: REPO, addedAt: "", lastUsedAt: "", status: "ready" }];
+  const merged = (over: Partial<SessionInfo>) => session({
+    remoteUrl: REPO,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    lastUsedAt: "2026-01-02T00:00:00.000Z",
+    mergedAt: "2026-01-02T00:00:00.000Z",
+    ...over,
+  });
+
+  it("sinks a merged session below an active one", () => {
+    const groups = computeRepoGroups(repos, [
+      merged({ id: "resolved" }),
+      session({ id: "active", remoteUrl: REPO, createdAt: "2025-12-01T00:00:00.000Z" }),
+    ]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["active", "resolved"]);
+  });
+
+  it("keeps a merged session with a blocked workspace above an older active one (docs/298)", () => {
+    const groups = computeRepoGroups(repos, [
+      session({ id: "active", remoteUrl: REPO, createdAt: "2025-12-01T00:00:00.000Z" }),
+      merged({ id: "blocked", workspaceBlock: "conflict" }),
+    ]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["blocked", "active"]);
   });
 });

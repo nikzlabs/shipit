@@ -1,22 +1,14 @@
-/**
- * docs/257 req 5 — results and errors render next to the step that produced
- * them, not as a toast somewhere else on screen.
- *
- * Every case here asserts the absence of a toast as well as the presence of the
- * inline notice — "we also render it inline" would pass a presence-only test.
- *
- * The failover-cutoff tests that used to live beside these moved to
- * `CredentialRouting.test.tsx` with the control itself (docs/252).
- */
+
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ProviderAccountRows } from "./ProviderAccountRows.js";
+import { AccountChallenge, AuthCliOutput, ProviderAccountRows } from "./ProviderAccountRows.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { CredentialRoute } from "../../../server/shared/types.js";
+import type { LoginIntegrationId } from "../../../server/shared/catalogue/types.js";
 
 const agent: AgentOption = {
   id: "claude",
@@ -39,13 +31,6 @@ function account(id: string, isPrimary = false): CredentialRoute {
   };
 }
 
-/**
- * The body as `ServiceCard` hosts it. There is no longer an "Add account"
- * button to render beside it: docs/252 req 17 moved adding into the
- * add-service dialog, so a failure while *creating* an account is that
- * dialog's to report (`ServicesPanel.test.tsx`), and what is left here is
- * everything done to an account that already exists.
- */
 function renderRows(provider: "claude" | "codex" = "claude", onReconnect = vi.fn()) {
   const result = render(
     <ProviderAccountRows
@@ -58,16 +43,10 @@ function renderRows(provider: "claude" | "codex" = "claude", onReconnect = vi.fn
   return { ...result, onReconnect };
 }
 
-/**
- * Open one row's `⋯`. docs/252 req 19 moved every per-account verb in there, so
- * a test that used to find "Disconnect" as a permanently-rendered button now
- * has to open the menu first — which is the compaction, asserted.
- */
 async function openRowMenu(user: ReturnType<typeof userEvent.setup>, label: string) {
   await user.click(screen.getByLabelText(`Manage ${label}`));
 }
 
-/** Fail every request with a server-supplied message. */
 function installFailingFetch(message: string) {
   const fetchMock = vi.fn(() =>
     Promise.resolve(new Response(JSON.stringify({ error: message }), { status: 500 })),
@@ -85,7 +64,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useSettingsStore.getState().setProviderAccounts([]);
-  useSettingsStore.setState({ providerAccountNotices: {} });
+  useSettingsStore.setState({ providerAccountNotices: {}, authDiagnostics: {} });
 });
 
 describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () => {
@@ -104,9 +83,7 @@ describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () =>
   });
 
   it("disconnects in one click with no session bookkeeping to report (docs/260-turn-level-account-routing req 3)", async () => {
-    // No pinning means no "moved N sessions" story: the row disappears and the
-    // remaining accounts render, nothing else. Sessions route among what
-    // remains at their next turn.
+
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() =>
       Promise.resolve(new Response(
@@ -127,9 +104,7 @@ describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () =>
   });
 
   it("gives the duplicate-account refusal a landing place on the card", () => {
-    // The one credential failure that arrives from OUTSIDE the card: it comes
-    // as an `agent_auth_failed` SSE, and the refusal deletes the row a per-row
-    // error would have used (docs/150-multiple-provider-subscriptions req 22). It was a global toast.
+
     renderRows();
     act(() => {
       useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", {
@@ -194,18 +169,11 @@ describe("ProviderAccountRows naming", () => {
   });
 });
 
-/**
- * docs/252 req 19 — **the row is `label · quota · ⋯`, and a healthy row says
- * nothing about its health.**
- */
 describe("ProviderAccountRows compact row", () => {
   it("says nothing about a ready account beyond its name", () => {
     renderRows();
     const row = screen.getByTestId("provider-account-row-a");
-    // No status pill, no "ready", no account UUID line, no permanently mounted
-    // rename field, and no green dot: an earlier mock-up put a `StatusDot` on
-    // every row, which is decoration on the normal case and a hue alone on the
-    // abnormal one.
+
     expect(screen.queryByTestId("provider-account-row-a-status")).toBeNull();
     expect(row).not.toHaveTextContent(/ready/i);
     expect(row.querySelector("input")).toBeNull();
@@ -273,14 +241,6 @@ describe("ProviderAccountRows compact row", () => {
   });
 });
 
-/**
- * docs/150-multiple-provider-subscriptions req 19 — the provider-wide purge, which a row's Disconnect is NOT.
- *
- * `DELETE /api/auth/api-key` clears every account's credentials *and* the
- * singleton pre-account path, where a legacy install's unscoped OAuth tokens
- * sit with no row to reach them from. It used to live on the Settings → Claude
- * tab and was nearly dropped with it; cross-backend review caught that.
- */
 describe("ProviderAccountRows stale-credential escape hatch", () => {
   it("offers the provider-wide purge when rows exist and none can authenticate", async () => {
     useSettingsStore.getState().setProviderAccounts([
@@ -302,7 +262,7 @@ describe("ProviderAccountRows stale-credential escape hatch", () => {
   });
 
   it("stays hidden while any account is usable", () => {
-    // `account()` is `ready` by default — nothing here is stale.
+
     renderRows();
     expect(screen.queryByTestId("provider-stale-credentials-claude")).toBeNull();
   });
@@ -314,20 +274,6 @@ describe("ProviderAccountRows stale-credential escape hatch", () => {
   });
 });
 
-/**
- * docs/274 req 16 — a subscription ShipIt has no reader for gets no read-out on
- * this row either.
- *
- * The header pill was where it was reported, but this row rendered the identical
- * empty `5h · —  7d · —` for the same reason: it asked `billingMode === "sub"`,
- * on the belief that every subscription reports a quota.
- *
- * The example is OpenCode Go, and it changed: this was written against xAI,
- * whose reader turned out to be one query parameter away (planning#454). Go is
- * the durable case — the vendor publishes no per-key usage API at all, so it is
- * missing by decision rather than by backlog (docs/272 req 6). The rule under
- * test is `modeReportsQuota`, not the service.
- */
 describe("a subscription with no quota reader (docs/274 req 16)", () => {
   function goAccount(overrides: Partial<CredentialRoute> = {}): CredentialRoute {
     return {
@@ -364,10 +310,223 @@ describe("a subscription with no quota reader (docs/274 req 16)", () => {
   it("keeps the read-out on a subscription that does report one", () => {
     useSettingsStore.getState().setProviderAccounts([account("a", true)]);
     renderRows();
-    // The Anthropic row's blanks mean "no reading yet" and have a refresh
-    // button beside them, which is what makes them a pending state rather than
-    // a permanent one.
+
     const row = screen.getByTestId("provider-account-row-a");
     expect(row.querySelector("[data-meter-pct]")).not.toBeNull();
+  });
+});
+
+describe("the authorization-code challenge", () => {
+  const antigravityAccount: CredentialRoute = {
+    id: "acct-agy",
+    serviceId: "antigravity",
+    billingMode: "sub",
+    via: "account",
+    label: "Antigravity account 1",
+    isPrimary: true,
+    status: "authenticating",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+
+  function renderChallenge(provider: "antigravity" | "claude", loginId: LoginIntegrationId) {
+    useSettingsStore.getState().setProviderAccountAuth(loginId, antigravityAccount.id, {
+      loginId,
+      accountId: antigravityAccount.id,
+      verificationUri: "https://accounts.google.com/o/oauth2/auth?client_id=1234",
+    });
+    return render(
+      <AccountChallenge
+        provider={provider}
+        account={{ ...antigravityAccount, serviceId: provider === "claude" ? "anthropic" : "antigravity" }}
+        serviceName="Antigravity"
+        onError={vi.fn()}
+      />,
+    );
+  }
+
+  /**
+   * The POST only hands the code to the CLI, so it returns in milliseconds while
+   * the sign-in runs on for seconds. With nothing left behind, a user who had
+   * submitted could not tell that from a click that missed.
+   */
+  it("says the code went through, and spends the button on that code", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+
+    await waitFor(() => expect(screen.getByTestId("provider-account-code-submitted-acct-agy"))
+      .toBeInTheDocument());
+    // Reported from the dogfood: a button that stays up answers the click with
+    // nothing, and invites a second one for a code already delivered.
+    expect(screen.getByRole("button", { name: "Submit code" })).toBeDisabled();
+  });
+
+  /**
+   * The other half of the same rule. A resolving event that never arrives — an
+   * SSE drop — must not leave the panel inert, and the dialog offers "Try again"
+   * only once no challenge pends. So it is the CODE that is spent, not the
+   * challenge: the box hands the button back.
+   */
+  it("hands the button back as soon as the code is edited", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    const box = screen.getByPlaceholderText("Paste authorization code");
+    await user.type(box, "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Submit code" })).toBeDisabled());
+
+    await user.type(box, "-two");
+
+    expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled();
+    // The confirmation belongs to the challenge, not to what the box holds now.
+    expect(screen.getByTestId("provider-account-code-submitted-acct-agy")).toBeInTheDocument();
+  });
+
+  /**
+   * The confirmation arrives on a click, so a panel that grows at that moment
+   * moves everything under the pointer — the same jump `ChallengePlaceholder`'s
+   * `h-8` slot prevents one step earlier. The line is reserved, not added.
+   */
+  it("reserves the confirmation's line rather than growing the panel under the click", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    const panel = screen.getByTestId("provider-account-challenge-acct-agy");
+    const slot = panel.querySelector("div.h-4");
+    expect(slot, "nothing holds the confirmation's line before it arrives").not.toBeNull();
+    expect(slot?.textContent).toBe("");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(screen.getByTestId("provider-account-code-submitted-acct-agy"))
+      .toBeInTheDocument());
+
+    // The same element, filled — not a new one pushing the panel down.
+    expect(panel.querySelector("div.h-4")).toBe(slot);
+    expect(slot?.textContent).toContain("Code submitted");
+  });
+
+  it("does not claim a refused code went through", async () => {
+    const user = userEvent.setup();
+    installFailingFetch("Authorization code cannot be empty");
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled());
+    expect(screen.queryByTestId("provider-account-code-submitted-acct-agy")).not.toBeInTheDocument();
+  });
+
+  // A second attempt reuses this component, so a confirmation that outlived its
+  // own challenge would tell the user the new link's code had been sent.
+  it("retires the confirmation when a new link replaces the one it answered", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({ success: true })))));
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    await user.type(screen.getByPlaceholderText("Paste authorization code"), "4/0AY-code");
+    await user.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(screen.getByTestId("provider-account-code-submitted-acct-agy"))
+      .toBeInTheDocument());
+
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("google-antigravity-oauth", "acct-agy", {
+        loginId: "google-antigravity-oauth",
+        accountId: "acct-agy",
+        verificationUri: "https://accounts.google.com/o/oauth2/auth?client_id=5678",
+      });
+    });
+
+    await waitFor(() => expect(screen.queryByTestId("provider-account-code-submitted-acct-agy"))
+      .not.toBeInTheDocument());
+  });
+
+  /**
+   * The panel was gated on `provider === "claude"`, so an Antigravity sign-in
+   * that failed showed one summary sentence and nothing the CLI had said.
+   */
+  it("shows the CLI's output for a harness other than Claude, named after that harness", () => {
+    act(() => {
+      useSettingsStore.getState().appendAuthLog("acct-agy", {
+        attemptId: "attempt-1",
+        timestamp: "2026-09-16T00:00:00.000Z",
+        level: "error",
+        source: "cli_stdout",
+        message: "Error: authentication failed or timed out",
+      });
+    });
+    renderChallenge("antigravity", "google-antigravity-oauth");
+
+    const buffer = screen.getByTestId("provider-account-diagnostics-acct-agy");
+    expect(buffer).toHaveTextContent("Antigravity CLI output (1)");
+    expect(buffer).toHaveTextContent("Error: authentication failed or timed out");
+  });
+
+  // The CLI gives up 60 s after printing the link, which covers the whole Google
+  // consent round trip — a user who learns that from the failure has lost the try.
+  it("states Antigravity's window before the attempt, and invents none for Claude", () => {
+    renderChallenge("antigravity", "google-antigravity-oauth");
+    expect(screen.getByTestId("provider-account-challenge-acct-agy"))
+      .toHaveTextContent("expires about 60 seconds");
+    cleanup();
+
+    renderChallenge("claude", "anthropic-oauth");
+    expect(screen.getByTestId("provider-account-challenge-acct-agy"))
+      .not.toHaveTextContent("60 seconds");
+  });
+});
+
+/**
+ * Reserving the empty disclosure is a claim that a line is coming, so the set
+ * has to name every harness whose sign-in spawns a CLI — and only those.
+ * Spawning a CLI and being a device-code flow are independent: Codex and Grok
+ * are both, because ShipIt reads their challenge off the CLI's own output.
+ */
+describe("which harnesses hold the output panel open before the first line", () => {
+  afterEach(cleanup);
+
+  function renderEmpty(provider: "claude" | "codex" | "opencode" | "grok" | "antigravity") {
+    return render(<AuthCliOutput provider={provider} accountId="acct-x" evenWhenEmpty />);
+  }
+
+  it.each(["claude", "antigravity", "codex", "grok"] as const)(
+    "reserves the panel's place for %s, whose sign-in runs its CLI",
+    (provider) => {
+      renderEmpty(provider);
+      expect(screen.getByTestId("provider-account-diagnostics-acct-x")).toBeInTheDocument();
+    },
+  );
+
+  /**
+   * The one harness absent by right: OpenCode has no auth manager and no login
+   * integration at all — its Zen service takes a pasted key, and its
+   * subscription path carries the Codex account — so nothing ever reports here.
+   */
+  it("reserves nothing for OpenCode, which has no sign-in of its own", () => {
+    renderEmpty("opencode");
+    expect(screen.queryByTestId("provider-account-diagnostics-acct-x")).not.toBeInTheDocument();
+  });
+
+  it("still renders for any harness once a line has actually landed", () => {
+    act(() => {
+      useSettingsStore.getState().appendAuthLog("acct-x", {
+        attemptId: "attempt-1",
+        timestamp: "2026-09-16T00:00:00.000Z",
+        level: "info",
+        source: "cli_stderr",
+        message: "a line from somewhere",
+      });
+    });
+    render(<AuthCliOutput provider="opencode" accountId="acct-x" />);
+    expect(screen.getByTestId("provider-account-diagnostics-acct-x"))
+      .toHaveTextContent("a line from somewhere");
   });
 });

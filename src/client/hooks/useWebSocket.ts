@@ -22,22 +22,14 @@ export interface UseWebSocketReturn {
    * can never outrun the wire.
    */
   send: (data: unknown) => boolean;
-  /**
-   * The most recent WebSocket message. Used as a React render trigger — when
-   * multiple messages arrive between renders, only the last one is visible here.
-   * Use {@link drainMessages} to process every message without drops.
-   */
+
   lastMessage: MessageEvent | null;
-  /**
-   * Drain all messages that arrived since the last drain. Returns and clears
-   * the internal queue. This guarantees no messages are lost even when React
-   * batches multiple `setLastMessage` calls between renders.
-   */
+
   drainMessages: () => MessageEvent[];
   status: WsStatus;
-  /** Number of consecutive reconnect attempts since last successful connection. */
+
   reconnectAttempt: number;
-  /** Manually trigger an immediate reconnect (resets backoff timer). */
+
   reconnect: () => void;
 }
 
@@ -67,24 +59,14 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     foregroundRetryTimersRef.current = [];
   }, []);
 
-  /**
-   * The `url` the live socket was opened for. `status` is React state, so on
-   * the render that CHANGES `url` it still holds the previous socket's value —
-   * a session switch renders `"open"` once for a socket that belongs to the
-   * outgoing session and is about to be torn down. Anything keyed on status
-   * (history hydration, pending sends) would act on it. Reporting `"connecting"`
-   * for a url we have not opened yet is simply the truth, one render earlier.
-   */
   const openedUrlRef = useRef<string | null>(null);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     openedUrlRef.current = url;
-    // A queued message belongs to the socket generation that received it.
-    // Session switches change `url`, but React may not run the consumer effect
+
     // until after this hook has torn down the old socket. Never let an
-    // undrained event from the outgoing session cross that boundary and render
-    // in the incoming session's transcript.
+
     messageQueueRef.current = [];
     setLastMessage(null);
 
@@ -93,9 +75,8 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
       return;
     }
 
-    // Guard against React StrictMode double-mount: when cleanup closes the WS,
     // onclose must NOT schedule a reconnect (the remounted effect will open a
-    // fresh connection).
+
     let intentionalClose = false;
 
     const ws = new WebSocket(url);
@@ -157,19 +138,18 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
       wsRef.current.send(JSON.stringify(data));
       return true;
     } catch {
-      // `ws.send` throws InvalidStateError if the socket transitioned between
-      // the readyState check and the write. A dropped frame is a dropped frame.
+
       return false;
     }
   }, []);
 
   const openFreshSocket = useCallback(() => {
-    // Clear any pending backoff timer and trigger an immediate reconnect
+
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    // Reset attempt counter so the next auto-reconnect starts fresh
+
     reconnectAttemptRef.current = 0;
     setReconnectAttempt(0);
     setConnectAttempt((n) => n + 1);
@@ -193,18 +173,8 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     }
   }, [clearForegroundRetryTimers, openFreshSocket]);
 
-  // Force a fresh WebSocket when the tab returns from the background. Mobile
-  // OSes silently kill or stall backgrounded TCP sockets without notifying the
-  // JS layer; the WebSocket's readyState can remain OPEN or CONNECTING even
-  // though a reload would immediately recover. Foreground lifecycle events use
-  // an aggressive short retry burst before falling back to normal backoff. A
-  // disabled signal while `url` is absent reproduces the old `if (!url) return`
-  // gate.
-  //
-  // `useForegroundSignal` owns which events count as a resume — in particular
   // why a bare window `focus` must NOT tear this socket down; see its docstring.
-  // A connect that doesn't take is still covered by the 300/1200/3000ms retries
-  // in `reconnectForForeground` and then by normal backoff.
+
   useForegroundSignal({
     enabled: Boolean(url),
     onForeground: reconnectForForeground,
@@ -212,9 +182,7 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
       wsRef.current?.readyState === WebSocket.OPEN ||
       wsRef.current?.readyState === WebSocket.CONNECTING,
   });
-  // The listener effect previously cleared the foreground retry timers on url
-  // change / unmount; useEventListeners owns only add/remove, so keep that
-  // teardown on the same [url] cadence so a stale retry can't fire post-switch.
+
   // eslint-disable-next-line no-restricted-syntax -- non-listener cleanup (clear foreground retry timers on url change/unmount)
   useEffect(() => () => clearForegroundRetryTimers(), [url, clearForegroundRetryTimers]);
 

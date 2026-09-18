@@ -1,12 +1,4 @@
-/**
- * DiagnosticsPanel — the diagnostic/notice output region rendered below the
- * SessionHealthStrip's top row: the OOM circuit-breaker banner, the idle /
- * memory-pressure pause notice, the interrupt-error toast, the phased
- * recovery-failure banner, the inline container-creation error, and the
- * mount point for the full SessionDiagnosticsPanel modal.
- *
- * See docs/124-session-rescue-and-diagnostics.
- */
+
 
 import { SessionDiagnosticsPanel } from "../SessionDiagnosticsPanel.js";
 import { useSessionStore } from "../../stores/session-store.js";
@@ -38,9 +30,6 @@ export function DiagnosticsPanel({
   const memoryExhausted = useSessionStore((s) => s.memoryExhausted);
   const setMemoryExhausted = useSessionStore((s) => s.setMemoryExhausted);
 
-  // Surface a creation error from the server alongside any client-side
-  // action error. The server-side error is the primary signal when the
-  // factory's async create failed (Docker error, image missing, etc.).
   const createError = health?.lastCreateError ?? null;
 
   return (
@@ -82,11 +71,14 @@ export function DiagnosticsPanel({
           className="px-3 py-1.5 border-t border-(--color-warning)/40 bg-(--color-warning)/10 flex items-center gap-2"
         >
           <span className="flex-1 text-(--color-text-primary)">
-            {pauseNotice.reason === "memory-pressure"
-              ? "Session container shut down to reclaim memory."
-              : pauseNotice.idleMs && pauseNotice.idleMs > 0
-                ? `Session container shut down after ${formatIdleDuration(pauseNotice.idleMs)} idle.`
-                : "Session container shut down after idle timeout."}
+            {/* docs/284 — tier 1 kept the preview running, tier 2 did not.
+                Saying "shut down to reclaim memory" for both would tell a user
+                whose preview is still serving that it is gone. */}
+            {pauseNotice.reason === "agent-reclaimed"
+              ? pauseNotice.idleMs && pauseNotice.idleMs > 0
+                ? `Agent container stopped after ${formatIdleDuration(pauseNotice.idleMs)} idle, to stay inside the memory budget. The preview is still running.`
+                : "Agent container stopped to stay inside the memory budget. The preview is still running."
+              : "Session container and preview services stopped to reclaim memory."}
             <span className="ml-1 text-(--color-text-secondary)">Your workspace is preserved — send a message to resume.</span>
           </span>
           <button
@@ -145,7 +137,14 @@ export function DiagnosticsPanel({
         </div>
       )}
       {/* Server-side creation error always renders inline (no toggle) — it's
-          the most actionable signal when the container is missing. */}
+          the most actionable signal when the container is missing.
+          `lastCreateError` is unbounded: it carries `getErrorMessage(err)`
+          straight from a failed Docker create, which can be a screenful of
+          runtime stderr. The strip sits in the SAME flex column as the log
+          view (TerminalPanel) as a `flex: 0 1 auto` child, so an unbounded
+          error box takes its content height first and the `flex-1 min-h-0`
+          log view gets whatever is left — measured at 316px of a 420px panel,
+          leaving the log with no visible rows at all. Hence the cap below. */}
       {createError && (
         <div className="px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary)">
           <div className="text-(--color-error) font-medium mb-0.5">
@@ -156,7 +155,17 @@ export function DiagnosticsPanel({
               </span>
             )}
           </div>
-          <div className="text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all">
+          {/* `max-h-20` + `overflow-y-auto` bound the box at ~5 lines; a short
+              error renders exactly as it always did. `tabIndex` puts the
+              clipped text in the tab order, which is what makes a
+              keyboard-only user able to scroll it. */}
+          <div
+            className="max-h-20 overflow-y-auto text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all"
+            tabIndex={0}
+            role="group"
+            aria-label="Container creation error detail"
+            data-testid="container-create-error"
+          >
             {createError}
           </div>
         </div>

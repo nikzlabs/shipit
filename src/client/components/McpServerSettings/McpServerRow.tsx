@@ -3,7 +3,6 @@ import { useMcpStore } from "../../stores/mcp-store.js";
 import { McpTestResult } from "./McpTestResult.js";
 import type { McpServerConfig, McpTestResult as McpTestResultData } from "../../../server/shared/types.js";
 
-/** Per-server runtime status pill driven by `mcp_server_status` WS events. */
 export function StatusBadge({ name }: { name: string }) {
   const status = useMcpStore((s) => s.statuses[name]);
   if (!status) return null;
@@ -23,11 +22,6 @@ export function StatusBadge({ name }: { name: string }) {
   );
 }
 
-/**
- * A single standalone (non-OAuth-managed) server row: name, type, status
- * badge, the via-connection badge for orphaned OAuth entries, and the
- * Enable/Disable / Test / Edit / Delete actions plus the inline test result.
- */
 export function McpServerRow({
   server,
   result,
@@ -82,6 +76,7 @@ export function McpServerRow({
             variant="ghost"
             onClick={onToggle}
             disabled={isToggling || isDeleting}
+            aria-label={`${server.enabled ? "Disable" : "Enable"} ${server.name}`}
           >
             {isToggling ? "…" : server.enabled ? "Disable" : "Enable"}
           </Button>
@@ -91,18 +86,29 @@ export function McpServerRow({
             onClick={onTest}
             disabled={!hasActiveSession || isTesting || isDeleting}
             title={hasActiveSession ? undefined : "Start a session to test"}
+            aria-label={isTesting ? "Testing…" : "Test"}
           >
             {isTesting ? "Testing…" : "Test"}
           </Button>
-          {/* OAuth-managed servers have their URL/auth wired from the
-              connection — editing them by hand would only desync the
-              pairing, so the Edit affordance is hidden for them. */}
+          {/* OAuth connections own their server configuration. */}
           {!managedBy && (
-            <Button size="md" variant="ghost" onClick={onEdit} disabled={isDeleting}>
+            <Button
+              size="md"
+              variant="ghost"
+              onClick={onEdit}
+              disabled={isDeleting}
+              aria-label={`Edit ${server.name}`}
+            >
               Edit
             </Button>
           )}
-          <Button size="md" variant="ghost" onClick={onDelete} disabled={isDeleting}>
+          <Button
+            size="md"
+            variant="ghost"
+            onClick={onDelete}
+            disabled={isDeleting}
+            aria-label={`${isDeleting ? "Deleting" : "Delete"} ${server.name}`}
+          >
             {isDeleting ? "Deleting…" : "Delete"}
           </Button>
         </div>

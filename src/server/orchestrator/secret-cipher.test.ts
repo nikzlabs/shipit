@@ -46,7 +46,6 @@ describe("SecretCipher", () => {
 
   it("rejects a tampered ciphertext (auth-tag mismatch)", () => {
     const enc = cipher.encrypt("secret");
-    // Flip a byte in the base64 body.
     const body = enc.slice(ENC_PREFIX.length);
     const raw = Buffer.from(body, "base64");
     raw[raw.length - 1] ^= 0xff;
@@ -100,7 +99,6 @@ describe("resolveSecretCipher", () => {
 
   afterEach(() => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    // Restore env so tests don't leak into each other.
     for (const [name, val] of [
       ["SHIPIT_SECRET_KEY", savedEnv.key],
       ["SHIPIT_SECRET_KEY_FILE", savedEnv.keyFile],
@@ -140,9 +138,7 @@ describe("resolveSecretCipher", () => {
     const key = crypto.randomBytes(32);
     process.env.SHIPIT_SECRET_KEY = key.toString("base64");
     const cipher = resolveSecretCipher({ credentialsDir: dir })!;
-    // No key file is generated when the env key is supplied.
     expect(fs.existsSync(path.join(dir, SECRET_KEY_FILENAME))).toBe(false);
-    // Same key → an externally-built cipher decrypts it.
     const enc = cipher.encrypt("x");
     expect(new SecretCipher(key).decrypt(enc)).toBe("x");
   });
@@ -168,12 +164,9 @@ describe("resolveSecretCipher", () => {
   it("adopts a concurrently-created key when it loses the create race (EEXIST)", () => {
     const dir = mkTmp();
     const keyPath = path.join(dir, SECRET_KEY_FILENAME);
-    // The "winner" persisted this key just after our existsSync check.
     const winner = crypto.randomBytes(32);
     fs.writeFileSync(keyPath, `${winner.toString("base64")}\n`);
 
-    // Force the generate branch (existsSync false) and make the exclusive create
-    // lose (openSync → EEXIST).
     const existsSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
     const openSpy = vi.spyOn(fs, "openSync").mockImplementation(() => {
       const e = new Error("EEXIST: file already exists") as NodeJS.ErrnoException;
@@ -182,7 +175,6 @@ describe("resolveSecretCipher", () => {
     });
     try {
       const cipher = resolveSecretCipher({ credentialsDir: dir })!;
-      // Adopted the winner's key, not a freshly generated one.
       const enc = cipher.encrypt("x");
       expect(new SecretCipher(winner).decrypt(enc)).toBe("x");
     } finally {

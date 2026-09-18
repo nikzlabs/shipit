@@ -31,7 +31,6 @@ describe("HomeScreen", () => {
       render(<HomeScreen {...baseProps} githubAuthenticated={false} hasRepos={false} />);
       expect(screen.getByText("Connect GitHub to add repositories")).toBeTruthy();
       expect(screen.queryByText("Start a sandbox session")).toBeNull();
-      // The bare "Add Repository" CTA (which would dead-end) is not the path here.
       expect(screen.queryByText("Add Repository")).toBeNull();
     });
 

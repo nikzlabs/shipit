@@ -151,7 +151,7 @@ android/
   build.gradle.kts
   settings.gradle.kts
   gradle.properties
-  gradle/wrapper/         (committed gradle-wrapper.jar + properties)
+  gradle/wrapper/
   gradlew, gradlew.bat
   app/
     build.gradle.kts
@@ -161,21 +161,21 @@ android/
         MainActivity.kt
         SettingsActivity.kt
         OAuthRedirectActivity.kt
-        WebAppInterface.kt        (small JS bridge if needed for OAuth deep link)
-        Prefs.kt                  (EncryptedSharedPreferences wrapper)
+        WebAppInterface.kt
+        Prefs.kt
       res/
         layout/
-          activity_main.xml       (just a WebView)
-          activity_settings.xml   (URL field + save button)
+          activity_main.xml
+          activity_settings.xml
         values/
           strings.xml, themes.xml, colors.xml
-        mipmap-*/                 (launcher icons — generated from existing favicon.svg)
+        mipmap-*/
         xml/
-          network_security_config.xml  (for debug-only http allowance)
+          network_security_config.xml
     proguard-rules.pro
-  README.md                       (keystore setup, signing flow)
+  README.md
 
-.github/workflows/android.yml     (workflow_dispatch, debug + signed release)
+.github/workflows/android.yml
 ```
 
 ### Cleanup of the previous TWA scaffolding

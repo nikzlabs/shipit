@@ -1,4 +1,5 @@
-import { FileIcon, CircleNotchIcon, WarningCircleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { FileIcon, WarningCircleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -16,20 +17,14 @@ export interface FileUploadChipsProps {
   onRetry: (index: number) => void;
 }
 
-/** Render an image upload as a thumbnail with overlay controls. */
-function ImageThumbnail({ u, index, onRemove }: { u: UploadItem; index: number; onRemove: (i: number) => void }) {
+function ImageThumbnail({ u, index, onRemove, onRetry }: { u: UploadItem; index: number; onRemove: (i: number) => void; onRetry: (i: number) => void }) {
   const openImagePreview = () => {
     const store = useFileStore.getState();
     const sid = useSessionStore.getState().sessionId;
-    // The uploaded copy is the better source wherever it exists: it carries the
-    // real path in the dialog header, and the dialog renders an `.svg` as
-    // markup — which a blob URL cannot supply.
     if (u.status === "ready" && u.path && sid) {
       void store.openPreview(sid, u.path);
       return;
     }
-    // No server copy yet — a pasted image, or one still uploading, previews
-    // from the bytes the browser already holds, so the click works right away.
     const local = u.dataUrl ?? u.previewUrl;
     if (local) store.openPreviewWithContent(u.name, local, "image");
   };
@@ -49,27 +44,35 @@ function ImageThumbnail({ u, index, onRemove }: { u: UploadItem; index: number; 
         />
       </button>
       {u.status === "uploading" && (
-        // pointer-events-none: the overlay covers the button, and a pasted
-        // image is previewable from local bytes before the POST finishes.
+        // Keep the local preview clickable while upload is in progress.
         <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-md pointer-events-none">
-          <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-white" />
+          <Spinner size={ICON_SIZE.SM} className="text-white" />
         </div>
       )}
-      {u.status !== "uploading" && (
+      {u.status === "error" && (
         <button
-          onClick={() => onRemove(index)}
-          className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-          aria-label={`Remove ${u.name}`}
-          title={`Remove ${u.name}`}
+          onClick={() => onRetry(index)}
+          className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-md bg-(--color-error)/70 text-white"
+          aria-label={`Retry ${u.name}`}
+          title={u.error ? `${u.error} — click to retry` : "Retry"}
         >
-          &times;
+          <WarningCircleIcon size={ICON_SIZE.SM} />
+          <ArrowClockwiseIcon size={ICON_SIZE.XS} />
         </button>
       )}
+      {/* Keep removal visible for touch and keyboard users. */}
+      <button
+        onClick={() => onRemove(index)}
+        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 transition-opacity"
+        aria-label={`Remove ${u.name}`}
+        title={`Remove ${u.name}`}
+      >
+        &times;
+      </button>
     </div>
   );
 }
 
-/** Render a non-image upload as a text chip. */
 function FileChip({ u, index, onRemove, onRetry }: { u: UploadItem; index: number; onRemove: (i: number) => void; onRetry: (i: number) => void }) {
   return (
     <span
@@ -81,7 +84,7 @@ function FileChip({ u, index, onRemove, onRetry }: { u: UploadItem; index: numbe
       title={u.status === "error" ? u.error : u.name}
     >
       {u.status === "uploading" && (
-        <CircleNotchIcon size={ICON_SIZE.XS} className="shrink-0 animate-spin text-(--color-text-secondary)" />
+        <Spinner size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-secondary)" />
       )}
       {u.status === "ready" && (
         <FileIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-secondary)" />
@@ -122,16 +125,14 @@ function FileChip({ u, index, onRemove, onRetry }: { u: UploadItem; index: numbe
           <ArrowClockwiseIcon size={ICON_SIZE.XS} />
         </button>
       )}
-      {u.status !== "uploading" && (
-        <button
-          onClick={() => onRemove(index)}
-          className="ml-0.5 text-(--color-text-tertiary) hover:text-(--color-text-primary) shrink-0"
-          aria-label={`Remove ${u.name}`}
-          title={`Remove ${u.name}`}
-        >
-          &times;
-        </button>
-      )}
+      <button
+        onClick={() => onRemove(index)}
+        className="ml-0.5 text-(--color-text-tertiary) hover:text-(--color-text-primary) shrink-0"
+        aria-label={`Remove ${u.name}`}
+        title={`Remove ${u.name}`}
+      >
+        &times;
+      </button>
     </span>
   );
 }
@@ -143,7 +144,7 @@ export function FileUploadChips({ uploads, onRemove, onRetry }: FileUploadChipsP
     <div className="flex gap-1.5 flex-wrap items-end" data-testid="file-upload-chips">
       {uploads.map((u, i) =>
         u.previewUrl
-          ? <ImageThumbnail key={u.id} u={u} index={i} onRemove={onRemove} />
+          ? <ImageThumbnail key={u.id} u={u} index={i} onRemove={onRemove} onRetry={onRetry} />
           : <FileChip key={u.id} u={u} index={i} onRemove={onRemove} onRetry={onRetry} />,
       )}
     </div>

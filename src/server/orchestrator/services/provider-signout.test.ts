@@ -12,25 +12,12 @@ import { signOutProvider } from "./settings.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
-/**
- * planning#285 — provider-wide sign-out has to take the account away from the
- * sessions running on it, not just delete the rows.
- *
- * The row is not where the token lives: every pinned session holds its own copy
- * in `<credentialsDir>/sessions/<id>/`, and that copy is what the CLI in the
- * container reads. Nothing else deletes it — first-turn provisioning is guarded
- * on `agentPinned`, and only a switch to another account overwrites it. So these
- * tests are mostly about *which* sessions lose their copy, and what survives the
- * removal.
- */
 describe("signOutProvider", () => {
   let root: string;
   let accounts: ProviderAccountManager;
   let sessions: SessionManager;
   let runningSessionIds: Set<string>;
-  /** Sessions holding a resident (idle but alive) agent process, id → kill spy. */
   let residentAgents: Map<string, { killed: boolean; cleared: boolean }>;
-  /** Providers whose singleton credentials the stub auth manager cleared. */
   let signedOutProviders: string[];
 
   const registry = () => ({
@@ -42,8 +29,6 @@ describe("signOutProvider", () => {
         sessionId: id,
         running: runningSessionIds.has(id),
         backgroundWorkDescriptions: [] as string[],
-        // No spawn stamp in these fakes — the marker fallback identifies the
-        // process's account, which is exactly the post-restart shape.
         residentRoute: undefined,
         getAgent: () => (resident ? { kill: () => { resident.killed = true; } } : null),
         setAgent: (agent: unknown) => { if (resident && agent === null) resident.cleared = true; },
@@ -51,7 +36,6 @@ describe("signOutProvider", () => {
     },
   }) as unknown as SessionRunnerRegistry;
 
-  /** The per-session copy of the token — what the CLI actually reads. */
   const sessionTokenPath = (sessionId: string): string =>
     path.join(root, "sessions", sessionId, ".claude", ".credentials.json");
 
@@ -67,7 +51,6 @@ describe("signOutProvider", () => {
     return accountRoot;
   }
 
-  /** A connected account with credentials on disk. */
   function connectAccount(label: string): string {
     const account = accounts.create("anthropic", label);
     accounts.setAccountStatus("anthropic", account.id, "ready");
@@ -75,10 +58,6 @@ describe("signOutProvider", () => {
     return account.id;
   }
 
-  /**
-   * docs/260 — a session "on" an account means its credential subtree records
-   * that account in its marker; no session-row pin exists any more.
-   */
   function pinSession(id: string, accountId: string, agentId: "claude" | "codex" = "claude"): void {
     sessions.track(id, id);
     sessions.setAgentId(id, agentId);
@@ -95,8 +74,6 @@ describe("signOutProvider", () => {
     signedOutProviders = [];
     const stubAuthManager = (provider: "claude" | "codex"): AgentAuthManager => ({
       signOut: () => { signedOutProviders.push(provider); },
-      // `delete()` ends the device flow of the row it removes; nothing is
-      // in flight in these tests, so the scope is always empty.
       getActiveAccountId: () => null,
       cancel: () => {},
     } as unknown as AgentAuthManager);
@@ -124,11 +101,6 @@ describe("signOutProvider", () => {
     expect(signedOutProviders).toEqual(["claude"]);
   });
 
-  /**
-   * The defect this file exists for: sign-out erased the *source* subtree and
-   * the row, and left every pinned session holding a working subscription token
-   * it could go on spending indefinitely.
-   */
   it("revokes each pinned session's own copy of the token, not just the source", () => {
     const a = connectAccount("A");
     const b = connectAccount("B");
@@ -143,15 +115,10 @@ describe("signOutProvider", () => {
     expect(fs.existsSync(sessionTokenPath("s2"))).toBe(false);
   });
 
-  /**
-   * A resident CLI holds the token in memory, where deleting files cannot reach
-   * it — same reason the per-account disconnect retires the process first.
-   */
   it("retires the resident agent process before it takes the credentials away", () => {
     const a = connectAccount("A");
     pinSession("s1", a);
     seedSessionCredentials("s1", "token-A");
-    // Idle but alive, so the running-turn refusal does not apply.
     residentAgents.set("s1", { killed: false, cleared: false });
 
     signOutProvider(accounts, sessions, registry(), "claude", { credentialsDir: root });
@@ -174,13 +141,6 @@ describe("signOutProvider", () => {
     expect(fs.existsSync(resume)).toBe(true);
   });
 
-  /**
-   * The dangling pin is what makes the session recoverable: it reads unusable,
-   * so the next turn's preflight fails it over — and re-provisions credentials —
-   * once an account is connected again. Clearing it would look tidier and would
-   * strand the session, since env prep only provisions for a session that is not
-   * yet pinned.
-   */
   it("routes the session's next turn through selection once accounts are gone (req 1)", () => {
     const a = connectAccount("A");
     pinSession("s1", a);
@@ -188,17 +148,9 @@ describe("signOutProvider", () => {
 
     signOutProvider(accounts, sessions, registry(), "claude", { credentialsDir: root });
 
-    // docs/260 — no pin survives sign-out because no pin exists at all: the
-    // next turn selects among whatever accounts remain, and with none left the
-    // selector answers auth_required rather than naming a ghost.
     expect(accounts.selectAccountForTurn("anthropic")).toEqual({ ok: false, reason: "auth_required" });
   });
 
-  /**
-   * A reserved route has no account row, and its credentials came from env
-   * OAuth rather than from anything this deletes — revoking there would break a
-   * path that does not depend on the signed-out accounts at all.
-   */
   it("leaves a session on a reserved route alone", () => {
     connectAccount("A");
     sessions.track("s1", "s1");
@@ -211,7 +163,6 @@ describe("signOutProvider", () => {
     expect(fs.readFileSync(sessionTokenPath("s1"), "utf-8")).toBe("env-token");
   });
 
-  /** Signing out of one provider must not touch the other's sessions. */
   it("leaves the other provider's pinned sessions alone", () => {
     const claudeAccount = connectAccount("A");
     const codexAccount = accounts.create("openai", "Codex A");
@@ -230,11 +181,6 @@ describe("signOutProvider", () => {
     expect(accounts.list("openai").map((account) => account.id)).toEqual([codexAccount.id]);
   });
 
-  /**
-   * An archived session cannot be running, but its credential subtree survives
-   * archival and comes back with it — leaving the copy is the same leak on a
-   * delay.
-   */
   it("revokes an archived session's copy too", () => {
     const a = connectAccount("A");
     pinSession("s1", a);
@@ -246,11 +192,6 @@ describe("signOutProvider", () => {
     expect(fs.existsSync(sessionTokenPath("s1"))).toBe(false);
   });
 
-  /**
-   * The one refusal sign-out keeps: rewriting credentials under a live agent
-   * turns someone's in-flight turn into a 401 instead of an answer. It has to
-   * refuse *before* touching anything, so the retry has something to act on.
-   */
   it("refuses mid-turn without revoking or deleting anything", () => {
     const a = connectAccount("A");
     pinSession("s1", a);

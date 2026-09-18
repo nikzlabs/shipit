@@ -1,53 +1,20 @@
-/**
- * Minimal SSE client using raw http.request.
- * Extracted from container-session-runner.ts for single-responsibility.
- */
-
 import http from "node:http";
 import { workerAuthHeaders } from "./worker-auth.js";
 
 export interface SSEEvent {
   type: string;
   data: string;
-  /**
-   * Monotonic sequence number from the worker's `id:` line, if present.
-   * Used by the SSE connection manager to track which events have been
-   * delivered so a reconnect can pass `?since=<seq>` and replay only
-   * what's new. Undefined for streams that don't include `id:` (e.g.
-   * legacy workers).
-   */
+  /** Worker event ID for reconnect replay via ?since=. */
   seq?: number;
 }
 
 export interface ConnectSSEOpts {
-  /**
-   * If set, the connection is treated as silently dead when no bytes
-   * arrive from the server within `idleTimeoutMs`. The request is
-   * destroyed and `onError` fires with `Error("SSE stream stale (no
-   * activity within idle timeout)")` — which then lets the caller's
-   * existing reconnect path recover.
-   *
-   * Pair this with a server-side keepalive interval that is shorter
-   * (e.g. server keepalive every 15s, client idle timeout 45s = three
-   * missed keepalives). Without an idle timeout, half-open TCP
-   * connections (NAT idle drops, kernel-killed peers, frozen worker
-   * processes) appear "connected" indefinitely and never trigger
-   * Node's `error`/`end` handlers.
-   */
+  /** Must exceed the server's keepalive interval to detect half-open connections. */
   idleTimeoutMs?: number;
-  /**
-   * Fires whenever any bytes arrive from the server, including SSE
-   * comment lines (e.g. `: keepalive`) that the parser would otherwise
-   * discard. Use this to advance liveness gauges that should reflect
-   * connection health rather than only "the agent emitted an event."
-   */
+  /** Includes keepalive comments discarded by the event parser. */
   onActivity?: () => void;
 }
 
-/**
- * Minimal SSE client using raw http.request. Avoids the EventSource polyfill
- * dependency. Parses "event:" and "data:" fields from the SSE stream.
- */
 export function connectSSE(
   url: string,
   onEvent: (event: SSEEvent) => void,
@@ -83,13 +50,8 @@ export function connectSSE(
     {
       hostname: parsedUrl.hostname,
       port: parsedUrl.port,
-      // Include the query string (e.g. `?since=42`) so the worker can
-      // replay only events the consumer hasn't seen yet.
       path: `${parsedUrl.pathname}${parsedUrl.search}`,
       method: "GET",
-      // planning#313 — `/events` is orchestrator-facing, so it carries the same
-      // per-session worker token the request helpers send. Keyed off the
-      // origin, not the full URL, since the registry is per worker base URL.
       headers: { Accept: "text/event-stream", ...workerAuthHeaders(parsedUrl.origin) },
     },
     (res) => {
@@ -99,22 +61,16 @@ export function connectSSE(
       let currentSeq: number | undefined;
 
       if (onOpen) onOpen();
-      // Arm the idle timer once the response starts so even a worker
-      // that connects but never writes is treated as stale.
       armIdle();
 
       res.setEncoding("utf-8");
       res.on("data", (chunk: string) => {
-        // Reset the idle timer on every byte from the server, including
-        // keepalive comments. Without this, only fully-formed events
-        // would advance liveness — which means an idle-but-healthy
-        // connection looks the same as a dead one.
         armIdle();
         opts?.onActivity?.();
 
         buffer += chunk;
         const lines = buffer.split("\n");
-        buffer = lines.pop() ?? ""; // Keep incomplete last line
+        buffer = lines.pop() ?? "";
 
         for (const line of lines) {
           if (line.startsWith("event: ")) {
@@ -125,7 +81,6 @@ export function connectSSE(
             const parsed = Number.parseInt(line.slice(4).trim(), 10);
             currentSeq = Number.isFinite(parsed) ? parsed : undefined;
           } else if (line === "") {
-            // End of event
             if (currentEvent && currentData) {
               onEvent({ type: currentEvent, data: currentData, ...(currentSeq !== undefined ? { seq: currentSeq } : {}) });
             }
@@ -133,7 +88,6 @@ export function connectSSE(
             currentData = "";
             currentSeq = undefined;
           }
-          // Skip comments (lines starting with ":")
         }
       });
 

@@ -4,28 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { FileWatcher } from "./file-watcher.js";
 
-// chokidar needs a moment to finish its initial directory walk and register
-// watches before events are reliably delivered for synchronous writes.
+// Let chokidar finish registering watches before writes.
 const settle = () => new Promise<void>((r) => setTimeout(r, 100));
 
-/**
- * How long to keep listening AFTER the expected event has arrived, to give an
- * event that should have been ignored a chance to show up. Asserting absence
- * requires actually waiting; without this window, returning the instant the
- * expected file lands would let a broken ignore matcher slip through.
- */
+// Wait after the expected event to detect extra events that should be absent.
 const absenceWindow = () => new Promise<void>((r) => setTimeout(r, 300));
 
-/**
- * Poll until `predicate` holds, or give up after `timeoutMs`.
- *
- * A fixed sleep races the watcher: chokidar's inotify delivery is not bounded
- * by any wall-clock budget the test controls, so on a loaded runner a
- * slow-but-correct delivery blows a 500ms budget and fails the build (which is
- * exactly how "ignores node_modules changes" went red in CI). Polling keeps
- * every assertion identical and only raises the ceiling — an event that never
- * arrives still fails the test, just later.
- */
 async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
@@ -33,21 +17,10 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<vo
   }
 }
 
-/** Every path the spy has been handed so far, flattened across batches. */
 const seenPaths = (spy: { mock: { calls: unknown[][] } }): string[] =>
   spy.mock.calls.flatMap((c) => c[0] as string[]);
 
-// These tests rely on the underlying chokidar watcher (inotify on Linux)
-// reliably delivering events for synchronous file writes. Under heavy
-// parallel load, the per-uid inotify queue can overflow and silently drop
-// events. GitHub Actions runners have generous inotify limits and these
-// tests pass there. The ShipIt sandbox runs as an unprivileged container
-// where /proc/sys/fs/inotify is read-only, so we can't raise the limit
-// and the tests flake under full-suite load.
-//
-// Skip when running inside a ShipIt session container (SHIPIT_SESSION_ID is
-// set by the ShipIt runtime; it's never set in CI). CI is detected via the
-// standard `CI` env var as a belt-and-suspenders check.
+// Session containers share host inotify limits and can lose events under load.
 const isShipItSandbox =
   process.env.SHIPIT_SESSION_ID !== undefined && process.env.CI === undefined;
 
@@ -55,10 +28,7 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    // Resolve any symlinks (e.g. /tmp -> /private/tmp on macOS) so the
-    // path we hand to chokidar matches the absolute paths it reports
-    // back in events. Otherwise path.relative() would fail to strip the
-    // root prefix and every event would be classified as "outside".
+    // Match chokidar's resolved paths, including macOS /tmp symlinks.
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vibe-filewatcher-")));
   });
 
@@ -67,7 +37,7 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
   });
 
   it("emits changes event when a file is created", async () => {
-    const watcher = new FileWatcher(50); // short debounce for test speed
+    const watcher = new FileWatcher(50);
     const changesPromise = new Promise<string[]>((resolve) => {
       watcher.on("changes", resolve);
     });
@@ -75,7 +45,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     watcher.start(tmpDir);
     await settle();
 
-    // Create a file to trigger the watch
     fs.writeFileSync(path.join(tmpDir, "hello.txt"), "world");
 
     const changes = await changesPromise;
@@ -85,7 +54,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
   });
 
   it("emits changes event when a file is modified", async () => {
-    // Create the file first
     fs.writeFileSync(path.join(tmpDir, "existing.txt"), "original");
 
     const watcher = new FileWatcher(50);
@@ -96,7 +64,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
       watcher.on("changes", resolve);
     });
 
-    // Modify the file
     fs.writeFileSync(path.join(tmpDir, "existing.txt"), "modified");
 
     const changes = await changesPromise;
@@ -106,9 +73,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
   });
 
   it("reports a shipit.yaml edit (the config file both the compose reconcile and the client's tracker refresh hang off)", async () => {
-    // planning#323 / #1622 — `shipit.yaml` must survive the ignore matcher: the
-    // orchestrator's config re-evaluation and the browser's declared-tracker
-    // refresh (docs/248) are both driven by seeing this path in a batch.
     fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: 2048\n");
 
     const watcher = new FileWatcher(50);
@@ -153,17 +117,13 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     watcher.start(tmpDir);
     await settle();
 
-    // Rapidly create multiple files
     fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");
     fs.writeFileSync(path.join(tmpDir, "b.txt"), "b");
     fs.writeFileSync(path.join(tmpDir, "c.txt"), "c");
 
-    // Wait for the debounce to fire, then keep listening: a split batch would
-    // arrive after the first one, and that is what this test exists to catch.
     await waitUntil(() => emitSpy.mock.calls.length > 0);
     await absenceWindow();
 
-    // Should have emitted exactly once with all changes batched
     expect(emitSpy).toHaveBeenCalledTimes(1);
     const changes: string[] = emitSpy.mock.calls[0][0];
     expect(changes).toContain("a.txt");
@@ -182,14 +142,12 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     watcher.start(tmpDir);
     await settle();
 
-    // Write to the same file multiple times rapidly
     fs.writeFileSync(path.join(tmpDir, "dup.txt"), "v1");
     fs.writeFileSync(path.join(tmpDir, "dup.txt"), "v2");
     fs.writeFileSync(path.join(tmpDir, "dup.txt"), "v3");
 
     const changes = await changesPromise;
 
-    // The file should appear only once in the changes list
     const count = changes.filter((p) => p === "dup.txt").length;
     expect(count).toBe(1);
 
@@ -204,19 +162,15 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     watcher.start(tmpDir);
     await settle();
 
-    // Create node_modules AFTER the watcher starts so we exercise the
-    // ignore matcher being consulted on a newly-discovered directory.
     const nmDir = path.join(tmpDir, "node_modules");
     fs.mkdirSync(nmDir, { recursive: true });
     fs.writeFileSync(path.join(nmDir, "pkg.json"), "{}");
 
-    // Also write a non-ignored file to verify the watcher is working
     fs.writeFileSync(path.join(tmpDir, "app.ts"), "export {}");
 
     await waitUntil(() => seenPaths(emitSpy).includes("app.ts"));
     await absenceWindow();
 
-    // The changes should include app.ts but NOT anything under node_modules
     expect(emitSpy).toHaveBeenCalled();
     const allChanges = seenPaths(emitSpy);
     expect(allChanges).toContain("app.ts");
@@ -226,8 +180,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
   });
 
   it("ignores node_modules even when nested deep in the tree", async () => {
-    // Mimics a real workspace where a sub-package has its own
-    // node_modules (e.g. monorepo packages/app/node_modules).
     const pkgDir = path.join(tmpDir, "packages", "app");
     fs.mkdirSync(pkgDir, { recursive: true });
 
@@ -242,7 +194,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     fs.mkdirSync(nestedNm, { recursive: true });
     fs.writeFileSync(path.join(nestedNm, "index.js"), "module.exports = {}");
 
-    // Also write a non-ignored file in the same package
     fs.writeFileSync(path.join(pkgDir, "main.ts"), "export {}");
 
     const mainRel = path.join("packages", "app", "main.ts");
@@ -268,10 +219,8 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     watcher.start(tmpDir);
     await settle();
 
-    // Write into .git
     fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/main");
 
-    // Also write a non-ignored file
     fs.writeFileSync(path.join(tmpDir, "readme.md"), "# Hello");
 
     await waitUntil(() => seenPaths(emitSpy).includes("readme.md"));
@@ -341,7 +290,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     await settle();
     watcher.stop();
 
-    // Write a file after stop — should not trigger any event
     fs.writeFileSync(path.join(tmpDir, "after-stop.txt"), "data");
 
     await new Promise((r) => setTimeout(r, 300));
@@ -355,17 +303,14 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     watcher.on("changes", emitSpy);
 
     watcher.start(tmpDir);
-    watcher.start(tmpDir); // should be a no-op
+    watcher.start(tmpDir);
     await settle();
 
     fs.writeFileSync(path.join(tmpDir, "once.txt"), "data");
 
-    // Wait for the first batch, then keep listening — a duplicate watcher would
-    // emit a second one, which is the whole point of this test.
     await waitUntil(() => emitSpy.mock.calls.length > 0);
     await absenceWindow();
 
-    // Should only emit once, not twice (from two watchers)
     expect(emitSpy).toHaveBeenCalledTimes(1);
 
     watcher.stop();
@@ -386,7 +331,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     fs.writeFileSync(path.join(subDir, "app.ts"), "export default {}");
 
     const changes = await changesPromise;
-    // Chokidar reports per-file paths, so we always get the full relative path.
     expect(changes).toContain(path.join("src", "app.ts"));
 
     watcher.stop();
@@ -400,7 +344,6 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
     watcher.start(tmpDir);
     await settle();
 
-    // Wait without making any changes
     await new Promise((r) => setTimeout(r, 300));
 
     expect(emitSpy).not.toHaveBeenCalled();
@@ -410,9 +353,7 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
 
   it("constructor defaults to 300ms debounce", () => {
     const watcher = new FileWatcher();
-    // The debounceMs is private, so we verify via behavior.
-    // Just verify it can be constructed without args.
     expect(watcher).toBeInstanceOf(FileWatcher);
-    watcher.stop(); // clean up
+    watcher.stop();
   });
 });

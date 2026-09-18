@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { ServiceError } from "./types.js";
 import {
   validateString,
-  validateNumber,
   validateStringArray,
   validateNonEmptyString,
 } from "./validation.js";
@@ -33,22 +32,6 @@ describe("validateString", () => {
   });
 });
 
-describe("validateNumber", () => {
-  it("returns the value when it is a finite number", () => {
-    expect(validateNumber(42, "field")).toBe(42);
-    expect(validateNumber(0, "field")).toBe(0);
-    expect(validateNumber(-1.5, "field")).toBe(-1.5);
-  });
-
-  it("throws a 400 ServiceError for non-numbers and NaN", () => {
-    for (const bad of ["42", null, undefined, {}, [], true, NaN]) {
-      expect(() => validateNumber(bad, "prNumber")).toThrow(
-        new ServiceError(400, "prNumber must be a number"),
-      );
-    }
-  });
-});
-
 describe("validateStringArray", () => {
   it("returns the array when every entry is a string", () => {
     expect(validateStringArray([], "ids")).toEqual([]);
@@ -73,7 +56,6 @@ describe("validateStringArray", () => {
 describe("validateNonEmptyString", () => {
   it("returns the value when it is a non-empty string", () => {
     expect(validateNonEmptyString("hello", "field")).toBe("hello");
-    // Surrounding whitespace is preserved on the returned value.
     expect(validateNonEmptyString("  x  ", "field")).toBe("  x  ");
   });
 

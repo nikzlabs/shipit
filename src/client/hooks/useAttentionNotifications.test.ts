@@ -23,11 +23,6 @@ afterEach(() => {
   useSettingsStore.setState({ autoFixCi: false, autoResolveConflicts: false });
 });
 
-/**
- * Attention notifications only fire once the reason has held for the settle
- * window (see `ATTENTION_SETTLE_MS`), so every assertion has to run the clock
- * forward first. Comfortably longer than the window.
- */
 function settle(): void {
   act(() => { vi.advanceTimersByTime(5000); });
 }
@@ -91,12 +86,6 @@ describe("useAttentionNotifications", () => {
     });
   });
 
-  /**
-   * The docs/235 regression. The CLI drains its background-task list ~1ms before
-   * the self-wake that starts the next turn, so the session reads as "idle, needs
-   * you" for a single frame. Firing the chime there tells the user their agent
-   * stopped while it is visibly working.
-   */
   it("does not fire when the attention state reverts inside the settle window", () => {
     useSessionStore.setState({ sessions: [session("s1")] });
     useSessionStore.setState({ backgroundTaskSessions: new Map([["s1", ["npm test"]]]) });
@@ -104,9 +93,8 @@ describe("useAttentionNotifications", () => {
     const notify = vi.fn();
     renderHook(() => useAttentionNotifications(notify));
 
-    // Task list drains — neither running nor holding tasks for one frame.
     act(() => { useSessionStore.setState({ backgroundTaskSessions: new Map<string, string[]>() }); });
-    // The self-wake lands a moment later and the turn is running again.
+
     act(() => { vi.advanceTimersByTime(50); });
     act(() => setAgentRunning("s1", true));
     settle();
@@ -122,7 +110,7 @@ describe("useAttentionNotifications", () => {
     renderHook(() => useAttentionNotifications(notify));
 
     act(() => setAgentRunning("s1", false));
-    // Not yet — the window hasn't elapsed.
+
     act(() => { vi.advanceTimersByTime(500); });
     expect(notify).not.toHaveBeenCalled();
 
@@ -137,9 +125,8 @@ describe("useAttentionNotifications", () => {
     const notify = vi.fn();
     renderHook(() => useAttentionNotifications(notify));
 
-    // Turn ends -> "Waiting for your input" starts settling...
     act(() => setAgentRunning("s1", false));
-    // ...then CI failure arrives before the window elapses.
+
     act(() => {
       setCard("s1", {
         cardId: "c1",
@@ -176,7 +163,6 @@ describe("useAttentionNotifications", () => {
       repoLabel: "acme/app",
     });
   });
-
 
   it("fires when CI failure arrives for an idle session", () => {
     useSessionStore.setState({ sessions: [session("s1")] });
@@ -287,13 +273,10 @@ describe("useAttentionNotifications", () => {
     const notify = vi.fn();
     renderHook(() => useAttentionNotifications(notify));
 
-    // First transition: running -> idle (Waiting for your input).
     act(() => setAgentRunning("s1", false));
     settle();
     expect(notify).toHaveBeenCalledTimes(1);
 
-    // Now CI failure arrives — reason changes "Waiting" -> "CI checks failed".
-    // This is not a null -> reason transition, so should not fire again.
     act(() => {
       setCard("s1", {
         cardId: "c1",
@@ -355,17 +338,14 @@ describe("useAttentionNotifications", () => {
     const notify = vi.fn();
     renderHook(() => useAttentionNotifications(notify));
 
-    // First transition: idle (Waiting).
     act(() => setAgentRunning("s1", false));
     settle();
     expect(notify).toHaveBeenCalledTimes(1);
 
-    // User sends a new message — agent runs again. Reason -> null.
     act(() => setAgentRunning("s1", true));
     settle();
     expect(notify).toHaveBeenCalledTimes(1);
 
-    // Agent finishes again. null -> "Waiting", so we should fire a second time.
     act(() => setAgentRunning("s1", false));
     settle();
     expect(notify).toHaveBeenCalledTimes(2);

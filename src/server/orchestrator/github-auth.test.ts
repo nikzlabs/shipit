@@ -12,7 +12,6 @@ import {
   CONTAINER_CREDENTIAL_HELPER,
 } from "./git-config.js";
 
-/** Create a mock GitHub API response for fetch. */
 function mockGitHubUserResponse(data: { login: string; avatar_url: string; id: number; name: string | null }): void {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
     new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -29,9 +28,6 @@ describe("GitHubAuthManager", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-github-auth-"));
     credentialStore = new CredentialStore(tmpDir);
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
-    // Clear GITHUB_TOKEN so checkCredentials() tests don't accidentally
-    // pick up an env-injected token from the CI shell. Individual tests
-    // that exercise the env-fallback path re-set it explicitly.
     origGithubToken = process.env.GITHUB_TOKEN;
     delete process.env.GITHUB_TOKEN;
     initGlobalGitConfig(tmpDir);
@@ -93,9 +89,6 @@ describe("GitHubAuthManager", () => {
       process.env.GITHUB_TOKEN = "ghp_from_env_only";
       const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       expect(mgr.checkCredentials()).toBe(true);
-      // The CredentialStore on disk should remain empty — env is the source
-      // of truth in dogfooding mode and we don't want to mask token rotation
-      // with a stale on-disk copy.
       expect(credentialStore.getGithubToken()).toBeNull();
     });
   });
@@ -197,7 +190,6 @@ describe("GitHubAuthManager", () => {
 
   describe("markTokenInvalid", () => {
     it("clears credentials and emits token_invalid when GitHub also rejects the token", async () => {
-      // GET /user fails too → the token really is invalid → clear it.
       vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Unauthorized", { status: 401 }));
 
       credentialStore.setGithubToken("ghp_testtoken");
@@ -216,9 +208,6 @@ describe("GitHubAuthManager", () => {
     });
 
     it("preserves a token that still validates against GET /user (repo-specific 401 from a fine-grained PAT)", async () => {
-      // GET /user succeeds → the token is still valid globally; the per-repo
-      // git failure was a scope issue, not an expired credential. The token
-      // must not be cleared and no `token_invalid` event must be emitted.
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
         new Response(
           JSON.stringify({ login: "octocat", avatar_url: "https://example.com/a.png", id: 1, name: null }),
@@ -252,9 +241,6 @@ describe("GitHubAuthManager", () => {
     });
 
     it("preserves the token when GitHub is unreachable (5xx outage), no event", async () => {
-      // The git failure and the GET /user verification are both casualties of
-      // the same outage. Clearing here would log the user out for an incident
-      // they didn't cause — only the user may clear their token implicitly.
       vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Bad Gateway", { status: 502 }));
 
       credentialStore.setGithubToken("ghp_validtoken");
@@ -358,10 +344,8 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     origGithubToken = process.env.GITHUB_TOKEN;
     delete process.env.GITHUB_TOKEN;
-    // Point the global git config at a fresh, token-free file in tmpDir.
     initGlobalGitConfig(tmpDir);
 
-    // A real git repo whose LOCAL .git/config we configure.
     workspaceDir = path.join(tmpDir, "workspace");
     fs.mkdirSync(workspaceDir);
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workspaceDir });
@@ -375,22 +359,16 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /** Run `git credential fill` in the workspace; return combined stdout+stderr. */
   function credentialFill(host: string): string {
     try {
       return execFileSync("git", ["credential", "fill"], {
         cwd: workspaceDir,
         input: `protocol=https\nhost=${host}\n\n`,
         encoding: "utf-8",
-        // Disable interactive prompts and the system gitconfig so the test
-        // observes only the global + local helpers we control.
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1" },
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
-      // With no helper able to supply a password and prompts disabled, git
-      // exits non-zero — capture whatever it emitted so the test can assert
-      // the token never appears in any output channel.
       const e = err as { stdout?: Buffer | string; stderr?: Buffer | string };
       return `${String(e.stdout ?? "")}${String(e.stderr ?? "")}`;
     }
@@ -406,8 +384,6 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
     const config = fs.readFileSync(path.join(workspaceDir, ".git", "config"), "utf-8");
     expect(config).not.toContain(TOKEN);
     expect(config).not.toContain("ghp_");
-    // The workspace is routed through the brokering helper instead of an
-    // inline token echo.
     const helper = execFileSync("git", ["config", "--local", "credential.helper"], {
       cwd: workspaceDir,
       encoding: "utf-8",
@@ -419,12 +395,6 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
     credentialStore.setGithubToken(TOKEN);
     const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
     mgr.checkCredentials();
-    // `checkCredentials` installs the orchestrator's global inline helper.
-    // Clear it so this test isolates the *workspace* config: pre-fix, the
-    // inline local helper echoed the token for ANY host straight from
-    // .git/config. With the brokering helper (whose binary is absent on the
-    // orchestrator/test host, and which is host-scoped anyway), no token is
-    // ever produced for an attacker host.
     clearGlobalCredentialHelper();
     mgr.configureGitCredentials(workspaceDir);
 
@@ -436,23 +406,15 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
   it("git credential fill for github.com still resolves the token via the global helper (push/pull unaffected)", () => {
     credentialStore.setGithubToken(TOKEN);
     const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
-    mgr.checkCredentials(); // installs the global inline helper (orchestrator side)
-    mgr.configureGitCredentials(workspaceDir); // local broker helper
+    mgr.checkCredentials();
+    mgr.configureGitCredentials(workspaceDir);
 
-    // The global inline helper is consulted first and fills the credential, so
-    // the (orchestrator-side) push/pull path is unaffected even though the
-    // local config now points at the broker.
     const out = credentialFill("github.com");
     expect(out).toContain("username=x-access-token");
     expect(out).toContain(`password=${TOKEN}`);
   });
 
   it("silently skips a target dir that no longer exists (no spurious ENOENT)", () => {
-    // setGitHubToken backfills creds into EVERY persisted session, including
-    // ones whose on-disk checkout was reclaimed (archive / disk-janitor) while
-    // metadata is kept. A non-existent cwd makes spawnSync fail to chdir and
-    // surface a misleading "spawnSync git ENOENT" (path: 'git'). The guard
-    // turns that into a clean no-op.
     credentialStore.setGithubToken(TOKEN);
     const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
     mgr.checkCredentials();
@@ -463,15 +425,11 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
   });
 });
 
-/** Narrow fetch's `url` argument to a string. The auth manager only ever
- * passes string URLs, so we assert that and keep the test types clean. */
 function urlOf(input: Parameters<typeof fetch>[0]): string {
   if (typeof input !== "string") throw new Error("Expected string URL in test");
   return input;
 }
 
-/** Narrow fetch's `init.body` to a string. The auth manager only sends JSON
- * strings, so this is a safe narrowing for tests. */
 function jsonBody(init: RequestInit | undefined): unknown {
   const body = init?.body;
   if (typeof body !== "string") throw new Error("Expected JSON string body in test");
@@ -502,8 +460,6 @@ describe("GitHubAuthManager.mergePullRequest", () => {
   });
 
   it("forwards the PR title and body as commit_title / commit_message", async () => {
-    // First fetch (viewPullRequest in the wrapper) returns PR details. Second
-    // fetch (mergePullRequest impl) is the actual PUT we want to inspect.
     let mergeBody: Record<string, unknown> | undefined;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const u = urlOf(input);
@@ -655,8 +611,6 @@ describe("GitHubAuthManager.enableAutoMerge", () => {
     fetchSpy.mockRestore();
   });
 
-  // The returned `message` is surfaced verbatim in the managed-merge tooltip
-  // (docs/077), so GitHub's cryptic GraphQL errors are mapped to actionable text.
   function mockGraphqlError(message: string) {
     return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const u = urlOf(input);
@@ -805,7 +759,7 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
         status: 403,
         headers: {
           "x-ratelimit-remaining": "0",
-          "x-ratelimit-reset": "1747843200", // epoch seconds
+          "x-ratelimit-reset": "1747843200",
         },
       }),
     );
@@ -818,10 +772,6 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
   });
 
   it("treats 200 + errors[].type RATE_LIMITED as a failure and returns null", async () => {
-    // GitHub's nastiest rate-limit shape: 200 OK with empty-looking data and
-    // the rate-limit signal hiding in `errors[]`. Without the body-level
-    // check, the poller would interpret this as "no PRs" and promote every
-    // tracked session to merged.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
         data: { repository: { pullRequests: { nodes: [] } } },
@@ -834,10 +784,6 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
   });
 
   it("treats 200 + errors[].type RATE_LIMIT (graphql_rate_limit) as a failure", async () => {
-    // The shape prod actually sees when the primary GraphQL budget is exhausted:
-    // GitHub returns `type:"RATE_LIMIT"` (singular) with `code:"graphql_rate_limit"`,
-    // not the `RATE_LIMITED` label the docs hint at. Previously this slipped
-    // through the predicate and the poller hammered GitHub at full cadence.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
         data: null,
@@ -850,8 +796,6 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
   });
 
   it("falls back to errors[].code graphql_rate_limit when type is unfamiliar", async () => {
-    // Defense in depth: if GitHub renames the type yet again, the `code` field
-    // should still trip the predicate.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
         data: null,
@@ -876,14 +820,12 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
   });
 
   it("clears rate-limit state on a clean 200 response", async () => {
-    // First call: limited.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("", { status: 429, headers: { "retry-after": "60" } }),
     );
     await mgr.graphqlQuery("query{ x }");
     expect(mgr.getRateLimitState().limited).toBe(true);
 
-    // Second call: success.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ data: { viewer: { login: "octocat" } } }), {
         status: 200,
@@ -914,7 +856,6 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
     const events: unknown[] = [];
     mgr.on("rate_limit_changed", (e) => events.push(e));
 
-    // Clean success — was already clean, no event.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ data: {} }), {
         status: 200,
@@ -924,17 +865,12 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
     await mgr.graphqlQuery("q");
     expect(events).toHaveLength(0);
 
-    // Now hit a 403 — transition, should fire.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("", { status: 403, headers: { "retry-after": "60" } }),
     );
     await mgr.graphqlQuery("q");
     expect(events).toHaveLength(1);
 
-    // Another 403 with same shape — limited stays true, resetAt may shift
-    // slightly because retry-after is relative; the implementation only
-    // emits if `limited` or `resetAt` changed, so this can be 1 or 2 events
-    // depending on timing. Just confirm it didn't silently lose state.
     expect(mgr.getRateLimitState().limited).toBe(true);
   });
 });
@@ -1033,5 +969,339 @@ describe("GitHubAuthManager.listOrgs", () => {
     const mgr = authedManager();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 403 }));
     expect(await mgr.listOrgs()).toEqual([]);
+  });
+});
+
+describe("GitHubAuthManager.listUserRepos", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-list-user-repos-"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function authedManager(token = "ghp_x"): GitHubAuthManager {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken(token);
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    return mgr;
+  }
+
+  function urlOf(input: RequestInfo | URL): string {
+    if (typeof input === "string") return input;
+    return input instanceof URL ? input.href : input.url;
+  }
+
+  function listing(fullNames: string[]): Response {
+    return new Response(
+      JSON.stringify(
+        fullNames.map((fullName) => ({
+          full_name: fullName,
+          description: null,
+          private: false,
+          default_branch: "main",
+          clone_url: `https://github.com/${fullName}.git`,
+        })),
+      ),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  function page(count: number, prefix: string, offset = 0): Response {
+    return listing(Array.from({ length: count }, (_, i) => `${prefix}/repo-${offset + i}`));
+  }
+
+  function affiliationOf(input: RequestInfo | URL): string | null {
+    const url = urlOf(input);
+    if (!url.includes("/user/repos?")) return null;
+    return new URL(url).searchParams.get("affiliation");
+  }
+
+  function pageOf(input: RequestInfo | URL): number {
+    return Number(new URL(urlOf(input)).searchParams.get("page"));
+  }
+
+  type Walk = (pageNumber: number) => Response | Promise<Response>;
+
+  /** Answers the two affiliation walks separately, so no test can confuse them. */
+  function mockWalks(handlers: { own?: Walk; org?: Walk; other?: (url: string) => Response }) {
+    const empty: Walk = () => listing([]);
+    return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const affiliation = affiliationOf(input);
+      if (affiliation === "owner,collaborator") return (handlers.own ?? empty)(pageOf(input));
+      if (affiliation === "organization_member") return (handlers.org ?? empty)(pageOf(input));
+      if (handlers.other) return handlers.other(urlOf(input));
+      throw new Error(`unexpected fetch: ${urlOf(input)}`);
+    });
+  }
+
+  function callsFor(spy: ReturnType<typeof mockWalks>, affiliation: string): unknown[] {
+    return spy.mock.calls.filter((c) => affiliationOf(c[0]) === affiliation);
+  }
+
+  const names = (repos: { fullName: string }[]) => repos.map((r) => r.fullName);
+
+  it("returns [] when unauthenticated", async () => {
+    const mgr = new GitHubAuthManager(tmpDir, new CredentialStore(tmpDir));
+    expect(await mgr.listUserRepos()).toEqual([]);
+  });
+
+  it("walks every page of the account's own repos until a short one ends the list", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({ own: (p) => (p === 1 ? page(100, "me") : page(30, "also-me")) });
+
+    const repos = await mgr.listUserRepos();
+
+    expect(repos).toHaveLength(130);
+    const own = callsFor(fetchSpy, "owner,collaborator") as [RequestInfo | URL][];
+    expect(own).toHaveLength(2);
+    const first = new URL(urlOf(own[0][0])).searchParams;
+    expect(first.get("page")).toBe("1");
+    expect(first.get("per_page")).toBe("100");
+    expect(new URL(urlOf(own[1][0])).searchParams.get("page")).toBe("2");
+    expect(repos[0].fullName).toBe("me/repo-0");
+    expect(repos[100].fullName).toBe("also-me/repo-0");
+  });
+
+  it("stops at the page bound for an account with very many repos", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({ own: (p) => page(100, "me", (p - 1) * 100) });
+
+    expect(await mgr.listUserRepos()).toHaveLength(1000);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(10);
+  });
+
+  it("includes repos reached only through an organization, after the account's own", async () => {
+    const mgr = authedManager();
+    mockWalks({ own: () => listing(["me/mine"]), org: () => listing(["acme/theirs"]) });
+
+    expect(names(await mgr.listUserRepos())).toEqual(["me/mine", "acme/theirs"]);
+  });
+
+  it("walks the organization affiliation separately, on a smaller bound", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({ org: (p) => page(100, "acme", (p - 1) * 100) });
+
+    expect(await mgr.listUserRepos()).toHaveLength(500);
+    expect(callsFor(fetchSpy, "organization_member")).toHaveLength(5);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+  });
+
+  it("lists a repo once when both affiliations return it", async () => {
+    const mgr = authedManager();
+    mockWalks({ own: () => listing(["me/shared"]), org: () => listing(["Me/Shared"]) });
+
+    expect(names(await mgr.listUserRepos())).toEqual(["me/shared"]);
+  });
+
+  it("keeps the pages that arrived when a later page fails", async () => {
+    const mgr = authedManager();
+    mockWalks({ own: (p) => (p === 1 ? page(100, "me") : new Response("", { status: 502 })) });
+
+    expect(await mgr.listUserRepos()).toHaveLength(100);
+  });
+
+  it("does not cache a failed fetch", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({ own: () => new Response("", { status: 502 }) });
+
+    await mgr.listUserRepos();
+    await mgr.listUserRepos();
+
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
+  });
+
+  it("does not cache a partial walk, so a recovered page is picked up at once", async () => {
+    const mgr = authedManager();
+    let failPageTwo = true;
+    mockWalks({
+      own: (p) => {
+        if (p !== 2) return page(100, "me");
+        return failPageTwo ? new Response("", { status: 502 }) : page(30, "also-me");
+      },
+    });
+
+    expect(await mgr.listUserRepos()).toHaveLength(100);
+
+    failPageTwo = false;
+    expect(await mgr.listUserRepos()).toHaveLength(130);
+  });
+
+  it("still caches when only the organization walk fails, which can fail durably", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({
+      own: () => listing(["me/mine"]),
+      org: () => new Response("", { status: 403 }),
+    });
+
+    expect(names(await mgr.listUserRepos())).toEqual(["me/mine"]);
+    await mgr.listUserRepos();
+
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+  });
+
+  it("caches a genuinely empty account", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({});
+
+    expect(await mgr.listUserRepos()).toEqual([]);
+    await mgr.listUserRepos();
+
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+  });
+
+  it("re-fetches once the cache entry has expired", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({ own: () => listing(["me/a"]) });
+
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    await mgr.listUserRepos();
+    await mgr.listUserRepos();
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000 + 5 * 60 * 1000 - 1);
+    await mgr.listUserRepos();
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000 + 5 * 60 * 1000 + 1);
+    await mgr.listUserRepos();
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
+  });
+
+  it("drops malformed entries rather than ranking an undefined name", async () => {
+    const mgr = authedManager();
+    mockWalks({
+      own: () =>
+        new Response(JSON.stringify([{}, { full_name: "me/real", clone_url: "c" }, null]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+
+    expect(names(await mgr.listUserRepos())).toEqual(["me/real"]);
+  });
+
+  it("re-fetches after a repo is created so the new repo is searchable", async () => {
+    const mgr = authedManager();
+    let created = false;
+    const fetchSpy = mockWalks({
+      own: () => listing(created ? ["me/repo-0", "me/fresh"] : ["me/repo-0"]),
+      other: () => {
+        created = true;
+        return new Response(
+          JSON.stringify({ name: "fresh", full_name: "me/fresh", html_url: "u", clone_url: "c" }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    expect(names(await mgr.listUserRepos())).not.toContain("me/fresh");
+    await mgr.createRepo("fresh");
+    expect(names(await mgr.listUserRepos())).toContain("me/fresh");
+
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
+  });
+
+  it("re-fetches when the same token is reconnected, whose access may have changed", async () => {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    const fetchSpy = mockWalks({ own: () => listing(["me/a"]) });
+
+    await mgr.listUserRepos();
+    mgr.checkCredentials();
+    await mgr.listUserRepos();
+
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
+  });
+
+  it("re-fetches when the same token is re-submitted after its access changed", async () => {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    const fetchSpy = mockWalks({
+      own: () => listing(["me/a"]),
+      other: () =>
+        new Response(JSON.stringify({ login: "me", avatar_url: "a", id: 1, name: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+
+    await mgr.listUserRepos();
+    await mgr.setToken("ghp_x");
+    await mgr.listUserRepos();
+
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
+  });
+
+  it("joins overlapping calls into one walk of the pages", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({
+      own: () => new Promise((resolve) => setTimeout(() => resolve(listing(["me/a"])), 5)),
+    });
+
+    const [a, b] = await Promise.all([mgr.listUserRepos(), mgr.listUserRepos()]);
+
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+    expect(names(a)).toEqual(["me/a"]);
+    expect(names(b)).toEqual(["me/a"]);
+  });
+
+  it("does not let a walk that started before a repo was created repopulate the cache", async () => {
+    const mgr = authedManager();
+    let releaseOwnWalk: (() => void) | undefined;
+    let ownCalls = 0;
+    const fetchSpy = mockWalks({
+      own: async () => {
+        // Only the first walk is held open; the post-creation one runs straight through.
+        if (++ownCalls === 1) {
+          await new Promise<void>((resolve) => {
+            releaseOwnWalk = resolve;
+          });
+        }
+        return listing(["me/a"]);
+      },
+      other: () =>
+        new Response(
+          JSON.stringify({ name: "r", full_name: "me/r", html_url: "u", clone_url: "c" }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+    });
+
+    const inFlight = mgr.listUserRepos();
+    await vi.waitFor(() => expect(releaseOwnWalk).toBeDefined());
+    await mgr.createRepo("r");
+    releaseOwnWalk?.();
+    await inFlight;
+
+    // The pre-creation walk must not be serving later searches.
+    await mgr.listUserRepos();
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
+  });
+
+  it("drops the cache on logout, so reconnecting the same token re-fetches", async () => {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    const fetchSpy = mockWalks({ own: () => listing(["me/a"]) });
+
+    expect(await mgr.listUserRepos()).toHaveLength(1);
+
+    mgr.clearCredentials();
+    expect(await mgr.listUserRepos()).toEqual([]);
+
+    store.setGithubToken("ghp_x");
+    mgr.checkCredentials();
+    expect(await mgr.listUserRepos()).toHaveLength(1);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
   });
 });

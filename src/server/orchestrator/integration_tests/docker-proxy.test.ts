@@ -1,11 +1,3 @@
-/**
- * Integration tests for Docker API proxy.
- *
- * Tests end-to-end flows: container lifecycle, network lifecycle,
- * volume lifecycle, and session cleanup — all through the proxy
- * with a mock Docker daemon.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -14,10 +6,6 @@ import path from "node:path";
 import os from "node:os";
 import { createDockerProxy, PARENT_SESSION_LABEL } from "../docker-proxy.js";
 import type { DockerProxyDeps } from "../docker-proxy.js";
-
-// ---------------------------------------------------------------------------
-// Minimal mock Docker daemon
-// ---------------------------------------------------------------------------
 
 function createMockDaemon() {
   const containers = new Map<string, { labels: Record<string, string>; running: boolean }>();
@@ -46,10 +34,8 @@ function createMockDaemon() {
         res.end(JSON.stringify(data));
       };
 
-      // /_ping
       if (url === "/_ping") { res.writeHead(200); res.end("OK"); return; }
 
-      // Container create
       if ((/\/containers\/create/.exec(url)) && method === "POST") {
         ctr++;
         const id = `c-${ctr}`;
@@ -58,7 +44,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Container list
       if ((/\/containers\/json/.exec(url)) && method === "GET") {
         json(200, [...containers.entries()].filter(() => true).map(([id, c]) => ({
           Id: id, Labels: c.labels, State: c.running ? "running" : "created",
@@ -66,7 +51,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Container inspect
       const inspMatch = /\/containers\/([^/]+)\/json/.exec(url);
       if (inspMatch && method === "GET") {
         const c = containers.get(inspMatch[1]);
@@ -75,7 +59,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Container start
       const startMatch = /\/containers\/([^/]+)\/start/.exec(url);
       if (startMatch && method === "POST") {
         const c = containers.get(startMatch[1]);
@@ -85,7 +68,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Container stop
       const stopMatch = /\/containers\/([^/]+)\/stop/.exec(url);
       if (stopMatch && method === "POST") {
         const c = containers.get(stopMatch[1]);
@@ -95,7 +77,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Container kill
       const killMatch = /\/containers\/([^/]+)\/kill/.exec(url);
       if (killMatch && method === "POST") {
         const c = containers.get(killMatch[1]);
@@ -105,7 +86,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Container logs (minimal streaming)
       const logsMatch = /\/containers\/([^/]+)\/logs/.exec(url);
       if (logsMatch && method === "GET") {
         const c = containers.get(logsMatch[1]);
@@ -115,7 +95,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Container delete
       const delMatch = (/\/containers\/([^/]+)$/.exec(url)) && method === "DELETE";
       if (delMatch) {
         const id = /\/containers\/([^/]+)$/.exec(url)![1];
@@ -124,7 +103,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Exec create
       const execCreateMatch = /\/containers\/([^/]+)\/exec/.exec(url);
       if (execCreateMatch && method === "POST") {
         const cid = execCreateMatch[1];
@@ -136,7 +114,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Exec inspect
       const execInspMatch = /\/exec\/([^/]+)\/json/.exec(url);
       if (execInspMatch && method === "GET") {
         const cid = execs.get(execInspMatch[1]);
@@ -145,7 +122,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Exec start
       const execStartMatch = /\/exec\/([^/]+)\/start/.exec(url);
       if (execStartMatch && method === "POST") {
         if (!execs.has(execStartMatch[1])) { json(404, {}); return; }
@@ -153,7 +129,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Network create
       if ((/\/networks\/create/.exec(url)) && method === "POST") {
         const id = `n-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         networks.set(id, { labels: (body.Labels ?? {}) as Record<string, string> });
@@ -161,13 +136,11 @@ function createMockDaemon() {
         return;
       }
 
-      // Network list
       if ((/\/networks(\?|$)/.exec(url)) && method === "GET" && !(/\/networks\/[^?]/.exec(url))) {
         json(200, [...networks.entries()].map(([id, n]) => ({ Id: id, Name: id, Labels: n.labels })));
         return;
       }
 
-      // Network inspect
       const netInspMatch = /\/networks\/([^/?]+)$/.exec(url);
       if (netInspMatch && method === "GET") {
         const n = networks.get(netInspMatch[1]);
@@ -176,7 +149,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Network delete
       if (netInspMatch && method === "DELETE") {
         const id = /\/networks\/([^/?]+)$/.exec(url)![1];
         networks.delete(id);
@@ -184,19 +156,16 @@ function createMockDaemon() {
         return;
       }
 
-      // Network connect
       if ((/\/networks\/[^/]+\/connect/.exec(url)) && method === "POST") {
         json(200, {});
         return;
       }
 
-      // Network disconnect
       if ((/\/networks\/[^/]+\/disconnect/.exec(url)) && method === "POST") {
         json(200, {});
         return;
       }
 
-      // Volume create
       if ((/\/volumes\/create/.exec(url)) && method === "POST") {
         const name = (body.Name as string) ?? `v-${Date.now()}`;
         volumes.set(name, { labels: (body.Labels ?? {}) as Record<string, string> });
@@ -204,13 +173,11 @@ function createMockDaemon() {
         return;
       }
 
-      // Volume list
       if ((/\/volumes(\?|$)/.exec(url)) && method === "GET" && !(/\/volumes\/[^?]/.exec(url))) {
         json(200, { Volumes: [...volumes.entries()].map(([n, v]) => ({ Name: n, Labels: v.labels })) });
         return;
       }
 
-      // Volume inspect
       const volInspMatch = /\/volumes\/([^/?]+)$/.exec(url);
       if (volInspMatch && method === "GET") {
         const v = volumes.get(volInspMatch[1]);
@@ -219,7 +186,6 @@ function createMockDaemon() {
         return;
       }
 
-      // Volume delete
       if (volInspMatch && method === "DELETE") {
         const name = /\/volumes\/([^/?]+)$/.exec(url)![1];
         volumes.delete(name);
@@ -242,10 +208,6 @@ function createMockDaemon() {
     }),
   };
 }
-
-// ---------------------------------------------------------------------------
-// HTTP helper
-// ---------------------------------------------------------------------------
 
 function req(
   proxyUrl: string, method: string, urlPath: string, body?: unknown,
@@ -274,10 +236,6 @@ function req(
     r.end();
   });
 }
-
-// ---------------------------------------------------------------------------
-// Integration tests
-// ---------------------------------------------------------------------------
 
 describe("Docker proxy integration", () => {
   let daemon: ReturnType<typeof createMockDaemon>;
@@ -314,11 +272,8 @@ describe("Docker proxy integration", () => {
     await daemon.close();
   });
 
-  // --- Container lifecycle end-to-end ---
-
   describe("container lifecycle (create → start → logs → stop → rm)", () => {
     it("completes full container lifecycle", async () => {
-      // Create
       const createRes = await req(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine", Cmd: ["echo", "hello"], HostConfig: {},
       });
@@ -326,25 +281,20 @@ describe("Docker proxy integration", () => {
       const containerId = (createRes.body as any).Id;
       expect(containerId).toBeTruthy();
 
-      // Verify label was set
       const container = daemon.containers.get(containerId);
       expect(container?.labels[PARENT_SESSION_LABEL]).toBe("sess-1");
 
-      // Start
       const startRes = await req(proxyUrl, "POST", `/v1.41/containers/${containerId}/start`);
       expect([200, 204]).toContain(startRes.status);
       expect(daemon.containers.get(containerId)?.running).toBe(true);
 
-      // Logs
       const logsRes = await req(proxyUrl, "GET", `/v1.41/containers/${containerId}/logs?stdout=true`);
       expect(logsRes.status).toBe(200);
 
-      // Stop
       const stopRes = await req(proxyUrl, "POST", `/v1.41/containers/${containerId}/stop`);
       expect([200, 204]).toContain(stopRes.status);
       expect(daemon.containers.get(containerId)?.running).toBe(false);
 
-      // Remove
       const rmRes = await req(proxyUrl, "DELETE", `/v1.41/containers/${containerId}`);
       expect([200, 204]).toContain(rmRes.status);
       expect(daemon.containers.has(containerId)).toBe(false);
@@ -355,33 +305,27 @@ describe("Docker proxy integration", () => {
         Image: "alpine", HostConfig: {},
       });
       expect(createRes.status).toBe(201);
-      // The mock daemon receives the request — we can't directly inspect the
-      // HostConfig it received, but we verify the container was created with
-      // the session label, confirming the proxy processed the request.
+      // This mock checks labels; it does not retain HostConfig for inspection.
       const container = daemon.containers.get((createRes.body as any).Id);
       expect(container?.labels[PARENT_SESSION_LABEL]).toBe("sess-1");
     });
 
     it("exec lifecycle through proxy", async () => {
-      // Create container
       const createRes = await req(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine", HostConfig: {},
       });
       const containerId = (createRes.body as any).Id;
 
-      // Create exec
       const execRes = await req(proxyUrl, "POST", `/v1.41/containers/${containerId}/exec`, {
         Cmd: ["ls", "-la"],
       });
       expect(execRes.status).toBe(201);
       const execId = (execRes.body as any).Id;
 
-      // Inspect exec
       const inspectRes = await req(proxyUrl, "GET", `/v1.41/exec/${execId}/json`);
       expect(inspectRes.status).toBe(200);
       expect((inspectRes.body as any).ContainerID).toBe(containerId);
 
-      // Start exec
       const startRes = await req(proxyUrl, "POST", `/v1.41/exec/${execId}/start`, {
         Detach: false, Tty: false,
       });
@@ -389,65 +333,52 @@ describe("Docker proxy integration", () => {
     });
   });
 
-  // --- Network lifecycle ---
-
   describe("network lifecycle (create → list → connect → disconnect → delete)", () => {
     it("completes full network lifecycle", async () => {
-      // Create network
       const createRes = await req(proxyUrl, "POST", "/v1.41/networks/create", {
         Name: "my-app-net",
       });
       expect(createRes.status).toBe(201);
       const networkId = (createRes.body as any).Id;
 
-      // Verify label
       const network = daemon.networks.get(networkId);
       expect(network?.labels[PARENT_SESSION_LABEL]).toBe("sess-1");
 
-      // List (should see only our network)
       const listRes = await req(proxyUrl, "GET", "/v1.41/networks");
       expect(listRes.status).toBe(200);
       const nets = listRes.body as any[];
       expect(nets.length).toBe(1);
       expect(nets[0].Id).toBe(networkId);
 
-      // Create a container to connect
       const containerRes = await req(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine", HostConfig: {},
       });
       const containerId = (containerRes.body as any).Id;
 
-      // Connect container to network
       const connectRes = await req(proxyUrl, "POST", `/v1.41/networks/${networkId}/connect`, {
         Container: containerId,
       });
       expect(connectRes.status).toBe(200);
 
-      // Disconnect
       const disconnectRes = await req(proxyUrl, "POST", `/v1.41/networks/${networkId}/disconnect`, {
         Container: containerId,
       });
       expect(disconnectRes.status).toBe(200);
 
-      // Delete network
       const deleteRes = await req(proxyUrl, "DELETE", `/v1.41/networks/${networkId}`);
       expect([200, 204]).toContain(deleteRes.status);
       expect(daemon.networks.has(networkId)).toBe(false);
     });
   });
 
-  // --- Volume lifecycle ---
-
   describe("volume lifecycle (create → list → inspect → delete)", () => {
     it("completes full volume lifecycle", async () => {
-      // Create volume
       const createRes = await req(proxyUrl, "POST", "/v1.41/volumes/create", {
         Name: "my-data-vol",
       });
       expect(createRes.status).toBe(201);
       expect(daemon.volumes.get("my-data-vol")?.labels[PARENT_SESSION_LABEL]).toBe("sess-1");
 
-      // List (should see only our volume)
       daemon.volumes.set("foreign-vol", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
       const listRes = await req(proxyUrl, "GET", "/v1.41/volumes");
       expect(listRes.status).toBe(200);
@@ -455,32 +386,25 @@ describe("Docker proxy integration", () => {
       expect(data.Volumes.length).toBe(1);
       expect(data.Volumes[0].Name).toBe("my-data-vol");
 
-      // Inspect
       const inspectRes = await req(proxyUrl, "GET", "/v1.41/volumes/my-data-vol");
       expect(inspectRes.status).toBe(200);
 
-      // Delete
       const deleteRes = await req(proxyUrl, "DELETE", "/v1.41/volumes/my-data-vol");
       expect([200, 204]).toContain(deleteRes.status);
       expect(daemon.volumes.has("my-data-vol")).toBe(false);
     });
   });
 
-  // --- Cross-session isolation ---
-
   describe("cross-session isolation", () => {
     it("cannot access containers from other sessions", async () => {
-      // Create a container directly in the daemon with a different session label
       daemon.containers.set("foreign-c", {
         labels: { [PARENT_SESSION_LABEL]: "other-session" },
         running: true,
       });
 
-      // List should not include it
       const listRes = await req(proxyUrl, "GET", "/v1.41/containers/json");
       expect((listRes.body as any[]).length).toBe(0);
 
-      // Direct access should be forbidden
       expect((await req(proxyUrl, "GET", "/v1.41/containers/foreign-c/json")).status).toBe(403);
       expect((await req(proxyUrl, "POST", "/v1.41/containers/foreign-c/start")).status).toBe(403);
       expect((await req(proxyUrl, "POST", "/v1.41/containers/foreign-c/stop")).status).toBe(403);
@@ -503,11 +427,9 @@ describe("Docker proxy integration", () => {
     });
 
     it("network connect rejects foreign container", async () => {
-      // Create owned network
       const netRes = await req(proxyUrl, "POST", "/v1.41/networks/create", { Name: "owned-net" });
       const networkId = (netRes.body as any).Id;
 
-      // Foreign container
       daemon.containers.set("foreign-c", { labels: { [PARENT_SESSION_LABEL]: "other" }, running: true });
 
       const res = await req(proxyUrl, "POST", `/v1.41/networks/${networkId}/connect`, {

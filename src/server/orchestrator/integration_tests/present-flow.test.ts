@@ -1,26 +1,3 @@
-/**
- * End-to-end integration test for the `present` tool pipeline (docs/093).
- *
- * Drives the full server-side path with a REAL session worker (no Docker):
- *
- *   worker POST /agent-ops/present/submit
- *     → worker records metadata in its PresentRegistry + broadcasts a
- *       `present_content` SSE (metadata only — no bytes)
- *     → ContainerSessionRunner's SSE client receives it (handleSSEEvent)
- *     → runner translates it into a `present_content` WS message + caches metadata
- *
- * Listening on `runner.on("message")` captures the exact `WsServerMessage` the
- * orchestrator relays to every attached viewer — i.e. what a TestClient would
- * receive as `WsPresentContentMessage`. We assert the translated message shape,
- * the runner's `presentations` metadata cache (the authoritative source the
- * `present_state` replay reads on viewer attach), the `present_cleared` path via
- * a revision, and the lazy byte-read via the worker's `/present/:id/raw` route.
- *
- * Mirrors the real-worker harness from container-agent-wiring.test.ts so no new
- * fake-worker infra is needed — the live SessionWorker already registers the
- * present endpoints + SSE broadcaster.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -36,11 +13,6 @@ import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { PresentStore } from "../present-store.js";
-
-// ---------------------------------------------------------------------------
-// Minimal agent stub (the worker requires an agentFactory; the present path
-// never spawns it).
-// ---------------------------------------------------------------------------
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -69,10 +41,6 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 async function waitFor(fn: () => boolean, timeoutMs = 3000, label = "condition"): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -82,7 +50,6 @@ async function waitFor(fn: () => boolean, timeoutMs = 3000, label = "condition")
   throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
 }
 
-/** Pick a file extension that infers (or matches) the given MIME type. */
 function extForMime(mimeType: string | undefined): string {
   switch (mimeType) {
     case "text/plain":
@@ -96,30 +63,16 @@ function extForMime(mimeType: string | undefined): string {
   }
 }
 
-/**
- * Fetch an artifact's raw bytes from the worker's lazy disk-read endpoint —
- * the same `{ content, mimeType }` the orchestrator proxies to the Present tab.
- * Metadata rides the WS messages; bytes are only ever read on demand here.
- */
 async function fetchRaw(workerUrl: string, presentId: string): Promise<{ content: string; mimeType: string }> {
   const res = await fetch(`${workerUrl}/present/${presentId}/raw`);
   expect(res.ok).toBe(true);
   return (await res.json()) as { content: string; mimeType: string };
 }
 
-/**
- * Write the artifact to a temp file and POST its absolute path to the worker's
- * file-based submit broker (docs/188). The worker records only the path; bytes
- * are read from disk on demand (see {@link fetchRaw}). `mimeType` is forwarded
- * only when explicitly set (it overrides extension inference); omitting it
- * exercises the inference path.
- */
 async function submitPresent(
   workerUrl: string,
   body: { content: string; mimeType?: string; title?: string; file?: string },
 ): Promise<{ presentId: string; status: string; filePath: string }> {
-  // A fixed `file` re-presents the same path (in-place update); otherwise each
-  // submission gets a fresh path → a distinct presentId → a new carousel entry.
   const filePath = body.file ?? path.join(tmpDir, `artifact-${fileCounter++}.${extForMime(body.mimeType)}`);
   await writeFile(filePath, body.content, "utf8");
   const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
@@ -136,20 +89,13 @@ async function submitPresent(
   return { ...json, filePath };
 }
 
-/** Temp dir holding the artifact files each submission writes. */
 let tmpDir: string;
-/** Monotonic counter so each submission writes a uniquely-named file. */
 let fileCounter = 0;
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe("Integration: present tool pipeline (worker → SSE → runner WS)", () => {
   let worker: SessionWorker;
   let workerUrl: string;
   let runner: ContainerSessionRunner;
-  /** Every WS message the runner broadcast to viewers, in order. */
   let messages: WsServerMessage[];
 
   beforeEach(async () => {
@@ -159,7 +105,6 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       agentFactory: () => new FakeWorkerAgent(),
       port: 0,
       host: "127.0.0.1",
-      // Treat the temp dir as the workspace so submitted artifacts resolve there.
       workspaceDir: tmpDir,
     });
     const address = await worker.start();
@@ -175,8 +120,7 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     messages = [];
     runner.on("message", (m: WsServerMessage) => messages.push(m));
 
-    // attachViewer() starts the SSE connection to the worker. Give it a beat to
-    // connect so the first broadcast is delivered (mirrors container-agent-wiring).
+    // Let SSE connect before the first presentation is broadcast.
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
   });
@@ -206,19 +150,14 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
 
     const msg = presentContentMsgs()[0];
     expect(msg.type).toBe("present_content");
-    expect(msg.sessionId).toBe("present-session"); // runner's id, not the worker's env
+    expect(msg.sessionId).toBe("present-session");
     expect(msg.presentId).toBe(presentId);
     expect(msg.mimeType).toBe("text/html");
     expect(msg.title).toBe("Sales Chart");
-    // The presented file path rides through verbatim so the header can show it.
     expect(msg.filePath).toBe(filePath);
     expect(typeof msg.createdAt).toBe("string");
-    // The WS message carries NO bytes — content is fetched lazily from disk.
     expect((msg as { content?: unknown }).content).toBeUndefined();
 
-    // The runner caches metadata only — this is what `present_state` replays to
-    // a viewer that attaches after the tool fired (index.ts attachToRunner reads
-    // runner.presentations).
     expect(runner.presentations).toHaveLength(1);
     expect(runner.presentations[0]).toMatchObject({
       presentId,
@@ -228,7 +167,6 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     });
     expect((runner.presentations[0] as { content?: unknown }).content).toBeUndefined();
 
-    // The bytes are served on demand from disk via the raw endpoint.
     expect(await fetchRaw(workerUrl, presentId)).toMatchObject({
       content: "<h1>Chart</h1>",
       mimeType: "text/html",
@@ -236,9 +174,6 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
   });
 
   it("presents an artifact that lives outside the workspace", async () => {
-    // Write the file to a sibling temp dir that is NOT the worker's workspaceDir,
-    // then submit its absolute path. The path rides through verbatim and the
-    // bytes are still served on demand — there is no in/out-of-workspace concept.
     const outsideDir = await mkdtemp(path.join(os.tmpdir(), "present-outside-"));
     const outsidePath = path.join(outsideDir, "throwaway.html");
     await writeFile(outsidePath, "<p>throwaway</p>", "utf8");
@@ -298,8 +233,6 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       title: "Mockup v2",
       file: samePath,
     });
-    // Identity is the path: re-presenting the same file yields the SAME id (no
-    // explicit replace flag), so the entry updates in place.
     expect(second.presentId).toBe(first.presentId);
 
     await waitFor(
@@ -308,10 +241,8 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       "updated present_content",
     );
 
-    // No per-id present_cleared is emitted — there is nothing to supersede.
     expect(presentClearedMsgs()).toHaveLength(0);
 
-    // Cache holds exactly one entry under the stable id, with the new bytes.
     expect(runner.presentations).toHaveLength(1);
     expect(runner.presentations[0].presentId).toBe(first.presentId);
     expect(runner.presentations[0].title).toBe("Mockup v2");
@@ -331,8 +262,6 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
   });
 
   it("keeps every presented artifact — no size or count eviction", async () => {
-    // The registry holds only metadata, so there is nothing to cap: submit a
-    // batch and assert they ALL stay cached, none evicted, none cleared.
     const ids: string[] = [];
     for (let i = 0; i < 25; i++) {
       const { presentId } = await submitPresent(workerUrl, { content: `entry-${i}`, mimeType: "text/plain" });
@@ -342,21 +271,9 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
 
     expect(runner.presentations).toHaveLength(25);
     expect(runner.presentations.map((p) => p.presentId)).toEqual(ids);
-    // No spontaneous clears — the only present_cleared paths are revision + full clear.
     expect(presentClearedMsgs()).toHaveLength(0);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Durable persistence across a container restart (docs/093)
-//
-// A runner constructed with a PresentStore persists each present_content to the
-// store and seeds its cache from the store at construction. After a simulated
-// restart (fresh worker, empty registry) a NEW runner over the SAME store still
-// carries the presentation (so `present_state` replays it) and can serve the
-// bytes again — re-registering the artifact with the fresh worker on the first
-// raw-read miss. A throwaway whose file is gone surfaces a graceful 404.
-// ---------------------------------------------------------------------------
 
 describe("Integration: present persistence across container restart", () => {
   let dbManager: DatabaseManager;
@@ -412,7 +329,6 @@ describe("Integration: present persistence across container restart", () => {
   it("persists a presentation and re-serves it after a fresh-worker restart", async () => {
     const filePath = path.join(work, "committed.html");
 
-    // --- Before restart: present an artifact on worker A. ---
     const a = await startWorker();
     const runnerA = makeRunner(a.url);
     await new Promise((r) => setTimeout(r, 200));
@@ -421,22 +337,17 @@ describe("Integration: present persistence across container restart", () => {
 
     const persisted = presentStore.list("restart-session")[0];
     expect(persisted.presentId).toBe(presentId);
-    expect(persisted.resolvedPath).toBe(filePath); // re-serve target after restart
+    expect(persisted.resolvedPath).toBe(filePath);
 
     runnerA.dispose({ force: true });
     await a.worker.stop();
 
-    // --- Restart: worker B is fresh (empty registry); the file is still on disk
-    // (it's a "committed workspace file"). A NEW runner over the same store. ---
     const b = await startWorker();
     const runnerB = makeRunner(b.url);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Seeded from the store → `present_state` would replay it.
     expect(runnerB.presentations.map((p) => p.presentId)).toEqual([presentId]);
 
-    // The fresh worker's registry is empty, so the first raw read 404s; the
-    // runner re-registers from the persisted resolvedPath and retries.
     const raw = await runnerB.proxyPresentRaw(presentId);
     expect(raw.content).toBe("<h1>kept</h1>");
     expect(raw.mimeType).toBe("text/html");
@@ -456,16 +367,12 @@ describe("Integration: present persistence across container restart", () => {
     runnerA.dispose({ force: true });
     await a.worker.stop();
 
-    // Simulate a /tmp throwaway that did NOT survive the restart.
     await rm(filePath, { force: true });
 
     const b = await startWorker();
     const runnerB = makeRunner(b.url);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Metadata still seeds the tab, but serving the bytes fails gracefully
-    // (re-register succeeds, the on-disk read 404s) → the Present tab shows its
-    // "no longer available" placeholder rather than crashing.
     expect(runnerB.presentations.map((p) => p.presentId)).toEqual([presentId]);
     await expect(runnerB.proxyPresentRaw(presentId)).rejects.toThrow();
 
@@ -473,17 +380,6 @@ describe("Integration: present persistence across container restart", () => {
     await b.worker.stop();
   });
 });
-
-// ---------------------------------------------------------------------------
-// docs/280 — inline presentations. `present({ inline: true })` renders the
-// artifact as a card in the chat transcript AND keeps it in the Present-tab
-// carousel. The card is a PERSISTED transcript row, and the whole point of the
-// emit gate is that it is written exactly once per artifact: the screenshot
-// loop re-presents the same path repeatedly, and every one of those must
-// refresh the card that already exists rather than stack another copy showing
-// identical bytes. These drive the real worker so the flag is exercised across
-// every hop it takes (tool body → registry → SSE → runner → store → card).
-// ---------------------------------------------------------------------------
 
 describe("Integration: inline presentations (docs/280)", () => {
   let dbManager: DatabaseManager;
@@ -493,7 +389,7 @@ describe("Integration: inline presentations (docs/280)", () => {
   let workerUrl: string;
   let runner: ContainerSessionRunner;
   let messages: WsServerMessage[];
-  /** Rows a card write would have persisted — the reload-survival surface. */
+  // Capture history writes; this fixture does not persist transcript rows.
   let appended: { presentInline?: { presentId: string; filePath: string } }[];
 
   beforeEach(async () => {
@@ -569,10 +465,8 @@ describe("Integration: inline presentations (docs/280)", () => {
     const card = cards()[0].card;
     expect(card.filePath).toBe(file);
     expect(card.mimeType).toBe("text/html");
-    // req 6 — the carousel gets it too, flagged so both surfaces agree.
     expect(runner.presentations.map((p) => p.presentId)).toEqual([card.presentId]);
     expect(runner.presentations[0].inline).toBe(true);
-    // req 8 — the card is a persisted row, not an emit-only broadcast.
     expect(appended.map((m) => m.presentInline?.presentId)).toEqual([card.presentId]);
   });
 
@@ -581,8 +475,6 @@ describe("Integration: inline presentations (docs/280)", () => {
     await present(file, "<h1>v1</h1>", true);
     await waitFor(() => cards().length === 1, 3000, "first card");
 
-    // The screenshot loop: edit, re-present the SAME path — with and without the
-    // flag, since the agent has no reason to keep repeating it.
     await present(file, "<h1>v2</h1>", true);
     await present(file, "<h1>v3</h1>");
     await waitFor(
@@ -591,8 +483,6 @@ describe("Integration: inline presentations (docs/280)", () => {
       "three content updates",
     );
 
-    // Three artifact updates, still exactly one card (req 9), and the artifact
-    // stays inline despite the last present omitting the flag.
     expect(cards()).toHaveLength(1);
     expect(appended).toHaveLength(1);
     expect(presentStore.list("inline-session")[0].inline).toBe(true);
@@ -614,9 +504,6 @@ describe("Integration: inline presentations (docs/280)", () => {
     await present(file, "<h1>kept</h1>", true);
     await waitFor(() => cards().length === 1, 3000, "card");
 
-    // A fresh worker + runner over the SAME store: the worker's registry is
-    // empty, so nothing in the container remembers the card — the durable
-    // `inline` flag is what stops a duplicate.
     runner.dispose({ force: true });
     await worker.stop();
     worker = new SessionWorker({

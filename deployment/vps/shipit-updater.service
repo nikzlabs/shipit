@@ -4,6 +4,8 @@ After=docker.service
 
 [Service]
 Type=oneshot
+# Bound a stuck oneshot above the longest valid cold rebuild.
+TimeoutStartSec=90min
 ExecStart=/opt/shipit/deployment/vps/update.sh
 StandardOutput=journal
 StandardError=journal

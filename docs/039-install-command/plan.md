@@ -27,7 +27,6 @@ optional shell command that installs project dependencies before the preview
 server starts.
 
 ```yaml
-# Full example
 install: npm install
 preview:
   command: npm run dev
@@ -43,7 +42,6 @@ The field is:
 ### Examples
 
 ```yaml
-# Node.js project
 install: npm install
 preview:
   command: npm run dev
@@ -51,7 +49,6 @@ preview:
 ```
 
 ```yaml
-# Python project
 install: pip install -r requirements.txt
 preview:
   command: python -m http.server 8000
@@ -59,7 +56,6 @@ preview:
 ```
 
 ```yaml
-# Monorepo with directory
 install: npm install
 preview:
   command: npm run dev
@@ -68,7 +64,6 @@ preview:
 ```
 
 ```yaml
-# Static HTML — no install needed
 preview:
   html: index.html
 ```
@@ -111,19 +106,16 @@ PreviewManager.start(workspaceDir):
     markerDir = join(workspaceDir, ".shipit")
     markerFile = join(markerDir, ".install-done")
 
-    // Skip if install has already succeeded for this workspace
     if not exists(markerFile):
       emit("install_status", { status: "running" })
       exitCode = await runCommand(config.install, { cwd })
       if exitCode !== 0:
         emit("install_status", { status: "error", message: "..." })
-        return   // Do not start preview
-      // Write marker to avoid redundant re-runs
+        return
       mkdirSync(markerDir, { recursive: true })
       writeFileSync(markerFile, new Date().toISOString())
       emit("install_status", { status: "complete" })
 
-  // ... proceed to start preview
 ```
 
 **Behavior:**
@@ -145,7 +137,6 @@ Server → Client. Sent when the install command starts, completes, or fails.
 interface WsInstallStatus {
   type: "install_status";
   status: "running" | "complete" | "error";
-  /** Human-readable message (e.g. error details). */
   message?: string;
 }
 ```
@@ -165,7 +156,6 @@ The `PreviewConfig` type (from doc 037) gains an `install` field:
 interface PreviewConfig {
   mode: PreviewMode;
   source: "shipit.yaml" | "package.json" | "index.html" | "none";
-  /** Shell command to install dependencies. From shipit.yaml `install` field. */
   install?: string;
 }
 ```

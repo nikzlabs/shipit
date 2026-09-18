@@ -6,36 +6,22 @@ import type { WsClientMessage } from "../../server/shared/types.js";
 export type TerminalMode = "logs" | "shell";
 
 export interface TerminalPanelProps {
-  /** Clears the agent log channel (sends `log_clear` server-side). */
+
   onClear: () => void;
-  /** Current sub-tab. */
+
   terminalMode: TerminalMode;
-  /** Called when the user switches sub-tabs. */
+
   onTerminalModeChange: (mode: TerminalMode) => void;
-  /** Render prop for the shell sub-tab content (InteractiveTerminal). */
+
   shellContent: React.ReactNode;
-  /** WS sender — forwarded to the agent `<LogView>` so it can subscribe. */
+
   send: (msg: WsClientMessage) => void;
-  /**
-   * Active session ID, used by the health strip to poll
-   * `/api/sessions/:id/container/health`. When undefined, the strip
-   * renders a placeholder.
-   */
+
   sessionId: string | undefined;
-  /**
-   * Called by the health strip after a successful container restart so
-   * the per-session WebSocket re-handshakes and a fresh container is
-   * created via the runner factory.
-   */
+
   onReconnectWs: () => void;
 }
 
-/**
- * Bottom panel with a Logs / Shell sub-tab switcher. The Logs tab is the
- * unified `<LogView channel="agent">` (docs/192) — full durable backlog, ANSI,
- * scrollback, and a search box (the old per-source filter chips are gone). The
- * Shell tab is the interactive PTY.
- */
 export function TerminalPanel({ onClear, terminalMode, onTerminalModeChange, shellContent, send, sessionId, onReconnectWs }: TerminalPanelProps) {
   return (
     <div className="flex flex-col h-full">

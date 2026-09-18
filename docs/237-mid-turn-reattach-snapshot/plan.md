@@ -68,7 +68,7 @@ persistence path uses — in the *same synchronous block* that subscribes the
 socket to the runner:
 
 ```ts
-runner.on("message", runnerMessageListener);   // everything after this is live
+runner.on("message", runnerMessageListener);
 …
 if (runner.running) send({ type: "turn_snapshot", sessionId, messages: buildTurnMessages(…) });
 ```

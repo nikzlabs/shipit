@@ -56,7 +56,7 @@ services:
     ports: ["5173:5173"]
     x-shipit-preview: auto
     environment:
-      HOST: 0.0.0.0          # regular env var — not a secret
+      HOST: 0.0.0.0
     x-shipit-secrets:
       - STRIPE_KEY
 
@@ -72,7 +72,7 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_PASSWORD: dev  # not a secret — dev-only default
+      POSTGRES_PASSWORD: dev
 ```
 
 **Why compose, not shipit.yaml:**
@@ -95,16 +95,13 @@ The simple form is a string (just the env var name). The extended form is an obj
 
 ```yaml
 x-shipit-secrets:
-  # Simple — just the name
   - STRIPE_KEY
 
-  # With description — helps the user know what to configure
   - name: DATABASE_URL
     description: PostgreSQL connection string
     required: true
-    agent: true               # also available in agent container (for migrations, etc.)
+    agent: true
 
-  # Platform credential — resolved from the outer session
   - name: ANTHROPIC_API_KEY
     source: platform:claude_oauth
 
@@ -117,15 +114,14 @@ The `agent: true` flag marks a secret as also available in the agent container. 
 **Schema:**
 
 ```typescript
-// Each entry in x-shipit-secrets is either a string or an object
 type SecretEntry = string | SecretRequirement;
 
 interface SecretRequirement {
-  name: string;               // env var name
-  description?: string;       // shown in UI
-  required?: boolean;         // default: false. Missing required → warning
-  agent?: boolean;            // default: false. Also inject into agent container
-  source?: string;            // "platform:claude_oauth" | "platform:github_token"
+  name: string;
+  description?: string;
+  required?: boolean;
+  agent?: boolean;
+  source?: string;
 }
 ```
 
@@ -145,8 +141,8 @@ Docker socket forwarding is handled separately by 086's `compose.docker-socket: 
 The orchestrator writes per-service env files and references them from the compose override:
 
 ```
-.shipit/.env.web             # STRIPE_KEY
-.shipit/.env.api             # DATABASE_URL, REDIS_URL, STRIPE_KEY
+.shipit/.env.web
+.shipit/.env.api
 ```
 
 ```yaml
@@ -161,7 +157,6 @@ services:
     labels: { ... }
     networks: [shipit-session]
   db:
-    # no env_file — no x-shipit-secrets declared
     labels: { ... }
     networks: [shipit-session]
 ```
@@ -188,8 +183,8 @@ services:
     x-shipit-secrets:
       - name: DATABASE_URL
         description: PostgreSQL connection string
-        agent: true              # agent needs it for running migrations
-      - STRIPE_KEY               # service-only — agent doesn't need this
+        agent: true
+      - STRIPE_KEY
 ```
 
 The orchestrator collects all `agent: true` secrets across services, writes `.shipit/.env.agent`, and passes it to the agent container:
@@ -223,18 +218,16 @@ Secrets are in place before anything starts. The `SecretStore` already persists 
 New module that composes all secret sources and produces env files:
 
 ```typescript
-// src/server/orchestrator/secret-resolver.ts
-
 interface ResolvedSecrets {
-  perService: Record<string, Record<string, string>>;  // service name → env vars
-  agent: Record<string, string>;                        // agent: true entries
-  missing: SecretRequirement[];                         // required but no value
+  perService: Record<string, Record<string, string>>;
+  agent: Record<string, string>;
+  missing: SecretRequirement[];
 }
 
 async function resolveSecrets(opts: {
-  composeSecrets: Record<string, SecretEntry[]>;  // service name → x-shipit-secrets
-  userSecrets: Record<string, string>;             // from SecretStore
-  platformCredentials: PlatformCredentials;         // from AuthManager etc.
+  composeSecrets: Record<string, SecretEntry[]>;
+  userSecrets: Record<string, string>;
+  platformCredentials: PlatformCredentials;
 }): Promise<ResolvedSecrets>
 ```
 
@@ -357,10 +350,6 @@ Use Docker Compose's native `secrets:` feature. Secrets are mounted as read-only
 
 ```sh
 #!/bin/sh
-# secrets-entrypoint.sh (baked into the orchestrator image; planning#287 stages a copy
-# at <SHIPIT_SECRETS_INTERNAL_DIR>/_entrypoint/ and bind-mounts it into each
-# service container from there. It used to be copied into <clone>/.shipit/, where
-# the post-turn `git add -A` committed it into the user's repo — docs/246-shipit-state-out-of-clone req 1.)
 for f in /run/secrets/shipit-*; do
   [ -f "$f" ] || continue
   export "$(basename "$f" | sed 's/^shipit-//')"="$(cat "$f")"
@@ -392,7 +381,6 @@ services:
     labels: { ... }
     networks: [shipit-session]
   db:
-    # no secrets
     labels: { ... }
     networks: [shipit-session]
 

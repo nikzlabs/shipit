@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { isUnderEvictionPressure } from "./memory-pressure.js";
+import { isUnderEvictionPressure, resolveMemoryTargets } from "./memory-pressure.js";
+import { resolveDeploymentMode } from "./deployment-mode.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import {
   createMissingContainerReconciler,
@@ -13,30 +14,19 @@ import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-livenes
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
+import { downComposeStackByProject, reapSurvivingComposeStacks } from "./compose-stack-reaper.js";
+import { liveWorkAfterRestart, unprobedAfterRestart } from "./restart-turn-reattach.js";
+import { serializeStackOp } from "./stack-op-queue.js";
+import { startWarmTierSweep } from "./warm-tier-sweep.js";
+import { sweepWorkspaceBlocksAtStartup } from "./services/workspace-block.js";
+import { stopWarmPreview } from "./warm-preview.js";
+import { runUpdateCheckIfDue, versionAnchor, UPDATE_CHECK_TICK_MS } from "./services/update-notice.js";
+import type { UpdateNotice } from "../shared/types.js";
 
-/** Functions produced by {@link startStartupMonitors} that later steps need. */
 export interface StartupMonitors {
-  /**
-   * Kick a background disk-tier escalation pass (issue #1049). Created here
-   * because it closes over the resolved disk watermarks / pacing config, and
-   * consumed by the WS `activateSession` path in `route-registry.ts`.
-   */
   kickDiskEscalation: (excludeSessionId?: string) => void;
 }
 
-/**
- * Start the orchestrator's periodic monitors and register the
- * process-lifecycle hooks: the Docker memory-stats broadcast, the idle
- * container enforcer + missing-container reconciler, the startup disk-janitor
- * sweep, disk-tier escalation (startup + periodic), container health
- * monitoring, and the graceful-shutdown / interval-cleanup `onClose` hooks.
- *
- * Extracted from `index.ts` for the P4 split (docs/201) with no behavior
- * change. The two `onClose` hooks registered here are the only ones in the app
- * (route registration uses `onError`/`onRequest`, never `onClose`), so
- * registering them at monitor-startup time preserves their relative order:
- * interval-cleanup first, then `registerShutdownHook`.
- */
 export async function startStartupMonitors(
   app: FastifyInstance,
   rt: OrchestratorRuntime,
@@ -44,65 +34,64 @@ export async function startStartupMonitors(
   const {
     dockerForStats, latestMemoryStats, sseBroadcast, enforceIdleContainerLimit,
     containerManager, runnerRegistry, broadcastLog, sessionManager,
+    credentialStore,
     isTestMode, stateDir, repoStore, credentialsDir, githubAuthManager,
-    createRepoGit, getBareCacheDir, serviceManagers, createGitManager,
+    createRepoGit, getBareCacheDir, serviceManagers, composeStopPromises, createGitManager,
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
-    mergeWatchManager, autoPushScheduler,
+    mergeWatchManager, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
+    cleanupContainer, version,
   } = rt;
 
-  // ---- Docker memory stats broadcast (every 10s) ----
-  // Also caches the latest reading for the pressure-aware idle enforcer
-  // and triggers an immediate eviction pass when usage crosses the
-  // eviction threshold. Without the immediate trigger, eviction would
-  // wait for the next 30s idle-enforcement tick — long enough for the
-  // host to OOM-kill containers underneath us.
-  const memoryStatsInterval = dockerForStats ? setInterval(() => {
-    void (async () => {
-      const stats = await readDockerMemoryStats(dockerForStats);
-      if (!stats) return;
+  // Held for the process: the first dictation after a quiet period must not pay
+  // a container start (docs/299 req 8). Creation is off the boot critical path.
+  if (cleanupContainer) {
+    void cleanupContainer.start().catch((err: unknown) => {
+      console.error("[cleanup-container] startup failed:", err);
+    });
+    app.addHook("onClose", async () => { cleanupContainer.stop(); });
+  }
+
+  const deployment = resolveDeploymentMode();
+  // Docker reads can outlast the interval; overlapping reads publish stale snapshots.
+  let memoryReadInFlight = false;
+  const pollMemory = async (): Promise<void> => {
+    if (memoryReadInFlight) return;
+    memoryReadInFlight = true;
+    try {
+      const raw = await readDockerMemoryStats(dockerForStats!);
+      if (!raw) return;
+      // The client and enforcer consume the same resolved budget.
+      const stats = {
+        ...raw,
+        ...resolveMemoryTargets(raw.totalBytes, credentialStore.getMemoryBudgetMb(), deployment),
+      };
       const wasUnderPressure = isUnderEvictionPressure(latestMemoryStats.value);
       latestMemoryStats.value = stats;
       sseBroadcast("docker_memory", stats);
       const nowUnderPressure = isUnderEvictionPressure(stats);
       if (nowUnderPressure && !wasUnderPressure) {
-        // Edge-triggered: only fire once per pressure crossing so we don't
-        // burn cycles on every poll while pressure persists. The periodic
-        // 30s enforcer continues to run with pressure-aware semantics for
-        // the duration.
         try { enforceIdleContainerLimit(); }
         catch (err) { console.error("[memory-pressure] immediate eviction failed:", err); }
       }
-    })();
-  }, 10_000) : null;
+    } finally {
+      memoryReadInFlight = false;
+    }
+  };
+  // Seed pressure data before the first timer tick without blocking boot on Docker.
+  if (dockerForStats) void pollMemory().catch(() => {});
+  const memoryStatsInterval = dockerForStats
+    ? setInterval(() => { void pollMemory().catch(() => {}); }, 10_000)
+    : null;
 
-  // ---- Periodic idle container cleanup (every 30s) ----
-  // Runs the idle enforcer on a fixed cadence so cleanup happens regardless
-  // of WebSocket activity. WebSocket close handlers MUST NOT trigger this
-  // synchronously — that would couple WS lifecycle to runner/container
-  // lifecycle and let transient disconnects kill running agents. The
-  // enforcer itself also enforces a grace period (IDLE_GRACE_PERIOD_MS) so
-  // a runner whose viewer just detached is not immediately eligible for
-  // disposal.
-  //
-  // The missing-container reconciler runs on the same cadence — it catches
-  // runners whose container vanished without a `container_exited` event
-  // (Docker daemon restart, missed die event during the health-monitor
-  // reconnect window, external `docker rm`). Without it, the session
-  // looks stuck forever from the client's perspective.
+  // Enforcement is independent of WebSocket activity.
   const reconcileMissingContainers = containerManager
     ? createMissingContainerReconciler({
         containerManager,
         runnerRegistry,
         broadcastLog,
-        // Lets the vanished path preserve an interrupted turn's transcript and
-        // append a visible notice — the same rescue `handleContainerExited`
-        // performs for a Docker `die` (docs/121 gap E).
         chatHistoryManager,
-        // Lets the reconciler re-adopt a live-but-untracked container
-        // instead of force-disposing its runner — same resolver shape as
-        // the startup `rediscover` path.
         sessionInfoResolver: (sessionId) => {
           const session = sessionManager.get(sessionId);
           if (!session?.workspaceDir) return undefined;
@@ -119,12 +108,7 @@ export async function startStartupMonitors(
         },
       })
     : null;
-  // Guards against overlapping reconciler passes: the reconciler is async
-  // (C3 awaits Docker queries to re-adopt orphaned containers) and a hung
-  // Docker daemon can make a pass outlast the 30s interval. Two concurrent
-  // passes over `runnerRegistry.ids()` could both decide the same runner is
-  // orphaned and race dispose-vs-adopt — so a pass that's still running
-  // skips the next tick entirely.
+  // Concurrent reconciliation could race disposal against adoption of the same runner.
   let reconcileInFlight = false;
   const idleEnforcementInterval = containerManager ? setInterval(() => {
     try {
@@ -133,9 +117,6 @@ export async function startStartupMonitors(
       console.error("[idle-cleanup] periodic enforcement failed:", err);
     }
     if (reconcileMissingContainers && !reconcileInFlight) {
-      // Async since C3 — the reconciler may await a Docker query to
-      // re-adopt an orphaned container. Fire-and-forget with a catch so a
-      // hung Docker daemon can't wedge the idle-enforcement interval.
       reconcileInFlight = true;
       void reconcileMissingContainers()
         .catch((err: unknown) => {
@@ -144,44 +125,30 @@ export async function startStartupMonitors(
         .finally(() => { reconcileInFlight = false; });
     }
   }, 30_000) : null;
-  // Don't keep the event loop alive just for idle enforcement — let process
-  // shutdown proceed naturally.
   if (idleEnforcementInterval && typeof idleEnforcementInterval.unref === "function") {
     idleEnforcementInterval.unref();
   }
 
-  // ---- Disk janitor (startup-only CRASH-RECOVERY sweep) ----
-  // Reclaims orphan ShipIt-labeled compose volumes/networks, the archived
-  // session workspace crash-recovery backstop, the one-time nm-store migration
-  // leftover, per-session credential/log dirs, and merged-PR branches. Every
-  // item is recovering from a failure earlier in the lifecycle (teardown
-  // crashed, fs.rm failed, the per-merge branch-delete hook didn't fire) — none
-  // accumulate steadily, so we run once at boot rather than on a timer. The
-  // STEADY-GROWTH sweeps (repo/dep caches, repo-memory, overlay bases, pnpm
-  // stores) moved onto the periodic escalation pass below (planning#198). Skipped in
-  // test mode so unit tests don't shell out to docker.
-  //
-  // planning#199 — one knob for every cold artifact: the archived-workspace
-  // crash-recovery backstop swept here PLUS the repo/dep/pnpm/repo-memory caches
-  // swept by the steady-state reclaim below, replacing the two coincidental 30d
-  // knobs (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`).
-  // Parsed once here because both consumers (boot janitor + periodic reclaim)
-  // read it.
+  // Standbys have no runner, so missing-container reconciliation cannot repair them.
+  const warmSweepInterval = containerManager && !isTestMode
+    ? startWarmTierSweep({
+        repoStore, sessionManager, containerManager,
+        warmSessionForRepo: rt.warmSessionForRepo,
+        ensureStandbyForWarmSession: rt.ensureStandbyForWarmSession,
+        waitForWarmSession: rt.waitForWarmSession,
+        stopPreview: (sessionId: string) => stopWarmPreview(serviceManagers, sessionId, composeStopPromises),
+        ...(rt.preStartWarmPreview ? { repairPreview: rt.preStartWarmPreview } : {}),
+        getMemoryStats: () => latestMemoryStats.value,
+      })
+    : null;
+
   const coldArtifactRetentionRaw = parseFloat(process.env.DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS ?? "");
   const coldArtifactRetentionDays = Number.isFinite(coldArtifactRetentionRaw)
     ? coldArtifactRetentionRaw
     : COLD_ARTIFACT_RETENTION_DAYS;
   if (!isTestMode) {
-    // Pace between destructive ops so the (fire-and-forget) sweep drips out
-    // instead of bursting `docker` spawns + git pushes that contend with a
-    // concurrent agent start for the Docker daemon / bare-cache git layer. This
-    // is why we DON'T defer the sweep off the boot window — throttling flattens
-    // the spike wherever it lands instead of relocating it to a later, more
-    // disruptive moment mid-session.
     const janitorPaceMs = parseFloat(process.env.DISK_JANITOR_PACE_MS ?? "");
-    // Fire-and-forget — we don't want the sweep to block first-request
-    // latency, and `runDiskJanitor` swallows its own errors (see the
-    // module docstring) so there's nothing to await for safety.
+    // Recover failed teardown at boot; ongoing cache growth is handled below.
     void runDiskJanitor({
       sessionManager,
       repoStore,
@@ -192,44 +159,22 @@ export async function startStartupMonitors(
       paceMs: Number.isFinite(janitorPaceMs) ? janitorPaceMs : 500,
       githubAuthManager,
       createRepoGit,
+      createGitManager,
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
-      // planning#224 — orphan egress-sidecar sweep. Reuses the container manager's
-      // OWN Docker client so we hit the same daemon/socket it was configured
-      // with; without a container manager there are no sidecars to reap.
+      stackName: process.env.DOCKER_STACK,
       ...(containerManager ? { docker: containerManager.dockerClient } : {}),
     });
   }
 
-  // docs/161 Part 2 — disk-tier escalation. Fired async after each session
-  // activation (never on the start critical path). This is the PRIMARY
-  // steady-state reclaim of the idle node_modules tail: prod deploys manually,
-  // so the startup janitor above runs rarely, but session starts are frequent
-  // and are exactly when disk gets consumed. Guarded + fire-and-forget;
-  // `escalateDiskTiers` swallows its own errors.
-  // planning#199 — the disk-idle ladder as one ordered, unit-consistent config (ms).
-  // Env overrides fall back to the in-code defaults per-field; the ordering
-  // invariant (`lightAfter ≤ evictMerged ≤ evictUnmerged`) is asserted once here
-  // so an incoherent override (e.g. merged clock below the light clock) fails
-  // fast at boot instead of silently misbehaving at runtime.
   const ladder: DiskLadderThresholds = {
     lightAfterMs: parseFloat(process.env.DISK_IDLE_LIGHT_MS ?? "") || DEFAULT_DISK_LADDER.lightAfterMs,
     evictMergedAfterMs: parseFloat(process.env.DISK_IDLE_EVICT_MERGED_MS ?? "") || DEFAULT_DISK_LADDER.evictMergedAfterMs,
     evictUnmergedAfterMs: parseFloat(process.env.DISK_IDLE_EVICT_MS ?? "") || DEFAULT_DISK_LADDER.evictUnmergedAfterMs,
   };
   assertDiskLadderOrdering(ladder);
-  // Pace between age-based tier descents for the same reason as the janitor:
-  // keep the steady-state node_modules reclaim from monopolizing the Docker
-  // daemon a concurrent agent start needs. Deliberately NOT applied to the
-  // disk-pressure LRU descent — when the box is critically low and starts are
-  // already failing, fast reclaim is the point.
   const escalationPaceMsRaw = parseFloat(process.env.DISK_ESCALATION_PACE_MS ?? "");
   const escalationPaceMs = Number.isFinite(escalationPaceMsRaw) ? escalationPaceMsRaw : 500;
-  // Disk-pressure watermarks: explicit *_BYTES win (backward compat); otherwise
-  // derive fraction-of-disk *_PCT × total host disk size (portable across host
-  // disk sizes — self-hosters can't be expected to know the right byte count).
-  // Total is a fixed property of the host filesystem, so probe it once here
-  // rather than on every escalation pass.
   const diskTotalBytes = isTestMode ? null : await statfsTotalBytes(stateDir);
   const { diskFreeLow, diskFreeHigh } = resolveDiskWatermarks({
     lowBytes: parseFloat(process.env.DISK_FREE_LOW_BYTES ?? "") || undefined,
@@ -238,11 +183,6 @@ export async function startStartupMonitors(
     highPct: parseFloat(process.env.DISK_FREE_HIGH_PCT ?? "") || undefined,
     totalBytes: diskTotalBytes,
   });
-  // issue #1048 — surface that the disk-pressure safety net is off. When
-  // neither watermark resolves (no *_BYTES / *_PCT configured, or a *_PCT
-  // was set but the host total couldn't be probed), the LRU-under-pressure
-  // descent in `escalateDiskTiers` no-ops, leaving only the age-based ladder.
-  // One line at startup makes that visible instead of silently degraded.
   if (!isTestMode && (diskFreeLow === undefined || diskFreeHigh === undefined)) {
     console.warn(
       "[disk-janitor] disk-pressure eviction is DISABLED — set DISK_FREE_LOW_PCT/DISK_FREE_HIGH_PCT "
@@ -250,20 +190,9 @@ export async function startStartupMonitors(
       + "Age-based tier escalation still runs.",
     );
   }
-  // planning#198 — in-flight guard for the steady-state disk-reclaim pass. It fires
-  // from three triggers (startup, per-activation, hourly timer); without this,
-  // two passes can race on the same session's tier descent (mirrors the
-  // missing-container reconciler's `reconcileInFlight` above). It matters more
-  // now the pass also runs the slower steady-state cache sweeps below.
+  // Startup, activation, and hourly triggers share this guard.
   let escalationInFlight = false;
-  // planning#296 — sessions already warned that their eviction is blocked by
-  // uncommittable work. Process-scoped so the hourly pass appends the notice
-  // once per stuck session instead of once per hour.
   const notifiedEvictBlocked = new Set<string>();
-  // Sessions whose eviction is stuck on something that can't change between
-  // passes (a workspace that is no longer a git repository, a corrupt checkout).
-  // Process-scoped so the hourly + per-activation passes report each cause once
-  // instead of re-logging it on every sweep for as long as the session exists.
   const evictStuckLog = new Map<string, string>();
   const kickDiskEscalation = (excludeSessionId?: string): void => {
     if (isTestMode || !containerManager) return;
@@ -278,13 +207,17 @@ export async function startStartupMonitors(
             serviceManagers,
             containerManager,
             pruneVolumes: (sid) => pruneSessionVolumes(sid),
+            // Find stacks from earlier processes and serialize teardown with concurrent starts.
+            stopComposeStack: (sid) => serializeStackOp(
+              sid, () => downComposeStackByProject(containerManager.dockerClient, sid),
+            ),
             createGitManager,
             ladder,
-            // planning#296 — persisted warning when a dirty checkout can't be made
-            // durable, so a session pinned at `light` is visible to its user.
             chatHistory: chatHistoryManager,
             notifiedEvictBlocked,
             evictStuckLog,
+            onSessionsChanged: () =>
+              sseBroadcast("session_list", { sessions: sessionManager.list() }),
             paceMs: escalationPaceMs,
             diskFreeLow,
             diskFreeHigh,
@@ -292,27 +225,13 @@ export async function startStartupMonitors(
           },
           excludeSessionId,
         );
-        // planning#198 — steady-growth disk reclaim (repo/dep caches, repo-memory,
-        // obsolete overlay bases, stale pnpm stores) rides this periodic pass: it
-        // grows with the clock, not with a crashed teardown, so it must NOT be
-        // boot-only (it used to live in the startup `runDiskJanitor`). Boot
-        // coverage is preserved because this same kick fires once at startup.
-        // Both calls swallow their own errors and always resolve. planning#199 — the
-        // cache cutoff is the single cold-artifact retention shared with the
-        // boot janitor's archived-workspace backstop.
         await runSteadyStateReclaim({
           stateDir,
           repoStore,
           credentialsDir,
           cacheDays: coldArtifactRetentionDays,
           paceMs: escalationPaceMs,
-          // Both resolve at sweep time (not boot) so each reflects the current
-          // session set / runtime, and both return an empty/null live-set under
-          // the `OVERLAY_DEP_STORE` kill switch, keeping their sweeps inert when
-          // off. They live in `disk-liveness-sources.ts` rather than inline here
-          // because WHICH session set they enumerate is a correctness property
-          // that was wrong in production (planning#439) and is untestable as a
-          // closure in this function.
+          // Resolve live mounts at sweep time, not from a boot snapshot.
           liveOverlayScopeHashes: overlayLiveScopeSource(sessionManager),
           livePluginStoreArtifacts: pluginLiveArtifactSource(sessionManager),
           pnpmStoreRuntimeHash: () =>
@@ -325,43 +244,46 @@ export async function startStartupMonitors(
       }
     })();
   };
-  // Startup safety net: run one pass now so a long-idle tail left by a
-  // manually-deployed (rarely-restarted) prod box gets reclaimed even before
-  // the first session activation. The per-activation kicks above are the
-  // primary steady-state reclaim.
   kickDiskEscalation();
 
-  // ---- Periodic disk-tier escalation (issue #1049) ----
-  // The escalation pass is the single steady-state disk-reclaim entry point: the
-  // tier ladder (idle node_modules → hot/light/evicted) + its disk-pressure LRU
-  // descent, AND — since planning#198 — the steady-growth cache sweeps
-  // (`runSteadyStateReclaim`). All grow with the clock, not with a failed
-  // teardown. The startup `runDiskJanitor` failure-recovery sweeps correctly stay
-  // startup-only (see the disk-janitor.ts module docstring) because those orphans
-  // only appear when teardown crashed, so a timer there would mostly burn cycles.
-  //
-  // Until now escalation only fired at orchestrator boot and after each session
-  // start, which created a self-heal feedback trap: once the disk fills, new
-  // session starts FAIL → the per-start kick never fires → the reclaim that
-  // would free space never runs. A quiet period with no starts also let idle
-  // node_modules sit well past the 24h `hot → light` step unreclaimed. This
-  // low-frequency timer makes the age-based reclaim, the disk-pressure check, AND
-  // the steady-state cache sweeps run even when the instance is quiet or wedged,
-  // independent of session activity. Mirrors `kickDiskEscalation`'s own
-  // `!isTestMode && containerManager` no-op guard, so in test mode the interval is
-  // never created.
+  // docs/298 — the janitor above never inspects a checkout it is not about to evict,
+  // so a broken session that stays hot is invisible until someone opens it. Off the
+  // critical path, and read-only: a redeploy must not commit anybody's work.
+  if (!isTestMode) {
+    void sweepWorkspaceBlocksAtStartup({
+      sessionManager,
+      createGitManager,
+      onSessionsChanged: () =>
+        sseBroadcast("session_list", { sessions: sessionManager.list() }),
+      paceMs: escalationPaceMs,
+    }).catch((err: unknown) => {
+      console.error("[startup] workspace sweep failed:", err);
+    });
+  }
+
+  // Reclaim must still run when a full disk prevents new session activations.
   const diskEscalationIntervalMs = parseFloat(process.env.DISK_ESCALATION_INTERVAL_MS ?? "")
-    || 3_600_000; // hourly
+    || 3_600_000;
   const diskEscalationInterval = (!isTestMode && containerManager)
     ? setInterval(() => { kickDiskEscalation(); }, diskEscalationIntervalMs)
     : null;
-  // Don't keep the event loop alive just for the periodic reclaim — match the
-  // idle-enforcement / memory-stats intervals.
   if (diskEscalationInterval && typeof diskEscalationInterval.unref === "function") {
     diskEscalationInterval.unref();
   }
 
-  // ---- Container health monitoring ----
+  // docs/304. The tick only asks whether a check is due; `lastCheckedAt` is
+  // persisted, so restarting does not earn an extra check.
+  const updateNoticeDeps = {
+    store: credentialStore,
+    anchor: versionAnchor(version),
+    broadcast: (notice: UpdateNotice | null) => sseBroadcast("update_notice", notice),
+  };
+  const updateCheckInterval = isTestMode
+    ? null
+    : setInterval(() => { void runUpdateCheckIfDue(updateNoticeDeps); }, UPDATE_CHECK_TICK_MS);
+  if (updateCheckInterval?.unref) updateCheckInterval.unref();
+  if (!isTestMode) void runUpdateCheckIfDue(updateNoticeDeps);
+
   if (containerManager) {
     const keepPreviewSupervisor = createKeepPreviewRestartSupervisor({
       sessionManager,
@@ -380,6 +302,24 @@ export async function startStartupMonitors(
     if (restored.length > 0) {
       console.log(`[keep-preview] Restoring ${restored.length} reserved preview runtime(s)`);
     }
+    // Reap only after turn reattachment and preview restoration have registered their runners.
+    if (!isTestMode) {
+      void (async () => {
+        const reaped = await reapSurvivingComposeStacks({
+          docker: containerManager.dockerClient,
+          sessionManager,
+          runnerRegistry,
+          serviceManagers,
+          unprobed: unprobedAfterRestart,
+          liveWork: liveWorkAfterRestart,
+          paceMs: 500,
+          stackName: process.env.DOCKER_STACK,
+        });
+        if (reaped > 0) {
+          console.log(`[compose-reap] Took down ${reaped} compose stack(s) left by a previous orchestrator`);
+        }
+      })();
+    }
     setupContainerHealthMonitoring(
       containerManager,
       runnerRegistry,
@@ -392,21 +332,23 @@ export async function startStartupMonitors(
     app.addHook("onClose", async () => keepPreviewSupervisor.dispose());
   }
 
-  // Graceful shutdown
   app.addHook("onClose", async () => {
+    // Stop timers before shutdown closes the database they query.
+    agentMergeExecutor.stop();
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);
+    if (warmSweepInterval) clearInterval(warmSweepInterval);
+    if (updateCheckInterval) clearInterval(updateCheckInterval);
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
-    // planning#260 — the notify-on-merge retry supervisor. Unref'd, so it never held
-    // the process open, but stopping it keeps shutdown free of a stray pass.
     mergeWatchManager?.stopRetryLoop();
+    quotaContinuationManager?.stop();
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry, autoPushScheduler,
-    dockerProxyServer, containerManager, databaseManager,
+    dockerProxyServer, containerManager, databaseManager, serviceManagers,
   });
 
   return { kickDiskEscalation };

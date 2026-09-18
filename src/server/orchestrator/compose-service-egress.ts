@@ -1,13 +1,3 @@
-/**
- * Fail-closed egress containment for Compose-managed service containers.
- *
- * The generated Compose network is `internal`, so a newly started service has
- * no internet route. We then pause the service, attach a private NAT-capable
- * egress bridge, install the same Tier A/B/C stack used by the agent in the
- * service's network namespace, and unpause it. Thus there is no interval in
- * which repository code can run with unrestricted egress.
- */
-
 import os from "node:os";
 import { createHash } from "node:crypto";
 import type Docker from "dockerode";
@@ -57,7 +47,6 @@ export interface ContainComposeServicesOptions {
   labels?: Record<string, string>;
   orchestratorHost?: string;
   orchestratorPort?: string;
-  /** Replace live service resolver/proxy sidecars after an allowlist change. */
   refresh?: boolean;
 }
 
@@ -103,13 +92,9 @@ async function containerWasSuperseded(
       all: true,
       filters: { label: [`shipit-parent-session=${opts.sessionId}`] },
     });
-    // A present-but-stopped/restarting container is still the same workload.
-    // It can restart into a fresh netns without the firewall, so only absence
-    // proves that Compose removed or replaced this exact container.
+    // Only absence proves replacement; a stopped container can restart without its firewall.
     return !current.some((entry) => entry.Id === containerId);
   } catch {
-    // Failure to verify supersession must keep the active-container path
-    // fail-closed.
     return false;
   }
 }
@@ -134,11 +119,6 @@ async function reapServiceSidecars(
   }
 }
 
-/**
- * Contain every running Compose container for the session. The operation is
- * idempotent per container id. Call it after each `compose up`, because Compose
- * can replace a container without changing the service name.
- */
 export async function containComposeServices(opts: ContainComposeServicesOptions): Promise<void> {
   if (!opts.config.contained) return;
   const parentLabel = `shipit-parent-session=${opts.sessionId}`;
@@ -176,8 +156,6 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   const sessionNetwork = opts.docker.getNetwork(`shipit-session-${opts.sessionId}`);
   const sessionNetworkInfo = await sessionNetwork.inspect();
   if (!sessionNetworkInfo.Internal) {
-    // Never attach the NAT egress bridge to a service whose bootstrap network
-    // was reused from Open mode or an older ShipIt version.
     const remediationFailures: Error[] = [];
     for (const info of allServiceContainers) {
       const container = opts.docker.getContainer(info.Id);
@@ -238,8 +216,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
     try {
       const inspected = await container.inspect();
       if (inspected.State?.Paused) {
-        // A previous orchestrator died inside the critical section. Preserve
-        // the container and anonymous volumes, but leave the workload stopped.
+        // Recover an interrupted setup without deleting anonymous volumes.
         await container.unpause();
         await container.stop({ t: 0 });
         throw new Error(`service ${info.Labels?.["shipit-service-name"] ?? info.Id} was left paused during egress setup`);
@@ -264,16 +241,12 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       }
       await container.pause();
       paused = true;
-      // A stopped-and-started container has the same id but a fresh netns.
-      // Always replace its old sidecars and reinstall the firewall on `up`.
       for (const sidecar of containers.filter((entry) =>
         entry.Labels?.[COMPOSE_EGRESS_SIDECAR_LABEL]
           && entry.Labels?.["shipit-egress-parent"] === info.Id
       )) {
         try { await opts.docker.getContainer(sidecar.Id).remove({ force: true }); } catch { /* already gone */ }
       }
-      // A private per-session bridge supplies the resolver/proxy's internet
-      // route. GwPriority makes it the default route after the attachment.
       try {
         await network.connect({
           Container: info.Id,
@@ -295,9 +268,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         proxyPort: opts.proxyEnabled ? EGRESS_PROXY_PORT : undefined,
         labels: sidecarLabels,
       });
-      // The installer allows only its default egress bridge. Re-open the
-      // internal session subnet so api→database, service→agent, and similar
-      // intra-session connections keep working.
+      // The firewall installer allows only the egress bridge; restore session-local routes.
       await allowEgressToSubnets(opts.docker, {
         agentContainerId: info.Id,
         sidecarImage: opts.sidecarImage,
@@ -337,21 +308,13 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       paused = false;
       containedServiceState.set(stateKey, `${startedAt}:${policyHash}`);
     } catch (error) {
-      // A later Compose reconcile can replace this exact service while a
-      // short-lived installer is still running. Docker then reports errors
-      // such as "Container ... is not paused" when this stale pass reaches
-      // unpause. The replacement starts on the internal bootstrap network and
-      // has its own queued containment pass, so obsolete work is not a failure
-      // of the new container. Reap only the old container's sidecars.
+      // A concurrent replacement has its own containment pass; clean up only this old container.
       if (await containerWasSuperseded(opts, info.Id)) {
         containedServiceState.delete(stateKey);
         await reapServiceSidecars(opts, info.Id);
         continue;
       }
-      // Never resume repository code unless the complete containment stack is
-      // ready.
-      // Preserve the container and anonymous volumes. Its bootstrap network is
-      // internal or its firewall is default-deny, so stopping is fail-closed.
+      // Detach the internet route before unpausing to stop the failed workload.
       let routeDetached: boolean;
       try {
         await network.disconnect({ Container: info.Id, Force: true });
@@ -379,8 +342,6 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       containedServiceState.delete(stateKey);
       failures.push(error instanceof Error ? error : new Error(String(error)));
     } finally {
-      // Success unpauses above. This fallback applies only when stopping the
-      // failed container was not possible.
       if (paused) {
         try { await container.remove({ force: true }); } catch { /* fail closed */ }
       }

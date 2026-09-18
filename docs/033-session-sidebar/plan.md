@@ -66,7 +66,7 @@ export interface SessionInfo {
   createdAt: string;
   lastUsedAt: string;
   workspaceDir?: string;
-  remoteUrl?: string;  // NEW — cached origin remote URL
+  remoteUrl?: string;
 }
 ```
 
@@ -107,9 +107,6 @@ interface SessionSidebarProps {
 Helper to extract display name from remote URL:
 ```typescript
 function parseRepoLabel(remoteUrl: string): string {
-  // "https://github.com/owner/repo.git" → "owner/repo"
-  // "git@github.com:owner/repo.git" → "owner/repo"
-  // Other URLs → "domain/path"
 }
 ```
 

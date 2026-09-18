@@ -1,12 +1,3 @@
-/**
- * OpenAI speech-to-text adapter (docs/144).
- *
- * Whole-utterance transcription: takes a recorded audio blob and returns the
- * raw transcript. No streaming partials (see plan "Why no mid-utterance
- * partials"). The key is supplied by the service layer from the server-side
- * credential store — it never touches the browser.
- */
-
 import { VoiceProviderError, type SttProvider, type SttTranscribeOptions } from "./types.js";
 import { CODING_VOCABULARY } from "../vocabulary.js";
 
@@ -31,12 +22,9 @@ export function createWhisperProvider(apiKey: string, fetchImpl: typeof fetch = 
       const blob = new Blob([new Uint8Array(audio)], { type: opts.mimeType ?? "audio/webm" });
       form.append("file", blob, filenameForMime(opts.mimeType));
       form.append("model", OPENAI_TRANSCRIBE_MODEL);
-      // GPT Transcribe accepts language hints as an array. ShipIt's setting is
-      // singular, so preserve its leading ISO-639-1 subtag as one hint.
+      // Convert the BCP-47 setting to one ISO-639-1 language hint.
       if (opts.language) form.append("languages[]", opts.language.split("-")[0]);
       form.append("prompt", TRANSCRIPTION_CONTEXT);
-      // Literal keyword hints are the model's intended mechanism for domain
-      // vocabulary. Cleanup can only fix terms the transcription preserves.
       for (const keyword of CODING_VOCABULARY) form.append("keywords[]", keyword);
       form.append("response_format", "json");
 

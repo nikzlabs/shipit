@@ -87,11 +87,6 @@ describe("presentExplicitResetSuccess", () => {
   });
 });
 
-/**
- * docs/221 — the merged-session half of "the manual sync never told the agent".
- * The user's "Sync with main" click resets the branch through this route with no
- * turn in flight, so the notice is parked for the next one.
- */
 describe("recordManualResetAgentNotice", () => {
   const resetOutcome = {
     outcome: "reset" as const,

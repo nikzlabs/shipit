@@ -1,66 +1,28 @@
-/**
- * bug-report.ts — user bug filing against ShipIt itself (docs/164).
- *
- * Two pure-ish steps, kept separate so the consent gate sits between them:
- *
- *   1. `compileBugReport()` — take the agent's draft, run the mandatory
- *      server-side redaction pipeline over it, stamp the server-known platform
- *      build, and assemble the single editable issue body shown in the consent
- *      card. NOTHING is sent here.
- *   2. `fileBugReport()` — only after the user confirms the card, open the
- *      issue on the fixed upstream repo under the user's OWN GitHub identity.
- *
- * Credential model (docs/164 principle #1): there is no trusted central party
- * in a self-hosted deployment, so the only legitimate credential is the user's
- * own GitHub auth (already held by `GitHubAuthManager` for PRs). The issue is
- * filed as the user — identical to filing it by hand on github.com — so we
- * inherit GitHub's identity and abuse model and add no rate-limiting of our own.
- */
+// Compile before consent; file only after consent, with the user's GitHub identity.
 
 import type { AgentId } from "../../shared/types.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { redact, type ModelRunner } from "./redaction.js";
 
-/**
- * Fixed destination. NOT the user's project repo, and intentionally not env-
- * configurable: a fork that wants its own target changes this constant (a
- * deliberate code edit, not deploy config). See docs/164 "Credential &
- * destination model".
- */
+// Fixed upstream destination; never use the user's project repository.
 export const UPSTREAM_REPO = { owner: "nikzlabs", repo: "shipit" } as const;
 
-/** Which kind of session produced the report — drives the body marker + label. */
 export type BugReportProducer = "session" | "ops";
 
 export interface CompiledBugReport {
-  /** Stable id so the card can be updated in place across its lifecycle. */
   cardId: string;
   title: string;
-  /**
-   * The single editable issue body — exactly what gets filed unless the user
-   * edits it. Description + redacted "what happened" + a build/marker footer.
-   */
   body: string;
-  /** False when the Stage-2 semantic redaction pass didn't run → card flags it. */
   stage2Ran: boolean;
   producer: BugReportProducer;
-  /** Bare `SHIPIT_BUILD_ID` commit, or `unknown` on dev/local builds. */
   buildId: string;
 }
 
-/** Real label names a push-capable filer (a ShipIt dev) sets directly. */
 export function bugReportLabels(producer: BugReportProducer): string[] {
   return ["user-reported", producer === "ops" ? "source:ops" : "source:session"];
 }
 
-/**
- * Build the body footer. A *visible* marker line (human-readable) plus a
- * machine-parseable HTML comment, both of which survive even when GitHub drops
- * the `labels` field for a filer without push access — a maintainer-side
- * Action reads the comment and applies the real labels. The footer is part of
- * the editable body (WYSIWYG); the deliberate tradeoff is the user can alter
- * it, which at worst makes a report less useful, never unsafe.
- */
+// The upstream Action reads this marker to label reports from users without push access.
 function buildFooter(producer: BugReportProducer, buildId: string): string {
   const source = producer === "ops" ? "ops" : "session";
   return [
@@ -70,15 +32,6 @@ function buildFooter(producer: BugReportProducer, buildId: string): string {
   ].join("\n");
 }
 
-/**
- * Compile the agent's draft into a redacted, ready-to-review report. Runs the
- * two-stage redaction pipeline over the agent-authored body (the agent already
- * chose what's relevant when composing it — there is no separate excerpt step),
- * then appends the build/marker footer (non-sensitive, added after redaction).
- *
- * `run` is injectable so tests can drive Stage 2 deterministically; in
- * production it's derived from `agentId` (the session's own CLI).
- */
 export async function compileBugReport(args: {
   cardId: string;
   title: string;
@@ -106,42 +59,17 @@ export async function compileBugReport(args: {
   };
 }
 
-/**
- * The consent gate swallowed its own result (nikzlabs/shipit#2350): the agent was told a
- * card had been posted and then never told what the user decided, so for the
- * rest of the session it described a filed report as pending and grew reluctant
- * to propose a second one. Consent and reporting are separable — the user still
- * decides, and the agent is still told what they decided.
- *
- * The outcome is delivered as a PREFIX on the user's next turn, not as a turn of
- * its own. Filing a bug is a side errand; waking the session to announce it
- * would interrupt whatever the user and the agent are actually doing, to say
- * something the card on screen already says. So the fact waits, costs nothing,
- * and arrives at the only moment it can matter — when the agent next speaks.
- *
- * The text must be SELF-DESCRIBING: an unresolved card can sit for days, so by
- * delivery time the turn that proposed it may be long out of the agent's
- * context. It also states plainly that it is a ShipIt-generated status line, not
- * something the user typed, since it rides in front of the user's own words.
- *
- * Returns "" when there is nothing to report, so the caller can concatenate it
- * unconditionally.
- */
+// Prefix the next user turn with outcomes; do not start a separate agent turn.
 export function buildBugOutcomeNotice(
   outcomes: {
     title: string;
-    // A union, not `string`: with a bare `string` every non-`"filed"` phase
-    // renders as DECLINED, which is only harmless as long as the caller happens
-    // to filter. Let the compiler carry that instead.
     phase: "filed" | "dismissed";
     issueNumber?: number | undefined;
     issueUrl?: string | undefined;
   }[],
 ): string {
   const lines = outcomes.map((o) => {
-    // The title is a single-line field in the card, but the WS message is not
-    // bound by the input element — flatten it so a multi-line title cannot
-    // forge extra lines inside a block the agent reads as ShipIt's own.
+    // Flatten untrusted titles so they cannot add lines to the platform notice.
     const title = o.title.replace(/\s+/g, " ").trim().slice(0, 200);
     return o.phase === "filed"
       ? `- "${title}" — FILED as issue #${o.issueNumber} (${o.issueUrl}). Cite that number/URL if you reference the report later; never re-propose it.`
@@ -160,16 +88,9 @@ export interface FileBugReportResult {
   url?: string;
   number?: number;
   message?: string;
-  /** True when the failure is a GitHub permission/scope error → reconnect prompt. */
   scopeError?: boolean;
 }
 
-/**
- * File the (possibly user-edited) report as an issue on the upstream repo
- * under the user's own GitHub identity. Labels are passed through but GitHub
- * drops them for filers without push access (the body marker is the durable
- * carrier). Surfaces a scope/permission 403 as a reconnect prompt.
- */
 export async function fileBugReport(
   githubAuthManager: GitHubAuthManager,
   args: { title: string; body: string; producer: BugReportProducer },

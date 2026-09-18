@@ -4,15 +4,6 @@ import { locateInBlocks } from "../utils/anchoring.js";
 import type { MarkdownBlock } from "../utils/markdown.js";
 import type { PendingSelection, SelectionCommentData } from "../types.js";
 
-/**
- * Index the rendered top-level blocks, assign each comment to the block that
- * contains its selected occurrence, and expose the pending editor's block.
- *
- * Comments whose quoted text is truly missing fall into the orphan bucket.
- * Optimistic local anchors (captured from the DOM selection when a comment is
- * first added) take precedence over quote matching so duplicate text and
- * markdown/rendered-text normalization can't move a freshly added comment.
- */
 export function useCommentAnchoring(
   blocks: MarkdownBlock[],
   comments: SelectionCommentData[],
@@ -35,9 +26,6 @@ export function useCommentAnchoring(
     return { indexedBlocks: indexed, renderedText: blocks.map((block) => block.textContent).join("") };
   }, [blocks]);
 
-  // Assign each comment to the rendered top-level block containing its selected
-  // occurrence. Anything whose quoted text is truly missing goes into the
-  // orphan bucket at the bottom.
   const { commentsByBlock, orphaned } = useMemo(() => {
     const byBlock = new Map<number, SelectionCommentData[]>();
     const orphans: SelectionCommentData[] = [];
@@ -81,9 +69,7 @@ export function useCommentAnchoring(
     });
   }, [comments]);
 
-  // Which rendered block the pending comment input should render under. This
-  // comes from the DOM selection itself instead of quote matching, so duplicate
-  // text and markdown/rendered-text normalization cannot move a new editor.
+  // A DOM block index disambiguates duplicate quoted text.
   const pendingBlockIndex = useMemo(() => {
     if (!pendingSelection) return null;
     return pendingSelection.blockIndex >= 0 && pendingSelection.blockIndex < indexedBlocks.length

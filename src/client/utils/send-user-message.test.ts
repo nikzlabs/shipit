@@ -4,22 +4,12 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { ChatMessage } from "../components/MessageList.js";
 
-/**
- * Repro for the bug where a session sometimes did not immediately drop its
- * sidebar "needs attention" marker when the user sent a turn. The marker
- * derives purely from `activeRunnerSessions.has(sessionId)` (see
- * useAttentionInfo), which the server only populates after the
- * `session_agent_started` SSE round-trip. Between hitting send and that echo,
- * the session still read as "Waiting for your input". `sendUserMessage` now
- * optimistically adds the active session so the marker clears instantly.
- */
 describe("sendUserMessage — optimistic active-runner marking", () => {
   const bubble: ChatMessage = { role: "user", text: "hello" };
 
   beforeEach(() => {
     useSessionStore.getState().reset();
-    // activeRunnerSessions lives outside initialResettableState, so reset()
-    // leaves it untouched — clear it explicitly for test isolation.
+
     useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
   });
 
@@ -29,7 +19,7 @@ describe("sendUserMessage — optimistic active-runner marking", () => {
     sendUserMessage({ bubble, activity: "Thinking...", dispatch: () => true });
 
     expect(useSessionStore.getState().activeRunnerSessions.has("sess-1")).toBe(true);
-    // The other optimistic signals still fire.
+
     expect(useSessionStore.getState().isLoading).toBe(true);
     expect(useSessionStore.getState().activity?.label).toBe("Thinking...");
   });
@@ -125,7 +115,7 @@ describe("sendUserMessage — undelivered send rolls back", () => {
   });
 
   it("restores a genuinely-running turn's spinner rather than forcing it off", () => {
-    // The user typed a follow-up while a turn was already in flight; a dropped
+
     // send must not make the running turn look finished.
     useSessionStore.setState({
       sessionId: "sess-1",
@@ -193,7 +183,7 @@ describe("sendUserMessage — insecure context (no crypto.randomUUID)", () => {
     expect(ok).toBe(true);
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]).toBeTruthy();
-    // And the optimistic UI still reflects an in-flight turn.
+
     expect(useSessionStore.getState().isLoading).toBe(true);
     expect(useSessionStore.getState().messages).toHaveLength(1);
     expect(useUiStore.getState().toast).toBeNull();

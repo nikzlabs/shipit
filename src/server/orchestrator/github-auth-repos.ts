@@ -1,28 +1,14 @@
-/**
- * GitHub repository operations — extracted from GitHubAuthManager.
- * Functions in this module handle repo creation, listing, and search.
- */
-
 import type { GitHubRepoResult } from "./github-auth.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { fetchGitHub, parseGitHubError } from "./github-api.js";
 
-/**
- * Create a new GitHub repository via the API.
- * Returns repo details on success, error message on failure.
- */
 export async function createRepo(
   token: string,
   name: string,
   options: { description?: string; isPrivate?: boolean; owner?: string } = {},
 ): Promise<GitHubRepoResult> {
   try {
-    // `owner` selects an organization: POST /orgs/{org}/repos creates the repo
-    // inside that org, whereas the bare POST /user/repos endpoint creates it
-    // under the authenticated user's personal account. Callers omit `owner`
-    // (or pass the personal login) for a personal repo. If the user lacks
-    // repo-creation rights in the org, GitHub answers 403 and the message is
-    // surfaced verbatim via parseGitHubError below.
+    // Omit owner for a personal repo; a supplied owner selects an organization.
     const endpoint = options.owner
       ? `https://api.github.com/orgs/${encodeURIComponent(options.owner)}/repos`
       : "https://api.github.com/user/repos";
@@ -65,44 +51,114 @@ export async function createRepo(
   }
 }
 
-/**
- * List the authenticated user's repos, sorted by most recently pushed.
- * Used to populate the repo selector before the user types a search query.
- */
-export async function listUserRepos(token: string): Promise<{
+export interface GitHubRepoSummary {
   fullName: string;
   description: string | null;
   private: boolean;
   defaultBranch: string;
   cloneUrl: string;
-}[]> {
+}
+
+/** Only the two fields every consumer indexes on are required; the rest get defaults. */
+interface GitHubRepoPayload {
+  full_name: string;
+  clone_url: string;
+  description?: string | null;
+  private?: boolean;
+  default_branch?: string;
+}
+
+const USER_REPOS_PER_PAGE = 100;
+/** Bounds the walk so an account with thousands of repos can't stall a repo search. */
+const OWN_REPOS_MAX_PAGES = 10;
+/** Smaller: one large organization can hold far more repos than the account itself. */
+const ORG_REPOS_MAX_PAGES = 5;
+
+export interface UserRepoListing {
+  repos: GitHubRepoSummary[];
+  /**
+   * A page request for the account's OWN repos failed, so entries a retry might
+   * return are missing. Distinct from stopping at the page bound, which
+   * truncates deterministically and is safe to cache.
+   */
+  failed: boolean;
+}
+
+function isRepoPayload(value: unknown): value is GitHubRepoPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const r = value as Partial<GitHubRepoPayload>;
+  return typeof r.full_name === "string" && typeof r.clone_url === "string";
+}
+
+/** Drops entries missing the fields every consumer indexes on, rather than ranking `undefined`. */
+function toRepoSummaries(data: unknown[]): GitHubRepoSummary[] {
+  return data.filter(isRepoPayload).map((r) => ({
+    fullName: r.full_name,
+    description: r.description ?? null,
+    private: r.private ?? false,
+    defaultBranch: r.default_branch ?? "main",
+    cloneUrl: r.clone_url,
+  }));
+}
+
+async function walkUserRepos(
+  token: string,
+  affiliation: string,
+  maxPages: number,
+): Promise<UserRepoListing> {
+  const repos: GitHubRepoSummary[] = [];
   try {
-    const res = await fetchGitHub(
-      "https://api.github.com/user/repos?sort=pushed&per_page=15&affiliation=owner,collaborator",
-      token,
-    );
+    for (let page = 1; page <= maxPages; page++) {
+      const res = await fetchGitHub(
+        `https://api.github.com/user/repos?sort=pushed&per_page=${USER_REPOS_PER_PAGE}&page=${page}&affiliation=${affiliation}`,
+        token,
+      );
+      if (!res.ok) return { repos, failed: true };
 
-    if (!res.ok) return [];
-
-    const data = (await res.json()) as { full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }[];
-    return data.map((r) => ({
-      fullName: r.full_name,
-      description: r.description,
-      private: r.private,
-      defaultBranch: r.default_branch,
-      cloneUrl: r.clone_url,
-    }));
+      const data = (await res.json()) as unknown;
+      if (!Array.isArray(data)) return { repos, failed: true };
+      repos.push(...toRepoSummaries(data));
+      if (data.length < USER_REPOS_PER_PAGE) break;
+    }
   } catch {
-    return [];
+    // Network failure mid-walk: keep the pages that already arrived, but say so.
+    return { repos, failed: true };
   }
+  return { repos, failed: false };
 }
 
 /**
- * List the organizations the authenticated user belongs to, for the new-repo
- * owner picker. Returns every membership — including orgs where the user may
- * lack repo-creation rights; the create call surfaces GitHub's 403 if so.
- * Never throws (returns `[]` on error) so the dialog degrades to personal-only.
+ * Every repo the account can reach, most recently pushed first, the account's
+ * own ahead of those it reaches through an organization. Paginated in full
+ * because repo search ranks these ahead of GitHub's own search results
+ * (docs/027-github-import), which drop them.
+ *
+ * The two affiliations are walked separately rather than as one
+ * `owner,collaborator,organization_member` request: a single push-sorted walk
+ * lets a busy organization fill the page bound and push the account's own repos
+ * out of it, which is the exact failure this feature exists to prevent.
  */
+export async function listUserRepos(token: string): Promise<UserRepoListing> {
+  const [own, org] = await Promise.all([
+    walkUserRepos(token, "owner,collaborator", OWN_REPOS_MAX_PAGES),
+    walkUserRepos(token, "organization_member", ORG_REPOS_MAX_PAGES),
+  ]);
+
+  const seen = new Set<string>();
+  const repos = [...own.repos, ...org.repos].filter((repo) => {
+    // Team membership and an explicit collaborator grant can both list a repo.
+    const key = repo.fullName.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // Only the account's own walk gates caching. An organization walk can be
+  // refused durably — a token an org has not authorized — and treating that as
+  // uncacheable would re-walk every page on every search, forever.
+  return { repos, failed: own.failed };
+}
+
 export async function listOrgs(token: string): Promise<{ login: string; avatarUrl: string }[]> {
   try {
     const res = await fetchGitHub("https://api.github.com/user/orgs?per_page=100", token);
@@ -115,28 +171,25 @@ export async function listOrgs(token: string): Promise<{ login: string; avatarUr
 }
 
 /**
- * docs/162 — check whether the authenticated user can push to `owner/repo`.
- *
- * Uses `GET /repos/{owner}/{repo}`, whose `permissions` block reflects the
- * *authenticated* user's effective access (push / maintain / admin all imply
- * write). Returns `{ canWrite, reason }` — never throws, so the Ops fix-session
- * spawn can degrade to a structured incident report instead of erroring.
+ * `reachable` answers a different question from `canWrite`: whether the account
+ * can SEE the repository at all. A caller that only needs a checkout (docs/303)
+ * must not treat read-only access as a missing repository.
  */
 export async function checkRepoWriteAccess(
   token: string,
   owner: string,
   repo: string,
-): Promise<{ canWrite: boolean; reason?: string }> {
+): Promise<{ canWrite: boolean; reachable: boolean; reason?: string }> {
   try {
     const res = await fetchGitHub(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
       token,
     );
     if (res.status === 404) {
-      return { canWrite: false, reason: `Repository ${owner}/${repo} is not visible to this account.` };
+      return { canWrite: false, reachable: false, reason: `Repository ${owner}/${repo} is not visible to this account.` };
     }
     if (!res.ok) {
-      return { canWrite: false, reason: await parseGitHubError(res) };
+      return { canWrite: false, reachable: false, reason: await parseGitHubError(res) };
     }
     const data = (await res.json()) as {
       permissions?: { push?: boolean; maintain?: boolean; admin?: boolean };
@@ -144,36 +197,31 @@ export async function checkRepoWriteAccess(
     const perms = data.permissions ?? {};
     const canWrite = Boolean(perms.push || perms.maintain || perms.admin);
     return canWrite
-      ? { canWrite: true }
-      : { canWrite: false, reason: `The authenticated account has read-only access to ${owner}/${repo}.` };
+      ? { canWrite: true, reachable: true }
+      : {
+          canWrite: false,
+          reachable: true,
+          reason: `The authenticated account has read-only access to ${owner}/${repo}.`,
+        };
   } catch (err) {
-    return { canWrite: false, reason: getErrorMessage(err) };
+    return { canWrite: false, reachable: false, reason: getErrorMessage(err) };
   }
 }
 
-/**
- * Search the user's accessible repos by name.
- */
-export async function searchRepos(token: string, query: string): Promise<{
-  fullName: string;
-  description: string | null;
-  private: boolean;
-  defaultBranch: string;
-  cloneUrl: string;
-}[]> {
-  const res = await fetchGitHub(
-    `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+in:name&sort=updated&per_page=10`,
-    token,
-  );
+export async function searchRepos(token: string, query: string): Promise<GitHubRepoSummary[]> {
+  try {
+    const res = await fetchGitHub(
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+in:name&sort=updated&per_page=10`,
+      token,
+    );
 
-  if (!res.ok) return [];
+    if (!res.ok) return [];
 
-  const data = (await res.json()) as { items: { full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }[] };
-  return data.items.map((r) => ({
-    fullName: r.full_name,
-    description: r.description,
-    private: r.private,
-    defaultBranch: r.default_branch,
-    cloneUrl: r.clone_url,
-  }));
+    const data = (await res.json()) as { items?: unknown };
+    // Degrade to the personal-repo half of the search rather than failing it.
+    if (!Array.isArray(data.items)) return [];
+    return toRepoSummaries(data.items);
+  } catch {
+    return [];
+  }
 }

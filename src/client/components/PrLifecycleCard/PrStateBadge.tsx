@@ -1,7 +1,4 @@
-/**
- * PrStateBadge — the small square status badge for a session's PR state.
- * Reused in the sidebar (SessionItem) and across the card's phase renderers.
- */
+
 
 import { usePrStore } from "../../stores/pr-store.js";
 import {
@@ -33,8 +30,7 @@ export function PrStateBadge({ sessionId, url, prNumber }: { sessionId: string; 
     title = prNumber ? `PR #${prNumber}` : "PR open";
     icon = <GitPullRequestIcon size={ICON_SIZE.SM} />;
   } else if (prState === "closed") {
-    // Closed-but-not-merged: red, mirroring GitHub's convention, so it reads as
-    // distinct from both the green open PR and a plain (PR-less) branch.
+
     className = `${base} bg-(--color-error)/15 text-(--color-error) border-(--color-error)/30`;
     title = prNumber ? `PR #${prNumber} closed` : "PR closed";
     icon = <GitPullRequestClosedIcon size={ICON_SIZE.SM} />;

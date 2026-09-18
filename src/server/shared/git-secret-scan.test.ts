@@ -6,8 +6,7 @@ import simpleGit from "simple-git";
 import { GitManager } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
-// Pattern-shaped fixtures (not real credentials). This test file is allowlisted
-// by path in secret-scan.ts, so committing it never trips the guard.
+// Synthetic credential; this test file is allowlisted in secret-scan.ts.
 const FAKE_PAT = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
 
 describe("GitManager.autoCommit — docs/213 secret-scan guard", () => {
@@ -41,9 +40,7 @@ describe("GitManager.autoCommit — docs/213 secret-scan guard", () => {
     expect(result.secretFindings).toHaveLength(1);
     expect(result.secretFindings[0].rule).toBe("github-pat");
     expect(result.secretFindings[0].file).toBe("config.ts");
-    // HEAD must not have advanced — nothing was committed.
     expect(await git.getHeadHash()).toBe(headBefore);
-    // The working-tree change is preserved and left unstaged for the next turn.
     expect(fs.readFileSync(file, "utf-8")).toContain(FAKE_PAT);
     const staged = await simpleGit(tmpDir).diff(["--cached"]);
     expect(staged.trim()).toBe("");
@@ -58,7 +55,6 @@ describe("GitManager.autoCommit — docs/213 secret-scan guard", () => {
     const blocked = await git.autoCommit("add config");
     expect(blocked.commitHash).toBeNull();
 
-    // Agent fixes it next turn.
     fs.writeFileSync(file, `export const TOKEN = process.env.TOKEN;\n`);
     const ok = await git.autoCommit("use env var");
     expect(ok.commitHash).toBeTruthy();
@@ -78,7 +74,6 @@ describe("GitManager.autoCommit — docs/213 secret-scan guard", () => {
   it("blocks a secret in a brand-new untracked file (caught via git add -A)", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
-    // A leaked credential file the agent created from scratch.
     fs.writeFileSync(path.join(tmpDir, "creds.env"), `GH_TOKEN=${FAKE_PAT}\n`);
 
     const result = await git.autoCommit("add creds");
@@ -91,7 +86,6 @@ describe("GitManager.autoCommit — docs/213 secret-scan guard", () => {
     await git.init();
     fs.writeFileSync(path.join(tmpDir, "ok.ts"), "export const x = 1;\n");
 
-    // Clean diff, but the agent-derived summary carries a token.
     const result = await git.autoCommit(`Wire up auth with ${FAKE_PAT}`);
     expect(result.commitHash).toBeTruthy();
 

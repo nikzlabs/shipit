@@ -1,7 +1,3 @@
-/**
- * Tests for the Tier C SNI proxy launch wiring (docs/172 Gap 1, planning#92).
- */
-
 import { describe, it, expect, vi } from "vitest";
 import type Docker from "dockerode";
 import {
@@ -31,8 +27,8 @@ describe("egressProxyEnabled", () => {
     expect(egressProxyEnabled({ SESSION_EGRESS_PROXY: "0" } as NodeJS.ProcessEnv)).toBe(false);
   });
   it("preserves tier stacking C ⊃ B ⊃ A — OFF when DNS or enforcement is opted out", () => {
-    expect(egressProxyEnabled({ SESSION_EGRESS_DNS: "0" } as NodeJS.ProcessEnv)).toBe(false); // Tier B off
-    expect(egressProxyEnabled({ SESSION_EGRESS_ENFORCE: "0" } as NodeJS.ProcessEnv)).toBe(false); // Tier A off
+    expect(egressProxyEnabled({ SESSION_EGRESS_DNS: "0" } as NodeJS.ProcessEnv)).toBe(false);
+    expect(egressProxyEnabled({ SESSION_EGRESS_ENFORCE: "0" } as NodeJS.ProcessEnv)).toBe(false);
   });
 });
 
@@ -89,12 +85,11 @@ describe("launchEgressProxy", () => {
     expect(cfg.Entrypoint).toEqual(["/usr/local/bin/sni-proxy"]);
     expect(cfg.User).toBe(String(EGRESS_PROXY_UID));
     expect(cfg.HostConfig.NetworkMode).toBe("container:agent123");
-    expect(cfg.HostConfig.CapAdd).toBeUndefined(); // least privilege: no NET_ADMIN
+    expect(cfg.HostConfig.CapAdd).toBeUndefined();
     expect(cfg.Env).toContain(`EGRESS_PROXY_LISTEN=${EGRESS_PROXY_LISTEN}`);
     expect(cfg.Env).toContain(`EGRESS_PROXY_PORT=${EGRESS_PROXY_PORT}`);
     expect(cfg.Env).toContain("EGRESS_PROXY_ALLOWED=.anthropic.com github.com");
     expect(cfg.Env).toContain("EGRESS_PROXY_SESSION_ID=s1");
-    // No decision URL passed → deny-fast (no allow-once query)
     expect(cfg.Env.some((e) => e.startsWith("EGRESS_PROXY_DECISION_URL="))).toBe(false);
     expect(cfg.Labels[EGRESS_PROXY_LABEL]).toBe("s1");
     expect(container.start).toHaveBeenCalled();
@@ -113,10 +108,6 @@ describe("launchEgressProxy", () => {
     expect(cfg.Env).toContain("EGRESS_PROXY_DECISION_URL=http://shipit:3000/api/egress/decision");
   });
 
-  // planning#371 — the token travels with the decision URL and only with it. A
-  // proxy that makes no query holds no credential to leak, which is what keeps
-  // the plugin CLI / install namespaces (`plugin-egress.ts`, no decision URL)
-  // exactly as denied as req 19 wants them.
   it("mints a session-scoped decision token alongside the decision URL", async () => {
     const { docker, calls } = fakeDocker();
     await launchEgressProxy(docker, {
@@ -189,7 +180,7 @@ describe("dockerEgressDecisionTokenRecovery", () => {
       sidecarImage: "egress:1",
       allowed: "github.com",
       sessionId: "s1",
-      identityRules: "", // composeEgressIdentityRules returns "" when none
+      identityRules: "",
     });
     const cfg = calls.create as { Env: string[] };
     expect(cfg.Env.some((e) => e.startsWith("EGRESS_PROXY_IDENTITY_RULES="))).toBe(false);

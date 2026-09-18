@@ -4,13 +4,6 @@ import fs from "node:fs";
 import { ClaudeAdapter } from "./adapter.js";
 import type { AgentMcpBridge, McpServerConfig } from "../agent-process.js";
 
-/**
- * docs/088 / docs/125 / docs/155 hair 10 / planning#130 — ClaudeAdapter writes a
- * per-turn `--mcp-config` JSON file bundling the built-in Playwright server, the
- * consolidated `shipit` bridge (when present), and any user-configured MCP
- * servers (with `$secret:` placeholders resolved against process.env). Missing
- * secrets drop the server and report it back via onServerFailed.
- */
 describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, planning#130)", () => {
   let adapter: ClaudeAdapter;
   let onServerFailed: ReturnType<typeof vi.fn<(name: string, reason: string) => void>>;
@@ -21,9 +14,6 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, planning#130)", () => 
   };
 
   beforeEach(() => {
-    // Adapter is constructed with a minimal stub inner so the wireEvents
-    // setup doesn't try to spawn anything. writeMcpConfig() doesn't touch
-    // inner — it only writes the JSON file.
     adapter = new ClaudeAdapter(new EventEmitter() as never);
     onServerFailed = vi.fn<(name: string, reason: string) => void>();
   });
@@ -59,15 +49,29 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, planning#130)", () => 
   it("registers ONE consolidated shipit server selecting Claude's tool subset", () => {
     const { config } = write();
     const servers = config.mcpServers as Record<string, { command: string; args: string[]; env: Record<string, string> }>;
-    // No per-tool servers — just `shipit`.
     expect(servers["shipit-review"]).toBeUndefined();
     expect(servers["shipit-present"]).toBeUndefined();
     expect(servers["shipit-permission"]).toBeUndefined();
     expect(servers.shipit).toEqual({
       command: shipitBridge.tsxBin,
       args: [shipitBridge.bridgePath],
-      env: { SHIPIT_MCP_TOOLS: "present,voice,bug,permission,propose_actions" },
+      env: { SHIPIT_MCP_TOOLS: "present,voice,bug,permission,propose_actions,propose_repo_session" },
     });
+  });
+
+  it("offers session_status instead of propose_actions while the card setting is on (docs/303 req 21)", () => {
+    const result = adapter.writeMcpConfig({
+      servers: [],
+      shipitBridge,
+      sessionStatusCard: true,
+      onServerFailed,
+    });
+    writtenPaths.push(result.mcpConfigPath!);
+    const config = JSON.parse(fs.readFileSync(result.mcpConfigPath!, "utf-8")) as {
+      mcpServers: Record<string, { env: Record<string, string> }>;
+    };
+    expect(config.mcpServers.shipit.env.SHIPIT_MCP_TOOLS)
+      .toBe("present,voice,bug,permission,session_status,propose_repo_session");
   });
 
   it("omits the shipit server when no bridge is available", () => {

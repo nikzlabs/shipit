@@ -11,7 +11,6 @@ const REPO = "https://github.com/owner/repo";
 
 type Checks = Awaited<ReturnType<GitHubAuthManager["getCheckStatus"]>>;
 
-/** Minimal GitHubAuthManager fake with call counters + configurable results. */
 function makeFakeGitHub() {
   const state = {
     authenticated: true,
@@ -42,7 +41,6 @@ function makeFakeGitHub() {
   return { gh, state };
 }
 
-/** Fake registry exposing one always-viewed runner so the gate stays open. */
 function makeFakeRegistry(viewerCount = 1): SessionRunnerRegistry {
   return {
     ids: () => ["viewer"],
@@ -54,8 +52,6 @@ interface CardSnapshot { phase: string; tag: string; cardId: string; alreadyRele
 
 function makePoller() {
   const { gh, state } = makeFakeGitHub();
-  // Every card transition is now routed through the single `onCard` sink (which
-  // the orchestrator wires to chat-history persist + the `release_card` WS).
   const cards: CardSnapshot[] = [];
   const poller = new ReleaseStatusPoller({
     githubAuth: gh,
@@ -65,7 +61,6 @@ function makePoller() {
   return { poller, state, cards };
 }
 
-/** Last card emitted through `onCard` (the phases the tests assert on). */
 function lastCard(cards: CardSnapshot[]): CardSnapshot | undefined {
   return cards.length > 0 ? cards[cards.length - 1] : undefined;
 }
@@ -129,14 +124,13 @@ describe("ReleaseStatusPoller", () => {
     expect(card?.prNumber).toBe(42);
     expect(card?.releaseBranch).toBe("stable");
     expect(ctx.state.prCalls).toBeGreaterThan(0);
-    // No Release polling while the PR is still open.
     expect(ctx.state.releaseCalls).toBe(0);
   });
 
   it("pr_open → pr_merged → released once the PR merges and CI publishes", async () => {
     const ctx = makePoller();
     poller = ctx.poller;
-    ctx.state.pr = { state: "open", merged: true }; // already merged when first polled
+    ctx.state.pr = { state: "open", merged: true };
     ctx.state.release = {
       name: "v0.3.0", body: "notes", htmlUrl: "https://github.com/owner/repo/releases/tag/v0.3.0",
       prerelease: false, publishedAt: "2026-06-03T00:00:00Z", tagName: "v0.3.0",
@@ -146,7 +140,6 @@ describe("ReleaseStatusPoller", () => {
       prNumber: 42, prUrl: "https://github.com/owner/repo/pull/42", releaseBranch: "stable",
     });
     await vi.advanceTimersByTimeAsync(0);
-    // merge detected → immediate re-poll picks up the published Release.
     expect(poller.getStatus("s1")?.phase).toBe("released");
   });
 
@@ -181,7 +174,6 @@ describe("ReleaseStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(poller.getStatus("s1")?.phase).toBe("gating");
     const callsAfterInitial = ctx.state.releaseCalls;
-    // A fast tick later, an active (gating) card polls again.
     await vi.advanceTimersByTimeAsync(RELEASE_POLL_INTERVAL_MS);
     expect(ctx.state.releaseCalls).toBeGreaterThan(callsAfterInitial);
   });
@@ -215,8 +207,6 @@ describe("ReleaseStatusPoller", () => {
     expect(poller.getStatus("s1")?.phase).toBe("released");
 
     const releaseCallsBefore = ctx.state.releaseCalls;
-    // A different session confirms the same tag — should surface the existing
-    // release immediately as "already released", without re-polling.
     poller.markTagged("s2", REPO, { tag: "v0.3.0", version: "0.3.0", prerelease: false, sha: "abc123" });
     await vi.advanceTimersByTimeAsync(0);
     const s2 = poller.getStatus("s2");
@@ -230,8 +220,6 @@ describe("ReleaseStatusPoller", () => {
     poller = ctx.poller;
     poller.propose("s1", REPO, { version: "0.3.0", tag: "v0.3.0", prerelease: false });
     poller.cancel("s1");
-    // The card stays — collapsed to terminal `cancelled` — so the decision is
-    // persisted in the transcript and survives a reload, rather than vanishing.
     expect(poller.getStatus("s1")?.phase).toBe("cancelled");
     const last = lastCard(ctx.cards);
     expect(last?.phase).toBe("cancelled");

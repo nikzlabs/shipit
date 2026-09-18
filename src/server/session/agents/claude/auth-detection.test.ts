@@ -7,14 +7,7 @@ import {
 } from "./process.js";
 import type { ClaudeEvent } from "../../../shared/types.js";
 
-/**
- * The two events a real, unauthenticated `claude -p --output-format stream-json`
- * run emits (captured from CLI 2.1.219, trimmed to the fields that matter).
- * They are the regression anchor for this suite: detection used to require
- * `subtype: "error"`, which the CLI never sends, so neither of these was
- * recognized and the "Not logged in · Please run /login" text was rendered as
- * the agent's own reply.
- */
+// Unauthenticated CLI 2.1.219 capture, trimmed to relevant fields.
 const CLI_AUTH_FAILURE_ASSISTANT: ClaudeEvent = {
   type: "assistant",
   message: { content: [{ type: "text", text: "Not logged in · Please run /login" }] },
@@ -92,8 +85,6 @@ describe("claude auth-failure detection — real CLI payloads (docs/179)", () =>
   });
 
   it("does not flag a model reply that merely talks about signing in", () => {
-    // The turn succeeded and the agent is explaining OAuth — no synthetic
-    // envelope, so this must not tear the turn down and re-auth the session.
     expect(
       assistantEventIndicatesAuthFailure({
         type: "assistant",
@@ -110,11 +101,6 @@ describe("claude auth-failure detection — real CLI payloads (docs/179)", () =>
     ).toBe(false);
   });
 
-  // A FAILED result is not automatically an API failure, and only an API
-  // failure can be an auth failure. Without these exclusions the generic
-  // patterns ("oauth", "sign in") turn an ordinary non-auth failure into a
-  // swallowed turn plus a silent heal-and-retry — the real error never
-  // reaches the user and the turn runs twice.
   it("does not flag a turn that hit the turn cap while working on sign-in code", () => {
     expect(
       resultEventIndicatesAuthFailure({
@@ -153,8 +139,6 @@ describe("claude auth-failure detection — real CLI payloads (docs/179)", () =>
   });
 
   it("still flags an auth failure from a CLI that omits terminal_reason", () => {
-    // Absent must not disqualify — older CLIs don't set it, and a missed
-    // detection is the failure mode this whole path exists to prevent.
     expect(
       resultEventIndicatesAuthFailure({
         type: "result",
@@ -187,7 +171,6 @@ describe("resultEventIsError", () => {
   });
 
   it("treats every non-success subtype as a failed turn", () => {
-    // What an interrupt (AskUserQuestion / ExitPlanMode / stop) produces.
     expect(
       resultEventIsError({ type: "result", subtype: "error_during_execution", session_id: "s1" }),
     ).toBe(true);

@@ -1,28 +1,4 @@
-/**
- * docs/272-shared-cache-ownership req 3 — a census of the **plain recursive
- * chown**, the operation that reaches through a hardlink into a shared cache.
- *
- * ## Why a source rule and not a behavioural test
- *
- * `clone --local` hardlinks `.git/objects` from the source repository, and an
- * inode has exactly one owner across every link. So a `chown -R` over a tree cut
- * from a shared cache is a `chown` *inside that cache*: the caller hands whichever
- * identity it is chowning to — a session's — ownership of object files every
- * sibling session and every other generation reads, and with it chmod and
- * rewrite rights over their content.
- *
- * That defect is invisible everywhere it is exercised. The chown helpers resolve
- * an identity first and no-op when there is none, so below root — every test, the
- * dogfood instance, local mode — the call does nothing at all and any behavioural
- * assertion passes either way. planning#417 was found by a **human reviewer**
- * reading two files side by side, two feature cycles after the object-aware walk
- * that exists precisely to prevent it. This rule is that reviewer, at CI.
- *
- * It is a census, not a ban: a plain recursive chown is correct for a tree that
- * shares no inode with a shared cache, and the rule's job is to make each such
- * claim something someone wrote down rather than a line that slipped through.
- */
-
+// Source guard: ownership helpers do nothing without root, masking unsafe call sites in tests.
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -31,7 +7,6 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const REPO_SRC = path.join(HERE, "..");
 const ROOTS = [HERE, path.join(HERE, "..", "shared")];
 
-/** Blank out comments so a rule reads code, never prose about code. */
 function stripComments(src: string): string {
   let out = src.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "));
   out = out
@@ -55,23 +30,10 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
-/**
- * `chownTreeToSessionWorker(...)` — the plain `chownRecursive` handover. Matched
- * as a CALL, not as a name, so the declaration and the re-exports in
- * `session-worker-uid.ts` are not counted as call sites.
- */
 const PLAIN_RECURSIVE_CHOWN = /\bchownTreeToSessionWorker\s*\(/g;
 
-/**
- * The file that DECLARES it, which necessarily names it, and is not a call site.
- */
 const DECLARING_FILE = "orchestrator/session-worker-uid.ts";
 
-/**
- * Every call site that exists on purpose, with the reason its tree shares no
- * inode with a shared cache. Keyed by file and COUNT rather than by line, so an
- * edit above a site doesn't churn the list while a new site still fails.
- */
 const ALLOWED: Record<string, { count: number; why: string }> = {
   "orchestrator/services/github-ci-fix.ts": {
     count: 1,
@@ -85,10 +47,24 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "walk is load-bearing here for the opposite reason: it must reach the legacy-alias "
       + "symlinks, which it lchowns in place without following.",
   },
+  "orchestrator/cleanup-container.ts": {
+    count: 1,
+    why: "The cleanup container's directory, just created and holding nothing (docs/299). "
+      + "It is never a clone: the container holds no repository at all, so there is no "
+      + "object store to descend into and nothing shares an inode with a bare cache.",
+  },
   "orchestrator/session-dir-factory.ts": {
     count: 1,
     why: "A session directory that has just been created and holds nothing yet — "
       + "a handful of lchowns over empty directories, no object store to reach into.",
+  },
+  "orchestrator/ssh-provision.ts": {
+    count: 1,
+    why: "The session's `~/.ssh` (docs/305): three or four small files the orchestrator "
+      + "wrote itself moments earlier, inside the per-session credentials subtree. No git "
+      + "tree, no clone, no shared cache — nothing under it can share an inode with "
+      + "anything, and the directory is materialized first so the walk cannot be "
+      + "redirected out of the subtree by a symlink.",
   },
   "orchestrator/services/session-fork-merge.ts": {
     count: 1,
@@ -113,8 +89,6 @@ describe("plain recursive chown is a census (docs/272-shared-cache-ownership req
       Object.entries(ALLOWED).map(([file, { count }]) => [file, count]),
     );
 
-    // Vacuity guard: if the pattern stops matching anything, the census asserts
-    // nothing and would pass no matter what the tree contains.
     expect([...found.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
 
     expect(Object.fromEntries([...found].sort()), [
@@ -144,7 +118,6 @@ describe("plain recursive chown is a census (docs/272-shared-cache-ownership req
 
     expect(hits("chownTreeToSessionWorker(job.stagingDir);")).toBe(1);
     expect(hits("  chownTreeToSessionWorker (dir)")).toBe(1);
-    // An import or a type position names it without calling it.
     expect(hits('import { chownTreeToSessionWorker } from "./x.js";')).toBe(0);
     expect(hits("export function chownTreeToSessionWorker")).toBe(0);
   });

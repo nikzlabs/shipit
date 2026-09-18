@@ -1,10 +1,5 @@
 import type { PersistedMessage } from "../chat-history.js";
 
-/**
- * Build a conversation replay string from persisted chat messages.
- * Used to give Claude context after a rollback or fork where we can't
- * use --resume (fresh CLI session).
- */
 export function buildConversationReplay(messages: PersistedMessage[]): string {
   if (messages.length === 0) return "";
 

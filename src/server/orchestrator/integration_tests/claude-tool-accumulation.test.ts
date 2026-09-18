@@ -63,18 +63,17 @@ describe("Integration: Claude tool use accumulation", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Ignore cleanup errors.
     }
   });
 
   it("accumulates tool use blocks across multiple assistant events in persisted chat history", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Edit some files" });
     await waitForClaude(() => lastClaude);
 
-    // System init creates the session
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
@@ -83,7 +82,6 @@ describe("Integration: Claude tool use accumulation", () => {
     const sessionStarted = await client.receiveType("session_started");
     const appSessionId = (sessionStarted as any).session.id;
 
-    // First assistant event with text + one tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -99,7 +97,6 @@ describe("Integration: Claude tool use accumulation", () => {
       },
     });
 
-    // Second assistant event with another tool call (simulates a follow-up action)
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -115,7 +112,6 @@ describe("Integration: Claude tool use accumulation", () => {
       },
     });
 
-    // Third assistant event with yet another tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -130,14 +126,10 @@ describe("Integration: Claude tool use accumulation", () => {
       },
     });
 
-    // Complete the turn and wait for persistence to finish
     lastClaude.finish("tool-accum-session");
-    // Drain remaining WS messages (session_agent_finished is SSE-only)
     try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* timeout expected */ }
 
-    // Verify persisted chat history has ALL tool calls, not just the last one
     const messages = chatHistoryManager.load(appSessionId);
-    // messages[0] = user message, messages[1] = assistant message
     const assistantMsg = messages.find((m) => m.role === "assistant");
     expect(assistantMsg).toBeDefined();
     expect(assistantMsg!.text).toBe("I'll read and edit the file. Now editing.");
@@ -154,12 +146,11 @@ describe("Integration: Claude tool use accumulation", () => {
 
   it("relays all tool use blocks to client across multiple assistant events", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Do parallel work" });
     await waitForClaude(() => lastClaude);
 
-    // System init
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
@@ -167,7 +158,6 @@ describe("Integration: Claude tool use accumulation", () => {
     });
     await client.receiveType("session_started");
 
-    // First assistant event with a tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -190,7 +180,6 @@ describe("Integration: Claude tool use accumulation", () => {
     expect(content1[0]).toMatchObject({ type: "text", text: "Reading file" });
     expect(content1[1]).toMatchObject({ type: "tool_use", id: "t1", name: "Read" });
 
-    // Second assistant event with another tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -206,7 +195,6 @@ describe("Integration: Claude tool use accumulation", () => {
     });
     const event2 = await client.receiveType("agent_event");
     expect(event2.type).toBe("agent_event");
-    // The second event should also contain its tool_use block
     const content2 = (event2 as any).event.content;
     expect(content2).toHaveLength(1);
     expect(content2[0]).toMatchObject({ type: "tool_use", id: "t2", name: "Edit" });

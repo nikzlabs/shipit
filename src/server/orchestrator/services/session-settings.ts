@@ -1,18 +1,3 @@
-/**
- * docs/279-mutable-sandbox-capabilities — editing a session's settings after it
- * exists.
- *
- * Two writers live here because they share one transcript card (requirements 7 +
- * 8): a sandbox's capability grants, and — via {@link emitSessionSettingsChangeCard},
- * called from the egress route — a regular session's network containment mode.
- *
- * The capability write is deliberately NOT reachable from inside a container.
- * docs/211 made `capabilities` server-authoritative by making it immutable; once
- * it is writable, "the route is browser-only" is the whole of that guarantee
- * (requirement 4), so this service is registered only on browser-facing routes
- * and takes no agent-supplied identity.
- */
-
 import { randomUUID } from "node:crypto";
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
@@ -36,28 +21,10 @@ export interface SessionSettingsDeps {
   sessionManager: SessionManager;
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
-  /** Absent in local/dogfood mode and in tests without containers. */
   containerManager?: SessionContainerManager;
   sseBroadcast: (event: string, data: unknown) => void;
 }
 
-/**
- * Emit + persist the "session settings changed" transcript card.
- *
- * Goes through `emitChatCard`, which emits, records in-band at its true
- * transcript position and persists in one call — and picks the post-turn
- * `append` path itself when no turn is running, which is the common case here
- * (the user changes a setting while nothing is executing).
- *
- * When the session has no runner at all the row is appended directly rather than
- * dropped. `renameSessionByAgent` drops its card in that situation because a
- * rename with nobody attached is cosmetic; this one is the durable record of a
- * trust boundary moving, so "nobody is watching right now" is precisely the case
- * requirement 7 exists for.
- *
- * A no-op change writes nothing: an empty `changes` list would render a card
- * claiming something happened.
- */
 export function emitSessionSettingsChangeCard(
   deps: Pick<SessionSettingsDeps, "runnerRegistry" | "chatHistoryManager">,
   sessionId: string,
@@ -87,7 +54,6 @@ export function emitSessionSettingsChangeCard(
   );
 }
 
-/** The sandbox session behind an id, or the right error for what it isn't. */
 function requireSandbox(
   sessionManager: SessionManager,
   sessionId: string,
@@ -95,18 +61,11 @@ function requireSandbox(
   const session = sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
   if (session.kind !== "sandbox") {
-    // Not 403: this isn't a permission the caller could be granted. An ordinary
-    // or ops session has no capability set at all, and inventing one here would
-    // be a second, undeclared way into the privileged container wiring.
     throw new ServiceError(400, "Only a sandbox session has capabilities");
   }
-  // `fromRow` runs every sandbox row through `normalizeCapabilities`, so this is
-  // always populated; the fallback keeps the type honest rather than guarding a
-  // reachable case.
   return session.capabilities ?? normalizeCapabilities(undefined);
 }
 
-/** The current grants + what the live container started with + the pending diff. */
 export function readSandboxCapabilities(
   deps: Pick<SessionSettingsDeps, "sessionManager" | "containerManager">,
   sessionId: string,
@@ -121,32 +80,7 @@ export function readSandboxCapabilities(
   };
 }
 
-/**
- * Write a sandbox session's capability grants (requirement 1).
- *
- * The write always succeeds — what varies is whether it has already taken effect
- * (`git`/`dangerousGitHubOps`, read per request by the orchestrator's brokers) or
- * applies at the next container start (`docker`/`network`, plumbed into the
- * container). See `capabilitiesPendingRestart` for why that split is a fact about
- * the read sites rather than a policy.
- *
- * `input` is untrusted and may be partial, so it is merged over the session's
- * CURRENT set and only then normalized — an omitted or malformed flag keeps the
- * grant the session already has.
- *
- * Merging rather than replacing is the safe direction and the corrected one
- * (review finding). `normalizeCapabilities` alone substitutes the *creation
- * defaults* for anything missing, so a `{ docker: true }` body would have turned
- * Network on and silently revoked GitHub access and the merge sub-grant — an
- * unrelated security setting overwritten by a request that never mentioned it.
- * The dialog always sends the whole set, so this changes nothing for it; it
- * matters for an older client, a direct request, or a frontend defect. An
- * explicit `false` still revokes: only *absence* means "leave it alone".
- *
- * `normalizeCapabilities` still runs last, so docs/224's sub-grant rule
- * (`dangerousGitHubOps` requires `git`) is enforced on the merged result — a
- * body that revokes `git` alone also clears the merge grant it depended on.
- */
+/** Browser-only: never expose capability grants through a container route. */
 export function updateSandboxCapabilities(
   deps: SessionSettingsDeps,
   sessionId: string,
@@ -154,6 +88,7 @@ export function updateSandboxCapabilities(
 ): SandboxCapabilitiesView {
   const previous = requireSandbox(deps.sessionManager, sessionId);
   const patch = input && typeof input === "object" ? input : {};
+  // Merge first so omitted grants retain their current values, not creation defaults.
   const next = normalizeCapabilities({ ...previous, ...patch });
   const changes = describeCapabilityChanges(previous, next);
 
@@ -161,16 +96,10 @@ export function updateSandboxCapabilities(
   const pendingRestart = capabilitiesPendingRestart(capabilitiesAtStart, next);
 
   if (changes.length === 0) {
-    // Selecting the state the session already has is a success, not a write:
-    // no durable churn, no SSE, no card claiming a change (same rule
-    // `renameSessionByAgent` follows for a rename to the current title).
     return { sessionId, capabilities: previous, capabilitiesAtStart, pendingRestart };
   }
 
   deps.sessionManager.setCapabilities(sessionId, next);
-  // The sidebar badge and the sandbox banner both render from the session list,
-  // and neither is driven by the responding client alone (other tabs, and the
-  // banner is rendered from `sessions`), so the list is rebroadcast.
   deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
   emitSessionSettingsChangeCard(deps, sessionId, "sandbox-capabilities", changes, pendingRestart);
 

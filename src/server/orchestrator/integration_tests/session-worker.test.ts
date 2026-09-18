@@ -1,13 +1,3 @@
-/**
- * Integration tests for the Session Worker IPC layer.
- *
- * Tests the round-trip: orchestrator → HTTP → SessionWorker → AgentProcess
- * → SSE → ContainerSessionRunner → event emission.
- *
- * The worker runs as an in-process Fastify server (not a subprocess or Docker
- * container) to keep tests fast and deterministic.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
@@ -17,10 +7,6 @@ import path from "node:path";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
-
-// ---------------------------------------------------------------------------
-// Fake AgentProcess for worker tests
-// ---------------------------------------------------------------------------
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -74,12 +60,7 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   }
 }
 
-/**
- * A steering-capable fake that also implements the optional
- * `setPermissionMode` control method. The base `FakeWorkerAgent` deliberately
- * omits it so the "agent does not support mid-stream permission-mode changes"
- * 400 path stays covered.
- */
+// Keep the base fake without setPermissionMode to test unsupported agents.
 class FakeSteeringWorkerAgent extends FakeWorkerAgent {
   permissionModeCalls: (PermissionMode | undefined)[] = [];
 
@@ -88,11 +69,6 @@ class FakeSteeringWorkerAgent extends FakeWorkerAgent {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Wait for a condition to become true, polling every 50ms. Async predicates are awaited. */
 async function waitFor(
   fn: () => boolean | Promise<boolean>,
   timeoutMs = 3000,
@@ -106,10 +82,6 @@ async function waitFor(
   throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
 }
 
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe("Integration: Session Worker IPC", () => {
   let worker: SessionWorker;
@@ -125,7 +97,7 @@ describe("Integration: Session Worker IPC", () => {
         lastAgent = new FakeWorkerAgent();
         return lastAgent;
       },
-      port: 0, // Ephemeral port
+      port: 0,
       host: "127.0.0.1",
     });
 
@@ -137,19 +109,14 @@ describe("Integration: Session Worker IPC", () => {
 
   afterEach(async () => {
     await worker.stop();
-    // Small delay for cleanup
     await new Promise((r) => setTimeout(r, 50));
   });
-
-  // ---- Worker health check ----
 
   it("worker responds to health check", async () => {
     const res = await worker.getApp().inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
   });
-
-  // ---- Agent start/status ----
 
   it("starts an agent on the worker", async () => {
     const res = await worker.getApp().inject({
@@ -166,7 +133,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(lastAgent.runCalled).toBe(true);
     expect(lastAgent.lastParams?.prompt).toBe("Hello world");
 
-    // Status should show running
     const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
     expect(status.json()).toMatchObject({ running: true });
     expect(status.json().latestSseSeq).toBeGreaterThanOrEqual(0);
@@ -188,8 +154,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toContain("already running");
   });
-
-  // ---- Agent interrupt/kill ----
 
   it("interrupts a running agent", async () => {
     await worker.getApp().inject({
@@ -222,19 +186,11 @@ describe("Integration: Session Worker IPC", () => {
     expect(res.statusCode).toBe(200);
     expect(lastAgent.killed).toBe(true);
 
-    // Status should now be not running
     const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
     expect(status.json()).toMatchObject({ running: false });
   });
 
-  // Identity-guarded kill (prod incident 2026-08-09, session 468191f5): the
-  // orchestrator's fire-and-forget `/agent/kill` executed ~9 minutes late and
-  // SIGTERMed the NEW resident streaming process mid-turn — the kill carried no
-  // victim identity, so the worker killed whoever was resident at execution
-  // time. A kill that names its victim (`runToken`) must be a no-op when the
-  // resident spawn is a different one.
   it("a kill naming a retired spawn's runToken does NOT kill the newer resident", async () => {
-    // Spawn A occupies the slot, then exits on its own (frees the slot).
     await worker.getApp().inject({
       method: "POST",
       url: "/agent/start",
@@ -247,7 +203,6 @@ describe("Integration: Session Worker IPC", () => {
       return status.json().running === false;
     }, 3000, "slot freed after A's exit");
 
-    // Spawn B is now resident — the live turn the late kill must not touch.
     await worker.getApp().inject({
       method: "POST",
       url: "/agent/start",
@@ -256,7 +211,6 @@ describe("Integration: Session Worker IPC", () => {
     const agentB = lastAgent;
     expect(agentB).not.toBe(agentA);
 
-    // The late-executing kill, aimed at retired spawn A.
     const res = await worker.getApp().inject({
       method: "POST",
       url: "/agent/kill",
@@ -290,10 +244,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(status.json()).toMatchObject({ running: false });
   });
 
-  // A targeted kill against a resident whose identity is unknown (started
-  // without a runToken — legacy caller) refuses rather than guessing: the
-  // failure mode being fixed (killing the wrong live process) is worse than a
-  // leaked process, and the untargeted legacy kill still clears it.
   it("a kill naming a runToken no-ops when the resident spawn has none", async () => {
     await worker.getApp().inject({
       method: "POST",
@@ -320,8 +270,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // ---- Stdin ----
-
   it("writes to agent stdin", async () => {
     await worker.getApp().inject({
       method: "POST",
@@ -338,8 +286,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(res.statusCode).toBe(200);
     expect(lastAgent.stdinData).toEqual(["yes\n"]);
   });
-
-  // ---- Live steering: POST /agent/message (docs/140) ----
 
   it("rejects /agent/message when no agent is running", async () => {
     const res = await worker.getApp().inject({
@@ -402,8 +348,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(lastAgent.sentMessages).toEqual(["change course"]);
   });
 
-  // ---- Live steering: POST /agent/permission-mode (docs/138 / docs/140) ----
-
   it("returns 404 on /agent/permission-mode when no agent is running", async () => {
     const res = await worker.getApp().inject({
       method: "POST",
@@ -415,7 +359,6 @@ describe("Integration: Session Worker IPC", () => {
   });
 
   it("returns 400 on /agent/permission-mode when the agent lacks setPermissionMode", async () => {
-    // The base FakeWorkerAgent does not implement the optional control method.
     await worker.getApp().inject({
       method: "POST",
       url: "/agent/start",
@@ -431,8 +374,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(res.json().error).toContain("does not support");
   });
 
-  // ---- SSE event streaming ----
-
   it("streams agent events via SSE to proxy agent on ContainerSessionRunner", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-session",
@@ -441,13 +382,11 @@ describe("Integration: Session Worker IPC", () => {
       workerUrl,
     });
 
-    // Attach a viewer so the SSE connection is established
     runner.attachViewer();
 
-    // Give SSE connection time to establish
+    // Allow the SSE connection to open.
     await new Promise((r) => setTimeout(r, 200));
 
-    // Start an agent on the worker — returns a proxy that receives SSE events
     const proxy = await runner.startAgentOnWorker("claude", {
       prompt: "Write a test",
       cwd: "/workspace",
@@ -455,20 +394,17 @@ describe("Integration: Session Worker IPC", () => {
 
     expect(lastAgent.runCalled).toBe(true);
 
-    // Collect events on the proxy agent
     const agentEvents: { type: string }[] = [];
     proxy.on("event", (event: { type: string }) => {
       agentEvents.push(event);
     });
 
-    // Wait for result event to propagate through SSE
     const resultPromise = new Promise<void>((resolve) => {
       proxy.on("event", (event: { type: string }) => {
         if (event.type === "agent_result") resolve();
       });
     });
 
-    // Simulate agent events on the worker side
     lastAgent.emit("event", {
       type: "agent_init",
       agentId: "claude",
@@ -490,10 +426,8 @@ describe("Integration: Session Worker IPC", () => {
       durationMs: 500,
     });
 
-    // Wait for all events to arrive
     await resultPromise;
 
-    // Verify the proxy agent received all three event types
     const eventTypes = agentEvents.map((e) => e.type);
     expect(eventTypes).toContain("agent_init");
     expect(eventTypes).toContain("agent_assistant");
@@ -501,8 +435,6 @@ describe("Integration: Session Worker IPC", () => {
 
     runner.dispose();
   });
-
-  // ---- AskUserQuestion bridge round-trip (docs/147) ----
 
   it("injects an AskUserQuestion tool_use into the event stream on POST /agent-ops/ask/submit", async () => {
     const runner = new ContainerSessionRunner({
@@ -534,7 +466,6 @@ describe("Integration: Session Worker IPC", () => {
       });
     });
 
-    // The `shipit` bridge's ask tool POSTs here when Codex calls AskUserQuestion.
     const res = await fetch(`${workerUrl}/agent-ops/ask/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -596,8 +527,6 @@ describe("Integration: Session Worker IPC", () => {
       });
     });
 
-    // Step 1: the bridge opens the request — returns IMMEDIATELY with a
-    // requestId (not held), and the card broadcasts off the same call.
     const openRes = await fetch(`${workerUrl}/agent-ops/permission/request`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -610,14 +539,13 @@ describe("Integration: Session Worker IPC", () => {
     await gotRequest;
     expect(cardRequestId).toBe(opened.requestId);
 
-    // Step 2: the bridge polls /await, which holds until resolved.
     const awaitPromise = fetch(`${workerUrl}/agent-ops/permission/await`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ requestId: opened.requestId, timeoutMs: 5000 }),
     });
 
-    // Give the poll a beat to register before the orchestrator pushes the answer.
+    // Allow the poll to register before resolving it.
     await new Promise((r) => setTimeout(r, 50));
     const resolveRes = await fetch(`${workerUrl}/agent/permission/resolve`, {
       method: "POST",
@@ -627,7 +555,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(resolveRes.status).toBe(200);
     expect(await resolveRes.json()).toEqual({ resolved: true });
 
-    // The held poll now returns the decision the CLI maps to its envelope.
     const reply = await awaitPromise;
     expect(reply.status).toBe(200);
     expect(await reply.json()).toEqual({ behavior: "allow" });
@@ -664,7 +591,6 @@ describe("Integration: Session Worker IPC", () => {
     const first = await open();
     const second = await open();
 
-    // Same gated call → same requestId, and only ONE card was broadcast.
     expect(first.requestId).toBeTruthy();
     expect(second.requestId).toBe(first.requestId);
     await new Promise((r) => setTimeout(r, 50));
@@ -709,12 +635,10 @@ describe("Integration: Session Worker IPC", () => {
       cwd: "/workspace",
     });
 
-    // Listen for the done event on the proxy
     const donePromise = new Promise<number>((resolve) => {
       proxy.on("done", (exitCode: number) => resolve(exitCode));
     });
 
-    // Simulate agent completion
     lastAgent.emit("done", 0);
 
     const exitCode = await donePromise;
@@ -780,8 +704,6 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
-  // ---- ContainerSessionRunner interface compliance ----
-
   it("implements SessionRunnerInterface state management", () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-state",
@@ -790,7 +712,6 @@ describe("Integration: Session Worker IPC", () => {
       workerUrl,
     });
 
-    // Agent state
     expect(runner.running).toBe(false);
     runner.running = true;
     expect(runner.running).toBe(true);
@@ -807,7 +728,6 @@ describe("Integration: Session Worker IPC", () => {
     runner.turnSummary = "Did stuff";
     expect(runner.turnSummary).toBe("Did stuff");
 
-    // Message queue
     expect(runner.queueLength).toBe(0);
     runner.enqueue({ text: "msg1", execution: "interactive" });
     expect(runner.queueLength).toBe(1);
@@ -817,24 +737,19 @@ describe("Integration: Session Worker IPC", () => {
     expect(dequeued?.text).toBe("msg1");
     expect(runner.queueLength).toBe(0);
 
-    // Turn event buffer
     expect(runner.getTurnEventBuffer()).toEqual([]);
     runner.emitMessage({ type: "error", message: "test" });
     expect(runner.getTurnEventBuffer().length).toBe(1);
     runner.clearTurnEventBuffer();
     expect(runner.getTurnEventBuffer()).toEqual([]);
 
-    // Detected ports
     expect(runner.detectedPorts).toEqual([]);
     runner.detectedPorts = [3000, 8080];
     expect(runner.detectedPorts).toEqual([3000, 8080]);
 
-    // Viewer management
     expect(runner.viewerCount).toBe(0);
 
-    // Lifecycle — running=true in this test, so force-dispose to bypass the
-    // running-agent guard (this test only verifies state-management plumbing,
-    // not the lifecycle invariant).
+    // This test left running=true, which prevents normal disposal.
     expect(runner.disposed).toBe(false);
     runner.dispose({ force: true });
     expect(runner.disposed).toBe(true);
@@ -899,8 +814,6 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
-  // ---- Agent cleanup on done ----
-
   it("clears agent reference after done event", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-cleanup",
@@ -917,11 +830,9 @@ describe("Integration: Session Worker IPC", () => {
       cwd: "/workspace",
     });
 
-    // Agent status on worker is running
     const before = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
     expect(before.json().running).toBe(true);
 
-    // Complete the agent
     lastAgent.emit("event", {
       type: "agent_result",
       status: "success",
@@ -929,20 +840,16 @@ describe("Integration: Session Worker IPC", () => {
     });
     lastAgent.emit("done", 0);
 
-    // Wait for the done event to propagate
     await waitFor(() => {
       void worker.getApp().inject({ method: "GET", url: "/agent/status" });
-      return true; // The agent reference is cleared in the worker's done handler
+      return true;
     }, 1000, "agent cleared");
 
-    // Status should show not running
     const after = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
     expect(after.json().running).toBe(false);
 
     runner.dispose();
   });
-
-  // ---- Secrets endpoint (087 Phase 3) ----
 
   it("PUT /secrets injects values into process.env and returns count", async () => {
     const res = await worker.getApp().inject({
@@ -955,7 +862,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(process.env.TEST_DB_URL).toBe("postgres://x");
     expect(process.env.TEST_REDIS).toBe("redis://y");
 
-    // Cleanup so the test doesn't leak env vars into siblings.
     delete process.env.TEST_DB_URL;
     delete process.env.TEST_REDIS;
   });
@@ -968,7 +874,6 @@ describe("Integration: Session Worker IPC", () => {
     });
     expect(process.env.TEST_OLD_KEY).toBe("v1");
 
-    // Second push without TEST_OLD_KEY — the worker should drop it.
     const res = await worker.getApp().inject({
       method: "PUT",
       url: "/secrets",
@@ -978,7 +883,6 @@ describe("Integration: Session Worker IPC", () => {
     expect(process.env.TEST_OLD_KEY).toBeUndefined();
     expect(process.env.TEST_KEEP).toBe("v2-new");
 
-    // Final push with empty body clears everything we tracked.
     await worker.getApp().inject({ method: "PUT", url: "/secrets", payload: { secrets: {} } });
     expect(process.env.TEST_KEEP).toBeUndefined();
   });
@@ -1014,11 +918,6 @@ describe("Integration: Session Worker IPC", () => {
 
 });
 
-// ---- Live steering: /agent/permission-mode mode mapping (docs/138 / docs/140) ----
-//
-// A dedicated worker whose factory produces a steering-capable agent (one that
-// implements the optional `setPermissionMode`), so we can exercise the
-// valid/invalid mode-mapping paths the base FakeWorkerAgent can't reach.
 describe("Integration: Session Worker permission-mode mapping", () => {
   let worker: SessionWorker;
   let lastAgent: FakeSteeringWorkerAgent;
@@ -1101,14 +1000,7 @@ describe("Integration: Session Worker permission-mode mapping", () => {
   });
 });
 
-// ---- Install endpoint and SSE-reconnect resync (fix for "Installing
-// dependencies..." getting stuck after a transient SSE drop) ----
-//
-// These tests use an isolated worker with its own temporary workspaceDir and
-// stateDir — the worker's install endpoint short-circuits when the marker
-// exists. docs/246 moved that marker OUT of the clone: in production it lives on
-// the `/session-state` mount, so an in-process worker (no mount) must be given a
-// real state dir or the marker write fails at the filesystem root.
+// Supply a writable stateDir: these in-process workers have no /session-state mount.
 describe("Integration: Session Worker install endpoint", () => {
   let installWorker: SessionWorker;
   let installWorkerPort: number;
@@ -1147,8 +1039,6 @@ describe("Integration: Session Worker install endpoint", () => {
   });
 
   it("POST /install records a successful result that /install/status surfaces", async () => {
-    // `true` is a portable, instant-success command — no need to actually
-    // invoke npm.
     const res = await installWorker.getApp().inject({
       method: "POST",
       url: "/install",
@@ -1185,12 +1075,7 @@ describe("Integration: Session Worker install endpoint", () => {
   });
 
   it("joins an in-flight install instead of failing the second caller", async () => {
-    // The warm-pool pre-install and the on-activation install can race on the
-    // same worker (standby claimed mid pre-install). The second POST must NOT
-    // 409 — that surfaced `install_status: error` on a perfectly healthy run.
-    // Instead the worker reports `started: true, joined: true` so the
-    // orchestrator awaits the SSE-delivered completion event.
-    // `sleep 1` keeps the install in flight long enough to race a second POST.
+    // Keep the first install running until the second POST.
     await installWorker.getApp().inject({
       method: "POST",
       url: "/install",
@@ -1212,31 +1097,19 @@ describe("Integration: Session Worker install endpoint", () => {
       defaultAgentId: "claude",
       workerUrl: installWorkerUrl,
     });
-    // Attach a viewer to establish the SSE connection — install_done flows
-    // back through SSE, so runInstall would otherwise wait forever for an
-    // event that never arrives.
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // Capture every install_status emitted by the runner so we can assert
-    // the second concurrent call did not produce a duplicate "running"
-    // event (which would happen if the idempotency guard let it through).
     const statusEvents: string[] = [];
     runner.on("message", (msg) => {
       if (msg.type === "install_status") statusEvents.push(msg.status);
     });
 
-    // Fire two concurrent runInstall calls. The second should join the
-    // first's promise instead of starting a fresh install (which would
-    // hit /install with 409 on the worker).
     const a = runner.runInstall(["true"]);
     const b = runner.runInstall(["true"]);
 
     await Promise.all([a, b]);
 
-    // Worker should have only seen one install. The second call must NOT
-    // have emitted a second "running" event (guard worked) and the worker
-    // must be back to idle with a successful lastResult.
     expect(statusEvents.filter((s) => s === "running").length).toBe(1);
     const status = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
     const body = status.json() as { running: boolean; lastResult: { ok: boolean } | null };
@@ -1246,11 +1119,6 @@ describe("Integration: Session Worker install endpoint", () => {
     runner.dispose();
   });
 
-  // docs/183 Phase 1 — the lockfile-keyed copy-store fast path (docs/148) was
-  // removed. The worker install path is now just: marker present → skip; else
-  // run `agent.install` (tuned) → write marker. The plain-install behavior is
-  // already exercised by the `true` / `sleep 1` install tests above and the
-  // marker-skip test below.
   it("plain install: a successful command writes the marker so a re-run skips", async () => {
     const res = await installWorker.getApp().inject({
       method: "POST",
@@ -1267,8 +1135,6 @@ describe("Integration: Session Worker install endpoint", () => {
 
     expect(fs.existsSync(path.join(installStateDir, ".install-done"))).toBe(true);
 
-    // A second install with the SAME commands short-circuits on the stamped
-    // marker (source commit + runtime + commands all match).
     const second = await installWorker.getApp().inject({
       method: "POST",
       url: "/install",
@@ -1277,9 +1143,6 @@ describe("Integration: Session Worker install endpoint", () => {
     expect(second.json()).toEqual({ skipped: true, reason: "marker" });
   });
 
-  // docs/183 Phase 3 — the stamped marker skips ONLY on an exact match. A
-  // changed install command must NOT skip: the stale marker is whiteouted and
-  // `agent.install` re-runs against the new command.
   it("stamped marker: a changed install command re-runs instead of skipping", async () => {
     await installWorker.getApp().inject({
       method: "POST",
@@ -1292,8 +1155,6 @@ describe("Integration: Session Worker install endpoint", () => {
       return !body.running && body.lastResult?.ok === true;
     }, 5_000, "first install completed");
 
-    // Different command list → stamp mismatch → must start a fresh install, not
-    // short-circuit on the existing marker.
     const second = await installWorker.getApp().inject({
       method: "POST",
       url: "/install",
@@ -1308,11 +1169,6 @@ describe("Integration: Session Worker install endpoint", () => {
     }, 5_000, "second install completed");
   });
 
-  // docs/183 FINDINGS finding 3 — the flag-rollback hazard. A marker written
-  // while deps lived in the overlay store must be distrusted after the flag is
-  // rolled OFF: there is then no overlay mount, but the dep dir left behind in
-  // the host clone is EMPTY. A matching marker over a present-but-empty dep dir
-  // (any mount type) reinstalls instead of skipping into a dep-less session.
   const awaitInstallOk = () =>
     waitFor(async () => {
       const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
@@ -1321,31 +1177,14 @@ describe("Integration: Session Worker install endpoint", () => {
     }, 5_000, "install completed");
 
   it("distrusts a matching marker when a present-but-empty (non-overlay) dep dir contradicts it", async () => {
-    // The reinstall command has to POPULATE `node_modules`, and that is the
-    // scenario rather than a concession to it. After a flag rollback the deps
-    // are gone and `agent.install` is what puts them back — an install that
-    // leaves the dir empty is the docs/272 laundered-exit failure, and since
-    // that check landed it is reported as one. This fixture used `true` for
-    // both installs, which never modelled a rollback faithfully: it asserted
-    // that an install which fixed nothing "succeeded".
-    //
-    // The subject is unchanged and is the line below: a matching marker over an
-    // empty dep dir must RE-RUN (`started: true`) rather than skip.
     const reinstall = "mkdir -p node_modules && : > node_modules/dep.js";
 
-    // First install stamps the marker (default dep dir = node_modules; `true`
-    // does not create it).
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
     expect(fs.existsSync(path.join(installStateDir, ".install-done"))).toBe(true);
 
-    // Simulate the post-rollback state: an EMPTY node_modules sits in the clone
-    // (the old overlay mountpoint), no overlay mount present.
     fs.mkdirSync(path.join(installWorkspaceDir, "node_modules"));
 
-    // The marker still matches exactly, but the empty dep dir contradicts it →
-    // reinstall, NOT skip. (A different command list would also miss the marker,
-    // so the reinstall is re-proven below by the dir it repopulates.)
     const second = await installWorker.getApp().inject({
       method: "POST",
       url: "/install",
@@ -1353,15 +1192,9 @@ describe("Integration: Session Worker install endpoint", () => {
     });
     expect(second.json()).toEqual({ started: true });
     await awaitInstallOk();
-    // The reinstall actually ran, which is what the contradiction was for.
     expect(fs.existsSync(path.join(installWorkspaceDir, "node_modules", "dep.js"))).toBe(true);
   });
 
-  // docs/272 — the other side of the same predicate. The contradiction above
-  // forces a reinstall; if that reinstall STILL leaves the dep dir empty, the
-  // install did not do the thing it was re-run for, and reporting success would
-  // stamp a marker and open the service gate over a tree that was never built
-  // (the production shape: `npm ci … || [ -x node_modules/.bin/vite ]`).
   it("fails the reinstall when it leaves the contradicting dep dir empty", async () => {
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
@@ -1383,8 +1216,6 @@ describe("Integration: Session Worker install endpoint", () => {
     const status = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
     const { lastResult } = status.json() as { lastResult: { ok: boolean; message?: string } };
     expect(lastResult.message).toContain("node_modules");
-    // No marker — otherwise the NEXT activation skips the install entirely and
-    // re-opens the gate over the same empty tree, with no failure anywhere.
     expect(fs.existsSync(path.join(installStateDir, ".install-done"))).toBe(false);
   });
 
@@ -1392,7 +1223,6 @@ describe("Integration: Session Worker install endpoint", () => {
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
 
-    // A populated dep dir does not contradict the marker → skip preserved.
     fs.mkdirSync(path.join(installWorkspaceDir, "node_modules"));
     fs.writeFileSync(path.join(installWorkspaceDir, "node_modules", "dep.js"), "//");
 
@@ -1405,9 +1235,6 @@ describe("Integration: Session Worker install endpoint", () => {
   });
 
   it("preserves the marker-skip when the dep dir is absent (legit dep-less repo)", async () => {
-    // No node_modules is created (e.g. a non-Node repo carrying the default
-    // dep-dir). An absent dep dir is not a contradiction — the skip stands so the
-    // repo does not reinstall on every resume.
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
 
@@ -1424,7 +1251,6 @@ describe("Integration: Session Worker install endpoint", () => {
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
 
-    // Empty node_modules, but the repo declared no install-managed dep dirs.
     fs.mkdirSync(path.join(installWorkspaceDir, "node_modules"));
 
     const second = await installWorker.getApp().inject({
@@ -1435,10 +1261,6 @@ describe("Integration: Session Worker install endpoint", () => {
     expect(second.json()).toEqual({ skipped: true, reason: "marker" });
   });
 
-  // docs/197 — the content-keyed install skip. With a real git repo, the marker
-  // stamps the source commit AND a content hash of the dependency input files;
-  // a later install on a DIFFERENT commit whose dep files are byte-identical
-  // skips via the content key instead of reinstalling.
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: installWorkspaceDir, stdio: "ignore" });
 
@@ -1457,7 +1279,7 @@ describe("Integration: Session Worker install endpoint", () => {
 
   it("content key: skips a DIFFERENT commit when the dep input files are identical", async () => {
     initGitRepo();
-    // Explicit install-inputs opts into content-keying regardless of the command.
+    // Explicit inputs enable content hashing for the otherwise unsupported command.
     fs.writeFileSync(path.join(installWorkspaceDir, "shipit.yaml"), "agent:\n  install-inputs:\n    - deps.lock\n");
     fs.writeFileSync(path.join(installWorkspaceDir, "deps.lock"), "left-pad@1.0.0\n");
     const first = commitAll("init");
@@ -1465,8 +1287,6 @@ describe("Integration: Session Worker install endpoint", () => {
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
 
-    // A new commit that touches only a non-dependency file. HEAD moves; deps.lock
-    // is byte-identical, so the content hash is unchanged.
     fs.writeFileSync(path.join(installWorkspaceDir, "README.md"), "docs\n");
     const second = commitAll("docs only");
     expect(second).not.toBe(first);
@@ -1488,7 +1308,6 @@ describe("Integration: Session Worker install endpoint", () => {
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
 
-    // Edit the dependency input file → both the commit AND the content hash move.
     fs.writeFileSync(path.join(installWorkspaceDir, "deps.lock"), "left-pad@2.0.0\n");
     commitAll("bump dep");
 
@@ -1503,16 +1322,12 @@ describe("Integration: Session Worker install endpoint", () => {
 
   it("content key: a non-allowlisted install command stays commit-only (reinstalls)", async () => {
     initGitRepo();
-    // No install-inputs; the command (`true`) is not a recognized pure dep
-    // install, so depsHash is null and only the commit can match.
     fs.writeFileSync(path.join(installWorkspaceDir, "deps.lock"), "left-pad@1.0.0\n");
     commitAll("init");
 
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
     await awaitInstallOk();
 
-    // Different commit, identical deps.lock — but content-keying is off, so the
-    // commit mismatch forces a reinstall.
     fs.writeFileSync(path.join(installWorkspaceDir, "README.md"), "docs\n");
     commitAll("docs only");
 
@@ -1526,7 +1341,6 @@ describe("Integration: Session Worker install endpoint", () => {
   });
 
   it("SSE replays last install_done to a late-connecting client", async () => {
-    // First, run an install to completion with no SSE clients attached.
     await installWorker.getApp().inject({
       method: "POST",
       url: "/install",
@@ -1537,8 +1351,6 @@ describe("Integration: Session Worker install endpoint", () => {
       return !(s.json() as { running: boolean }).running;
     }, 3_000, "install completed");
 
-    // Now attach a runner — its SSE connection should receive the replay
-    // and emit install_status: complete.
     const runner = new ContainerSessionRunner({
       sessionId: "test-install-replay",
       sessionDir: "/tmp/test",
@@ -1552,7 +1364,6 @@ describe("Integration: Session Worker install endpoint", () => {
     });
 
     runner.attachViewer();
-    // SSE setup is async; give it time to connect and replay.
     await waitFor(() => completes.includes("complete"), 3_000, "replayed install_done");
     expect(completes).toContain("complete");
 

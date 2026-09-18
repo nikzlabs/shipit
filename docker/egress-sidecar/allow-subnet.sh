@@ -1,38 +1,11 @@
 #!/usr/bin/env bash
 #
-# Intra-session subnet allow — docs/172-agent-containment Gap 1 (planning#92).
-#
-# Companion to init-firewall.sh. Runs in a SHORT-LIVED PRIVILEGED SIDECAR that
-# shares the agent container's network namespace:
-#
-#   docker run --network container:<agentId> --cap-add NET_ADMIN egress-sidecar \
-#     /usr/local/bin/allow-subnet.sh
-#
-# It appends `iptables OUTPUT ... ACCEPT` rules for one or more CIDRs INTO THE
-# AGENT'S NETNS, so the (multi-homed) agent — and its in-netns Playwright browser
-# — can reach the session's OWN preview / compose service containers by IP.
-#
-# Why this is needed: init-firewall.sh runs at agent-container CREATION and only
-# allows the agent's *default-gateway* bridge subnet (the orchestrator net). A
-# session's compose/preview network is created LATER (`docker compose up`) and the
-# agent is attached to it after the fact, so its subnet is not in the allow-set and
-# the default-deny OUTPUT policy drops traffic to the dev server. This re-opens it
-# for that ONE session subnet — the agent gains no route to any OTHER network, so
-# this does not widen cross-session reach (cross-session isolation is unchanged).
-# We deliberately allow only the specific session subnet, never broad RFC1918 (a
-# broad allow would let the host forward the agent's packets into its own VPC/LAN).
+# Allow only the session's late-created Compose subnet in the agent netns.
 #
 # Inputs (env, space-separated):
 #   EGRESS_ALLOW_SUBNETS  CIDRs to allow (e.g. "172.19.0.0/16")
 #
-# Idempotent: re-run on every network (re)join (reconnect after a container
-# recreate re-attaches the agent), so each rule is added only if not already
-# present (`-C` check before `-A`). Best-effort by design — the orchestrator does
-# NOT fail-close on a non-zero exit here: failing to open the preview subnet only
-# degrades the agent's own browser reachability, it never weakens containment.
-#
-# Verified on a live Docker host (the planning#92 checklist), not in unit tests — the
-# orchestrator-side wiring that feeds it is unit-tested in egress-firewall-install.test.ts.
+# Idempotent and best effort: failure affects preview access, not containment.
 
 set -euo pipefail
 
@@ -46,9 +19,7 @@ allow_one() {
       || ip6tables -A OUTPUT -d "$cidr" -j ACCEPT 2>/dev/null \
       || { log "WARN: could not add ip6 rule for $cidr"; return 0; }
   else
-    # Keep same-session HTTPS inside the session. This RETURN must precede the
-    # catch-all Tier C redirect in nat/OUTPUT, or service names such as `api`
-    # are treated as public SNI and rejected by the allowlist proxy.
+    # Exempt session HTTPS before the Tier C redirect.
     iptables -t nat -C OUTPUT -d "$cidr" -p tcp --dport 443 -j RETURN 2>/dev/null \
       || iptables -t nat -I OUTPUT 1 -d "$cidr" -p tcp --dport 443 -j RETURN \
       || { log "WARN: could not exempt HTTPS for $cidr"; return 0; }

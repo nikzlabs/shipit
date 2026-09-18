@@ -5,17 +5,7 @@ const ROUTE = "cred_glm";
 const NOW = Date.parse("2026-08-17T17:30:00Z");
 const HOUR = 60 * 60_000;
 
-/**
- * **The measured payload**, captured verbatim from `api.z.ai` against a real
- * coding-plan key on 2026-08-17, after one small request had opened the 5-hour
- * window. Everything else in this file is a variation on it.
- *
- * It is transcribed rather than paraphrased because every plausible reading of
- * these field names is wrong in some way (see the module docstring), so a
- * fixture that "looks about right" would re-admit exactly the bugs the shape
- * caused. `usage` is the ALLOWANCE, `remaining` is what is left, `currentValue`
- * lags both, and `percentage` reports 1 for a true 0.05%.
- */
+// Based on a coding-plan response captured from api.z.ai on 2026-08-17.
 const MEASURED = {
   code: 200,
   msg: "Operation successful",
@@ -73,35 +63,20 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
     const parsed = parseZaiQuota(MEASURED, NOW);
     expect(parsed).toEqual({
       session: {
-        // (2000 - 1999) / 2000 — the EXACT fraction, not the payload's coarse
-        // `percentage: 1`.
         usedPct: 0.05,
         resetAt: new Date(NOW + 5 * HOUR).toISOString(),
-        // `unit: 3, number: 5` is a measured five hours, so the window's start
-        // is known rather than assumed from the badge's constant.
         startedAt: new Date(NOW).toISOString(),
       },
       weekly: {
         usedPct: 7.9,
         resetAt: new Date(NOW + 116 * HOUR).toISOString(),
-        // `unit: 6, number: 1` is one week, so this window's start is known
-        // too. Its provenance differs from the 5h window's — see `UNIT_MS`.
         startedAt: new Date(NOW + 116 * HOUR - 7 * 24 * HOUR).toISOString(),
       },
       plan: "Lite",
-      // planning#454 — `data.limits[]` is a COMPLETE statement of the plan's
-      // windows, so this reader can say which ones exist and the pill can drop
-      // a slot the plan does not have. Claude's reader cannot say it: its
-      // events deliver one window at a time.
       windows: ["session", "weekly"],
     });
   });
 
-  /*
-    An ambiguous slot counts as PRESENT. Two entries landed in it, so the window
-    plainly exists and only its number is unresolvable — reporting it absent
-    would delete the meter from the pill on the strength of a parse failure.
-  */
   it("still names a window whose two candidate entries could not be told apart", () => {
     const twoSessions = {
       data: {
@@ -119,18 +94,12 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
   });
 
   it("treats `usage` as the allowance, never as a percentage", () => {
-    // THE regression this file exists for. An earlier parser took `usage` from
-    // community field names and read 2000 as a percent — which, clamped, would
-    // have painted a full bar over a plan at 0.05%. Rejecting out-of-range
-    // values is what caught it, and deriving from `remaining` is the fix.
     const parsed = parseZaiQuota(MEASURED, NOW);
     expect(parsed?.session?.usedPct).toBe(0.05);
     expect(parsed?.session?.usedPct).not.toBe(100);
   });
 
   it("ignores `currentValue`, which lags `remaining` inside one entry", () => {
-    // Measured: after one request `remaining` moved 2000 → 1999 while
-    // `currentValue` stayed 0. Reading it would report the window as untouched.
     const parsed = parseZaiQuota(MEASURED, NOW);
     expect(parsed?.session?.usedPct).toBeGreaterThan(0);
   });
@@ -144,9 +113,6 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
   });
 
   it("reports no window for a 5h allowance nothing has opened yet", () => {
-    // Measured shape before any usage: full `remaining`, and NO `nextResetTime`
-    // at all. That is "no window is open", and a countdown cannot be drawn for
-    // it — but it must not take the whole payload down with it.
     const unopened = {
       data: {
         level: "lite",
@@ -162,8 +128,6 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
   });
 
   it("places a window of UNRECOGNISED `unit` by its reset horizon, with no startedAt", () => {
-    // The fallback exists so an unknown unit degrades to something less precise
-    // rather than to a confident `startedAt` drawn from an invented length.
     const parsed = parseZaiQuota(
       {
         data: {
@@ -180,8 +144,6 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
   });
 
   it("trusts a DECLARED long window even when its reset is imminent", () => {
-    // The horizon rule alone would call a monthly window resetting in 2h a "5h
-    // window". The declared length is the API's own statement, so it wins.
     const parsed = parseZaiQuota(
       { data: { limits: [{ unit: 3, number: 168, usage: 100, remaining: 40, nextResetTime: NOW + 2 * HOUR }] } },
       NOW,
@@ -189,9 +151,6 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
     expect(parsed?.session).toBeNull();
     expect(parsed?.weekly?.usedPct).toBe(60);
   });
-
-  // ---- Fail-closed rules. Each of these would otherwise render a number
-  // ---- nobody measured, which req 10 prefers an empty pill to.
 
   it("rejects a `remaining` outside [0, usage] rather than clamping it", () => {
     expect(
@@ -206,8 +165,6 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
   });
 
   it("reports nothing when two entries land in the same slot", () => {
-    // Ambiguous: nothing distinguishes which of these is the 5h window, and
-    // picking one is a coin flip presented as a measurement.
     expect(
       parseZaiQuota(
         {
@@ -298,8 +255,6 @@ describe("ZaiLimitsProvider", () => {
     expect(snap?.routeId).toBe(ROUTE);
     expect(snap?.session?.usedPct).toBe(0.05);
     expect(snap?.weekly?.usedPct).toBe(7.9);
-    // The tier rides the same response as the numbers, unlike Claude's (a
-    // credentials file) and Codex's (a JWT claim).
     expect(snap?.plan).toBe("Lite");
   });
 
@@ -309,7 +264,6 @@ describe("ZaiLimitsProvider", () => {
 
     const result = await provider.refreshNow("manual", ROUTE);
     expect(result.outcome).toBe("failed");
-    // The failure that matters: not a zeroed pair of meters.
     expect(await provider.fetch(ROUTE)).toBeNull();
   });
 
@@ -349,7 +303,6 @@ describe("ZaiLimitsProvider", () => {
     expect(first.outcome).toBe("rate-limited");
     expect(first.lockedUntil).toBe(NOW + 120_000);
 
-    // A route with no reading but an active lockout still owes the countdown.
     expect((await provider.fetch(ROUTE))?.lockedUntil).toBe(NOW + 120_000);
 
     const second = await provider.refreshNow("manual", ROUTE);
@@ -407,8 +360,6 @@ describe("ZaiLimitsProvider", () => {
   });
 
   it("keeps a harness-pushed reading, preferring whichever source is fresher", async () => {
-    // Nothing is known to push one for a GLM credential, but a reading that
-    // does arrive is real, and dropping it would be a lie of omission.
     let clock = NOW;
     const provider = new ZaiLimitsProvider({
       listRouteIds: () => [ROUTE],
@@ -429,8 +380,6 @@ describe("ZaiLimitsProvider", () => {
     const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(61);
     expect(snap?.fetchedAt).toBe(NOW + 60_000);
-    // An event carries no tier, so the pill loses its label rather than keeping
-    // one that describes an older reading.
     expect(snap?.plan).toBeNull();
   });
 });

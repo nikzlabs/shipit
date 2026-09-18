@@ -1,32 +1,27 @@
 import { memo } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { markdownComponents } from "../message-markdown.js";
+import { markdownComponents, shipitLinkComponents, urlTransform } from "../message-markdown.js";
 
-/**
- * Shared remark plugin stack for the docs viewer. `remark-gfm` is the superset
- * we render (tables, task lists, strikethrough). We deliberately don't add
- * `rehype-slug` / `rehype-autolink-headings` — the docs viewer has no UI for
- * deep-linking to sections, so the heading ids and wrapping anchors would
- * just be dead DOM weight.
- */
 const remarkPluginsDocs = [remarkGfm];
 
 /**
- * Memoised wrapper around a single rendered markdown block. The wrapper exists
- * so selection-anchored comment positioning has a stable container per
- * top-level block: `offsetWithin` walks text nodes from the document root and
- * `commentsByBlock` slots each comment after the block whose flat text
- * contains it. We memoise on the source slice so streaming-style re-renders of
- * an unrelated block don't reconcile this one's text nodes — the same
- * property that lets the chat survive without the freeze hack now keeps the
- * docs viewer's mid-selection rendering stable too.
+ * Keep each top-level block stable for selection anchoring.
+ *
+ * `shipitLinks` opts the block into agent-authored pointers (docs/258 req 14)
+ * and is **default off** — the same renderer draws repo markdown in the
+ * file-preview dialog, which ShipIt did not author. Both component maps and the
+ * transform are module constants, so the memo still holds.
  */
-export const MarkdownBlock = memo(({ source }: { source: string }) => (
+export const MarkdownBlock = memo(({ source, shipitLinks = false }: {
+  source: string;
+  shipitLinks?: boolean;
+}) => (
   <div className="prose dark:prose-invert prose-sm max-w-none">
     <Markdown
       remarkPlugins={remarkPluginsDocs}
-      components={markdownComponents}
+      components={shipitLinks ? shipitLinkComponents : markdownComponents}
+      urlTransform={shipitLinks ? urlTransform : undefined}
       skipHtml
     >
       {source}

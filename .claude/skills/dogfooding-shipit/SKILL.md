@@ -6,9 +6,11 @@ user-invocable: true
 
 # Dogfooding ShipIt in ShipIt
 
-Opening the ShipIt repo in production ShipIt surfaces the `dev` Compose service as a **manual** preview — heavy enough (a whole second orchestrator, plus a `Dockerfile.dogfood` build) that it starts on demand rather than every boot. It shares the agent container's `/workspace/node_modules` (populated by `agent.install` at session boot) and runs Vite's **dev server** on the exposed port 3000, proxying `/api`, `/ws`, and `/preview` to the inner orchestrator on internal port 4000. It does **not** run its own `npm install` or a production `vite build` — the Compose file explains why that would be redundant and unsafe.
+Opening the ShipIt repo in production ShipIt surfaces the `dev` Compose service as a **manual** preview — a whole second orchestrator, plus a `Dockerfile.dogfood` build, so it starts on demand rather than every boot. It shares the agent container's `/workspace/node_modules` (populated by `agent.install` at session boot) and runs Vite's **dev server** on the exposed port 3000, proxying `/api`, `/ws`, and `/preview` to the inner orchestrator on internal port 4000. It does **not** run its own `npm install` or a production `vite build` — the Compose file explains why that would be redundant and unsafe.
 
-Start it with `shipit service start dev`. A first start may take minutes; a `start` that times out is still running — re-check with `shipit service list`.
+Start it with `shipit service start dev`. A first start may take minutes; a `start` that times out is still running — re-check with `shipit service list`. **Start it whenever your change can be seen in the inner UI.** A few minutes of start time buys a check unit tests cannot make, so "that needs the dogfood instance" is never a reason to ship a UI change unverified, or to hand the decision back to the user. If the container is *paused*, `start` fails with `cannot start a paused container, try unpause instead`; `shipit service restart dev` recovers it.
+
+**Leave it running when you are done — never `shipit service stop dev`.** Stopping it by hand buys nothing: archiving the session stops the service anyway. And the user often opens the inner UI after you report, so a stopped service only makes them wait through another start. Say that it is running and point at it with a `[the inner UI](shipit-preview://dev)` chat link — the `url` from `shipit service list` is the container IP, which is yours to curl and not an address their browser can reach.
 
 ## Local mode is a real exception to "ShipIt always runs in Docker"
 
@@ -24,7 +26,7 @@ Full design: `docs/118-shipit-ui-local`.
 
 ## Credentials — set them once, outside
 
-The `dev` service's credentials are **user-supplied secrets**, set once in the outer **Settings → Secrets** (`docs/184-remove-platform-secret-forwarding`). Platform secret forwarding was deliberately removed, so nothing is inherited.
+The `dev` service's credentials are **user-supplied secrets**, set once in the outer **Project Settings → Secrets** (`docs/184-remove-platform-secret-forwarding`). Platform secret forwarding was deliberately removed, so nothing is inherited.
 
 `GITHUB_TOKEN` plus **any service credential you want to exercise** is the set. The `x-shipit-secrets` block in `docker-compose.yml` declares every `storageEnv` name the model catalogue knows — `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_CODING_PLAN_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY` — so a key set once out there appears in every dogfood session without a visit to inner Settings (docs/131 req 11).
 
@@ -32,13 +34,13 @@ The `dev` service's credentials are **user-supplied secrets**, set once in the o
 
 ### A supplied key becomes a credential ROUTE, not just a variable
 
-This matters and is not what the environment alone gives you. A bare variable is read by `listConfiguredCredentials` (`service-routing.ts`), so its models are already *eligible* and it does get a synthetic `env:<NAME>` route id. What it does **not** have is a row — so inner Settings → Services shows nothing, and it can be neither ordered, nor persistently benched, nor failed over to (`stringSelectionFor` reaches it only when nothing is stored). `scripts/seed-inner-credentials.ts` closes that: at boot it POSTs each supplied variable to `/api/credential-routes`, so the inner instance holds a real credential.
+This matters and is not what the environment alone gives you. A bare variable is read by `listConfiguredCredentials` (`service-routing.ts`), so its models are already *eligible* and it does get a synthetic `env:<NAME>` route id. What it does **not** have is a row — so inner Settings → Model providers shows nothing, and it can be neither ordered, nor persistently benched, nor failed over to (`stringSelectionFor` reaches it only when nothing is stored). `scripts/seed-inner-credentials.ts` closes that: at boot it POSTs each supplied variable to `/api/credential-routes`, so the inner instance holds a real credential.
 
 The stored credential reaches a local turn through `applyLocalMcp` → `localMcpSpawnEnv` → `selectAgentEnvForPush`, which applies `SHIPIT_CREDENTIAL_*` to `process.env` around each spawn, read live from the store. **No orchestrator restart is needed** — a credential seeded (or added by hand) after boot works on the next turn. Verified with a real inner turn.
 
 ### ⚠ Two billing hazards, and the first one is the one people miss
 
-**1. Any metered key can become what background work spends on.** Session naming and PR descriptions resolve an unpinned model with `firstEligibleNonTurnSelection` (`non-turn-model.ts`) — the *first eligible model in catalogue order*, over whatever credentials the install holds. So supplying only a DeepSeek key makes that the background-work model, and it bills. No CLI is involved, and this applies to every metered `key` mode, not just the vendor-native ones. Check **Settings → Services → Background work**, and pin it if you care.
+**1. Any metered key can become what background work spends on.** Session naming and PR descriptions resolve an unpinned model with `firstEligibleNonTurnSelection` (`non-turn-model.ts`) — the *first eligible model in catalogue order*, over whatever credentials the install holds. So supplying only a DeepSeek key makes that the background-work model, and it bills. No CLI is involved, and this applies to every metered `key` mode, not just the vendor-native ones. Check **Settings → Model providers → Background work**, and pin it if you care.
 
 **2. Three names bypass a connected account.** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` are read by the vendor CLIs **directly**. Two things protect a spawn, and neither is universal:
 
@@ -51,7 +53,7 @@ The seed prints a `⚠` line for each hazard that applies. `local-agent-credenti
 
 ## Testing onboarding — the `onboarding` service, not a wipe
 
-`dev` is a *configured* install and cannot be un-configured. Every key supplied in the outer Settings → Secrets is injected into it, `adoptEnvCredentials` turns each one into a stored credential at boot (docs/252 req 20), and `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the first read — permanently, since nothing clears it. **`DOGFOOD_SEED_CREDENTIALS=0` is not enough**: it stops the seeder POSTing, and adoption still makes rows out of the variables.
+`dev` is a *configured* install and cannot be un-configured. Every key supplied in the outer Project Settings → Secrets is injected into it, `adoptEnvCredentials` turns each one into a stored credential at boot (docs/252 req 20), and `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the first read — permanently, since nothing clears it. **`DOGFOOD_SEED_CREDENTIALS=0` is not enough**: it stops the seeder POSTing, and adoption still makes rows out of the variables.
 
 So there is a second manual service:
 
@@ -75,21 +77,35 @@ Never test onboarding by deleting credentials from inner Settings or wiping `.in
 
 ## Seeding
 
-At `dev`-service boot, `scripts/seed-inner.ts` runs in the background and seeds three things in order, all prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
+At `dev`-service boot, `scripts/seed-inner.ts` runs in the background and seeds four things in order, all prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
 
-1. **Credentials** (`scripts/seed-inner-credentials.ts`) — every supplied service key becomes a credential route, labelled `… (dogfood secret)` in inner Settings → Services.
+1. **Credentials** (`scripts/seed-inner-credentials.ts`) — every supplied service key becomes a credential route, labelled `… (dogfood secret)` in inner Settings → Model providers.
 2. **Roles** (`scripts/seed-inner-roles.ts`) — a few agent roles, so the role surfaces are not empty: `deep-dive`, `quick-look`, `second-opinion`, and `needs-a-credential`. Second **because it reads what the install can run** — a role's harness, model and level are resolved out of `settings.agents`, which step 1 has just widened.
-3. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate. Last, because a cold clone takes minutes.
+3. **A sample transcript** (`scripts/seed-inner-transcript.ts`) — one session, "Sample transcript (seeded)", whose conversation is fixture data. See below.
+4. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate. Last, because a cold clone takes minutes.
 
-Behavior for all three: skips what is already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`, and has a switch of its own — `DOGFOOD_SEED_CREDENTIALS=0`, `DOGFOOD_SEED_ROLES=0`. A step that throws is logged and the remaining steps still run.
+Behavior for all four: skips what is already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`, and has a switch of its own — `DOGFOOD_SEED_CREDENTIALS=0`, `DOGFOOD_SEED_ROLES=0`, `DOGFOOD_SEED_TRANSCRIPT=0`. A step that throws is logged and the remaining steps still run.
 
 Already-present means *left completely alone*: a credential or role you edited in the inner UI survives a restart, and rotating the outer secret does **not** propagate — delete the inner credential to re-seed it. The **name** is a role's identity, so a re-pointed `deep-dive` is never reconciled back.
+
+### The sample transcript — a conversation to look at, without talking to an agent
+
+Any change to how a conversation renders needs a conversation with the awkward shapes in it. This one is a committed list of turns, each labelled with the shape it covers: a turn that ends in an agent reply, a turn with **no agent response text at all**, a failed tool call inside a turn that still answers, an error row, a notice, a card that still needs the user, the same card after the user acted, a turn that has both hidden work and an action card, a reply that is a file rather than prose, a long reply, and an ordinary newest turn as the control.
+
+```bash
+npx tsx scripts/seed-inner-transcript.ts --list     # what each turn covers
+npx tsx scripts/seed-inner-transcript.ts --force    # rewrite it after editing the fixture
+```
+
+It writes `$SHIPIT_STATE_DIR/.shipit.db` directly, so **you can run it from your own container** — `/workspace/.inner-shipit` is bind-mounted — and the inner UI picks it up on the next history load, no restart. Add a turn by adding an entry, then `--force`.
+
+Unlike the other steps it keys on the session id and leaves an existing session completely alone, including turns you typed into it yourself. `--force` is the only thing that overwrites, and it overwrites the whole transcript.
 
 ### What the seeded roles are for
 
 Nothing is hardcoded: a role's `(harness, service, billing mode, model, level)` is resolved against what this install can actually run, so the set differs per install and a role is never stranded by someone else's secrets. `reviewer` is never written — it exists on every install and resolves its params per run (`docs/264-agent-roles` req 2).
 
-`needs-a-credential` is **deliberately unavailable**, so the "shown, disabled, with its reason" state is visible too: the seeder derives it by taking the first catalogue entry its harness can speak to that this install holds *no* credential for, so it reads `Service disconnected` in Settings → Roles and is greyed out in the composer's role menu. An install that holds every credential simply gets no such role. Connecting that service turns it into an ordinary working role — that is not a bug.
+`needs-a-credential` is **deliberately unavailable**, so the "shown, disabled, with its reason" state is visible too: the seeder derives it by taking the first catalogue entry its harness can speak to that this install holds *no* credential for, so it reads `Provider disconnected` in Settings → Roles and is greyed out in the composer's role menu. An install that holds every credential simply gets no such role. Connecting that service turns it into an ordinary working role — that is not a bug.
 
 Delete a seeded role in the inner UI and the next `dev` boot puts it back. To try the empty-install state instead, set `DOGFOOD_SEED_ROLES: "0"` on the `dev` service.
 

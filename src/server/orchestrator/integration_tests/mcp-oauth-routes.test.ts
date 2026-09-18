@@ -1,24 +1,3 @@
-/**
- * Integration tests for the MCP OAuth routes (docs/088-mcp-integration Phase 2).
- *
- * Spins up a Fastify app via `buildApp()` with a stub `fetch` to drive the
- * Notion discovery + RFC 7591 dynamic-client-registration chain (docs/139)
- * and capture token-endpoint requests, asserting the full lifecycle:
- *
- *   1. GET /api/mcp-servers/oauth/providers returns the registered providers.
- *   2. POST /api/mcp-servers/oauth/start returns an authorize URL with PKCE,
- *      pointing at the discovered endpoint with a dynamically-registered client.
- *   3. GET /api/mcp-servers/oauth/callback exchanges code → tokens, persists,
- *      and emits the close-the-popup HTML.
- *   4. The persisted token is surfaced through the providers endpoint as
- *      "connected" and never echoed.
- *   5. DELETE /api/mcp-servers/oauth/:source removes the token.
- *   6. Start failures: unknown provider.
- *
- * Notion is the sole built-in OAuth provider since the Linear preset was
- * removed (docs/190). Stays orchestrator-only — no Docker, no real worker.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -45,9 +24,7 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
   let tmpDir: string;
   let credentialStore: CredentialStore;
   let dbManager: DatabaseManager;
-  /** Records every fetch call so assertions can verify wire-level behavior. */
   let fetchCalls: { url: string; body: string }[];
-  /** Programmable next token-endpoint response for the fake fetch. */
   let nextFetchResponse: () => Response;
 
   beforeEach(async () => {
@@ -70,9 +47,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
 
-    // Serves Notion's discovery chain + dynamic client registration during
-    // POST /start, then the token exchange during GET /callback. Mirrors the
-    // `makeNotionDiscoveryFetch` helper in services/mcp-oauth.test.ts.
     const fakeFetch: typeof fetch = async (input, init) => {
       const url =
         typeof input === "string"
@@ -89,8 +63,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
             : "";
       fetchCalls.push({ url, body });
 
-      // 1. Unauthenticated probe → 401 with WWW-Authenticate pointing at the
-      //    protected-resource metadata.
       if (url === "https://mcp.notion.com/mcp" && init?.method === "POST") {
         return new Response("unauthorized", {
           status: 401,
@@ -100,7 +72,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
           },
         });
       }
-      // 2. Protected-resource metadata.
       if (url === "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp") {
         return new Response(
           JSON.stringify({
@@ -110,7 +81,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
           { status: 200 },
         );
       }
-      // 3. Authorization-server metadata (RFC 8414).
       if (url === "https://mcp.notion.com/.well-known/oauth-authorization-server") {
         return new Response(
           JSON.stringify({
@@ -123,11 +93,9 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
           { status: 200 },
         );
       }
-      // 4. Dynamic client registration.
       if (url === "https://mcp.notion.com/register") {
         return new Response(JSON.stringify({ client_id: "dcr_client_id" }), { status: 201 });
       }
-      // 5. Token exchange.
       if (url === "https://mcp.notion.com/token") {
         return nextFetchResponse();
       }
@@ -158,10 +126,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
     }
   });
 
-  // -------------------------------------------------------------------------
-  // Provider listing
-  // -------------------------------------------------------------------------
-
   it("GET /api/mcp-servers/oauth/providers lists providers with connection state", async () => {
     const res = await app.inject({ method: "GET", url: "/api/mcp-servers/oauth/providers" });
     expect(res.statusCode).toBe(200);
@@ -170,14 +134,9 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
     };
     const ids = body.providers.map((p) => p.id);
     expect(ids).toContain("notion_oauth");
-    // Linear was removed as a built-in OAuth provider (docs/190).
     expect(ids).not.toContain("linear_oauth");
     expect(body.providers.every((p) => !p.status.connected)).toBe(true);
   });
-
-  // -------------------------------------------------------------------------
-  // Start flow
-  // -------------------------------------------------------------------------
 
   it("POST /api/mcp-servers/oauth/start returns a PKCE authorize URL", async () => {
     const res = await app.inject({
@@ -191,7 +150,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as { authorizeUrl: string; state: string };
     const url = new URL(body.authorizeUrl);
-    // Points at the *discovered* endpoint with the dynamically-registered client.
     expect(url.origin + url.pathname).toBe("https://mcp.notion.com/authorize");
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("client_id")).toBe("dcr_client_id");
@@ -207,10 +165,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
     });
     expect(res.statusCode).toBe(404);
   });
-
-  // -------------------------------------------------------------------------
-  // Callback (full happy path)
-  // -------------------------------------------------------------------------
 
   it("GET /callback exchanges code, persists tokens, and renders close-popup HTML", async () => {
     const startRes = await app.inject({
@@ -228,12 +182,10 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
     expect(cbRes.headers["content-type"]).toContain("text/html");
     const html = cbRes.body;
     expect(html).toContain("Connected");
-    // Posts a structured message back to the opener
     expect(html).toContain("shipit-mcp-oauth-result");
     expect(html).toContain('"ok":true');
     expect(html).toContain('"source":"notion_oauth"');
 
-    // Verify the fake fetch saw a code-exchange call at the discovered endpoint.
     const tokenCalls = fetchCalls.filter((c) => c.url === "https://mcp.notion.com/token");
     expect(tokenCalls).toHaveLength(1);
     const sent = new URLSearchParams(tokenCalls[0].body);
@@ -242,12 +194,10 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
     expect(sent.get("client_id")).toBe("dcr_client_id");
     expect(sent.get("code_verifier")).toBeTruthy();
 
-    // Token was persisted to CredentialStore
     const tokens = credentialStore.getMcpOAuthTokens("notion_oauth");
     expect(tokens?.accessToken).toBe("ntn_access_xyz");
     expect(tokens?.refreshToken).toBe("ntn_refresh_xyz");
 
-    // Provider listing flips to connected — and the raw token is NOT echoed.
     const listRes = await app.inject({
       method: "GET",
       url: "/api/mcp-servers/oauth/providers",
@@ -277,7 +227,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
       method: "GET",
       url: "/api/mcp-servers/oauth/callback?error=access_denied&error_description=User%20denied",
     });
-    // Provider-side error — we still render HTML, just with ok=false.
     expect(res.headers["content-type"]).toContain("text/html");
     expect(res.body).toContain('"ok":false');
     expect(res.body).toContain("User denied");
@@ -301,10 +250,6 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
     expect(cbRes.body).toContain('"ok":false');
     expect(credentialStore.getMcpOAuthTokens("notion_oauth")).toBeUndefined();
   });
-
-  // -------------------------------------------------------------------------
-  // Disconnect
-  // -------------------------------------------------------------------------
 
   it("DELETE /:source removes the persisted tokens", async () => {
     credentialStore.setMcpOAuthTokens("notion_oauth", {

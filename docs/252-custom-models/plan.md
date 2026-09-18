@@ -162,6 +162,15 @@ published rate as an explicitly documented provisional estimate. The row keeps
 Codex's existing 272K first-frame fallback; runtime telemetry remains
 authoritative after a turn starts.
 
+**Catalogue maintenance (2026-09-04): GPT-6 Astra.** OpenAI's published model
+ID is `gpt-6-astra`; Codex 0.153.2 embeds the same ID with a minimum client
+version of 0.153.0, a 272K default Codex window, image input, and reasoning from
+low through max. The row is available under both OpenAI billing modes and uses
+the Responses transport because GPT-6 tool use requires that API. GPT-5.6
+Sol stays first because Astra access is still rolling out and catalogue order
+sets the default. The exact 0.153.2 CLI pin has a time-limited dependency-age
+waiver approved for this model launch.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither
@@ -3166,8 +3175,8 @@ at is the one carrying the provider's code.
   fill in, and a second button beside it is a live control they did not ask for, in the one
   place where a stray click restarts the login they are in the middle of. So the button is
   gone from the start, the wait and the challenge; it returns only when nothing is happening
-  (stopped, or never started), and is **secondary** even then, since the step's own next
-  action is no longer a button. A hung login is recovered the way everything else here is —
+  (stopped, or never started), and is **secondary** even then, since the call to action
+  belongs to the panel and not to the footer. A hung login is recovered the way everything else here is —
   close it and start again. A mode that also takes a key keeps its primary *Sign in*, because
   nothing auto-starts there.
 
@@ -3179,10 +3188,16 @@ pulse alone reads as *stuck* rather than as *working*.
 - `AuthPanel` is the bordered box, and it is the same box in every state — waiting, challenge,
   failure. What changes as a login proceeds is its *contents*, never the page around it.
 - `ChallengePlaceholder` fills it before the code lands, and takes a `shape`, because the box
-  it stands in for differs: a code to read (98px) or a field to paste into (84px). One
-  placeholder could only be right for one of them.
-- **The narration is ShipIt's phase message**, in the slot the link will occupy ("Waiting for
+  it stands in for differs: a code to read, or a field to paste into, and the two are not the
+  same height. One placeholder could only be right for one of them.
+- **The narration is ShipIt's phase message**, in the slot the button will occupy ("Waiting for
   Claude CLI to print an authentication link"), with a pulse for the rest.
+- **Opening the provider's page is a button, not a text link.** It shipped as a bare line of
+  link-coloured text at the top of the panel, which is where a panel puts its *heading* — a
+  user read it as the step's title, waited for a browser that only opens on a click, and said
+  so. It is now a full-width `cta` button with a trailing `ArrowSquareOut`, calm at rest so it
+  does not compete with the solid *Submit code* beside it, and still an `<a>` (`buttonVariants`
+  exists for exactly this) so cmd-click and long-press keep working.
 - **`ClaudeAuthOutput` — the whole buffer, collapsed — lives INSIDE the panel**, in both the
   waiting state and the challenge, so the arrival of the field moves nothing and there is one
   place carrying the sign-in. Its open/closed state is held in the settings store
@@ -3208,7 +3223,7 @@ pulse alone reads as *stuck* rather than as *working*.
   request first — sampled per frame, one frame of blue, seven of nothing, then whatever came
   next, which reads as a control that hung around after the UI had moved on and was then
   swapped for a disabled *Save*. The rule is uniform across both kinds of mode now: while a
-  sign-in is under way there is one button and it says Cancel.
+  sign-in is under way the footer holds one button and it says Cancel.
 - **Save appears with the field it saves.** It used to render from step 1, where there is
   nothing to save: permanently disabled, and — the mode being unknown that early — `primary`,
   so arriving at a mode with an account path *animated* it from blue to grey. Sampled per
@@ -3226,11 +3241,138 @@ which is the cheaper order for anything this visual.
 
 **Waiting looks like what it is waiting for.** The step renders `ChallengePlaceholder` — the
 same `CHALLENGE_BOX` shell as the real challenge, its lines drawn as a pulse — and the two
-measure **98px** each, which is why the first bar is `h-4` rather than the `h-5` the link's
-font size suggests (the link is inline, so its line box is 16). It is keyed off
-`startingSignIn`, not off the account: keyed off the account it arrived one request late, so
-the dialog opened short on a line of prose and then grew by the height of a panel. Measured
-live, step 3 is 326px from its first frame and does not move when the code lands.
+measure the same, which is why the first bar is `h-8` — the slot it stands in for is a
+full-width `md` button. (It was `h-4` while that slot held an inline link, whose line box is
+16.) It is keyed off `startingSignIn`, not off the account: keyed off the account it arrived
+one request late, so the dialog opened short on a line of prose and then grew by the height of
+a panel. Measured live against the dogfood instance, the waiting panel and the challenge were
+**124px** each — the collapsed CLI-output disclosure included, since that slot is reserved from
+the first frame.
+
+**That pairing did not hold, and the section below is why it was never going to.**
+
+## One height per step, and the sign-in held still inside it (req 26)
+
+**What was measured on 2026-09-17**, in the dogfood instance, driving one Anthropic sign-in end
+to end at the dialog's 448px width: **302px** idle, **329** once the wizard started, **349**
+when the code landed, and a success screen ~130px shorter again. Antigravity's challenge is
+**389**. The three steps stood at **496 / 246 / 409**. The dialog is centred, so every one of
+those moved the whole window — title, panel and buttons — and only two of them followed a click
+of the user's. The 20px between the waiting panel and the challenge is exactly the challenge's
+reserved "Code submitted" line plus its gap, added after the placeholder was written;
+Antigravity's extra 60px is its 60-second deadline sentence, added with the harness
+(docs/301). So the pairing above did not merely drift — **two shapes maintained against each
+other is a mechanism that drifts by construction**, silently, and every test still passed while
+it did.
+
+**The fix is a fixed height, not a better pairing** — and it is fixed around the thing that
+actually moves. Everything that varies while the credential step is open — the sign-in panel,
+the token field, the error line — is a child of one box (`add-service-stage`), which a sign-in
+gives a concrete `SIGN_IN_STAGE_HEIGHT`. Consequences, all of them the point:
+
+- The height is a constant in **CSS**, so no state can change it. Being wrong about the constant
+  costs a scrollbar, never a jump — and the CLI-output disclosure, which grows the content to
+  469px when a user opens it, now scrolls inside the box rather than growing the window by
+  200px.
+- The **structure** that makes the guarantee is testable without a layout engine — the geometry
+  itself is not, and the guards do not claim to measure it. One jsdom guard walks one sign-in
+  through all five states, asserting the box's height anchor — a *concrete* length, since
+  `h-auto` is equal across the states and is the bug itself — that the model chips are outside
+  the box, that the footer is one row of `h-8` buttons and nothing else, and that the dialog's
+  markup *outside* the box is byte-identical in every state: the failure the old approach could
+  not produce. Another walks the three steps and asserts the opposite of what it used to —
+  that step 1 carries a height and steps 2 and 3 carry no height class **at all**, which is a
+  claim about every class rather than the four this dialog happens to use: the first cut of
+  that guard matched a list, and the independent review passed it by putting
+  `md:h-(--add-service-body)` back on steps 2 and 3. Each guard was proved red on its own
+  defect before being left green. What they cannot see is a state they do not walk and a
+  geometry they cannot measure; this repo has no browser-driven suite, so the live figures here
+  are the record of the geometry, taken by hand.
+- **The number is the tallest state — this provider's, at this width**, and there are four of
+  them because reserve is the whole cost of the box. The tallest state is always the challenge,
+  and it differs along exactly two axes, both known before it arrives: the provider, since
+  Antigravity's 60-second deadline sentence is two lines nothing else has; and the width, since
+  the same state wraps ~17px taller in a 328px sheet stage than at the dialog's own 414px.
+  Measured in Chromium on 2026-09-17, sheet / window: Anthropic **202 / 185**, Antigravity
+  **242 / 225** — so `13rem / 12rem` plain and `15.5rem / 14.5rem` where there is a deadline,
+  6–7px of headroom each. The provider half is read from `challengeHasDeadline`, the same map
+  that prints the sentence, so the reserve cannot outlive it. A single 16rem covering all four
+  shipped first and left **71px of dead space** under the common sign-in, which is what the user
+  saw and asked about.
+- **The model chips are outside the box.** They say the same thing in every state, so holding
+  them inside it made the box the height of the sign-in *plus* a chip row — up to 65px more,
+  where a service's ids wrap to three lines. Outside, they follow the box and the box is sized
+  by the sign-in alone.
+- **A step is as tall as its content, except the provider list, which keeps a height.**
+  `STEP_1_BODY_HEIGHT` (**24rem**) is `h`, not `max-h`: this is the one step whose content does
+  not all arrive at once — the harness table's columns and the caption under it come with the
+  agent list — and under a cap the independent review measured it growing **493 → 517px** with
+  the window's top moving 12px up, by opening the dialog before that list landed. The catalogue
+  grows into it the same way, so past it the list scrolls with its heads pinned (see the
+  support-table section). What a cap saves is white space in a hypothetical short catalogue;
+  what it costs is the guarantee. Step 2 and the credential step carry no height class at all.
+  Below `md`, where the dialog is a fullscreen sheet whose height is the viewport's, even this
+  is dropped: step 1 needs 562px there (its rows wrap at 390px), and fixing it would scroll the
+  one step that fits everywhere else for a window that cannot move anyway. The sign-in's box is
+  the one mechanism that applies at every width, because what moves in a sheet is the content
+  inside it.
+- **A scroll made in one state must not outlive it.** The box scrolling rather than growing is
+  the whole valve, and the CLI-output disclosure makes it ordinary — 385px of log in a box of
+  192. The independent review reproduced a challenge arriving with the stage at `scrollTop` 109:
+  the window held, and the authentication link and code field were nonetheless entirely above
+  the visible area, with nothing moving to say so. The box now carries the challenge's own URI
+  as its React `key`, so each challenge — including a replacement one — gets a new element and a
+  fresh scroll position. A key rather than an effect assigning `scrollTop`, because remounting
+  *is* a fresh scroll position; the disclosure survives it, its open state being held in the
+  store precisely because this subtree is rebuilt mid sign-in.
+- **Measured after, in the dogfood on 2026-09-17.** Step 1 **518px**, step 2 **266**, the
+  Anthropic sign-in **376** — held at top 262 through idle → waiting → challenge, with the log
+  opened and the box scrolled to 80 on the way, which the arriving challenge resets to 0. Key-
+  only steps are their content: DeepSeek **295**, OpenRouter **364**, OpenCode's subscription
+  **409** (its hazard notice is 235px on its own). On a 360px sheet the box holds at 208px, the
+  challenge needs 202, and the footer's top does not move through a sign-in.
+- **The title is the one thing outside the body, so its height is fixed and its text cannot
+  change under the user.** Two ways it moved the window, both found by independent review in
+  Chromium rather than by reasoning: a successful login adopts the authenticated email over a
+  generated account name (`recordAccountIdentity`), so a reconnect's title rewrapped at the
+  moment the sign-in completed — `openingLabel` freezes the label the dialog opened on, not the
+  whole title, which still gains the provider's name at step 1 → 2; and that gain is itself
+  enough to wrap a longer name than today's catalogue has, measured at **498 → 518px with the
+  top moving 10px**. The title is therefore `h-10 line-clamp-2`: two lines' worth, always.
+  Clamped rather than truncated to one line, because what a long title ends with is what
+  identifies it (`· someone@example.com`).
+
+**A key-only step gets a reserved line rather than a box of its own.** Nothing there changes as
+anything proceeds — the field, the hint and the mode's hazard notice are the same before and
+after the paste — and the one thing that can arrive is *Save*'s failure, which gets a two-line
+fixed slot (`KEY_ERROR_SLOT`). The step keeps its natural height, which differs by service by
+more than a box could sit above without being a hole under most of them. One caveat is recorded
+at that constant: while the fixed body existed, the slot was a scrollable flex child in a
+constrained parent, **a scrollable flex child has no automatic minimum**, and it shrank to 0px
+and took the error message with it — present in the DOM, invisible, and not reachable by
+scrolling (reproduced in Chromium by the independent review with a 30-chip fixture). The
+`shrink-0` that fixed it is gone with the fixed body it defended against; a stage given a height
+again needs it back.
+
+**What this costs, stated because it is visible.** The sign-in step reserves its provider's
+tallest state, so an idle Anthropic sign-in carries about 7px of slack and a challenge fills the
+box. That is the price of the step not moving while the provider's clock runs, and it is now the
+only place the price is paid — the reserve went 71px → 7 by measuring the four cases instead of
+rounding one number up. It was paid everywhere for one day: steps 1–3 all held to 24rem after
+the human asked for one height across the flow, which they then looked at — *"a lot of empty
+space, especially on step 2"* — and which is why req 26 is now about the step rather than the
+dialog. The other alternative, priced
+in the dogfood at the time, was unifying on the *shorter* height, which puts the provider
+list behind a scroll on the one screen whose whole purpose is comparing the providers against
+each other. (Its mock-up scrolled the table heads away too, which is a separate defect and is
+fixed on its own account — see the support-table section — because the catalogue's tenth service
+will scroll this list whatever height it is given.)
+
+**The width still changes and is meant to, and the height now changes with it.** Step 1 is wider
+by exactly its harness table and the rest go back to `max-w-md`. That was agreed first and it is
+what settles the height question too: if a click may change one dimension of the window, it may
+change the other, and both changes say the same thing — this is a different screen. The distinct
+call is *within* a step, where neither dimension moves.
 
 ## The compact card (reqs 19, 20, 21)
 
@@ -3527,11 +3669,11 @@ being tidied up in it — the sentence explaining what the default follows, the 
 which state is in force, and the model menu's "ShipIt's default" row, which existed only so the
 user could get back to the state that no longer exists.
 
-**The seed is on the READ path** (`seedNonTurnModel` in `services/settings.ts`), for the reason
+**The seed was on the READ path** (`seedNonTurnModel` in `services/settings.ts`), for the reason
 `resolveHarnessOnboarding` above it already argues: a mutation-site seed is a list that a
 newly-added credential path quietly falls off, and there are four such paths today — a pasted
 key, `upsertSingleStringCredential`, an account connecting, and boot-time env adoption. **Two**
-read paths call it, and between them they cover every way a credential can arrive:
+read paths called it, and between them they covered every way a credential can arrive:
 `getGlobalSettings`, which is every bootstrap, including an install that already had
 credentials before this existed; and `buildAgentListPayload`, which every credential mutation
 broadcasts through. The second was missing in the first cut and cross-backend review found what
@@ -3540,6 +3682,33 @@ setting, so the section read "Nothing to run it on yet" over a runnable install 
 empty-while-a-service-exists state req 9 forbids. The window before the first read is still not
 a gap: `resolveNonTurnModel` falls back to the first eligible model when nothing is stored, so
 background work runs, and it runs on the same model the seed then writes.
+
+> **Reversed on 2026-09-15 — the seed is off the read path** (planning#578). What the paragraph
+> above traded away is bigger than what it bought: `getGlobalSettings` is also what a *save*
+> returns, so applying any unrelated global setting pinned a background model no card had named,
+> and the value the agent reads depended on whether anybody had opened the Settings dialog. The
+> seed now runs from two places that are *changes*: `app-di.ts` at boot — which covers the case
+> the first read path existed for, an install whose credentials predate the setting or arrive
+> from the environment — and `seedAndBuildAgentListPayload`, the `agent_list` builder that every
+> credential and account mutation announces through, which covers the case the second existed
+> for. The "list a path falls off" objection survives and is answered rather than dismissed, in
+> two parts. **What falling off it costs**: background work keeps running, on the same model the
+> seed would have written, because of the fallback this paragraph already names — but an
+> unpinned install re-derives that model on every resolution, so a *later* credential for a
+> service earlier in catalogue order moves it, where a pin would have held. So the cost is a
+> setting that follows the install instead of holding still, which is precisely the second state
+> req 9 removed; it is not, as an earlier draft of this note claimed, a stale display and
+> nothing else. **Why the list is nonetheless a safe one to be on**: it is not a hand-kept list
+> of mutation sites but the single `agent_list` builder, and a mutation that skips that
+> broadcast is already a visible staleness bug the next paragraph is about — pinned by the
+> producer census in `services/can-run-turns.test.ts`, which now names the one producer allowed
+> to use the read-only builder.
+>
+> **One thing is genuinely narrower**: a seed whose disk write fails rolls back
+> (`stampNonTurnModel`), and the retry is now the next eligibility change or the next boot,
+> where before it was the next read of the settings payload. Nothing recovers a write the disk
+> refuses; this only changes how soon the retry comes once it stops refusing. Guards:
+> `services/settings-read-purity.test.ts`, `integration_tests/non-turn-model-boot-seed.test.ts`.
 
 **The setting rides `agent_list` too**, for the reason the reviewer slots do (docs/261): an open
 Settings tab that does not follow a credential change shows the answer from before it. The same
@@ -3677,7 +3846,17 @@ So, in the code as it stands:
 - **A window too narrow for the pair scrolls it sideways as one unit**, with the list column
   `sticky left-0`. A tick is only an answer beside the question it is about, so the names are the
   one thing that must not leave; dropping the table on a narrow screen, or crushing a column,
-  loses one or the other.
+  loses one or the other. Since req 26 caps the step's body, **both heads are `sticky
+  top-0`** and the scroller owns both axes for the same reason on the other side: a tick is no
+  answer under a harness name that has scrolled off either. Today's nine services fit the cap
+  (382px of 384), so the tenth is what makes this live — which is exactly why it is in before
+  it is needed, and why the body's height is not load-bearing for whether the table can be
+  read. Sticky resolves against the NEAREST scrolling ancestor, so the heads had to move onto
+  the scroller rather than the body: with the scroll one level up they simply left with the
+  rows, measured in the dogfood. Putting the vertical scroll on the scroller does not break the
+  sticky column — the old warning here was about a *second* scrolling ancestor, and this is one
+  element scrolling both ways: at 480 × 240, scrolled 147px right and 120px down, the names
+  hold at left 0 and the heads at top 0 together.
 
 **The cell is the picker's own eligibility rule, asked about a credential that does not exist
 yet.** `harnessSupportsMode` (`catalogue/index.ts`) calls `eligibleEntriesForHarness` with a

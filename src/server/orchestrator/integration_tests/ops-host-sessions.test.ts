@@ -1,19 +1,3 @@
-/**
- * Integration tests for the Ops host-session inventory surface (docs/255).
- *
- *   GET /api/sessions/:id/host-sessions[?branch=&pr=&container=&id=…]
- *
- * Covers the two contracts this route exists to hold:
- *
- *  - the Ops GATE — 200 for an ops session, 403 for an ordinary one, 404 for a
- *    session that doesn't exist, and (crucially) the unchanged container guard:
- *    a container reaching the route for ANOTHER session's id is still refused by
- *    `api-container-guard.ts`'s §3 own-session check, which this feature
- *    deliberately did not touch;
- *  - the metadata-only BOUNDARY — the response body must not carry another
- *    session's conversation replay or workspace path.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -77,7 +61,6 @@ describe("Integration: Ops host-session inventory (docs/255)", () => {
     return sessionId;
   }
 
-  /** A subject session owning a branch and a PR — the thing we look up. */
   function seedSubject(id: string, branch: string, prNumber: number): void {
     sessionManager.track(id, "Fix the thing");
     sessionManager.setBranch(id, branch);
@@ -143,7 +126,6 @@ describe("Integration: Ops host-session inventory (docs/255)", () => {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${ops}/host-sessions` });
     expect(res.statusCode).toBe(200);
     const ids = (res.json() as { sessions: { id: string }[] }).sessions.map((s) => s.id);
-    // The ops session itself is inventory too.
     expect(ids).toContain("aaaa1111-2222-3333-4444-555555555555");
     expect(ids).toContain("bbbb1111-2222-3333-4444-555555555555");
     expect(ids).toContain(ops);
@@ -164,21 +146,13 @@ describe("Integration: Ops host-session inventory (docs/255)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).not.toContain("PRIVATE-TRANSCRIPT-MARKER");
     expect(res.body).not.toContain("workspaceDir");
-    // The PR's own prose is withheld too — identity and state only.
     expect(res.body).not.toContain("Subject PR");
   });
 
   it("does not leak a credential-bearing repo URL across the session boundary", async () => {
     const ops = await createSession("ops");
     seedSubject("83292266-7445-4a1b-9c2d-000000000000", "shipit/kmwodw", 1744);
-    // `setGitRemote` persists a user-supplied origin verbatim, so a session row
-    // can hold userinfo. Showing it to a DIFFERENT session is the token leak
-    // req 8 forbids — the projection strips it at the crossing.
-    //
-    // Generic `u:pw@` rather than a realistic `x-access-token:<pat>@` shape on
-    // purpose: `stripUrlCredentials` strips ANY http(s) userinfo, so the path
-    // under test is identical, and a PAT-shaped fixture trips the secret scanner
-    // on every commit. Don't "improve" it back.
+    // Generic userinfo exercises stripping without triggering the secret scanner.
     sessionManager.setRemoteUrl(
       "83292266-7445-4a1b-9c2d-000000000000",
       "https://u:pw@github.com/o/r.git",
@@ -217,7 +191,7 @@ describe("Integration: Ops host-session inventory (docs/255)", () => {
     expect(first.statusCode).toBe(200);
     const firstBody = first.json() as { sessions: { id: string }[]; total: number; nextOffset?: number };
     expect(firstBody.sessions).toHaveLength(1);
-    expect(firstBody.total).toBe(3); // two subjects + the ops session itself
+    expect(firstBody.total).toBe(3);
     expect(firstBody.nextOffset).toBe(1);
 
     const second = await app.inject({

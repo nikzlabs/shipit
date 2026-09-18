@@ -1,3 +1,8 @@
+---
+issue: planning#482
+title: Context Window Usage Display
+description: The composer's context dial — per-turn token/cost breakdown and the session's running cost.
+---
 
 # 105 — Context Window Usage Display
 
@@ -209,6 +214,119 @@ The original implementation derived the context window from a static `MODEL_CONT
 - The static map is still used (a) for the first frame before `result` arrives, and (b) for adapters that can't surface the field. `"claude-opus-4-7": 1_000_000` was added so even the first-frame fallback is correct.
 - Backend-reported context windows are authoritative for the active session, including Codex profiles that expose less than a model's maximum API context. The static model map remains a first-frame fallback only; completion telemetry replaces it without model-specific reconciliation so the dial reflects the context the backend actually assigned.
 - GPT-5.6's static fallback is Codex's 272K assigned window, not the model's larger API-advertised maximum. ShipIt invokes these profiles through Codex, so showing the API maximum before the first telemetry event overstates the context actually available to the session.
+
+## The current-context reading belongs to the session on screen
+
+`ui-store.contextTokens` is a session-LESS global, and `ContextDialMount` falls
+back to it for exactly the session that has no turns of its own. That makes every
+writer of the field a potential cross-session leak, and both writers were one
+(planning#482 — "sometimes I open a new session and the context window is already
+a third full"):
+
+- `loadSessionHistory` seeded it only `if (data.turnUsage.length > 0)`, so a
+  session with no recorded turns never corrected whatever the previously-viewed
+  session had left there. It is now authoritative in both directions: no turns ⇒
+  `0`. (`modelInfo` deliberately keeps the one-directional seed — clearing it on a
+  mid-turn foreground reconnect would hide the dial while a turn is running.)
+- `handleUsageUpdate` / `handleTurnUsageUpdate` wrote it with no session check.
+  The per-session socket is keyed off the ROUTE (`App`'s `wsSessionId`) while the
+  handlers read the STORE, and a switch moves the store first — so the outgoing
+  session's trailing usage landed on the incoming one. Both now drop a message
+  naming another session; `appendTurnUsage` stays unscoped because it is keyed by
+  the message's own session id.
+
+This is the same hazard `TRANSCRIPT_SCOPED_MESSAGES` exists for. `usage_update` is
+deliberately outside that set, on the grounds that these messages are "keyed by
+their own `sessionId` inside their stores" — true for the per-turn series, and not
+true for `contextTokens` (no key) or `currentSessionUsage` (keyed in the object,
+read unconditionally by the dial). Scoping lives in the handlers for that reason.
+
+### The guard covers the load's first suspension point only
+
+Scoping the two WS handlers left the third writer of these fields — the
+rehydration in `loadSessionHistory` — still able to write for a session the user
+has left. The load re-checks `isStillActiveSession()` after its history fetch,
+but the model / context-window / spend writes sat **below `await treePromise`**,
+a second suspension point the check does not cover. By then the load has already
+cleared `inFlightHistoryLoad` (the `finally` around the history fetch), so the
+incoming load's `controller.abort()` finds nothing to abort and the outgoing
+continuation resumes and overwrites whatever the incoming session just seeded.
+
+The file tree is fetched from the session container while history is served from
+the orchestrator's SQLite, so the outgoing tree routinely outlives the incoming
+load — a starting container widens the window to seconds.
+
+The symptom was a dial whose **model name and max context window** belonged to
+the previous session while its **token count** was current — a 480K-token Opus
+session reading `480.0K / 272.0K` against the previous session's GPT model, over
+a spurious "type `/compact`" hint. The split is structural, not luck:
+`ContextDialMount` selects `turnUsage[sessionId]` from the session store, so the
+count and the per-turn bars are keyed by session and cannot go foreign once the
+session has a turn of its own. `modelInfo` is a global the dial reads
+unconditionally, and nothing rewrites it until a turn starts. `currentSessionUsage`
+and the cumulative totals are read unconditionally too, so they went stale in the
+same window without announcing it.
+
+Fix: the usage block moved **above** the tree await, into the synchronous region
+the existing check already protects. Nothing in it depends on the tree, so the
+move is the whole fix — no second guard, and no new ordering to maintain. Guard
+test: "a file tree still in flight cannot let the outgoing session reclaim the
+dial" (`session-data.test.ts`), which gives every moved field a per-session value
+and asserts all of them, so moving any one of them back below the await fails.
+
+### `model_info` carries its session, because socket teardown is not a scope
+
+`model_info` was the one per-session message on the wire with no `sessionId`, on
+the reasoning that a foreign one cannot be delivered: `useWebSocket` nulls
+`ws.onmessage` and clears `messageQueueRef` when the url changes. That protects
+*delivery after teardown* and does not establish *ownership at dispatch*.
+`useMessageHandler` drains the queue into a LOCAL array and dispatches the whole
+batch, and clearing the ref cannot retract that array. A batch carrying
+`session_forked` — which moves the active session mid-loop — followed by the
+parent's `model_info` therefore lands the parent's model on the child.
+
+So the message now carries `sessionId` (set from the turn's captured id at both
+emitters in `agent-listeners.ts`) and `model-info.ts` drops a mismatch, the same
+shape `turn-usage-update.ts` uses. Guard test: `model-info.test.ts`.
+
+### A fork is a session switch, and has to go through the switch path
+
+`handleSessionForked` adopted the child with a bare `setSessionId` and then
+pushed the route. That order is why the reset never ran: `useSessionActivation`
+calls `resumeSessionInternal` only when `urlSessionId !== sessionId`, and the
+store had already been moved to match. The child inherited the parent's whole
+session-scoped UI state — visibly the dial's model, context window and spend,
+which a fresh fork has no usage row to correct.
+
+It now calls `resumeSessionInternal(childSessionId)`, the one path that knows
+what a switch must clear; the route effect still finds the ids equal and does not
+repeat it. Guard test: `session-forked.test.ts` — the hook-level test
+docs/144-rewind-fork-ux planned for D7 and never wrote.
+
+### `usage_update` no longer writes the reading at all
+
+Scoping fixed *whose* number reached the field; it did not make the number a
+context occupancy. `handleUsageUpdate` set `contextTokens` from
+`cumulativeInputTokens` — the session's LIFETIME sum of input tokens, which only
+grows — falling back to `lastTurnInputTokens`, the uncached portion of one turn's
+prompt, which under prompt caching is near zero. One overstates without bound, the
+other undercounts heavily, and the field means "occupied NOW".
+
+`turn_usage_update` is the authoritative reading, and every `usage_update` the
+agent path emits is emitted alongside one — both live inside the same
+`if (perTurnUsage)` block in `agent-listeners.ts` — so the coarse value was
+overwritten a moment later in the ordinary case. The case where it was NOT: a turn
+that reports no token telemetry (a Codex compact result) produces no per-turn row,
+so the dial stayed pinned to the lifetime sum precisely when a compaction had just
+FREED context. The write is gone; the last real occupancy stands until the next
+per-turn row replaces it.
+
+Consequences: `lastTurnInputTokens` / `lastTurnOutputTokens` lost their only
+reader and are off the wire — the same figures ride `turn_usage_update.turn`.
+`WsUsageUpdate.subAgent` stays, but no longer as the mechanism that keeps a
+consult off the dial (nothing on this message reaches the dial now, and a consult
+emits no `turn_usage_update`) — only as the attribution fact, which nothing else
+on the message carries.
 
 ## Future extensions
 

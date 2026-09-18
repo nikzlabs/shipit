@@ -1,22 +1,20 @@
 import type { FileDiff } from "../../server/shared/types.js";
 
-/** Tree node for the file tree sidebar. */
 export interface FileTreeNode {
   name: string;
-  /** Full path for leaf (file) nodes. */
+
   path?: string;
-  /** Index into diff.files for leaf nodes. */
+
   fileIndex?: number;
-  /** Child nodes for directory nodes. */
+
   children?: FileTreeNode[];
-  /** Aggregated stats for directories. */
+
   insertions: number;
   deletions: number;
-  /** File status for leaf nodes. */
+
   status?: FileDiff["status"];
 }
 
-/** Propagate insertion/deletion stats up from leaves into directory nodes. */
 export function sumStats(node: FileTreeNode): void {
   if (!node.children) return;
   node.insertions = 0;
@@ -28,7 +26,6 @@ export function sumStats(node: FileTreeNode): void {
   }
 }
 
-/** Collapse single-child directories (e.g. `src` -> `client` becomes `src/client`). */
 export function collapse(nodes: FileTreeNode[]): FileTreeNode[] {
   return nodes.map((node) => {
     if (node.children) {
@@ -42,7 +39,6 @@ export function collapse(nodes: FileTreeNode[]): FileTreeNode[] {
   });
 }
 
-/** Build a nested tree from a flat list of FileDiff entries. */
 export function buildFileTree(files: FileDiff[]): FileTreeNode[] {
   const root: FileTreeNode = { name: "", children: [], insertions: 0, deletions: 0 };
 
@@ -79,7 +75,6 @@ export function buildFileTree(files: FileDiff[]): FileTreeNode[] {
   return collapse(root.children!);
 }
 
-/** Single-letter status indicator for a file diff entry. */
 export function statusIcon(status: FileDiff["status"]): string {
   switch (status) {
     case "added": return "A";
@@ -89,7 +84,6 @@ export function statusIcon(status: FileDiff["status"]): string {
   }
 }
 
-/** Tailwind text color class for a file diff status. */
 export function statusColor(status: FileDiff["status"]): string {
   switch (status) {
     case "added": return "text-(--color-success)";

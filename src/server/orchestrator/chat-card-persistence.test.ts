@@ -5,13 +5,6 @@ import type { PersistedMessage } from "./chat-history.js";
 import type { WsServerMessage } from "../shared/types.js";
 import { createCommittedBodyIds } from "./transcript-projection.js";
 
-/**
- * The anti-footgun contract: a transcript card emitted via `emitChatCard` is
- * ALWAYS also recorded for in-band persistence AND persisted to chat history
- * immediately, so it can't ship emit-only or flicker out on a mid-turn reconnect
- * (the recurring bug behind docs/163 + docs/164 + docs/191). A fresh fake runner
- * per test is one isolated "turn".
- */
 function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
   runner: SessionRunnerInterface;
   emitted: WsServerMessage[];
@@ -21,7 +14,6 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
     replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
     append(sessionId: string, message: PersistedMessage): void;
     hasInProgress(sessionId: string): boolean;
-    /** Test knob: model the DB having (or not having) open rows for the session. */
     inProgressRows: boolean;
   };
 } {
@@ -32,29 +24,18 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
     replaceInProgress: (sessionId: string, messages: PersistedMessage[]) =>
       persisted.push({ sessionId, messages }),
     append: (sessionId: string, message: PersistedMessage) => appended.push({ sessionId, message }),
-    // nikzlabs/shipit#2350 — `persistCardTransition` asks the STORE whether a turn owns
-    // open rows, rather than trusting `runner.running`. Default true: the fake
-    // models one turn in flight, which is what the mid-turn cases exercise.
     inProgressRows: true,
     hasInProgress(): boolean { return this.inProgressRows; },
   };
-  // Model the turn-event replay buffer: `emitMessage` buffers (as the real
-  // runner does), so a test can assert `emitChatCard` advances the persisted
-  // cursor past it (the switch/reconnect overlap fix).
   const turnEventBuffer: WsServerMessage[] = [];
   const runner = {
     emitMessage: (m: WsServerMessage) => { emitted.push(m); turnEventBuffer.push(m); },
-    // The fake models ONE turn in flight, which is the mid-turn case every card
-    // below exercises. `running` is what `emitChatCard` branches on, so a test
-    // for the post-turn (append) path flips it to false explicitly.
     running: true,
     chatMessageGroups: groups,
     recordedCards: [],
     steeredMessages: [],
     getTurnEventBuffer: () => [...turnEventBuffer],
     lastPersistedBufferIndex: 0,
-    // docs/244 / planning#299 — the real runner's committed-body marker, which
-    // `persistTurnInProgress` fills in as it writes.
     committedBodyIds: createCommittedBodyIds(),
   } as unknown as SessionRunnerInterface;
   return { runner, emitted, persisted, appended, chatHistoryManager };
@@ -71,15 +52,10 @@ describe("chat-card-persistence", () => {
       { chatHistoryManager, sessionId: "s1" },
     );
 
-    // Emitted live for attached viewers...
     expect(emitted).toHaveLength(1);
     expect(emitted[0]).toMatchObject({ type: "voice_note", id: "v1" });
-    // ...recorded for in-band interleaving...
     expect(runner.recordedCards).toHaveLength(1);
     expect(runner.recordedCards[0].message).toMatchObject({ role: "assistant", voiceNote: { id: "v1" } });
-    // ...AND persisted to chat history in the SAME call (docs/191), so a
-    // mid-turn reconnect's loadSessionHistory snapshot already contains the
-    // card — no flicker-out-then-back window.
     expect(persisted).toHaveLength(1);
     expect(persisted[0].sessionId).toBe("s1");
     expect(persisted[0].messages.find((m) => (m as { voiceNote?: unknown }).voiceNote)).toMatchObject({
@@ -88,15 +64,7 @@ describe("chat-card-persistence", () => {
   });
 
   it("advances lastPersistedBufferIndex past the buffer so a later switch/reconnect doesn't replay pre-card events onto the snapshot", () => {
-    // Reproduces the vanishing-permission-card bug (planning#114): a gated tool's
-    // `agent_assistant` was buffered but unpersisted (the buffer cursor only
-    // moved at tool-result boundaries), so emitChatCard persisted a snapshot
-    // AHEAD of the cursor. On a session switch the buffered event replayed on
-    // top of that snapshot, merged into the card's carrier message, and dropped
-    // the card field — the card showing only after the agent stopped (which
-    // clears the buffer). Advancing the cursor here removes that overlap.
     const { runner, emitted, chatHistoryManager } = fakeRunner([{ text: "I'll run a command", toolUse: [{}] }]);
-    // A prior agent_assistant (the gated action) sits in the buffer, unpersisted.
     runner.emitMessage({ type: "agent_event" } as unknown as WsServerMessage);
     expect(runner.lastPersistedBufferIndex).toBe(0);
 
@@ -107,18 +75,11 @@ describe("chat-card-persistence", () => {
       { chatHistoryManager, sessionId: "s1" },
     );
 
-    // The buffer now holds the prior agent_event + the card's own WS message;
-    // the cursor must point past BOTH so neither is replayed over the snapshot.
     expect(runner.getTurnEventBuffer()).toHaveLength(emitted.length);
     expect(runner.lastPersistedBufferIndex).toBe(runner.getTurnEventBuffer().length);
   });
 
   it("persistTurnInProgress records what it wrote as committed (docs/244, planning#299)", () => {
-    // The reconnect snapshot may only strip a body once the row holding it is on
-    // disk. `persistTurnInProgress` is one of the two writers that puts a turn
-    // there (the tool-result boundary is the other), so it is also where the
-    // marker has to be set — from the list it actually wrote, not from the live
-    // groups, which keep accumulating after the write.
     const { runner, chatHistoryManager } = fakeRunner([
       {
         text: "writing",
@@ -137,16 +98,6 @@ describe("chat-card-persistence", () => {
   });
 
   describe("emitChatCard — a card that lands AFTER its turn finalized", () => {
-    /**
-     * The `shipit agent run` data-loss bug. A backgrounded consult outlives the
-     * turn that launched it (which `shipit-docs/agent.md` tells the agent to do),
-     * so its card fires with `running === false`. Routed through the in-progress
-     * path it was written into a turn that had already finalized, and the next
-     * turn's first `replaceInProgress` — which deletes every `in_progress=1` row
-     * for the session — took it with it. Symptom: `shipit agent result <id>`
-     * answering "No sub-agent runs in this session yet" for a run that had just
-     * printed that id.
-     */
     const card: PersistedMessage = {
       role: "assistant",
       text: "",
@@ -164,7 +115,7 @@ describe("chat-card-persistence", () => {
       const { runner, emitted, persisted, appended, chatHistoryManager } = fakeRunner([
         { text: "launching codex in the background", toolUse: [{}] },
       ]);
-      runner.running = false; // the launching turn already finalized
+      runner.running = false;
 
       emitChatCard(
         runner,
@@ -173,21 +124,15 @@ describe("chat-card-persistence", () => {
         { chatHistoryManager, sessionId: "s1" },
       );
 
-      // Still emitted live for attached viewers.
       expect(emitted).toHaveLength(1);
-      // Persisted as a standalone finalized row at the end of history...
       expect(appended).toEqual([{ sessionId: "s1", message: card }]);
-      // ...and NOT via the in-progress rebuild, which would (a) duplicate the
-      // finished turn's rows and (b) make the card deletable by the next turn.
       expect(persisted).toHaveLength(0);
-      // Not recorded either: the next turn start clears `recordedCards`, and
-      // recording would re-insert the card into that turn's rebuilt rows.
       expect(runner.recordedCards).toHaveLength(0);
     });
 
     it("still takes the in-progress path while a turn IS running", () => {
       const { runner, persisted, appended, chatHistoryManager } = fakeRunner([{ text: "x", toolUse: [{}] }]);
-      runner.running = true; // a foreground consult: the agent is blocked waiting
+      runner.running = true;
 
       emitChatCard(
         runner,
@@ -205,13 +150,12 @@ describe("chat-card-persistence", () => {
   it("anchors the card after the persistable assistant groups produced so far", () => {
     const { runner } = fakeRunner([
       { text: "one", toolUse: [] },
-      { text: "", toolUse: [] }, // non-persistable (no text, no tools) — not counted
+      { text: "", toolUse: [] },
       { text: "two", toolUse: [] },
     ]);
 
     recordChatCard(runner, { role: "assistant", text: "", voiceNote: { id: "v1", headline: "h", kind: "authored", createdAt: "t" } });
 
-    // Two persistable groups → anchor 2 (lands after both).
     expect(runner.recordedCards[0].afterGroupIndex).toBe(2);
   });
 
@@ -221,11 +165,8 @@ describe("chat-card-persistence", () => {
       messages.find((m) => (m as PermMsg).permissionPrompt?.requestId === requestId) as PermMsg | undefined;
 
     it("patches a recorded card in place so a LATER in-turn rebuild keeps the terminal state", () => {
-      // One persistable assistant group (the agent says it'll edit, with a tool).
       const { runner, persisted, chatHistoryManager } = fakeRunner([{ text: "I'll edit .npmrc", toolUse: [{}] }]);
 
-      // 1. Permission card proposed mid-turn (pending), recorded + persisted —
-      //    exactly what emitChatCard does on `agent_permission_request`.
       recordChatCard(runner, {
         role: "assistant",
         text: "",
@@ -234,8 +175,6 @@ describe("chat-card-persistence", () => {
       persistTurnInProgress(chatHistoryManager, runner, "s1");
       expect(findCard(persisted[persisted.length - 1].messages, "p1")?.permissionPrompt?.phase).toBe("pending");
 
-      // 2. User approves WHILE the agent is still blocked mid-turn. Patch the
-      //    recorded card (not just the DB row), then flush.
       const patched = updateRecordedCard(
         runner,
         (m) => (m as PermMsg).permissionPrompt?.requestId === "p1",
@@ -247,10 +186,6 @@ describe("chat-card-persistence", () => {
       expect(patched).toBe(true);
       persistTurnInProgress(chatHistoryManager, runner, "s1");
 
-      // 3. A LATER in-turn rebuild (next tool-result boundary, then end-of-turn)
-      //    must STILL carry "approved". Before the fix, this rebuild read the
-      //    recorded card — still pending — and clobbered the card back to its
-      //    Approve/Deny variant on the next switch/reload.
       persistTurnInProgress(chatHistoryManager, runner, "s1");
       const finalCard = findCard(persisted[persisted.length - 1].messages, "p1");
       expect(finalCard?.permissionPrompt?.phase).toBe("approved");
@@ -291,30 +226,15 @@ describe("chat-card-persistence", () => {
         () => { dbPatched = true; },
       );
 
-      // In-flight → recorded card patched, DB fallback NOT used.
       expect(dbPatched).toBe(false);
-      // A LATER in-turn rebuild (next tool boundary / end-of-turn finalize) still
-      // carries "filed" — the clobber the fix prevents.
       persistTurnInProgress(chatHistoryManager, runner, "s1");
       expect(findCard(persisted[persisted.length - 1].messages)?.bugReport?.phase).toBe("filed");
     });
 
-    /**
-     * The turn-startup window (found in the nikzlabs/shipit#2350 review). Both send
-     * handlers set `running = true` BEFORE `runAgentWithMessage`, while
-     * `resetRunnerTurnState` — which clears `recordedCards` — runs later inside
-     * `executeAgentTurn`, behind a real await. In between, `running` is true and
-     * `recordedCards` still holds the PREVIOUS, already-finalized turn's
-     * snapshot. Patching it there revives that finished turn as in-progress
-     * rows, which the new turn's first `replaceInProgress` deletes wholesale —
-     * losing the user's decision silently.
-     */
     it("uses the DB-row fallback when `running` is true but no turn owns the in-progress rows", () => {
       const { runner, chatHistoryManager } = fakeRunner([{ text: "a finished turn", toolUse: [{}] }]);
       runner.running = true;
       recordDraft(runner, chatHistoryManager);
-      // The proposing turn finalized; the successor set `running` but has not
-      // reset yet, so the stale snapshot is still on the runner.
       chatHistoryManager.inProgressRows = false;
 
       let dbPatched = false;
@@ -326,8 +246,6 @@ describe("chat-card-persistence", () => {
         () => { dbPatched = true; },
       );
 
-      // The durable DB row is patched, and the stale snapshot is left alone so
-      // nothing revives the finished turn.
       expect(dbPatched).toBe(true);
       expect(findCard([runner.recordedCards[0].message])?.bugReport?.phase).toBe("draft");
     });
@@ -346,15 +264,13 @@ describe("chat-card-persistence", () => {
         () => { dbPatched = true; },
       );
 
-      // Finalized → direct DB-row patch is safe; the (now inert) recorded card is
-      // left untouched, and no spurious in-progress turn is revived.
       expect(dbPatched).toBe(true);
       expect((runner.recordedCards[0].message as BugMsg).bugReport?.phase).toBe("draft");
     });
 
     it("falls back to the DB patch when the card isn't in this turn's recorded set", () => {
       const { runner, chatHistoryManager } = fakeRunner();
-      runner.running = true; // running, but nothing recorded (proposed by a prior, finalized turn)
+      runner.running = true;
       let dbPatched = false;
       persistCardTransition(
         runner,
@@ -370,14 +286,12 @@ describe("chat-card-persistence", () => {
   it("emitNoticeInTurn emits + records a notice with a shared id (docs/138)", () => {
     const { runner, emitted, persisted, chatHistoryManager } = fakeRunner([{ text: "x", toolUse: [] }]);
     emitNoticeInTurn(runner, "s1", "Guarded mode unavailable.", chatHistoryManager, "warn");
-    // Persisted immediately too, like every other in-turn card (docs/191).
     expect(persisted).toHaveLength(1);
 
     expect(emitted).toHaveLength(1);
     const ws = emitted[0] as { type: string; id?: string; message?: string; level?: string };
     expect(ws).toMatchObject({ type: "system_notice", message: "Guarded mode unavailable.", level: "warn" });
     expect(ws.id).toMatch(/^notice-/);
-    // Recorded in-band; the persisted row carries the SAME id for reload dedup.
     expect(runner.recordedCards).toHaveLength(1);
     const recorded = runner.recordedCards[0].message;
     expect(recorded).toMatchObject({ role: "assistant", notice: true, noticeLevel: "warn", noticeId: ws.id });
@@ -393,7 +307,6 @@ describe("chat-card-persistence", () => {
     expect(emitted).toHaveLength(1);
     const ws = emitted[0] as { type: string; id?: string };
     expect(ws).toMatchObject({ type: "system_notice", id: expect.stringMatching(/^notice-/) });
-    // Persisted directly (post-turn → append, not recordedCards).
     expect(runner.recordedCards).toHaveLength(0);
     expect(appended).toHaveLength(1);
     expect(appended[0].message).toMatchObject({ notice: true, noticeLevel: "warn", noticeId: ws.id, text: "Unresolved merge conflict." });

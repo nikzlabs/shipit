@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { ToolUseItem, formatToolDuration } from "./message-tools.js";
+import { ToolUseItem, formatToolDuration, formatToolCallTime } from "./message-tools.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { ToolUseBlock } from "./MessageList.js";
+import { highlightCode } from "../syntax-highlight.js";
 
 afterEach(() => {
   cleanup();
@@ -29,13 +30,12 @@ describe("ToolUseItem apply_patch", () => {
       />,
     );
 
-    // Paths render (workspace prefix stripped), kind mapped to Claude verbs.
     expect(screen.getByText("src/game/Game.js")).toBeInTheDocument();
     expect(screen.getByText("src/new.js")).toBeInTheDocument();
-    // Kind verbs render as icons labeled with the verb (update → Edit, add → Write).
+
     expect(screen.getByLabelText("Edit")).toBeInTheDocument();
     expect(screen.getByLabelText("Write")).toBeInTheDocument();
-    // Line stats from the unified diff (update: +1/-1, add: +2).
+
     expect(screen.getByText("+1")).toBeInTheDocument();
     expect(screen.getByText("-1")).toBeInTheDocument();
     expect(screen.getByText("+2")).toBeInTheDocument();
@@ -70,9 +70,9 @@ describe("ToolUseItem inline tool icon", () => {
         isQuestionDisabled
       />,
     );
-    // The verb is shown as visible text (not hover-only) next to the glyph…
+
     expect(screen.getByText("Read")).toBeInTheDocument();
-    // …followed by the argument summary (file path).
+
     expect(screen.getByText("src/foo.ts")).toBeInTheDocument();
   });
 
@@ -85,7 +85,7 @@ describe("ToolUseItem inline tool icon", () => {
         isQuestionDisabled
       />,
     );
-    // No tool word at all (no icon, no "shell"); the command stands in for the tool.
+
     expect(screen.queryByText("shell")).toBeNull();
     expect(screen.getByText("ls -la")).toBeInTheDocument();
   });
@@ -121,16 +121,15 @@ describe("ToolUseItem output modal input", () => {
 
     fireEvent.click(screen.getByLabelText("Show output"));
 
-    // Field labels for the raw input keys are rendered in the modal.
     expect(screen.getByText("file_path")).toBeInTheDocument();
     expect(screen.getByText("offset")).toBeInTheDocument();
     expect(screen.getByText("limit")).toBeInTheDocument();
-    // Non-string args that used to be dropped are now shown.
+
     expect(screen.getByText("10")).toBeInTheDocument();
     expect(screen.getByText("50")).toBeInTheDocument();
-    // file_path is shown workspace-relative (one-liner + modal field).
+
     expect(screen.getAllByText("src/foo.ts").length).toBeGreaterThan(0);
-    // The output section still renders below the input.
+
     expect(screen.getByText("Output")).toBeInTheDocument();
   });
 
@@ -161,6 +160,68 @@ describe("ToolUseItem output modal input", () => {
     fireEvent.click(screen.getByLabelText("Show output"));
     expect(screen.queryByText(/\d+\s?(ms|s)$/)).not.toBeInTheDocument();
   });
+
+  it("shows when the call happened in the dialog header", () => {
+    const startedAt = new Date("2026-09-11T14:32:05Z").toISOString();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T15:00:00Z"));
+    try {
+      render(
+        <ToolUseItem
+          tool={{ ...tool("Bash", { command: "ls" }), startedAt }}
+          result={{ toolUseId: "t1", content: "out" }}
+          isLast={false}
+          isStreaming={false}
+          isQuestionDisabled
+        />,
+      );
+      fireEvent.click(screen.getByLabelText("Show output"));
+      expect(screen.getByTestId("tool-call-time")).toHaveTextContent(
+        formatToolCallTime(startedAt, new Date("2026-09-11T15:00:00Z")),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("omits the time on a row persisted before the stamp existed", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Bash", { command: "ls" })}
+        result={{ toolUseId: "t1", content: "out" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+    expect(screen.queryByTestId("tool-call-time")).not.toBeInTheDocument();
+  });
+});
+
+describe("formatToolCallTime", () => {
+  it("shows the time alone for a call made today", () => {
+    const now = new Date("2026-09-11T15:00:00Z");
+    const at = new Date("2026-09-11T14:32:05Z");
+    expect(formatToolCallTime(at.toISOString(), now)).toBe(
+      at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    );
+  });
+
+  it("adds the date once the call is from another day", () => {
+    const now = new Date("2026-09-11T15:00:00Z");
+    const at = new Date("2026-09-08T14:32:05Z");
+    const formatted = formatToolCallTime(at.toISOString(), now);
+    expect(formatted).toContain(at.toLocaleDateString([], { month: "short", day: "numeric" }));
+    expect(formatted).toContain(
+      at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    );
+  });
+
+  it("returns an empty string for an absent or unparseable stamp", () => {
+    expect(formatToolCallTime(undefined)).toBe("");
+    expect(formatToolCallTime("not a date")).toBe("");
+  });
 });
 
 describe("ToolUseItem pending tool calls", () => {
@@ -168,19 +229,17 @@ describe("ToolUseItem pending tool calls", () => {
     render(
       <ToolUseItem
         tool={tool("Bash", { command: "sleep 5" })}
-        // No result — the tool is the last one in a still-streaming message.
+
         isLast
         isStreaming
         isQuestionDisabled
       />,
     );
 
-    // Pending tools expose a "Show input" affordance (vs "Show output" once done).
     fireEvent.click(screen.getByLabelText("Show input"));
 
-    // Input is shown.
     expect(screen.getByText("command")).toBeInTheDocument();
-    // Output section renders a running indicator instead of a tool result.
+
     expect(screen.getByText("Output")).toBeInTheDocument();
     expect(screen.getByText("Running…")).toBeInTheDocument();
   });
@@ -191,11 +250,9 @@ describe("ToolUseItem pending tool calls", () => {
       <ToolUseItem tool={t} isLast isStreaming isQuestionDisabled />,
     );
 
-    // Open the dialog while pending.
     fireEvent.click(screen.getByLabelText("Show input"));
     expect(screen.getByText("Running…")).toBeInTheDocument();
 
-    // Result arrives — same component instance (stable position) re-renders with it.
     rerender(
       <ToolUseItem
         tool={t}
@@ -206,7 +263,6 @@ describe("ToolUseItem pending tool calls", () => {
       />,
     );
 
-    // The running indicator is replaced in place by the output, no re-click needed.
     expect(screen.queryByText("Running…")).toBeNull();
     expect(screen.getByText("1.2 s")).toBeInTheDocument();
     expect(screen.getByText("job complete")).toBeInTheDocument();
@@ -298,7 +354,7 @@ describe("ToolUseItem lazy tool input (docs/244)", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls[0]![0]).toBe("/api/sessions/session-1/tool-inputs/t1");
-    // `description` was dropped on the wire entirely — its field only exists
+
     // because the fetch brought it back.
     await waitFor(() => expect(screen.getByText("description")).toBeInTheDocument());
     expect(screen.getByLabelText("Tool output")).toHaveTextContent("echo one two three");
@@ -319,7 +375,7 @@ describe("ToolUseItem lazy tool input (docs/244)", () => {
     fireEvent.click(screen.getByLabelText("Show output"));
 
     await waitFor(() => expect(screen.getByText("Loading input…")).toBeInTheDocument());
-    // The prefix already on the wire is still shown while the rest is in flight.
+
     expect(screen.getByLabelText("Tool output")).toHaveTextContent("echo one");
   });
 
@@ -357,5 +413,50 @@ describe("ToolUseItem lazy tool input (docs/244)", () => {
 
     await waitFor(() => expect(screen.getByText("command")).toBeInTheDocument());
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("ToolUseItem read-output highlighting", () => {
+
+  function asRendered(html: string | null): string | null {
+    if (html === null) return null;
+    const el = document.createElement("code");
+    el.innerHTML = html;
+    return el.innerHTML;
+  }
+
+  const content = '{"a": 1, "b": [2, 3]}';
+
+  it("highlights a Read result as the language of the file_path it was given", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Read", { file_path: "/workspace/config.py" })}
+        result={{ toolUseId: "t1", content }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    const code = screen.getByLabelText("Tool output").querySelector("code.hljs");
+    expect(code?.innerHTML).toBe(asRendered(highlightCode(content, "python")));
+    expect(code?.innerHTML).not.toBe(asRendered(highlightCode(content, null)));
+  });
+
+  it("falls back to auto-detection when the tool input names no file", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Read", {})}
+        result={{ toolUseId: "t1", content }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    const code = screen.getByLabelText("Tool output").querySelector("code.hljs");
+    expect(code?.innerHTML).toBe(asRendered(highlightCode(content, null)));
   });
 });

@@ -25,7 +25,7 @@ After each overlay session's `agent.install` resolves and the per-dep-dir publis
 orchestrator prints one greppable line (only when overlay is active for that session):
 
 ```
-[overlay-measure] session=<id> repo=<url> install_ok=<bool> install_ms=<n> dirs=<depDir>:<outcome>[:d<depth>g<generation>],...
+[overlay-measure] session=<id> repo=<url> install_ok=<bool> install_ms=<n> dirs=<depDir>:<outcome>[:d<depth>g<generation>][:a<attempts>],...
 ```
 
 - **`install_ms`** — orchestrator-observed wall-clock from install kickoff to resolve. A
@@ -38,6 +38,11 @@ orchestrator prints one greppable line (only when overlay is active for that ses
 - **`d<depth>g<generation>`** — overlay depth + base generation **after** the publish. `depth`
   is the number of incremental layers stacked since the last clean rebuild — the signal the
   depth cap bounds. Absent for skips/errors that read no pointer.
+- **`a<attempts>`** — how many pull+extract attempts the dep dir needed. Emitted **only when the
+  retry fired** (`> 1`), so an ordinary line is unchanged and `grep ':a'` counts the dep dirs whose
+  snapshot raced a concurrent write into the dep dir — a running dev server writing
+  `node_modules/.vite`, the degradation the retry was added for. Its own segment, since the case
+  worth counting most is an `error`, which has no `d…g…` before it.
 
 Tabulate a run:
 

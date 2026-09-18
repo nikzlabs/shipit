@@ -1,18 +1,3 @@
-/**
- * WS handler for undoing an agent issue write (docs/177).
- *
- * The write itself is do-then-surface: it already happened over the HTTP relay
- * (`shipit issue …` → `/api/sessions/:id/issue/*`), which emitted + persisted
- * the provenance card. This handler fires when the user clicks "Undo" on that
- * card. It is a *reverse brokered write*: recover the tracker + undo snapshot
- * from the persisted card (the server-authoritative source, not client state),
- * perform the reverse write, then patch the card to its terminal undo state.
- *
- * Per the WS-lifecycle contract we resolve the runner via the registry and emit
- * via `runner.emitMessage` so the update lands in the turn-event buffer and
- * survives reconnects; the persisted patch makes it survive a switch/reload.
- */
-
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { WsUndoIssueWrite } from "../../shared/types/ws-client-messages.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
@@ -26,12 +11,6 @@ type IssueWriteCtx = ConnectionCtx &
   RunnerCtx &
   Pick<AppCtx, "sessionManager" | "githubAuthManager" | "chatHistoryManager" | "credentialStore" | "trackerFetchImpl">;
 
-/**
- * Persist an issue-write card's undo lifecycle (undoing → undone / failed) so it
- * survives a switch/reload, clobber-free if the user clicks Undo while the
- * card's proposing turn is still in flight. Thin wrapper over the shared
- * `persistCardTransition` primitive (see its docstring for the clobber).
- */
 function persistIssueWriteTransition(
   ctx: IssueWriteCtx,
   runner: SessionRunnerInterface,
@@ -70,11 +49,8 @@ export async function handleUndoIssueWrite(
     });
     return;
   }
-  // Already undone — idempotent no-op (a double-click or a buffer replay).
   if (card.undoState === "undone") return;
 
-  // Optimistic "undoing" so the button can't be re-clicked mid-flight; persisted
-  // so a reload during the reverse write shows the in-flight state.
   runner.emitMessage({ type: "issue_write_update", sessionId, cardId: msg.cardId, undoState: "undoing" });
   persistIssueWriteTransition(ctx, runner, sessionId, msg.cardId, { undoState: "undoing" });
 

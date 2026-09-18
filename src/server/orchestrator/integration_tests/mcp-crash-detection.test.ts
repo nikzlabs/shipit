@@ -1,22 +1,3 @@
-/**
- * Integration tests for mid-turn MCP server crash detection (docs/088).
- *
- * The Claude CLI's init event covers cold-start MCP liveness via
- * `mcp_servers[]` (see `claude-adapter.ts mapCliMcpStatus`), but doesn't
- * emit anything if a server dies mid-turn. We recover that signal in
- * `agent-listeners.ts` by:
- *
- *   1. Recording every `tool_use` we see in `agent_assistant` events
- *      (id → name).
- *   2. On any `agent_tool_result` with `is_error: true`, looking up the
- *      parent tool name. If it matches `mcp__<server>__*`, attribute the
- *      failure to that server and emit `mcp_server_status` with
- *      `state: "crashed"`.
- *
- * These tests drive the full WS pipeline (FakeClaudeProcess → orchestrator
- * → TestClient) and assert that the right `mcp_server_status` messages
- * land on the wire.
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -79,13 +60,13 @@ describe("Integration: MCP mid-turn crash detection", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir cleanup is OS-managed.
+      // Ignore cleanup errors.
     }
   });
 
   it("emits mcp_server_status crashed when an mcp__<server>__* tool returns is_error", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "use linear" });
     await waitForClaude(() => lastClaude);
@@ -93,7 +74,6 @@ describe("Integration: MCP mid-turn crash detection", () => {
     lastClaude.initSession("crash-session-1");
     await client.receiveType("session_started");
 
-    // Agent invokes an MCP tool.
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -107,9 +87,8 @@ describe("Integration: MCP mid-turn crash detection", () => {
         ],
       },
     });
-    await client.receiveType("agent_event"); // the assistant event
+    await client.receiveType("agent_event");
 
-    // Tool returns an error — server crashed.
     lastClaude.emit("event", {
       type: "user",
       message: {
@@ -123,7 +102,7 @@ describe("Integration: MCP mid-turn crash detection", () => {
         ],
       },
     });
-    await client.receiveType("agent_event"); // the tool_result event
+    await client.receiveType("agent_event");
 
     const statusMsg = await client.receiveType("mcp_server_status");
     expect(statusMsg).toMatchObject({
@@ -148,7 +127,6 @@ describe("Integration: MCP mid-turn crash detection", () => {
     lastClaude.initSession("dedup-session");
     await client.receiveType("session_started");
 
-    // Three tool calls to the same MCP server in one assistant event.
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -161,7 +139,6 @@ describe("Integration: MCP mid-turn crash detection", () => {
     });
     await client.receiveType("agent_event");
 
-    // All three error out.
     lastClaude.emit("event", {
       type: "user",
       message: {
@@ -174,7 +151,6 @@ describe("Integration: MCP mid-turn crash detection", () => {
     });
     await client.receiveType("agent_event");
 
-    // Only one crashed status — the first failure wins, the rest are deduped.
     const firstStatus = await client.receiveType("mcp_server_status");
     expect(firstStatus).toMatchObject({
       type: "mcp_server_status",
@@ -182,7 +158,6 @@ describe("Integration: MCP mid-turn crash detection", () => {
       state: "crashed",
     });
 
-    // No further mcp_server_status emissions for the same server.
     await expect(client.receiveType("mcp_server_status", 200)).rejects.toThrow(
       /timed out/,
     );
@@ -282,9 +257,6 @@ describe("Integration: MCP mid-turn crash detection", () => {
     });
     await client.receiveType("agent_event");
 
-    // Built-in Read tool failing must NOT be reported as a crashed MCP
-    // server — only `mcp__<server>__*`-prefixed names attribute back to
-    // user-configured MCP servers.
     await expect(client.receiveType("mcp_server_status", 200)).rejects.toThrow(
       /timed out/,
     );
@@ -354,7 +326,6 @@ describe("Integration: MCP mid-turn crash detection", () => {
     });
     await client.receiveType("agent_event");
 
-    // 1 KB single-line error → must collapse to a bounded reason.
     const huge = "x".repeat(1024);
     lastClaude.emit("event", {
       type: "user",
@@ -370,9 +341,7 @@ describe("Integration: MCP mid-turn crash detection", () => {
       reason?: string;
     };
     expect(status.reason).toBeDefined();
-    // Truncation cap is implementation-defined but must keep the WS payload small.
     expect(status.reason!.length).toBeLessThan(huge.length);
-    // …and the first line should be present (i.e. we didn't drop content).
     expect(status.reason!.startsWith("x")).toBe(true);
 
     lastClaude.finish("long-error-session");

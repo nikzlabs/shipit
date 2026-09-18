@@ -5,10 +5,6 @@ import path from "node:path";
 import { createOrchestratorApp, serveStaticClient } from "./app-assembly.js";
 import { markPreviewProxyRegistered } from "./api-origin-guard.js";
 
-// The policy itself (`framePolicyFor` / `frameGuardHeaders`) lives in
-// `shared/frame-policy.ts` and is covered by its own test — it is shared with
-// `vite.config.ts`. What this file covers is the Fastify wiring.
-
 describe("frame guard on the served app", () => {
   let clientDir: string;
 
@@ -46,10 +42,6 @@ describe("frame guard on the served app", () => {
     expect(ok.statusCode).toBe(200);
     expect(ok.headers["content-security-policy"]).toBe("frame-ancestors 'none'");
 
-    // The origin guard is registered first and replies without calling `done()`,
-    // so this hook never runs for a refused request. Deliberately left that way:
-    // the origin guard's "MUST be the first onRequest hook" ordering is
-    // load-bearing, and its 403 body is a JSON error with nothing to click.
     const refused = await app.inject({
       method: "GET",
       url: "/api/thing",
@@ -90,9 +82,6 @@ describe("frame guard on the served app", () => {
   });
 
   it("does not let a forged preview Host opt a runtime WITHOUT the proxy out of the header", async () => {
-    // Local mode registers no preview proxy, so a `{uuid}--{port}.…` Host is an
-    // ordinary request to this orchestrator — the same reasoning the origin
-    // guard uses for its own skip.
     const app = await createOrchestratorApp(undefined, "containerized");
     app.get("/anything", async () => ({ ok: true }));
 

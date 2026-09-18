@@ -22,16 +22,16 @@ Two blocks, both optional, in the consuming project's `shipit.yaml`:
 ```yaml
 plugins:
   repos:
-    - repo: acme/dev-tools     # owner/name on GitHub, or `self`
-      name: tools              # the local name, used everywhere else
-      branch: main             # or `pin: v1.2.0` / a full SHA — never both
+    - repo: acme/dev-tools # Or self.
+      name: tools
+      branch: main # Or pin: v1.2.0 / a full SHA; never both.
   use:
-    - plugin: requirements     # an export the repo's manifest declares
+    - plugin: requirements
       from: tools
-      alias: reqs              # optional local name (default: the plugin name)
-      overrides:               # everything the CONSUMER gets to decide
+      alias: reqs # Defaults to the plugin name.
+      overrides:
         settings:
-          root: docs/specs     # a value for a setting the manifest declares
+          root: docs/specs
         services:
           api: { port: 4300, autostart: false, as: reqs-api }
         commands:
@@ -70,14 +70,33 @@ exports:
       skills: plugins/requirements/skills
       install: npm ci
       install-inputs: [package-lock.json]
-      dep-dirs: [node_modules]   # what install populates; this is the default
-      credentials: [FAL_KEY]     # names only — values live with each project
-      hosts: [fal.run]           # informational
+      dep-dirs: [node_modules]
+      credentials: [FAL_KEY]
+      hosts: [fal.run]
       settings:
         root:
           description: Directory the plugin reads and writes
           default: docs
 ```
+
+**A declared credential or host is REQUIRED unless the manifest says
+otherwise.** A plugin that merely *uses* one when it is given says so with a
+mapping, and the same grammar covers both lists:
+
+```yaml
+      credentials: [FAL_KEY, { name: PIXELLAB_KEY, optional: true }]
+      hosts:       [fal.run, { name: pixellab.ai,  optional: true }]
+```
+
+Optionality changes only how an unsatisfied name is reported: the Plugins card
+says "`assetgen` can use `pixellab.ai`" instead of counting it as an unmet need,
+and an install failure never blames it. It grants nothing, and an optional name
+the project HAS provided behaves exactly like a required one — the credential is
+delivered, the host is reachable. An optional row keeps whatever affordance a
+required one in the same state would have, for a user who wants to close the gap
+after all: "Add key…" for a credential, and the grant buttons for a host the
+session could actually be given — a host in one of the two states below carries
+the reason instead, exactly as a required one does.
 
 A plugin reads its settings from the JSON file at `$SHIPIT_SETTINGS`, which
 ShipIt writes from the manifest's defaults merged with the consumer's
@@ -130,6 +149,19 @@ The practical consequence for you: `/plugins/<name>` shows plugin **source**.
 It does not show a plugin's installed dependencies, because those live in a
 layer that belongs to the plugin's own execution environment, not to yours.
 
+The traffic runs the other way too. A plugin's **command** sees your working
+tree at `/project`, including the directories you declare in `agent.dep-dirs` —
+so a plugin program that imports one of your dependencies, or runs a tool you
+pinned into a declared directory, reads what your own shell reads. It *reads*
+them: a plugin from another repository gets that copy read-only, and a write
+there fails instead of reaching your tree.
+
+A plugin's **service** is the exception. ShipIt starts it without waiting for
+`agent.install`, so it is never handed those directories. It may still find
+them — when ShipIt is not storing them outside the clone, they are ordinary
+files in your tree like any others — so treat a service that reads your
+dependencies as working by accident, and put work that needs them in a command.
+
 ## What containment does not cover
 
 **The project's own files are not a containment boundary.** `/project` is this
@@ -137,8 +169,9 @@ project's workspace, mounted read-write in a plugin's containers, and it is the
 directory a companion CLI starts in — a purpose rather than a leak, since a
 plugin that generates code, formats files, or records its output into the
 project is the ordinary case, and a manifest's `settings` exist so this project
-can say where. ShipIt does not restrict which paths inside the workspace a
-plugin may write, so "it appeared under a path I did not expect" is not an
+can say where. ShipIt restricts one path and no others: a plugin from another
+repository gets your `agent.dep-dirs` read-only. Everywhere else in the
+workspace it may write, so "it appeared under a path I did not expect" is not an
 anomaly the platform will report — it is yours to notice.
 
 **And the workspace is not only content.** `shipit.yaml` (a changed
@@ -206,6 +239,13 @@ copy of is the one thing that does not arrive. Both keys are the author's, and
 [plugin-authoring.md](plugin-authoring.md) → Build in `install` is where they
 are set.
 
+**When a plugin's install is not shared, its card says why** — a row on the
+repository's card in the Plugins tab, and a line in `shipit plugin status`
+(`install.depStoreReason` under `--json`). It is advisory: the version is live
+and whole, it just pays its whole install in every session. The full list of
+what an install has to satisfy is in [plugin-authoring.md](plugin-authoring.md)
+→ What makes an install shareable, which is also what to send its author.
+
 ## Skills
 
 A plugin can ship skills. ShipIt copies each imported plugin's skills into
@@ -234,8 +274,8 @@ re-activates when `shipit.yaml` changes or the session opens. After you push a
 change to the plugin repository, pull it in:
 
 ```
-shipit plugin refresh            # every declared repository
-shipit plugin refresh tools      # just this one
+shipit plugin refresh
+shipit plugin refresh tools
 ```
 
 It waits for the work and prints the commit each repository moved from and to.
@@ -244,8 +284,15 @@ session keeps working, on the OLD version. That distinction is the point of the
 non-zero exit: nothing is broken, but you are not running what you think.
 
 ```
-shipit plugin refresh --json     # the same rows, plus the last install
+shipit plugin refresh --json
 ```
+
+The user has the same verb without asking you: each branch-tracking repository's
+card in the **Plugins tab** carries a **Refresh** button, on this route and this
+round. So a repository may move under you between turns — read the card's commit
+(or `shipit plugin status`) rather than remembering what you last activated. A
+**pinned** repository has no such button: a pin only moves when `shipit.yaml`
+changes, which is an edit, not a refresh.
 
 `--json` adds an `install` object per repository: the commit it was for, the
 outcome, and **the tail of what the install printed — on a successful install as
@@ -277,9 +324,9 @@ not "what is live" (the Plugins tab and `SHIPIT_PLUGIN_COMMIT` already say
 that), but **is what is live usable, and if not, why**:
 
 ```
-shipit plugin status             # every declared repository
-shipit plugin status tools       # just this one
-shipit plugin status --json      # the same thing for a machine reader
+shipit plugin status
+shipit plugin status tools
+shipit plugin status --json
 ```
 
 Per repository it prints the commit being executed, every problem the Plugins
@@ -412,6 +459,13 @@ not allowed yet and offers to add them, for this session or for the whole
 instance. Adding one takes effect on the next companion-CLI call; there is no
 allow-once prompt from inside a plugin container.
 
+**A plugin whose very first `install` failed on those hosts is listed the same
+way**, even though it has no working version and its card reads `unavailable`.
+So when an install failure ends "…is not in this session's egress allowlist",
+the host rows and their Allow buttons are on that same card: allow, then
+press Refresh there. Nothing has to be retyped into Settings, and the session
+does not have to be recreated — the next install reads the allowlist fresh.
+
 Some hosts cannot be added at all, and the card says so **instead of** offering
 the buttons — one row, no action. Two states read that way, and neither is
 something you or the user can fix from the session:
@@ -425,6 +479,11 @@ something you or the user can fix from the session:
 
 If a plugin's host is in either state, stop trying to grant it: the entry saves
 and changes nothing. Say which of the two it is and what would have to change.
+
+A host the manifest marked `optional: true` is not a gap to close. The card
+lists it quietly — "`assetgen` can use `pixellab.ai`" — and it counts toward no
+warning. Leaving it unallowed is a supported configuration, so do not report it
+as a problem, and do not name it as the cause of an unrelated failure.
 
 ## Writing a plugin
 

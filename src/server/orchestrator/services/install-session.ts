@@ -1,27 +1,3 @@
-/**
- * Install-as-session service (docs/149 — skill install UX, 2026-06-09 revision).
- *
- * Installing a skill is a repo change, so it runs in its own dedicated session
- * on a fresh branch and opens a PR — rather than mutating whatever session the
- * user happens to be in. The current session is never touched.
- *
- * Flow (no agent turn ever runs):
- *   1. Claim a fresh repo-backed workspace for the selected repo (the same
- *      warm-pool-aware path the home screen + agent-spawn use).
- *   2. Rename the claim branch to a readable `shipit/install-<plugin>-<slug>`.
- *   3. Run `installPlugin()` in that workspace — writes SKILL.md + marker and a
- *      path-scoped LOCAL commit.
- *   4. Open the PR via `agentCreatePr()` directly and unconditionally — it
- *      pushes the branch AND creates the PR with a fixed title/body. We do NOT
- *      use `emitPrLifecycleAfterCommit` / the `autoCreatePr` toggle: that path
- *      is viewer-gated and this freshly-spawned session has no WS viewer, so it
- *      would silently produce no PR.
- *   5. Graduate the session so it appears in the sidebar, and track the PR.
- *
- * GitHub auth is required up front: the whole point is to open a PR, so we fail
- * fast with a clear message before claiming a workspace if it's missing.
- */
-
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -58,7 +34,6 @@ export interface InstallPluginAsSessionOptions {
   repoUrl: string;
   marketplaceId: string;
   pluginName: string;
-  /** Agent the install targets. Defaults to `defaultAgentId` (Claude in v1). */
   agentId?: AgentId;
 }
 
@@ -69,7 +44,6 @@ export interface InstallPluginAsSessionResult {
   installedDirs: string[];
 }
 
-/** Lowercase kebab slug for a branch segment. */
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 }
@@ -83,21 +57,17 @@ export async function installPluginAsSession(
   if (!opts.marketplaceId || !opts.pluginName) {
     throw new ServiceError(400, "marketplaceId and pluginName are required");
   }
-  // Fail fast before claiming a workspace — the install only makes sense if we
-  // can open a PR for it.
+  // Check auth before claiming: installation must produce a PR.
   if (!deps.githubAuthManager.authenticated) {
     throw new ServiceError(401, "Connect GitHub to install a skill as a pull request.");
   }
 
   const agentId = opts.agentId ?? deps.defaultAgentId;
 
-  // 1. Claim a fresh workspace for the repo. forceFetch so the branch is cut
-  //    off the real current default branch (matches the agent-spawn path).
   const claimed = await deps.claimService.claim(repoUrl, { forceFetch: true });
   const sessionId = claimed.sessionId;
   const workspaceDir = claimed.workspaceDir;
 
-  // 2. Rename the claim branch (`shipit/<rand>`) to a readable install branch.
   let branchName: string;
   try {
     const currentBranch = (await safeSimpleGit(workspaceDir).raw(["branch", "--show-current"])).trim();
@@ -116,8 +86,6 @@ export async function installPluginAsSession(
   deps.sessionManager.setAgentId(sessionId, agentId);
   deps.sessionManager.setAgentPinned(sessionId);
 
-  // 3. Write + local commit. The workspace is fresh, but hold the lock for
-  //    consistency with the rest of the install paths.
   const git = deps.createGitManager(workspaceDir);
   const installResult = await withWorkspaceLock(workspaceDir, async () =>
     installPlugin({
@@ -132,7 +100,7 @@ export async function installPluginAsSession(
     }),
   );
 
-  // 4. Push + open the PR directly (NOT via the viewer-gated lifecycle card).
+  // Create directly: this session has no viewer to trigger the lifecycle card.
   const title = `Install ${opts.pluginName} skill`;
   const skillsDirName = deps.agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";
   const body = [
@@ -147,14 +115,11 @@ export async function installPluginAsSession(
     remoteUrl: repoUrl,
     sessionId,
   }).catch((err: unknown) => {
-    // Surface PR failures as the install failing — the session was spawned but
-    // there's no PR to review, which defeats the flow.
     if (err instanceof ServiceError) throw err;
     throw new ServiceError(500, `Failed to open pull request: ${String(err)}`);
   });
 
-  // 5. Graduate so the session shows in the sidebar. Explicit title + branch so
-  //    AI naming doesn't rename either (it has no chat context to name from).
+  // Explicit names prevent AI naming without chat context.
   const graduationDeps: GraduateSessionDeps = {
     sessionManager: deps.sessionManager,
     runnerRegistry: deps.runnerRegistry,
@@ -172,7 +137,6 @@ export async function installPluginAsSession(
     explicitBranch: branchName,
   });
 
-  // Track the PR so its status surfaces in the new session's PR card.
   if (deps.prStatusPoller) {
     deps.prStatusPoller.trackSession(sessionId, repoUrl);
     await activatePendingAutoMergeForPr(

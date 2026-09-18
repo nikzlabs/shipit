@@ -47,7 +47,6 @@
 
 import type { InlineCode, Link, Root, RootContent, Text } from "mdast";
 
-/** Sentinel href scheme carrying the reference token through to `MarkdownLink`. */
 export const ISSUE_LINK_SCHEME = "shipit-issue:";
 
 /**
@@ -70,16 +69,10 @@ export const ISSUE_LINK_SCHEME = "shipit-issue:";
 const ISSUE_TOKEN_RE =
   /(?<![\w#/-])[A-Za-z0-9][A-Za-z0-9._-]*#(?:[A-Za-z][A-Za-z0-9]*-\d+|\d+)(?![\w-])|(?<![\w-])[A-Z][A-Z0-9]*-\d+(?![\w-])/g;
 
-/** Keep the leaf type of the node a match came from so an inline-code key stays monospace. */
 function leaf(value: string, code: boolean): Text | InlineCode {
   return code ? { type: "inlineCode", value } : { type: "text", value };
 }
 
-/**
- * Split one node's string value into alternating leaf / `link` nodes on each
- * reference match. Returns `null` when nothing matched so callers leave the
- * original node untouched.
- */
 function linkifyValue(value: string, code: boolean): (Text | InlineCode | Link)[] | null {
   ISSUE_TOKEN_RE.lastIndex = 0;
   const out: (Text | InlineCode | Link)[] = [];
@@ -132,7 +125,6 @@ function transform(node: { children: RootContent[] }): void {
   }
 }
 
-/** Remark plugin entry point. */
 export function remarkLinkifyIssues() {
   return (tree: Root): void => {
     transform(tree);

@@ -1,20 +1,5 @@
-# Configures the auto-generated release notes that `gh release create
-# --generate-notes` produces in .github/workflows/release.yml. GitHub reads this
-# file at release time and groups the merged PRs (since the previous tag) into
-# the titled sections below — the result is the changelog shown on the GitHub
-# Releases page and surfaced inline in ShipIt's update panel.
-#
-# Categorization is by PR label. The label set is defined as code in
-# `.github/labels.yml` and synced by `.github/workflows/labels.yml`; the
-# path-based auto-labeler (`.github/workflows/labeler.yml`) applies best-effort
-# labels so these sections populate without manual triage. The final "*"
-# category is a catch-all so a PR with no matching label still appears under
-# "Other Changes" — nothing is ever silently dropped. See RELEASING.md and
-# docs/162-release-channels/plan.md.
-
 changelog:
   exclude:
-    # Keep release-plumbing noise out of user-facing notes.
     labels:
       - ignore-for-release
   categories:
@@ -39,8 +24,7 @@ changelog:
         - refactor
         - ci
         - test
-    # Catch-all — must stay last. Any PR not matched above lands here so every
-    # merged change is represented in the notes.
+    # Keep the catch-all last.
     - title: Other Changes
       labels:
         - "*"

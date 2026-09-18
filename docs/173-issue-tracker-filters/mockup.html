@@ -4,13 +4,6 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Issues tab — filters & table mock (docs/173)</title>
-<!--
-  Static, self-contained visual reference for docs/173-issue-tracker-filters.
-  Not wired to anything — it exists so the design's layout decisions (merged top
-  bar, tabular desktop layout, 2-line title, status/priority/assignee facets, and
-  the mobile card collapse) survive alongside plan.md instead of living only in
-  an ephemeral Present-tab artifact. Open in a browser to view.
--->
 <style>
   :root{
     --bg:#0a0a0b; --bg-2:#111114; --bg-3:#17171b; --bg-hover:#1c1c21;
@@ -38,7 +31,6 @@
     overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.45);
   }
   .caption{color:var(--text-3);font-size:12px;margin:0 2px 8px}
-  /* merged top bar */
   .topbar{display:flex;align-items:stretch;background:var(--bg-2);border-bottom:1px solid var(--border-2)}
   .tab{padding:8px 12px;font-size:12px;font-weight:600;color:var(--text-3);border:0;border-bottom:2px solid transparent;cursor:pointer;background:transparent;white-space:nowrap}
   .tab.active{color:var(--text-1);border-bottom-color:var(--accent)}
@@ -49,7 +41,6 @@
   .meta .count b{color:var(--text-1)}
   .ghost-btn{display:inline-flex;align-items:center;gap:6px;color:var(--text-2);background:transparent;border:0;cursor:pointer;font-size:12px;padding:4px 6px;border-radius:6px}
   .ghost-btn:hover{background:var(--bg-hover)}
-  /* filter bar */
   .filterbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border-2)}
   .search{flex:1;display:flex;align-items:center;gap:7px;background:var(--bg-3);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text-2);min-width:0}
   .search input{flex:1;background:transparent;border:0;outline:0;color:var(--text-1);font-size:13px;min-width:0}
@@ -66,13 +57,11 @@
   .cb.on{background:var(--accent);border-color:var(--accent)}
   .opt .spacer{flex:1}
   .opt .n{color:var(--text-3);font-size:11px}
-  /* badges */
   .badge{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:5px;font-size:11px;font-weight:600;line-height:1;white-space:nowrap}
   .b-err{background:var(--err-bg);color:var(--err)}
   .b-warn{background:var(--warn-bg);color:var(--warn)}
   .b-info{background:var(--info-bg);color:var(--info)}
   .b-def{background:var(--def-bg);color:var(--text-2)}
-  /* table */
   .thead,.trow{display:grid;grid-template-columns:72px minmax(0,1fr) 92px 112px 96px 116px;gap:10px;padding:0 12px}
   .thead{height:30px;align-items:center;background:var(--bg-2);border-bottom:1px solid var(--border-2);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);font-weight:600}
   .thead .r,.trow .r{justify-self:end}
@@ -96,7 +85,6 @@
   .ftr{padding:11px 12px;color:var(--text-3);font-size:12px;border-top:1px dashed var(--border-2)}
   .ftr a{color:var(--accent);cursor:pointer}
 
-  /* ---- mobile phone frame ---- */
   .phone{width:380px;max-width:100%;border:1px solid var(--border);border-radius:22px;overflow:hidden;background:var(--bg);box-shadow:0 12px 40px rgba(0,0,0,.5)}
   .notch{height:26px;background:var(--bg-2);display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border-2)}
   .notch::after{content:"";width:90px;height:5px;border-radius:999px;background:#2c2c33}
@@ -112,7 +100,6 @@
   .chip{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;background:var(--bg-3);border:1px solid var(--border);border-radius:999px;padding:5px 11px;color:var(--text-2);font-size:12px;cursor:pointer}
   .chip.active{border-color:var(--accent);color:var(--text-1)}
   .chip .pill{background:var(--accent);color:#fff;border-radius:999px;font-size:10px;min-width:15px;height:15px;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
-  /* mobile = stacked cards (table degrades) */
   .card{padding:11px 12px;border-bottom:1px solid var(--border-2)}
   .card .l1{display:flex;align-items:center;gap:8px}
   .card .l1 a{display:inline-flex;align-items:center;gap:4px;color:var(--text-3);font-size:11px;text-decoration:none}
@@ -124,7 +111,6 @@
 </head>
 <body>
 
-  <!-- ============ DESKTOP ============ -->
   <div class="col">
     <div>
       <div class="caption">Desktop — Assignee facet (popover open: assignees derived from the list, with avatars + counts)</div>
@@ -188,7 +174,6 @@
     </div>
   </div>
 
-  <!-- ============ MOBILE ============ -->
   <div class="col">
     <div>
       <div class="caption">Mobile — table collapses to stacked cards; count stays in the top bar (consistent with desktop); facets are a scrollable chip row</div>

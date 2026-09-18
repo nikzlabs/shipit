@@ -1,46 +1,8 @@
-/**
- * ActionChecklistCard — inline batch-resolve card for agent-proposed optional
- * actions (docs/207 / planning#155).
- *
- * The agent proposes one or more INDEPENDENT optional follow-ups via the
- * `propose_actions` tool; the user resolves the subset they want with a SINGLE
- * batched submit — a button for one action, checkboxes + Submit for two or more.
- * The load-bearing contract: selection is local UI state until the user clicks,
- * and only then does ONE coherent message reach the agent (one message → one
- * turn), never N racing steering clicks (see CLAUDE.md WebSocket-lifecycle).
- *
- * The card is an immutable, reusable message composer with NO lifecycle: it never
- * locks, has no terminal/stale/dismissed state, and can be re-submitted with a
- * different subset indefinitely. The only post-submit visual change — clearing
- * the boxes and a brief "Submitted · N sent" ack — is transient CLIENT-ONLY state
- * (the spinner category, never persisted); on reload the card rehydrates from its
- * immutable definition. The durable record of a submit is the user message in the
- * transcript below, not anything on the card.
- *
- * The ack is CONDITIONAL ON DELIVERY: `onSubmit` reports whether the message
- * actually reached the wire, and only a `true` clears the boxes and confirms. A
- * dropped send keeps the exact selection the user ticked (including the
- * RECOMMENDED defaults, which the old unconditional clear silently ate) and
- * shows a transient "couldn't send" line instead. That failure line is the same
- * client-only, non-persisted category as the ack — it is NOT a lock and NOT a
- * terminal state: the buttons stay live and pressing Submit again retries.
- *
- * Two resolve paths, identical across single- and multi-action cards:
- *   • Submit / Do it — concatenate the selected payloads into one user turn.
- *     Disabled when nothing is selected (nothing to send).
- *   • Add comment… — seed the MAIN composer with a bullet snapshot of the
- *     SELECTED actions only (so voice + free text apply), never disabled.
- *     Unselected actions are not filled into the composer at all. There is no
- *     card-local input on purpose: ShipIt's voice input lives in the composer.
- */
-
-// eslint-disable-next-line no-restricted-imports -- useEffect is used solely to clear the transient-ack setTimeout on unmount (a browser-timer subscription cleanup), which is exactly the escape-hatch case.
+// eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircleIcon,
-  CheckIcon,
   ChatCircleDotsIcon,
-  ArrowRightIcon,
   ListChecksIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
@@ -49,41 +11,41 @@ import type { ActionChecklistCard as ActionChecklistCardData } from "../../serve
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { Button } from "./ui/button.js";
+import {
+  ActionChecklist,
+  ChecklistSubmitButton,
+  useChecklistSelection,
+  type ChecklistItem,
+} from "./ActionChecklist.js";
 import { formatProposalMessage, formatCommentSnapshot } from "../utils/action-checklist-message.js";
 
 export interface ActionChecklistCardProps {
   card: ActionChecklistCardData;
-  /**
-   * Send one user message (queue-aware) — wired to the same follow-up sender the
-   * rest of the chat uses, so Submit starts a turn when idle or queues mid-turn.
-   *
-   * MUST return whether the message was accepted for delivery; the card's ack is
-   * gated on it. An absent `onSubmit` is by definition undeliverable.
-   */
-  onSubmit?: (text: string) => boolean;
+  /** Returns whether the message was accepted for delivery. */
+  onSubmit?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
 }
 
-/** How long the transient "Submitted · N sent" ack lingers before fading. */
 const ACK_MS = 5000;
 
 export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps) {
   const isSingle = card.actions.length === 1;
 
-  // Selection is ephemeral client state, recomputed from the immutable card each
-  // mount (defaultChecked = the agent's recommendation; the user still decides).
-  const initialSelected = useMemo(
-    () => new Set(card.actions.filter((a) => a.defaultChecked).map((a) => a.id)),
+  const items = useMemo<ChecklistItem[]>(
+    () =>
+      card.actions.map((a) => ({
+        key: a.id,
+        label: a.label,
+        description: a.description,
+        defaultChecked: a.defaultChecked,
+      })),
     [card.actions],
   );
-  const [selected, setSelected] = useState<Set<string>>(initialSelected);
+  const { selected, toggle: toggleSelection, clear: clearSelection } = useChecklistSelection(items);
 
-  // Transient post-Submit acknowledgement — client-only, never persisted.
   const [ackCount, setAckCount] = useState<number | null>(null);
-  // Transient "the send didn't reach the wire" notice — same category as the
-  // ack. Never a lock: Submit stays enabled so the user can just press again.
   const [sendFailed, setSendFailed] = useState(false);
   const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // eslint-disable-next-line no-restricted-syntax -- clears the pending transient-ack timer on unmount so it can't fire setState after teardown; there is no event-handler/derived-state equivalent for unmount cleanup.
+  // eslint-disable-next-line no-restricted-syntax -- timer cleanup on unmount
   useEffect(
     () => () => {
       if (ackTimer.current) clearTimeout(ackTimer.current);
@@ -101,51 +63,38 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
   const toggle = useCallback(
     (id: string) => {
       clearAck();
-      setSelected((prev) => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        return next;
-      });
+      toggleSelection(id);
     },
-    [clearAck],
+    [clearAck, toggleSelection],
   );
 
-  // The selected actions in the card's deterministic order. For a single-action
-  // card the lone action is the implicit selection (no checkbox to tick).
   const selectedActions = useMemo(
     () => (isSingle ? card.actions : card.actions.filter((a) => selected.has(a.id))),
     [isSingle, card.actions, selected],
   );
 
   const handleSubmit = useCallback(() => {
-    // Snapshot the selection atomically here; never re-read checkbox state after.
     const chosen = isSingle ? card.actions : card.actions.filter((a) => selected.has(a.id));
     if (chosen.length === 0) return;
-    // `?? false` covers a card rendered with no sender wired at all: nothing was
-    // sent, so nothing is acknowledged.
-    const delivered = onSubmit?.(formatProposalMessage(card, chosen)) ?? false;
+    const delivered =
+      onSubmit?.(formatProposalMessage(card, chosen), { actionChecklistCardId: card.cardId })
+      ?? false;
     if (ackTimer.current) clearTimeout(ackTimer.current);
     if (!delivered) {
-      // Keep the selection intact — the user must not have to re-tick to retry.
       setAckCount(null);
       setSendFailed(true);
       ackTimer.current = setTimeout(() => setSendFailed(false), ACK_MS);
       return;
     }
-    // Transient client-only ack: clear the boxes and confirm. Never persisted.
     setSendFailed(false);
-    setSelected(new Set());
+    clearSelection();
     setAckCount(chosen.length);
     ackTimer.current = setTimeout(() => setAckCount(null), ACK_MS);
-  }, [isSingle, card, selected, onSubmit]);
+  }, [isSingle, card, selected, onSubmit, clearSelection]);
 
   const handleAddComment = useCallback(() => {
-    // For a single-action card the lone action is the implicit selection.
     const selectedIds = isSingle ? new Set(card.actions.map((a) => a.id)) : selected;
     const snapshot = formatCommentSnapshot(card, selectedIds);
-    // Seed the main composer (where voice + free text live) and reveal it on
-    // mobile. Add comment leaves the card untouched — no ack, no reset.
     useSessionStore.getState().setPrefillText(snapshot);
     useUiStore.getState().setMobilePanel("chat");
   }, [isSingle, card, selected]);
@@ -162,7 +111,6 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
       data-testid="action-checklist-card"
       className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 text-xs flex flex-col gap-2.5"
     >
-      {/* Head */}
       <div className="flex items-center gap-2">
         <span className="shrink-0 text-(--color-accent)">
           {isSingle ? (
@@ -181,7 +129,6 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
         )}
       </div>
 
-      {/* Body: single action (no checkbox) or a checklist */}
       {isSingle ? (
         <div className="pl-0.5">
           <div className="text-(--color-text-primary) font-medium">{card.actions[0].label}</div>
@@ -192,51 +139,14 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
           )}
         </div>
       ) : (
-        <div className="flex flex-col gap-0.5" role="group" aria-label={card.title ?? "Optional follow-ups"}>
-          {card.actions.map((a) => {
-            const checked = selected.has(a.id);
-            return (
-              <label
-                key={a.id}
-                className={`flex items-start gap-2.5 rounded-md px-2 py-1.5 cursor-pointer transition-colors ${
-                  checked ? "bg-(--color-accent-subtle)" : "hover:bg-(--color-bg-hover)"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={checked}
-                  onChange={() => toggle(a.id)}
-                />
-                <span
-                  aria-hidden="true"
-                  className={`shrink-0 mt-0.5 inline-flex items-center justify-center w-4 h-4 rounded border transition-colors ${
-                    checked
-                      ? "bg-(--color-accent) border-(--color-accent) text-(--color-accent-text)"
-                      : "border-(--color-border-primary) text-transparent"
-                  }`}
-                >
-                  <CheckIcon size={ICON_SIZE.XS} weight="bold" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="text-(--color-text-primary) font-medium">{a.label}</span>
-                  {a.defaultChecked && (
-                    <span className="ml-1.5 align-middle text-[10px] font-semibold tracking-wide text-(--color-text-link) bg-(--color-accent-subtle) rounded-full px-1.5 py-px">
-                      RECOMMENDED
-                    </span>
-                  )}
-                  {a.description && (
-                    <span className="block text-(--color-text-secondary) mt-0.5">{a.description}</span>
-                  )}
-                </span>
-              </label>
-            );
-          })}
-        </div>
+        <ActionChecklist
+          items={items}
+          selected={selected}
+          onToggle={toggle}
+          ariaLabel={card.title ?? "Optional follow-ups"}
+        />
       )}
 
-      {/* Transient not-delivered notice — client-only, dies on reload. The
-          selection above is deliberately still intact so Submit retries it. */}
       {sendFailed && (
         <div className="flex items-center gap-1.5 text-(--color-warning)" role="status">
           <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
@@ -244,7 +154,6 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
         </div>
       )}
 
-      {/* Transient post-Submit ack — client-only, dies on reload. */}
       {ackCount !== null && (
         <div className="flex items-center gap-1.5 text-(--color-success)">
           <CheckCircleIcon size={ICON_SIZE.XS} weight="fill" />
@@ -254,12 +163,8 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
         </div>
       )}
 
-      {/* Footer buttons */}
       <div className="flex items-center gap-2">
-        <Button variant="primary" size="md" onClick={handleSubmit} disabled={submitDisabled}>
-          <ArrowRightIcon size={ICON_SIZE.SM} weight="bold" />
-          {submitLabel}
-        </Button>
+        <ChecklistSubmitButton label={submitLabel} disabled={submitDisabled} onClick={handleSubmit} />
         <Button variant="ghost" size="md" onClick={handleAddComment}>
           <ChatCircleDotsIcon size={ICON_SIZE.SM} />
           Add comment…

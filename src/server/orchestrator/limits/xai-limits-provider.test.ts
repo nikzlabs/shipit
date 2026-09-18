@@ -7,21 +7,7 @@ import { XaiLimitsProvider, parseXaiBilling, XAI_QUOTA_URL } from "./xai-limits-
 const ROUTE = "acct_xai";
 const NOW = Date.parse("2026-08-20T12:00:00Z");
 
-/**
- * **The measured payload**, captured verbatim from
- * `cli-chat-proxy.grok.com/v1/billing?format=credits` against a live SuperGrok
- * token on 2026-08-20. Everything else in this file is a variation on it.
- *
- * Transcribed rather than paraphrased for the reason the module docstring
- * gives: the same PATH without `?format=credits` returns a *different*
- * representation with HTTP 200 — calendar-month credit spend, all zeros on a
- * subscription — and that 200 is what convinced an earlier probe there was
- * nothing to read. A fixture that "looks about right" would not distinguish the
- * two, so this one is the real bytes.
- *
- * Note `productUsage[1]` has no `usagePercent` key at all rather than a zero:
- * an unused product omits the field.
- */
+// Captured from cli-chat-proxy.grok.com/v1/billing?format=credits on 2026-08-20.
 const MEASURED = {
   config: {
     currentPeriod: {
@@ -44,10 +30,7 @@ const MEASURED = {
   },
 };
 
-/**
- * The OTHER 200 — bare `/v1/billing`, the response that read as proof of
- * absence. A month-long window and no `creditUsagePercent` at all.
- */
+// Bare /v1/billing also returns HTTP 200, but reports monthly spend.
 const BARE_BILLING = {
   config: {
     monthlyLimit: { val: 0 },
@@ -70,15 +53,11 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 
 let tmpRoot: string;
 
-/** A credential root holding a `.grok/auth.json` shaped like the live one. */
 function writeAuthFile(token: string | null): string {
   const root = fs.mkdtempSync(path.join(tmpRoot, "acct-"));
   fs.mkdirSync(path.join(root, ".grok"), { recursive: true });
   fs.writeFileSync(
     path.join(root, ".grok", "auth.json"),
-    // The live file is SCOPE-KEYED, and the key is not a name anyone would
-    // guess — `https://auth.x.ai::<client-uuid>`. Reproduced so this test
-    // exercises the same walk the harness does rather than a flat shape.
     JSON.stringify(
       token === null
         ? { "https://auth.x.ai::7c9a": { refresh_token: "r" } }
@@ -119,11 +98,6 @@ describe("parseXaiBilling", () => {
     expect(parsed?.weekly.startedAt).toBe("2026-08-18T09:41:48.430Z");
   });
 
-  /**
-   * The whole reason this reader exists. The bare endpoint answers 200 with a
-   * monthly credit object, and reading it as "no usage" is the mistake that
-   * shipped a subscription declared as having no usage API at all.
-   */
   it("refuses the bare /v1/billing response rather than reading it as zero usage", () => {
     expect(parseXaiBilling(BARE_BILLING)).toBeNull();
   });
@@ -135,11 +109,6 @@ describe("parseXaiBilling", () => {
     expect(parseXaiBilling(monthly)).toBeNull();
   });
 
-  /*
-    `billingPeriodStart`/`End` mirror the period in the measured payload and
-    carry no `type`, so they are not a fallback: accepting them would mean
-    guessing the window length the rule above exists to refuse.
-  */
   it("does not fall back to the untyped billing-period fields", () => {
     const config: Record<string, unknown> = { ...MEASURED.config };
     delete config.currentPeriod;
@@ -189,15 +158,10 @@ describe("XaiLimitsProvider", () => {
     expect(await provider.refreshNow("manual", ROUTE)).toEqual({ routeId: ROUTE, outcome: "updated" });
     const snap = await provider.fetch(ROUTE);
     expect(snap?.weekly?.usedPct).toBe(10);
-    // The half that was the reported bug: a `session` window here would put a
-    // permanently-empty `5h · —` beside a real number.
     expect(snap?.session).toBeNull();
-    // The reader STATES it, and the pill does not infer it from the null:
-    // Claude's null means "not delivered yet" on the same field.
     expect(snap?.availableWindows).toEqual(["weekly"]);
     expect(snap?.serviceId).toBe("xai");
     expect(snap?.billingMode).toBe("sub");
-    // Declined on purpose — see requirements.md, 2026-08-20.
     expect(snap?.plan).toBeNull();
   });
 
@@ -207,8 +171,6 @@ describe("XaiLimitsProvider", () => {
     await provider.refreshNow("manual", ROUTE);
 
     const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
-    // The query parameter IS the endpoint. Pinned because dropping it still
-    // returns 200, so nothing else in this file would fail.
     expect(url).toBe(XAI_QUOTA_URL);
     expect(url).toContain("format=credits");
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tok_live");
@@ -232,11 +194,6 @@ describe("XaiLimitsProvider", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  /*
-    401 and 403 are separated because the remedies differ, and the pill's
-    tooltip prints one of them. For an OAuth account a 401 is a lapsed sign-in
-    ("reconnect it"), not a credential that was never good.
-  */
   it("reports a rejected sign-in as an expired token", async () => {
     const fetchImpl = vi.fn(async () => new Response("", { status: 401 })) as unknown as typeof fetch;
     const provider = makeProvider({ fetchImpl });
@@ -256,13 +213,9 @@ describe("XaiLimitsProvider", () => {
 
     const first = await provider.refreshNow("manual", ROUTE);
     expect(first).toMatchObject({ outcome: "rate-limited", lockedUntil: NOW + 120_000 });
-    // A route 429'd before it ever reported still owes the user the countdown
-    // behind its disabled button — so `fetch` returns a snapshot, not null.
     const snap = await provider.fetch(ROUTE);
     expect(snap?.lockedUntil).toBe(NOW + 120_000);
     expect(snap?.weekly).toBeNull();
-    // ...and it claims nothing about the plan's windows, so the pill draws both
-    // as pending rather than declaring an unmetered plan.
     expect(snap?.availableWindows).toBeUndefined();
 
     expect(await provider.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "locked" });

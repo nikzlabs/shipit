@@ -3,7 +3,12 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSettingsDialog } from "./SessionSettingsDialog.js";
 import { useSessionStore } from "../../stores/session-store.js";
-import type { EgressAllowlistView, SessionCapabilities, SessionInfo } from "../../../server/shared/types.js";
+import type {
+  EgressAllowlistView,
+  EgressEnforcementStatus,
+  SessionCapabilities,
+  SessionInfo,
+} from "../../../server/shared/types.js";
 
 function renderDialog(sessionId = "s1") {
   return render(<SessionSettingsDialog sessionId={sessionId} open onOpenChange={() => {}} />);
@@ -12,14 +17,16 @@ function renderDialog(sessionId = "s1") {
 function stubFetch(opts: {
   initialOverride?: boolean | null;
   enforcementActive?: boolean;
+
+  enforcementStatus?: EgressEnforcementStatus;
   startedContained?: boolean | null;
   pendingRestart?: boolean;
 } = {}) {
   const { initialOverride = null, enforcementActive = true, startedContained = null } = opts;
+  const enforcementStatus: EgressEnforcementStatus =
+    opts.enforcementStatus ?? (enforcementActive ? "active" : "no-sidecar");
   let override = initialOverride;
-  // Pending is recomputed server-side as startedContained !== effectiveContained.
-  // With global Contained (globalEnabled=true) the effective containment is:
-  // inherit→true, contained→true, open→false.
+
   const effectiveContained = (): boolean => override ?? true;
   const pending = (): boolean => startedContained !== null && startedContained !== effectiveContained();
   const sessionView = () => ({
@@ -29,6 +36,7 @@ function stubFetch(opts: {
     effectiveContained: effectiveContained(),
     globalEnabled: true,
     enforcementActive,
+    enforcementStatus,
     startedContained,
     pendingRestart: pending(),
   });
@@ -36,11 +44,16 @@ function stubFetch(opts: {
     entries: [],
     globalEnabled: true,
     enforcementActive,
+    enforcementStatus,
     session: sessionView(),
     defaultsCustomized: false,
   });
   const impl = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.startsWith("/api/egress/allowlist")) return { ok: true, status: 200, json: async () => view() } as Response;
+
+    if (url.startsWith("/api/egress/session/") && init?.method !== "PUT") {
+      return { ok: true, status: 200, json: async () => sessionView() } as Response;
+    }
     if (url.startsWith("/api/egress/session/") && init?.method === "PUT") {
       override = (JSON.parse((init.body as string) ?? "{}").override ?? null) as boolean | null;
       return { ok: true, status: 200, json: async () => sessionView() } as Response;
@@ -63,7 +76,7 @@ afterEach(() => {
 
 describe("SessionSettingsDialog (docs/172)", () => {
   it("loads the session's current override and reflects it (open → 'Open' checked)", async () => {
-    stubFetch({ initialOverride: false }); // override=false → Open
+    stubFetch({ initialOverride: false });                         
     renderDialog();
     await waitFor(() =>
       expect(screen.getByRole("radio", { name: "Open" })).toHaveAttribute("aria-checked", "true"),
@@ -74,12 +87,12 @@ describe("SessionSettingsDialog (docs/172)", () => {
     stubFetch({ initialOverride: null });
     renderDialog();
     await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "Inherit global" })).toHaveAttribute("aria-checked", "true"),
+      expect(screen.getByRole("radio", { name: "Inherit workspace" })).toHaveAttribute("aria-checked", "true"),
     );
   });
 
   it("warns when this session would be contained but the deployment can't enforce", async () => {
-    stubFetch({ initialOverride: null, enforcementActive: false }); // inherit → global Contained, enforcement off
+    stubFetch({ initialOverride: null, enforcementActive: false });                                               
     renderDialog();
     await waitFor(() =>
       expect(screen.getByTestId("session-settings-enforcement-warning")).toBeInTheDocument(),
@@ -87,7 +100,7 @@ describe("SessionSettingsDialog (docs/172)", () => {
   });
 
   it("does NOT warn when this session is Open even if enforcement is inactive", async () => {
-    stubFetch({ initialOverride: false, enforcementActive: false }); // override=false → Open
+    stubFetch({ initialOverride: false, enforcementActive: false });                         
     renderDialog();
     await waitFor(() =>
       expect(screen.getByRole("radio", { name: "Open" })).toHaveAttribute("aria-checked", "true"),
@@ -119,7 +132,7 @@ describe("SessionSettingsDialog (docs/172)", () => {
 
   describe("pending-restart (mode differs from the live container)", () => {
     it("shows the pending indicator only on a real delta", async () => {
-      // Live container started Contained; user is in Open → pending.
+
       stubFetch({ initialOverride: false, startedContained: true });
       renderDialog();
       await waitFor(() => expect(screen.getByTestId("session-settings-pending")).toBeInTheDocument());
@@ -127,10 +140,10 @@ describe("SessionSettingsDialog (docs/172)", () => {
     });
 
     it("does NOT show the pending indicator when the live mode matches", async () => {
-      // Live container started Contained; inherit (global Contained) → no delta.
+
       stubFetch({ initialOverride: null, startedContained: true });
       renderDialog();
-      await waitFor(() => expect(screen.getByRole("radio", { name: "Inherit global" })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole("radio", { name: "Inherit workspace" })).toBeInTheDocument());
       expect(screen.queryByTestId("session-settings-pending")).not.toBeInTheDocument();
     });
 
@@ -168,7 +181,7 @@ describe("SessionSettingsDialog (docs/172)", () => {
       renderDialog();
       await waitFor(() => expect(screen.getByRole("radio", { name: "Open" })).toBeInTheDocument());
       await userEvent.click(screen.getByRole("radio", { name: "Open" }));
-      // The PUT happened…
+
       await waitFor(() =>
         expect(impl.mock.calls.some(([url, init]) => url === "/api/egress/session/s1" && init?.method === "PUT")).toBe(true),
       );
@@ -178,17 +191,11 @@ describe("SessionSettingsDialog (docs/172)", () => {
   });
 });
 
-/**
- * docs/279 — the sandbox half of the dialog. The two halves are mutually
- * exclusive, so these also pin that a sandbox does NOT get the containment radio
- * group (which would be a second control over the same session's egress).
- */
 describe("SessionSettingsDialog — sandbox capabilities (docs/279)", () => {
   const CAPS: SessionCapabilities = {
     git: false, docker: false, network: true, dangerousGitHubOps: false,
   };
 
-  /** Mark s1 as a sandbox in the session list — the dialog's own discriminator. */
   function asSandbox() {
     useSessionStore.setState({
       sessions: [{ id: "s1", kind: "sandbox", capabilities: CAPS } as unknown as SessionInfo],
@@ -206,8 +213,7 @@ describe("SessionSettingsDialog — sandbox capabilities (docs/279)", () => {
     const impl = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/sessions/s1/capabilities" && init?.method === "PUT") {
         const sent = JSON.parse((init.body as string) ?? "{}").capabilities as SessionCapabilities;
-        // Stand in for the server's `normalizeCapabilities`, which is what
-        // actually enforces the sub-grant rule.
+
         caps = { ...sent, dangerousGitHubOps: sent.git && sent.dangerousGitHubOps };
         return { ok: true, status: 200, json: async () => view() } as Response;
       }

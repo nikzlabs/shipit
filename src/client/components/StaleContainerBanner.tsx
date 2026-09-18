@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ArrowsClockwiseIcon, CircleNotchIcon, WarningIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
+import { ArrowsClockwiseIcon, WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -80,7 +81,7 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
           onClick={() => void restart()}
         >
           {restarting
-            ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+            ? <Spinner size={ICON_SIZE.XS} />
             : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
           {turnRunning ? "Restart after turn" : "Restart agent"}
         </Button>

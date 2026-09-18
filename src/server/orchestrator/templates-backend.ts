@@ -1,9 +1,7 @@
 import type { ProjectTemplate } from "../shared/types.js";
 import { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 
-// ---------------------------------------------------------------------------
-// Backend & utility template definitions
-// ---------------------------------------------------------------------------
+// Install through agent.install: service-side lockfile writes can trigger a restart loop.
 
 export const BACKEND_TEMPLATES: ProjectTemplate[] = [
   {
@@ -81,7 +79,7 @@ compose: docker-compose.yml
   api:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "3001:3001"
     volumes:
@@ -161,7 +159,7 @@ compose: docker-compose.yml
   api:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "3001:3001"
     volumes:
@@ -239,7 +237,7 @@ compose: docker-compose.yml
   api:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "3001:3001"
     volumes:
@@ -248,7 +246,6 @@ compose: docker-compose.yml
     },
   },
 
-  // ---- Utility ----
   {
     id: "node-cli-ts",
     name: "Node.js CLI",

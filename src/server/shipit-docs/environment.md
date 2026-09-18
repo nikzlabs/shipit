@@ -80,11 +80,12 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
 - **Node.js** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version). The container bakes Node 24, but **a repo's own Node pin wins** — see [Node version](#node-version) below.
 - **git**, **git-lfs**, **curl** (see [Git LFS](#git-lfs) below)
 - **python3**, **make**, **g++** (for native npm addons)
-- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex and `opencode` / OpenCode are installed by default; `grok` / Grok Build is available but off by default, and an install can narrow or widen the set) are installed; ShipIt invokes whichever the user selected for the session
+- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex and `opencode` / OpenCode are installed by default; `grok` / Grok Build and `antigravity` / Antigravity are available but off by default, and an install can narrow or widen the set) are installed; ShipIt invokes whichever the user selected for the session
 
   Codex authentication has two modes — they are not interchangeable:
 
   - **ChatGPT subscription** (preferred). The user signs in with `Sign in with ChatGPT` in the UI; the credentials are written to `~/.codex/auth.json` (a symlink onto the credentials volume). Bills against their ChatGPT plan / Codex credits.
+  - **OpenCode with ChatGPT** reuses the same connected OpenAI account and quota. ShipIt currently offers GPT-5.5 on this route. The image keeps the Codex CLI as a login and renewal dependency even when only the OpenCode harness is selected. This does not add Codex to the session picker. It gives OpenCode only an access token, account identity, and expiry; Codex's account machinery owns renewal. Managed OpenCode runs use a private XDG data root under `HOME/.local/share/opencode/shipit-data`. Terminal OpenCode logins do not configure this route. Use ShipIt's account settings and model selection; do not copy auth files. Existing conversation state is migrated automatically.
   - **`OPENAI_API_KEY` env var**. Bills against their OpenAI Platform account. ShipIt only injects this into the agent process when no ChatGPT login is present — when both are configured, the env var is stripped so the user isn't double-billed.
 - **Playwright** with headless Chrome (available via browser tools)
 - **Android build toolchain** — JDK 17 (`JAVA_HOME=/opt/java`), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk` — `sdkmanager`, `adb`, platforms 34/35, build-tools), and Gradle 8.7. Always present, so any Android/Gradle repo builds, lints, and runs JVM/snapshot tests with no per-repo setup (no `shipit.yaml` Android fields). See [android.md](android.md).
@@ -208,7 +209,7 @@ headless-browser codec support, a corrupt asset) all look plausible. **Before
 chasing any of those, check the file itself**:
 
 ```bash
-head -c 120 path/to/asset.png     # a "git-lfs.github.com/spec/v1" header means it's a stub
+head -c 120 path/to/asset.png
 ```
 
 If it is a stub, fetch the content rather than debugging the renderer:
@@ -228,11 +229,40 @@ the bandwidth cost on asset-heavy repos; a manual `git lfs pull` still works.
 ## Session container lifecycle — idle containers are destroyed, not paused
 
 When a session sits idle (no one viewing it and no agent turn running), ShipIt
-**stops and removes** its container to reclaim host resources. The UI may call
+may **stop and remove** its container to reclaim host resources. The UI may call
 this "shutting down" or "pausing," but it is a full teardown — `docker stop` +
 `docker rm`, **not** `docker pause`. The container is not frozen and later
 thawed; it is deleted. When the user sends the next message, a **brand-new**
 container is created and re-mounted onto the same host clone at `/workspace`.
+
+**Three things cause it, and the fastest one is not a timer.**
+
+**Memory pressure**, the steady-state one: ShipIt reclaims when it is over its
+**memory budget** (Settings → Advanced). With none set, the default is the whole
+machine on a server deployment and half of it on a local install, where the user
+is working on the same machine. `shipit settings get advanced.memoryBudgetMb`
+reads what the user configured — a number, or `not set` meaning the default
+above. It is the configured value, not the enforced one: ShipIt clamps a budget
+larger than the host's memory, so quote the number as what was set rather than
+as what is in force (`/shipit-docs/settings.md`). It takes the longest-idle session first. Two tiers, in
+order: the session's **agent container** goes first and its Compose services
+keep running — an idle session's preview stays up and reachable — and only if
+that did not free enough does the **preview stack** stop too. So a session you
+left an hour ago may still have both, and a preview may outlive the agent
+container that started it.
+
+**A ShipIt update**: when ShipIt itself is updated, every container left on the
+old image that is genuinely idle at that moment is destroyed and *not* replaced —
+regardless of how much memory is free. A fresh one starts when the session is
+next opened. "Genuinely idle" excludes a live turn, a turn the agent woke itself
+for, an outstanding background task, a running terminal, an `agent.install` in
+flight, an attached viewer, and a session with **Keep preview running** enabled.
+
+**Idle age**, on a much longer clock: a session untouched for **24 hours** drops
+a disk tier, which disposes its runner and destroys its container (and by two
+days to two weeks, depending on whether its work merged, reclaims the checkout
+itself). This one *is* time-driven — the "no fixed grace period" below is about
+the memory path, not this ladder.
 
 The user can explicitly enable **Keep preview running** for a session from its
 overflow menu. While enabled, ShipIt reserves that session's container and its
@@ -249,6 +279,19 @@ no durability guarantee and belong in `docker-compose.yml`.
   a cron entry, a polling loop, an in-memory queue or timer — is killed on
   eviction and does **not** come back. The next message lands in a fresh
   container with none of it running.
+- **A *tracked* background task defers memory-path reclaim — but it is not a
+  job lifetime.** A job you start with the Bash tool's `run_in_background`
+  (rather than a bare `&` or `nohup`) is reported to ShipIt, and while it is
+  outstanding the session counts as busy and is not reclaimed for memory.
+  Two limits. It holds only while the agent CLI process stays resident — when
+  that exits, its background work dies with it and the count goes to zero at
+  once. And ShipIt honours the last reported task list for **one hour after
+  that list last changed**, not one hour per task: a running task emits nothing
+  in between, not even when it prints output, so a single long job coasts on
+  one timestamp — while any *other* task starting or finishing restarts the
+  window for everything still outstanding. Treat it as cover for a build or a
+  test run, never as a guarantee your job runs to completion. Nothing about it
+  survives eviction once that does happen.
 - **`/workspace` (the git repo) and `/persist` (non-git scratch) persist** —
   both are host-backed and re-mounted onto the new container. In-memory state,
   processes, and files written *elsewhere* (outside `/workspace`, `/persist`,
@@ -260,10 +303,12 @@ no durability guarantee and belong in `docker-compose.yml`.
   file at the repo root — does not. Nothing warns you first, so put scratch that
   must survive in `/persist` and declare build output you depend on
   ([shipit-yaml.md](shipit-yaml.md) → Dependency directories).
-- **There is a grace period of 10 minutes** after the last viewer detaches
-  before a container becomes eligible for eviction (host memory pressure can
-  cut this short). A short-lived timer may fire within that window, but **do
-  not rely on it** — it is a cushion, not a guarantee.
+- **There is no grace period you can count on.** On the memory path a session
+  is reclaimed only when ShipIt is over its budget, longest-idle first — so a
+  timer may well outlive the turn that started it, and may equally be killed
+  minutes later if the machine fills up. A ShipIt update can take it at any
+  moment, and 24 hours idle takes it regardless. **Do not rely on any of it** —
+  the cushion is incidental, not a guarantee.
 
 **If something needs to keep running or run on every (re)start, declare it —
 don't start it at runtime:**
@@ -280,7 +325,22 @@ to ShipIt and dies on the next eviction. Move it into compose or
 
 ## Resource limits
 
-Agent containers have default limits (1536 MB memory, 0.5 CPU, 256 PIDs) that
-can be increased via the `agent` section in `shipit.yaml`. See
-[shipit-yaml.md](shipit-yaml.md) for details. Service containers have their
-own resource limits set in `docker-compose.yml`.
+Session containers are sized automatically from host capacity — the repo cannot
+set its own limits, and there is no `shipit.yaml` field for them. Memory is a
+generous ceiling (roughly half the host's usable RAM), PIDs are capped at 8192,
+and CPU is capped at **about half the host's cores after a reserve**, so one
+session running a full test suite cannot claim the whole machine and starve the
+orchestrator.
+
+A CPU quota does not narrow what most tools see, so `nproc` and Node's
+`os.availableParallelism()` can report more cores than the container may
+actually use. A pool sized from that number oversubscribes the quota, which
+costs context switching and memory and can end up slower than a right-sized
+pool. When a test run or build is CPU-heavy, pass an explicit worker count
+(`vitest run --maxWorkers=4`, `make -j4` — bare `make -j` is unlimited, which is
+worse) rather than letting the tool guess.
+
+Service containers declared in `docker-compose.yml` are separate containers, so
+they do **not** draw on the session's CPU budget — they get their own. ShipIt
+gives them a low scheduling weight so they yield to the platform under
+contention; set your own `deploy.resources` limits if a service needs a cap.

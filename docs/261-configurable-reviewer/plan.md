@@ -869,6 +869,20 @@ refuses. That was the cost of the phase boundary and it was taken deliberately; 
 reason to widen phase 2. It is closed now, and `review-command-callers.test.ts` is what keeps it
 closed.
 
+**The composer has one path, and a review ShipIt cannot broker does not happen** (planning#571).
+`composeReviewMessage` used to name a fresh `Task` subagent twice — as the entire message when
+Multi-agent sessions was off, and as the fallback whenever `shipit agent run` exited non-zero —
+so the setting being off, or one failed spawn, silently returned the review to the same model
+that wrote the code. That is the outcome req 1 exists to prevent, reached by the path nobody
+reviews. It also could not be carried out on every harness: `Task` is a Claude tool, and a
+harness like Antigravity (docs/301) declares no subagent tool to the model at all, so the
+fallback named a tool that does not exist there. Both instructions are removed. The message now
+takes only the file path — no `ReviewComposition`, no mode, no reviewer name — and a failed
+brokered run ends the review with the command's own reason relayed to the user. Because that
+leaves `shipit agent run` as the only path, and it refuses while Multi-agent sessions is off,
+`resolveReviewRequest` now refuses `/review` before the turn starts rather than after it is
+spent (`client/utils/review-command.ts`).
+
 **Phase 4 is not "confirm nothing changed".** The draft said attribution was unchanged, and
 the review found that the persisted consult card carries only `subAgentId`, duration and cost
 (`shared/types/domain-types/chat.ts:51`) — it cannot say which service, model or effort ran.

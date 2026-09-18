@@ -1,12 +1,3 @@
-/**
- * docs/252 phase 2 — the three load-time migrations that move existing installs
- * onto `(service, billing mode)`-keyed credentials.
- *
- * Each is a one-way move whose *result* has to keep reproducing forever, so the
- * assertions are about what an install that already had accounts, a key, or
- * routing settings looks like afterwards — not about the mechanism.
- */
-
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -45,10 +36,6 @@ describe("providerAccounts → credentialRoutes", () => {
   });
 
   it("preserves every field the routing machinery reads", () => {
-    // An earlier draft of this design dropped four of these. Each omission is a
-    // silent behaviour change: selection filters on `status` and
-    // `exhaustedUntil`, balanced routing reads `lastUsedAt`, and duplicate
-    // detection and label adoption use `externalId` and `labelIsGenerated`.
     const store = new CredentialStore(seed({
       providerAccounts: {
         codex: [account("acct_2", {
@@ -85,8 +72,6 @@ describe("providerAccounts → credentialRoutes", () => {
   it("runs once — a later boot cannot resurrect an account the user disconnected", () => {
     const dir = seed({ providerAccounts: { claude: [account("acct_1")] } });
     new CredentialStore(dir).deleteCredentialRoute("acct_1");
-    // The legacy blob is still on disk (it is the downgrade path) and must NOT
-    // be re-imported: `credentialRoutes` being present is what marks it done.
     expect(new CredentialStore(dir).listCredentialRoutes("anthropic", "sub")).toEqual([]);
   });
 });
@@ -97,8 +82,6 @@ describe("agentEnv key → credential route", () => {
     const [route] = store.listCredentialRoutes("openai", "key");
     expect(route).toMatchObject({ serviceId: "openai", billingMode: "key", via: "string" });
     expect(store.getCredentialSecret(route.id)).toBe("sk-openai");
-    // Moved, not copied: a copy would keep being delivered from the old slot
-    // after the user removed the credential.
     expect(store.getAgentEnv("OPENAI_API_KEY")).toBeUndefined();
   });
 

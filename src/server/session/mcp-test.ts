@@ -1,14 +1,4 @@
-/**
- * Minimal MCP client used by the session worker's `POST /mcp/test` endpoint
- * (docs/088-mcp-integration). Speaks just enough of the MCP JSON-RPC 2.0
- * protocol to perform `initialize` → `tools/list` and tear the connection
- * down. NOT a general-purpose MCP client — the agent's Claude CLI owns the
- * real connections; this exists purely for the connectivity-test UX.
- *
- * Configs passed here are already RESOLVED (no `$secret:` placeholders) — the
- * caller substitutes them against `process.env` first, same as each agent
- * adapter's `writeMcpConfig()`.
- */
+// Callers must resolve secret placeholders before testing the connection.
 
 import { spawn } from "node:child_process";
 import type { McpServerConfig, McpTestResult, McpTool } from "../shared/types/mcp-types.js";
@@ -26,7 +16,6 @@ interface JsonRpcResponse {
   error?: { code: number; message: string };
 }
 
-/** Extract a tool list from a `tools/list` result payload. */
 function parseTools(result: unknown): McpTool[] {
   const tools = (result as { tools?: unknown })?.tools;
   if (!Array.isArray(tools)) return [];
@@ -37,7 +26,6 @@ function parseTools(result: unknown): McpTool[] {
     .map((t) => ({ name: t.name, description: t.description }));
 }
 
-/** Run `initialize` + `tools/list` against a server config. */
 export async function testMcpServer(config: McpServerConfig): Promise<McpTestResult> {
   try {
     const tools =
@@ -50,7 +38,6 @@ export async function testMcpServer(config: McpServerConfig): Promise<McpTestRes
   }
 }
 
-/** Spawn a stdio MCP server, handshake, list tools, kill it. */
 function testStdioServer(
   command: string,
   args: string[],
@@ -115,14 +102,13 @@ function testStdioServer(
         try {
           msg = JSON.parse(line) as JsonRpcResponse;
         } catch {
-          continue; // server log noise on stdout — ignore
+          continue;
         }
         if (msg.id === 1) {
           if (msg.error) {
             finish(() => reject(new Error(`initialize failed: ${msg.error?.message}`)));
             return;
           }
-          // Handshake complete — notify + request tools.
           send({ jsonrpc: "2.0", method: "notifications/initialized" });
           send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
         } else if (msg.id === 2) {
@@ -136,7 +122,6 @@ function testStdioServer(
       }
     });
 
-    // Kick off the handshake.
     send({
       jsonrpc: "2.0",
       id: 1,
@@ -150,7 +135,6 @@ function testStdioServer(
   });
 }
 
-/** Open a Streamable-HTTP MCP server, handshake, list tools. */
 async function testHttpServer(
   url: string,
   headers: Record<string, string>,
@@ -175,8 +159,7 @@ async function testHttpServer(
         throw new Error(`HTTP ${res.status} ${res.statusText}`);
       }
       const text = await res.text();
-      // Streamable HTTP may answer with SSE framing (`data: {...}`) or plain
-      // JSON. Pull the last JSON object out either way.
+      // Accept SSE-framed or plain JSON responses.
       const jsonLine = text
         .split("\n")
         .map((l) => l.replace(/^data:\s*/, "").trim())

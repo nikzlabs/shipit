@@ -3,7 +3,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import type { GitTreeUidDeps } from "./git-tree-uid.js";
 import {
   gitCredentialConfig,
   gitCredentialEnv,
@@ -11,22 +10,6 @@ import {
   parseRemoteOrigin,
   resolveTreeRemoteCredential,
 } from "./git-remote-credential.js";
-
-/**
- * The dropped-uid state, faked. `resolveGitTreeUid` answers "no drop" for any
- * process that is not root, and this container has no root and refuses
- * `unshare -r` — so the branch docs/266-orchestrator-git-trust-boundary E3 exists for is only reachable
- * through this seam. What it can NOT prove is stated in `plan.md` §4.
- */
-const AS_ROOT_ON_WORKER_TREE: GitTreeUidDeps = {
-  getuid: () => 0,
-  statOwner: () => ({ uid: 1000, gid: 1000 }),
-};
-
-const NOT_ROOT: GitTreeUidDeps = {
-  getuid: () => 1000,
-  statOwner: () => ({ uid: 1000, gid: 1000 }),
-};
 
 describe("parseRemoteOrigin", () => {
   it("splits an https GitHub remote into origin, host, owner and repo", () => {
@@ -51,11 +34,6 @@ describe("parseRemoteOrigin", () => {
   });
 
   it("follows the global insteadOf rewrite for a GitHub SSH remote", () => {
-    // `initGlobalGitConfig` rewrites exactly these two prefixes to HTTPS
-    // (docs/200), so git never speaks SSH and DOES want an HTTPS credential.
-    // Reading the configured URL literally would decline one and the push would
-    // fail with "could not read Username" — a regression against E1, which
-    // authenticated these through the global inline helper. (Review finding.)
     for (const url of [
       "git@github.com:acme/widgets.git",
       "ssh://git@github.com/acme/widgets.git",
@@ -70,12 +48,8 @@ describe("parseRemoteOrigin", () => {
   });
 
   it("returns null for the remotes that authenticate nothing", () => {
-    // A fork's origin before it is re-pointed, another session's directory
-    // added as a remote, and every test's bare path.
     expect(parseRemoteOrigin("/workspace/sessions/abc/workspace")).toBeNull();
     expect(parseRemoteOrigin("file:///tmp/bare.git")).toBeNull();
-    // Any OTHER ssh remote stays null — the image ships no key, so ShipIt holds
-    // nothing for it, and there is no rewrite that turns it into HTTPS.
     expect(parseRemoteOrigin("git@gitlab.example:acme/widgets.git")).toBeNull();
     expect(parseRemoteOrigin("ssh://git@ghe.example/acme/widgets.git")).toBeNull();
     expect(parseRemoteOrigin(undefined)).toBeNull();
@@ -93,7 +67,7 @@ describe("parseRemoteOrigin", () => {
 describe("resolveTreeRemoteCredential", () => {
   const url = async (): Promise<string> => "https://github.com/acme/widgets.git";
 
-  it("mints for a dropped-uid git on an https remote", async () => {
+  it("mints on an https remote, whatever uid the git would run as", async () => {
     const seen: string[] = [];
     const credential = await resolveTreeRemoteCredential(
       "/workspace/sessions/s1/workspace",
@@ -103,7 +77,6 @@ describe("resolveTreeRemoteCredential", () => {
         return { username: "x-access-token", password: "ghs_installation" };
       },
       url,
-      AS_ROOT_ON_WORKER_TREE,
     );
     expect(seen).toEqual(["github.com:acme/widgets"]);
     expect(credential).toEqual({
@@ -112,25 +85,24 @@ describe("resolveTreeRemoteCredential", () => {
     });
   });
 
-  it("does NOT mint when the tree needs no uid drop", async () => {
-    // The bare cache, /opt/shipit, local mode, the session worker, every test.
-    // Those keep reading the orchestrator's own global helper, which reads the
-    // root-only PAT file — handing them a second credential would be churn.
+  it("mints for a tree that needs no uid drop — the bare cache", async () => {
     let called = false;
     const credential = await resolveTreeRemoteCredential(
       "/workspace/repo-cache/abc",
       "origin",
       async () => { called = true; return { username: "u", password: "p" }; },
       url,
-      NOT_ROOT,
     );
-    expect(called).toBe(false);
-    expect(credential).toBeNull();
+    expect(called).toBe(true);
+    expect(credential).toEqual({
+      origin: "https://github.com",
+      token: { username: "u", password: "p" },
+    });
   });
 
   it("does NOT mint without a resolver", async () => {
     expect(
-      await resolveTreeRemoteCredential("/w", "origin", undefined, url, AS_ROOT_ON_WORKER_TREE),
+      await resolveTreeRemoteCredential("/w", "origin", undefined, url),
     ).toBeNull();
   });
 
@@ -141,25 +113,20 @@ describe("resolveTreeRemoteCredential", () => {
       "origin",
       async () => { called = true; return { username: "u", password: "p" }; },
       async () => "/workspace/sessions/other/workspace",
-      AS_ROOT_ON_WORKER_TREE,
     );
     expect(called).toBe(false);
     expect(credential).toBeNull();
   });
 
   it("degrades to null — never throws — when the resolver fails or declines", async () => {
-    // docs/266-orchestrator-git-trust-boundary req 6 / CLAUDE.md invariant 2: the post-turn path may not gain a
-    // way to fail. A credential that cannot be minted falls back to the
-    // behaviour that shipped with E1; it never aborts the operation.
     expect(
-      await resolveTreeRemoteCredential("/w", "origin", async () => null, url, AS_ROOT_ON_WORKER_TREE),
+      await resolveTreeRemoteCredential("/w", "origin", async () => null, url),
     ).toBeNull();
     expect(
       await resolveTreeRemoteCredential(
         "/w", "origin",
         () => { throw new Error("mint exploded"); },
         url,
-        AS_ROOT_ON_WORKER_TREE,
       ),
     ).toBeNull();
     expect(
@@ -167,23 +134,11 @@ describe("resolveTreeRemoteCredential", () => {
         "/w", "origin",
         async () => ({ username: "u", password: "p" }),
         () => { throw new Error("no such remote"); },
-        AS_ROOT_ON_WORKER_TREE,
       ),
     ).toBeNull();
   });
 });
 
-/**
- * The security properties of the `-c` bundle, checked against the git that is
- * actually installed rather than against a reading of its documentation.
- *
- * Real git matters here for one reason above the others: the whole mechanism
- * rests on `credential.helper=` (empty) RESETTING a multi-valued list that the
- * global config has already populated. If that were not true, the orchestrator's
- * own helper would answer first and the repo-scoped credential would never be
- * reached — and on an App-only install that reads as "no credential" with no
- * error anywhere.
- */
 describe("gitCredentialConfig against real git", () => {
   let tmpDir: string;
   let globalConfig: string;
@@ -198,8 +153,6 @@ describe("gitCredentialConfig against real git", () => {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
-      // Prompts are disabled, so "no helper answered" exits non-zero. That IS
-      // the assertion in the negative cases below.
       return `FAILED: ${String((err as { stderr?: Buffer }).stderr ?? err)}`;
     }
   };
@@ -207,9 +160,7 @@ describe("gitCredentialConfig against real git", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-cred-config-"));
     globalConfig = path.join(tmpDir, "gitconfig");
-    // Stand in for the orchestrator's own global helper — the one a dropped-uid
-    // git must NOT end up using. Written through `git config` so the value is
-    // escaped the way git expects (a raw `;` in a config file starts a comment).
+    // git config quotes the helper's semicolons, which would start config comments.
     fs.writeFileSync(globalConfig, "");
     execFileSync("git", [
       "config", "--file", globalConfig, "credential.helper",
@@ -251,8 +202,6 @@ describe("gitCredentialConfig against real git", () => {
       gitCredentialConfig(credential),
       gitCredentialEnv(credential),
     );
-    // Neither ours nor the inherited PAT: the reset removed the unscoped helper
-    // and our replacement is scoped to github.com.
     expect(out).not.toContain("ghs_repo_scoped");
     expect(out).not.toContain("inherited-pat");
     expect(out).toContain("FAILED");
@@ -265,11 +214,6 @@ describe("gitCredentialConfig against real git", () => {
   });
 
   it("answers a PATH-bearing fill, which is what a real fetch/push/LFS sends", () => {
-    // The other fixtures send only protocol+host. git-lfs and a
-    // `credential.useHttpPath` install both add `path=owner/repo.git`, and a
-    // URL-scoped helper that stopped matching those would leave every real
-    // operation uncredentialed while this suite stayed green. (Review finding:
-    // a missing fixture, not a defect — checked against the installed git.)
     const credential = {
       origin: "https://github.com",
       token: { username: "x-access-token", password: "ghs_repo_scoped" },
@@ -292,7 +236,6 @@ describe("gitCredentialConfig against real git", () => {
     const env = gitCredentialEnv(credential);
     expect(fill("protocol=https\nhost=ghe.example:8443\n\n", args, env))
       .toContain("password=ghs_enterprise");
-    // A different port is a different origin and gets nothing.
     expect(fill("protocol=https\nhost=ghe.example\n\n", args, env))
       .not.toContain("ghs_enterprise");
   });
@@ -316,7 +259,6 @@ describe("gitCredentialSpawnOverrides", () => {
     expect(args[0]).toBe("-c");
     expect(args).toContain("credential.helper=");
     expect(args.filter((a) => a === "-c")).toHaveLength(2);
-    // /proc/<pid>/cmdline is readable by every uid in the container.
     expect(args.join(" ")).not.toContain("ghs_repo_scoped");
     expect(Object.values(env)).toContain("ghs_repo_scoped");
   });

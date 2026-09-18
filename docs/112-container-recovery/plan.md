@@ -85,10 +85,10 @@ use, not a recovery action).
 
 ```
 POST /api/sessions/:id/container/restart
-  → runner.emitMessage({ type: "container_restarting" })   // notify viewers
-  → runner.killAgentOnWorker()                              // best-effort SIGKILL
-  → runnerRegistry.dispose(sessionId, { force: true })      // tear down runner
-  → containerManager.destroy(sessionId)                     // stop + remove
+  → runner.emitMessage({ type: "container_restarting" })
+  → runner.killAgentOnWorker()
+  → runnerRegistry.dispose(sessionId, { force: true })
+  → containerManager.destroy(sessionId)
   → 200 { ok: true }
 
 Client:
@@ -110,7 +110,7 @@ recover from.
 ```
 POST /api/sessions/:id/agent/kill
   → runner.wasInterrupted = true
-  → runner.killAgentOnWorker()    // POST /agent/kill on worker → SIGKILL
+  → runner.killAgentOnWorker()
   → runner.emitMessage({ type: "claude_interrupted" })
   → 200 { ok: true }
 ```
@@ -159,6 +159,26 @@ is actor). Recovery affordances are a category exception: the agent
 literally cannot restart its own container, so the buttons aren't
 "shell-shaped affordances for things the agent could do." They're the
 manual override for when the agent is dead.
+
+### The strip shares a flex column with the log view, so its content must be bounded
+
+`TerminalPanel` is `flex flex-col h-full`: the strip is a `flex: 0 1 auto`
+child (base size = its content height) and the log view below it is
+`flex-1 min-h-0` (base size 0, leftover space only). Anything the strip
+renders therefore takes its height *first*, and `min-h-0` lets the log
+collapse all the way to nothing.
+
+That is why the inline `lastCreateError` box is capped at `max-h-20`
+with `overflow-y-auto` (and a `tabIndex` so the clipped text is
+reachable by keyboard). The value is `getErrorMessage(err)` straight
+from a failed Docker create — unbounded, and routinely a screenful of
+runtime stderr. Measured in a browser at a 420px panel: a 24-line error
+gave the strip 316px and left the log view 57px, which is the search
+row and zero log lines; with the cap it is 156px / 217px. Every other
+message the strip renders is deliberately single-line (`truncate` on
+`actionError`, `interruptError`, `rescueState.message`) — a new
+multi-line one needs the same treatment. Same shape as the PR
+lifecycle card's auto-resolve banner (docs/146).
 
 ## Key files
 

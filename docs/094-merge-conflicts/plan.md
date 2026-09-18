@@ -90,7 +90,6 @@ Force push (`--force-with-lease`) replaces the old feature branch on the remote.
 **`session-worker.ts`** — Accept git identity in the worker config and set it on startup:
 
 ```typescript
-// In worker startup, after receiving config
 if (config.gitIdentity) {
   execFileSync("git", ["config", "--global", "user.name", config.gitIdentity.name]);
   execFileSync("git", ["config", "--global", "user.email", config.gitIdentity.email]);
@@ -100,7 +99,6 @@ if (config.gitIdentity) {
 **`container-session-runner.ts`** — Pass identity when starting the container worker:
 
 ```typescript
-// When creating the worker, include git identity from global config
 const identity = getGitIdentity();
 if (identity) {
   workerConfig.gitIdentity = identity;
@@ -114,7 +112,6 @@ if (identity) {
 Add rebase methods to `src/server/shared/git.ts`:
 
 ```typescript
-/** Rebase current branch onto a target ref. */
 async rebase(onto: string): Promise<RebaseResult> {
   try {
     await this.git.rebase([onto]);
@@ -126,18 +123,15 @@ async rebase(onto: string): Promise<RebaseResult> {
         status: "conflicts",
         conflicts: status.conflicted.map(file => ({
           path: file,
-          // Read conflict markers from working tree
           content: fs.readFileSync(path.join(this.dir, file), "utf-8"),
         })),
       };
     }
-    // Other rebase failure — abort and rethrow
     await this.git.rebase(["--abort"]);
     throw err;
   }
 }
 
-/** Continue a rebase after conflicts are resolved. */
 async rebaseContinue(): Promise<RebaseResult> {
   try {
     await this.git.rebase(["--continue"]);
@@ -157,14 +151,11 @@ async rebaseContinue(): Promise<RebaseResult> {
   }
 }
 
-/** Abort an in-progress rebase. */
 async rebaseAbort(): Promise<void> {
   await this.git.rebase(["--abort"]);
 }
 
-/** Check if a rebase is in progress. */
 async isRebaseInProgress(): Promise<boolean> {
-  // git has a rebase-merge or rebase-apply dir when rebase is active
   const gitDir = await this.git.revparse(["--git-dir"]);
   return (
     fs.existsSync(path.join(gitDir, "rebase-merge")) ||
@@ -178,7 +169,7 @@ async isRebaseInProgress(): Promise<boolean> {
 ```typescript
 interface RebaseConflictFile {
   path: string;
-  content: string; // File content with conflict markers
+  content: string;
 }
 
 type RebaseResult =
@@ -191,7 +182,6 @@ type RebaseResult =
 Add force push to GitManager:
 
 ```typescript
-/** Force push with lease — safe force push that fails if remote has unexpected commits. */
 async forcePush(remote = "origin", branch?: string): Promise<string> {
   const currentBranch = branch || (await this.getCurrentBranch());
   await this.git.push(remote, currentBranch, ["--force-with-lease", "--set-upstream"]);
@@ -202,7 +192,6 @@ async forcePush(remote = "origin", branch?: string): Promise<string> {
 Update the git service layer (`services/git.ts`):
 
 ```typescript
-/** Git force push after rebase. */
 export async function gitForcePush(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
@@ -223,37 +212,26 @@ The orchestrator owns the rebase lifecycle. It runs `git rebase`, and if conflic
 New service function in `services/git.ts`:
 
 ```typescript
-/**
- * Rebase the session's branch onto the latest base branch.
- * Fetches upstream, attempts rebase. On clean rebase, force-pushes immediately.
- * On conflicts, returns them for agent resolution (caller is responsible for
- * the resolve → continue → force-push loop).
- */
 export async function rebaseOntoBase(
   git: GitManager,
   baseBranch: string,
 ): Promise<RebaseFlowResult> {
-  // 1. Fetch latest from remote
   await git.fetch("origin");
 
-  // 2. Resolve the base branch ref
   const baseRef = await git.resolveBaseBranchRef(baseBranch);
   if (!baseRef) throw new ServiceError(400, `Cannot resolve base branch: ${baseBranch}`);
 
-  // 3. Check if rebase is needed
   const isAncestor = await git.isAncestor(baseRef, "HEAD");
   if (isAncestor) {
     return { status: "up_to_date" };
   }
 
-  // 4. Attempt rebase
   const result = await git.rebase(baseRef);
 
   if (result.status === "clean") {
     return { status: "rebased", baseRef };
   }
 
-  // 5. Conflicts — return them (caller will delegate to agent, then continue)
   return {
     status: "conflicts",
     conflicts: result.conflicts,
@@ -265,7 +243,6 @@ export async function rebaseOntoBase(
 Force push is a separate step, called by the orchestrator after rebase completes (clean or after agent resolution):
 
 ```typescript
-/** Force push after a successful rebase. Requires GitHub auth. */
 export async function forcePushAfterRebase(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
@@ -341,12 +318,10 @@ The agent edits files via its normal tools. The orchestrator handles all git plu
 Enhance the auto-push flow in `post-turn.ts` to detect and handle divergence:
 
 ```typescript
-// In scheduleAutoPush, after push fails:
 try {
   await git.push(remote, branch);
 } catch (err) {
   if (isNonFastForwardError(err)) {
-    // Branch has diverged — emit event so client can offer rebase
     emit({
       type: "git_push_rejected",
       reason: "non_fast_forward",
@@ -364,14 +339,12 @@ try {
 
 ```typescript
 interface GitStore {
-  // ... existing ...
   rebaseStatus: "idle" | "in_progress" | "conflicts" | "resolving";
   rebaseConflicts: ConflictFile[];
   pushRejected: boolean;
 
   startRebase: (baseBranch: string) => Promise<void>;
   abortRebase: () => Promise<void>;
-  // No continueRebase — orchestrator manages the resolve loop internally
 }
 ```
 
@@ -396,7 +369,6 @@ The one wire change: `WsRebaseComplete` gained an optional `upToDate` flag, set 
 ### WS Message Types
 
 ```typescript
-// Server → Client
 interface WsGitPushRejected {
   type: "git_push_rejected";
   reason: "non_fast_forward";

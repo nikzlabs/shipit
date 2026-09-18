@@ -253,14 +253,14 @@ Per docs/132, the goal is stored on the session. Concrete shape:
 
 ```ts
 type SessionGoal = {
-  text: string;            // user-supplied objective
-  setAt: number;           // ms epoch — when the current goal record was created
-  updatedAt: number;       // ms epoch — last write to this record (rename, pause, resume, ...)
-  setBy: "user";           // reserved for future system-set goals
+  text: string;
+  setAt: number;
+  updatedAt: number;
+  setBy: "user";
   status: "active" | "paused" | "cleared" | "achieved";
-  pausedAt?: number;       // ms epoch — set when status transitions to "paused", cleared on resume
-  achievedAt?: number;     // ms epoch — set when status transitions to "achieved"
-  clearedAt?: number;      // ms epoch — set when status transitions to "cleared"
+  pausedAt?: number;
+  achievedAt?: number;
+  clearedAt?: number;
 };
 ```
 
@@ -685,9 +685,9 @@ carry goal state. The distinction matters because clients drive different
 side-effects off each:
 
 ```ts
-{ type: "goal_updated"; sessionId: string; goal: SessionGoal }    // state changed
-{ type: "goal_cleared"; sessionId: string }                       // state changed: cleared
-{ type: "goal_status"; sessionId: string; goal: SessionGoal | null } // query response, no state change
+{ type: "goal_updated"; sessionId: string; goal: SessionGoal }
+{ type: "goal_cleared"; sessionId: string }
+{ type: "goal_status"; sessionId: string; goal: SessionGoal | null }
 ```
 
 `goal_updated` and `goal_cleared` are *change* notifications: clients
@@ -996,29 +996,11 @@ solved this for streaming agents by gating three call sites in
 signal:
 
 ```ts
-// Existing live-steering predicate, unchanged in meaning:
 const useStreaming = liveSteering && capabilities.supportsSteering;
-// Goal-driven keep-alive predicate. Derived from session state +
-// registry capability + agent id, NOT from a method on `agent` — the
-// orchestrator-side `agent` is a `ProxyAgentProcess` whose
-// `capabilities` field is the deliberately conservative hardcoded
-// default (proxy-agent-process.ts:60-74). Asking the proxy "are you
-// keeping alive?" falls into the same trap as `supportsSteering` (see
-// "Activation split → Capability"). The orchestrator already has all
-// three inputs synchronously: the session record, the agent registry,
-// and the agent id.
 const goalsKeepAlive =
   agentId === "codex" &&
   agentInfo?.capabilities.supportsGoals === true &&
   hasActiveGoal(session);
-// Per-agent gate, NOT a union. This is what fixes the live-steering-
-// Codex regression: under live-steering-only Codex (no active goal),
-// `useStreaming` is true but `goalsKeepAlive` is false, and the
-// adapter side still kills at turn/completed. If the orchestrator
-// here took the union, it would reuse a worker agent that was just
-// killed. Per-agent split keeps both sides aligned:
-//   - Claude takes the reuse branch under live steering only.
-//   - Codex takes the reuse branch under goalsKeepAlive only.
 const keepAliveAcrossTurns =
   (agentId === "claude" && useStreaming) ||
   (agentId === "codex" && goalsKeepAlive);
@@ -1078,8 +1060,7 @@ adapter-emitted event takes:
    ```ts
    case "agent_event":
      if (data.type === "agent_goal_updated" || data.type === "agent_goal_cleared") {
-       this.applyGoalEvent(data);   // session-lifetime, runner-owned
-       // fall through to also fan out to attached viewers if needed
+       this.applyGoalEvent(data);
      }
      if (this._agent) this._agent.emit("event", data);
      break;
@@ -1457,7 +1438,6 @@ The augmentation methods are **optional** on `AgentProcess`:
 
 ```ts
 interface AgentProcess {
-  // …existing methods…
   getGoal?(): Promise<ThreadGoal | null>;
   setGoal?(args: { objective?: string; status?: ThreadGoalStatus; tokenBudget?: number | null }): Promise<ThreadGoal>;
   clearGoal?(): Promise<void>;

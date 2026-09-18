@@ -10,17 +10,6 @@ import { writeSessionAccountMarker, readSessionAccountMarker } from "../session-
 import { deleteProviderAccount } from "./settings.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
-/**
- * docs/260 §6 (reqs 2, 3, 13) — disconnecting an account.
- *
- * There is no pinning any more, so disconnect never asks where sessions should
- * move and never reports "pinned" ones (req 3). What it must still do:
- * refuse while a live process on the account is running a turn or holds
- * background work (req 13 + the 2026-08-03 no-rewrite-under-a-live-turn
- * decision), kill idle resident processes on the account, and remove each
- * session's recorded COPY of the account's credentials — found by the
- * session's own marker, never by a session row.
- */
 describe("deleteProviderAccount", () => {
   let root: string;
   let accounts: ProviderAccountManager;
@@ -69,11 +58,9 @@ describe("deleteProviderAccount", () => {
     },
   }) as unknown as SessionRunnerRegistry;
 
-  /** The per-session copy of the account's token — what the CLI actually reads. */
   const sessionTokenPath = (sessionId: string): string =>
     path.join(root, "sessions", sessionId, ".claude", ".credentials.json");
 
-  /** A session whose subtree holds `accountId`'s credentials, per its marker. */
   function seedSessionCopy(sessionId: string, accountId: string, token: string): void {
     sessions.track(sessionId, sessionId);
     sessions.setAgentId(sessionId, "claude");
@@ -125,12 +112,8 @@ describe("deleteProviderAccount", () => {
     });
 
     expect(result).toEqual({ accounts: [] });
-    // The copies are revoked — a "disconnected" session must not keep a
-    // working subscription token on disk.
     expect(fs.existsSync(sessionTokenPath("s1"))).toBe(false);
     expect(fs.existsSync(sessionTokenPath("s2"))).toBe(false);
-    // And the markers are cleared, so the next turn's identity check
-    // reprovisions instead of trusting a stale record.
     expect(readSessionAccountMarker(root, "s1").claude).toBeUndefined();
   });
 
@@ -162,7 +145,6 @@ describe("deleteProviderAccount", () => {
         credentialsDir: root,
       }),
     ).toThrow(/still working on it/);
-    // Nothing was deleted — the account is still there to retry against.
     expect(accounts.list("anthropic").map((x) => x.id)).toContain(a.id);
   });
 
@@ -218,8 +200,6 @@ describe("deleteProviderAccount", () => {
   });
 
   it("identifies a re-adopted process by the session marker when the stamp is missing", () => {
-    // After an orchestrator restart, a surviving process may not have its
-    // residentRoute recovered yet; the subtree marker is the fallback identity.
     const a = accounts.create("anthropic", "A");
     accounts.setAccountStatus("anthropic", a.id, "ready");
     seedSessionCopy("adopted", a.id, "tok-a");

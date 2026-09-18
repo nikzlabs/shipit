@@ -50,7 +50,7 @@ describe("MemoryPressureBanner", () => {
     render(<MemoryPressureBanner stats={{ usedBytes: 0.95 * 16 * GiB, totalBytes: 16 * GiB }} />);
     const banner = screen.getByTestId("memory-pressure-banner");
     expect(banner.className).toContain("color-error");
-    // Critical message wording — distinct from the warning case.
+
     expect(banner.textContent).toMatch(/near OOM/i);
   });
 

@@ -1,0 +1,8 @@
+label:        tour2
+cli_version:  1.1.27
+model:        gemini-3.1-pro  effort: high
+prompt_file:  /persist/agy-review-probe/tour-prompt.txt
+exit_code:    0
+wall_seconds: 104
+date_utc:     2026-09-14T10:51:45Z
+stderr_bytes: 0

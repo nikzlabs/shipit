@@ -1,12 +1,3 @@
-/**
- * Unit tests for the shared shim plumbing in `shim-common.ts`.
- *
- * Focus: `readBodyFromFileOrStdin` / `readStdin` must fail fast (not hang) when
- * `--prompt-file -` / `--body-file -` is passed with no piped stdin — the
- * production bug where `shipit agent run --prompt-file -` blocked forever on a
- * TTY/never-EOF stdin. The TTY check is the primary guard; the idle-timeout
- * backstop covers a non-TTY pipe that never reaches EOF.
- */
 
 import { describe, it, expect, vi } from "vitest";
 import { Readable } from "node:stream";
@@ -41,14 +32,12 @@ function makeIO() {
   };
 }
 
-/** A fake non-TTY stdin carrying `content`, then EOF. */
 function pipedStdin(content: string): NodeJS.ReadStream {
   const s = Readable.from([content]) as unknown as NodeJS.ReadStream;
   s.isTTY = false as never;
   return s;
 }
 
-/** A fake TTY stdin (nothing will ever be written). */
 function ttyStdin(): NodeJS.ReadStream {
   const s = new Readable({ read() {} }) as unknown as NodeJS.ReadStream;
   s.isTTY = true as never;
@@ -94,7 +83,6 @@ describe("readBodyFromFileOrStdin", () => {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "shim-common-"));
     const file = path.join(dir, "prompt.md");
     await fsp.writeFile(file, "from a file");
-    // Pass a TTY stdin to prove the file path never touches it.
     const result = await readBodyFromFileOrStdin(
       file,
       cap.io,
@@ -108,9 +96,6 @@ describe("readBodyFromFileOrStdin", () => {
 });
 
 describe("callBroker", () => {
-  // Regression: `shipit agent run` passes timeoutMs: 0 so the long-lived spawn
-  // leg uses Node http, not undici's `fetch` (default 300s headersTimeout →
-  // "fetch failed" → misreported as an unreachable worker).
   it("routes an unbounded (timeoutMs: 0) call over Node http, not global fetch", async () => {
     const seen: { method?: string; url?: string; body: string } = { body: "" };
     const server = http.createServer((req, res) => {
@@ -148,8 +133,6 @@ describe("callBroker", () => {
   });
 
   it("surfaces a connection failure on the unbounded path as status 0 with a worker-unreachable message", async () => {
-    // Port 1 is closed → ECONNREFUSED. The message includes the cause code so a
-    // transport failure is no longer opaque.
     const res = await callBroker(
       "POST",
       "/agent-ops/agent/spawn",
@@ -174,11 +157,7 @@ describe("readStdin", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// applyJq — the tiny `-q/--jq` path evaluator
-// ---------------------------------------------------------------------------
 
-/** Convenience: assert success and return the printed lines. */
 function jqValues(value: unknown, expr: string): string[] {
   const res = applyJq(value, expr);
   if (!res.ok) throw new Error(`expected success, got ${res.kind}: ${res.message}`);

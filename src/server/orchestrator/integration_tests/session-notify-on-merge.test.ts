@@ -1,26 +1,6 @@
-/**
- * Integration tests for the async notify-on-merge watch (docs/196).
- *
- * Exercises the orchestrator end of the chain end-to-end through `buildApp`:
- *
- *   POST /api/sessions/:parentId/children/:childId/notify-on-merge   (arm)
- *   → the PR poller observes the child's PR reach a terminal state
- *     (simulated here by invoking the wired `mergeWatchManager` directly, the
- *     same entrypoint the poller's `onPrTerminalState` hook calls)
- *   → a persisted "Child PR merged / closed" card lands in the PARENT's history
- *   → a self-describing system turn is enqueued into the PARENT's runner.
- *
- * The poller's terminal-state detection → `onPrTerminalState` wire is covered
- * separately in `pr-status-poller.test.ts`; the manager's state machine
- * (fire-once, idle/busy parent, reconcile) in `merge-watch.test.ts`. Here we
- * prove the HTTP register route + the real runner-registry / chat-history
- * delivery in a fully-wired app.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
-// `{ name: null }` is "naming produced no title", which is what these tests want.
+// Keep naming local and preserve the supplied titles.
 vi.mock("../session-namer.js", () => ({
   generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
@@ -84,9 +64,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     seedRepoCacheWithLocalBare({ tmpDir, repoUrl: REPO_URL, seedFiles: { "README.md": "# x\n" } });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
-    // docs/243 — the merge notification is delivered as a wake-turn, and every
-    // agent turn now passes runner-owned trust admission. This suite exercises
-    // watch/delivery behavior after repository consent, not the trust gate.
     repoStore.setTrusted(REPO_URL, true);
 
     app = await buildApp({
@@ -150,7 +127,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     deliveryFailure?: { attempts: number; error?: string };
   }
 
-  /** The parent's `childMerged` cards, read back through the HTTP history route. */
   async function parentCards(parentId: string): Promise<HistoryCard[]> {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/history` });
     const messages = (res.json() as { messages: { childMerged?: HistoryCard }[] }).messages;
@@ -197,8 +173,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       mergeSha: "deadbeefcafe1234",
     });
 
-    // The card lands on the parent immediately; the wake-turn is dispatched into
-    // the parent's real runner.
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
     await waitFor(
       () => {
@@ -209,13 +183,8 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       "parent wake-turn dispatched",
     );
 
-    // Crucially, the watch is NOT yet `delivered` — the turn has only been
-    // dispatched, not run. This is the window the docs/196 fix protects: a
-    // restart here must leave the watch recoverable, so it stays `merge-observed`.
     expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
 
-    // Drive the dispatched wake-turn to completion through the real
-    // turn-executor; only its `onTurnComplete` advances the watch to `delivered`.
     await waitFor(
       () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
       10_000,
@@ -228,7 +197,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       "watch delivered after wake-turn completion",
     );
 
-    // Delivery is fire-once: the card was surfaced exactly once.
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
   });
 
@@ -237,9 +205,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
 
-    // The parent is busy with a REAL user turn — the common case, and the one
-    // the fake busy runner in merge-watch.test.ts couldn't reproduce: the
-    // interactive drain (not the dispatched one) is what picks the wake-turn up.
     const client = await TestClient.connect(port, parentId);
     client.send({ type: "send_message", text: "Keep working on the integration" });
     await waitFor(
@@ -261,15 +226,10 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       mergeSha: "deadbeefcafe1234",
     });
 
-    // Card now; wake-turn QUEUED behind the running user turn (never preempting).
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
     await waitFor(() => runner.queueLength === 1, 10_000, "wake-turn queued behind the user turn");
     expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
 
-    // The user turn ends → the interactive drain starts the wake-turn. Before
-    // the fix it re-entered with text only, so the turn ran as an ordinary
-    // interactive one, `onTurnComplete` never fired, and the watch sat at
-    // `merge-observed` until a restart re-fired it (duplicate notification).
     userTurn.finish("parent-user-turn");
     await waitFor(
       () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
@@ -304,8 +264,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       mergeSha: "deadbeefcafe1234",
     };
 
-    // Observe the merge: card surfaced + wake-turn dispatched, but we never let
-    // it complete — this models the orchestrator dying before the turn runs.
     await app.mergeWatchManager!.handleChildPrTerminal(info);
     await waitFor(
       () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
@@ -316,8 +274,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     const firstWakeAgents = spawnedAgents.filter((a) => isMergeWakePrompt(a.lastPrompt)).length;
     expect(firstWakeAgents).toBe(1);
 
-    // Simulate the restart: tear the parent runner down (the in-memory turn is
-    // gone), then re-derive from the persisted PR snapshot as startup does.
     app.runnerRegistry.dispose(parentId, { force: true });
     app.mergeWatchManager!.setPrStatusLookup((id) =>
       id === childId
@@ -341,8 +297,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     );
     await app.mergeWatchManager!.reconcilePending();
 
-    // Re-delivered (a second wake-turn agent), driven to completion → delivered,
-    // and still exactly ONE card on the parent.
     await waitFor(
       () => spawnedAgents.filter((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)).length >= 2,
       10_000,
@@ -381,10 +335,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
 
-    // The parent's container can't be resumed on the first attempt. Before this
-    // fix the watch sat at `merge-observed` until an orchestrator restart: the
-    // poller's terminal callback fires once per transition, and `reconcilePending`
-    // only runs at bootstrap.
     const getOrCreate = vi
       .spyOn(app.runnerRegistry, "getOrCreate")
       .mockImplementationOnce(() => { throw new Error("container could not be resumed"); });
@@ -399,8 +349,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       mergeSha: "deadbeefcafe1234",
     });
 
-    // Card surfaced (the human sees the merge) but no wake-turn ran, and the
-    // failure is recorded on the persisted watch.
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
     const failed = sessionManager.getMergeWatch(childId);
     expect(failed?.state).toBe("merge-observed");
@@ -408,8 +356,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     expect(failed?.lastDeliveryError).toContain("could not be resumed");
     expect(spawnedAgents.some((a) => isMergeWakePrompt(a.lastPrompt))).toBe(false);
 
-    // Container comes back. Backdate the attempt anchor past the backoff and let
-    // the retry supervisor's pass run — the SAME process, no restart, no reconcile.
     getOrCreate.mockRestore();
     sessionManager.setMergeWatch(childId, {
       ...sessionManager.getMergeWatch(childId)!,
@@ -428,8 +374,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       10_000,
       "watch delivered after the in-process retry",
     );
-    // Still exactly one card — the retry re-enters at `merge-observed`, which
-    // skips the card guard.
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
   });
 
@@ -438,7 +382,6 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
 
-    // Every attempt fails — a parent whose container will never come back.
     const getOrCreate = vi
       .spyOn(app.runnerRegistry, "getOrCreate")
       .mockImplementation(() => { throw new Error("container could not be resumed"); });
@@ -461,12 +404,8 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     getOrCreate.mockRestore();
 
     expect(sessionManager.getMergeWatch(childId)?.state).toBe("delivery-failed");
-    // A terminal watch drops out of the pending list, so it stops holding the PR
-    // polling gate open for a wake that will never happen.
     expect(sessionManager.listPendingMergeWatches()).toHaveLength(0);
 
-    // The failure is transcript content, so it must come back over the HTTP
-    // history route (not merely have been emitted on the wire).
     const cards = await parentCards(parentId);
     expect(cards).toHaveLength(2);
     expect(cards[0].deliveryFailure).toBeUndefined();

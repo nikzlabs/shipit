@@ -6,7 +6,6 @@ import type { Nodes, Link } from "mdast";
 import { remarkLinkifyPaths } from "./linkify-paths.js";
 import { remarkLinkifyIssues, ISSUE_LINK_SCHEME } from "./linkify-issues.js";
 
-/** Parse markdown through the same plugin chain the app uses, return the tree. */
 function run(md: string): Nodes {
   const processor = unified()
     .use(remarkParse)
@@ -16,7 +15,6 @@ function run(md: string): Nodes {
   return processor.runSync(processor.parse(md)) as Nodes;
 }
 
-/** Collect every link node's `{ url, text }` from a tree, depth-first. */
 function links(tree: Nodes): { url: string; text: string }[] {
   const out: { url: string; text: string }[] = [];
   const walk = (node: Nodes): void => {
@@ -39,7 +37,7 @@ const ISSUE = (key: string) => ({ url: `${ISSUE_LINK_SCHEME}${key}`, text: key }
 
 describe("remarkLinkifyIssues", () => {
   // planning#325 — docs/248-declared-issue-trackers req 10's name form. The badge must cover the WHOLE
-  // reference; matching only the trailing key left `roadmap#` outside the pill.
+
   it("wraps a name form carrying a Linear key, prefix included", () => {
     expect(links(run("Fixed in roadmap#SHI-319 today"))).toEqual([ISSUE("roadmap#SHI-319")]);
   });
@@ -57,8 +55,7 @@ describe("remarkLinkifyIssues", () => {
   });
 
   it("matches name-shaped noise too (the declared-tracker gate at render filters these)", () => {
-    // `PR#3` / `channel#2` are exactly why the gate can't live in the matcher:
-    // the shape is common in prose and only the declarations can tell them apart.
+
     expect(links(run("PR#3 and channel#2")).map((l) => l.text)).toEqual(["PR#3", "channel#2"]);
   });
 
@@ -121,7 +118,7 @@ describe("remarkLinkifyIssues", () => {
 
   it("matches key-shaped noise too (the team-key gate at render filters these)", () => {
     // The plugin is intentionally liberal — `GPT-4`/`UTF-8` parse as candidates;
-    // IssueBadge renders them as plain text unless the team prefix is connected.
+
     expect(links(run("GPT-4 and UTF-8")).map((l) => l.text)).toEqual(["GPT-4", "UTF-8"]);
   });
 });

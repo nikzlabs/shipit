@@ -1,7 +1,6 @@
 import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
 
-/** Formats captured preview errors into an agent-friendly prompt. */
 export function formatErrorForMessage(errors: PreviewError[]): string {
   const lines = ["The preview is showing these errors:", ""];
   errors.forEach((err, i) => {
@@ -9,7 +8,7 @@ export function formatErrorForMessage(errors: PreviewError[]): string {
     if (err.source && err.line) {
       lines.push(`   at ${err.source}:${err.line}${err.col ? `:${err.col}` : ""}`);
     } else if (err.stack) {
-      // Take first line of stack after the message
+
       const stackLines = err.stack.split("\n").filter((l) => l.trim().startsWith("at "));
       if (stackLines.length > 0) {
         lines.push(`   ${stackLines[0].trim()}`);
@@ -22,15 +21,14 @@ export function formatErrorForMessage(errors: PreviewError[]): string {
 }
 
 interface PreviewErrorsProps {
-  /** Captured preview errors from the iframe. */
+
   errors: PreviewError[];
-  /** Send the given errors to the agent to fix. */
+
   onSendErrors: (errors: PreviewError[]) => void;
-  /** Clear all errors. */
+
   onClearErrors: () => void;
 }
 
-/** Expandable panel listing captured preview errors with send-to-agent actions. */
 export function PreviewErrors({ errors, onSendErrors, onClearErrors }: PreviewErrorsProps) {
   return (
     <div className="border-t border-(--color-error) bg-(--color-error-subtle) max-h-[40%] flex flex-col" role="region" aria-label="Preview errors">

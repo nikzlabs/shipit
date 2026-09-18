@@ -1,10 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
-import { queuedMessageToDispatchOptions, releaseQueuedTurn, startQueuedMessage } from "./queue-drain.js";
+import {
+  queuedMessageToDispatchOptions,
+  releaseQueuedTurn,
+  startQueuedMessage,
+  takeRunnableQueuedTurn,
+} from "./queue-drain.js";
 import { toQueuedMessage } from "./session-runner.js";
 import type { AgentDispatchOptions, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 
-/** Minimal runner surface `startQueuedMessage` touches. */
 function fakeRunner(opts: { canRunDispatchedTurn?: boolean } = {}) {
   const ran: AgentDispatchOptions[] = [];
   const runner = {
@@ -33,7 +37,6 @@ describe("queue drain routing (planning#257)", () => {
 
     expect(runInteractive).not.toHaveBeenCalled();
     expect(ran).toHaveLength(1);
-    // The whole option set survives — these two are what the WS drain dropped.
     expect(ran[0]).toMatchObject({
       text: "child PR merged",
       activity: "Resuming after child PR merged…",
@@ -77,22 +80,19 @@ describe("queue drain routing (planning#257)", () => {
       files: [{ path: "src/a.ts" }],
       uploads: [{ path: "/uploads/a.png", type: "upload" }],
       permissionMode: "plan",
+      resetMergedBranch: false,
+      silent: false,
+      compactContext: false,
       postTurn: "none",
       systemTurn: true,
       onTurnComplete,
       deliveryId: "watch-1:1",
       dictated: true,
+      statusNudge: true,
     };
 
-    // docs/240 — `toQueuedMessage` now takes a branded `PreparedDispatch` (so
-    // the queue can't be entered around the brand either); `testDispatch` is the
-    // test-only shim that mints one from a partial literal. The property under
-    // test is unchanged: nothing may be lost on the way in or out.
     const restored = queuedMessageToDispatchOptions(toQueuedMessage(testDispatch(opts)));
 
-    // Every key the caller set is still set after the queue round-trip. This is
-    // the guard: adding a field to AgentDispatchOptions without teaching
-    // `toQueuedMessage` / `queuedMessageToDispatchOptions` about it fails here.
     for (const key of Object.keys(opts) as (keyof AgentDispatchOptions)[]) {
       expect(restored[key], `field "${key}" was dropped by the queue round-trip`).toEqual(opts[key]);
     }
@@ -100,36 +100,115 @@ describe("queue drain routing (planning#257)", () => {
   });
 });
 
+describe("takeRunnableQueuedTurn (planning#562)", () => {
+  function fakeQueueRunner(opts: {
+    queue: QueuedMessage[];
+    resident?: boolean;
+    work?: string[];
+  }) {
+    const state = { work: opts.work ?? [] };
+    const runner = {
+      sessionId: "s1",
+      messageQueue: opts.queue,
+      dequeue: () => opts.queue.shift(),
+      getAgent: () => ((opts.resident ?? true) ? ({} as never) : null),
+      get backgroundWorkDescriptions() { return state.work; },
+    } as unknown as SessionRunnerInterface;
+    return { runner, state };
+  }
+
+  const systemEntry = (): QueuedMessage => ({
+    text: "Child PR #42 merged",
+    execution: "dispatched",
+    systemTurn: true,
+  });
+
+  it("leaves a queued system turn in the queue while the resident agent has background work", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const queue = [systemEntry()];
+    const { runner } = fakeQueueRunner({ queue, work: ["Codex consult"] });
+
+    expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
+    expect(queue).toHaveLength(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("Codex consult");
+    warn.mockRestore();
+  });
+
+  it("hands over the same entry once the background work has finished", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const queue = [systemEntry()];
+    const { runner, state } = fakeQueueRunner({ queue, work: ["Codex consult"] });
+    expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
+
+    state.work = [];
+
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("Child PR #42 merged");
+    expect(queue).toHaveLength(0);
+    vi.restoreAllMocks();
+  });
+
+  it("never holds a queued user turn: only a system turn replaces the resident process", () => {
+    const queue: QueuedMessage[] = [{ text: "typed by the user", execution: "dispatched" }];
+    const { runner } = fakeQueueRunner({ queue, work: ["Codex consult"] });
+
+    expect(takeRunnableQueuedTurn(runner)?.text).toBe("typed by the user");
+    expect(queue).toHaveLength(0);
+  });
+
+  it("takes a system turn when no resident process is left for it to destroy", () => {
+    const queue = [systemEntry()];
+    const { runner } = fakeQueueRunner({ queue, resident: false, work: ["Codex consult"] });
+
+    expect(takeRunnableQueuedTurn(runner)?.systemTurn).toBe(true);
+    expect(queue).toHaveLength(0);
+  });
+
+  it("reports an empty queue without touching it", () => {
+    const queue: QueuedMessage[] = [];
+    const { runner } = fakeQueueRunner({ queue });
+
+    expect(takeRunnableQueuedTurn(runner)).toBeUndefined();
+  });
+});
+
 describe("releaseQueuedTurn (planning#338)", () => {
-  /** Minimal runner surface `releaseQueuedTurn` touches. */
   function fakeReleaseRunner(opts: {
     running?: boolean;
     systemTurnInProgress?: boolean;
+    mergeHold?: boolean;
     queueLength?: number;
+    head?: QueuedMessage;
+    work?: string[];
   }) {
     const dispatched: AgentDispatchOptions[] = [];
     let dequeues = 0;
+    // A real array: the release shares the drain's take, which reads the head before claiming it.
+    const queue: QueuedMessage[] = Array.from(
+      { length: opts.queueLength ?? 0 },
+      () => opts.head ?? toQueuedMessage(testDispatch({ text: "queued user msg", execution: "dispatched" })),
+    );
     const runner = {
       sessionId: "s1",
       running: opts.running ?? false,
       systemTurnInProgress: opts.systemTurnInProgress ?? false,
-      queueLength: opts.queueLength ?? 0,
+      mergeHold: opts.mergeHold ?? false,
+      get queueLength() { return queue.length; },
+      messageQueue: queue,
       canRunDispatchedTurn: true,
+      getAgent: () => ({} as never),
+      backgroundWorkDescriptions: opts.work ?? [],
       dequeue: () => {
         dequeues++;
-        return toQueuedMessage(testDispatch({ text: "queued user msg", execution: "dispatched" }));
+        return queue.shift();
       },
       getQueueSnapshot: () => [],
       emitMessage: () => {},
       dispatch: (o: AgentDispatchOptions) => { dispatched.push(o); },
     } as unknown as SessionRunnerInterface;
-    return { runner, dispatched, dequeueCount: () => dequeues };
+    return { runner, dispatched, queue, dequeueCount: () => dequeues };
   }
 
   it("refuses to release while a system flow holds the session between its own turns", () => {
-    // The rebase driver clears `running` when each resolution turn settles but
-    // keeps running git against the workspace — releasing a user turn into
-    // that window is how a production session stranded mid-rebase.
     const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
       running: false,
       systemTurnInProgress: true,
@@ -140,6 +219,18 @@ describe("releaseQueuedTurn (planning#338)", () => {
     expect(dequeueCount()).toBe(0);
   });
 
+  it("refuses to release while ShipIt is merging this session's pull request", () => {
+    const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
+      running: false,
+      mergeHold: true,
+      queueLength: 1,
+    });
+    expect(releaseQueuedTurn(runner)).toBe(false);
+    expect(dispatched).toEqual([]);
+    expect(dequeueCount()).toBe(0);
+  });
+
+
   it("releases the head of the queue once the flow has released its hold", () => {
     const { runner, dispatched } = fakeReleaseRunner({
       running: false,
@@ -149,5 +240,20 @@ describe("releaseQueuedTurn (planning#338)", () => {
     expect(releaseQueuedTurn(runner)).toBe(true);
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]?.text).toBe("queued user msg");
+  });
+
+  it("leaves a system-turn head queued rather than moving it to the tail behind the gate", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { runner, dispatched, queue, dequeueCount } = fakeReleaseRunner({
+      queueLength: 1,
+      head: { text: "child PR merged", execution: "dispatched", systemTurn: true },
+      work: ["Codex consult"],
+    });
+
+    expect(releaseQueuedTurn(runner)).toBe(false);
+    expect(dispatched).toEqual([]);
+    expect(dequeueCount()).toBe(0);
+    expect(queue).toHaveLength(1);
+    warn.mockRestore();
   });
 });

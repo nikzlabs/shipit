@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor, act, cleanup } from "@testing-library/react";
 
-// Stub out the HTTP data loaders so the hook doesn't hit the network.
 vi.mock("../utils/session-data.js", () => ({
   loadBootstrapData: vi.fn().mockResolvedValue(undefined),
   loadSessionHistory: vi.fn().mockResolvedValue(undefined),
@@ -31,7 +30,7 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
       configurable: true,
       get: () => hiddenValue,
     });
-    // Reset the slice of session state the hook reads.
+
     useSessionStore.setState({
       sessionId: undefined,
       pendingWsMessage: undefined,
@@ -63,9 +62,7 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
   });
 
   it("keeps the message stashed when the flush send is dropped", async () => {
-    // `status` can flip to "open" a tick before the socket is actually
-    // writable, and it can close again in between. Clearing the stash on a
-    // dropped send loses the user's first message with no trace.
+
     useSessionStore.setState({
       sessionId: "s1",
       pendingWsMessage: { type: "send_message", text: "first message" },
@@ -91,7 +88,7 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
     renderHook(() => useConnectionSync({ status: "connecting", send }));
 
     expect(send).not.toHaveBeenCalled();
-    // The message stays queued for the eventual open.
+
     expect(useSessionStore.getState().pendingWsMessage).toEqual({
       type: "send_message",
       text: "queued",
@@ -104,7 +101,6 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
     const send = vi.fn(() => true);
     renderHook(() => useConnectionSync({ status: "open", send }));
 
-    // Give the history-load microtask a chance to run; still nothing to send.
     await Promise.resolve();
     expect(send).not.toHaveBeenCalled();
   });
@@ -151,12 +147,6 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
     expect(useSessionStore.getState().messages).toEqual([{ role: "user", text: "keep going" }]);
   });
 
-  // The suppression window above is for a real resume. The preview iframe
-  // fires a bare `focus` on every load (and `MessageInput` reclaims focus,
-  // firing another), which used to count as foregrounding and kept the 8s
-  // window permanently open next to a live preview — so a genuine mid-stream
-  // disconnect silently skipped the error below and stranded the composer in
-  // its loading state with nothing on screen to explain it.
   it("still injects a connection-lost agent error after an iframe focus steal", () => {
     useSessionStore.setState({
       sessionId: "s1",
@@ -169,8 +159,6 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
       { initialProps: { status: "open" } },
     );
 
-    // An iframe taking focus leaves the browser window with system focus —
-    // that is what tells the two apart. See `useForegroundSignal`.
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     act(() => {
       window.dispatchEvent(new Event("blur"));

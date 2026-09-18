@@ -54,7 +54,7 @@ describe("TtsCache", () => {
   it("evicts least-recently-used entries past the byte cap", () => {
     const cache = new TtsCache(dir, 10);
     cache.set("a", Buffer.alloc(6, 1));
-    cache.set("b", Buffer.alloc(6, 2)); // total 12 > 10 → evict LRU "a"
+    cache.set("b", Buffer.alloc(6, 2));
 
     expect(cache.get("a")).toBeNull();
     expect(cache.get("b")).not.toBeNull();

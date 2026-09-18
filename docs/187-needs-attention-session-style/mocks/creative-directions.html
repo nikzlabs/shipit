@@ -33,8 +33,6 @@
   .row{position:relative;display:flex;align-items:flex-start;gap:6px;margin:2px 2px;padding:6px 8px;border-radius:6px;
     font-size:12px;color:var(--txt2);overflow:hidden;}
   .row.sel{background:var(--sel);}
-
-  /* leading PR badge — real: w-5 h-5 rounded-md border */
   .prbadge{width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex:none;border:1px solid;margin-top:1px;position:relative;}
   .pr-open{background:var(--success-subtle);color:var(--success);border-color:var(--success-border);}
   .pr-branch{background:#f3f4f6;color:var(--txt3);border-color:var(--bd2);}
@@ -50,34 +48,20 @@
   .amerge{margin-left:auto;color:var(--txt3);flex:none;display:flex;}
   .kebab{flex:none;color:var(--txt3);opacity:.45;margin-top:1px;}
   .reason{font-size:9px;font-weight:600;color:var(--am700);background:var(--a12);border-radius:999px;padding:1px 6px;letter-spacing:.02em;flex:none;}
-
-  /* 2 · Notification dot on the PR badge */
   .c2 .attn .prbadge::after{content:"";position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:999px;
     background:var(--am);border:1.5px solid #fff;animation:halo 1.9s ease-out infinite;}
   @keyframes halo{0%{box-shadow:0 0 0 0 rgba(217,119,6,.5);}70%{box-shadow:0 0 0 5px rgba(217,119,6,0);}100%{box-shadow:0 0 0 0 rgba(217,119,6,0);}}
-
-  /* 3 · Pulsing bell (trailing, before kebab) */
   .bell{flex:none;color:var(--am);margin-top:1px;transform-origin:50% 12%;animation:ring 2.6s ease-in-out infinite;}
   @keyframes ring{0%,86%,100%{transform:rotate(0);}88%{transform:rotate(12deg);}90%{transform:rotate(-10deg);}92%{transform:rotate(7deg);}94%{transform:rotate(-5deg);}}
-
-  /* 4 · Edge gradient wash */
   .c4 .attn{background:linear-gradient(90deg,var(--a18),transparent 60%);}
   .c4 .attn.sel{background:linear-gradient(90deg,var(--a18),var(--sel) 60%);}
-
-  /* 5 · Shimmer sweep */
   .c5 .attn{background:var(--a08);}
   .c5 .attn::after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 30%,rgba(217,119,6,.22) 50%,transparent 70%);
     transform:translateX(-100%);animation:sweep 2.8s ease-in-out infinite;}
   @keyframes sweep{0%{transform:translateX(-100%);}60%,100%{transform:translateX(100%);}}
-
-  /* 6 · Corner dog-ear */
   .c6 .attn::before{content:"";position:absolute;top:0;right:0;border-width:0 13px 13px 0;border-style:solid;
     border-color:transparent var(--am) transparent transparent;border-top-right-radius:6px;}
-
-  /* 7 · Wavy underline */
   .c7 .attn .title{text-decoration:underline;text-decoration-style:wavy;text-decoration-color:var(--am);text-underline-offset:3px;text-decoration-thickness:1.5px;}
-
-  /* 8 · Marching-ants rail */
   .c8 .attn::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
     background:repeating-linear-gradient(180deg,var(--am) 0 5px,transparent 5px 10px);background-size:3px 20px;animation:march .6s linear infinite;}
   @keyframes march{to{background-position-y:20px;}}
@@ -105,8 +89,6 @@
   </p>
 
   <div class="grid">
-
-    <!-- 1 REASON CHIP -->
     <div class="card c1">
       <div class="clabel"><div class="n">1 · Reason chip</div><div class="d">Surface <i>why</i> — the attention reason as an amber chip in the sub-line, sitting with the CI/meta glyphs.</div></div>
       <div class="list">
@@ -115,8 +97,6 @@
         <div class="row attn"><div class="prbadge pr-branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="reason">your input</span><span>api · 8m</span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
       </div>
     </div>
-
-    <!-- 2 NOTIFICATION DOT ON PR BADGE -->
     <div class="card c2">
       <div class="clabel"><div class="n">2 · Notification dot on PR icon</div><div class="d">An app-style amber badge-dot on the corner of the PR icon that pulses. Tiny, layout-safe, instantly “unread”.</div></div>
       <div class="list">
@@ -125,8 +105,6 @@
         <div class="row attn"><div class="prbadge pr-branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Waiting for your input</div><div class="meta"><span class="ci ci-pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>web · 8m</span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
       </div>
     </div>
-
-    <!-- 3 PULSING BELL -->
     <div class="card c3">
       <div class="clabel"><div class="n">3 · Pulsing bell</div><div class="d">A small amber bell at the row's trailing edge (by the ⋮) that periodically rings. Reads as a notification.</div></div>
       <div class="list">
@@ -135,8 +113,6 @@
         <div class="row attn"><div class="prbadge pr-branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="ci ci-pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>api · 8m</span></div></div><span class="bell"><svg class="i-xs"><use href="#bell"/></svg></span><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
       </div>
     </div>
-
-    <!-- 4 GRADIENT WASH -->
     <div class="card c4">
       <div class="clabel"><div class="n">4 · Edge gradient wash · ✅ chosen</div><div class="d">Amber fades in from the left edge and dissolves — softer than a full fill, coexists with the selected row (row 3).</div></div>
       <div class="list">
@@ -145,8 +121,6 @@
         <div class="row attn sel"><div class="prbadge pr-branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Waiting for your input</div><div class="meta"><span class="ci ci-pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>web · now</span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
       </div>
     </div>
-
-    <!-- 5 SHIMMER -->
     <div class="card c5">
       <div class="clabel"><div class="n">5 · Shimmer sweep</div><div class="d">A faint amber tint with a light sweeping across — signals a <i>live</i>, active-waiting session.</div></div>
       <div class="list">
@@ -155,8 +129,6 @@
         <div class="row attn"><div class="prbadge pr-branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="ci ci-pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>api · 8m</span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
       </div>
     </div>
-
-    <!-- 6 DOG-EAR -->
     <div class="card c6">
       <div class="clabel"><div class="n">6 · Corner dog-ear</div><div class="d">A small amber folded corner, like a flagged page — out of the way of the icons and text.</div></div>
       <div class="list">
@@ -165,8 +137,6 @@
         <div class="row attn"><div class="prbadge pr-branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="ci ci-pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>api · 8m</span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
       </div>
     </div>
-
-    <!-- 7 WAVY UNDERLINE -->
     <div class="card c7">
       <div class="clabel"><div class="n">7 · Wavy underline</div><div class="d">An amber wavy underline under the title (a “look at this” squiggle). Zero layout shift.</div></div>
       <div class="list">
@@ -175,8 +145,6 @@
         <div class="row attn"><div class="prbadge pr-branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="ci ci-pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>api · 8m</span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
       </div>
     </div>
-
-    <!-- 8 MARCHING ANTS -->
     <div class="card c8">
       <div class="clabel"><div class="n">8 · Marching-ants rail</div><div class="d">An animated dashed rail that crawls — a livelier cousin of the plain left rail.</div></div>
       <div class="list">

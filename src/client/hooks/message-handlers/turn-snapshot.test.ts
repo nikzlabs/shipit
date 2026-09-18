@@ -23,8 +23,7 @@ beforeEach(() => {
 
 describe("turn_snapshot handler", () => {
   it("replaces the in-progress rows a history load left behind", () => {
-    // What `loadSessionHistory` produced: a finalized turn plus the running
-    // turn's `in_progress` rows, which are stale by one persist boundary.
+
     useSessionStore.setState({
       messages: [
         { role: "user", text: "earlier question" },
@@ -39,9 +38,6 @@ describe("turn_snapshot handler", () => {
       { role: "assistant", text: "GROUP-TWO" },
     ]));
 
-    // The finalized turn and the turn-opening user message survive; the stale
-    // in-progress tail is replaced rather than appended to (no duplicate
-    // GROUP-ONE), and the slice the old two-source rebuild dropped is back.
     expect(texts()).toEqual([
       "earlier question",
       "earlier answer",
@@ -53,8 +49,7 @@ describe("turn_snapshot handler", () => {
 
   it("corrects a history baseline that ran AHEAD of the snapshot", () => {
     // The other ordering: the history read landed after a persist the attach
-    // didn't see. The snapshot rolls the transcript back to the attach instant;
-    // the live events that followed it on the wire replay the difference.
+
     useSessionStore.setState({
       messages: [
         { role: "user", text: "Do the thing" },
@@ -85,11 +80,9 @@ describe("turn_snapshot handler", () => {
   });
 
   it("never marks a trailing notice row streaming, so live text can't fold into it", () => {
-    // The production window: `emitNoticeInTurn` fires at env-prep, after
-    // `resetRunnerTurnState`, so a viewer attaching before the agent's first
-    // token gets a snapshot consisting of exactly one row — the notice. A notice
+
     // is complete when emitted and never written to incrementally, so it must
-    // not come back open, however far along it sits in the snapshot.
+
     handleTurnSnapshot(ctx, snapshot([
       { role: "assistant", text: "Claude2 reached your usage cutoff — continuing this session on Claude1.", notice: true, noticeLevel: "warn", noticeId: "failover-1" },
     ]));
@@ -99,8 +92,6 @@ describe("turn_snapshot handler", () => {
     expect(!!notice.streaming).toBe(false);
     expect(notice.inProgress).toBe(true);
 
-    // End to end against the real merge path: the agent's first text opens its
-    // own bubble instead of being concatenated onto the notice panel.
     handleAgentEvent(ctx, {
       type: "agent_event",
       event: { type: "agent_assistant", content: [{ type: "text", text: "I agree — 5b is the right one." }] },
@@ -127,23 +118,9 @@ describe("turn_snapshot handler", () => {
   });
 });
 
-/**
- * The reported regression: reactivate the browser window and part of the
- * transcript vanishes, but a page reload brings it back.
- *
- * `inProgress` is the replace-filter's scope marker, and only two paths ever
- * set it — a history load of a running turn, and this snapshot. Nothing used to
- * clear it, so once a viewer had been attached mid-turn those rows carried the
- * marking for the rest of the session. Any later attach (a foreground
- * reconnect is one) sends a snapshot of whatever turn is running NOW, and its
- * `prev.filter((m) => !m.inProgress)` deleted the older, finished turns along
- * with the running one it means to replace. The DB was fine, so a reload
- * repaired it — matching the report exactly.
- */
 describe("turn_snapshot — the replace-filter is scoped to the running turn", () => {
   it("does not delete a finished turn whose rows came from a history load", () => {
-    // Turn 1, hydrated from `GET /history` while it was still running: its rows
-    // arrive marked in-progress.
+
     useSessionStore.setState({
       messages: [
         { role: "user", text: "first question" },
@@ -151,7 +128,6 @@ describe("turn_snapshot — the replace-filter is scoped to the running turn", (
       ] as ChatMessage[],
     });
 
-    // Turn 1 ends. The server drops `in_progress` from these rows in the DB
     // (`finalizeInProgress`); the client must drop it too.
     handleAgentEvent(ctx, {
       type: "agent_event",
@@ -159,8 +135,6 @@ describe("turn_snapshot — the replace-filter is scoped to the running turn", (
     } as never);
     expect(useSessionStore.getState().messages.some((m) => m.inProgress)).toBe(false);
 
-    // Turn 2 starts and the user reactivates the window: the reattach snapshot
-    // covers turn 2 only.
     useSessionStore.setState({
       messages: [
         ...useSessionStore.getState().messages,
@@ -185,8 +159,6 @@ describe("turn_snapshot — the replace-filter is scoped to the running turn", (
     });
     handleAgentEvent(ctx, { type: "agent_event", event: { type: "agent_result" } } as never);
 
-    // Turn 2's own stale in-progress rows (a history load of the running turn)
-    // are still the snapshot's business to replace.
     useSessionStore.setState({
       messages: [
         ...useSessionStore.getState().messages,

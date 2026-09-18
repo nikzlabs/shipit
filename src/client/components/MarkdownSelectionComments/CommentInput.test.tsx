@@ -4,11 +4,6 @@ import { CommentInput } from "./CommentInput.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import type { VoiceInputApi } from "../../voice/use-voice-input.js";
 
-/**
- * A controllable stand-in for the voice hook: the component under test only
- * ever sees a transcript arrive through `onTranscript`, so the fake exposes an
- * `emit` to fire one on demand.
- */
 const fakeVoice = {
   subscribers: new Set<(text: string) => void>(),
   state: "idle" as VoiceInputApi["state"],

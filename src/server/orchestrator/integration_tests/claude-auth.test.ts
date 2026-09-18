@@ -30,7 +30,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
   let lastClaude: FakeClaudeProcess;
   let credentialStore: CredentialStore;
   let sessionManager: SessionManager;
-  /** The auth manager `buildApp` wired its event handlers to. */
   let authManager: StubAuthManager;
   let credentialsDir: string;
 
@@ -92,12 +91,11 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Ignore cleanup errors.
     }
   });
 
   it("send_message when unauthenticated returns an error pointing to Settings (no OAuth popup)", async () => {
-    // Override the auth manager to be unauthenticated
     const unauthStub = new StubAuthManager() as unknown as AuthManager;
     (unauthStub as any).authenticated = false;
     (unauthStub as any).checkCredentials = () => false;
@@ -121,14 +119,11 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
 
     try {
       const client = await TestClient.connect(unauthPort);
-      await client.receive(); // connection_established
+      await client.receive();
 
       client.send({ type: "send_message", text: "hello" });
       const msg = await client.receiveType("error");
 
-      // We no longer auto-launch the OAuth flow / pop the global sign-in
-      // overlay. The turn is blocked with an actionable error that directs the
-      // user to authenticate in Settings → Agents.
       expect(msg).toMatchObject({ type: "error" });
       expect((msg as any).message).toContain("Settings");
       expect((msg as any).message).toContain("not authenticated");
@@ -144,7 +139,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const unauthStub = new StubAuthManager() as unknown as AuthManager;
     (unauthStub as any).authenticated = false;
     (unauthStub as any).checkCredentials = () => {
-      // Simulate: after setting the env var, checkCredentials succeeds
       const ok = !!process.env.ANTHROPIC_API_KEY;
       (unauthStub as any).authenticated = ok;
       return ok;
@@ -153,7 +147,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const unauthTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-apikey-"));
     const unauthSessions = new SessionManager(dbManager);
 
-    // Clear any existing API key
     const origKey = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
 
@@ -173,9 +166,8 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
 
     try {
       const client = await TestClient.connect(unauthPort);
-      await client.receive(); // connection_established
+      await client.receive();
 
-      // Use HTTP endpoint to set API key
       const res = await unauthApp.inject({
         method: "POST",
         url: "/api/auth/api-key",
@@ -183,12 +175,9 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       });
       expect(res.statusCode).toBe(200);
 
-      // agent_auth_complete is broadcast via SSE (docs/155 Phase 2b), not WS
-      // — verify the stub auth state changed.
       expect(unauthStub.authenticated).toBe(true);
       client.close();
     } finally {
-      // Restore env
       if (origKey) {
         process.env.ANTHROPIC_API_KEY = origKey;
       } else {
@@ -221,10 +210,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     expect(res.json()).toMatchObject({ error: "API key cannot be empty" });
   });
 
-  // docs/150-multiple-provider-subscriptions reqs 16, 19 — the account-less `POST /api/auth/code` is gone.
-  // Pasting an authorization code now names the account it authenticates, so
-  // the credentials land in that account's root rather than in a provider-wide
-  // one no row can manage. Covered in http-mutations.test.ts.
   it("does not expose an account-less paste-code endpoint", async () => {
     const res = await app.inject({
       method: "POST",
@@ -234,21 +219,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // docs/142 A3, rescoped by docs/260 §5 — a completed sign-in force-pushes the
-  // fresh source token into the sessions whose credential subtree currently
-  // holds that account's copy. With session→account pinning gone (docs/260
-  // reqs 1–2), "whose copy a session holds" is the subtree's own recorded
-  // identity — the account MARKER written by the provisioning writer
-  // (`writeSessionAccountMarker`) — never a session row. The half that needs
-  // asserting is the SCOPE: re-authenticating account X must not write X's
-  // token over a subtree marked as holding account Y's copy, or that session's
-  // next resident process would run a different subscription than the one its
-  // turn selected (and audited as).
-  //
-  // Driven through `buildApp`'s own `wireEventHandlers` by emitting the real
-  // `complete` event, rather than calling the re-push helper directly: the
-  // scoping lives in that handler (`repushTokenToPinnedSessions` in
-  // app-lifecycle.ts), so calling the helper would assert nothing.
   it("re-pushes a refreshed token only into sessions whose credential subtree is marked with that account", async () => {
     const accountRoot = (accountId: string): string =>
       path.join(credentialsDir, "provider-accounts", "claude", accountId);
@@ -267,10 +237,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
         claudeAiOauth: { accessToken: string };
       }).claudeAiOauth.accessToken;
 
-    // Two connected Claude accounts, each with a session whose credential
-    // subtree holds (and is MARKED as holding) that account's copy. The
-    // accounts are created through the same store `buildApp` was handed, so the
-    // app's own `ProviderAccountManager` sees them.
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
     const x = accounts.create("anthropic", "Account X");
     const y = accounts.create("anthropic", "Account Y");
@@ -281,45 +247,24 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       sessionManager.track(sessionId, "Claude session");
       sessionManager.setAgentId(sessionId, "claude");
       sessionManager.setAgentPinned(sessionId);
-      // Each already holds its own copy — the one the CLI in the container
-      // actually reads, and the only thing a re-push can repair. The marker is
-      // the subtree's recorded identity: docs/260 §5 makes it, not any session
-      // row, the authority on whose token the copy is.
       writeToken(sessionRoot(sessionId), `stale-${sessionId}`);
       writeSessionAccountMarker(credentialsDir, sessionId, "claude", accountId);
     }
 
-    // And one pre-260 session holding a token with NO marker at all — its
-    // identity is unknown, so an account-scoped re-push must leave it alone.
-    // (It may be running on Y; force-pushing X's token there is the poisoning
-    // class the marker scoping exists to close. Its next turn's env-prep
-    // provisions and marks it properly.)
     sessionManager.track("sess-unmarked", "Pre-260 session");
     sessionManager.setAgentId("sess-unmarked", "claude");
     sessionManager.setAgentPinned("sess-unmarked");
     writeToken(sessionRoot("sess-unmarked"), "stale-sess-unmarked");
 
-    // Account X finishes signing in again.
     authManager.start({ accountId: x.id });
     authManager.emit("complete");
 
     expect(readToken(sessionRoot("sess-x"))).toBe("fresh-x");
-    // The session pinned to Y is untouched in BOTH directions: it did not get
-    // X's token, and Y's own source was not pushed on X's event either.
     expect(readToken(sessionRoot("sess-y"))).toBe("stale-sess-y");
-    // The unmarked subtree did not receive X's account token.
     expect(readToken(sessionRoot("sess-unmarked"))).toBe("stale-sess-unmarked");
     expect(accounts.get("anthropic", x.id)?.status).toBe("ready");
   });
 
-  // The mirror of the test above: a `complete` that names NO account writes
-  // nothing at all. It used to fall through to the flat re-push for every
-  // pinned session — no marker check, source `<credentialsRoot>/.claude/…`,
-  // which no account-scoped path ever refreshes — so one duplicate emission
-  // (the Claude auth manager's poll+exit double `complete`, fixed in
-  // `auth-manager.ts`) copied an unrelated, ageing token over the per-session
-  // copy of every pinned session, including sessions marked for another
-  // account and the session whose fresh token had just been delivered.
   it("re-pushes nothing when a completed sign-in names no account", async () => {
     const sessionRoot = (sessionId: string): string =>
       path.join(credentialsDir, "sessions", sessionId);
@@ -339,8 +284,6 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
     const y = accounts.create("anthropic", "Account Y");
 
-    // What the flat re-push would have copied: a token at the credentials root
-    // belonging to nobody the router knows about.
     writeToken(credentialsDir, "flat-root-token");
 
     sessionManager.track("sess-marked", "Marked session");
@@ -354,32 +297,12 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     sessionManager.setAgentPinned("sess-unmarked");
     writeToken(sessionRoot("sess-unmarked"), "own-unmarked");
 
-    // No `start()` — the manager reports a completion with no active scope.
     authManager.emit("complete");
 
     expect(readToken(sessionRoot("sess-marked"))).toBe("own-y");
     expect(readToken(sessionRoot("sess-unmarked"))).toBe("own-unmarked");
   });
 
-  // The case where the marker does NOT save us, so the source-level fix above
-  // is the only thing that does.
-  //
-  // docs/260 §4b refuses a write-back whose subtree marker names a different
-  // account — which covers a session holding some OTHER account's copy. It
-  // cannot cover THIS: the flat token landed in a session marked Y, and the
-  // write-back targets Y, so the marker AGREES and the identity check passes.
-  // The marker is telling the truth about intent and lying about bytes. All
-  // that is left is `syncAgentTokenBackToRoot`'s freshness compare, which
-  // orders two tokens and cannot tell whose they are (8ca7eea9's own lesson) —
-  // so a flat token with a later expiry than Y's source publishes a foreign
-  // bearer straight into Y's account root.
-  //
-  // In production the flat token is stale, so freshness usually blocks this.
-  // "Usually" is luck, not a guarantee, and the expiry ordering is not ours to
-  // control. This test therefore gives the flat token the LATER expiry — the
-  // arrangement where every downstream defence is spent — and asserts the
-  // foreign bearer never reaches Y's root anyway, because the unscoped re-push
-  // that would have started the chain is now unexpressible.
   it("keeps a foreign flat-root token out of an account root even when it is the fresher of the two", async () => {
     const accountRoot = (accountId: string): string =>
       path.join(credentialsDir, "provider-accounts", "claude", accountId);
@@ -398,7 +321,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
     const y = accounts.create("anthropic", "Account Y");
     const soon = Date.now() + 3_600_000;
-    const later = Date.now() + 36_000_000; // the flat token outlives Y's own
+    const later = Date.now() + 36_000_000;
 
     writeToken(accountRoot(y.id), "own-y", soon);
     writeToken(credentialsDir, "flat-root-token", later);
@@ -409,16 +332,11 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     writeToken(sessionRoot("sess-marked"), "own-y", soon);
     writeSessionAccountMarker(credentialsDir, "sess-marked", "claude", y.id);
 
-    authManager.emit("complete"); // no account scope
+    authManager.emit("complete");
 
-    // The turn-end write-back for a session that is legitimately Y's. Nothing
-    // refuses it — the marker agrees — so it is the freshness compare's turn,
-    // and the compare would publish whatever the session happens to hold.
+    // A matching marker cannot detect a foreign token copied into the session.
     syncProviderAccountTokenBack(credentialsDir, "sess-marked", "claude", y.id);
 
-    // Asserted first, because it is the claim: on the old code this reads
-    // `flat-root-token` — a foreign bearer in an account root, past a marker
-    // that agreed and a freshness compare that could not tell whose it was.
     expect(readToken(accountRoot(y.id))).toBe("own-y");
     expect(readToken(sessionRoot("sess-marked"))).toBe("own-y");
   });

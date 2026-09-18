@@ -47,7 +47,6 @@ The Claude CLI `stream-json` output already includes most of this data:
 Extend the `ClaudeResultEvent` type and `UsageManager` to capture token data:
 
 ```typescript
-// src/server/types.ts — extend ClaudeResultEvent
 export interface ClaudeResultEvent {
   type: "result";
   subtype: "success" | "error";
@@ -55,7 +54,6 @@ export interface ClaudeResultEvent {
   total_cost_usd?: number;
   duration_ms?: number;
   result?: string;
-  // New fields (from CLI stream-json output):
   input_tokens?: number;
   output_tokens?: number;
   cache_read_tokens?: number;
@@ -66,13 +64,11 @@ export interface ClaudeResultEvent {
 #### Extended UsageTurn
 
 ```typescript
-// src/server/types.ts — extend UsageTurn
 export interface UsageTurn {
   sessionId: string;
   costUsd: number;
   durationMs: number;
   timestamp: string;
-  // New:
   inputTokens?: number;
   outputTokens?: number;
 }
@@ -81,27 +77,20 @@ export interface UsageTurn {
 #### New Server → Client Messages
 
 ```typescript
-// src/server/types.ts — additions
-
-/** Sent once after the Claude CLI init event, and on reconnect. */
 export interface WsModelInfo {
   type: "model_info";
-  model: string;                  // e.g. "claude-sonnet-4-20250514"
-  contextWindowTokens: number;    // e.g. 200000
+  model: string;
+  contextWindowTokens: number;
 }
 
-/** Sent after each turn completes, extending the existing usage_update. */
-// Extend existing WsUsageUpdate:
 export interface WsUsageUpdate {
   type: "usage_update";
   sessionId: string;
   totalCostUsd: number;
   totalDurationMs: number;
   turnCount: number;
-  // New fields:
   lastTurnInputTokens?: number;
   lastTurnOutputTokens?: number;
-  /** Estimated cumulative input tokens across all turns in this session. */
   cumulativeInputTokens?: number;
 }
 ```
@@ -112,8 +101,6 @@ In the `system` event handler in `index.ts`, when the CLI sends the init event w
 
 ```typescript
 if (event.type === "system" && event.subtype === "init") {
-  // ... existing session ID tracking ...
-
   if (event.model) {
     send({
       type: "model_info",
@@ -125,12 +112,10 @@ if (event.type === "system" && event.subtype === "init") {
 ```
 
 ```typescript
-/** Map model identifiers to context window sizes. */
 function getContextWindowSize(model: string): number {
   if (model.includes("opus")) return 200_000;
   if (model.includes("sonnet")) return 200_000;
   if (model.includes("haiku")) return 200_000;
-  // Default conservative estimate
   return 200_000;
 }
 ```
@@ -160,13 +145,11 @@ A thin status bar at the bottom of the chat panel (or integrated into the header
 #### Model Name Formatting
 
 ```typescript
-/** Convert CLI model ID to display name. */
 function formatModelName(model: string): string {
   if (model.includes("opus")) return "Opus 4.5";
   if (model.includes("sonnet-4")) return "Sonnet 4.5";
   if (model.includes("sonnet-3")) return "Sonnet 3.5";
   if (model.includes("haiku")) return "Haiku 4.5";
-  // Fallback: show raw ID
   return model;
 }
 ```
@@ -204,17 +187,14 @@ The existing `UsageModal` shows per-session aggregate cost. Extend it with per-t
 #### State Management
 
 ```typescript
-// New state in App.tsx
 const [modelInfo, setModelInfo] = useState<{ model: string; contextWindowTokens: number } | null>(null);
 const [contextTokens, setContextTokens] = useState(0);
 
-// In lastMessage handler:
 if (data.type === "model_info") {
   setModelInfo({ model: data.model, contextWindowTokens: data.contextWindowTokens });
 }
 
 if (data.type === "usage_update") {
-  // ... existing cost tracking ...
   if (data.cumulativeInputTokens) {
     setContextTokens(data.cumulativeInputTokens);
   }
@@ -241,12 +221,10 @@ At 95%, show a more prominent warning:
 If exact token counts aren't available from the CLI, estimate from message content:
 
 ```typescript
-/** Rough token estimate: ~4 chars per token for English text. */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/** Estimate cumulative context from chat history. */
 function estimateContextUsage(messages: ChatMessage[]): number {
   let tokens = 0;
   for (const msg of messages) {

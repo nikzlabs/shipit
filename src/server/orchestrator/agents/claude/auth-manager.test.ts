@@ -11,24 +11,16 @@ import {
   extractPlanLabel,
   extractUrlFromBuffer,
 } from "./auth-manager.js";
-import { sanitizeClaudeAuthDiagnostic } from "./auth-diagnostics.js";
 
-// docs/150 — mock node-pty so the scoped-spawn test can assert the CLI is
-// launched with HOME pointed at the account root, without spawning a real
-// `claude /login`. The other suites in this file don't spawn, so the mock is
-// inert for them. `vi.hoisted` keeps the capture array reachable from the
-// hoisted `vi.mock` factory.
 const ptyHoisted = vi.hoisted(() => ({
-  calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string> } }[],
-  // Captured CLI lifecycle callbacks + a kill counter, so the freshness suite
-  // can drive the exit path and assert the PTY isn't SIGHUP'd prematurely.
+  calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string>; cols?: number } }[],
   exitHandlers: [] as ((e: { exitCode: number }) => void)[],
   dataHandlers: [] as ((data: string) => void)[],
   writes: [] as string[],
   killed: 0,
 }));
 vi.mock("node-pty", () => ({
-  spawn: (cmd: string, args: readonly string[], opts: { env?: Record<string, string> }) => {
+  spawn: (cmd: string, args: readonly string[], opts: { env?: Record<string, string>; cols?: number }) => {
     ptyHoisted.calls.push({ cmd, args, opts });
     return {
       pid: 4242,
@@ -105,14 +97,12 @@ describe("extractAuthUrl", () => {
   });
 
   it("prefers Anthropic console URL over generic patterns", () => {
-    // AUTH_URL_PATTERNS is ordered: console > claude.ai > generic auth > login
     const text = "Open https://console.anthropic.com/login?code=abc";
     const result = extractAuthUrl(text);
     expect(result).toBe("https://console.anthropic.com/login?code=abc");
   });
 
   it("strips ANSI escape codes before matching", () => {
-    // PTY output includes ANSI codes for colors, cursor movement, etc.
     const text = "\x1b[1mOpen \x1b[36mhttps://console.anthropic.com/verify?code=abc\x1b[0m in your browser";
     expect(extractAuthUrl(text)).toBe("https://console.anthropic.com/verify?code=abc");
   });
@@ -125,8 +115,6 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("joins URL split across multiple lines by PTY wrapping", () => {
-    // Real-world scenario: PTY wraps at 80 chars, splitting the URL.
-    // An empty line separates the URL block from the "Paste code here" prompt.
     const buffer = [
       "Browser didn't open? Use the url below to sign in:",
       "",
@@ -144,7 +132,6 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("extracts the last URL when multiple are present", () => {
-    // CLI outputs redirect URL first, then the code-paste URL
     const buffer = [
       "Opening https://claude.ai/oauth/authorize?redirect_uri=http://localhost:40393",
       "",
@@ -178,7 +165,6 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("returns null for very short URLs", () => {
-    // URLs shorter than 20 chars are rejected
     expect(extractUrlFromBuffer("https://a.b")).toBeNull();
   });
 
@@ -188,8 +174,6 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("handles real Docker PTY output with 6-line wrapped URL", () => {
-    // Exact format from Docker logs — URL wrapped at ~80 cols, two blank lines
-    // before "Paste code here" trigger (PTY strips spaces from trigger text)
     const buffer = [
       "Browser didn't open?Use the urlbelowtosignin(ctocopy)",
       "",
@@ -211,51 +195,20 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("strips DEC private mode escape sequences", () => {
-    // PTY may emit \x1b[?25l (hide cursor) which the basic ANSI regex misses
     const buffer = "\x1b[?25lhttps://claude.ai/oauth/authorize?code=true&client_id=abc123\x1b[?25h\n\nDone";
     expect(extractUrlFromBuffer(buffer)).toBe("https://claude.ai/oauth/authorize?code=true&client_id=abc123");
   });
 
   it("handles trigger text glued directly to URL end (no empty line)", () => {
-    // The PTY may glue the "Paste code here" prompt directly onto the URL
-    // with no newline between. The caller (AuthManager) truncates at the
-    // trigger position, so extractUrlFromBuffer receives a clean buffer.
     const fullBuffer = "https://claude.ai/oauth/authorize?code=true&state=abc123Pastecodehereifprompted";
-    // Simulating what AuthManager does: truncate at trigger position
     const triggerPos = fullBuffer.indexOf("Pastecodehereifprompted");
     const truncated = fullBuffer.substring(0, triggerPos);
     expect(extractUrlFromBuffer(truncated)).toBe("https://claude.ai/oauth/authorize?code=true&state=abc123");
   });
 });
 
-describe("sanitizeClaudeAuthDiagnostic", () => {
-  it("redacts auth URL details, token-like values, emails, API keys, and credential paths", () => {
-    const sanitized = sanitizeClaudeAuthDiagnostic(
-      "Open https://claude.ai/oauth/authorize?code=true&state=secret-state&code_challenge=secret-challenge " +
-      "for person@example.com with Authorization: Bearer abcdefghijklmnop and sk-ant-secret " +
-      "from /root/.claude/.credentials.json plus /credentials/.claude/auth.json",
-    );
-
-    expect(sanitized).toContain("https://claude.ai/oauth/authorize?[redacted]");
-    expect(sanitized).toContain("[email redacted]");
-    expect(sanitized).toContain("Bearer [redacted]");
-    expect(sanitized).toContain("sk-ant-[redacted]");
-    expect(sanitized).toContain("/root/.[redacted]");
-    expect(sanitized).toContain("/credentials/[redacted]");
-    expect(sanitized).not.toContain("secret-state");
-    expect(sanitized).not.toContain("person@example.com");
-    expect(sanitized).not.toContain("abcdefghijklmnop");
-  });
-});
 
 describe("AuthManager.checkCredentials", () => {
-  // Save/restore Anthropic auth env vars so tests don't depend on the host
-  // shell and don't leak state between tests. We don't try to assert the
-  // *unauthenticated* case here because the dev container may have a real
-  // ~/.claude/.credentials.json on disk that flips the OR'd authentication
-  // check on regardless of env. The disk-only path is already exercised
-  // implicitly by the production deploy; what's new in this change is the
-  // env-var branch.
   let origApiKey: string | undefined;
   let origAuthToken: string | undefined;
 
@@ -281,12 +234,6 @@ describe("AuthManager.checkCredentials", () => {
   });
 
   it("returns true when ANTHROPIC_AUTH_TOKEN is set (dogfooding path)", () => {
-    // ShipIt-in-ShipIt: the outer orch forwards its Claude OAuth access
-    // token to the inner orch as ANTHROPIC_AUTH_TOKEN. The inner orch has
-    // no /root/.claude/.credentials.json on disk, so this env var is the
-    // only signal that authentication is configured. Before this fix
-    // checkCredentials() only looked at ANTHROPIC_API_KEY and would report
-    // the inner orch as unauthenticated in OAuth-only setups.
     process.env.ANTHROPIC_AUTH_TOKEN = "oauth-access-token-abc";
     const mgr = new AuthManager();
     expect(mgr.checkCredentials()).toBe(true);
@@ -333,8 +280,6 @@ describe("extractExpiresAt", () => {
 });
 
 describe("extractPlanLabel", () => {
-  // Mirrors the exact shape captured during doc 135 Phase 0 against a
-  // real Anthropic Max-20x credentials file.
   it("renders 'Max 20x' from rateLimitTier=default_claude_max_20x", () => {
     expect(extractPlanLabel({
       claudeAiOauth: {
@@ -398,9 +343,7 @@ describe("AuthManager / account-scoped (docs/150)", () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     process.env.ANTHROPIC_AUTH_TOKEN = "bearer";
     const mgr = new AuthManager();
-    // No file in the account dir → scoped check is false despite env auth...
     expect(mgr.isConfigured({ credentialDir: tmp })).toBe(false);
-    // ...while the singleton check still honors env auth.
     expect(mgr.isConfigured()).toBe(true);
 
     fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });
@@ -422,7 +365,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
   beforeEach(() => {
     ptyHoisted.calls.length = 0;
     ptyHoisted.dataHandlers.length = 0;
-    // Fake timers so the 15s watchdog + wizard-Enter debounce don't leak/fire.
     vi.useFakeTimers();
   });
 
@@ -448,10 +390,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
     }
   });
 
-  // docs/150 — `startAccountAuth` refuses while another account owns the flow,
-  // so a scope that outlives its process locks the provider out of sign-in
-  // entirely. A cancel emits no terminal complete/failed event, so `cancel()`
-  // is the only thing that can release it.
   it("cancel() releases the account scope, not just the PTY", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-home-"));
     try {
@@ -461,7 +399,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
 
       mgr.cancel();
 
-      // Stale scope here would 409 every later sign-in for this provider.
       expect(mgr.getActiveAccountId()).toBeNull();
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -477,12 +414,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
   });
 
   it("wipes a stale/expired credential file before spawning the login CLI", () => {
-    // The fix for the "must Clear saved credentials before re-authenticating"
-    // bug: `claude /login` only runs the full code-paste flow from a clean
-    // slate. An expired `.credentials.json` left on disk makes it short-circuit
-    // and never write a fresh token, so the login silently no-ops. Starting the
-    // flow must remove the scope's credential files first — automatically doing
-    // what the user previously had to do by hand.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-wipe-"));
     try {
       const credPath = path.join(tmp, ".claude", ".credentials.json");
@@ -492,7 +423,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
       const mgr = new AuthManager();
       mgr.startOAuthFlow({ accountId: "acct-reauth", credentialDir: tmp });
 
-      // Stale file gone, yet the CLI was still spawned to start a fresh login.
       expect(fs.existsSync(credPath)).toBe(false);
       expect(ptyHoisted.calls).toHaveLength(1);
       mgr.kill();
@@ -502,14 +432,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
   });
 
   it("strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN from the login subprocess env", () => {
-    // Companion to the on-disk wipe: `claude /login` honors these env vars over
-    // the interactive OAuth flow, so a stale key/token in the orchestrator's
-    // environment makes the flow hang on "Starting…" no matter how clean the
-    // disk is. All three subscription-bearer vars must never be inherited by
-    // the login child — while the orchestrator's own `process.env` is left
-    // untouched. CLAUDE_CODE_OAUTH_TOKEN (set by `claude setup-token`) is the
-    // third such var and is easy to miss — a forwarded one (e.g. dogfood
-    // secrets) would re-introduce the hang.
     const origKey = process.env.ANTHROPIC_API_KEY;
     const origToken = process.env.ANTHROPIC_AUTH_TOKEN;
     const origOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -524,8 +446,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
       expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-      // The orchestrator's own env is unchanged — env-var auth still works for
-      // agent turns / dogfooding.
       expect(process.env.ANTHROPIC_API_KEY).toBe("sk-ant-stale");
       expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("stale-bearer");
       expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("stale-oauth-token");
@@ -541,21 +461,14 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
   });
 
   it("tears down a stale PTY and restarts instead of silently no-oping", () => {
-    // The deadlock that forced users to click "Clear saved credentials" first:
-    // a hung first login left `this.proc` non-null, so every subsequent "Sign
-    // in" early-returned (no-op) and the UI sat on "Starting…" forever — the
-    // only escape was signOut()/kill() via "Clear credentials". Re-starting the
-    // flow must now kill the stale PTY and spawn a fresh one, making "Sign in"
-    // self-healing.
     ptyHoisted.killed = 0;
     const mgr = new AuthManager();
 
-    mgr.startOAuthFlow(); // first attempt — leaves a live PTY
+    mgr.startOAuthFlow();
     expect(ptyHoisted.calls).toHaveLength(1);
     expect(ptyHoisted.killed).toBe(0);
 
-    mgr.startOAuthFlow(); // retry while the first is still "running"
-    // The stale PTY was killed and a brand-new login was spawned (not a no-op).
+    mgr.startOAuthFlow();
     expect(ptyHoisted.killed).toBe(1);
     expect(ptyHoisted.calls).toHaveLength(2);
     mgr.kill();
@@ -596,10 +509,307 @@ describe("AuthManager / auth diagnostics", () => {
 
     expect(pending).toHaveLength(1);
     expect(progress.map((p) => p.phase)).toContain("waiting_for_code");
-    const cliLog = logs.find((l) => l.source === "claude_stdout");
-    expect(cliLog?.message).toContain("https://claude.ai/oauth/authorize?[redacted]");
-    expect(cliLog?.message).not.toContain("super-secret-state");
+    // Relayed a line at a time, so the link is its own entry.
+    const cli = logs.filter((l) => l.source === "cli_stdout").map((l) => l.message);
+    expect(cli.join("")).toContain("https://claude.ai/oauth/authorize?[redacted]");
+    expect(cli.join("")).not.toContain("super-secret-state");
     expect(new Set(progress.map((p) => p.attemptId)).size).toBe(1);
+    mgr.kill();
+  });
+
+  /**
+   * A pty echoes what is written to it, so the pasted code comes back on the
+   * CLI's own output — which the diagnostics panel shows. The sanitizer's
+   * long-secret rule catches a long code and nothing guarantees the code is one.
+   */
+  it("keeps the pasted code out of the CLI output the pty echoes back", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("short-code-1234#state");
+    ptyHoisted.dataHandlers[0]("short-code-1234#state\nExchanging the code…\n");
+
+    const panel = logs.map((l) => l.message).join("\n");
+    expect(panel, "leaked the authorization code").not.toContain("short-code-1234");
+    expect(panel).toContain("Exchanging the code…");
+    mgr.kill();
+  });
+
+  /**
+   * A chunk boundary lands wherever the pty buffer says, and every rule that
+   * protects this panel is a whole-string rule. Relaying a line at a time is
+   * what makes any of them apply — the code redaction is only one of them.
+   */
+  it.each([
+    {
+      name: "a link's query string",
+      chunks: ["Open https://claude.ai/oauth/authorize?code=true&sta", "te=private-state-value&hint=x\n"],
+      secret: "private-state-value",
+    },
+    {
+      // The first chunk is redacted on its own, which is what makes the second
+      // look like ordinary text: the tail is the half that gets published.
+      name: "the tail of a bearer token",
+      chunks: ["Authorization: Bearer abcdefgh", "ijklmnopqrstuvwx\n"],
+      secret: "ijklmnopqrstuvwx",
+    },
+  ])("redacts $name the pty split across two chunks", ({ chunks, secret }) => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    for (const chunk of chunks) ptyHoisted.dataHandlers[0](chunk);
+
+    expect(logs.map((l) => l.message).join("")).not.toContain(secret);
+    mgr.kill();
+  });
+
+  /**
+   * A chunk boundary is not the only break in the stream: the CLI wraps its own
+   * output at the width ShipIt spawned it with, newline included — a capture of
+   * this login at 80 columns breaks the link across three lines — so a whole
+   * line is still half a secret. Taking the width back from the spawn call is
+   * the property under test: a relay unwrapping at a different number is the
+   * same defect.
+   */
+  it("redacts a link the CLI wrapped at the width it was spawned with", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    const cols = ptyHoisted.calls[0].opts.cols ?? 0;
+    // The break falls inside `state`, which is where the leak lives: split
+    // anywhere else and the assignment rule still recognises the key on the
+    // second line, so the test would pass with no unwrapping at all.
+    const base = "https://claude.ai/oauth/authorize?hint=";
+    const url = `${base}${"x".repeat(cols - base.length - 3)}state=private-state-value`;
+    expect(url.slice(0, cols)).toMatch(/sta$/);
+
+    ptyHoisted.dataHandlers[0](`${url.slice(0, cols)}\n${url.slice(cols)}\n`);
+
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel).not.toContain("private-state-value");
+    // Relaying nothing at all would satisfy the line above.
+    expect(panel).toContain("https://claude.ai/oauth/authorize?[redacted]");
+    mgr.kill();
+  });
+
+  /**
+   * A held line is held because it might be half a secret, and cancelling is
+   * when the user most wants to read why. `kill()` is the only path left that
+   * can drain it — the exit callback runs on a process that has been detached.
+   */
+  it("relays a held line when the login is cancelled", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    const cols = ptyHoisted.calls[0].opts.cols ?? 0;
+    const line = "The Claude CLI could not reach the authentication service.".padEnd(cols, ".");
+    ptyHoisted.dataHandlers[0](`${line}\n`);
+    expect(logs.map((l) => l.message).join(""), "relayed before the line could be joined")
+      .not.toContain("could not reach");
+
+    mgr.cancel();
+
+    expect(logs.map((l) => l.message).join("")).toContain("could not reach");
+  });
+
+  /**
+   * The credential poll's timeout ends the attempt without killing the process,
+   * so nothing else drains the relay — and what it holds is the CLI's last word
+   * on why the credentials never arrived.
+   */
+  it("flushes what the CLI last printed when the credential poll times out", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-poll-"));
+    try {
+      const mgr = new AuthManager();
+      const logs: { message: string }[] = [];
+      mgr.on("log", (l: { message: string }) => logs.push(l));
+      mgr.startOAuthFlow({ accountId: "acct-1", credentialDir: tmp });
+      mgr.sendCode("4/short.private/code");
+      ptyHoisted.dataHandlers[0]("Error: the token exchange did not complete");
+
+      vi.advanceTimersByTime(31_000);
+
+      expect(logs.map((l) => l.message).join("")).toContain("the token exchange did not complete");
+      mgr.kill();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The flush publishes whatever the CLI had printed, and mid-echo that is the
+   * first half of the code — which no whole-code match recognises. It reaches
+   * the `[auth output]` log as well as the panel, from the same string.
+   */
+  it("keeps a half-echoed code out of what cancelling flushes", () => {
+    const mgr = new AuthManager();
+    const logs: { message: string }[] = [];
+    mgr.on("log", (l: { message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "https://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("4/short.private/code");
+    ptyHoisted.dataHandlers[0]("4/short.private/");
+
+    mgr.cancel();
+
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel).not.toContain("4/short.private/");
+    // Flushing nothing at all would satisfy the line above.
+    expect(panel).toContain("[code-redacted]");
+  });
+
+  /**
+   * A pty colours its echo, so an escape sequence can land inside the code, and
+   * split across two chunks neither half is recognisable — which is why chunks
+   * are buffered raw and the escapes are stripped off the assembled line.
+   */
+  it("keeps the code out when an escape sequence splits its echo", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("short-code-1234#state");
+    ptyHoisted.dataHandlers[0]("echo: short-code-\x1b[9");
+    ptyHoisted.dataHandlers[0]("0m1234#state\n");
+
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel, "leaked the authorization code").not.toContain("short-code-");
+    mgr.kill();
+  });
+
+  /**
+   * The Claude CLI is a TUI, so a code can arrive as two frames. Neither half
+   * matches what was submitted; only the assembled line does.
+   */
+  it("keeps the pasted code out when the echo is split across two chunks", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("short-code-1234#state");
+    ptyHoisted.dataHandlers[0]("echo: short-code-");
+    ptyHoisted.dataHandlers[0]("1234#state\nExchanging the code…\n");
+
+    // Joined without a separator: two adjacent lines each holding half of the
+    // code put the whole code on the screen just as plainly as one line would.
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel, "leaked the authorization code").not.toContain("short-code-1234");
+    expect(panel).toContain("Exchanging the code…");
+    mgr.kill();
+  });
+
+  /**
+   * Only the latest code used to be remembered, so a second submission stripped
+   * the first one's protection off output still sitting in the line buffer.
+   */
+  it("keeps redacting a code the user has already replaced", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >",
+    );
+    mgr.sendCode("first-code-secret");
+    ptyHoisted.dataHandlers[0]("echo: first-code-secret");
+    mgr.sendCode("second-code-secret");
+    ptyHoisted.dataHandlers[0]("\n");
+
+    const panel = logs.map((l) => l.message).join("");
+    expect(panel, "leaked the first code once a second was submitted").not.toContain("first-code-secret");
+    mgr.kill();
+  });
+
+  /**
+   * A torn-down login keeps draining. The exit callback already checked the
+   * flow generation; the data callback did not, so the old run's output landed
+   * on the new attempt and its expired link became that attempt's challenge.
+   */
+  it("ignores a superseded login process's output", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    const pending: string[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+    mgr.on("pending", () => pending.push("pending"));
+
+    mgr.startOAuthFlow();
+    const stale = ptyHoisted.dataHandlers[0];
+    mgr.startOAuthFlow();
+    logs.length = 0;
+    pending.length = 0;
+    stale("Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >");
+
+    expect(logs).toEqual([]);
+    expect(pending, "replayed the superseded run's link").toEqual([]);
+    mgr.kill();
+  });
+
+  /**
+   * Cancelling is not restarting: nothing supersedes the flow, so the guard has
+   * to move when the process is killed as well. A cancelled pty keeps draining.
+   */
+  it("ignores a cancelled login process's output", () => {
+    const mgr = new AuthManager();
+    const logs: { source: string; message: string }[] = [];
+    const pending: string[] = [];
+    mgr.on("log", (l: { source: string; message: string }) => logs.push(l));
+    mgr.on("pending", () => pending.push("pending"));
+
+    mgr.startOAuthFlow();
+    const drained = ptyHoisted.dataHandlers[0];
+    mgr.cancel();
+    logs.length = 0;
+    pending.length = 0;
+    drained("Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=s\n\nPaste code here if prompted >");
+
+    expect(logs).toEqual([]);
+    expect(pending, "replayed the cancelled run's link").toEqual([]);
+  });
+
+  /**
+   * The panel's redaction has to cover the orchestrator's log too: the same
+   * chunk was being printed raw next to the sanitized line it produced.
+   */
+  it("logs the sanitized line rather than the raw chunk", () => {
+    const mgr = new AuthManager();
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map((a) => String(a)).join(" "));
+    });
+
+    mgr.startOAuthFlow();
+    ptyHoisted.dataHandlers[0](
+      "Browser didn't open?\nhttps://claude.ai/oauth/authorize?code=true&state=super-secret-state\n",
+    );
+
+    // Every line this manager prints, not only the relayed one: the URL
+    // detection printed its own unsanitized copy beside the clean one.
+    expect(logged.join("\n"), "printed the link's query string to the server log")
+      .not.toContain("super-secret-state");
+    spy.mockRestore();
     mgr.kill();
   });
 
@@ -635,21 +845,12 @@ describe("AuthManager / auth diagnostics", () => {
 });
 
 describe("AuthManager / fresh-credential completion gate", () => {
-  // Regression for the stale-credential short-circuit: re-authenticating an
-  // account that already has a credential file used to "complete" on the very
-  // first 500ms poll tick (pure existsSync), killing the CLI before it could
-  // exchange the pasted code into a new token. The completion checks now
-  // require the credential file to be *newer* than a baseline captured at flow
-  // start, so only a genuinely-new write counts.
   let tmp: string;
   const CRED_REL = path.join(".claude", ".credentials.json");
 
-  // Absolute mtimes (epoch ms) — deterministic regardless of wall clock or
-  // fake timers. STALE < FRESH, so a rewrite to FRESH advances past baseline.
-  const STALE_MTIME = 1_000_000_000_000; // 2001
-  const FRESH_MTIME = 2_000_000_000_000; // 2033
+  const STALE_MTIME = 1_000_000_000_000;
+  const FRESH_MTIME = 2_000_000_000_000;
 
-  /** Write a credential file and stamp it with an explicit mtime. */
   function writeCred(mtimeMs: number): void {
     const credPath = path.join(tmp, CRED_REL);
     fs.mkdirSync(path.dirname(credPath), { recursive: true });
@@ -658,7 +859,6 @@ describe("AuthManager / fresh-credential completion gate", () => {
     fs.utimesSync(credPath, when, when);
   }
 
-  /** Capture the normalized terminal events for assertions. */
   function track(mgr: AuthManager): { complete: number; failed: { reason?: string }[] } {
     const seen = { complete: 0, failed: [] as { reason?: string }[] };
     mgr.on("complete", () => { seen.complete++; });
@@ -687,17 +887,15 @@ describe("AuthManager / fresh-credential completion gate", () => {
     mgr.startOAuthFlow({ accountId: "acct-stale", credentialDir: tmp });
     mgr.sendCode("auth-code-xyz");
 
-    // One poll tick: the stale file must not be mistaken for a fresh write.
     vi.advanceTimersByTime(500);
     expect(seen.complete).toBe(0);
     expect(seen.failed).toHaveLength(0);
-    expect(ptyHoisted.killed).toBe(0); // CLI not SIGHUP'd mid-exchange
+    expect(ptyHoisted.killed).toBe(0);
 
-    // The CLI finishes the exchange and writes fresh credentials.
     writeCred(FRESH_MTIME);
     vi.advanceTimersByTime(500);
     expect(seen.complete).toBe(1);
-    expect(ptyHoisted.killed).toBe(1); // killed exactly once, on real success
+    expect(ptyHoisted.killed).toBe(1);
   });
 
   it("poll completes when credentials first appear (no pre-existing file)", () => {
@@ -707,7 +905,7 @@ describe("AuthManager / fresh-credential completion gate", () => {
     mgr.sendCode("auth-code-xyz");
 
     vi.advanceTimersByTime(500);
-    expect(seen.complete).toBe(0); // nothing written yet
+    expect(seen.complete).toBe(0);
 
     writeCred(FRESH_MTIME);
     vi.advanceTimersByTime(500);
@@ -721,7 +919,6 @@ describe("AuthManager / fresh-credential completion gate", () => {
     mgr.startOAuthFlow({ accountId: "acct-timeout", credentialDir: tmp });
     mgr.sendCode("auth-code-xyz");
 
-    // 60 ticks × 500ms = 30s — the full poll budget.
     vi.advanceTimersByTime(30_000);
     expect(seen.complete).toBe(0);
     expect(seen.failed).toHaveLength(1);
@@ -748,7 +945,7 @@ describe("AuthManager / fresh-credential completion gate", () => {
     const seen = track(mgr);
     mgr.startOAuthFlow({ accountId: "acct-exit-fresh", credentialDir: tmp });
 
-    writeCred(FRESH_MTIME); // CLI persisted a new token before exiting
+    writeCred(FRESH_MTIME);
     for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 0 });
 
     expect(seen.complete).toBe(1);
@@ -757,12 +954,6 @@ describe("AuthManager / fresh-credential completion gate", () => {
 });
 
 describe("AuthManager / one terminal outcome per flow", () => {
-  // Regression: the credentials poll detected success, killed the CLI, emitted
-  // `complete` and then cleared the account scope — so the PTY's own exit
-  // handler ran next, still saw fresh credentials, and emitted a SECOND
-  // `complete` with `getActiveAccountId() === null`. The unscoped duplicate
-  // reached the SSE wiring as an account-less sign-in, which pushed the flat
-  // root's token into every pinned session.
   let tmp: string;
   const CRED_REL = path.join(".claude", ".credentials.json");
   const FRESH_MTIME = 2_000_000_000_000;
@@ -775,7 +966,6 @@ describe("AuthManager / one terminal outcome per flow", () => {
     fs.utimesSync(credPath, when, when);
   }
 
-  /** Record each terminal event together with the scope live at emit time. */
   function trackScoped(mgr: AuthManager): { complete: (string | null)[]; failed: (string | null)[] } {
     const seen = { complete: [] as (string | null)[], failed: [] as (string | null)[] };
     mgr.on("complete", () => { seen.complete.push(mgr.getActiveAccountId()); });
@@ -807,8 +997,6 @@ describe("AuthManager / one terminal outcome per flow", () => {
     vi.advanceTimersByTime(500);
     expect(seen.complete).toEqual(["acct-once"]);
 
-    // The poll's kill() makes the CLI exit; the credentials are still fresh on
-    // disk, so the exit handler's own success check passes. It must stay quiet.
     for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
     expect(seen.complete).toEqual(["acct-once"]);
     expect(seen.failed).toEqual([]);
@@ -834,7 +1022,7 @@ describe("AuthManager / one terminal outcome per flow", () => {
     const seen = trackScoped(mgr);
     mgr.startOAuthFlow({ accountId: "acct-cancelled", credentialDir: tmp });
 
-    mgr.cancel(); // the user gave up; the scope is released here
+    mgr.cancel();
     for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
 
     expect(seen.failed).toEqual([]);
@@ -847,13 +1035,11 @@ describe("AuthManager / one terminal outcome per flow", () => {
     mgr.startOAuthFlow({ accountId: "acct-first", credentialDir: tmp });
     const staleExit = [...ptyHoisted.exitHandlers];
 
-    // A second attempt tears the stale PTY down; its exit lands afterwards.
     mgr.startOAuthFlow({ accountId: "acct-second", credentialDir: tmp });
     for (const cb of staleExit) cb({ exitCode: 129 });
     expect(seen.failed).toEqual([]);
     expect(seen.complete).toEqual([]);
 
-    // The live flow still owns its outcome.
     mgr.sendCode("auth-code-xyz");
     writeCred(FRESH_MTIME);
     vi.advanceTimersByTime(500);

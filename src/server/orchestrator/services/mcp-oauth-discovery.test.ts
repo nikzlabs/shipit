@@ -1,14 +1,3 @@
-/**
- * Unit tests for MCP OAuth metadata discovery (docs/139).
- *
- * Covers the discovery chain (WWW-Authenticate → protected-resource →
- * authorization-server), RFC 8414 path construction, the openid-configuration
- * fallback, the S256 requirement, the in-memory cache, and the SSRF
- * origin-validation guards.
- *
- * The `fetch` boundary is faked — none of these touch the network.
- */
-
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   discoverOAuthMetadata,
@@ -20,15 +9,10 @@ import { ServiceError } from "./types.js";
 
 const NOTION_MCP = "https://mcp.notion.com/mcp";
 
-/** Default canned responses for the Notion discovery chain. */
 function notionFetch(opts?: {
-  /** Drop the WWW-Authenticate header so the well-known fallback runs. */
   noChallenge?: boolean;
-  /** AS metadata overrides. */
   asMeta?: Record<string, unknown>;
-  /** authorization_servers override in the protected-resource metadata. */
   authServers?: string[];
-  /** Make the RFC 8414 path 404 so the openid-configuration fallback runs. */
   rfc8414Status?: number;
 }): { fetchImpl: typeof fetch; urls: string[] } {
   const urls: string[] = [];
@@ -130,7 +114,6 @@ describe("services/mcp-oauth-discovery (docs/139)", () => {
       expect(meta.tokenEndpoint).toBe("https://mcp.notion.com/token");
       expect(meta.registrationEndpoint).toBe("https://mcp.notion.com/register");
       expect(meta.codeChallengeMethods).toContain("S256");
-      // Used the header-advertised metadata URL (not a guessed well-known).
       expect(urls).toContain("https://mcp.notion.com/.well-known/oauth-protected-resource/mcp");
     });
 
@@ -138,7 +121,6 @@ describe("services/mcp-oauth-discovery (docs/139)", () => {
       const { fetchImpl, urls } = notionFetch({ noChallenge: true });
       const meta = await discoverOAuthMetadata({ mcpUrl: NOTION_MCP, fetchImpl });
       expect(meta.tokenEndpoint).toBe("https://mcp.notion.com/token");
-      // Tried the resource-suffixed well-known path.
       expect(
         urls.some((u) => u.endsWith("/.well-known/oauth-protected-resource/mcp")),
       ).toBe(true);

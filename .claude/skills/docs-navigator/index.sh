@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Lists all feature docs with status and title.
-# Usage:
-#   bash .claude/skills/docs-navigator/index.sh          # all docs
-#   bash .claude/skills/docs-navigator/index.sh active    # planned + in-progress only
-#   bash .claude/skills/docs-navigator/index.sh <keyword> # filter by keyword in name or title
+# Usage: index.sh [active|keyword]
 
 set -euo pipefail
 
@@ -16,21 +12,17 @@ for dir in "$DOCS_DIR"/*/; do
 
   name=$(basename "$dir")
 
-  # Extract status from YAML frontmatter
   status=$(awk '/^---$/{c++; next} c==1 && /^status:/{print $2; exit}' "$plan")
   status="${status:-unknown}"
 
-  # Extract first markdown heading after frontmatter
   title=$(awk '/^---$/{c++; next} c>=2 && /^#/{sub(/^#+ */, ""); print; exit}' "$plan")
   title="${title:-<no title>}"
 
-  # Check for checklist
   checklist=""
   [ -f "$dir/checklist.md" ] && checklist=" [has checklist]"
 
   line="$name ($status)$checklist — $title"
 
-  # Apply filter
   if [ -n "$FILTER" ]; then
     if [ "$FILTER" = "active" ]; then
       case "$status" in

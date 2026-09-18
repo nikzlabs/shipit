@@ -1,8 +1,3 @@
-/**
- * Tests for the Tier C egress allow-once WS handler (docs/172, planning#92),
- * focusing on the durable write-through + live reload on "Add to allowlist".
- */
-
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { handleEgressDecision } from "./egress-handlers.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -19,6 +14,7 @@ function makeCtx(store: EgressAllowlistStore, reloadEgress: ReturnType<typeof vi
     getRunnerRegistry: () => ({ get: () => runner }),
     getRunner: () => runner,
     send: vi.fn(),
+    sseBroadcast: vi.fn(),
     chatHistoryManager: {
       updateEgressPromptCard: (_sid: string, _cardId: string, patch: unknown) => updates.push(patch),
     },
@@ -41,10 +37,10 @@ describe("handleEgressDecision", () => {
     reloadEgress = vi.fn(async () => true);
   });
 
-  it("'add' grants live, writes the host to the durable global allowlist, and reloads the session", () => {
+  it("'add' grants live, writes the host to the durable global allowlist, and reloads the session", async () => {
     const { ctx, updates } = makeCtx(store, reloadEgress);
     const msg: WsEgressDecision = { type: "egress_decision", action: "add", host: "cdn.example.com", cardId: "egress-s1-cdn.example.com" };
-    handleEgressDecision(ctx, msg);
+    await handleEgressDecision(ctx, msg);
 
     expect(isEgressHostAllowed("s1", "cdn.example.com")).toBe(true);
     expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual(["cdn.example.com"]);
@@ -52,9 +48,9 @@ describe("handleEgressDecision", () => {
     expect(updates).toContainEqual({ phase: "added" });
   });
 
-  it("'allow-once' grants live but does NOT persist or reload", () => {
+  it("'allow-once' grants live but does NOT persist or reload", async () => {
     const { ctx, updates } = makeCtx(store, reloadEgress);
-    handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
+    await handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
 
     expect(isEgressHostAllowed("s1", "cdn.example.com")).toBe(true);
     expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
@@ -62,9 +58,9 @@ describe("handleEgressDecision", () => {
     expect(updates).toContainEqual({ phase: "allowed-once" });
   });
 
-  it("'deny' grants nothing and marks the card denied", () => {
+  it("'deny' grants nothing and marks the card denied", async () => {
     const { ctx, updates } = makeCtx(store, reloadEgress);
-    handleEgressDecision(ctx, { type: "egress_decision", action: "deny", host: "cdn.example.com", cardId: "c1" });
+    await handleEgressDecision(ctx, { type: "egress_decision", action: "deny", host: "cdn.example.com", cardId: "c1" });
 
     expect(isEgressHostAllowed("s1", "cdn.example.com")).toBe(false);
     expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
@@ -72,9 +68,7 @@ describe("handleEgressDecision", () => {
     expect(updates).toContainEqual({ phase: "denied" });
   });
 
-  it("patches the recorded card in place (not the DB row) when the proposing turn is still in flight", () => {
-    // A pending egress card recorded on an IN-FLIGHT turn, mirroring emitChatCard.
-    // The decision must not be lost when that turn finalizes from recordedCards.
+  it("patches the recorded card in place (not the DB row) when the proposing turn is still in flight", async () => {
     const dbUpdates: unknown[] = [];
     const flushed: unknown[] = [];
     const runner = {
@@ -99,12 +93,10 @@ describe("handleEgressDecision", () => {
       containerManager: { reloadEgress },
     } as never;
 
-    handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
+    await handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
 
-    // In-flight → recorded card patched to the resolved phase, DB-row patch skipped.
     expect((runner.recordedCards[0].message as { egressPrompt?: { phase?: string } }).egressPrompt?.phase).toBe("allowed-once");
     expect(dbUpdates).toHaveLength(0);
-    // ...and the patched in-progress set was flushed so a reload sees it.
     expect(flushed.length).toBeGreaterThan(0);
   });
 });

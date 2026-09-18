@@ -86,27 +86,27 @@ This also fills a gap: the `diff_comment` WebSocket message type already exists 
 type ReviewCommentSource = "human" | "ai";
 
 interface ReviewComment {
-  id: string;              // crypto.randomUUID()
-  sectionHeading: string;  // "## Architecture" — heading this comment is anchored to
-  sectionIndex: number;    // 0-based index of the section in the doc (at time of creation)
-  text: string;            // The comment text
+  id: string;
+  sectionHeading: string;
+  sectionIndex: number;
+  text: string;
   source: ReviewCommentSource;
 }
 
 type ReviewStatus = "draft" | "sent";
 
 interface DocReview {
-  id: string;              // crypto.randomUUID()
-  featureId: string;       // "012-deployment" — feature directory name
-  planPath: string;        // "docs/012-deployment/plan.md"
+  id: string;
+  featureId: string;
+  planPath: string;
   status: ReviewStatus;
   comments: ReviewComment[];
-  docSnapshotHash: string; // SHA-256 of the plan.md content when the review was created
-  sectionHeadings: string[]; // Ordered list of ## headings at snapshot time
-  createdAt: string;       // ISO 8601 timestamp
-  updatedAt: string;       // ISO 8601 timestamp
-  sentAt?: string;         // Set when status transitions to "sent"
-  sentToSessionId?: string; // Session that was created to address this review
+  docSnapshotHash: string;
+  sectionHeadings: string[];
+  createdAt: string;
+  updatedAt: string;
+  sentAt?: string;
+  sentToSessionId?: string;
 }
 ```
 
@@ -121,7 +121,7 @@ Follows the same pattern as `DeploymentStore` and `ThreadManager`: file-based JS
 **Storage layout**:
 ```
 {workspaceDir}/.shipit-reviews/
-  {featureId}.json          # Array of DocReview objects for that feature
+  {featureId}.json
 ```
 
 Each feature gets its own file. This keeps file sizes small and avoids contention.
@@ -129,33 +129,16 @@ Each feature gets its own file. This keeps file sizes small and avoids contentio
 **Methods**:
 ```typescript
 class ReviewStore {
-  constructor(baseDir?: string);  // defaults to /workspace/.shipit-reviews
+  constructor(baseDir?: string);
 
-  /** List all reviews for a feature, newest first. */
   listReviews(featureId: string): DocReview[];
-
-  /** Get a specific review by ID. */
   getReview(featureId: string, reviewId: string): DocReview | null;
-
-  /** Get the current draft review for a feature (status === "draft"), or null. */
   getDraft(featureId: string): DocReview | null;
-
-  /** Create a new draft review. Only one draft per feature at a time. */
   createDraft(featureId: string, planPath: string): DocReview;
-
-  /** Add a comment to a draft review. */
   addComment(featureId: string, reviewId: string, comment: Omit<ReviewComment, "id">): ReviewComment;
-
-  /** Update a comment's text. */
   updateComment(featureId: string, reviewId: string, commentId: string, text: string): void;
-
-  /** Delete a comment from a review. */
   deleteComment(featureId: string, reviewId: string, commentId: string): void;
-
-  /** Mark a review as sent, recording the target session ID. */
   markSent(featureId: string, reviewId: string, sessionId: string): void;
-
-  /** Delete a draft review (e.g., on cancel). */
   deleteDraft(featureId: string, reviewId: string): void;
 }
 ```
@@ -238,7 +221,7 @@ The main review UI. Fetches the draft review from the server on mount, renders s
 ```typescript
 interface DocReviewPanelProps {
   feature: FeatureInfo;
-  content: string;                // Raw markdown content of plan.md
+  content: string;
   onSendComments: (feature: FeatureInfo, reviewId: string) => void;
   onClose: () => void;
 }
@@ -284,7 +267,6 @@ function buildReviewPrompt(
 ): string {
   const currentSet = new Set(currentHeadings);
 
-  // Separate anchored vs orphaned
   const anchored: ReviewComment[] = [];
   const orphaned: ReviewComment[] = [];
   for (const c of comments) {
@@ -295,7 +277,6 @@ function buildReviewPrompt(
     }
   }
 
-  // Group anchored comments by section
   const grouped = new Map<string, ReviewComment[]>();
   for (const comment of anchored) {
     const key = comment.sectionHeading || "(Introduction)";
@@ -536,22 +517,20 @@ In FilePreviewModal for markdown files, section-anchored comments (reuses `Markd
 Comments are stored in a **persisted Zustand store** (`localStorage`) keyed by session ID. They survive page refresh but are scoped to the session they were created in. Cleared after send.
 
 ```typescript
-// Line-anchored comment (code files + diffs)
 interface LineComment {
-  id: string;              // crypto.randomUUID()
+  id: string;
   kind: "line";
-  filePath: string;        // "src/server/api-routes.ts"
-  line: number;            // 1-based line number
+  filePath: string;
+  line: number;
   text: string;
 }
 
-// Section-anchored comment (markdown files)
 interface SectionComment {
-  id: string;              // crypto.randomUUID()
+  id: string;
   kind: "section";
-  filePath: string;        // "docs/012-deployment/plan.md"
-  sectionHeading: string;  // "## Architecture"
-  sectionIndex: number;    // 0-based, for ordering
+  filePath: string;
+  sectionHeading: string;
+  sectionIndex: number;
   text: string;
 }
 
@@ -570,22 +549,11 @@ A utility module that adds comment UI to any Monaco editor instance. Used by bot
 
 ```typescript
 interface CommentWidgetManager {
-  /** Render existing comments as ViewZones + decorations */
   setComments(comments: FileComment[]): void;
-
-  /** Show the "add comment" input below a line */
   openCommentInput(line: number): void;
-
-  /** Clean up all ViewZones and decorations */
   dispose(): void;
 }
 
-/**
- * Attaches comment widgets to a Monaco editor instance.
- * - Adds glyph margin click handler (opens comment input)
- * - Renders existing comments as ViewZones (inline DOM below the line)
- * - Each comment card has Edit and Delete buttons
- */
 function createCommentWidgetManager(
   editor: monaco.editor.IStandaloneCodeEditor | monaco.editor.IStandaloneDiffEditor,
   options: {
@@ -593,7 +561,7 @@ function createCommentWidgetManager(
     onAddComment: (line: number, text: string) => void;
     onEditComment: (commentId: string, text: string) => void;
     onDeleteComment: (commentId: string) => void;
-    side?: "modified";  // For diff editor — only attach to modified side
+    side?: "modified";
   },
 ): CommentWidgetManager;
 ```
@@ -618,8 +586,8 @@ Extracted from `DocReviewPanel`'s section rendering. Renders markdown split by `
 
 ```typescript
 interface MarkdownSectionCommentsProps {
-  content: string;                  // Raw markdown
-  comments: SectionComment[];       // Only section-kind comments
+  content: string;
+  comments: SectionComment[];
   onAddComment: (sectionHeading: string, sectionIndex: number, text: string) => void;
   onEditComment: (commentId: string, text: string) => void;
   onDeleteComment: (commentId: string) => void;
@@ -649,7 +617,6 @@ Changes by file type:
 **Image/binary**: No changes.
 
 ```typescript
-// Inside FilePreviewModal, for code files:
 <Editor
   value={content}
   language={getLanguageFromPath(filePath)}
@@ -658,7 +625,7 @@ Changes by file type:
     readOnly: true,
     minimap: { enabled: false },
     lineNumbers: "on",
-    glyphMargin: true,         // Required for comment affordance
+    glyphMargin: true,
     folding: false,
     scrollBeyondLastLine: false,
     fontSize: 12,
@@ -699,12 +666,11 @@ Changes:
     readOnly: true,
     renderSideBySide: true,
     minimap: { enabled: false },
-    glyphMargin: true,           // NEW — enables comment affordance
+    glyphMargin: true,
     scrollBeyondLastLine: false,
     fontSize: 12,
     lineNumbers: "on",
     folding: false,
-    // ... existing options
   }}
   onMount={(editor) => {
     commentManagerRef.current = createCommentWidgetManager(editor, {
@@ -732,13 +698,10 @@ import { persist } from "zustand/middleware";
 interface FileCommentStore {
   commentsBySession: Record<string, FileComment[]>;
 
-  // Line comments (code files + diffs)
   addLineComment: (sessionId: string, filePath: string, line: number, text: string) => void;
 
-  // Section comments (markdown files)
   addSectionComment: (sessionId: string, filePath: string, sectionHeading: string, sectionIndex: number, text: string) => void;
 
-  // Common operations
   editComment: (sessionId: string, commentId: string, text: string) => void;
   deleteComment: (sessionId: string, commentId: string) => void;
   clearComments: (sessionId: string) => void;
@@ -772,7 +735,6 @@ function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<stri
   for (const [filePath, fileComments] of byFile) {
     const lines = (fileContents.get(filePath) ?? "").split("\n");
 
-    // Line comments — include code snippet with context
     const lineComments = fileComments.filter((c): c is LineComment => c.kind === "line");
     const sorted = lineComments.sort((a, b) => a.line - b.line);
     for (const comment of sorted) {
@@ -791,7 +753,6 @@ function buildFileCommentsPrompt(comments: FileComment[], fileContents: Map<stri
       prompt += `Comment: ${comment.text}\n\n`;
     }
 
-    // Section comments — reference the heading
     const sectionComments = fileComments.filter((c): c is SectionComment => c.kind === "section");
     const sortedSections = sectionComments.sort((a, b) => a.sectionIndex - b.sectionIndex);
     for (const comment of sortedSections) {
@@ -824,7 +785,7 @@ Full files are also attached via `FileContextRef` so Claude has broader context.
 
 ```typescript
 interface MarkdownSection {
-  heading: string;     // "## Architecture" or "" for preamble
+  heading: string;
   rawContent: string;
   index: number;
 }

@@ -22,11 +22,7 @@ const badgeVariants = cva(
 
 export type BadgeProps = HTMLAttributes<HTMLSpanElement> &
   VariantProps<typeof badgeVariants> & {
-    /**
-     * Render with `tabular-nums` so digits keep a fixed width — metric/status
-     * pills whose numbers tick (uptime, memory, usage %) don't jitter as the
-     * value changes.
-     */
+
     numeric?: boolean;
   };
 
@@ -34,10 +30,7 @@ export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(
   ({ className, variant, numeric, ...props }, ref) => (
     <span
       ref={ref}
-      // Merge through twMerge (like Button) so a caller's `className` reliably
-      // overrides the variant utilities it conflicts with — e.g. a header chip's
-      // bg-(--color-bg-hover) over the default background. CVA alone just
-      // concatenates, leaving the winner to stylesheet source order.
+
       className={cn(badgeVariants({ variant }), numeric && "tabular-nums", className)}
       {...props}
     />

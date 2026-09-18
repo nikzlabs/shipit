@@ -1,0 +1,451 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { RolesSettings } from "./RolesSettings.js";
+import { useSettingsStore } from "../../../stores/settings-store.js";
+import { useUiStore } from "../../../stores/ui-store.js";
+import type { AgentOption } from "../../../agent-types.js";
+import type { RoleView } from "../../../../server/shared/types/agent-types.js";
+
+/**
+ * docs/264 phase 2 (reqs 1, 2, 5, 6, 8, 9, 17, 18) — what the Settings surface
+ * has to make true.
+ *
+ * The demanding ones are req 6 and the unresolved view, and both are places a
+ * picker-based UI goes wrong by default:
+ *
+ *  - **req 6** — a model carried by TWO harnesses needs a real picker, because
+ *    nothing else can say which harness the role means. The fixture below has
+ *    one (`deepseek-v4`, on both installed agents) and one that is single-harness
+ *    (`claude-opus-5`), so the two branches are pinned against each other rather
+ *    than against a hand-waved "some model".
+ *  - **the unresolved role** — with no eligible row to match, a resolution-only
+ *    list would either drop the row or silently show the first available value.
+ *    It has to render the RAW stored tuple and keep both controls, or a role
+ *    whose model was retired can never be repaired.
+ */
+
+const agents: AgentOption[] = [
+  {
+    id: "claude",
+    name: "Claude Code",
+    installed: true,
+    hasRunnableModels: true,
+    models: ["claude-opus-5", "deepseek-flash"],
+    eligibleModels: [
+      {
+        serviceId: "anthropic",
+        serviceName: "Anthropic",
+        billingMode: "sub",
+        modelId: "claude-opus-5",
+        label: "Opus 5",
+        canonicalModelKey: "claude-opus-5",
+      },
+      {
+        serviceId: "deepseek",
+        serviceName: "DeepSeek",
+        billingMode: "key",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
+      },
+    ],
+    supportsReview: true,
+    reasoning: {
+      label: "Reasoning",
+      options: [
+        { value: "high", label: "High" },
+        { value: "max", label: "Max" },
+      ],
+    },
+  },
+  {
+
+    id: "codex",
+    name: "Codex",
+    installed: true,
+    hasRunnableModels: true,
+    models: ["deepseek-flash"],
+    eligibleModels: [
+      {
+        serviceId: "deepseek",
+        serviceName: "DeepSeek",
+        billingMode: "key",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
+      },
+    ],
+    supportsReview: true,
+    reasoning: {
+      label: "Reasoning effort",
+      options: [
+        { value: "minimal", label: "Minimal" },
+        { value: "high", label: "High" },
+        { value: "max", label: "Max" },
+      ],
+    },
+  },
+];
+
+const REVIEWER: RoleView = { name: "reviewer", params: { kind: "auto" }, reserved: true };
+
+function pinnedRole(over: Partial<RoleView> = {}): RoleView {
+  return {
+    name: "deep-dive",
+    description: "The thorough one",
+    reserved: false,
+    params: {
+      kind: "pinned",
+      harnessId: "claude",
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-flash",
+      reasoningEffort: "max",
+    },
+    resolved: {
+      harnessId: "claude",
+      harnessName: "Claude Code",
+      serviceId: "deepseek",
+      billingMode: "key",
+      serviceName: "DeepSeek",
+      modelId: "deepseek-flash",
+      label: "V4.1 Flash",
+      reasoningEffort: "max",
+      reasoningLabel: "Max",
+    },
+    ...over,
+  };
+}
+
+function okFetch(roles: RoleView[] = []) {
+  return vi.fn(async () => ({ ok: true, json: async () => ({ roles }) }));
+}
+
+function refusingFetch(error: string) {
+  return vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error }) }));
+}
+
+function urlOf(fetchMock: ReturnType<typeof vi.fn>, call = 0): string {
+  return (fetchMock.mock.calls[call] as unknown as [string])[0];
+}
+
+function bodyOf(fetchMock: ReturnType<typeof vi.fn>, call = 0): Record<string, unknown> {
+  const args = fetchMock.mock.calls[call] as unknown as [string, { body: string }];
+  return JSON.parse(args[1].body) as Record<string, unknown>;
+}
+
+function writtenRole(fetchMock: ReturnType<typeof vi.fn>, call = 0) {
+  const roles = bodyOf(fetchMock, call).roles as Record<string, unknown>;
+  const [name, write] = Object.entries(roles)[0];
+  return { name, write: write as Record<string, unknown> | null };
+}
+
+beforeEach(() => {
+  useSettingsStore.getState().setReviewers([]);
+  useSettingsStore.getState().setRoles([REVIEWER]);
+  // Read from the store since docs/308 slice 6b registered this as the component
+  // `roles` and `reviewers` name; a registered component takes no other props.
+  useUiStore.setState({ agentList: agents });
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe("RolesSettings — the list", () => {
+  it("keeps the reviewer out of the role list and gives it no rename or delete (req 2)", () => {
+    useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
+    render(<RolesSettings />);
+
+    expect(screen.queryByTestId("role-row-reviewer")).toBeNull();
+    expect(screen.queryByTestId("role-delete-reviewer")).toBeNull();
+
+    expect(screen.getByTestId("reviewer-tab")).toBeTruthy();
+    expect(screen.getByTestId("reviewer-metadata")).toBeTruthy();
+  });
+
+  it("renders a role as a SUMMARY — name, description, what it resolves to (req 17)", () => {
+    useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
+    render(<RolesSettings />);
+
+    const row = screen.getByTestId("role-row-deep-dive");
+    expect(row.textContent).toContain("deep-dive");
+    expect(row.textContent).toContain("The thorough one");
+    const resolution = screen.getByTestId("role-resolution-deep-dive").textContent ?? "";
+    expect(resolution).toContain("DeepSeek");
+    expect(resolution).toContain("V4.1 Flash");
+    expect(resolution).toContain("Claude Code");
+    expect(resolution).toContain("Max");
+
+    expect(screen.queryByTestId("role-editor-model-trigger")).toBeNull();
+  });
+
+  /**
+   * A role row states its harness flat — "running on Claude Code" — and that is
+   * CORRECT here, which is the opposite of the reviewer row's answer to the same
+   * sentence. The two look identical and are not the same claim:
+   *
+   *  - A reviewer slot pins `(service, billing mode, model)` only. Its harness is
+   *    derived (docs/261 req 3) implementer-independently for the Settings view
+   *    and re-derived at review time against `avoidHarnessId`, so the view is a
+   *    prediction and is worded as one.
+   *  - A **pinned role** stores `harnessId` outright, and `resolveRoleByName`'s
+   *    pinned branch takes the role's harness verbatim — `implementer` is read
+   *    only where the ranking runs, which a pinned role never reaches. So this
+   *    row reports what the user chose and what will run.
+   *
+   * The reserved `reviewer` role carries no `resolved` at all (its params are
+   * docs/261's two ranked slots), so it never renders this line either way.
+   *
+   * This test exists because the resemblance already misled a reader into
+   * proposing the reviewer row's fix here too. Qualifying this harness would say
+   * a stored parameter might not apply, which is false and undoes docs/264-agent-roles req 6.
+   */
+  it("states a pinned role's harness flat — it is stored, not derived", () => {
+    useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
+    render(<RolesSettings />);
+
+    const resolution = screen.getByTestId("role-resolution-deep-dive").textContent ?? "";
+
+    expect(resolution).toContain("running on Claude Code");
+
+    expect(resolution).not.toMatch(/per review|nothing to avoid/i);
+  });
+
+  it("says the install has no roles yet without hiding the reviewer", () => {
+    render(<RolesSettings />);
+    expect(screen.getByTestId("roles-empty")).toBeTruthy();
+    expect(screen.getByTestId("reviewer-metadata")).toBeTruthy();
+  });
+
+  it("deletes a role through the settings mutation surface", async () => {
+    const fetchMock = okFetch([REVIEWER]);
+    vi.stubGlobal("fetch", fetchMock);
+    useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
+    render(<RolesSettings />);
+
+    await userEvent.click(screen.getByTestId("role-delete-deep-dive"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(urlOf(fetchMock)).toBe("/api/settings");
+    expect(writtenRole(fetchMock)).toEqual({ name: "deep-dive", write: null });
+
+    await waitFor(() => expect(useSettingsStore.getState().roles).toEqual([REVIEWER]));
+  });
+});
+
+describe("RolesSettings — a failed write is ambiguous, so the list is re-read", () => {
+  it("re-reads the roles from the server after a refused write", async () => {
+
+    const renamed: RoleView = { ...pinnedRole(), name: "deeper-dive" };
+    const fetchMock = vi.fn(async (url: string) =>
+      url === "/api/bootstrap"
+        ? { ok: true, json: async () => ({ settings: { roles: [REVIEWER, renamed] } }) }
+        : { ok: false, status: 500, json: async () => ({ error: "connection lost" }) },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
+    render(<RolesSettings />);
+
+    await userEvent.click(screen.getByTestId("role-open-deep-dive"));
+    await userEvent.clear(screen.getByTestId("role-editor-name"));
+    await userEvent.type(screen.getByTestId("role-editor-name"), "deeper-dive");
+    await userEvent.click(screen.getByTestId("role-editor-save"));
+
+    await waitFor(() => expect(screen.getByTestId("role-editor-error")).toBeTruthy());
+    await waitFor(() =>
+      expect(useSettingsStore.getState().roles.map((r) => r.name)).toEqual([
+        "reviewer",
+        "deeper-dive",
+      ]),
+    );
+  });
+});
+
+describe("RolesSettings — a role that cannot run stays visible and editable", () => {
+  const stranded = pinnedRole({
+    name: "gone",
+    resolved: undefined,
+    unavailableReason: "stranded",
+    invalidField: "model",
+    params: {
+      kind: "pinned",
+      harnessId: "claude",
+      serviceId: "retired-service",
+      billingMode: "key",
+      modelId: "retired-model",
+      reasoningEffort: "max",
+    },
+  });
+
+  it("renders the RAW stored tuple, names the invalid field, and keeps both controls", () => {
+    useSettingsStore.getState().setRoles([REVIEWER, stranded]);
+    render(<RolesSettings />);
+
+    const resolution = screen.getByTestId("role-resolution-gone").textContent ?? "";
+    expect(resolution).toContain("retired-service");
+    expect(resolution).toContain("retired-model");
+    expect(screen.getByTestId("role-unavailable-gone").textContent).toContain("model");
+    expect(screen.getByTestId("role-open-gone")).toBeTruthy();
+    expect(screen.getByTestId("role-delete-gone")).toBeTruthy();
+  });
+
+  it("opens the editor on the stored tuple rather than the first available option", async () => {
+    useSettingsStore.getState().setRoles([REVIEWER, stranded]);
+    render(<RolesSettings />);
+
+    await userEvent.click(screen.getByTestId("role-open-gone"));
+
+    expect(screen.getByTestId("role-editor-service-trigger").textContent).toContain(
+      "retired-service",
+    );
+    expect(screen.getByTestId("role-editor-model-trigger").textContent).toContain("retired-model");
+  });
+
+  it("tells a disconnected role's user to reconnect the SERVICE, not to edit the role", () => {
+    useSettingsStore.getState().setRoles([
+      REVIEWER,
+      pinnedRole({ name: "quiet", resolved: undefined, unavailableReason: "disconnected" }),
+    ]);
+    render(<RolesSettings />);
+
+    const detail = screen.getByTestId("role-unavailable-quiet").textContent ?? "";
+    expect(detail).toContain("reconnect");
+    expect(detail).not.toContain("edit the role");
+  });
+
+  it("tells a quota-exhausted role's user there is nothing to fix", () => {
+    useSettingsStore.getState().setRoles([
+      REVIEWER,
+      pinnedRole({ name: "spent", resolved: undefined, unavailableReason: "quota_exhausted" }),
+    ]);
+    render(<RolesSettings />);
+    expect(screen.getByTestId("role-unavailable-spent").textContent).toContain("Nothing to fix");
+  });
+});
+
+describe("RoleEditor — one place editing the whole role (req 17)", () => {
+  it("creates a role with its name, description, instructions and params in one write", async () => {
+    const fetchMock = okFetch([REVIEWER]);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RolesSettings />);
+
+    await userEvent.click(screen.getByTestId("role-new"));
+    await userEvent.type(screen.getByTestId("role-editor-name"), "deep dive");
+    await userEvent.type(screen.getByTestId("role-editor-description"), "for the hard ones");
+    await userEvent.type(screen.getByTestId("role-editor-prompt"), "Read requirements.md first");
+    await userEvent.click(screen.getByTestId("role-editor-save"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const { name, write } = writtenRole(fetchMock);
+
+    expect(name).toBe("deep dive");
+    expect(write).toMatchObject({
+      description: "for the hard ones",
+      prompt: "Read requirements.md first",
+      params: { kind: "pinned", harnessId: "claude" },
+    });
+
+    expect(write?.previousName).toBeUndefined();
+  });
+
+  it("renames through the editor, carrying the previous name (req 18)", async () => {
+    const fetchMock = okFetch([REVIEWER]);
+    vi.stubGlobal("fetch", fetchMock);
+    useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
+    render(<RolesSettings />);
+
+    await userEvent.click(screen.getByTestId("role-open-deep-dive"));
+    await userEvent.clear(screen.getByTestId("role-editor-name"));
+    await userEvent.type(screen.getByTestId("role-editor-name"), "deeper-dive");
+    await userEvent.click(screen.getByTestId("role-editor-save"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const { name, write } = writtenRole(fetchMock);
+    expect(name).toBe("deeper-dive");
+    expect(write?.previousName).toBe("deep-dive");
+  });
+
+  it("keeps the server's refusal beside the controls, and the editor open", async () => {
+    const fetchMock = refusingFetch('The role "deep dive" cannot run: "minimal" is not a level Claude Code offers.');
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RolesSettings />);
+
+    await userEvent.click(screen.getByTestId("role-new"));
+    await userEvent.type(screen.getByTestId("role-editor-name"), "deep dive");
+    await userEvent.click(screen.getByTestId("role-editor-save"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("role-editor-error").textContent).toContain("Claude Code offers"),
+    );
+    expect(screen.getByTestId("role-editor")).toBeTruthy();
+  });
+
+});
+
+describe("RolesSettings — the harness the user picked is what gets written", () => {
+  it("writes the chosen harness, with a level that harness declares", async () => {
+    const fetchMock = okFetch([REVIEWER]);
+    vi.stubGlobal("fetch", fetchMock);
+    useSettingsStore.getState().setRoles([
+      REVIEWER,
+      pinnedRole({
+        params: {
+          kind: "pinned",
+          harnessId: "codex",
+          serviceId: "deepseek",
+          billingMode: "key",
+          modelId: "deepseek-flash",
+          reasoningEffort: "minimal",
+        },
+      }),
+    ]);
+    render(<RolesSettings />);
+
+    await userEvent.click(screen.getByTestId("role-open-deep-dive"));
+    await userEvent.click(screen.getByTestId("role-editor-harness-trigger"));
+    await userEvent.click(screen.getByTestId("role-editor-harness-option-claude"));
+    await userEvent.click(screen.getByTestId("role-editor-save"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    // `minimal` is Codex's level and not Claude Code's, so the draft cannot keep it.
+
+    const params = writtenRole(fetchMock).write?.params;
+    expect(params).toMatchObject({ harnessId: "claude" });
+    expect(params).not.toHaveProperty("reasoningEffort");
+  });
+});
+
+describe("RoleEditor — the reviewer", () => {
+  it("edits its description and standing instructions and nothing else", async () => {
+    const fetchMock = okFetch([REVIEWER]);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RolesSettings />);
+
+    await userEvent.click(screen.getByTestId("reviewer-edit"));
+
+    expect(screen.queryByTestId("role-editor-name")).toBeNull();
+
+    expect(screen.queryByTestId("role-editor-model-trigger")).toBeNull();
+    expect(screen.getByTestId("role-editor-auto-note")).toBeTruthy();
+
+    await userEvent.type(screen.getByTestId("role-editor-description"), "Second opinion");
+    await userEvent.click(screen.getByTestId("role-editor-save"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const { name, write } = writtenRole(fetchMock);
+    expect(name).toBe("reviewer");
+    expect(write).toMatchObject({
+      previousName: "reviewer",
+      description: "Second opinion",
+      params: { kind: "auto" },
+    });
+  });
+
+  it("shows its description and standing instructions above the slot cards", () => {
+    useSettingsStore.getState().setRoles([
+      { ...REVIEWER, description: "Second opinion", prompt: "Review only; do not edit" },
+    ]);
+    render(<RolesSettings />);
+    expect(screen.getByTestId("reviewer-description").textContent).toBe("Second opinion");
+    expect(screen.getByTestId("reviewer-prompt").textContent).toBe("Review only; do not edit");
+  });
+});

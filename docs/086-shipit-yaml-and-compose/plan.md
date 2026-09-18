@@ -71,22 +71,21 @@ Today ShipIt has two disconnected ways to run services:
 ### shipit.yaml schema
 
 ```yaml
-version: 1                      # Optional. Schema version for future-proofing.
+version: 1
 
 agent:
-  memory: 2048                   # Memory in MB (default: 1536, max: 4096)
-  cpu: 1.0                       # CPU cores (default: 0.5, max: 4)
-  pids: 4096                     # Max processes (default: 4096, max: 4096)
-  install:                       # Dependency installation commands
+  memory: 2048
+  cpu: 1.0
+  pids: 4096
+  install:
     - npm install
     - npx prisma generate
 
-compose: docker-compose.yml      # String form: path to compose file
+compose: docker-compose.yml
 
-# Or object form with flags:
 compose:
   file: docker-compose.yml
-  docker-socket: true            # Grant Docker socket access to compose services
+  docker-socket: true
 ```
 
 Three top-level keys: `version`, `agent`, `compose`.
@@ -194,10 +193,8 @@ Path to a Docker Compose file, relative to workspace root. Accepts a string (jus
 path) or an object (path + flags):
 
 ```yaml
-# String form (most projects)
 compose: docker-compose.yml
 
-# Object form (when flags are needed)
 compose:
   file: docker-compose.yml
   docker-socket: true
@@ -242,20 +239,20 @@ project and creates both docker-compose.yml and shipit.yaml.
 ```typescript
 interface ShipitConfig {
   version?: number;
-  agent?: AgentConfig;                  // optional, all fields have defaults
-  compose?: ComposeConfig;              // optional, auto-detected if absent
+  agent?: AgentConfig;
+  compose?: ComposeConfig;
 }
 
 interface AgentConfig {
-  memory?: number;                      // default: 1536
-  cpu?: number;                         // default: 0.5
-  pids?: number;                        // default: 4096
-  install?: string[];                   // default: [] (no install steps)
+  memory?: number;
+  cpu?: number;
+  pids?: number;
+  install?: string[];
 }
 
 interface ComposeConfig {
-  file: string;                         // path to compose file
-  dockerSocket?: boolean;               // default: false
+  file: string;
+  dockerSocket?: boolean;
 }
 ```
 
@@ -355,7 +352,6 @@ The orchestrator does **not** modify the user's docker-compose.yml. It generates
 `.shipit/compose.override.yml` that layers on top:
 
 ```yaml
-# .shipit/compose.override.yml (generated, not user-edited)
 services:
   web:
     labels:

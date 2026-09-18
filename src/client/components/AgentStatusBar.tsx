@@ -1,25 +1,22 @@
-import { CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { Spinner } from "./Spinner.js";
 import type { StreamingActivity } from "./StreamingIndicator.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 interface AgentStatusBarProps {
   activity?: StreamingActivity;
 }
 
 export function AgentStatusBar({ activity }: AgentStatusBarProps) {
-  // The `last:pb-2` adds 8px bottom padding only when this status bar is the
-  // last rendered child of the bottom-stack wrapper — i.e. nothing (no PR
-  // card, no rebase banner, no attachments) sits between it and the input.
-  // When a card *does* render below it, `gap-2` on the wrapper supplies the
-  // 8px gap and we leave bottom padding at 0.
+  // docs/178 — a compaction is what the agent is doing, so it is said here
+  // rather than as a card of its own. The card the compaction leaves behind,
+  // with the token counts, is still the record that it ran.
+  const compacting = useSessionStore((s) => s.compacting);
   return (
     <div className="mx-4 px-4 py-0 last:pb-2 flex items-center gap-1.5">
-      <CircleNotchIcon
-        size={ICON_SIZE.XS}
-        className="animate-spin text-(--color-text-tertiary)"
-      />
+      <Spinner size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
       <span className="text-xs text-(--color-text-tertiary)">
-        {activity?.label ?? "Working..."}
+        {compacting ? "Compacting context..." : activity?.label ?? "Working..."}
       </span>
     </div>
   );

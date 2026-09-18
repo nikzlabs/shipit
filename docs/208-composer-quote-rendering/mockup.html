@@ -49,7 +49,6 @@
   .col h2 { font-size: 15px; font-weight: 620; margin: 0 0 4px; }
   .col .why { font-size: 12.5px; color: var(--text-secondary); margin: 0 0 14px; min-height: 52px; }
 
-  /* ── composer shell ─────────────────────────────── */
   .composer {
     display: flex; flex-direction: column;
     border-radius: 12px;
@@ -72,10 +71,8 @@
   }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* plain `> ` lines (status quo + recommended share this text model) */
   .q-plain { color: var(--text-tertiary); }
 
-  /* recommended: decoration-only left rail behind the same plain text */
   .q-rail {
     position: relative;
     padding-left: 12px;
@@ -87,7 +84,6 @@
   }
   .q-rail .gt { color: rgba(96,165,250,.55); }
 
-  /* toolbar */
   .bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px 8px; }
   .icon-btn {
     width: 28px; height: 28px; border-radius: 8px; border: 0; cursor: pointer;
@@ -107,7 +103,6 @@
   }
   .send:hover { background: var(--accent-hover); }
 
-  /* reply chip (rejected option C) */
   .chip {
     margin: 10px 12px 0;
     border-left: 3px solid var(--info);
@@ -124,7 +119,6 @@
   }
   .chip .x:hover { color: var(--text-primary); }
 
-  /* rich blockquote (rejected option B) */
   .q-rich {
     margin: 2px 0 8px;
     border-left: 3px solid var(--text-tertiary);
@@ -163,7 +157,6 @@
 
   <div class="grid">
 
-    <!-- ── RECOMMENDED ─────────────────────────────── -->
     <div class="col">
       <span class="tag rec">✓ Recommended</span>
       <h2>Plain editable text + decoration-only left rail</h2>
@@ -187,7 +180,6 @@
       <p class="note"><b>Why it wins:</b> the user can still trim/annotate any <span class="checkbox">[x]</span> line, dictation appends into the same box, and the agent receives exactly the <code>&gt;</code> text shown. The rail is pure decoration — delete it and nothing breaks.</p>
     </div>
 
-    <!-- ── REJECTED B ──────────────────────────────── -->
     <div class="col">
       <span class="tag rej">✕ Rejected — rich editor</span>
       <h2>Styled blockquote rendered in-place</h2>
@@ -213,7 +205,6 @@
       <p class="note"><b>Cost vs. benefit upside-down:</b> six working integrations lean on "value is a plain string with a cursor." A document model puts all of them at risk to make a quote look nicer.</p>
     </div>
 
-    <!-- ── REJECTED C ──────────────────────────────── -->
     <div class="col">
       <span class="tag rej">✕ Rejected as default — reply chip</span>
       <h2>Removable context chip above the textarea</h2>

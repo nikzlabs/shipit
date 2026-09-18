@@ -1,12 +1,8 @@
 import { Button } from "../ui/button.js";
+import { settingCopy } from "../Settings/setting-copy.js";
 import { inputClass } from "./shared.js";
 import type { KvRow } from "./utils/payload.js";
 
-/**
- * Key-value editor for a server's stdio env vars / http headers. Values are
- * raw secrets (password inputs); when editing, the value placeholder reads
- * "(unchanged)" because secrets are never echoed back from the server.
- */
 export function KvEditor({
   type,
   editingId,
@@ -18,17 +14,21 @@ export function KvEditor({
   kv: KvRow[];
   onChange: (kv: KvRow[]) => void;
 }) {
+  // One editor, two settings: a stdio server's environment and an HTTP
+  // server's headers are separate declarations with separate refusals.
+  const settingKey = type === "stdio" ? "mcp.servers[].env" : "mcp.servers[].headers";
+  const { label } = settingCopy(settingKey);
+  const noun = type === "stdio" ? "variable" : "header";
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-xs text-(--color-text-secondary)">
-        {type === "stdio" ? "Environment variables" : "Headers"} (stored as secrets)
-      </span>
+      <span className="text-xs text-(--color-text-secondary)">{label} (stored as secrets)</span>
       {kv.map((row, idx) => (
         <div key={idx} className="flex gap-2 items-center">
           <input
             className={inputClass}
             value={row.key}
             placeholder={type === "stdio" ? "SENTRY_AUTH_TOKEN" : "Authorization"}
+            aria-label={`${label} — name ${idx + 1}`}
             onChange={(e) =>
               onChange(kv.map((r, i) => (i === idx ? { ...r, key: e.target.value } : r)))
             }
@@ -38,6 +38,7 @@ export function KvEditor({
             type="password"
             value={row.value}
             placeholder={editingId ? "(unchanged)" : "value"}
+            aria-label={`${label} — value ${idx + 1}`}
             onChange={(e) =>
               onChange(kv.map((r, i) => (i === idx ? { ...r, value: e.target.value } : r)))
             }
@@ -46,6 +47,7 @@ export function KvEditor({
             size="md"
             variant="ghost"
             onClick={() => onChange(kv.filter((_, i) => i !== idx))}
+            aria-label={`Remove ${noun} ${idx + 1}`}
           >
             ✕
           </Button>
@@ -56,7 +58,7 @@ export function KvEditor({
         variant="secondary"
         onClick={() => onChange([...kv, { key: "", value: "" }])}
       >
-        + Add {type === "stdio" ? "variable" : "header"}
+        + Add {noun}
       </Button>
     </div>
   );

@@ -6,27 +6,17 @@ services:
       context: ../../..
       dockerfile: docker/Dockerfile.prod
       args:
-        # docs/252 req 14 — the harnesses this install has. Override in
-        # $SHIPIT_HOME/.shipit.env (sourced by deployment/local/lib.sh) and
-        # re-run the installer; both images below must get the same value.
         SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
-    # docs/254 — bind loopback by DEFAULT. ShipIt has no built-in authentication
-    # (SECURITY-MODEL.md), so publishing on 0.0.0.0 exposed an agent with a shell
-    # and repo access to every network the machine joins. A host firewall is not a
-    # reliable backstop: on Linux, Docker's published-port rules sit above ufw's in
-    # FORWARD, so `ufw default deny incoming` reports active while the port stays
-    # reachable; on macOS the application firewall is off by default.
-    #
-    # Override in $SHIPIT_HOME/.shipit.env (sourced by deployment/local/lib.sh):
-    #   SHIPIT_BIND_ADDR=0.0.0.0   # deliberate LAN access on a trusted network
-    # For access from another device over Tailscale, prefer
-    # `deployment/local/tailscale.sh`, which ADDS a tailnet binding via a
-    # generated overlay and leaves this loopback one in place.
-    #
-    # 4124:5173 is vestigial — nothing listens on 5173 in the prod image (the
-    # client is built at image-build time and served from dist/client/ by the
-    # orchestrator on 4123; `EXPOSE 3000 5173` in Dockerfile.prod is stale). It is
-    # narrowed rather than removed because removing it is out of scope here.
+        # Without it the image cannot say which commit it was built from, and
+        # the running version falls back to whatever the checkout is at now —
+        # so a failed update reads as a performed one (docs/304). The VPS path
+        # has always passed this; the local ones now do too.
+        SHIPIT_BUILD_ID: ${SHIPIT_BUILD_ID:-}
+    # CFS fairness is per-CPU, so at the default weight the orchestrator's single main thread gets
+    # only its even share against dozens of runnable worker threads — HTTP and WS upgrades stall for
+    # seconds and every session switch shows "Reconnecting to server". Workers run at 512 (docs/229).
+    cpu_shares: 4096
+    # Keep loopback as the default: this service has no built-in authentication.
     ports:
       - "${SHIPIT_BIND_ADDR:-127.0.0.1}:4123:4123"
       - "${SHIPIT_BIND_ADDR:-127.0.0.1}:4124:5173"
@@ -39,9 +29,6 @@ services:
       - NODE_ENV=production
       - PORT=4123
       - USE_CONTAINERS=true
-      # docs/150 (planning#33) — non-root session worker runtime. See deployment/vps
-      # for the rationale; orchestrator HOME stays /root (auth.ts), only the
-      # session containers run as shipit(1000).
       - SHIPIT_SESSION_WORKER_UID=1000
       - AGENT_HOME=/home/shipit
       - WORKSPACE_VOLUME=shipit-prod_workspace
@@ -49,21 +36,9 @@ services:
       - DOCKER_NETWORK=shipit-prod
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
       - DOCKER_STACK=shipit-prod
-      # docs/172 Gap 1 (planning#92) — agent egress containment is ON by default for
-      # all instances (fail-closed). The orchestrator runs the privileged
-      # installer/resolver/proxy sidecars in the agent netns from this image;
-      # the local installer (deployment/local/setup.sh -> lib.sh) builds the
-      # :prod tag. A contained session whose deployment can't supply this image
-      # refuses to start. The local installer's egress preflight offers the
-      # opt-out (SESSION_EGRESS_ENFORCE=0) when this host can't run the sidecar.
+      - SHIPIT_DEPLOYMENT=local
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
       - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
-      # planning#370 / planning#378 — extra hostnames/origins this install answers
-      # to. Empty for every documented local path: loopback, a tailnet IP, a
-      # MagicDNS name and an sslip.io preview host are all derived from the
-      # name's own shape by api-origin-guard.ts. Needed only if you point an
-      # owned domain at this machine, since a registrable name proves nothing.
-      # Set it in ~/.shipit/.shipit.env, which lib.sh sources before `up`.
       - SHIPIT_ALLOWED_ORIGINS=${SHIPIT_ALLOWED_ORIGINS:-}
     networks:
       - shipit-prod
@@ -73,16 +48,11 @@ services:
       context: ../../..
       dockerfile: docker/Dockerfile.session-worker.prod
       args:
-        # docs/252 req 14 — must match the orchestrator's value above.
         SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
     image: shipit-session-worker:prod
     profiles:
       - build-only
 
-  # Egress firewall sidecar (docs/172 Gap 1, planning#92) — see SESSION_EGRESS_SIDECAR_IMAGE
-  # above. Build-only (like session-worker); built by lib.sh shipit_build_and_up,
-  # never started by `up`. Its Dockerfile COPYs egress-sidecar/* so the build
-  # context is docker/ (../.. from here).
   egress-sidecar:
     build:
       context: ../..

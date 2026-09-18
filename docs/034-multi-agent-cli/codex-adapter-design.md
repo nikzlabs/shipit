@@ -99,16 +99,14 @@ generate-json-schema`).
 ### Transport layer
 
 ```typescript
-// codex-adapter.ts — key transport methods
-
-private sendRequest(method, params?)   → Promise<result>   // Stores in pendingRequests map
-private sendNotification(method, params?) → void            // Fire-and-forget
-private writeJsonRpc(msg)              → void               // JSON.stringify + "\n" to stdin
-private drainLines(flush?)             → void               // Buffer stdout, split on "\n", parse JSON
-private handleMessage(msg)             → void               // Dispatch: server request → handleServerRequest, response → resolve promise, notification → handleNotification
-private handleServerRequest(req)       → void               // Auto-approve approval requests; error on the rest
-private sendResponse(id, result)       → void               // Reply to a server request
-private sendErrorResponse(id, code, m) → void               // Reply to a server request with an error
+private sendRequest(method, params?) → Promise<result>
+private sendNotification(method, params?) → void
+private writeJsonRpc(msg) → void
+private drainLines(flush?) → void
+private handleMessage(msg) → void
+private handleServerRequest(req) → void
+private sendResponse(id, result) → void
+private sendErrorResponse(id, code, m) → void
 ```
 
 The `pendingRequests` map (keyed by incrementing `id`) bridges the async request/response pattern. When a response arrives, the matching promise is resolved or rejected.
@@ -264,10 +262,10 @@ The `CodexAdapter` declares its capabilities so the server and UI can gracefully
 
 ```typescript
 {
-  supportsResume: true,         // thread/resume in the App Server protocol
-  supportsImages: false,        // Codex App Server doesn't accept image input
-  supportsSystemPrompt: true,   // Can be passed as turn context
-  supportsPermissionModes: false, // No equivalent to Claude's plan/normal/auto modes
+  supportsResume: true,
+  supportsImages: false,
+  supportsSystemPrompt: true,
+  supportsPermissionModes: false,
   supportedPermissionModes: [],
   toolNames: ["shell", "file_write", "file_read", "file_edit"],
   models: ["codex-mini-latest", "o4-mini", "o3", "gpt-4.1"],

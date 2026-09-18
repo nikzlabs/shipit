@@ -15,7 +15,7 @@ button is broken, file it". You compile the report; the user confirms it.
 
 ```jsonc
 report_shipit_bug({
-  title: "Preview won't reload after editing a file",   // short, specific
+  title: "Preview won't reload after editing a file",
   body:  "What happened + repro steps, in the user's words."
 })
 ```

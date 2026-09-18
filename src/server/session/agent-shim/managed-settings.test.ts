@@ -1,20 +1,3 @@
-/**
- * Tests for docker/agent-hooks/managed-settings.json — the ShipIt-managed
- * Claude Code settings file baked into /etc/shipit/managed-settings.json and
- * always passed to the CLI via --settings for the `claude` agent.
- *
- * planning#38 / docs/097 — "Explicit session-agent permissions". These assertions
- * are the executable contract the design doc asks for: they fail if the
- * explicit permission policy is removed or its load-bearing deny rules are
- * weakened. Today the real CLI's enforcement can't run in this harness (the
- * integration tests use a FakeClaudeProcess), so this is the regression guard
- * that catches the policy silently disappearing — or, just as important,
- * silently becoming over-broad and blocking a legitimate write (memory).
- *
- * Like the sibling block-branch-ops / stop-pr-check tests, the file ships from
- * docker/agent-hooks/ but the test lives under src/server/** so vitest picks it
- * up.
- */
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -45,18 +28,13 @@ function loadSettings(): ManagedSettings {
   return JSON.parse(readFileSync(SETTINGS_PATH, "utf8")) as ManagedSettings;
 }
 
-/** Parse a `Tool(path)` permission rule into its parts. Returns null if not file-scoped. */
 function parseRule(rule: string): { tool: string; pattern: string } | null {
   const m = /^(\w+)\((.+)\)$/.exec(rule);
   if (!m) return null;
   return { tool: m[1], pattern: m[2] };
 }
 
-/**
- * True if any deny rule for `tool` would match `filePath`. Mirrors the
- * gitignore-style glob semantics the Claude CLI uses for path rules well enough
- * to assert intent (exact match or `/**`-suffix prefix match).
- */
+// Approximate CLI path rules; this checks policy intent, not CLI enforcement.
 function isDenied(deny: string[], tool: string, filePath: string): boolean {
   return deny.some((rule) => {
     const parsed = parseRule(rule);
@@ -82,9 +60,6 @@ describe("managed-settings.json", () => {
 
   it("allows the core editing/read/search tools (codifies today's behavior)", () => {
     const allow = loadSettings().permissions?.allow ?? [];
-    // The whole point of the feature: editing must stay permissive even if the
-    // CLI ships a more restrictive headless default. These are the tools the
-    // orchestrator grants via --allowedTools (AUTO_TOOLS in process.ts).
     expect(allow).toContain("Read(**)");
     expect(allow).toContain("Edit(**)");
     expect(allow).toContain("Write(**)");
@@ -94,9 +69,6 @@ describe("managed-settings.json", () => {
   const MUTATION_TOOLS = ["Edit", "Write"];
 
   describe("denies writes to the agent's own settings + hooks", () => {
-    // /etc/shipit holds the managed policy + branch-block/PR hooks — the agent
-    // must not be able to rewrite its own permission policy. No memory lives
-    // here, so a tree-wide deny is safe.
     for (const tool of [...MUTATION_TOOLS, "NotebookEdit"]) {
       it(`denies ${tool} under /etc/shipit`, () => {
         const deny = loadSettings().permissions?.deny ?? [];
@@ -107,7 +79,6 @@ describe("managed-settings.json", () => {
   });
 
   describe("denies writes to the OAuth / CLI-config credential files", () => {
-    // Both spellings: /root/.claude is a symlink to /credentials/.claude.
     const CREDENTIAL_FILES = [
       "/root/.claude/.credentials.json",
       "/root/.claude/credentials.json",
@@ -127,11 +98,6 @@ describe("managed-settings.json", () => {
   });
 
   describe("does NOT block the agent's own memory updates (planning#38 follow-up)", () => {
-    // /root/.claude/projects/<cwd>/memory/ lives inside the same .claude tree as
-    // the credentials (via the /credentials/.claude symlink). The deny list is
-    // deliberately file-specific, not a /root/.claude/** or /credentials/** tree
-    // glob, so memory stays writable. This is the regression guard for the
-    // over-broad-deny mistake the first cut of this policy made.
     const MEMORY_PATHS = [
       "/root/.claude/projects/-workspace/memory/MEMORY.md",
       "/root/.claude/projects/-workspace/memory/some-fact.md",
@@ -150,8 +116,6 @@ describe("managed-settings.json", () => {
   it("deny overrides allow — no allow rule re-opens a denied credential file", () => {
     const { permissions } = loadSettings();
     const allow = permissions?.allow ?? [];
-    // An allow like `Write(/root/.claude/.credentials.json)` wouldn't actually
-    // grant access (deny wins in Claude Code) but would signal confused intent.
     for (const rule of allow) {
       const parsed = parseRule(rule);
       if (!parsed) continue;
@@ -161,28 +125,16 @@ describe("managed-settings.json", () => {
   });
 
   it("disables the claude.ai connectors", () => {
-    // A session container is headless, so a connector's OAuth flow can never be
-    // completed from inside one — they boot permanently unauthenticated, cost
-    // MCP connect time inside the CLI's 2000ms headless pre-wait at the 0.5-CPU
-    // agent default (the docs/199 failure mode), and add tools the agent cannot
-    // use. The CLI reads this key from every settings source, including the
-    // `--settings` file this one is, and ORs them together.
     expect(loadSettings().disableClaudeAiConnectors).toBe(true);
   });
 
   it("does not try to re-enable connectors with an explicit false anywhere", () => {
-    // The CLI's test is `sources.some(s => s.disableClaudeAiConnectors === true)`.
-    // `false` is therefore not an override — it is indistinguishable from the key
-    // being absent. Making connectors opt-in means OMITTING the key here and
-    // moving the switch to the CLI environment, not writing `false`.
     const raw = readFileSync(SETTINGS_PATH, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     expect(parsed.disableClaudeAiConnectors).not.toBe(false);
   });
 
   it("keeps the existing hooks and attribution settings intact", () => {
-    // The permissions block is additive — it must not have clobbered the
-    // branch-block / PR-enforcement hooks or the co-author suppression.
     const settings = loadSettings();
     expect(settings.includeCoAuthoredBy).toBe(false);
     expect(settings.hooks).toHaveProperty("PreToolUse");

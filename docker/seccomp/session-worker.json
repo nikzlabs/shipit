@@ -1,6 +1,6 @@
 {
-  "_comment": "docs/172 Gap 5 (planning#99) — custom seccomp profile for ShipIt session-worker containers. Default-DENY (SCMP_ACT_ERRNO/EPERM) with an explicit allowlist, derived from Docker's battle-tested default profile and TIGHTENED: the high-risk syscalls listed in `_denied_beyond_default` are deliberately omitted from the allowlist below so they return EPERM. The agent + worker (node, npm/pnpm/yarn lifecycle scripts, git, ripgrep, gosu, playwright/chromium) all run inside this set. Applied only when SESSION_SECCOMP=1 (default off); Docker's default profile applies otherwise. See docs/172-agent-containment/plan.md Gap 5 for the verification-pending status.",
-  "_denied_beyond_default": "Relative to Docker's default profile, these otherwise-allowed syscalls are intentionally absent (→ EPERM): ptrace, process_vm_readv, process_vm_writev (cross-process memory read/write + debugger attach — defeats worker/agent process isolation and is a tamper/exfil vector), kcmp (process-comparison side channel), userfaultfd (a recurring kernel-exploit primitive), perf_event_open, bpf (already cap-gated, made explicit), personality (only ADDR_NO_RANDOMIZE etc. — ASLR-weakening, unused), and the mount/namespace/module/reboot/clock families that Docker's default already gates on dropped capabilities (we CapDrop ALL).",
+  "_comment": "Default-deny seccomp profile for session workers. Enabled by SESSION_SECCOMP=1.",
+  "_denied_beyond_default": "Also denies ptrace, process_vm_readv/writev, kcmp, userfaultfd, perf_event_open, bpf, personality, and privileged system-control families.",
   "defaultAction": "SCMP_ACT_ERRNO",
   "defaultErrnoRet": 1,
   "archMap": [
@@ -374,22 +374,22 @@
       "action": "SCMP_ACT_ALLOW"
     },
     {
-      "_comment": "clone/clone3 — process & thread creation. node, npm child processes and gosu all need these. The CLONE_NEW* namespace flags are unusable anyway: CapDrop ALL strips CAP_SYS_ADMIN, so an unprivileged clone with a new namespace flag fails EPERM at the kernel regardless of seccomp. Allowed unconditionally here to match Docker's behavior for non-CAP_SYS_ADMIN containers.",
+      "_comment": "Process creation requires clone; dropped capabilities still block new namespaces.",
       "names": ["clone", "clone3"],
       "action": "SCMP_ACT_ALLOW"
     },
     {
-      "_comment": "arch_prctl — required by the glibc dynamic loader on x86_64 (TLS setup). Without it node fails to start.",
+      "_comment": "The x86_64 glibc loader requires arch_prctl.",
       "names": ["arch_prctl"],
       "action": "SCMP_ACT_ALLOW"
     },
     {
-      "_comment": "modify_ldt — legacy x86 LDT; kept (Docker default allows) for some JIT/runtime edge cases.",
+      "_comment": "Docker permits modify_ldt for runtime compatibility.",
       "names": ["modify_ldt"],
       "action": "SCMP_ACT_ALLOW"
     },
     {
-      "_comment": "membarrier/sched_* already above. statfs/quota family intentionally excluded except statfs (read-only).",
+      "_comment": "Other scheduler calls are listed above; only read-only statfs is present.",
       "names": ["sysctl"],
       "action": "SCMP_ACT_ALLOW"
     }

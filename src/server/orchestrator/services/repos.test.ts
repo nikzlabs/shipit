@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { RepoStore } from "../repo-store.js";
 import { REPO_COLOR_COUNT } from "../../shared/repo-colors.js";
-import { addRepo, setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
+import { addRepo, ensureRepoReady, setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
 import { ServiceError } from "./types.js";
 
 let dbManager: DatabaseManager;
@@ -19,8 +19,6 @@ afterEach(() => {
   dbManager.close();
 });
 
-// docs/254 — the color is user-supplied, so the service is the boundary that
-// keeps an unrenderable index out of the database.
 describe("setRepoColorIndex", () => {
   it("stores a valid index", () => {
     setRepoColorIndex(repoStore, url, 9);
@@ -67,18 +65,12 @@ describe("setRepoColorIndex", () => {
     }
   });
 
-  // The route validates the WHOLE body up front via this assert, so a PATCH
-  // carrying a good `hidden` and a bad `colorIndex` writes neither.
   it("exposes a standalone assert the route can run before any write", () => {
     expect(() => assertValidRepoColorIndex(0)).not.toThrow();
     expect(() => assertValidRepoColorIndex(REPO_COLOR_COUNT)).toThrow(ServiceError);
     expect(() => assertValidRepoColorIndex("2")).toThrow(ServiceError);
   });
 
-  // docs/262 req 19 — the credential a user types into the Add-repo field is
-  // dropped, not stored. Everything downstream (the bare cache's origin, every
-  // session clone's `/project/.git/config`) is written from this stored value,
-  // so this is where the credential would otherwise enter the system.
   it("drops a credential typed into the repository URL", () => {
     const repo = addRepo(repoStore, "https://x-access-token:pw@github.com/owner/other.git");
     expect(repo.url).toBe("https://github.com/owner/other.git");
@@ -87,9 +79,6 @@ describe("setRepoColorIndex", () => {
     );
   });
 
-  // The credentialed spelling and the clean one are ONE repository: the follow-up
-  // calls (`setReady`, `setWarmSessionId`) address the row by the URL the caller
-  // has, and a strip that only ran in `add` would leave them addressing nothing.
   it("keeps a credentialed re-add on the same row it already created", () => {
     const first = addRepo(repoStore, "https://github.com/owner/same.git");
     const second = addRepo(repoStore, "https://x-access-token:pw@github.com/owner/same.git");
@@ -102,9 +91,85 @@ describe("setRepoColorIndex", () => {
   it("leaves hidden untouched when a combined update is rejected up front", () => {
     setRepoHidden(repoStore, url, false);
     setRepoColorIndex(repoStore, url, 5);
-    // What the route does: validate everything, then write.
     expect(() => assertValidRepoColorIndex(99)).toThrow(ServiceError);
     expect(repoStore.get(url)?.hidden).toBe(false);
     expect(repoStore.get(url)?.colorIndex).toBe(5);
+  });
+});
+
+describe("ensureRepoReady", () => {
+  it("is a no-op when the repo is already ready", async () => {
+    let cloned = false;
+    const key = await ensureRepoReady("https://github.com/acme/shipit.git", {
+      repoStore: {
+        get: () => ({ status: "ready" }),
+        add: () => { throw new Error("should not add"); },
+        setReady: () => { throw new Error("should not setReady"); },
+        list: () => [],
+      },
+      getSharedRepoDir: (u) => `/cache/${u}`,
+      ensureBareCache: async () => { cloned = true; },
+    });
+    expect(cloned).toBe(false);
+    expect(key).toBe("https://github.com/acme/shipit.git");
+  });
+
+  it("registers, clones, and marks the repo ready when missing", async () => {
+    const events: string[] = [];
+    const key = await ensureRepoReady("https://github.com/acme/shipit.git", {
+      repoStore: {
+        get: () => undefined,
+        add: () => events.push("add"),
+        setReady: () => events.push("setReady"),
+        list: () => [],
+      },
+      getSharedRepoDir: () => "/cache/shipit",
+      ensureBareCache: async (dir) => { events.push(`clone:${dir}`); },
+    });
+    expect(events).toEqual(["add", "clone:/cache/shipit", "setReady"]);
+    expect(key).toBe("https://github.com/acme/shipit.git");
+  });
+
+  it("reuses the user's existing entry instead of adding a duplicate for a credentialed URL", async () => {
+    const userUrl = "https://github.com/acme/shipit.git";
+    const store = new Map<string, { status: string }>([[userUrl, { status: "ready" }]]);
+    const added: string[] = [];
+    const key = await ensureRepoReady(
+      "https://x-access-token:pw@GitHub.com/acme/shipit",
+      {
+        repoStore: {
+          get: (u) => store.get(u),
+          add: (u) => { added.push(u); store.set(u, { status: "cloning" }); return undefined; },
+          setReady: () => { throw new Error("should not setReady"); },
+          list: () => [...store.keys()].map((url) => ({ url })),
+        },
+        getSharedRepoDir: (u) => `/cache/${u}`,
+        ensureBareCache: async () => { throw new Error("should not clone — already ready"); },
+      },
+    );
+    expect(added).toEqual([]);
+    expect(key).toBe(userUrl);
+  });
+
+  it("registers a credential-free key, never the embedded credential, when no entry exists", async () => {
+    const store = new Map<string, { status: string }>();
+    const added: string[] = [];
+    const clonedFrom: string[] = [];
+    const key = await ensureRepoReady(
+      "https://x-access-token:pw@github.com/acme/shipit.git",
+      {
+        repoStore: {
+          get: (u) => store.get(u),
+          add: (u) => { added.push(u); store.set(u, { status: "cloning" }); return undefined; },
+          setReady: (u) => { store.set(u, { status: "ready" }); },
+          list: () => [...store.keys()].map((url) => ({ url })),
+        },
+        getSharedRepoDir: (u) => `/cache/${u}`,
+        ensureBareCache: async (_dir, u) => { clonedFrom.push(u); },
+      },
+    );
+    expect(key).toBe("https://github.com/acme/shipit.git");
+    expect(added).toEqual(["https://github.com/acme/shipit.git"]);
+    expect(JSON.stringify({ key, added, clonedFrom })).not.toContain("x-access-token");
   });
 });

@@ -91,7 +91,6 @@ catches) **plus** a soft amber gradient trailing left from it (the glow look we
 wanted) — the "rail + trail".
 
 ```tsx
-// SessionItem — applied as an inline style on the row div
 const attentionMarker = needsAttention
   ? {
       boxShadow: "inset -3px 0 0 var(--color-attention)",
@@ -99,7 +98,6 @@ const attentionMarker = needsAttention
         "linear-gradient(90deg, transparent 62%, color-mix(in srgb, var(--color-attention) 20%, transparent))",
     }
   : undefined;
-// ...
 <div ... style={attentionMarker}>
 ```
 

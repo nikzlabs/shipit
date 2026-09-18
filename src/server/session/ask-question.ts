@@ -1,14 +1,3 @@
-/**
- * Shared AskUserQuestion normalization (docs/147).
- *
- * The ShipIt-managed `shipit` MCP bridge's ask tool lets Codex ask structured
- * multiple-choice questions. The bridge POSTs the raw `questions` argument to
- * the worker (`POST /agent-ops/ask/submit`), which normalizes it here into the
- * exact shape the question card requires and injects it into the agent event
- * stream as an `AskUserQuestion` tool_use. Keeping the normalizer in its own
- * module lets the worker reuse it without dragging in the Codex adapter, and
- * keeps it independently unit-testable.
- */
 
 export interface NormalizedAskOption {
   label: string;
@@ -22,15 +11,6 @@ export interface NormalizedAskQuestion {
   multiSelect: boolean;
 }
 
-/**
- * Normalize a raw `questions` argument into `{ question, header, options:
- * [{ label, description }], multiSelect }`. Defensive against fields the model
- * might omit (missing `description`, missing `multiSelect`) so the card always
- * renders. Options without a non-empty `label` are dropped (they can't render).
- * Returns `[]` for a non-array input or one with no usable questions — the
- * worker route then rejects the call so the bridge surfaces an error to the
- * model rather than blocking forever.
- */
 export function normalizeAskQuestions(raw: unknown): NormalizedAskQuestion[] {
   if (!Array.isArray(raw)) return [];
   const out: NormalizedAskQuestion[] = [];

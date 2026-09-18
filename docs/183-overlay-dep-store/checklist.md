@@ -90,14 +90,30 @@ Split into a pure inert plumbing refactor (3a) and the flag-gated populator + in
       `prepareOverlaySpecs` and threads the result through `buildConfigForWorkspace({ overlaySpecs })`
       → `buildConfig` → the 3a plumbing. Both call sites pass the session (`sessionManager.get`).
       Flag-off → `[]` → byte-for-byte unchanged.
-- [x] **Contextual dep-dir validation (deferred from Phase 1)** — `validDepDirsForOverlay`: keep a dep
-      dir only if its **parent exists** on the clone AND it is **git-ignored** (an artifact, not tracked
-      source — `simpleGit.checkIgnore`). Any error (non-git dir, git failure) drops all (conservative).
-      A dropped dir falls back to a plain install for that path; never fatal.
-- [x] Tests: `validDepDirsForOverlay` (ignored-kept, tracked-source-dropped, missing-parent-dropped,
-      nested, mixed-filter, non-git→[]); `prepareOverlaySpecs` (flag-off, ineligible, valid→spec anchored
+- [x] **Contextual dep-dir validation (deferred from Phase 1)** — `classifyDepDirsForOverlay` (and its
+      `validDepDirsForOverlay` wrapper): keep a dep dir only if it is **git-ignored** (an artifact, not
+      tracked source — `simpleGit.checkIgnore`) AND every **missing** ancestor is itself git-ignored.
+      **Amended 2026-09-15** — the rule was "its **parent exists** on the clone", which permanently
+      dropped a dep dir under an ignored parent (`.tools/blender` under `.tools/`): no clone ever
+      materializes such a parent, and nothing else creates it. What the parent test is actually for —
+      rejecting a dep dir under a *tracked source* path the clone does not have — is unchanged. Any
+      error (non-git dir, git failure) drops all (conservative). A dropped dir falls back to a plain
+      install for that path; never fatal, and now reported with its reason
+      (`not-git-ignored` / `missing-tracked-parent` / `git-unavailable`) in `[overlay-measure]`.
+      **"Ignored" here means git's own verdict, not the slash query's.** `git check-ignore` answers
+      the `foo/` form from the containing rule, so under `*` + `!foo` it reports `foo/` ignored while
+      `foo` is not — the slash form alone would accept an absent TRACKED directory. A second probe
+      (`check-ignore -v --non-matching`, `parseUnignoredByNegation`) reads the matching RULE and
+      excludes any path a `!` rule re-includes. Both forms are still needed: the bare form alone
+      misses a directory-only rule before the directory exists, which is the PR #1256 bug.
+- [x] Tests: `classifyDepDirsForOverlay`/`validDepDirsForOverlay` (ignored-kept, tracked-source-dropped,
+      **ignored-missing-parent-KEPT**, missing-tracked-parent-dropped, per-drop reasons, nested,
+      mixed-filter, non-git→[]); `prepareOverlaySpecs` (flag-off, ineligible, valid→spec anchored
       at the mountpoint, tracked-source→[], no-state-volume→[]); **end-to-end** populator →
       `buildConfigForWorkspace` → `create` mounts the volume nested at `/workspace/node_modules`.
+- [x] **Mount parents (2026-09-15)** — `prepareOverlayDirs` creates a dep dir's missing ancestors on
+      the clone and chowns them to the session worker. Docker would otherwise create the chain as
+      root inside the workspace volume, where the non-root worker (docs/150) cannot write.
 - [x] **Watcher × nested submount — RESOLVED (2026-06-11, two halves).** (1) The production
       watcher never descends into a dep dir at all: `FileWatcher` is chokidar with a
       per-segment `ignored` matcher over `WORKSPACE_SKIP_DIRS` (which includes

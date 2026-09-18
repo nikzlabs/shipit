@@ -38,7 +38,7 @@ vi.mock("../voice/use-voice-input.js", () => ({
 
 const { QuickCaptureOverlay } = await import("./QuickCaptureOverlay.js");
 
-const REASON = "Add a service to start chatting";
+const REASON = "Add a model provider to start chatting";
 const LIVE_PLACEHOLDER = "Describe what to build... (type @ to attach files)";
 const REPO_URL = "https://github.com/acme/app.git";
 
@@ -67,7 +67,7 @@ beforeEach(() => {
     cb(0);
     return 0;
   });
-  // Voice on and the hotkey-arm set: the state where a submission-only guard
+
   // would still start a recording the user cannot send.
   useSettingsStore.setState({ voiceInputEnabled: true, canRunTurns: false });
   useUiStore.setState({
@@ -107,8 +107,7 @@ describe("QuickCaptureOverlay on a non-runnable install (docs/257 req 3)", () =>
   });
 
   it("is fully live once the install can run a turn", () => {
-    // Non-vacuous complement — and the assertion that this change is scoped to
-    // the not-runnable case and nothing else.
+
     useSettingsStore.setState({ canRunTurns: true });
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
     expect(screen.getByPlaceholderText(LIVE_PLACEHOLDER)).not.toBeDisabled();

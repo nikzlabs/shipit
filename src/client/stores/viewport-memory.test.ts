@@ -115,7 +115,7 @@ describe("withViewportEntry", () => {
     for (let i = 0; i < MAX_REMEMBERED_VIEWPORTS; i++) {
       map = withViewportEntry(map, `s${i}`, { preset: "iphone-se" });
     }
-    // Re-writing the oldest key makes it most recent, so the *next* one ages out.
+
     map = withViewportEntry(map, "s0", { preset: "pixel-9" });
     map = withViewportEntry(map, "s-new", { preset: "ipad-mini" });
     expect(Object.keys(map)).toHaveLength(MAX_REMEMBERED_VIEWPORTS);

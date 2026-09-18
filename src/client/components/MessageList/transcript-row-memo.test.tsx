@@ -52,8 +52,6 @@ describe("MessageList — memoized rows bail out", () => {
     expect(renders.get("m-1")).toBe(1);
     expect(renders.get("m-2")).toBe(1);
 
-    // A new message arrives. The array is new (as it always is), but every
-    // ChatMessage object in the prefix is the same one.
     rerender(<MessageList messages={[...base, bot("four")]} isLoading={false} />);
 
     expect(renders.get("m-0")).toBe(1);
@@ -68,13 +66,12 @@ describe("MessageList — memoized rows bail out", () => {
     expect(renders.get("m-0")).toBe(1);
     expect(renders.get("m-1")).toBe(1);
 
-    // Three tokens land. Each replaces only the last message object.
     for (const text of ["answer so far a", "answer so far ab", "answer so far abc"]) {
       rerender(<MessageList messages={[head[0], { ...head[1], text }]} isLoading />);
     }
 
     // The row above the streaming one never re-rendered — this is the whole
-    // point: the cost of a token is now O(changed rows), not O(transcript).
+
     expect(renders.get("m-0")).toBe(1);
     expect(renders.get("m-1")).toBe(4);
   });
@@ -97,7 +94,6 @@ describe("MessageList — memoized rows bail out", () => {
     );
     expect(renders.get("m-0")).toBe(1);
 
-    // A parent re-render re-creates every callback prop. Those travel by ref
     // (row-context.tsx), so they must not invalidate a single row.
     rerender(<MessageList messages={base} isLoading={false} onSendFollowUp={() => true} />);
     expect(renders.get("m-0")).toBe(1);
@@ -105,11 +101,7 @@ describe("MessageList — memoized rows bail out", () => {
   });
 
   it("survives a caller that hands a fresh empty searchMatches array each render", () => {
-    // The production regression this guards: `useSearch` memoizes on `messages`
-    // and used to `return []` — a NEW array on every token even with no query.
-    // That rebuilt `matchesByMessage`, a prop on every row, so the no-search
-    // case (i.e. almost always) re-rendered the whole transcript per token and
-    // silently undid this entire change.
+
     const base = [user("one"), bot("two")];
     const { rerender } = render(
       <MessageList messages={base} isLoading={false} searchMatches={[]} />,

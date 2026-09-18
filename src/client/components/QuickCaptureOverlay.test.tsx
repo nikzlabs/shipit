@@ -6,6 +6,7 @@ import type { MessageInput } from "./MessageInput.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
@@ -67,15 +68,23 @@ function openOverlay() {
   useUiStore.setState({ quickCaptureOpen: true, bootstrapLoaded: true });
 }
 
+/**
+ * Closes the overlay the way the user does — from inside it. The real overlay
+ * takes focus on opening (its own composer autofocuses); `MessageInput` is
+ * mocked here, so the focus move has to be made by hand, or a restore-focus
+ * guard passes on focus that never left.
+ */
+function dismiss() {
+  const close = screen.getByRole("button", { name: "Close quick capture" });
+  close.focus();
+  fireEvent.click(close);
+}
+
 const LAST_QUICK_SESSION_REPO_KEY = "shipit-last-quick-session-repo";
 
 describe("QuickCaptureOverlay", () => {
   beforeEach(() => {
-    // Sending now records the target repo, so clear it between tests to keep
-    // the "no remembered repo" default path deterministic. The harness/model
-    // seeds are cleared for the same reason: a test that picks a harness writes
-    // both, and the overlay reads them on every render, so a leak would decide
-    // the next test's answer.
+
     localStorage.removeItem(LAST_QUICK_SESSION_REPO_KEY);
     localStorage.removeItem("vibe-agent-id");
     localStorage.removeItem("vibe-model-id");
@@ -118,6 +127,50 @@ describe("QuickCaptureOverlay", () => {
     useSessionStore.setState({ sessionId: undefined, sessions: [] });
   });
 
+  // never clears for a message that did not go out. This overlay's refusal is
+
+  it("refuses a capture with no repo, and reports the refusal", () => {
+    openOverlay();
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+
+    let outcome: boolean | undefined;
+    act(() => {
+      outcome = lastMessageInputProps!.onSend({
+        text: "with file",
+        uploadRefs: [],
+        uploads: [],
+        deferredFiles: [new File(["hi"], "note.txt", { type: "text/plain" })],
+      });
+    });
+
+    expect(outcome).toBe(false);
+    expect(startQuickSessionMock).not.toHaveBeenCalled();
+    expect(screen.getByText("Add a repo first.")).toBeInTheDocument();
+  });
+
+  it("accepts one once a repo is there", () => {
+
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/a.git")],
+      activeRepoUrl: "https://github.com/acme/a.git",
+    });
+    openOverlay();
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+
+    let outcome: boolean | undefined;
+    act(() => {
+      outcome = lastMessageInputProps!.onSend({
+        text: "with file",
+        uploadRefs: [],
+        uploads: [],
+        deferredFiles: [new File(["hi"], "note.txt", { type: "text/plain" })],
+      });
+    });
+
+    expect(outcome).toBe(true);
+    expect(startQuickSessionMock).toHaveBeenCalled();
+  });
+
   it("renders MessageInput with the overlay surface and falls back to the active session repo when no quick session has run", () => {
     const activeUrl = "https://github.com/acme/active.git";
     useRepoStore.setState({
@@ -143,9 +196,7 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("defaults to the last quick session's repo, not the repo of the current session", () => {
-    // The motivating case: the user is working in a product repo but keeps
-    // firing quick captures at a different repo (a gap they noticed in the tool
-    // itself). The remembered target wins over the current context.
+
     const currentUrl = "https://github.com/acme/product.git";
     const lastQuickUrl = "https://github.com/acme/shipit.git";
     localStorage.setItem(LAST_QUICK_SESSION_REPO_KEY, lastQuickUrl);
@@ -188,7 +239,6 @@ describe("QuickCaptureOverlay", () => {
 
     expect(localStorage.getItem(LAST_QUICK_SESSION_REPO_KEY)).toBe(otherUrl);
 
-    // Reopening (no reload) picks the remembered target up immediately.
     openOverlay();
     rerender(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
     expect(screen.getByRole("combobox")).toHaveValue(otherUrl);
@@ -250,8 +300,6 @@ describe("QuickCaptureOverlay", () => {
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
 
-    // Optimistic start: the overlay closes synchronously on submit — it does not
-    // await the create — and stays on the user's current session.
     expect(useUiStore.getState().quickCaptureOpen).toBe(false);
     expect(useSessionStore.getState().sessionId).toBe("current");
     expect(startQuickSessionMock).toHaveBeenCalledWith(
@@ -276,17 +324,15 @@ describe("QuickCaptureOverlay", () => {
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} onSessionCreated={onSessionCreated} />);
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
 
-    // Drive the callback the overlay handed to the helper — it should forward to onSessionCreated.
     const onCreated = startQuickSessionMock.mock.calls[0][1] as (s: SessionInfo) => void;
     onCreated(created);
     expect(onSessionCreated).toHaveBeenCalledWith(created);
   });
 
   it("derives the sent agent from the saved model, ignoring a stale vibe-agent-id", async () => {
-    // Regression for docs/166: a user who used Codex once "a while ago" keeps a
-    // stale `vibe-agent-id="codex"` while their saved/selected model is a Claude
+
     // model. The overlay must send the model-derived agent ("claude"), not the
-    // stale key, so the new quick session isn't pinned to Codex.
+
     localStorage.setItem("vibe-agent-id", "codex");
     localStorage.setItem("vibe-model-id", "claude-opus-4-8");
     useUiStore.setState({
@@ -313,7 +359,7 @@ describe("QuickCaptureOverlay", () => {
       },
       expect.any(Function),
     );
-    // The picker also shows the derived agent, so display and send agree.
+
     expect(lastMessageInputProps?.activeAgentId).toBe("claude");
 
     localStorage.removeItem("vibe-agent-id");
@@ -321,10 +367,7 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("moves the model onto a picked harness, so the pick is not a no-op", () => {
-    // The reported bug: on a quick session, tapping Codex changed nothing at
-    // all. The harness here is DERIVED from the model, so persisting the agent
-    // key alone left the previous harness's model in place and the derivation
-    // handed back the harness the user had just moved away from.
+
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem("vibe-model-id", "claude-opus-4-8");
     useUiStore.setState({
@@ -344,8 +387,6 @@ describe("QuickCaptureOverlay", () => {
 
     act(() => lastMessageInputProps?.onAgentChange?.("codex"));
 
-    // The picker now names Codex — and names Codex's first model, which is what
-    // the model picker itself falls back to, so anchor and Model row agree.
     expect(lastMessageInputProps?.activeAgentId).toBe("codex");
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
     expect(startQuickSessionMock).toHaveBeenCalledWith(
@@ -358,16 +399,13 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("keeps the model across a harness switch when the new harness runs it", () => {
-    // A harness switch is not a model switch. The shared models (DeepSeek, GLM,
-    // anything through a gateway) are precisely the ones both harnesses offer,
-    // and they are also where deriving the harness from the model is a coin
-    // flip — so this is the case the pick has to survive intact.
+
     localStorage.setItem("vibe-agent-id", "claude");
-    localStorage.setItem("vibe-model-id", "deepseek-v4-pro");
+    localStorage.setItem("vibe-model-id", "deepseek-v4-flash");
     useUiStore.setState({
       agentList: [
-        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8", "deepseek-v4-pro"], supportsReview: true },
-        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "deepseek-v4-pro"], supportsReview: true },
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8", "deepseek-v4-flash"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "deepseek-v4-flash"], supportsReview: true },
       ],
     });
     useRepoStore.setState({
@@ -382,7 +420,7 @@ describe("QuickCaptureOverlay", () => {
     expect(lastMessageInputProps?.activeAgentId).toBe("codex");
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
     expect(startQuickSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agent: "codex", model: "deepseek-v4-pro" }),
+      expect.objectContaining({ agent: "codex", model: "deepseek-v4-flash" }),
       expect.any(Function),
     );
 
@@ -390,11 +428,69 @@ describe("QuickCaptureOverlay", () => {
     localStorage.removeItem("vibe-model-id");
   });
 
+  it("creates with the ROLE's model and level, even after the role is taken back off", () => {
+    // The creation params read this component's state, which a role pick used not
+    // to move. The server hid it until "No role" removed the override.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-4-8");
+    useSettingsStore.setState({
+      roles: [
+        {
+          name: "triage",
+          params: {
+            kind: "pinned",
+            harnessId: "codex",
+            serviceId: "openai",
+            billingMode: "sub",
+            modelId: "gpt-5.6-sol",
+            reasoningEffort: "low",
+          },
+          reserved: false,
+          resolved: {
+            harnessId: "codex",
+            harnessName: "Codex",
+            serviceId: "openai",
+            billingMode: "sub",
+            serviceName: "OpenAI",
+            modelId: "gpt-5.6-sol",
+            label: "GPT-5.6 Sol",
+            reasoningEffort: "low",
+          },
+        },
+      ],
+    } as never);
+    useUiStore.setState({
+      agentList: [
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.6-sol"], supportsReview: true },
+      ],
+    });
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    act(() => lastMessageInputProps?.onReasoningChange?.("max"));
+    act(() => lastMessageInputProps?.onRoleChange?.("triage"));
+    // req 18 — "No role" leaves the parameters where the role put them.
+    act(() => lastMessageInputProps?.onRoleChange?.(undefined));
+
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+    expect(startQuickSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "codex", model: "gpt-5.6-sol", reasoning: "low" }),
+      expect.any(Function),
+    );
+
+    localStorage.removeItem("shipit-role-name");
+    localStorage.removeItem("shipit-reasoning-by-agent");
+  });
+
   it("forwards the active agent's saved reasoning seed as the creation param (docs/217)", () => {
-    // The quick session's first turn is dispatched server-side, so the chosen
+
     // reasoning must ride the creation request (the `?reasoning=` WS connect
-    // param can't reach turn 1). The ReasoningSelector persists every pick to
-    // the per-agent seed; the overlay reads it back at send for the active agent.
+
     localStorage.setItem("shipit-reasoning-by-agent", JSON.stringify({ claude: "high" }));
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/app.git")],
@@ -509,11 +605,26 @@ describe("QuickCaptureOverlay", () => {
     openOverlay();
 
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Close quick capture" }));
+    dismiss();
 
     await waitFor(() => expect(document.activeElement).toBe(textarea));
     expect(textarea.selectionStart).toBe(2);
     expect(textarea.selectionEnd).toBe(7);
     textarea.remove();
+  });
+
+  it("restores focus to the transcript when dismissed, so the chat-search chord still fires", async () => {
+    const transcript = document.createElement("div");
+    transcript.setAttribute("data-chat-transcript", "");
+    transcript.tabIndex = -1;
+    document.body.appendChild(transcript);
+    transcript.focus();
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    dismiss();
+
+    await waitFor(() => expect(document.activeElement).toBe(transcript));
+    transcript.remove();
   });
 });

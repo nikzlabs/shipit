@@ -44,8 +44,7 @@ describe("SecretBlockBanner", () => {
   });
 
   it("says the blast radius reaches later, unrelated work", () => {
-    // The whole point: one flagged line stops the branch advancing at all, and
-    // that consequence is what the user needs to understand at a glance.
+
     useSessionStore.getState().setSecretBlock(block());
     render(<SecretBlockBanner />);
     expect(screen.getByRole("status").textContent).toMatch(/including later, unrelated work/);
@@ -63,7 +62,7 @@ describe("SecretBlockBanner", () => {
     render(<SecretBlockBanner />);
     const banner = screen.getByRole("status");
     expect(banner.textContent).toContain("2 likely secrets");
-    // A finding without a line number falls back to the bare path.
+
     expect(banner.textContent).toContain("b.env — B");
   });
 

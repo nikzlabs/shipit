@@ -1,33 +1,5 @@
-/**
- * Release-prepare service (docs/214 Phase 2) — the deterministic, orchestrator-
- * side mechanics behind the `shipit release {plan,prepare}` shim. Centralizing
- * the bump/branch/cherry-pick/PR here (rather than letting the agent hand-edit
- * version files and run `git tag`) is what makes a release un-fumbleable and
- * works for any repo.
- *
- * Two entry points:
- *
- *  - `planRelease` — READ-ONLY. Detect the authoritative version source, compute
- *    the next version (reusing `release-version.ts`), and return the plan. The
- *    route reflects it onto the card as `proposed`.
- *
- *  - `prepareRelease` — the actor. For a FINAL release (the `release-branch`
- *    mechanism): resolve the release (maintenance) branch, build a deterministic
- *    `release/<version>` head branch off `origin/<release-branch>` (force-reset
- *    on a re-run, refusing to clobber a branch carrying foreign commits), apply
- *    the payload (`--pick` cherry-pick for a hotfix, or merge `--from` for a
- *    release-from-main), bump the version source, commit, and open the bump PR
- *    targeting the release branch. The route then drives the poller's
- *    `markPrOpened` — the human-act gate is merging the PR; CI does the publish.
- *
- *    For a PRERELEASE (`--prerelease`): rc's never go through the release branch
- *    (they must not advance the stable channel). They keep a deterministic path
- *    but, lacking a PR-merge gate, the tag push is CONFIRMATION-gated: without
- *    `confirm` we only propose; with it we cut + push the `vX.Y.Z-rc.N` tag
- *    through this broker (never a hand-run `git tag`).
- */
-
 import path from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { GitManager } from "../../shared/git.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -36,7 +8,8 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ReleaseBumpType } from "../../shared/types/release-types.js";
 import type { ReleaseProposeInput } from "../release-status-poller.js";
 import { ServiceError } from "./types.js";
-import { agentCreatePr } from "./github.js";
+import { agentCreatePr, findBranchPullRequest } from "./github.js";
+import { workflowPublishesAuthoredNotes } from "../release-autopublish-check.js";
 import {
   computeNextVersion,
   detectAllVersionSources,
@@ -51,69 +24,35 @@ import {
   type VersionSourceType,
 } from "../release-version.js";
 
-/** Commit-message trailer stamped on the version-bump commit so a re-run can
- * tell its own tip from a foreign commit pushed onto the open PR. */
 const BUMP_TRAILER = "Shipit-Release-Version";
+
+/** Gitignored (docs/309-agent-authored-release-notes): a tracked draft would trip the clean-tree check the user's edit lands in front of, and would not survive the checkout onto the release branch. */
+export const NOTES_DRAFT_FILE = "RELEASE_NOTES.draft.md";
+export const NOTES_DIR = ".release-notes";
 
 const BUMP_TYPES: ReadonlySet<string> = new Set(["major", "minor", "patch", "prerelease"]);
 
 export interface ReleasePlan {
-  /** The current version read from the source. */
   currentVersion: string;
-  /** The computed next version (no leading `v`). */
   version: string;
-  /** The tag that will be cut, e.g. "v0.3.0". */
   tag: string;
-  /** The bump category (or "explicit" when a literal version was given). */
   bumpType: ReleaseBumpType | "explicit";
-  /** The version-source ecosystem identifier, e.g. "package.json". */
   versionSource: VersionSourceType;
-  /** Absolute path to the version-source file. */
   versionSourcePath: string;
   prerelease: boolean;
-  /**
-   * docs/214 cold-start guard — set when this is a `release-branch` plan whose
-   * maintenance branch can't auto-publish on merge yet (no / legacy workflow).
-   * Populated by the route (which has the git handle to read the branch's
-   * workflow); the shim surfaces it so a merge never *looks* successful while it
-   * will silently no-op. See `release-autopublish-check.ts`.
-   */
   warning?: string;
 }
 
 export interface PlanReleaseArgs {
   dir: string;
-  /** A bump keyword (patch|minor|major|prerelease) or an explicit version. */
   bump?: string;
   prerelease?: boolean;
-  /** Monorepo override — path (relative to dir, or absolute) to the version file. */
   versionSourcePath?: string;
-  /**
-   * Release mechanism (from `shipit.yaml` `release.mechanism`). For
-   * `release-branch` the current version is anchored to the maintenance branch
-   * (`releaseBranch`) rather than the working tree — see `resolveCurrentVersion`.
-   */
   mechanism?: string;
-  /** The release (maintenance) branch to anchor the current version to. */
   releaseBranch?: string;
 }
 
-/**
- * Resolve the version to bump FROM.
- *
- * For the `release-branch` mechanism the authoritative current version lives on
- * the maintenance branch — it's what was last released, and exactly what CI reads
- * off the merged commit to derive the tag. It is NOT the session working tree's
- * version: the bump PR lands only on `<releaseBranch>` and is never merged back
- * to `main`, so the working tree (branched off `main`) lags every release. Reading
- * the next version from the working tree therefore computes a version at or below
- * what's already published (docs/214 bugfix).
- *
- * Reads the version source at `origin/<releaseBranch>`; falls back to the
- * working-tree version when that branch/file is absent (first release / bootstrap)
- * or for any non-`release-branch` mechanism (where `main` IS the release source).
- * The caller must have fetched `origin` first.
- */
+// The maintenance branch records the released version; callers must fetch origin first.
 async function resolveCurrentVersion(
   git: GitManager,
   detected: DetectedVersionSource,
@@ -128,12 +67,6 @@ async function resolveCurrentVersion(
   return parseVersionFromContent(detected.source, raw) ?? detected.version;
 }
 
-/**
- * Resolve the version source for a workspace, honoring a `version-source-path`
- * override (monorepo). Throws an actionable `ServiceError` for the no-source and
- * ambiguous-source cases — the agent surfaces the options, the user picks
- * (docs/214, "don't guess").
- */
 function resolveSource(dir: string, versionSourcePath?: string): DetectedVersionSource {
   if (versionSourcePath) {
     const abs = path.isAbsolute(versionSourcePath) ? versionSourcePath : path.join(dir, versionSourcePath);
@@ -177,26 +110,17 @@ function resolveSource(dir: string, versionSourcePath?: string): DetectedVersion
   return sources[0];
 }
 
-/**
- * Compute the next version + tag for a plan. `bump` is either a bump keyword or
- * an explicit version string. For a prerelease, `{n}` auto-increments from the
- * highest existing `v<core>-rc.N` tag (read from git) so re-cutting an rc lane
- * advances the counter rather than colliding.
- */
 async function computePlan(
   git: GitManager,
   current: string,
   bump: string | undefined,
   prerelease: boolean,
 ): Promise<{ version: string; bumpType: ReleaseBumpType | "explicit" }> {
-  // Explicit version literal (contains a dot and parses as semver).
   if (bump && bump.includes(".") && parseSemVer(bump)) {
     return { version: bump.replace(/^v/, ""), bumpType: "explicit" };
   }
 
   if (prerelease) {
-    // Derive the rc core (MAJOR.MINOR.PATCH) the candidate targets, then take
-    // the next rc number above the highest existing tag for that core.
     const candidate = computeNextVersion(current, "prerelease");
     if (!candidate) throw new ServiceError(400, `Could not parse the current version "${current}".`);
     const parsed = parseSemVer(candidate)!;
@@ -216,12 +140,8 @@ async function computePlan(
   return { version: next, bumpType };
 }
 
-/** Read-only release plan: detect source + compute next version (docs/214). */
 export async function planRelease(git: GitManager, args: PlanReleaseArgs): Promise<ReleasePlan> {
   const detected = resolveSource(args.dir, args.versionSourcePath);
-  // For the release-branch mechanism, anchor the current version to the
-  // maintenance branch (what's released) rather than the lagging working tree.
-  // Requires a fetch so `origin/<releaseBranch>` is fresh.
   let current = detected.version;
   if (args.mechanism === "release-branch" && args.releaseBranch) {
     await git.fetch("origin");
@@ -239,15 +159,6 @@ export async function planRelease(git: GitManager, args: PlanReleaseArgs): Promi
   };
 }
 
-/**
- * Build the `proposed`-card input from a computed plan + the repo's mechanism.
- * Pulled out of the `POST /release/plan` route so the conditional fields — most
- * importantly `mechanism`, which drives the card's "Confirm & publish" wording
- * (release-branch opens/merges a bump PR; tag-triggered pushes the tag) — are
- * unit-testable without spinning a git remote. Mirrors the marker path in
- * `release-flow.ts`: omit `mechanism` when absent (card defaults to
- * tag-triggered), and omit `bumpType` for an explicit version. (docs/214)
- */
 export function buildPlanProposeInput(
   plan: ReleasePlan,
   mechanism: string | undefined,
@@ -264,30 +175,19 @@ export function buildPlanProposeInput(
 
 export interface PrepareReleaseArgs extends PlanReleaseArgs {
   remoteUrl?: string;
-  /** Final release: the release (maintenance) branch the bump PR targets. */
   releaseBranch: string;
-  /** Hotfix payload — commits to cherry-pick onto the release head branch. */
   pick?: string[];
-  /** Release-from payload — merge this branch into the release head branch. */
   from?: string;
-  /** Bootstrap the release branch off the default base when it's absent. */
   bootstrap?: boolean;
-  /**
-   * Opt out of the content-free guard — cut a bump-only release on purpose even
-   * when the payload brings no new commits over the release branch. Off by
-   * default so a bare `prepare` can't silently ship a version-number-only release.
-   */
   allowEmpty?: boolean;
-  /** Prerelease only: push the rc tag (the confirmation gate). */
   confirm?: boolean;
-  /** Notes preview / PR body fragment. */
   notes?: string;
-  /** Session id + runner registry — threaded into agentCreatePr's commit flush. */
   sessionId?: string;
   runnerRegistry?: SessionRunnerRegistry;
-  /** Drop the session's pending debounced auto-push once this flow's own push lands. */
   cancelAutoPush?: (sessionId: string) => void;
   chatHistory?: ChatHistoryManager;
+  /** Notify immediately after checkout, even if later release steps fail. */
+  onTreeRewrite?: () => void;
 }
 
 export type PrepareReleaseResult =
@@ -302,13 +202,6 @@ export type PrepareReleaseResult =
       prNumber: number;
       prUrl: string;
       alreadyExisted: boolean;
-      /**
-       * docs/214 cold-start guard — set when merging this PR into the
-       * maintenance branch will NOT auto-publish (the branch lacks the
-       * merge-triggered workflow). Populated by the route after `prepare`'s fetch
-       * so the post-bootstrap branch state is reflected. See
-       * `release-autopublish-check.ts`.
-       */
       warning?: string;
     }
   | {
@@ -327,10 +220,6 @@ export type PrepareReleaseResult =
       sha: string;
     };
 
-/**
- * Prepare a release (docs/214). See the module docstring for the two shapes.
- * Returns a discriminated result the route maps onto the poller + shim output.
- */
 export async function prepareRelease(
   git: GitManager,
   githubAuth: GitHubAuthManager,
@@ -339,9 +228,6 @@ export async function prepareRelease(
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const detected = resolveSource(args.dir, args.versionSourcePath);
-  // Fetch up front so `resolveCurrentVersion` reads a fresh `origin/<releaseBranch>`
-  // (the release-branch anchor) and the downstream branch resolution sees current
-  // refs. `prepareFinalRelease` relies on this fetch too.
   await git.fetch("origin");
   const current = await resolveCurrentVersion(git, detected, args.dir, args.mechanism, args.releaseBranch);
   const { version, bumpType } = await computePlan(git, current, args.bump, args.prerelease ?? false);
@@ -354,11 +240,6 @@ export async function prepareRelease(
   return prepareFinalRelease(git, githubAuth, args, detected, version, tag, bumpType);
 }
 
-/**
- * Prerelease (rc) path — no PR-merge gate, so the tag push is confirmation-gated.
- * Without `confirm`, we return a proposed result (the route shows the card);
- * with it, we cut + push the rc tag at the chosen ref and return it.
- */
 async function preparePrerelease(
   git: GitManager,
   opts: { version: string; tag: string; detected: DetectedVersionSource; from?: string; confirm: boolean },
@@ -373,7 +254,6 @@ async function preparePrerelease(
     };
   }
 
-  // Resolve the ref to tag: the tip of `--from` (after a fetch) or current HEAD.
   let ref: string | undefined;
   if (opts.from) {
     await git.fetch("origin");
@@ -391,11 +271,6 @@ async function preparePrerelease(
   };
 }
 
-/**
- * Final release via the release-branch mechanism: build `release/<version>` off
- * `origin/<release-branch>`, apply the payload, bump + commit, force-push, and
- * open the bump PR targeting the release branch.
- */
 async function prepareFinalRelease(
   git: GitManager,
   githubAuth: GitHubAuthManager,
@@ -408,18 +283,56 @@ async function prepareFinalRelease(
   if ((args.pick?.length ?? 0) > 0 && args.from) {
     throw new ServiceError(400, "Pass either --pick (cherry-pick) or --from (merge), not both.");
   }
+  const draftNotes = await readDraftNotes(args.dir);
   if (!(await git.isClean())) {
     throw new ServiceError(409, "The working tree has uncommitted changes — commit or discard them first.");
   }
-
-  // `origin` was already fetched in `prepareRelease` before the version anchor.
 
   const releaseBranch = args.releaseBranch;
   const headBranch = `release/${version}`;
   const remoteBranches = await git.listRemoteBranches();
 
-  // Resolve the start point: origin/<release-branch>. When the branch is absent,
-  // bootstrap it (first release) off the default base — but only on explicit opt-in.
+  // Match the base before resetting the head: PR lookup uses the head branch alone.
+  const existing = await findBranchPullRequest(git, githubAuth, headBranch, args.remoteUrl);
+  if (existing?.state === "open" && existing.base !== releaseBranch) {
+    throw new ServiceError(409, wrongBasePrMessage(headBranch, releaseBranch, existing.number, existing.base, false));
+  }
+
+  /*
+    A release whose workflow publishes authored notes never publishes GitHub's
+    generated per-PR list (docs/309 req 6), so notes are a precondition there
+    rather than an extra. Gated on the workflow the release will actually run,
+    not unconditionally: a repo that never adopted the flow must stay
+    releasable (req 9), and a `--pick` hotfix onto a maintenance branch still
+    carrying the old workflow would otherwise commit notes nothing publishes.
+
+    Enforced before the branch is touched — refusing after the checkout would
+    leave the session on a rewritten tree for a mistake one file fixes.
+
+    Re-running prepare resets this branch to the release branch and rebuilds it,
+    and the draft is gone once a previous run consumed it — so with no draft the
+    notes already on the pushed branch are what the release keeps.
+  */
+  const payloadRef = await resolvePayloadRef(git, args.from, releaseBranch, remoteBranches);
+  const notesPublished = await workflowPublishesAuthoredNotes(git, payloadRef);
+  const notesBody = draftNotes ?? (await git.showFileAtRef(`origin/${headBranch}`, notesRelPath(tag)));
+  if (notesPublished && !notesBody?.trim()) {
+    throw new ServiceError(
+      400,
+      `This release has no notes, and its release workflow publishes authored notes rather than ` +
+        `GitHub's generated per-PR list — so it would fail to publish. Write a compact summary of ` +
+        `what ${tag} contains to "${NOTES_DRAFT_FILE}" at the repo root, then re-run. ` +
+        `(It is gitignored, so it will not dirty the tree this command checks.)`,
+    );
+  }
+  const notesWarning =
+    !notesPublished && notesBody?.trim()
+      ? `⚠ These release notes will NOT be published: the \`.github/workflows/release.yml\` this release ships ` +
+        `(from \`${payloadRef}\`) does not read \`.release-notes/<tag>.md\`, so ${tag} publishes GitHub's ` +
+        `generated per-PR list instead. Bring the notes-aware workflow into the release (e.g. \`--from main\`) ` +
+        `to publish authored notes.`
+      : undefined;
+
   let startPoint = `origin/${releaseBranch}`;
   if (!remoteBranches.includes(releaseBranch)) {
     if (!args.bootstrap) {
@@ -429,21 +342,16 @@ async function prepareFinalRelease(
           "Re-run with --bootstrap to create it from the current base for the first release.",
       );
     }
-    // The remote's actual default branch — a repo defaulting to `trunk` or
-    // `develop` must be able to bootstrap its maintenance branch too, not just
-    // main/master repos (which is all the old literal check accepted).
     const detected = await git.getDefaultBranch();
     const base = remoteBranches.includes(detected) ? detected : null;
     if (!base) throw new ServiceError(400, "Could not resolve the repository's default branch to bootstrap from.");
-    // Create the maintenance branch on the remote off the base tip.
     await git.createBranchFrom(releaseBranch, `origin/${base}`);
+    args.onTreeRewrite?.();
     await git.push("origin", releaseBranch);
     startPoint = `origin/${releaseBranch}`;
   }
 
-  // Re-run guard (docs/214): if the deterministic head branch already exists on
-  // the remote AND its tip wasn't authored by this flow (no bump trailer — e.g.
-  // a hand-resolved conflict pushed to the open PR), refuse to clobber it.
+  // Preserve manual commits added to an existing release PR.
   if (remoteBranches.includes(headBranch)) {
     const tipMsg = await git.tipCommitMessage(`origin/${headBranch}`);
     if (tipMsg && !tipMsg.includes(`${BUMP_TRAILER}:`)) {
@@ -456,10 +364,9 @@ async function prepareFinalRelease(
     }
   }
 
-  // Build the deterministic head branch off the release branch (create or reset).
   await git.createBranchFrom(headBranch, startPoint);
+  args.onTreeRewrite?.();
 
-  // Apply the payload.
   if (args.pick?.length) {
     const res = await git.cherryPick(args.pick);
     if (!res.success) {
@@ -471,42 +378,16 @@ async function prepareFinalRelease(
     }
   } else if (args.from) {
     const ref = remoteBranches.includes(args.from) ? `origin/${args.from}` : args.from;
-    // docs/214 — take the incoming branch's tree WHOLESALE, overriding the release
-    // branch's divergence. A `--from main` release should ship exactly main's tree
-    // at the new version: stable may carry cherry-picked hotfixes, but for a full
-    // release those are forward-ported to main anyway, so the release takes main as
-    // the source of truth and ignores stable's divergence. The result is a 2-parent
-    // merge commit (release-branch tip + incoming ref) whose tree == the incoming
-    // ref's, kept a descendant of `origin/<release-branch>` so the bump PR still
-    // merges cleanly. Because the tree is replaced rather than three-way merged,
-    // this can NEVER conflict — so a release `--from` never bails to manual conflict
-    // resolution (impossible inside the brokered, sandbox-forbidden release branch).
+    // Take the incoming tree exactly, retaining maintenance ancestry for the PR.
     await git.mergeOverride(ref);
   }
 
-  // nikzlabs/shipit#2349 — `createBranchFrom` (a `checkout -B`), the cherry-pick and
-  // the merge-override all re-materialize the worktree through the ORCHESTRATOR's
-  // git, whose LFS smudge filter is disabled by design. Without this, preparing a
-  // release in an LFS repo leaves every asset the payload touched as ~130 bytes of
-  // pointer text — and the version-bump commit below is authored on top of that
-  // tree. Best-effort and never throws.
+  // Orchestrator git disables LFS smudging; recover content after checkout and payload changes.
   await restoreLfsAfterTreeRewrite(args.dir, "Release prepare", (message) =>
     console.warn(`[release-prepare] ${message}`),
   );
 
-  // Content-free guard (docs/214): a bare `prepare` (no --pick/--from) resets the
-  // head branch to `origin/<release-branch>` and adds only a bump commit, so the
-  // release would ship the version number with zero code changes — identical to
-  // what's already released. Refuse an empty payload unless it's a bootstrap
-  // (first release legitimately ships everything on the new branch) or the caller
-  // explicitly opted in with --allow-empty.
-  //
-  // The emptiness test differs by path: `--from` always synthesizes an override
-  // commit (so a commit count is meaningless — it's always ≥1), and a release is
-  // content-free iff the incoming tree *equals* the release branch's tree, so we
-  // measure the two-dot file diff `origin/<release-branch>..HEAD` (HEAD now carries
-  // the incoming tree). The `--pick` and bare paths add real commits (or none), so
-  // they keep counting commits.
+  // --from always creates a merge commit, so test its tree rather than its commit count.
   if (!args.bootstrap && !args.allowEmpty) {
     const empty = args.from
       ? (await git.diffStatTwoDot(startPoint)).files === 0
@@ -522,19 +403,20 @@ async function prepareFinalRelease(
     }
   }
 
-  // Bump the version source + commit (stamped with the re-run guard trailer).
   writeVersionToSource(detected, version);
   const relPath = path.relative(args.dir, detected.path!);
   const lockRel = detected.source === "package.json" ? path.join(path.dirname(relPath), "package-lock.json") : null;
+  const notesRel = notesBody?.trim() ? await writeNotesFile(args.dir, tag, notesBody) : null;
+
   const message = `Release ${tag}\n\n${BUMP_TRAILER}: ${version}`;
-  const commitHash = await git.commitPaths(lockRel ? [relPath, lockRel] : [relPath], message);
+  const commitHash = await git.commitPaths(
+    [relPath, ...(lockRel ? [lockRel] : []), ...(notesRel ? [notesRel] : [])],
+    message,
+  );
   if (!commitHash) {
     throw new ServiceError(500, "Version bump produced no commit (the version may already be set).");
   }
 
-  // Force-push the head branch with a live lease (ShipIt owns release/<version>),
-  // so a re-run updates the same branch + open PR rather than non-fast-forward
-  // rejecting. agentCreatePr's own (non-force) push is then a harmless no-op.
   await git.forcePush("origin", headBranch);
 
   const body = buildPrBody(version, tag, releaseBranch, args.notes);
@@ -550,8 +432,23 @@ async function prepareFinalRelease(
     ...(args.chatHistory ? { chatHistory: args.chatHistory } : {}),
   });
 
+  // agentCreatePr can return an old closed PR; only an explicitly open one can publish.
+  if (pr.alreadyExisted && pr.alreadyExistedReason !== "open") {
+    throw new ServiceError(409, deadReleasePrMessage(headBranch, releaseBranch, pr));
+  }
+
+  // The PR may have been retargeted since preflight.
+  if (pr.baseBranch !== releaseBranch) {
+    throw new ServiceError(409, wrongBasePrMessage(headBranch, releaseBranch, pr.number, pr.baseBranch, true));
+  }
+
+  // Last: until the notes are on a pushed branch carrying a live PR, the draft
+  // is the only copy, and every path above can still fail.
+  if (draftNotes && notesRel) await rm(path.join(args.dir, NOTES_DRAFT_FILE), { force: true });
+
   return {
     kind: "pr-opened",
+    ...(notesWarning ? { warning: notesWarning } : {}),
     version,
     tag,
     bumpType,
@@ -564,7 +461,121 @@ async function prepareFinalRelease(
   };
 }
 
-/** Build the bump PR body — a short, stable rationale plus optional notes. */
+// Valid git refs can contain shell syntax; this value goes into a suggested command.
+function safeRefForCommand(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) ? value : "<branch>";
+}
+
+function wrongBasePrMessage(
+  headBranch: string,
+  releaseBranch: string,
+  prNumber: number,
+  prBase: string,
+  pushed: boolean,
+): string {
+  const stale = pushed
+    ? ` Note the version bump was already pushed to "${headBranch}", so #${prNumber} now carries it and its previous checks are stale.`
+    : "";
+  return (
+    `The branch "${headBranch}" already has an open pull request (#${prNumber}) into "${prBase}", but ` +
+    `this release targets "${releaseBranch}". Merging it would publish through the wrong maintenance ` +
+    `branch. ShipIt matches an existing pull request by branch name alone and won't retarget one for ` +
+    `you — re-run with --release-branch ${safeRefForCommand(prBase)} to continue that pull request, or ` +
+    `release a different version, which starts from a fresh branch. (Retargeting #${prNumber} to ` +
+    `"${releaseBranch}" on GitHub also works; closing it does not — a closed pull request still ` +
+    `blocks the branch.)${stale}`
+  );
+}
+
+function deadReleasePrMessage(
+  headBranch: string,
+  releaseBranch: string,
+  pr: {
+    number: number;
+    baseBranch: string;
+    alreadyExistedReason?: "open" | "merged-not-progressed" | "closed-not-progressed";
+    notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed";
+  },
+): string {
+  const at = `(#${pr.number} into "${pr.baseBranch}")`;
+  let state: string;
+  switch (pr.alreadyExistedReason) {
+    case "closed-not-progressed":
+      state = `a closed pull request ${at}, which ShipIt won't reuse for a new release`;
+      break;
+    case "merged-not-progressed":
+      state = `a merged pull request ${at}, which GitHub cannot reopen`;
+      break;
+    default:
+      state = `a pull request ${at} that is not open, which ShipIt won't reuse for a new release`;
+  }
+
+  let remedy: string;
+  switch (pr.notProgressedBecause) {
+    case "base-not-contained":
+      remedy =
+        `The branch doesn't contain the tip of "${pr.baseBranch}", because this run targets "${releaseBranch}" ` +
+        `instead. Re-run with --release-branch ${pr.baseBranch}, or release a different version.`;
+      break;
+    case "no-new-work":
+      remedy =
+        `With the version bump applied the branch is identical to "${pr.baseBranch}", so there is nothing to ` +
+        `ship. Bring content in with --from <branch>, or release a different version.`;
+      break;
+    case "base-unknown":
+      remedy =
+        `"${pr.baseBranch}" is no longer on the remote (deleted or renamed), so ShipIt can't tell whether this ` +
+        `branch has moved past it. Release a different version — that starts from a fresh branch.`;
+      break;
+    case "fetch-failed":
+      remedy =
+        `ShipIt could not refresh "${pr.baseBranch}" from the remote, so it declined to decide whether this ` +
+        `branch has moved past it. This is a connectivity or credentials problem, not a problem with the ` +
+        `release — check the GitHub connection and re-run the same version.`;
+      break;
+    default:
+      remedy = "Release a different version — that starts from a fresh branch.";
+  }
+
+  return (
+    `The branch "${headBranch}" already has ${state}. The version bump was pushed to "${headBranch}" but has ` +
+    `no pull request to carry it, so nothing would publish. ${remedy}`
+  );
+}
+
+function notesRelPath(tag: string): string {
+  return path.join(NOTES_DIR, `${tag}.md`);
+}
+
+/** The ref whose tree the release ships — and so whose workflow will run. Mirrors the branch selection below. */
+async function resolvePayloadRef(
+  git: GitManager,
+  from: string | undefined,
+  releaseBranch: string,
+  remoteBranches: string[],
+): Promise<string> {
+  if (from) return remoteBranches.includes(from) ? `origin/${from}` : from;
+  if (remoteBranches.includes(releaseBranch)) return `origin/${releaseBranch}`;
+  return `origin/${await git.getDefaultBranch()}`;
+}
+
+/** Read before any branch work: a checkout must never be what decides whether the user's text survives. */
+async function readDraftNotes(dir: string): Promise<string | null> {
+  try {
+    const body = await readFile(path.join(dir, NOTES_DRAFT_FILE), "utf-8");
+    return body.trim() ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeNotesFile(dir: string, tag: string, body: string): Promise<string> {
+  const rel = notesRelPath(tag);
+  await mkdir(path.join(dir, NOTES_DIR), { recursive: true });
+  await writeFile(path.join(dir, rel), `${body.trimEnd()}\n`, "utf-8");
+  return rel;
+}
+
 function buildPrBody(version: string, tag: string, releaseBranch: string, notes?: string): string {
   const lines = [
     "## Summary",

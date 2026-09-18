@@ -222,7 +222,7 @@ case "file_changes": {
 
   if (configChanged || lockfileChanged) {
     workerPost(this.previewWorkerUrl, "/preview/restart")
-      .catch(/* ... */);
+      .catch(() => undefined);
   }
   break;
 }

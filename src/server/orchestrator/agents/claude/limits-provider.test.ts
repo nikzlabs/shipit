@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from "vitest";
 import { ClaudeLimitsProvider } from "./limits-provider.js";
 import type { AuthManager } from "./auth-manager.js";
 
-/** docs/150 — every snapshot is now attributed to a route (account) id. */
 const ROUTE = "acct-test";
 
 function makeAuthStub(
@@ -37,7 +36,6 @@ describe("ClaudeLimitsProvider", () => {
   });
 
   it("derives plan tier from the auth manager and tolerates a missing token", async () => {
-    // No credentials → plan is null but the windows still render.
     const provider = new ClaudeLimitsProvider({
       authManager: makeAuthStub({ token: null, reason: "not-authenticated" }),
     });
@@ -68,8 +66,6 @@ describe("ClaudeLimitsProvider", () => {
     );
     const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(80);
-    // Adapter is responsible for accumulating partial updates; the provider
-    // just stores whatever was last pushed.
     expect(snap?.weekly).toBeNull();
   });
 
@@ -91,7 +87,6 @@ describe("ClaudeLimitsProvider", () => {
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
       fetchImpl,
     });
-    // Event stream reported the windows but no utilization (low usage).
     provider.setRateLimits(
       { usedPct: null, resetAt: "2026-06-01T00:00:00Z" },
       { usedPct: null, resetAt: "2026-06-07T00:00:00Z" },
@@ -107,9 +102,6 @@ describe("ClaudeLimitsProvider", () => {
   });
 
   it("reads a low session percentage as percent, not a 0–1 fraction", async () => {
-    // Regression: /api/oauth/usage reports percent on a 0–100 scale. A session
-    // reading of 1 means 1%, but a fraction heuristic (`<= 1 ? *100`) inflated
-    // it to 100% — the badge showed "5h 100%" while native /usage showed 1%.
     const fetchImpl = vi.fn().mockResolvedValue(
       jsonResponse({
         five_hour: { utilization: 1, resets_at: "2026-06-01T00:00:00Z" },
@@ -137,7 +129,6 @@ describe("ClaudeLimitsProvider", () => {
       now: clock,
     });
     await provider.refreshNow("manual", ROUTE);
-    // A later event with a real number should override the older API value.
     clock.mockReturnValue(2_000);
     provider.setRateLimits({ usedPct: 88, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
     const snap = await provider.fetch(ROUTE);
@@ -157,20 +148,14 @@ describe("ClaudeLimitsProvider", () => {
     });
     await provider.refreshNow("manual", ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
-    // Still locked → second manual refresh is a no-op (no new fetch).
     await provider.refreshNow("manual", ROUTE);
     expect(fetchImpl).toHaveBeenCalledOnce();
-    // The snapshot carries lockedUntil so the client can disable the button.
     provider.setRateLimits({ usedPct: 1, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
     const snap = await provider.fetch(ROUTE);
     expect(snap?.lockedUntil).toBeGreaterThan(0);
   });
 
   it("surfaces the lockout on a route that has never reported a number", async () => {
-    // The reported symptom: an account 429'd before it ever had a reading, so
-    // `fetch()` returned null, the broadcast omitted the route entirely, and
-    // the pill rendered an ENABLED refresh button that silently no-opped for
-    // the whole ~30 min lockout. The lockout is the one thing that route knows.
     const clock = vi.fn(() => 1_000);
     const provider = new ClaudeLimitsProvider({
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
@@ -188,8 +173,6 @@ describe("ClaudeLimitsProvider", () => {
   });
 
   it("reports why a refresh produced nothing", async () => {
-    // Every one of these was a silent `return` — indistinguishable, from the
-    // button, from a refresh that worked.
     const clock = vi.fn(() => 10_000);
 
     const noCreds = new ClaudeLimitsProvider({
@@ -232,7 +215,6 @@ describe("ClaudeLimitsProvider", () => {
       now: clock,
     });
     expect(await rateLimited.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "rate-limited" });
-    // A second press while locked out is reported as such, not as a success.
     expect(await rateLimited.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "locked" });
 
     const ok = new ClaudeLimitsProvider({
@@ -325,11 +307,6 @@ describe("ClaudeLimitsProvider", () => {
   });
 });
 
-/**
- * docs/150 — the route id has to reach BOTH the enumeration and the token
- * lookup. These two bugs together produced the reported symptom: a pill stuck
- * at "—" whose refresh button did nothing.
- */
 describe("ClaudeLimitsProvider account routing", () => {
   const okUsage = {
     ok: true,
@@ -341,9 +318,6 @@ describe("ClaudeLimitsProvider account routing", () => {
   } as unknown as Response;
 
   it("can name a connected account before it has ever reported quota", async () => {
-    // The bug: routeIds() returned only routes with a cached snapshot, so the
-    // once-per-sign-in seed fetch iterated zero routes for a fresh account —
-    // data was required in order to be allowed to fetch data.
     const provider = new ClaudeLimitsProvider({
       authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
       listAccountRouteIds: () => ["acct-work", "acct-personal"],
@@ -363,9 +337,6 @@ describe("ClaudeLimitsProvider account routing", () => {
   });
 
   it("fetches each account's usage with THAT account's credentials", async () => {
-    // The bug: `getAccessToken()` was called with no dir, so it preferred
-    // ANTHROPIC_AUTH_TOKEN / the root config dir — reading the wrong
-    // subscription's usage, or none at all.
     const getAccessToken = vi.fn().mockResolvedValue({
       token: "tok", source: "file", expiresAt: null, plan: "Pro",
     });
@@ -400,10 +371,6 @@ describe("ClaudeLimitsProvider account routing", () => {
     expect(getAccessToken).toHaveBeenCalledWith(undefined);
   });
 
-  // docs/150-multiple-provider-subscriptions req 19 — `fetch()` reads the plan label through the same door.
-  // It stayed unscoped after `doRefresh` was fixed, so each pill was labelled
-  // with whatever the singleton root held: the migrated default's plan for
-  // every account, and nothing at all once the aliases were retired.
   it("reads each account's plan label from that account's credentials", async () => {
     const getAccessToken = vi.fn().mockResolvedValue({
       token: "tok", source: "file", expiresAt: null, plan: "Max 20x",
@@ -426,20 +393,6 @@ describe("ClaudeLimitsProvider account routing", () => {
   });
 });
 
-/**
- * planning#454 — **this reader must NOT say which windows the plan has**, and
- * the omission is load-bearing rather than an oversight.
- *
- * Every other reader states it, so the pill can drop a slot the plan does not
- * have (SuperGrok's absent 5-hour window was the reported bug). Claude cannot:
- * `rate_limit_event` carries ONE window per event, so a five_hour reading with
- * nothing weekly yet is what a normal first turn produces on a plan that has
- * both. A reader that claimed completeness here would have hidden a real 7d
- * meter for the whole of that turn — longer if the `/api/oauth/usage` seed that
- * fills the gap had been 429'd, which it is designed to expect.
- *
- * Caught by the independent review, which traced the path this pins.
- */
 describe("ClaudeLimitsProvider and the windows it declines to declare", () => {
   const auth = () => makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Max 20x" });
 
@@ -455,8 +408,6 @@ describe("ClaudeLimitsProvider and the windows it declines to declare", () => {
 
   it("omits it for a one-window event, which is a first turn and not a one-window plan", async () => {
     const provider = new ClaudeLimitsProvider({ authManager: auth() });
-    // Exactly what the adapter emits after a `five_hour` event with no
-    // `seven_day` event yet: the weekly side is null and the plan still has one.
     provider.setRateLimits({ usedPct: 30, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
     const snap = await provider.fetch(ROUTE);
     expect(snap?.weekly).toBeNull();

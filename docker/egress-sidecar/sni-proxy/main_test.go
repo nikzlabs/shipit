@@ -1,7 +1,3 @@
-// Tests for the Tier C SNI proxy. Focus: Phase-2 SNI-scoped identity validation
-// (docs/172, planning#92) and the supporting allowlist/SNI-peek primitives. These are
-// pure unit tests — no netns, no iptables — plus one end-to-end peekSNI test over
-// a real loopback TLS handshake.
 package main
 
 import (
@@ -20,12 +16,12 @@ func TestMatchEntry(t *testing.T) {
 	}{
 		{"github.com", ".github.com", true},
 		{"api.github.com", ".github.com", true},
-		{"API.GitHub.com", ".github.com", true},  // case-insensitive
-		{"api.github.com.", ".github.com", true}, // trailing dot
-		{"evilgithub.com", ".github.com", false}, // look-alike rejected
+		{"API.GitHub.com", ".github.com", true},
+		{"api.github.com.", ".github.com", true},
+		{"evilgithub.com", ".github.com", false},
 		{"github.com.evil.com", ".github.com", false},
-		{"github.com", "github.com", true},      // exact
-		{"api.github.com", "github.com", false}, // exact does not match subdomain
+		{"github.com", "github.com", true},
+		{"api.github.com", "github.com", false},
 		{"", ".github.com", false},
 		{"github.com", "", false},
 	}
@@ -37,19 +33,15 @@ func TestMatchEntry(t *testing.T) {
 }
 
 func TestParseIdentityRules(t *testing.T) {
-	// Empty / whitespace → no rules.
 	if r := parseIdentityRules(""); r != nil {
 		t.Errorf("empty → %v want nil", r)
 	}
 	if r := parseIdentityRules("   "); r != nil {
 		t.Errorf("whitespace → %v want nil", r)
 	}
-	// Malformed JSON → no rules (logged, not fatal).
 	if r := parseIdentityRules("{not json"); r != nil {
 		t.Errorf("malformed → %v want nil", r)
 	}
-	// Valid: leading-dot and exact host both normalize to the same base; identities
-	// are normalized (lowercased, trailing dot dropped).
 	rules := parseIdentityRules(`[
 		{"host":".s3.amazonaws.com","identities":["My-Bucket","other"]},
 		{"host":"blob.core.windows.net","identities":["myaccount"]},
@@ -76,11 +68,11 @@ func TestTenantPrefix(t *testing.T) {
 		wantOK     bool
 	}{
 		{"my-bucket.s3.amazonaws.com", "s3.amazonaws.com", "my-bucket", true},
-		{"s3.amazonaws.com", "s3.amazonaws.com", "", true},                    // apex
-		{"MY-BUCKET.S3.amazonaws.com", "s3.amazonaws.com", "my-bucket", true}, // case
-		{"a.b.s3.amazonaws.com", "s3.amazonaws.com", "a.b", true},             // multi-label prefix
-		{"github.com", "s3.amazonaws.com", "", false},                         // unrelated
-		{"evil-s3.amazonaws.com", "s3.amazonaws.com", "", false},              // not a real subdomain
+		{"s3.amazonaws.com", "s3.amazonaws.com", "", true},
+		{"MY-BUCKET.S3.amazonaws.com", "s3.amazonaws.com", "my-bucket", true},
+		{"a.b.s3.amazonaws.com", "s3.amazonaws.com", "a.b", true},
+		{"github.com", "s3.amazonaws.com", "", false},
+		{"evil-s3.amazonaws.com", "s3.amazonaws.com", "", false},
 	}
 	for _, c := range cases {
 		gotT, gotOK := tenantPrefix(c.sni, c.base)
@@ -91,7 +83,6 @@ func TestTenantPrefix(t *testing.T) {
 }
 
 func TestValidateIdentity(t *testing.T) {
-	// No rules configured → everything passes (Tier C behavior unchanged).
 	identityRules = nil
 	for _, sni := range []string{"my-bucket.s3.amazonaws.com", "github.com", "s3.amazonaws.com"} {
 		if !validateIdentity(sni) {
@@ -99,18 +90,17 @@ func TestValidateIdentity(t *testing.T) {
 		}
 	}
 
-	// One rule: only `my-bucket` permitted on .s3.amazonaws.com; apex not opted in.
 	identityRules = parseIdentityRules(`[{"host":".s3.amazonaws.com","identities":["my-bucket"]}]`)
 	cases := []struct {
 		sni  string
 		want bool
 	}{
-		{"my-bucket.s3.amazonaws.com", true},           // approved tenant
-		{"MY-BUCKET.s3.amazonaws.com", true},           // case-insensitive
-		{"attacker.s3.amazonaws.com", false},           // attacker's bucket on the same host → blocked
-		{"s3.amazonaws.com", false},                    // un-scoped apex (path-style) → blocked (can't see bucket)
-		{"github.com", true},                           // host not governed by any rule → unaffected
-		{"my-bucket.s3.us-east-1.amazonaws.com", true}, // not under .s3.amazonaws.com base → ungoverned, allowed
+		{"my-bucket.s3.amazonaws.com", true},
+		{"MY-BUCKET.s3.amazonaws.com", true},
+		{"attacker.s3.amazonaws.com", false},
+		{"s3.amazonaws.com", false},
+		{"github.com", true},
+		{"my-bucket.s3.us-east-1.amazonaws.com", true},
 	}
 	for _, c := range cases {
 		if got := validateIdentity(c.sni); got != c.want {
@@ -118,8 +108,6 @@ func TestValidateIdentity(t *testing.T) {
 		}
 	}
 
-	// Apex opt-in: listing "" permits the un-scoped host (operator accepts that
-	// path-style identity is not enforceable under SNI-only).
 	identityRules = parseIdentityRules(`[{"host":".s3.amazonaws.com","identities":["my-bucket",""]}]`)
 	if !validateIdentity("s3.amazonaws.com") {
 		t.Errorf("apex with \"\" opt-in should be permitted")
@@ -128,12 +116,10 @@ func TestValidateIdentity(t *testing.T) {
 		t.Errorf("apex opt-in must not widen tenant scoping")
 	}
 
-	identityRules = nil // restore
+	identityRules = nil
 }
 
 func TestMatchIdentityRuleMostSpecific(t *testing.T) {
-	// A broad rule and a more-specific rule overlap; the most-specific (longest
-	// base) governs. Regional S3 is scoped tighter than the global base.
 	identityRules = parseIdentityRules(`[
 		{"host":".amazonaws.com","identities":["wide"]},
 		{"host":".s3.us-east-1.amazonaws.com","identities":["narrow"]}
@@ -150,19 +136,14 @@ func TestMatchIdentityRuleMostSpecific(t *testing.T) {
 	if validateIdentity("wide.s3.us-east-1.amazonaws.com") {
 		t.Errorf("the narrow rule governs; %q is not in its identities", "wide")
 	}
-	// A host under only the broad rule still uses it (tenant prefix == "wide").
 	if !validateIdentity("wide.amazonaws.com") {
 		t.Errorf("broad rule should govern hosts the specific rule does not cover")
 	}
-	// Under the broad rule, a multi-label tenant prefix is NOT the bare "wide".
 	if validateIdentity("wide.ec2.amazonaws.com") {
 		t.Errorf("tenant prefix %q != %q; should not match", "wide.ec2", "wide")
 	}
 }
 
-// TestPeekSNI drives peekSNI with a real TLS ClientHello over loopback to confirm
-// it extracts the ServerName without terminating TLS and records the handshake
-// bytes (which the proxy replays upstream).
 func TestPeekSNI(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -192,11 +173,10 @@ func TestPeekSNI(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.Close()
-	// The server aborts the handshake after peeking, so the client never gets a
-	// ServerHello — bound it with a deadline so this goroutine doesn't hang.
+	// The intentional handshake abort needs a deadline.
 	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
 	tlsClient := tls.Client(c, &tls.Config{ServerName: "my-bucket.s3.amazonaws.com", InsecureSkipVerify: true})
-	_ = tlsClient.Handshake() // expected to fail; we only care the ClientHello went out
+	_ = tlsClient.Handshake()
 
 	res := <-resCh
 	if res.sni != "my-bucket.s3.amazonaws.com" {
@@ -207,9 +187,6 @@ func TestPeekSNI(t *testing.T) {
 	}
 }
 
-// planning#371 — the decision query carries its own credential. The orchestrator
-// no longer trusts this connection's source IP, because it belongs to the
-// workload whose network namespace this proxy shares.
 func TestFetchDecisionSendsToken(t *testing.T) {
 	var gotToken, gotSession, gotHost string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -236,9 +213,6 @@ func TestFetchDecisionSendsToken(t *testing.T) {
 	}
 }
 
-// With no token configured the header is omitted entirely rather than sent
-// empty — the agent container's own proxy is admitted by its address, and an
-// empty credential must not read as a presented one.
 func TestFetchDecisionOmitsAbsentToken(t *testing.T) {
 	present := true
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

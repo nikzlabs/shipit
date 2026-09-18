@@ -8,7 +8,7 @@ export interface ToastData {
   message: string;
   action?: { label: string; onClick: () => void };
   duration?: number;
-  /** Visual treatment. Defaults to "success" so existing call sites are unchanged. */
+
   variant?: "success" | "error";
 }
 
@@ -16,10 +16,6 @@ interface ToastProps {
   toast: ToastData;
 }
 
-// Dismiss reads the latest store function inside the callback so the effect
-// can depend on `toast` alone — an unstable `onDismiss` prop (a fresh arrow
-// on every parent render) used to reset the auto-dismiss timer on every
-// re-render, making toasts effectively permanent.
 function clearToast(): void {
   useUiStore.getState().setToast(null);
 }
@@ -32,7 +28,7 @@ export function Toast({ toast }: ToastProps) {
     const duration = toast.duration ?? 8000;
     const timer = setTimeout(() => {
       setVisible(false);
-      // Wait for exit animation before removing
+
       setTimeout(clearToast, 200);
     }, duration);
     return () => clearTimeout(timer);

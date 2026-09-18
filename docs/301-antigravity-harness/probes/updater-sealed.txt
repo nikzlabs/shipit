@@ -1,0 +1,4 @@
+ERROR: logging before google.Init: W0913 17:58:20.074409       1 auto_updater.go:245] Directory /persist/agy-login-test/pinned is not fully accessible (readable: true, writable: false), skipping update
+ERROR: logging before google.Init: W0913 17:58:21.180959       1 auto_updater.go:245] Directory /persist/agy-login-test/pinned is not fully accessible (readable: true, writable: false), skipping update
+ERROR: logging before google.Init: W0913 17:58:21.597401       1 auto_updater.go:245] Directory /persist/agy-login-test/pinned is not fully accessible (readable: true, writable: false), skipping update
+ERROR: logging before google.Init: W0913 17:58:42.179456       1 auto_updater.go:245] Directory /persist/agy-login-test/pinned is not fully accessible (readable: true, writable: false), skipping update

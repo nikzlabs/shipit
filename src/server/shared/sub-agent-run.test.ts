@@ -1,20 +1,16 @@
-/**
- * Unit tests for the shared sub-agent run helper (docs/144). Drives a fake
- * AgentProcess through `runAgentToCompletion` and asserts the accumulated text,
- * status, cost/duration, truncation, and cancel behavior.
- */
-
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { runAgentToCompletion } from "./sub-agent-run.js";
+import {
+  runAgentToCompletion,
+  DEFAULT_SUB_AGENT_TIMEOUT_MS,
+  SUB_AGENT_TRANSPORT_TIMEOUT_MS,
+} from "./sub-agent-run.js";
 import type { AgentEvent } from "./types.js";
 
-/** Minimal AgentProcess stand-in: an EventEmitter with a spy-able kill(). */
 class FakeAgent extends EventEmitter {
   killed = false;
   kill = vi.fn(() => {
     this.killed = true;
-    // Emulate the adapter emitting `done` shortly after kill.
     queueMicrotask(() => this.emit("done", 0));
   });
 }
@@ -128,9 +124,6 @@ describe("runAgentToCompletion", () => {
   it("joins every completed message when a run answers across several (planning#247)", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
-    // Codex shape: deltas, then the completed message re-emitted — twice, because
-    // the answer spanned a long report and a shorter wrap-up. Keeping only the
-    // last one handed the caller the tail of the answer and nothing said so.
     agent.emit("event", assistant("The orphan branch is viab"));
     agent.emit("event", assistant("The orphan branch is viable, but…\n\n1. digest excludes the envelope", true));
     agent.emit("event", assistant("I found nine defi"));
@@ -185,9 +178,6 @@ describe("runAgentToCompletion", () => {
   it("treats a non-zero exit with no result event and no output as an error, not an empty success", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
-    // The shape of a CLI that never started: no events at all, then a non-zero
-    // exit. This resolved `status: "success"`, `text: ""` — so the caller
-    // reported "the reviewer found nothing" and retried into the same wall.
     agent.emit("done", 1);
     const res = await handle.promise;
     expect(res.status).toBe("error");
@@ -198,9 +188,6 @@ describe("runAgentToCompletion", () => {
   it("reports a crash that leaked a preamble as an error, keeping the partial text", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
-    // A run that starts talking, works, then dies before its result event. The
-    // preamble is not an answer — calling this a success hands the caller
-    // "Let me inspect the files…" as if it were the review.
     agent.emit("event", assistant("Let me inspect the files…"));
     agent.emit("done", 1);
     const res = await handle.promise;
@@ -263,11 +250,31 @@ describe("runAgentToCompletion", () => {
       vi.useRealTimers();
     }
   });
+
+  it("bounds a spawn that names no cap of its own, at the default", async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new FakeAgent();
+      const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+      agent.emit("event", assistant("still working"));
+
+      vi.advanceTimersByTime(DEFAULT_SUB_AGENT_TIMEOUT_MS - 1);
+      expect(agent.kill).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(2);
+      const res = await handle.promise;
+      expect(agent.kill).toHaveBeenCalled();
+      expect(res.status).toBe("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the transport backstop above the run's own cap", () => {
+    expect(SUB_AGENT_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(DEFAULT_SUB_AGENT_TIMEOUT_MS);
+  });
 });
 
-// 2026-08-21 incident — `homeDir` (a same-harness spawn's isolated credential
-// root) must survive the runOpts → AgentRunParams mapping, or the CLI falls
-// back to the session subtree the live primary reads.
 describe("buildSubAgentRunParams", () => {
   it("carries homeDir through to the run params, and omits an absent one", async () => {
     const { buildSubAgentRunParams } = await import("./sub-agent-run.js");

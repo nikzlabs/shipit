@@ -5,6 +5,8 @@ import {
   AUTO_RESOLVE_COOLDOWN_MS,
   AUTO_RESOLVE_DEFERRED_COOLDOWN_MS,
   AUTO_RESOLVE_SETTLE_MS,
+  AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS,
+  AUTO_RESOLVE_DEFER_BACKGROUND_WORK,
   MAX_AUTO_RESOLVE_ATTEMPTS,
   type AutoResolveResult,
   type RebaseAndResolveCb,
@@ -12,15 +14,15 @@ import {
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 
-// ---- Test scaffolding ----------------------------------------------------
-
 type RunnerStub = EventEmitter & {
   running: boolean;
   verifyRunningState: () => Promise<boolean>;
   emitMessage: (msg: unknown) => void;
   emitted: unknown[];
-  /** Custom verify behavior — defaults to returning `running`. */
   onVerify?: () => Promise<boolean> | boolean;
+  backgroundWorkDescriptions: string[];
+  getAgent: () => unknown;
+  setBackgroundWork: (descriptions: string[]) => void;
 };
 
 function makeRunner(running = false): RunnerStub {
@@ -31,6 +33,15 @@ function makeRunner(running = false): RunnerStub {
   r.verifyRunningState = async () => {
     if (r.onVerify) return await r.onVerify();
     return r.running;
+  };
+  // Background work only counts while a resident process holds it — mirror that here,
+  // or the stub reports work in flight for a session with no agent at all.
+  let agent: unknown = null;
+  r.backgroundWorkDescriptions = [];
+  r.getAgent = () => agent;
+  r.setBackgroundWork = (descriptions: string[]) => {
+    agent = descriptions.length > 0 ? { resident: true } : null;
+    r.backgroundWorkDescriptions = descriptions;
   };
   return r;
 }
@@ -97,9 +108,6 @@ function makeFixture(opts?: {
   const cb = opts?.cb ?? recordingCb(() => ({ outcome: "success", forcePushed: true, didWork: true }));
   const manager = new AutoConflictResolveManager(
     (id) => changes.push(id),
-    // The manager only uses the subset of SessionRunnerInterface for its
-    // gate; the stub provides those fields. Cast at the boundary so the
-    // test doesn't need to instantiate every interface member.
     (() => runner as unknown as SessionRunnerInterface | undefined),
     () => enabled,
     cb,
@@ -120,8 +128,6 @@ function makeFixture(opts?: {
 async function tick(): Promise<void> {
   await new Promise((r) => setImmediate(r));
 }
-
-// ---- Tests ---------------------------------------------------------------
 
 describe("AutoConflictResolveManager", () => {
   let fx: Fixture;
@@ -163,7 +169,6 @@ describe("AutoConflictResolveManager", () => {
     fx.setRunner(runner);
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     expect(fx.cb.count).toBe(0);
-    // Agent finished
     runner.running = false;
     await fx.manager.onRunnerIdle("s1");
     expect(fx.cb.count).toBe(1);
@@ -173,9 +178,7 @@ describe("AutoConflictResolveManager", () => {
     const runner = makeRunner(true);
     fx.setRunner(runner);
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
-    // The conflict resolves — next poll updates the cache.
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "mergeable" }), "main", "sha1");
-    // state was deleted on the resolved poll — onRunnerIdle should be a no-op.
     runner.running = false;
     await fx.manager.onRunnerIdle("s1");
     expect(fx.cb.count).toBe(0);
@@ -186,11 +189,8 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     expect(fx.cb.count).toBe(1);
     expect(fx.manager.getLastKnownMergeable("s1")).toBe("conflicting");
-    // UNKNOWN poll between two conflicting polls → nothing changes.
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "unknown" }), "main", "sha1");
     expect(fx.manager.getLastKnownMergeable("s1")).toBe("conflicting");
-    // Still running from above so the running short-circuit applies; the
-    // UNKNOWN handling didn't reach the running short-circuit either way.
     expect(fx.cb.count).toBe(1);
   });
 
@@ -199,12 +199,9 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     expect(fx.manager.get("s1")?.attemptCount).toBe(1);
-    // Advance past cooldown so the next poll on the same SHA could fire — confirms reset truly happens.
     fx.advance(AUTO_RESOLVE_COOLDOWN_MS + 1);
-    // Force a head SHA change.
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
     await tick();
-    // After SHA reset the new attempt starts at 1.
     expect(fx.manager.get("s1")?.attemptCount).toBe(1);
     expect(fx.manager.get("s1")?.lastHeadSha).toBe("sha2");
   });
@@ -218,7 +215,6 @@ describe("AutoConflictResolveManager", () => {
     }
     expect(fx.cb.count).toBe(MAX_AUTO_RESOLVE_ATTEMPTS);
     expect(fx.manager.get("s1")?.status).toBe("exhausted");
-    // Further polls short-circuit at step 6.
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     expect(fx.cb.count).toBe(MAX_AUTO_RESOLVE_ATTEMPTS);
@@ -229,12 +225,10 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     expect(fx.cb.count).toBe(1);
-    // Poll within cooldown — short-circuit at step 10.
     fx.advance(AUTO_RESOLVE_COOLDOWN_MS - 1);
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     expect(fx.cb.count).toBe(1);
-    // Poll after cooldown expires — re-fires.
     fx.advance(2);
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
@@ -247,10 +241,8 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     expect(fx.cb.count).toBe(1);
     fx.setEnabled(false);
-    // Subsequent polls early-return at step 4.
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     expect(fx.cb.count).toBe(1);
-    // In-flight writeBack still runs.
     resolveCb({ outcome: "success", forcePushed: true, didWork: true });
     await tick();
     expect(fx.manager.get("s1")?.status).toBe("idle");
@@ -265,7 +257,7 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
-    await tick(); // still in cooldown — no fire
+    await tick();
     expect(fx.cb.count).toBe(2);
     fx.manager.resetForUserActivity("s1");
     expect(fx.manager.get("s1")?.attemptCount).toBe(0);
@@ -303,7 +295,6 @@ describe("AutoConflictResolveManager", () => {
     expect(s.status).toBe("idle");
     expect(s.lastError).toBe("force_push_failed");
     expect(s.nextEligibleAt).toBeDefined();
-    // WS envelope reports success + forcePushed=false (no exhaustion yet).
     const emit = fx.runner!.emitted.find((m: unknown) => (m as { type?: string }).type === "auto_resolve_result") as { outcome: string; forcePushed?: boolean };
     expect(emit?.outcome).toBe("success");
     expect(emit?.forcePushed).toBe(false);
@@ -342,7 +333,6 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.manager.get("s1")?.nextEligibleAt).toBeDefined();
     fx.setEnabled(false);
     fx.setEnabled(true);
-    // Still within cooldown — does not fire.
     fx.advance(AUTO_RESOLVE_COOLDOWN_MS - 1);
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
@@ -350,16 +340,11 @@ describe("AutoConflictResolveManager", () => {
   });
 
   it("18. cache snapshot read happens before cache write (regression for earlier algorithm bug)", async () => {
-    // Pre-populate the cache via a clean poll, then transition to conflicting.
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "mergeable" }), "main", "sha1");
-    expect(fx.manager.getLastKnownMergeable("s1")).toBeUndefined(); // state delete clears cache
-    // Re-seed by going through a conflicting poll, then back to mergeable.
+    expect(fx.manager.getLastKnownMergeable("s1")).toBeUndefined();
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     expect(fx.manager.getLastKnownMergeable("s1")).toBe("conflicting");
-    // The next conflicting poll's snapshot read still sees "conflicting" — the
-    // step-3 write does not clobber the prevKnown local used by later logic.
-    // (Indirect assertion: the manager survives the cycle without losing state.)
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     expect(fx.manager.getLastKnownMergeable("s1")).toBe("conflicting");
   });
@@ -367,19 +352,14 @@ describe("AutoConflictResolveManager", () => {
   it("re-entrancy guard: verifyRunningState synchronously emits idle → callback fires exactly once", async () => {
     const runner = makeRunner(true);
     runner.onVerify = () => {
-      // Simulate the container runner's zombie-reset path: reset _isRunning and
-      // synchronously emit "idle" inside verifyRunningState.
       runner.running = false;
       runner.emit("idle");
       return false;
     };
     fx.setRunner(runner);
-    // Wire onRunnerIdle so the synchronous emit re-enters the manager (mirrors
-    // the production registry subscription).
     runner.on("idle", () => { void fx.manager.onRunnerIdle("s1"); });
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
-    // Even with the synchronous re-entry, the wrapper was called exactly once.
     expect(fx.cb.count).toBe(1);
   });
 
@@ -394,17 +374,13 @@ describe("AutoConflictResolveManager", () => {
     expect(emits.length).toBe(1);
   });
 
-  // ---- Settle window (docs/146 — stale-verdict re-trigger fix) ------------
-
   it("settle: a successful force-push opens a settle window (settleUntil + cooldown set)", async () => {
-    // Default cb = success forcePushed=true.
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     const s = fx.manager.get("s1")!;
     expect(s.attemptCount).toBe(1);
     expect(s.status).toBe("idle");
     expect(s.settleUntil).toBeDefined();
-    // Cooldown gate is pinned to the settle instant so step 10 holds the re-fire.
     expect(s.nextEligibleAt).toBe(s.settleUntil);
   });
 
@@ -412,11 +388,9 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     expect(fx.cb.count).toBe(1);
-    // Our push landed sha2; GitHub still serves the stale pre-recompute verdict.
     fx.advance(AUTO_RESOLVE_SETTLE_MS - 1);
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
     await tick();
-    // Held — no second attempt, and the SHA change did NOT zero the budget.
     expect(fx.cb.count).toBe(1);
     expect(fx.manager.get("s1")?.attemptCount).toBe(1);
     expect(fx.manager.get("s1")?.lastHeadSha).toBe("sha2");
@@ -426,7 +400,6 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     fx.advance(1000);
-    // GitHub finished recomputing: the pushed head is actually mergeable.
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "mergeable" }), "main", "sha2");
     expect(fx.manager.get("s1")).toBeUndefined();
     expect(fx.cb.count).toBe(1);
@@ -436,14 +409,10 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1", "base1");
     await tick();
     expect(fx.cb.count).toBe(1);
-    // Within the window the verdict is held.
     fx.advance(AUTO_RESOLVE_SETTLE_MS - 1);
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2", "base1");
     await tick();
     expect(fx.cb.count).toBe(1);
-    // The old bug: after the fixed window elapsed, the same stale verdict
-    // re-fired on the exact head ShipIt had just produced. Keep suppressing
-    // while the base SHA is unchanged.
     fx.advance(2);
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2", "base1");
     await tick();
@@ -466,9 +435,6 @@ describe("AutoConflictResolveManager", () => {
   });
 
   it("settle: a genuinely-new external head outside the window still resets the budget", async () => {
-    // An *errored* attempt does NOT open a settle window, so an external push
-    // (new head) resets the per-head budget as before — the settle gate is
-    // scoped to our own force-push, not to every SHA change.
     fx = makeFixture({ cb: recordingCb(() => ({ outcome: "error", lastError: "boom", didWork: true })) });
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
@@ -476,7 +442,7 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.manager.get("s1")?.settleUntil).toBeUndefined();
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
     await tick();
-    expect(fx.manager.get("s1")?.attemptCount).toBe(1); // reset then re-fired
+    expect(fx.manager.get("s1")?.attemptCount).toBe(1);
     expect(fx.manager.get("s1")?.lastHeadSha).toBe("sha2");
   });
 
@@ -490,19 +456,121 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.manager.get("s1")?.attemptCount).toBe(0);
   });
 
+  // nikzlabs/shipit#2751: a session whose resident agent held a background poll loop retried
+  // the resolution 55 times in 68 minutes on the transient deferred cooldown.
+  describe("nikzlabs/shipit#2751: a refusal that is not transient", () => {
+    function backgroundWorkFixture(): Fixture {
+      return makeFixture({
+        cb: recordingCb(() => ({
+          outcome: "deferred",
+          lastError: AUTO_RESOLVE_DEFER_BACKGROUND_WORK,
+          didWork: false,
+        })),
+      });
+    }
+
+    it("does not retry on the transient deferred cooldown", async () => {
+      fx = backgroundWorkFixture();
+      fx.runner!.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(fx.cb.count).toBe(1);
+
+      // The cadence that produced 55 attempts: one poll per deferred cooldown.
+      const step = AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1;
+      let elapsed = 0;
+      for (; elapsed + step < AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS; elapsed += step) {
+        fx.advance(step);
+        await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+        await tick();
+      }
+      // Guard the guard: a window this loop cannot reach into would prove nothing.
+      expect(elapsed).toBeGreaterThan(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS * 10);
+      expect(fx.cb.count).toBe(1);
+    });
+
+    it("retries once the long cooldown expires — the wait is a rate bound, not a surrender", async () => {
+      fx = backgroundWorkFixture();
+      fx.runner!.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      fx.advance(AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS + 1);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+    });
+
+    it("an idle runner whose background work has cleared retries at once", async () => {
+      fx = backgroundWorkFixture();
+      const runner = fx.runner!;
+      runner.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(fx.cb.count).toBe(1);
+
+      runner.setBackgroundWork([]);
+      await fx.manager.onRunnerIdle("s1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+    });
+
+    it("an idle runner still holding the work waits out the cooldown", async () => {
+      fx = backgroundWorkFixture();
+      fx.runner!.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+
+      await fx.manager.onRunnerIdle("s1");
+      await tick();
+      expect(fx.cb.count).toBe(1);
+      expect(fx.manager.get("s1")?.nextEligibleAt).toBeDefined();
+    });
+
+    // The reason is per-attempt, but state.lastError is sticky: a later deferral that
+    // carries no reason must not inherit this one's exemption from the cooldown.
+    it("hands the cooldown back after the next attempt defers for another reason", async () => {
+      fx = makeFixture({
+        cb: recordingCb((_sessionId, _baseBranch, attempt) => (attempt === 1
+          ? { outcome: "deferred", lastError: AUTO_RESOLVE_DEFER_BACKGROUND_WORK, didWork: false }
+          : { outcome: "deferred", didWork: false })),
+      });
+      const runner = fx.runner!;
+      runner.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+
+      runner.setBackgroundWork([]);
+      await fx.manager.onRunnerIdle("s1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+
+      await fx.manager.onRunnerIdle("s1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+      expect(fx.manager.get("s1")?.nextEligibleAt).toBeDefined();
+    });
+
+    it("leaves an ordinary deferral on the transient cooldown", async () => {
+      fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", lastError: "dirty_tree", didWork: false })) });
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      fx.advance(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+    });
+  });
+
   it("pendingReset: writeBack landing after a reset gives the user a fresh budget", async () => {
     let resolveCb: (r: AutoResolveResult) => void = () => { /* set below */ };
     fx = makeFixture({ cb: recordingCb(() => new Promise<AutoResolveResult>((r) => { resolveCb = r; })) });
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     expect(fx.manager.get("s1")?.status).toBe("running");
-    // User types mid-attempt — reset is deferred.
     fx.manager.resetForUserActivity("s1");
     expect(fx.manager.get("s1")?.pendingReset).toBe(true);
-    expect(fx.manager.get("s1")?.status).toBe("running"); // still running
-    // Attempt exhausts.
+    expect(fx.manager.get("s1")?.status).toBe("running");
     resolveCb({ outcome: "error", lastError: "boom", didWork: true });
     await tick();
-    // pendingReset applied: attemptCount cleared, status idle (not exhausted).
     expect(fx.manager.get("s1")?.attemptCount).toBe(0);
     expect(fx.manager.get("s1")?.status).toBe("idle");
     expect(fx.manager.get("s1")?.lastError).toBeUndefined();

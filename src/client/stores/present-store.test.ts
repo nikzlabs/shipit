@@ -1,6 +1,5 @@
-/**
- * Unit tests for the present-store reducer (docs/093).
- */
+
+
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { usePresentStore } from "./present-store.js";
 import { useSessionStore } from "./session-store.js";
@@ -38,8 +37,7 @@ describe("present-store", () => {
 
   it("re-presenting the same id refreshes in place and keeps the carousel slot", () => {
     usePresentStore.getState().addOrReplace(makePresent());
-    // Same file re-presented (presentId is content-addressed by path) with a
-    // newer timestamp = an edit during the iteration loop.
+
     usePresentStore.getState().addOrReplace(
       makePresent({ title: "Hi v2", createdAt: "2026-05-29T00:01:00.000Z" }),
     );
@@ -62,7 +60,7 @@ describe("present-store", () => {
   it("a true re-delivery (identical createdAt) preserves cached bytes — no needless refetch", () => {
     usePresentStore.getState().addOrReplace(makePresent());
     usePresentStore.getState().setContent("p1", "<p>cached</p>");
-    // Same event replayed (e.g. a WS reconnect) — same id AND same timestamp.
+
     usePresentStore.getState().addOrReplace(makePresent());
     expect(usePresentStore.getState().presentations[0].content).toBe("<p>cached</p>");
   });
@@ -90,7 +88,7 @@ describe("present-store", () => {
     expect(usePresentStore.getState().presentations[0].content).toBeUndefined();
     usePresentStore.getState().setContent("p1", "<p>hi</p>");
     expect(usePresentStore.getState().presentations[0].content).toBe("<p>hi</p>");
-    // No-op for an unknown id.
+
     usePresentStore.getState().setContent("missing", "x");
     expect(usePresentStore.getState().presentations).toHaveLength(1);
   });
@@ -118,7 +116,6 @@ describe("present-store", () => {
     expect(usePresentStore.getState().activePresentIndex).toBe(0);
   });
 
-  // Active-position memory (docs/093 — survives a session switch).
   describe("with an active session", () => {
     afterEach(() => {
       useSessionStore.getState().setSessionId(undefined);
@@ -132,13 +129,11 @@ describe("present-store", () => {
         { presentId: "c", mimeType: "text/html", filePath: "/tmp/c.html", createdAt: "2026-05-29T00:00:02.000Z" },
       ];
       usePresentStore.getState().hydrate(list);
-      usePresentStore.getState().setActiveIndex(2); // user navigates to "c"
+      usePresentStore.getState().setActiveIndex(2);                         
 
-      // Session switch: reset() wipes the list, then a fresh hydrate replays it.
       usePresentStore.getState().reset();
       usePresentStore.getState().hydrate(list);
 
-      // Restored to "c" (index 2), not snapped back to the first artifact.
       expect(usePresentStore.getState().activePresentIndex).toBe(2);
     });
 
@@ -149,9 +144,8 @@ describe("present-store", () => {
         { presentId: "y", mimeType: "text/html", filePath: "/tmp/y.html", createdAt: "2026-05-29T00:00:01.000Z" },
       ];
       usePresentStore.getState().hydrate(full);
-      usePresentStore.getState().setActiveIndex(1); // remembers "y"
+      usePresentStore.getState().setActiveIndex(1);                 
 
-      // "y" is no longer present on the next hydrate → clamp into bounds.
       usePresentStore.getState().reset();
       usePresentStore.getState().hydrate([full[0]]);
       expect(usePresentStore.getState().activePresentIndex).toBe(0);
@@ -164,9 +158,8 @@ describe("present-store", () => {
         { presentId: "v", mimeType: "text/html", filePath: "/tmp/v.html", createdAt: "2026-05-29T00:00:01.000Z" },
       ];
       usePresentStore.getState().hydrate(list);
-      usePresentStore.getState().setActiveIndex(1); // remembers "v"
+      usePresentStore.getState().setActiveIndex(1);                 
 
-      // A fresh page load seeds the in-memory map from this on next import.
       expect(getSavedActivePresentBySession().sess_ls).toBe("v");
     });
 
@@ -177,8 +170,8 @@ describe("present-store", () => {
         { presentId: "n", mimeType: "text/html", filePath: "/tmp/n.html", createdAt: "2026-05-29T00:00:01.000Z" },
       ];
       usePresentStore.getState().hydrate(list);
-      usePresentStore.getState().setActiveIndex(1); // remembers "n"
-      usePresentStore.getState().clear(); // full wipe forgets it
+      usePresentStore.getState().setActiveIndex(1);                 
+      usePresentStore.getState().clear();                        
 
       usePresentStore.getState().hydrate(list);
       expect(usePresentStore.getState().activePresentIndex).toBe(0);
@@ -191,7 +184,7 @@ describe("present-store", () => {
     usePresentStore.getState().clear("p1");
     const { presentations, activePresentIndex } = usePresentStore.getState();
     expect(presentations.map((p) => p.presentId)).toEqual(["p2"]);
-    // Active index falls back to a valid index after eviction.
+
     expect(activePresentIndex).toBe(0);
   });
 
@@ -236,17 +229,15 @@ describe("present-store", () => {
   });
 
   it("rehydrates an empty store from persisted metadata then dedupes a live re-delivery (docs/093 restart)", () => {
-    // After a container restart the store starts empty; session load hydrates it
-    // from durable metadata (the /history payload), and the WS present_state
-    // replay may re-deliver the same id. Neither should double-render.
+
     usePresentStore.getState().hydrate([
       { presentId: "p1", mimeType: "text/html", filePath: "docs/m.html", createdAt: "2026-06-15T00:00:00.000Z" },
     ]);
     expect(usePresentStore.getState().presentations.map((p) => p.presentId)).toEqual(["p1"]);
-    // A live present_content for the SAME id replaces in place, not appends.
+
     usePresentStore.getState().addOrReplace(makePresent({ presentId: "p1", filePath: "docs/m.html" }));
     expect(usePresentStore.getState().presentations).toHaveLength(1);
-    // A second hydrate (e.g. another reload) stays idempotent.
+
     usePresentStore.getState().hydrate([
       { presentId: "p1", mimeType: "text/html", filePath: "docs/m.html", createdAt: "2026-06-15T00:00:00.000Z" },
     ]);
@@ -263,7 +254,6 @@ describe("present-store", () => {
   });
 });
 
-/** docs/258 — focusing by the path an agent-authored pointer names. */
 describe("focusByPath", () => {
   const entry = (presentId: string, filePath: string) => ({
     presentId,
@@ -283,8 +273,7 @@ describe("focusByPath", () => {
   });
 
   it("closes the gallery, where no artifact is rendered at all", () => {
-    // Unlike `focusById`: with the grid open there is no rendered artifact and
-    // no markdown DOM, so a pointer would land on nothing.
+
     usePresentStore.getState().hydrate([entry("p1", "/persist/a.html")]);
     usePresentStore.getState().setGalleryOpen(true);
     usePresentStore.getState().focusByPath("/persist/a.html");

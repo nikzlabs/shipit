@@ -7,18 +7,18 @@ import type { UploadRef } from "../../../../server/shared/types.js";
 
 export interface UploadBackend {
   isOverlay: boolean;
-  /** Raw File objects buffered in overlay mode (empty in chat mode). */
+
   localFiles: File[];
-  /** Chips to render for this composer (session uploads or local placeholders). */
+
   displayUploads: UploadItem[];
-  /** All uploads visible to autocomplete (global store in chat mode). */
+
   allUploads: UploadItem[];
   handleAddFiles: (files: File[]) => void;
   handleRemoveUploadChip: (index: number) => void;
   handleRetryUploadChip: (index: number) => void;
-  /** Upload refs at send time — already-POSTed paths in chat mode, [] in overlay. */
+
   getUploadRefs: () => UploadRef[];
-  /** Clear upload state after a successful send. */
+
   clearUploads: () => void;
 }
 
@@ -49,9 +49,6 @@ export function useUploadBackend({
   const allSessionUploads = useFileStore((s) => s.sessionUploads);
   const [localFiles, setLocalFiles] = useState<File[]>([]);
 
-  // Map raw Files into UploadItem placeholders so the chip renderer treats
-  // both modes identically. Status is "ready" — no progress bar, no retry,
-  // since these are kept entirely local until the parent ships them.
   const localUploadItems = useMemo<UploadItem[]>(
     () =>
       localFiles.map((f, i) => ({
@@ -66,8 +63,7 @@ export function useUploadBackend({
       })),
     [localFiles],
   );
-  // Revoke object URLs when the chip set churns to keep memory bounded.
-  // We can't derive this — URL.revokeObjectURL is a browser-side side effect
+
   // that must happen when the item leaves the set, not during render.
   // eslint-disable-next-line no-restricted-syntax -- browser API cleanup tied to item lifetime
   useEffect(() => {

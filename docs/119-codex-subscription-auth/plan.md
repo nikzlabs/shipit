@@ -147,7 +147,7 @@ Update both session-worker images and the dev/prod orchestrator images:
 RUN mkdir -p /workspace /credentials \
  && ln -s /credentials/.claude       /root/.claude       \
  && ln -sf /credentials/.claude.json /root/.claude.json  \
- && ln -s /credentials/.codex        /root/.codex            # NEW
+ && ln -s /credentials/.codex        /root/.codex
 ```
 
 The first time `codex login` runs it creates `/credentials/.codex/`
@@ -161,6 +161,14 @@ cleanup.
 onboarding sidecar). The `~/.codex/config.toml` is opt-in and we do not
 need to seed it.
 
+> **Superseded.** ShipIt now writes `~/.codex/config.toml` on two counts:
+> the ShipIt-managed `[mcp_servers.*]` block (`CodexAdapter.writeMcpConfig`,
+> docs/125) and a `[projects."<workspace>"] trust_level = "trusted"` entry
+> (`session/agents/codex/project-trust.ts`). Codex *does* have a trust sidecar
+> after all — it just lives in `config.toml` rather than a separate file, and
+> without the entry the app-server logs an ERROR on `initialize` and drops the
+> repo's own `.codex/` config, hooks and exec policies.
+
 ### 2. New file: `src/server/orchestrator/codex-auth.ts`
 
 A `CodexAuthManager` that mirrors `AuthManager` (Claude). Different shape
@@ -172,20 +180,12 @@ export class CodexAuthManager extends EventEmitter {
   private proc: ChildProcess | null = null;
   private _authenticated = false;
 
-  /** True if /credentials/.codex/auth.json exists and is non-empty. */
   checkCredentials(): boolean { /* fs.existsSync + size > 0 */ }
 
-  /** Spawn `codex login --device-auth`. Emits codex_auth_pending with
-   *  { verificationUri, userCode } once the CLI prints them. Emits
-   *  codex_auth_complete when the process exits 0 and credentials are on
-   *  disk. Emits codex_auth_failed on non-zero exit or 15-minute timeout. */
   startDeviceFlow(): void { /* spawn, regex stdout, on('close') resolve */ }
 
-  /** SIGTERM the login process if it's still running. */
   cancel(): void { /* this.proc?.kill('SIGTERM') */ }
 
-  /** Drop on-disk credentials so the next turn falls back to API key
-   *  (or to no auth at all). */
   signOut(): Promise<void> { /* fs.rm(/credentials/.codex/auth.json) */ }
 }
 ```
@@ -240,8 +240,6 @@ if (!hasFileAuth && !hasEnvAuth) {
   return;
 }
 
-// If both are present, prefer the subscription path: strip the env key from
-// the spawned child so codex doesn't silently route through Platform API.
 if (hasFileAuth) delete env.OPENAI_API_KEY;
 ```
 

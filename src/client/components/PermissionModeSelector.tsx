@@ -1,15 +1,34 @@
-import { NotepadIcon, ShieldCheckIcon, FastForwardIcon, CheckIcon } from "@phosphor-icons/react";
+import {
+  NotepadIcon,
+  ShieldCheckIcon,
+  FastForwardIcon,
+  CheckIcon,
+  GlobeIcon,
+  GlobeXIcon,
+  WarningIcon,
+} from "@phosphor-icons/react";
 import { INSET_FOCUS_RING, ICON_SIZE } from "../design-tokens.js";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
 } from "./ui/dropdown-menu.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId } from "../utils/local-storage.js";
-import type { AgentId, PermissionMode } from "../../server/shared/types.js";
+import {
+  NETWORK_MODE_LABEL,
+  enforcementWarning,
+  resolvesToContained,
+  type NetworkMode,
+} from "../hooks/useSessionNetworkMode.js";
+import type {
+  AgentId,
+  EgressEnforcementStatus,
+  PermissionMode,
+} from "../../server/shared/types.js";
 import type { AgentOption } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 
@@ -26,8 +45,28 @@ import type { ModelInfo } from "../utils/model-info.js";
  * - `auto`: autonomous, no safety check (current default).
  *
  * Agent-aware: only modes in the active agent's `supportedPermissionModes` are
- * offered. For an agent that supports nothing (Codex) the selector hides
- * entirely — auto is the only behavior and there's nothing to toggle.
+ * offered.
+ *
+ * ---
+ *
+ * docs/285 — it now carries the session's **network mode** as well, as a second
+ * labelled section in the same flat popover (reqs 5, 6).
+ *
+ * Network containment gets no control of its own: it is needed rarely, and the
+ * composer row is the scarcest space in the product (docs/260 exists to keep
+ * that row from pushing Send off the edge). It shares the control that already
+ * holds the thing it most resembles — a per-session switch governing what the
+ * agent is allowed to do.
+ *
+ * **Flat, not a drill-down.** Two short sections fit in one menu body, and a
+ * setting the user reaches this rarely should not also cost a navigation step.
+ * `ComposerSettingsMenu`'s drill-down exists because that menu must survive
+ * catalogue growth (dozens of models); this one has at most six rows, forever.
+ *
+ * **One trigger, every viewport** (req 6). The mode left `ComposerSettingsMenu`
+ * entirely rather than appearing in both, so there is one control for one
+ * setting — and on mobile that removed a level of nesting rather than adding one
+ * (req 9).
  */
 
 /**
@@ -57,7 +96,6 @@ const MODE_META: Record<
   },
 };
 
-// Display order: most → least oversight.
 const LADDER: PermissionMode[] = ["plan", "guarded", "auto"];
 
 /**
@@ -86,6 +124,25 @@ export function isGuardedModelOk({
   return effectiveAlias !== "haiku";
 }
 
+export interface NetworkSectionProps {
+  mode: NetworkMode;
+  onChange: (mode: NetworkMode) => void;
+
+  globalEnabled: boolean;
+  enforcementStatus: EgressEnforcementStatus;
+  /**
+   * The server's verdict that the LIVE container was started in a different
+   * containment than the selection resolves to. Read rather than re-derived:
+   * "the topology is fixed at creation" is not the same as "this change alters
+   * it", and the client cannot see what the container actually booted with.
+   */
+  pendingRestart: boolean;
+
+  beforeFirstTurn: boolean;
+
+  loaded: boolean;
+}
+
 export function PermissionModeSelector({
   mode,
   onChange,
@@ -93,87 +150,198 @@ export function PermissionModeSelector({
   activeAgentId,
   modelInfo,
   disabled = false,
+  network,
 }: {
   mode: PermissionMode;
   onChange: (mode: PermissionMode) => void;
   agents: AgentOption[];
   activeAgentId: AgentId;
   modelInfo?: ModelInfo | null;
-  /**
-   * docs/257 req 3 — the composer is dead as a whole (no runnable service), so
-   * there is no turn for a permission mode to govern. The control stays visible
-   * (it still reports the mode a future turn will run under) but does not open.
-   */
+
   disabled?: boolean;
+
+  network?: NetworkSectionProps;
 }) {
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const supported = activeAgent?.supportedPermissionModes ?? [];
 
-  // Build the offered set: always include `auto` (every agent runs it), plus
-  // any other modes the agent advertises. Ordered along the oversight ladder.
   const available = LADDER.filter((m) => m === "auto" || supported.includes(m));
 
   const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
 
-  // Nothing meaningful to toggle (e.g. Codex: only `auto`). Hide the control —
-  // this also fixes the latent gap where the old binary toggle showed `plan`
-  // for agents that advertise no permission modes.
-  if (available.length <= 1) return null;
+  const showModes = available.length > 1;
+  if (!showModes && !network) return null;
 
-  // The mode we actually display as active. If the stored mode isn't currently
-  // offered (agent/model changed out from under it), fall back to auto.
   const displayMode: PermissionMode = available.includes(mode) ? mode : "auto";
   const Meta = MODE_META[displayMode];
-  const TriggerIcon = Meta.icon;
-  const isAuto = displayMode === "auto";
+  const modeIsDefault = displayMode === "auto";
+
+  const networkIsDefault = !network || network.mode === "inherit";
+  // req 10 — an unread workspace default cannot decide that this session is
+
+  const contained = network && (network.mode !== "inherit" || network.loaded)
+    ? resolvesToContained(network.mode, network.globalEnabled)
+    : false;
+  const warning = network && contained ? enforcementWarning(network.enforcementStatus) : null;
+
+  const triggerLabel = !networkIsDefault
+    ? NETWORK_MODE_LABEL[network.mode]
+    : modeIsDefault
+      ? null
+      : Meta.label;
+  const TriggerIcon = !networkIsDefault
+    ? (network.mode === "open" ? GlobeIcon : GlobeXIcon)
+    : Meta.icon;
+  const highlighted = !modeIsDefault || !networkIsDefault;
+
+  // never shows. An explicit pick says it OVERRIDES the workspace: that the
+
+  // what a colour cannot carry.
+  const networkSummary = network
+    ? networkIsDefault
+      ? network.loaded
+        ? `Network: inheriting the workspace setting (currently ${network.globalEnabled ? "Contained" : "Open"})`
+        : "Network: inheriting the workspace setting"
+      : `Network: ${NETWORK_MODE_LABEL[network.mode]}, overriding the workspace setting`
+    : null;
+  const accessibleName = [
+    showModes ? `Permission mode: ${Meta.label}` : null,
+    networkSummary,
+  ]
+    .filter(Boolean)
+    .join(". ");
 
   return (
     <DropdownMenu>
-      <WithTooltip label={Meta.description}>
+      <WithTooltip label={accessibleName}>
         <DropdownMenuTrigger asChild>
           <button
-            aria-label="Permission mode"
+            aria-label={accessibleName}
+            title={accessibleName}
             disabled={disabled}
             className={`flex items-center gap-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${INSET_FOCUS_RING} ${
-              isAuto
-                ? "p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
-                : "px-1.5 py-1.5 bg-(--color-accent)/15 text-(--color-accent) hover:bg-(--color-accent)/25"
+              highlighted
+                ? "px-1.5 py-1.5 bg-(--color-accent)/15 text-(--color-accent) hover:bg-(--color-accent)/25"
+                : "p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
             }`}
             data-testid="permission-mode-selector"
           >
-            <TriggerIcon size={ICON_SIZE.SM} weight={isAuto ? "regular" : "fill"} />
-            {!isAuto && <span className="text-xs font-medium">{Meta.label}</span>}
+            <TriggerIcon size={ICON_SIZE.SM} weight={highlighted ? "fill" : "regular"} />
+            {triggerLabel && <span className="text-xs font-medium">{triggerLabel}</span>}
           </button>
         </DropdownMenuTrigger>
       </WithTooltip>
-      <DropdownMenuContent side="top" align="start" className="w-72" data-testid="permission-mode-menu">
-        {available.map((m) => {
-          const meta = MODE_META[m];
-          const Icon = meta.icon;
-          const guardedDisabled = m === "guarded" && !guardedModelOk;
-          const isCurrent = m === displayMode;
-          return (
-            <DropdownMenuItem
-              key={m}
-              disabled={guardedDisabled}
-              onSelect={() => { if (!guardedDisabled) onChange(m); }}
-              className="flex items-start gap-2 px-3 py-2"
-              data-testid={`permission-mode-option-${m}`}
-            >
-              <Icon size={ICON_SIZE.SM} className="mt-0.5 shrink-0" weight={isCurrent ? "fill" : "regular"} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-medium">{meta.label} mode</span>
-                  {isCurrent && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-accent)" />}
-                </div>
-                <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-                  {guardedDisabled ? "Guarded mode needs a Sonnet or Opus model." : meta.description}
+      <DropdownMenuContent side="top" align="start" className="w-80" data-testid="permission-mode-menu">
+        {showModes && (
+          <>
+            <SectionHeader>Permission mode</SectionHeader>
+            {available.map((m) => {
+              const meta = MODE_META[m];
+              const Icon = meta.icon;
+              const guardedDisabled = m === "guarded" && !guardedModelOk;
+              const isCurrent = m === displayMode;
+              return (
+                <DropdownMenuItem
+                  key={m}
+                  disabled={guardedDisabled}
+                  onSelect={() => { if (!guardedDisabled) onChange(m); }}
+                  className="flex items-start gap-2 px-3 py-2"
+                  data-testid={`permission-mode-option-${m}`}
+                >
+                  <Icon size={ICON_SIZE.SM} className="mt-0.5 shrink-0" weight={isCurrent ? "fill" : "regular"} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium">{meta.label} mode</span>
+                      {isCurrent && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-accent)" />}
+                    </div>
+                    <p className="text-xs text-(--color-text-tertiary) mt-0.5">
+                      {guardedDisabled ? "Guarded mode needs a Sonnet or Opus model." : meta.description}
+                    </p>
+                  </div>
+                </DropdownMenuItem>
+              );
+            })}
+          </>
+        )}
+
+        {showModes && network && <DropdownMenuSeparator />}
+
+        {network && (
+          <>
+            <SectionHeader>Network access</SectionHeader>
+            {(["inherit", "contained", "open"] as const).map((m) => {
+              const isCurrent = m === network.mode;
+              const Icon = m === "open" ? GlobeIcon : m === "contained" ? GlobeXIcon : GlobeIcon;
+              return (
+                <DropdownMenuItem
+                  key={m}
+                  onSelect={() => network.onChange(m)}
+                  className="flex items-start gap-2 px-3 py-2"
+                  data-testid={`network-mode-option-${m}`}
+                >
+                  <Icon size={ICON_SIZE.SM} className="mt-0.5 shrink-0" weight={isCurrent ? "fill" : "regular"} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium">{NETWORK_MODE_LABEL[m]}</span>
+                      {isCurrent && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-accent)" />}
+                    </div>
+                    <p className="text-xs text-(--color-text-tertiary) mt-0.5">
+                      {m === "inherit"
+                        // req 10 — name the value being inherited, and do NOT
+
+                        ? network.loaded
+                          ? `Follow the workspace setting — currently ${network.globalEnabled ? "Contained" : "Open"}.`
+                          : "Follow the workspace setting."
+                        : m === "contained"
+                          ? "Deny by default; only allowlisted hosts are reachable."
+                          : "Unrestricted outbound network access."}
+                    </p>
+                  </div>
+                </DropdownMenuItem>
+              );
+            })}
+
+            {warning && (
+              <p
+                className="mx-3 mt-1 mb-2 flex items-start gap-1.5 rounded-md bg-(--color-warning-subtle) px-2 py-1.5 text-xs text-(--color-warning)"
+                data-testid="network-enforcement-warning"
+              >
+                <WarningIcon size={ICON_SIZE.XS} className="mt-0.5 shrink-0" />
+                <span>{warning}</span>
+              </p>
+            )}
+
+            {/* The menu STATES; it does not act. Two footers, and which one is
+                true depends on whether a turn has run. */}
+            {network.beforeFirstTurn ? (
+              <p
+                className="px-3 pt-1 pb-2 text-xs text-(--color-text-tertiary)"
+                data-testid="network-mode-first-turn-note"
+              >
+                In force from this session&rsquo;s first turn. Setup that has already run
+                may have used the workspace setting.
+              </p>
+            ) : (
+              network.pendingRestart && (
+                <p
+                  className="px-3 pt-1 pb-2 text-xs text-(--color-text-tertiary)"
+                  data-testid="network-mode-pending-note"
+                >
+                  Applies on the next container start — restart from Session settings.
                 </p>
-              </div>
-            </DropdownMenuItem>
-          );
-        })}
+              )
+            )}
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">
+      {children}
+    </div>
   );
 }

@@ -7,12 +7,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/**
- * A fake `matchMedia` that records the query each subscription was built from,
- * so the self-rearming listener can be observed: there is no `devicePixelRatio`
- * change event, so the hook's only signal is a media query pinned to the ratio
- * it read last — which stops matching the instant the ratio moves.
- */
 function stubMatchMedia(): { queries: string[]; fire: () => void } {
   const queries: string[] = [];
   const listeners = new Set<() => void>();
@@ -44,8 +38,6 @@ describe("useDevicePixelRatio", () => {
 
     const { result } = renderHook(() => useDevicePixelRatio());
 
-    // 0 would divide a screenshot's width into infinity. 1 is the honest
-    // fallback — no correction, exactly the behavior before this hook existed.
     expect(result.current).toBe(1);
   });
 
@@ -56,12 +48,11 @@ describe("useDevicePixelRatio", () => {
     const { result } = renderHook(() => useDevicePixelRatio());
     expect(mm.queries).toEqual(["(resolution: 1dppx)"]);
 
-    // Dragging the window onto a Retina display.
     vi.stubGlobal("devicePixelRatio", 2);
     act(() => { mm.fire(); });
 
     expect(result.current).toBe(2);
-    // Without the re-arm the hook would still be listening on `1dppx`, which no
+
     // longer matches, so a move back to 1× would never be noticed.
     expect(mm.queries).toEqual(["(resolution: 1dppx)", "(resolution: 2dppx)"]);
   });

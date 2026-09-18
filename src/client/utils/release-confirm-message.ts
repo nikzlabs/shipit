@@ -29,19 +29,8 @@
 
 import type { ReleaseMechanism } from "../../server/shared/types.js";
 
-/**
- * Provenance marker stamped on every variant so the agent can tell a templated
- * card confirmation from a hand-typed instruction and apply judgment instead of
- * obeying the literal string. Mirrors `action-checklist-message.ts`'s
- * `provenanceClause`.
- */
 const CARD_MARKER = "[Release card → Confirm & publish]";
 
-/**
- * Build the "yes, ship it" reply for a confirmed release proposal. The card
- * defaults `mechanism` to `tag-triggered` when the server omitted it, so callers
- * always pass a concrete mechanism.
- */
 export function buildReleaseConfirmMessage(version: string, mechanism: ReleaseMechanism): string {
   if (mechanism === "release-branch") {
     return (

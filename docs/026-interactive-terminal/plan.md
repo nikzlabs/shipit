@@ -45,12 +45,8 @@ import { EventEmitter } from "node:events";
 export class TerminalProcess extends EventEmitter {
   private proc: IPty | null = null;
 
-  /**
-   * Spawn an interactive shell in the given directory.
-   * Emits "data" for output and "exit" when the shell closes.
-   */
   start(cwd: string, cols = 80, rows = 24): void {
-    if (this.proc) return; // Already running
+    if (this.proc) return;
 
     const shell = process.env.SHELL || "/bin/bash";
     this.proc = pty.spawn(shell, [], {
@@ -71,21 +67,18 @@ export class TerminalProcess extends EventEmitter {
     });
   }
 
-  /** Write user input to the shell. */
   write(data: string): void {
     if (this.proc) {
       this.proc.write(data);
     }
   }
 
-  /** Resize the terminal. */
   resize(cols: number, rows: number): void {
     if (this.proc) {
       this.proc.resize(cols, rows);
     }
   }
 
-  /** Kill the shell process. */
   kill(): void {
     if (this.proc) {
       this.proc.kill();
@@ -102,9 +95,6 @@ export class TerminalProcess extends EventEmitter {
 #### New Message Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsTerminalInput {
   type: "terminal_input";
   data: string;
@@ -120,7 +110,6 @@ export interface WsTerminalStart {
   type: "terminal_start";
 }
 
-// Server → Client
 export interface WsTerminalOutput {
   type: "terminal_output";
   data: string;
@@ -141,7 +130,6 @@ Per-connection terminal instance:
 ```typescript
 let terminal: TerminalProcess | null = null;
 
-// Start terminal when requested (lazy — don't spawn until user opens terminal tab)
 if (msg.type === "terminal_start") {
   if (!terminal) {
     terminal = new TerminalProcess();
@@ -170,13 +158,11 @@ if (msg.type === "terminal_resize") {
   }
 }
 
-// Clean up on disconnect
 socket.on("close", () => {
   if (terminal) {
     terminal.kill();
     terminal = null;
   }
-  // ... existing cleanup ...
 });
 ```
 
@@ -193,11 +179,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 
 export interface InteractiveTerminalProps {
-  /** Write function to send input to the server. */
   onInput: (data: string) => void;
-  /** Resize handler to notify server of terminal size changes. */
   onResize: (cols: number, rows: number) => void;
-  /** Called when component mounts to request terminal start. */
   onStart: () => void;
 }
 ```
@@ -244,10 +227,8 @@ This preserves the existing log viewer while adding the interactive terminal.
 #### State Management in App.tsx
 
 ```typescript
-// New state
 const [terminalMode, setTerminalMode] = useState<"logs" | "shell">("logs");
 
-// Handler for terminal input
 const handleTerminalInput = useCallback(
   (data: string) => {
     send({ type: "terminal_input", data });
@@ -266,14 +247,11 @@ const handleTerminalStart = useCallback(() => {
   send({ type: "terminal_start" });
 }, [send]);
 
-// Process terminal output in lastMessage handler
 if (data.type === "terminal_output") {
-  // Forward to InteractiveTerminal via ref
   terminalRef.current?.write(data.data);
 }
 
 if (data.type === "terminal_exit") {
-  // Shell exited — show message, offer restart
 }
 ```
 
@@ -284,9 +262,7 @@ Terminal output (`terminal_output`) goes directly to the xterm.js instance via a
 ```typescript
 const terminalInstanceRef = useRef<Terminal | null>(null);
 
-// In InteractiveTerminal component:
 useEffect(() => {
-  // Register write function for parent to call
   terminalInstanceRef.current = term;
 }, [term]);
 ```

@@ -1,6 +1,10 @@
 # Checklist
 
 - [x] Automatically recreate stale agent containers whose agent process is stopped after an orchestrator update
+- [x] Reclaim (destroy, never recreate) every stale **idle** agent container at boot, keyed on `turnActive` rather than `running` — reqs 7, 8
+- [x] Publish the docs/235 liveness axis on `/agent/status` (`backgroundTaskCount`, `selfWakeActive`) so the boot sweep cannot destroy live background work
+- [x] Preserve the reservation / standby / busy-runner / probe-failure guards, and the docs/240 adopt path
+- [x] Correct the update behaviour described in `deploy.sh`, the session-containers skill, the agent system prompt, and `/shipit-docs/environment.md`
 
 - [x] Preserve the worker build ID on fresh and rediscovered `SessionContainer` records
 - [x] Centralize build-freshness classification and reuse it in adoption logging

@@ -1,7 +1,3 @@
-/**
- * Tests for the Tier B controlled-resolver config (docs/172 Gap 1, planning#92).
- */
-
 import { describe, it, expect } from "vitest";
 import {
   allowlistEntryToDomain,
@@ -36,7 +32,6 @@ describe("buildDnsmasqConfig", () => {
   it("has NO default server (the property that closes DNS tunneling)", () => {
     const cfg = buildDnsmasqConfig(base);
     expect(cfg).toContain("no-resolv");
-    // every server= line is domain-scoped (server=/<domain>/...), none is a bare default
     const serverLines = cfg.split("\n").filter((l) => l.startsWith("server="));
     expect(serverLines.length).toBeGreaterThan(0);
     expect(serverLines.every((l) => /^server=\/[^/]+\//.test(l))).toBe(true);
@@ -45,7 +40,6 @@ describe("buildDnsmasqConfig", () => {
   it("routes internal names to Docker embedded DNS, WITHOUT an ipset pin", () => {
     const cfg = buildDnsmasqConfig({ ...base, internalDomains: ["orch.internal"] });
     expect(cfg).toContain("server=/orch.internal/127.0.0.11");
-    // internal domain must not be pinned to the firewall set
     expect(cfg).not.toContain("ipset=/orch.internal/");
   });
 

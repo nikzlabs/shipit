@@ -101,8 +101,6 @@ describe("computeNotableFiles — classification", () => {
   });
 
   it("keeps both plan.md and checklist.md from one feature dir as distinct chips", () => {
-    // Previously collapsed to a single chip (both resolved to the directory
-    // title). Compact path labels tell them apart, so both survive.
     const dir = "docs/210-agent-spawned-sessions";
     const result = computeNotableFiles([
       { status: "M", path: `${dir}/checklist.md` },
@@ -115,9 +113,6 @@ describe("computeNotableFiles — classification", () => {
   });
 
   it("keeps same-named docs from different directories (no cross-feature collapse)", () => {
-    // The #1877 bug: two features' requirements.md both resolved to the title
-    // "Requirements", so one chip was dropped and the survivor pointed at the
-    // unrelated feature. Both must survive with distinct labels.
     const result = computeNotableFiles([
       { status: "M", path: "docs/150-multiple-provider-subscriptions/requirements.md" },
       { status: "A", path: "docs/246-native-issue-tracker-evaluation/requirements.md" },
@@ -158,13 +153,6 @@ describe("computeNotableFiles — classification", () => {
   });
 
   it("reproduces the shipit/brxzvw shape: same-dir docs sharing a frontmatter title all keep a chip", () => {
-    // The second confirmed instance. `plan.md` and `requirements.md` in ONE
-    // feature dir carried an IDENTICAL author-written frontmatter `title:` —
-    // reasonable authoring under docs/241 (they describe the same feature) —
-    // and the old title-keyed collapse dropped the requirements chip entirely
-    // (rank plan=0 beat requirements=3). Same-directory and author-chosen, so
-    // neither a same-dir-scoped dedupe nor a path-derived-titles-only dedupe
-    // would have saved it; only path labels do.
     const dir = "docs/246-shipit-state-out-of-clone";
     fs.mkdirSync(path.join(tmpDir, dir), { recursive: true });
     const sharedFrontmatter = "---\ntitle: Keep ShipIts generated state out of the users repository\n---\n";
@@ -218,10 +206,6 @@ describe("computeNotableFiles — classification", () => {
   });
 
   it("classifies HTML anywhere, not just under docs/ (blanket rule, deliberately)", () => {
-    // A location gate was rejected: no other tier here is path-dependent, and a
-    // change-set-dependent rule would make a mockup's chip appear or vanish
-    // based on what else the PR touched. An app's index.html getting a chip is
-    // the accepted cost of that determinism.
     const result = computeNotableFiles([
       { status: "M", path: "index.html" },
       { status: "M", path: "src/templates/email.html" },
@@ -310,11 +294,9 @@ describe("notableFilesForBranch — derive from the merge-base diff", () => {
     git("commit -qm initial");
 
     git("checkout -q -b feature");
-    // Notable changes
     fs.mkdirSync(path.join(tmpDir, "docs/210-thing"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "docs/210-thing/plan.md"), "---\ntitle: A Thing\n---\n");
     fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent: {}\n");
-    // Non-notable change
     fs.writeFileSync(path.join(tmpDir, "src.ts"), "export const x = 1;\n");
     git("add -A");
     git("commit -qm feature");
@@ -342,9 +324,6 @@ describe("notableFilesForBranch — derive from the merge-base diff", () => {
     git("add -A");
     git("commit -qm feature");
 
-    // `main` advances with its own notable change after the branch diverged.
-    // A two-dot `main..HEAD` diff would surface this as a (reverse) change the
-    // branch never made; the merge-base diff must not.
     git("checkout -q main");
     fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent: {}\n");
     git("add -A");

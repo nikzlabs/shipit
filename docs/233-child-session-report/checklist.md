@@ -23,7 +23,17 @@
 - [x] Single shared resolved-session classifier + client/server consumer migration + tests
 - [x] Every turn start updates `lastUsedAt`, including abnormal-exit coverage
 - [x] Direct parent-message resolved-child guard + service tests
-- [x] Cohort resolved-sibling skip result + service tests
+- [x] ~~Cohort resolved-sibling skip result + service tests~~ — superseded by parent-only reports
 - [x] Agent-facing docs updated for resolved-child command outcomes and `whoami` visibility
 - [x] Independent implementation review findings addressed
+- [x] `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck` clean
+
+## Parent-mediated coordination
+
+- [x] Remove sibling/cohort recipients from the report service
+- [x] Reject `--cohort` and non-parent targets in the shim and server
+- [x] Keep sibling visibility as read-only topology
+- [x] Update all agent prompts and agent-facing command documentation
+- [x] Add service, integration, and shim regression coverage for no lateral delivery
+- [x] Address Grok review findings; final Grok pass reports no remaining findings
 - [x] `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck` clean

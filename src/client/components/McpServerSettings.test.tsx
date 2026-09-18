@@ -1,15 +1,8 @@
-/**
- * Component tests for McpServerSettings (docs/088).
- *
- * Exercises the rendered server list, the add/edit form's validation
- * messages, the per-server status badge driven by useMcpStore.statuses,
- * and the disabled "Test" button when no session is active.
- */
-
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { McpServerSettings } from "./McpServerSettings.js";
 import { useMcpStore } from "../stores/mcp-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { McpServerConfig } from "../../server/shared/types.js";
 
 const stdioConfig: McpServerConfig = {
@@ -23,8 +16,6 @@ const stdioConfig: McpServerConfig = {
 
 const originalFetch = globalThis.fetch;
 
-// Capture-and-respond fetch double. The component mounts useEffect that calls
-// `fetchServers()`, so every test needs a GET handler for /api/mcp-servers.
 class FakeFetch {
   routes: { match: RegExp; method: string; respond: (body: unknown) => { status?: number; body: unknown } }[] = [];
   calls: { method: string; url: string; body?: unknown }[] = [];
@@ -60,13 +51,25 @@ class FakeFetch {
   }
 }
 
+/**
+ * Whether a session is running is the panel's own read now, not a prop the
+ * dialog drills into it — the component a declaration names takes the setting's
+ * key and nothing else (docs/308-data-driven-settings slice 6).
+ */
+function renderPanel({ activeSession = false } = {}) {
+  useSessionStore.getState().setSessionId(activeSession ? "session-1" : undefined);
+  render(<McpServerSettings />);
+}
+
 describe("McpServerSettings (docs/088)", () => {
   beforeEach(() => {
     useMcpStore.getState().reset();
+    useSessionStore.getState().setSessionId(undefined);
   });
 
   afterEach(() => {
     cleanup();
+    useSessionStore.getState().setSessionId(undefined);
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
   });
@@ -77,7 +80,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByText(/No MCP servers configured/)).toBeInTheDocument();
     });
@@ -89,7 +92,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -102,7 +105,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -120,7 +123,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
@@ -134,7 +137,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-add-server")).toBeInTheDocument();
     });
@@ -149,17 +152,16 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-add-server")).toBeInTheDocument();
     });
     fireEvent.click(screen.getByTestId("mcp-add-server"));
 
-    // Type an invalid name (uppercase + hyphen).
     const nameInput = screen.getByPlaceholderText("sentry");
     fireEvent.change(nameInput, { target: { value: "Bad-Name" } });
 
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
 
     await waitFor(() => {
       expect(
@@ -174,17 +176,16 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     fireEvent.click(await screen.findByTestId("mcp-add-server"));
 
     fireEvent.change(screen.getByPlaceholderText("sentry"), {
       target: { value: "ok" },
     });
-    // Empty the prefilled command field.
     const commandInput = screen.getByPlaceholderText("npx") as HTMLInputElement;
     fireEvent.change(commandInput, { target: { value: "" } });
 
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
 
     await waitFor(() => {
       expect(
@@ -202,7 +203,7 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
 
     await waitFor(() => {
       expect(screen.getByText("backend unavailable")).toBeInTheDocument();
@@ -215,23 +216,275 @@ describe("McpServerSettings (docs/088)", () => {
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={false} />);
+    renderPanel();
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    // The form header reflects the editing state.
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
     expect(screen.getByText('Edit "linear"')).toBeInTheDocument();
 
-    // The env-var key is preserved, but the value field is empty (no secret echo).
     expect((screen.getByDisplayValue("LINEAR_API_KEY") as HTMLInputElement).value).toBe(
       "LINEAR_API_KEY",
     );
-    // The password input for the value should be empty — secrets are never echoed.
     const valueInputs = screen.getAllByPlaceholderText("(unchanged)");
     expect(valueInputs).toHaveLength(1);
     expect((valueInputs[0] as HTMLInputElement).value).toBe("");
+  });
+
+  it("submits a rename with no secrets at all, so the server must carry them (planning#565)", async () => {
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: stdioConfig }));
+    fake.install();
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.change(screen.getByDisplayValue("linear"), { target: { value: "linearprod" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const put = fake.calls.find((c) => c.method === "PUT")!;
+    const body = put.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.config.env).toEqual({
+      LINEAR_API_KEY: "$secret:mcp__linearprod__LINEAR_API_KEY",
+    });
+    expect(body.secrets).toEqual({});
+  });
+
+  it("keeps a reference expression the form cannot represent, moving it on rename", async () => {
+    // A header whose value wraps the reference, under a key that is not the
+    // secret's name — the shape an agent-written config has.
+    const sentry: McpServerConfig = {
+      name: "sentry",
+      type: "http",
+      url: "https://mcp.sentry.dev/mcp",
+      headers: { Authorization: "Bearer $secret:mcp__sentry__TOKEN" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [sentry] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/sentry$/, () => ({ server: sentry }));
+    fake.install();
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-sentry")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit sentry" }));
+
+    fireEvent.change(screen.getByDisplayValue("sentry"), { target: { value: "sentryprod" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { headers: Record<string, string> };
+    };
+    expect(body.config.headers).toEqual({
+      Authorization: "Bearer $secret:mcp__sentryprod__TOKEN",
+    });
+  });
+
+  it("writes a typed value to the secret its own row refers to", async () => {
+    // Two rows whose keys are not their secrets' names: deriving the target
+    // from the key would write this row's value into the other row's secret.
+    const aliased: McpServerConfig = {
+      name: "linear",
+      type: "stdio",
+      command: "npx",
+      env: {
+        API_KEY: "$secret:mcp__linear__TOKEN",
+        BACKUP: "$secret:mcp__linear__API_KEY",
+      },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [aliased] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: aliased }));
+    fake.install();
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.change(screen.getByLabelText("Environment variables — value 1"), {
+      target: { value: "rotated" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.secrets).toEqual({ mcp__linear__TOKEN: "rotated" });
+    expect(body.config.env).toEqual(aliased.env);
+  });
+
+  it("gives a new row its own secret when the derived name is already referenced", async () => {
+    // The state a key rename leaves behind: the row is called TOKEN, its secret
+    // is still called API_KEY. Adding an API_KEY row must not land on it.
+    const renamedRow: McpServerConfig = {
+      name: "linear",
+      type: "stdio",
+      command: "npx",
+      env: { TOKEN: "$secret:mcp__linear__API_KEY" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [renamedRow] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: renamedRow }));
+    fake.install();
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Add variable" }));
+    fireEvent.change(screen.getByLabelText("Environment variables — name 2"), {
+      target: { value: "API_KEY" },
+    });
+    fireEvent.change(screen.getByLabelText("Environment variables — value 2"), {
+      target: { value: "fresh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.config.env.TOKEN).toBe("$secret:mcp__linear__API_KEY");
+    expect(body.secrets).toEqual({ mcp__linear__API_KEY_2: "fresh" });
+    expect(body.config.env.API_KEY).toBe("$secret:mcp__linear__API_KEY_2");
+  });
+
+  it("rotates the right secret when one expression names it more than once", async () => {
+    const repeated: McpServerConfig = {
+      name: "linear",
+      type: "stdio",
+      command: "npx",
+      env: {
+        API_KEY: "$secret:mcp__linear__TOKEN $secret:mcp__linear__TOKEN",
+        BACKUP: "$secret:mcp__linear__API_KEY",
+      },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [repeated] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: repeated }));
+    fake.install();
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.change(screen.getByLabelText("Environment variables — value 1"), {
+      target: { value: "rotated" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.secrets).toEqual({ mcp__linear__TOKEN: "rotated" });
+    expect(body.config.env).toEqual(repeated.env);
+  });
+
+  it("keeps an OAuth $platform: reference through an unrelated edit", async () => {
+    const notion: McpServerConfig = {
+      name: "notion",
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer $platform:notion_oauth" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [notion] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/notion$/, () => ({ server: notion }));
+    fake.install();
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit notion" }));
+
+    fireEvent.change(screen.getByDisplayValue("https://mcp.notion.com/mcp"), {
+      target: { value: "https://mcp.notion.com/v1/mcp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { headers: Record<string, string> };
+    };
+    expect(body.config.headers).toEqual({ Authorization: "Bearer $platform:notion_oauth" });
+  });
+
+  it("keeps the credential when only the row's key is renamed (planning#565)", async () => {
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: stdioConfig }));
+    fake.install();
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    // The key names the variable the server reads, not the secret behind it.
+    fireEvent.change(screen.getByDisplayValue("LINEAR_API_KEY"), {
+      target: { value: "LINEAR_TOKEN" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.config.env).toEqual({
+      LINEAR_TOKEN: "$secret:mcp__linear__LINEAR_API_KEY",
+    });
+    expect(body.secrets).toEqual({});
   });
 
   it("folds an OAuth-managed server into the connection card and hides the duplicate row", async () => {
@@ -258,29 +511,21 @@ describe("McpServerSettings (docs/088)", () => {
     }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-oauth-notion_oauth")).toBeInTheDocument();
     });
 
-    // The duplicate standalone row is gone — its Test/Disable controls now
-    // live inside the provider card so the user sees one element, not two.
     expect(screen.queryByTestId("mcp-server-notion")).toBeNull();
 
     const card = screen.getByTestId("mcp-oauth-notion_oauth");
     expect(within(card).getByText(/● Connected/)).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "Test" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Disable" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disable notion" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disconnect Notion" })).toBeInTheDocument();
   });
 
   it("reconciles stale tokens: auth-required status downgrades 'Connected' to Reconnect", async () => {
-    // Stored tokens exist (so listMcpOAuthProviders flags Connected) but the
-    // MCP server rejected them (CLI init reported needs-auth → "authentication
-    // required"). Without reconciliation the user would see two contradictory
-    // statuses on the same provider — green "Connected" up top, red "failed —
-    // authentication required" down below. The reconciled card shows a single
-    // "Authentication required" badge and a Reconnect CTA.
     const notionServer: McpServerConfig = {
       name: "notion",
       type: "http",
@@ -304,46 +549,34 @@ describe("McpServerSettings (docs/088)", () => {
     }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-oauth-notion_oauth")).toBeInTheDocument();
     });
 
-    // Simulate the worker emitting needs-auth for the managed server.
     useMcpStore.getState().applyStatus("notion", "failed", "authentication required");
 
     const card = await waitFor(() => screen.getByTestId("mcp-oauth-notion_oauth"));
     await waitFor(() => {
       expect(within(card).getByText(/Authentication required/)).toBeInTheDocument();
     });
-    // Green "Connected" is suppressed.
     expect(within(card).queryByText(/● Connected/)).toBeNull();
-    // Reconnect is the primary action; Disconnect is still available so the
-    // user can opt out instead of refreshing.
-    expect(within(card).getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
-    // Test / Enable / Disable are hidden — they'd fail until tokens are fresh.
+    expect(within(card).getByRole("button", { name: "Reconnect Notion" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disconnect Notion" })).toBeInTheDocument();
     expect(within(card).queryByRole("button", { name: "Test" })).toBeNull();
   });
 
   it("clearStatus drops the stale auth-required entry (used after Reconnect)", () => {
-    // White-box: connectProvider() calls clearStatus(defaultServerName) after a
-    // successful OAuth round-trip so the card flips back to plain "Connected"
-    // immediately instead of waiting for the next CLI init event.
     useMcpStore.getState().applyStatus("notion", "failed", "authentication required");
     expect(useMcpStore.getState().statuses.notion).toBeDefined();
 
     useMcpStore.getState().clearStatus("notion");
     expect(useMcpStore.getState().statuses.notion).toBeUndefined();
 
-    // Clearing a name that isn't tracked is a no-op (no throw).
     useMcpStore.getState().clearStatus("never-existed");
   });
 
   it("still shows an orphan OAuth-managed row when the provider is disconnected", async () => {
-    // Token revoked at provider side — server config still exists locally,
-    // so we surface it in the standalone list (with the via-connection badge)
-    // so the user can delete it.
     const notionServer: McpServerConfig = {
       name: "notion",
       type: "http",
@@ -367,15 +600,13 @@ describe("McpServerSettings (docs/088)", () => {
     }));
     fake.install();
 
-    render(<McpServerSettings hasActiveSession={true} />);
+    renderPanel({ activeSession: true });
     await waitFor(() => {
       expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
     });
 
-    // The row identifies itself as managed by the connection above and
-    // hides Edit, but is still visible so the user can delete it.
     const row = screen.getByTestId("mcp-server-notion");
     expect(within(row).getByText(/via Notion connection/)).toBeInTheDocument();
-    expect(within(row).queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Edit notion" })).toBeNull();
   });
 });

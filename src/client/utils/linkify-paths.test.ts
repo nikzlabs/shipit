@@ -5,13 +5,11 @@ import remarkGfm from "remark-gfm";
 import type { Nodes, Link } from "mdast";
 import { remarkLinkifyPaths } from "./linkify-paths.js";
 
-/** Parse markdown through the same plugin chain the app uses, return the tree. */
 function run(md: string): Nodes {
   const processor = unified().use(remarkParse).use(remarkGfm).use(remarkLinkifyPaths);
   return processor.runSync(processor.parse(md)) as Nodes;
 }
 
-/** Collect every link node's `{ url, text }` from a tree, depth-first. */
 function links(tree: Nodes): { url: string; text: string }[] {
   const out: { url: string; text: string }[] = [];
   const walk = (node: Nodes): void => {
@@ -63,7 +61,7 @@ describe("remarkLinkifyPaths", () => {
   });
 
   it("linkifies a path inside an inline-code span (the common backtick case)", () => {
-    // The path stays monospace (its link child is an inlineCode node), just
+
     // clickable. This is how paths most often appear, so it must work.
     expect(links(run("run `docs/foo/plan.md` then stop"))).toEqual([
       { url: "docs/foo/plan.md", text: "docs/foo/plan.md" },

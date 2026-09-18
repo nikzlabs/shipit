@@ -1,10 +1,3 @@
-/**
- * Unit tests for SessionContainerManager.
- *
- * Uses a mocked Docker client to test container lifecycle, network setup,
- * orphan cleanup, and health monitoring without a real Docker daemon.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -17,14 +10,12 @@ import {
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STACK_LABEL,
   readAgentConfig,
+  SESSION_CPU_SHARES,
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
 import { allowEgressHost, clearEgressPolicy } from "./egress-policy.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
-
-// ---------------------------------------------------------------------------
-// Mock Docker types
-// ---------------------------------------------------------------------------
+import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 
 interface MockContainerInfo {
   id: string;
@@ -45,30 +36,19 @@ function createMockDocker() {
   let containerCounter = 0;
   let networkExists = false;
   let pingResult = true;
-  // docs/183 — control the worker image inspect for resolveWorkerImageId.
-  // `undefined` Id models an inspect that throws (image absent).
   let imageId: string | undefined = "sha256:workerimageabc";
-  // planning#196 — the BASE_IMAGE_DIGEST baked into the worker image's Config.Env, read
-  // by resolveWorkerBaseDigest. `undefined` models an image without the baked env.
   let imageBaseDigest: string | undefined = "sha256:baseimagexyz";
   let imageInspectCalls = 0;
 
-  // docs/183 Phase 2 — track overlay volume create/remove for the mock.
   const liveVolumes = new Set<string>();
   const removedVolumes: string[] = [];
-  // Names whose `getVolume().inspect()` 404s — models a volume that was never
-  // provisioned (for the `requireProvisioned` compose-path filter). Inspect
-  // succeeds for any other name so `resolveVolumeMountpoint` keeps working.
   const missingVolumes = new Set<string>();
   const volumeSpecs = new Map<string, { Options?: Record<string, string>; Labels?: Record<string, string> }>();
-  // Containers that currently mount a volume — a `docker volume rm` against one of
-  // these 409s, exactly as the daemon's does. Models the session's Compose siblings.
   const volumeHolders = new Map<string, string[]>();
 
   const eventEmitter = new EventEmitter();
 
   const mockDocker = {
-    // Control
     _setPingResult: (v: boolean) => { pingResult = v; },
     _setNetworkExists: (v: boolean) => { networkExists = v; },
     _setImageId: (v: string | undefined) => { imageId = v; },
@@ -81,10 +61,6 @@ function createMockDocker() {
     _missingVolumes: missingVolumes,
     _volumeHolders: volumeHolders,
 
-    // The driver opts + labels each live volume was created with. `createOverlayVolume`
-    // re-inspects after creating and throws if they are not the ones it asked for
-    // (the 2026-08-19 ops finding — Docker silently returns the existing volume when
-    // the name is taken), so a double that forgets them fails every overlay create.
     _volumeSpecs: volumeSpecs,
 
     createVolume: vi.fn(async (opts: any) => {
@@ -96,10 +72,6 @@ function createMockDocker() {
     }),
     getVolume: vi.fn((name: string) => ({
       inspect: vi.fn(async () => {
-        // An overlay volume that was never created 404s, like the daemon's — the
-        // create path asks "does one already exist, and does it match?" before it
-        // removes anything, and answering "exists, opts unknown" would send it
-        // down the recreate branch for a volume that is simply absent.
         const uncreatedOverlay = name.includes("_overlay") && !liveVolumes.has(name);
         if (missingVolumes.has(name) || uncreatedOverlay) {
           const err: any = new Error("no such volume"); err.statusCode = 404; throw err;
@@ -193,8 +165,6 @@ function createMockDocker() {
     }),
 
     listContainers: vi.fn(async (args?: { filters?: { volume?: string[] } }) => {
-      // A `volume=` filter is the overlay holder release. Only `_volumeHolders`
-      // declares mounts here — no other test container has any.
       if (args?.filters?.volume) {
         const wanted = new Set(args.filters.volume);
         const ids = new Set<string>();
@@ -231,20 +201,6 @@ function createMockDocker() {
   return mockDocker;
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-/**
- * A writable stand-in for the production `/workspace/sessions/<id>` layout:
- * session dir, the clone at its `workspace/` child, ShipIt's state dir at its
- * `state/` sibling.
- *
- * These have to be REAL paths, not the `/workspace/...` literals they used to
- * be: `createContainer` mkdirs the state dir, and since planning#288 it does so
- * unconditionally (there is no "session without a state dir" left to skip for),
- * so a non-writable literal is an EACCES rather than a no-op.
- */
 const TEST_SESSION_DIR = path.join(
   fs.mkdtempSync(path.join(os.tmpdir(), "session-container-cfg-")),
   "sessions",
@@ -271,10 +227,6 @@ function buildConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe("SessionContainerManager", () => {
   let mockDocker: ReturnType<typeof createMockDocker>;
   let manager: SessionContainerManager;
@@ -294,8 +246,6 @@ describe("SessionContainerManager", () => {
     await manager.dispose();
   });
 
-  // --- isAvailable ---
-
   describe("isAvailable", () => {
     it("returns true when Docker daemon responds", async () => {
       expect(await manager.isAvailable()).toBe(true);
@@ -307,8 +257,6 @@ describe("SessionContainerManager", () => {
       expect(await manager.isAvailable()).toBe(false);
     });
   });
-
-  // --- resolveWorkerImageId (docs/183 — overlay runtime scope) ---
 
   describe("resolveWorkerImageId", () => {
     it("inspects the worker image and returns its id", async () => {
@@ -324,16 +272,13 @@ describe("SessionContainerManager", () => {
     });
 
     it("returns undefined and caches the miss when the image can't be inspected", async () => {
-      mockDocker._setImageId(undefined); // inspect throws
+      mockDocker._setImageId(undefined);
       expect(await manager.resolveWorkerImageId()).toBeUndefined();
-      // Re-flip to a real id: the cached miss must NOT trigger a re-inspect.
       mockDocker._setImageId("sha256:later");
       expect(await manager.resolveWorkerImageId()).toBeUndefined();
       expect(mockDocker._imageInspectCalls()).toBe(1);
     });
   });
-
-  // --- resolveWorkerBaseDigest (planning#196 — pinned-base overlay scope) ---
 
   describe("resolveWorkerBaseDigest", () => {
     it("reads BASE_IMAGE_DIGEST out of the worker image's Config.Env", async () => {
@@ -349,12 +294,12 @@ describe("SessionContainerManager", () => {
     });
 
     it("returns undefined for a pre-planning#196 image with no baked digest", async () => {
-      mockDocker._setImageBaseDigest(undefined); // env carries no BASE_IMAGE_DIGEST
+      mockDocker._setImageBaseDigest(undefined);
       expect(await manager.resolveWorkerBaseDigest()).toBeUndefined();
     });
 
     it("returns undefined and caches the miss when the image can't be inspected", async () => {
-      mockDocker._setImageId(undefined); // inspect throws
+      mockDocker._setImageId(undefined);
       expect(await manager.resolveWorkerBaseDigest()).toBeUndefined();
       mockDocker._setImageId("sha256:later");
       mockDocker._setImageBaseDigest("sha256:basexyz");
@@ -362,8 +307,6 @@ describe("SessionContainerManager", () => {
       expect(mockDocker._imageInspectCalls()).toBe(1);
     });
   });
-
-  // --- ensureNetwork ---
 
   describe("ensureNetwork", () => {
     it("creates the network if it does not exist", async () => {
@@ -383,8 +326,6 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- create ---
-
   describe("create", () => {
     it("creates and starts a container with correct config", async () => {
       const config = buildConfig();
@@ -396,7 +337,6 @@ describe("SessionContainerManager", () => {
       expect(sc.status).toBe("running");
       expect(sc.id).toMatch(/^container-\d+$/);
 
-      // Verify docker.createContainer was called with the right options
       expect(mockDocker.createContainer).toHaveBeenCalledWith(
         expect.objectContaining({
           Image: "shipit-session-worker:test",
@@ -408,20 +348,19 @@ describe("SessionContainerManager", () => {
           },
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
-              // The CLONE is what lands at /workspace — `<sessionDir>/workspace`.
               `${TEST_WORKSPACE_DIR}:/workspace:rw`,
-              // docs/138 — the container gets its private per-session credentials
-              // subtree, never the shared root.
               `${TEST_CREDENTIALS_DIR}/sessions/test-session-1:/credentials:rw`,
             ]),
             Memory: 512 * 1024 * 1024,
             CpuQuota: 50_000,
             CpuPeriod: 100_000,
+            CpuShares: SESSION_CPU_SHARES,
             PidsLimit: 256,
             NetworkMode: "shipit-test",
             SecurityOpt: ["no-new-privileges"],
             CapDrop: ["ALL"],
             CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
+            Init: true,
           }),
         }),
       );
@@ -445,33 +384,19 @@ describe("SessionContainerManager", () => {
       );
     });
 
-    // planning#2286 — the shared pnpm store is mounted NESTED at
-    // /workspace/.pnpm-store, so the entrypoint's chown loop does not revisit it
-    // once the workspace sentinel exists. If create() ever goes back to a bare
-    // mkdir, the store lands root:root and the non-root agent EACCESes on
-    // `pnpm install` with no way to recover — hence the wiring is pinned HERE,
-    // where the mkdir actually happens, not only on the helper's own unit tests.
-    // docs/270 — the handoff is by GROUP, and the shared gid is what
-    // `sessionWorkerGid()` parses out of SHIPIT_SESSION_WORKER_UID. The variable
-    // is therefore set to the test process's own primary gid, which is a group
-    // it can actually `chgrp` to; setting it to the process's *uid* only worked
-    // on a machine where uid == gid (CI: 1000/1000). A ShipIt session container
-    // runs an allocated uid over the shared group (e.g. 2000006:1000), where the
-    // real chgrp EPERMs and `ensurePnpmStoreDir` correctly reports false.
     it("hands the pnpm store dir to the shared worker gid before mounting it", async () => {
       const myUid = process.getuid?.();
       const myGid = process.getgid?.();
-      if (myUid === undefined || myGid === undefined) return; // not POSIX — skip
+      if (myUid === undefined || myGid === undefined) return;
       const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+      // This variable also selects the shared gid; use a group this process can assign.
       process.env.SHIPIT_SESSION_WORKER_UID = String(myGid);
       const storeDir = path.join(TEST_SESSION_DIR, "pnpm-store", "deadbeefcafe0001");
       const spy = vi.spyOn(fs, "lchownSync");
       try {
         await manager.create(buildConfig({ pnpmStoreDir: storeDir }));
         expect(fs.existsSync(storeDir)).toBe(true);
-        // Owner untouched, group set to the shared gid.
         expect(spy).toHaveBeenCalledWith(storeDir, myUid, myGid);
-        // Handoff verified → the mount is still there.
         const call = mockDocker.createContainer.mock.calls[0][0];
         expect(call.HostConfig.Binds).toContain(`${storeDir}:/workspace/.pnpm-store:rw`);
       } finally {
@@ -481,18 +406,12 @@ describe("SessionContainerManager", () => {
       }
     });
 
-    // A store the orchestrator could not hand over is worse than no shared store:
-    // the mount point is unrecoverable from inside the container, while dropping
-    // it just makes pnpm relocate into the workspace's own (gitignored)
-    // `.pnpm-store`. The env must be dropped with the mount, or pnpm would be
-    // pointed at a path nothing mounted.
     it("drops the pnpm store mount and env when the handoff fails", async () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
       const storeDir = path.join(TEST_SESSION_DIR, "pnpm-store", "deadbeefcafe0002");
-      // Stand in for the swallowed EPERM (see container-lifecycle.test.ts).
       const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
       try {
         await manager.create(buildConfig({ pnpmStoreDir: storeDir }));
@@ -527,9 +446,6 @@ describe("SessionContainerManager", () => {
 
       const call = mockDocker.createContainer.mock.calls[0][0];
       expect(call.HostConfig.CapDrop).toEqual(["ALL"]);
-      // docs/150 §10 — DAC_OVERRIDE + NET_BIND_SERVICE dropped after the non-root
-      // migration; the entrypoint still needs CHOWN/SETUID/SETGID/FOWNER to chown
-      // mounts + gosu-drop, KILL for process management.
       expect(call.HostConfig.CapAdd).toEqual([
         "CHOWN", "SETUID", "SETGID", "FOWNER", "KILL",
       ]);
@@ -562,26 +478,18 @@ describe("SessionContainerManager", () => {
       });
     }
 
-    await manager.prepareComposeServiceStart("test-session-1", ["web"]);
-    if (previousEnforce === undefined) delete process.env.SESSION_EGRESS_ENFORCE;
-    else process.env.SESSION_EGRESS_ENFORCE = previousEnforce;
+    try {
+      await manager.prepareComposeServiceStart("test-session-1", ["web"]);
+    } finally {
+      if (previousEnforce === undefined) delete process.env.SESSION_EGRESS_ENFORCE;
+      else process.env.SESSION_EGRESS_ENFORCE = previousEnforce;
+    }
 
     expect(disconnect).toHaveBeenCalledTimes(2);
     expect(disconnect).toHaveBeenCalledWith({ Container: "web-id", Force: true });
     expect(disconnect).toHaveBeenCalledWith({ Container: "db-id", Force: true });
   });
 
-  /**
-   * docs/262 req 24 — the seam that hands the two plugin containers the
-   * session's own egress posture (`plugin-egress.ts`).
-   *
-   * It exists so that enforcement and the Plugins card read ONE answer: the card
-   * (`plugin-hosts.ts`) already asks `isEgressContained` + `resolveEgress`, and
-   * this composes the same two plus the tier flags. Re-deriving either from the
-   * allowlist store is the thing not to do — a Network-off sandbox runs on a
-   * narrowed base with empty extras, and a store-derived answer reports hosts
-   * that session cannot reach.
-   */
   describe("pluginEgressPolicy", () => {
     let savedEnv: NodeJS.ProcessEnv;
     beforeEach(() => {
@@ -611,7 +519,6 @@ describe("SessionContainerManager", () => {
       const policy = managerWith(true).pluginEgressPolicy("test-session-1");
 
       expect(policy.contained).toBe(true);
-      // By identity of content with what the card reads, not a re-derivation.
       expect(policy.config).toEqual({
         contained: true, base: ["base.example"], extraHosts: ["extra.example"],
       });
@@ -622,9 +529,6 @@ describe("SessionContainerManager", () => {
       clearEgressPolicy("test-session-1");
     });
 
-    // An Open session denies nothing, so a plugin container that denied
-    // something would reach LESS than equivalent same-repo code — which req 24
-    // forbids in the same sentence that asks for the containment.
     it("reports an Open session as uncontained, with nothing to snapshot", () => {
       allowEgressHost("test-session-1", "once.example");
 
@@ -640,10 +544,6 @@ describe("SessionContainerManager", () => {
       expect(managerWith(true).pluginEgressPolicy("test-session-1").contained).toBe(false);
     });
 
-    // planning#380 — docs/211's `network` capability "only ever tightens", and a
-    // plugin container must not be the one surface that widens a sealed sandbox.
-    // Its own decision route refuses to card such a session, so this set is empty
-    // in practice; it is emptied here so that stays true however it got filled.
     it("snapshots no allow-once host for a session that admits none", () => {
       allowEgressHost("test-session-1", "once.example");
       const manager = new SessionContainerManager({
@@ -660,17 +560,12 @@ describe("SessionContainerManager", () => {
 
       expect(policy.contained).toBe(true);
       expect(policy.allowOnceHosts).toEqual([]);
-      // The lifeline base still reaches the container — this narrows one layer.
       expect(policy.config?.base).toEqual(["lifeline.example"]);
       clearEgressPolicy("test-session-1");
     });
   });
 
-  // --- docs/172 Gap 5 (planning#99) — kernel-tier hardening (env-gated, default-OFF) ---
-
   describe("kernel-tier hardening", () => {
-    // These hardening flags are read from process.env at create time. Snapshot
-    // the whole env and restore it wholesale (avoids dynamic per-key delete).
     let savedEnv: NodeJS.ProcessEnv;
     beforeEach(() => {
       savedEnv = { ...process.env };
@@ -713,9 +608,6 @@ describe("SessionContainerManager", () => {
       await manager.create(buildConfig());
       const call = mockDocker.createContainer.mock.calls[0][0];
       expect(call.HostConfig.ReadonlyRootfs).toBe(true);
-      // docs/262 — `/plugins` holds links into the read-only plugin store and
-      // `/plugin-bin` holds executable wrappers. Both must remain writable
-      // when the rest of the container root filesystem is read-only.
       expect(Object.keys(call.HostConfig.Tmpfs).sort()).toEqual([
         "/home/shipit",
         "/plugin-bin",
@@ -737,17 +629,37 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- docs/172 Gap 1 (planning#92) — egress containment fail-closed at create ---
+  describe("PID 1 / orphan reaping", () => {
+    let savedEnv: NodeJS.ProcessEnv;
+    beforeEach(() => {
+      savedEnv = { ...process.env };
+    });
+    afterEach(() => {
+      process.env = savedEnv;
+    });
+
+    it("runs docker-init as PID 1 so orphans are reaped", async () => {
+      await manager.create(buildConfig());
+      const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
+      expect(HostConfig.Init).toBe(true);
+    });
+
+    it("keeps the init when kernel-tier hardening is enabled", async () => {
+      process.env.SESSION_RUNTIME = "runsc";
+      process.env.SESSION_SECCOMP = "1";
+      process.env.SESSION_READONLY_ROOTFS = "1";
+      await manager.create(buildConfig());
+      const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
+      expect(HostConfig.Init).toBe(true);
+    });
+  });
 
   describe("egress fail-closed", () => {
-    // Enforcement is ON by default; the server test setup opts out globally so
-    // the fake-Docker lifecycle tests run. Re-enable it here to assert the
-    // fail-closed throw when the deployment can't supply the sidecar image.
     let savedEnv: NodeJS.ProcessEnv;
     beforeEach(() => {
       savedEnv = { ...process.env };
       process.env.SESSION_EGRESS_ENFORCE = "1";
-      delete process.env.SESSION_EGRESS_SIDECAR_IMAGE; // no image → can't enforce
+      delete process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     });
     afterEach(() => {
       process.env = savedEnv;
@@ -761,15 +673,11 @@ describe("SessionContainerManager", () => {
 
     it("names the escape hatches (build the image, or SESSION_EGRESS_ENFORCE=0) and tears the container down", async () => {
       await expect(manager.create(buildConfig())).rejects.toThrow(/SESSION_EGRESS_ENFORCE=0/);
-      // Fail-closed: no half-started container is left registered.
       expect(manager.get("test-session-1")).toBeUndefined();
       expect(manager.size).toBe(0);
     });
 
     it("reaps parent-session-labeled children on create failure (no leaked egress sidecars)", async () => {
-      // The create-failure path must run cleanupSessionDockerResources so the
-      // long-lived Tier B/C sidecars (which share the agent netns and carry the
-      // shipit-parent-session label) can't leak when a later step throws.
       await expect(manager.create(buildConfig())).rejects.toThrow();
       expect(mockDocker.listContainers).toHaveBeenCalledWith(
         expect.objectContaining({ filters: { label: ["shipit-parent-session=test-session-1"] } }),
@@ -777,11 +685,7 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- docs/183 dep-dir design — overlay sessions (N nested dep-dir mounts) ---
-
   describe("overlay session", () => {
-    // Two declared dep dirs → two overlay volumes, each mounted NESTED under
-    // /workspace at its dep-dir subpath. /workspace itself stays the normal mount.
     const overlaySpecs = [
       {
         volumeName: "shipit-test-session_overlay-aaaaaaaa",
@@ -825,12 +729,9 @@ describe("SessionContainerManager", () => {
       const mounts = call.HostConfig.Mounts ?? [];
       const overlayNames = overlaySpecs.map((s) => s.volumeName);
 
-      // /workspace is never sourced from an overlay volume — it stays the normal
-      // host-clone mount (a volume subpath in prod, a bind in this test harness).
       const wsMount = mounts.find((m: any) => m.Target === "/workspace");
       if (wsMount) expect(overlayNames).not.toContain(wsMount.Source);
 
-      // Each dep dir is mounted nested at its /workspace/<dep-dir> target.
       for (const spec of overlaySpecs) {
         const nested = mounts.find((m: any) => m.Target === spec.mountPath);
         expect(nested).toBeDefined();
@@ -839,14 +740,6 @@ describe("SessionContainerManager", () => {
       }
     });
 
-    // --- The ops finding of 2026-08-19 -----------------------------------------
-    //
-    // `prepareOverlayDirs` reaps the superseded generation's upper/work moments
-    // before the volumes are recreated against the new one. The session's Compose
-    // siblings mount those same volumes, so the removal 409'd, `docker volume
-    // create` returned the EXISTING volume and ignored the new driver opts, and
-    // four production sessions ran on an overlay whose upperdir no longer existed
-    // — reads frozen at the old base, writes silently discarded.
     describe("base generation rotated under a running Compose stack", () => {
       const rotated = overlaySpecs.map((s) => ({
         ...s,
@@ -856,7 +749,6 @@ describe("SessionContainerManager", () => {
         generation: 3,
       }));
 
-      /** Seed each volume at the previous generation, held by a Compose sibling. */
       function seedStaleHeldVolumes(): void {
         for (const [i, spec] of overlaySpecs.entries()) {
           mockDocker._liveVolumes.add(spec.volumeName);
@@ -878,27 +770,18 @@ describe("SessionContainerManager", () => {
         await manager.create(buildConfig({ overlaySpecs: rotated }));
 
         for (const spec of rotated) {
-          // The stale volume was actually removed (not 409'd away), and the live
-          // one names the generation the agent is about to mount.
           expect(mockDocker._removedVolumes).toContain(spec.volumeName);
           expect(mockDocker._volumeSpecs.get(spec.volumeName)?.Options?.o).toBe(
             `lowerdir=${spec.lowerdir},upperdir=${spec.upperdir},workdir=${spec.workdir}`,
           );
           expect(mockDocker._volumeSpecs.get(spec.volumeName)?.Options?.o).not.toContain("/g2");
         }
-        // …and the compose path is told it owes the stack a reconcile, since the
-        // service containers that were holding those volumes are now gone.
         expect(manager.consumeOverlayVolumesRecreated("test-session-1")).toBe(true);
-        // Read-and-clear.
         expect(manager.consumeOverlayVolumesRecreated("test-session-1")).toBe(false);
       });
 
       it("fails the create loudly when a holder survives every attempt, rather than mounting the reaped generation", async () => {
         seedStaleHeldVolumes();
-        // A holder the daemon refuses to remove, on every retry — the guard is what
-        // turns the old silent corruption into a visible, recoverable create
-        // failure. `mockImplementation`, not `…Once`: the create converges, so a
-        // holder that goes away after one round is a success, not a failure.
         const realGetContainer = mockDocker.getContainer.getMockImplementation()!;
         mockDocker.getContainer.mockImplementation((id: string) =>
           id.startsWith("compose-sibling-")
@@ -911,8 +794,6 @@ describe("SessionContainerManager", () => {
       });
 
       it("leaves an unrotated stack alone — no holder is removed and no reconcile is owed", async () => {
-        // The restart-agent path (docs/127) deliberately keeps the Compose stack
-        // running. A volume that already matches its spec must not cost it that.
         for (const [i, spec] of overlaySpecs.entries()) {
           mockDocker._liveVolumes.add(spec.volumeName);
           mockDocker._volumeSpecs.set(spec.volumeName, {
@@ -937,8 +818,6 @@ describe("SessionContainerManager", () => {
     });
 
     it("removes every overlay volume when container creation fails (no leak)", async () => {
-      // Regression: createOverlayVolume must run inside the try block so a
-      // later failure removes the volumes instead of leaking them.
       mockDocker.createContainer.mockRejectedValueOnce(new Error("image not found"));
 
       await expect(manager.create(buildConfig({ overlaySpecs }))).rejects.toThrow("image not found");
@@ -966,8 +845,6 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- docs/183 Phase 3b — prepareOverlaySpecs populator ---
-
   describe("prepareOverlaySpecs", () => {
     const STATE_VOL = "shipit-workspace";
     const MP = `/var/lib/docker/volumes/${STATE_VOL}/_data`;
@@ -993,10 +870,6 @@ describe("SessionContainerManager", () => {
       await ovlManager.dispose();
     });
 
-    /**
-     * A real session layout — the clone at `<sessionDir>/workspace`, which is
-     * what the state dir is resolved from (docs/246 / planning#288). Returns the clone.
-     */
     async function ws(opts: { gitignore?: string; shipitYaml?: string; dirs?: string[] } = {}): Promise<string> {
       const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
       tmpDirs.push(sessionDir);
@@ -1029,7 +902,7 @@ describe("SessionContainerManager", () => {
 
     it("builds one spec per valid dep dir, anchored at the state-volume mountpoint", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
-      const dir = await ws({ gitignore: "node_modules\n" }); // default dep dir node_modules, ignored
+      const dir = await ws({ gitignore: "node_modules\n" });
       const specs = await ovlManager.prepareOverlaySpecs({ sessionId: "abc123def456", workspaceDir: dir, session: eligible });
       expect(specs).toHaveLength(1);
       expect(specs[0].depDir).toBe("node_modules");
@@ -1055,19 +928,14 @@ describe("SessionContainerManager", () => {
       try {
         const specs = await mgr.prepareOverlaySpecs({ sessionId: "cold-scope-1", workspaceDir: dir, session: eligible });
         expect(specs[0].orchDirs).toBeDefined();
-        // Cold scope: no published base, no session overlay dirs — none exist yet.
         expect(fs.existsSync(specs[0].orchDirs!.lowerdir)).toBe(false);
         await mgr.create(mgr.buildConfigForWorkspace({
           sessionId: "cold-scope-1",
-          // `dir` is the CLONE; the session dir is its parent, so `uploadsDir`
-          // and `scratchDir` default to siblings of the clone as in production.
           sessionDir: path.dirname(dir),
           workspaceDir: dir,
           credentialsDir: TEST_CREDENTIALS_DIR,
           overlaySpecs: specs,
         }));
-        // The daemon's overlay mount ENOENTs unless all three exist — create()
-        // must have provisioned them (empty lowerdir is the valid cold start).
         expect(fs.existsSync(specs[0].orchDirs!.lowerdir)).toBe(true);
         expect(fs.existsSync(specs[0].orchDirs!.upperdir)).toBe(true);
         expect(fs.existsSync(specs[0].orchDirs!.workdir)).toBe(true);
@@ -1081,9 +949,6 @@ describe("SessionContainerManager", () => {
       const dir = await ws({ gitignore: "node_modules\n" });
       const all = await ovlManager.prepareOverlaySpecs({ sessionId: "abc123def456", workspaceDir: dir, session: eligible });
       expect(all).toHaveLength(1);
-      // The volume was never created (e.g. the agent container was built
-      // before OVERLAY_DEP_STORE was enabled) — the compose path must not
-      // reference it as `external`.
       mockDocker._missingVolumes.add(all[0].volumeName);
       const provisioned = await ovlManager.prepareOverlaySpecs({
         sessionId: "abc123def456", workspaceDir: dir, session: eligible, requireProvisioned: true,
@@ -1116,9 +981,7 @@ describe("SessionContainerManager", () => {
       });
       await ovlManager.create(config);
 
-      // The overlay volume was created…
       expect(mockDocker._liveVolumes.has(overlaySpecs[0].volumeName)).toBe(true);
-      // …and mounted nested at /workspace/node_modules (NOT at the /workspace root).
       const call = mockDocker.createContainer.mock.calls.at(-1)![0];
       const nested = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/node_modules");
       expect(nested?.Source).toBe(overlaySpecs[0].volumeName);
@@ -1129,11 +992,6 @@ describe("SessionContainerManager", () => {
     it("warm standby path (docs/183 Phase 7): prepareOverlaySpecs → buildConfigForWorkspace → createStandby mounts the overlay nested + records the volume", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const dir = await ws({ gitignore: "node_modules\n" });
-      // The warm pool builds the standby with this exact call shape: the warm
-      // appSessionId + a repo-backed, non-ops session ({ remoteUrl, kind: undefined }).
-      // A warm-claimed session reuses THIS container (keyed by appSessionId), so it
-      // must already carry the overlay mounts — the one path that doesn't go through
-      // createContainerForRunner.
       const appSessionId = "warm12345678";
       const overlaySpecs = await ovlManager.prepareOverlaySpecs({
         sessionId: appSessionId, workspaceDir: dir, session: eligible,
@@ -1172,7 +1030,6 @@ describe("SessionContainerManager", () => {
 
     it("drops dep dirs that fail contextual validation (tracked source)", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
-      // Declare `src` (tracked, not ignored) → validation drops it → no specs.
       const dir = await ws({ gitignore: "node_modules\n", shipitYaml: "agent:\n  dep-dirs:\n    - src\n", dirs: ["src"] });
       expect(await ovlManager.prepareOverlaySpecs({ sessionId: "s1", workspaceDir: dir, session: eligible }))
         .toEqual([]);
@@ -1191,8 +1048,6 @@ describe("SessionContainerManager", () => {
         .toEqual([]);
       await noVolManager.dispose();
     });
-
-    // --- docs/197 Part 2 — pnpm: skip overlay, use the shared store instead ---
 
     const PNPM_YAML = "agent:\n  install:\n    - pnpm install\n";
 
@@ -1234,7 +1089,7 @@ describe("SessionContainerManager", () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const { mgr } = managerWithState();
       try {
-        const dir = await ws({ gitignore: "node_modules\n" }); // plain npm repo
+        const dir = await ws({ gitignore: "node_modules\n" });
         expect(mgr.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
       } finally {
         await mgr.dispose();
@@ -1258,19 +1113,12 @@ describe("SessionContainerManager", () => {
     it("preparePnpmStore is undefined without a workspace state volume or state dir", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const dir = await ws({ shipitYaml: PNPM_YAML });
-      // ovlManager has a workspaceVolume but NO stateDir → undefined.
       expect(ovlManager.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
     });
 
     it("end-to-end: a pnpm session mounts the store + sets npm_config_store_dir and gets NO overlay", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
-      // `create()` drops the store mount when the group handoff cannot be
-      // verified, so this test's mount-shape assertions depend on the shared gid
-      // being one the test process can `chgrp` to. State it rather than
-      // inheriting whatever the runner happens to carry: a ShipIt session
-      // container has an ambient SHIPIT_SESSION_WORKER_UID naming a per-session
-      // uid, whose derived gid is not this process's group, so the handoff fails
-      // and the mount vanishes. See `ensurePnpmStoreDir`'s tests for the detail.
+      // Use a shared gid this process can assign, or create() omits the store mount.
       const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
       process.env.SHIPIT_SESSION_WORKER_UID = String(process.getgid?.() ?? 0);
       const { mgr } = managerWithState();
@@ -1285,15 +1133,11 @@ describe("SessionContainerManager", () => {
         });
         await mgr.create(config);
         const call = mockDocker.createContainer.mock.calls.at(-1)![0];
-        // docs/198 — the store is mounted at pnpm 11's relocation target
-        // /workspace/.pnpm-store (nested under /workspace) as a Subpath of the state volume…
         const storeMount = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/.pnpm-store");
         expect(storeMount?.Source).toBe(STATE_VOL);
         expect(storeMount?.VolumeOptions?.Subpath).toContain("pnpm-store/");
-        // …and no nested node_modules overlay mount exists.
         const nested = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/node_modules");
         expect(nested).toBeUndefined();
-        // …and older pnpm is pointed at the same path via npm_config_store_dir.
         expect(call.Env).toContain("npm_config_store_dir=/workspace/.pnpm-store");
       } finally {
         if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
@@ -1303,8 +1147,6 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- bootedLimits (W3) ---
-
   describe("bootedLimits", () => {
     it("records the resource limits the container was actually created with", async () => {
       const sc = await manager.create(buildConfig({
@@ -1313,22 +1155,17 @@ describe("SessionContainerManager", () => {
         pidsLimit: 2048,
       }));
 
-      // bootedLimits is always populated by createContainer — it's how the
-      // claim-time refresh detects a standby that booted off stale config.
       expect(sc.bootedLimits).toEqual({
         memoryLimit: 3072 * 1024 * 1024,
         cpuQuota: 200_000,
         pidsLimit: 2048,
       });
-      // Survives lookup via the manager map.
       expect(manager.get("test-session-1")?.bootedLimits).toEqual(sc.bootedLimits);
     });
 
     it("records bootedLimits even for non-docker-access sessions (unlike resourceLimits)", async () => {
       const sc = await manager.create(buildConfig());
-      // resourceLimits (child-container budget) is only set for dockerAccess.
       expect(sc.resourceLimits).toBeUndefined();
-      // bootedLimits is always set.
       expect(sc.bootedLimits).toEqual({
         memoryLimit: 512 * 1024 * 1024,
         cpuQuota: 50_000,
@@ -1342,9 +1179,6 @@ describe("SessionContainerManager", () => {
 
     it("reports null for a container whose boot-time grants were never recorded", async () => {
       await manager.create(buildConfig({ sessionId: "s1", sessionDir: "/ws/s1" }));
-      // The "absent means unknown" convention: a non-sandbox session, or a
-      // container rediscovered after an orchestrator restart. Unknown must not
-      // be reported as a set, or the pending diff would be against a guess.
       expect(manager.capabilitiesAtStart("s1")).toBeNull();
     });
 
@@ -1359,14 +1193,10 @@ describe("SessionContainerManager", () => {
     });
 
     it("ignores a record for a container that is already gone", async () => {
-      // Creation racing a teardown. The unrecorded set reads as unknown, which
-      // is the safe direction — no pending diff rather than a false one.
       expect(() => manager.recordCapabilitiesAtStart("never-created", CAPS)).not.toThrow();
       expect(manager.capabilitiesAtStart("never-created")).toBeNull();
     });
   });
-
-  // --- get / getAll / size ---
 
   describe("get / getAll / size", () => {
     it("tracks containers by session ID", async () => {
@@ -1380,8 +1210,6 @@ describe("SessionContainerManager", () => {
       expect(manager.size).toBe(2);
     });
   });
-
-  // --- destroy ---
 
   describe("destroy", () => {
     it("stops and removes the container", async () => {
@@ -1401,15 +1229,13 @@ describe("SessionContainerManager", () => {
       await manager.create(buildConfig());
       await manager.destroy("test-session-1");
 
-      expect(destroyed).toHaveBeenCalledWith("test-session-1");
+      expect(destroyed).toHaveBeenCalledWith("test-session-1", true);
     });
 
     it("is a no-op for unknown session IDs", async () => {
-      await manager.destroy("nonexistent"); // should not throw
+      await manager.destroy("nonexistent");
     });
   });
-
-  // --- markContainerGone (docs/121 gap E) ---
 
   describe("markContainerGone", () => {
     it("drops the tracking entry for a container Docker says is gone", async () => {
@@ -1420,16 +1246,10 @@ describe("SessionContainerManager", () => {
 
       expect(manager.get("test-session-1")).toBeUndefined();
       expect(manager.size).toBe(0);
-      // Same state transition the `die` handler applies — this path exists
-      // precisely because that `die` never arrived.
       expect(sc.status).toBe("stopped");
     });
 
     it("refuses to act on a different container incarnation", async () => {
-      // The caller inspected one container and then awaited. A rescue or
-      // manual restart can replace the entry in that window, and a late
-      // "not running" answer about the OLD container must not delete the
-      // healthy replacement.
       const sc = await manager.create(buildConfig());
 
       expect(await manager.markContainerGone("test-session-1", "some-other-id")).toBe(false);
@@ -1438,10 +1258,29 @@ describe("SessionContainerManager", () => {
       expect(sc.status).not.toBe("stopped");
     });
 
+    // The sidecar reap is awaited, and a recreate can land inside it — the
+    // cleanup container now schedules one the moment a probe says "gone".
+    it("refuses an incarnation replaced while the sidecar reap was awaited", async () => {
+      const sc = await manager.create(buildConfig());
+      const realList = mockDocker.listContainers;
+      let replacement: Awaited<ReturnType<typeof manager.create>> | undefined;
+      // The recreate lands inside the reap, exactly as an auto-revive does.
+      mockDocker.listContainers = vi.fn(async (...args: unknown[]) => {
+        mockDocker.listContainers = realList;
+        await manager.destroy("test-session-1", { replacementFollows: true });
+        replacement = await manager.create(buildConfig());
+        return realList(...(args as Parameters<typeof realList>));
+      }) as typeof realList;
+
+      const marked = await manager.markContainerGone("test-session-1", sc.id);
+
+      expect(replacement!.id).not.toBe(sc.id);
+      expect(marked).toBe(false);
+      expect(manager.get("test-session-1")).toBe(replacement);
+      expect(replacement!.status).not.toBe("stopped");
+    });
+
     it("does not emit container_destroyed", async () => {
-      // Nothing was destroyed: we are recording a death we discovered late,
-      // not performing one. Subscribers that tear resources down on that
-      // event must not fire for a container that is already gone.
       const destroyed = vi.fn();
       manager.on("container_destroyed", destroyed);
       const sc = await manager.create(buildConfig());
@@ -1456,19 +1295,13 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- cleanupOrphans ---
-
   describe("cleanupOrphans", () => {
     it("removes containers not in the active set", async () => {
-      // Manually create container entries in mock Docker (simulating leftovers)
       await manager.create(buildConfig({ sessionId: "active-1", sessionDir: "/ws/a1" }));
       await manager.create(buildConfig({ sessionId: "orphan-1", sessionDir: "/ws/o1" }));
 
-      // The manager's internal map tracks both, but cleanupOrphans checks
-      // docker.listContainers for ALL shipit containers vs active set.
       const removed = await manager.cleanupOrphans(new Set(["active-1"]));
 
-      // orphan-1 should be removed
       expect(removed).toBe(1);
     });
 
@@ -1478,8 +1311,6 @@ describe("SessionContainerManager", () => {
       expect(removed).toBe(0);
     });
   });
-
-  // --- buildConfig ---
 
   describe("buildConfig", () => {
     it("applies defaults from manager options", () => {
@@ -1513,8 +1344,6 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- Health monitoring ---
-
   describe("health monitoring", () => {
     it("emits container_exited when a container dies", async () => {
       await manager.create(buildConfig());
@@ -1523,7 +1352,6 @@ describe("SessionContainerManager", () => {
       const exited = vi.fn();
       manager.on("container_exited", exited);
 
-      // Simulate a Docker "die" event
       mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
         Action: "die",
         Actor: {
@@ -1539,13 +1367,6 @@ describe("SessionContainerManager", () => {
     });
 
     it("does NOT treat a bare oom event as a container exit", async () => {
-      // Docker fires `oom` when the cgroup's OOM-killer kills *a process* — not
-      // necessarily the container. In a session container PID 1 is the worker and
-      // the agent CLI is a child, so the common case is the one where the container
-      // SURVIVES: the CLI is killed, the worker keeps serving. Emitting
-      // `container_exited` here would finalize the live turn as crashed, dispose
-      // the runner, and trip the OOM circuit breaker against a healthy container.
-      // If PID 1 really was the victim, a `die` follows — and that one is proof.
       await manager.create(buildConfig());
       await manager.startHealthMonitor();
 
@@ -1563,13 +1384,10 @@ describe("SessionContainerManager", () => {
       })));
 
       expect(exited).not.toHaveBeenCalled();
-      expect(manager.get("test-session-1")).toBeDefined(); // session left alone
+      expect(manager.get("test-session-1")).toBeDefined();
     });
 
     it("reports 'Out of memory' on the die that FOLLOWS an oom", async () => {
-      // The PID-1 OOM: `oom` then `die`, milliseconds apart. The `oom` records why;
-      // the `die` is what actually ends the container, and it carries the reason
-      // through so the OOM circuit breaker and the crash breadcrumb still see it.
       await manager.create(buildConfig());
       await manager.startHealthMonitor();
 
@@ -1636,7 +1454,6 @@ describe("SessionContainerManager", () => {
       await manager.startHealthMonitor();
       manager.stopHealthMonitor();
 
-      // Should not throw when stopping again
       manager.stopHealthMonitor();
     });
 
@@ -1647,18 +1464,12 @@ describe("SessionContainerManager", () => {
         await manager.startHealthMonitor();
         expect(mockDocker.getEvents).toHaveBeenCalledTimes(1);
 
-        // Simulate the Docker event stream dropping (daemon restart, socket
-        // EAGAIN, etc.). Without auto-restart the orchestrator stops seeing
-        // `container_exited` events forever.
         mockDocker._eventEmitter.emit("error", new Error("daemon went away"));
 
-        // Restart is debounced 5s; advance through it.
         await vi.advanceTimersByTimeAsync(5_000);
 
         expect(mockDocker.getEvents).toHaveBeenCalledTimes(2);
 
-        // Subsequent `die` events on the same emitter (mock returns the same
-        // emitter from getEvents) should now fire `container_exited` again.
         const exited = vi.fn();
         manager.on("container_exited", exited);
         mockDocker._eventEmitter.emit("data", Buffer.from(JSON.stringify({
@@ -1686,9 +1497,7 @@ describe("SessionContainerManager", () => {
         const resumed = vi.fn();
         manager.on("health_monitor_resumed", resumed);
 
-        // Stream dies — `lastLossAt` should latch.
         mockDocker._eventEmitter.emit("error", new Error("daemon hiccup"));
-        // 5s debounce then reconnect.
         await vi.advanceTimersByTimeAsync(5_000);
 
         expect(mockDocker.getEvents).toHaveBeenCalledTimes(2);
@@ -1696,14 +1505,10 @@ describe("SessionContainerManager", () => {
         const arg = resumed.mock.calls[0]?.[0] as { gapMs: number };
         expect(arg.gapMs).toBeGreaterThanOrEqual(5_000);
 
-        // A second reconnect after a second loss should emit again with
-        // a fresh gap (state.lastLossAt cleared after the first resume).
         mockDocker._eventEmitter.emit("error", new Error("another hiccup"));
         await vi.advanceTimersByTimeAsync(5_000);
         expect(resumed).toHaveBeenCalledTimes(2);
 
-        // No spurious emit when there was never a loss in the first place
-        // (the test setup already opened once cleanly).
       } finally {
         manager.stopHealthMonitor();
         vi.useRealTimers();
@@ -1718,8 +1523,6 @@ describe("SessionContainerManager", () => {
 
         manager.stopHealthMonitor();
 
-        // Even if a stale "error" sneaks in after stop (e.g. emitted between
-        // destroy() and listener removal), no restart should be scheduled.
         mockDocker._eventEmitter.emit("error", new Error("late error"));
         await vi.advanceTimersByTimeAsync(10_000);
 
@@ -1730,14 +1533,7 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- dispose ---
-
   describe("dispose", () => {
-    // docs/113 — `dispose()` is the orchestrator-shutdown path. It must leave
-    // every session container running so the next orchestrator can re-adopt it
-    // (`rediscoverContainers()` + `reattachInFlightTurns()`). It used to call
-    // `destroyAll()`, which silently defeated zero-downtime updates and killed
-    // running agents mid-turn on every deploy (2026-08-10 incident).
     it("leaves every container running and only stops the health monitor", async () => {
       await manager.create(buildConfig({ sessionId: "s1", sessionDir: "/ws/s1" }));
       await manager.create(buildConfig({ sessionId: "s2", sessionDir: "/ws/s2" }));
@@ -1746,11 +1542,9 @@ describe("SessionContainerManager", () => {
 
       await manager.dispose();
 
-      // Nothing was stopped or removed on the Docker side...
       const live = [...mockDocker._containers.values()];
       expect(live).toHaveLength(2);
       expect(live.every((c) => !c.removed)).toBe(true);
-      // ...and the manager still records them as the survivors they are.
       expect(manager.size).toBe(2);
       expect(manager.get("s1")?.status).toBe("running");
       expect(manager.get("s2")?.status).toBe("running");
@@ -1768,14 +1562,10 @@ describe("SessionContainerManager", () => {
 
     it("is idempotent", async () => {
       await manager.dispose();
-      await manager.dispose(); // should not throw
+      await manager.dispose();
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// readAgentConfig — W4a: a broken shipit.yaml falls back to defaults, LOUDLY
-// ---------------------------------------------------------------------------
 
 describe("readAgentConfig (W4a)", () => {
   let tmpDir: string;
@@ -1791,18 +1581,16 @@ describe("readAgentConfig (W4a)", () => {
   });
 
   it("logs the workspace + error and returns defaults when shipit.yaml is malformed", () => {
-    // Malformed YAML — `: : :` is not parseable.
-    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: [unclosed\n: : :\n");
+    expectInvalidShipitConfig(() => {
+      fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: [unclosed\n: : :\n");
+    });
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     const config = readAgentConfig(tmpDir);
 
-    // Fallback is preserved — a broken config must not block the session.
     expect(config.agent.install).toEqual([]);
     expect(config.agent.depDirs).toEqual(["node_modules"]);
 
-    // ...but it is NOT silent: the catch logs the workspace dir + the cause
-    // so a default-sized container never appears with zero trace.
     expect(errSpy).toHaveBeenCalledTimes(1);
     const logged = String(errSpy.mock.calls[0]?.[0] ?? "");
     expect(logged).toContain(tmpDir);
@@ -1814,11 +1602,9 @@ describe("readAgentConfig (W4a)", () => {
   it("does not log for a genuinely-absent shipit.yaml (the common, legitimate case)", () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    const config = readAgentConfig(tmpDir); // no shipit.yaml written
+    const config = readAgentConfig(tmpDir);
 
     expect(config.agent.install).toEqual([]);
-    // Absent file resolves to defaults *without* hitting the catch — only a
-    // genuinely broken file is loud.
     expect(errSpy).not.toHaveBeenCalled();
 
     errSpy.mockRestore();
@@ -1831,14 +1617,10 @@ describe("readAgentConfig (W4a)", () => {
     );
     const config = readAgentConfig(tmpDir);
     expect(config.agent.install).toEqual(["npm install"]);
-    // Removed resource fields are warned-and-ignored, not surfaced on AgentConfig.
     expect(config.warnings.join("\n")).toMatch(/`agent.memory` is no longer used/);
   });
 });
 
-// ---------------------------------------------------------------------------
-// docs/211 — sandbox Docker capability threads through buildConfigForWorkspace
-// ---------------------------------------------------------------------------
 describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () => {
   let mgr: SessionContainerManager;
   let tmpDir: string;
@@ -1850,11 +1632,7 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
       networkName: "shipit-test",
       skipHealthCheck: true,
     });
-    // An empty sandbox workspace has NO shipit.yaml, so the workspace-derived
-    // dockerAccess is always false — the capability grant is the only source.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sandbox-docker-"));
-    // Sandboxes come from `createSessionDir` like every other session, so the
-    // clone is `<sessionDir>/workspace` — the layout the state dir resolves from.
     fs.mkdirSync(path.join(tmpDir, "workspace"), { recursive: true });
   });
   afterEach(async () => {
@@ -1874,7 +1652,6 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
   it("grants session-scoped dockerAccess when capabilities.docker is on (override wins over the absent shipit.yaml)", () => {
     const config = base(true);
     expect(config.dockerAccess).toBe(true);
-    // A sandbox is NEVER an ops session: no host socket, no journal/host mounts.
     expect(config.opsSession).toBeFalsy();
     expect(config.hostMounts).toBeUndefined();
   });
@@ -1885,5 +1662,82 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
 
   it("falls back to the workspace-derived value (false here) when no override is passed (non-sandbox path)", () => {
     expect(base(undefined).dockerAccess).toBe(false);
+  });
+});
+
+describe("createStandby cancelled by a concurrent destroy", () => {
+  const SESSION = "b1f0c2d3-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
+
+  it("neither completes nor registers the session as a standby", async () => {
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    let reachedCreate!: () => void;
+    const atCreate = new Promise<void>((resolve) => { reachedCreate = resolve; });
+    const started: string[] = [];
+
+    const docker = {
+      listContainers: async () => [],
+      listNetworks: async () => [],
+      listVolumes: async () => ({ Volumes: [] }),
+      getNetwork: () => ({ remove: async () => {} }),
+      getVolume: () => ({ remove: async () => {} }),
+      getContainer: () => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => {},
+      }),
+      createContainer: async () => {
+        reachedCreate();
+        await paused;
+        return {
+          id: "cid-standby",
+          start: async () => { started.push("cid-standby"); },
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-test": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    };
+
+    const manager = new SessionContainerManager({
+      docker: docker as never,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      skipHealthCheck: true,
+    });
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-standby-race-"));
+    fs.mkdirSync(path.join(tmp, "workspace"), { recursive: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config: ContainerConfig = {
+        sessionId: SESSION,
+        sessionDir: tmp,
+        workspaceDir: path.join(tmp, "workspace"),
+        sessionStateDir: path.join(tmp, "state"),
+        credentialsDir: TEST_CREDENTIALS_DIR,
+        imageName: "shipit-session-worker:test",
+        memoryLimit: 512 * 1024 * 1024,
+        cpuQuota: 50_000,
+        pidsLimit: 256,
+      } as ContainerConfig;
+
+      const creating = manager.createStandby(config);
+      const settled: Promise<unknown> = (async () => {
+        try { await creating; return null; } catch (e) { return e; }
+      })();
+
+      await atCreate;
+      await manager.destroy(SESSION);
+      release();
+
+      expect(await settled).toBeInstanceOf(Error);
+      expect(manager.isStandby(SESSION)).toBe(false);
+      expect(started).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

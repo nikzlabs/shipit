@@ -59,7 +59,6 @@ const card = (over: Record<string, unknown> = {}) => ({
 const spawnEvent: WsSubAgentSpawn = { type: "sub_agent_spawn", sessionId: "s1", spawnId: "sp-1", subAgentId: "codex" } as unknown as WsSubAgentSpawn;
 const consultCardEvent: WsSubAgentConsultCard = { type: "sub_agent_consult_card", sessionId: "s1", card: card() } as unknown as WsSubAgentConsultCard;
 
-/** The card is "visible" only if buildVisualElements emits a renderable element for it. */
 const cardVisible = (): boolean => {
   const { messages } = useSessionStore.getState();
   return buildVisualElements(messages).some(
@@ -78,11 +77,8 @@ describe("consult card survival (docs/144, docs/220)", () => {
     handleSubAgentConsultCard(ctx, consultCardEvent);
     expect(cardVisible()).toBe(true);
 
-    // The Bash tool_result for the `shipit agent run` command routes back to the
-    // message that issued the call, stepping over the card — the card is a
     // terminal transcript entry and must come through untouched. (It used to
-    // land ON the card, since the card was simply the last message; that is the
-    // same mis-routing that left the gated tool's row non-inspectable.)
+
     handleAgentEvent(ctx, toolResultEvent("bash-1", "Favorite: Strong and specific."));
     expect(cardVisible()).toBe(true);
     const messages = useSessionStore.getState().messages;
@@ -90,24 +86,22 @@ describe("consult card survival (docs/144, docs/220)", () => {
     expect(messages.find((m) => m.toolUse?.some((t) => t.id === "bash-1"))?.toolResults?.[0]?.content)
       .toBe("Favorite: Strong and specific.");
 
-    // Parent relays Codex's take as prose, then the turn ends.
     handleAgentEvent(ctx, assistantEvent("Codex's take (relayed): ..."));
     handleAgentEvent(ctx, { type: "agent_event", event: { type: "agent_result" } } as unknown as WsAgentEvent);
     expect(cardVisible()).toBe(true);
   });
 
   it("survives a mid-turn reconnect: a streaming:true card is not clobbered by a replayed pre-card agent_assistant", () => {
-    // loadSessionHistory maps inProgress -> streaming:true for an in-progress turn.
+
     useSessionStore.setState({ messages: [{ role: "assistant", text: "", subAgentConsult: card(), streaming: true }] as never });
-    // The turn-event buffer replays the pre-card Bash agent_assistant on top of the snapshot.
+
     handleAgentEvent(ctx, assistantEvent("Let me ask Codex.", [{ id: "bash-1", name: "Bash", input: { command: "shipit agent run" } }]));
     expect(cardVisible()).toBe(true);
   });
 
   it("patches the pending card in place on completion — one row, not two (planning#280)", () => {
     handleSubAgentSpawn(ctx, spawnEvent);
-    // At spawn the card lands `pending`; the transient chip stays up alongside
-    // it only until the durable row exists.
+
     handleSubAgentConsultCard(ctx, {
       ...consultCardEvent,
       card: card({ status: "pending", durationMs: undefined, costUsd: undefined, outputMarkdown: undefined }),
@@ -116,7 +110,6 @@ describe("consult card survival (docs/144, docs/220)", () => {
     expect(useSessionStore.getState().messages).toHaveLength(1);
     expect(useSessionStore.getState().messages[0].subAgentConsult?.status).toBe("pending");
 
-    // Completion re-delivers the SAME cardId with a terminal status.
     handleSubAgentConsultCard(ctx, consultCardEvent);
     const { messages, subAgentSpawns } = useSessionStore.getState();
     expect(messages).toHaveLength(1);
@@ -124,7 +117,7 @@ describe("consult card survival (docs/144, docs/220)", () => {
       status: "success",
       outputMarkdown: "Favorite: Strong and specific.",
     });
-    // the terminal card clears the transient spinner
+
     expect(subAgentSpawns["sp-1"]).toBeUndefined();
     expect(cardVisible()).toBe(true);
   });

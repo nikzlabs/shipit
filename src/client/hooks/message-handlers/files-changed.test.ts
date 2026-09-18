@@ -30,7 +30,6 @@ function tracker(over: Partial<TrackerInfo> = {}): TrackerInfo {
 
 const originalFetch = globalThis.fetch;
 
-/** Track calls per endpoint so a no-op refresh is distinguishable from a real one. */
 let calls: string[] = [];
 
 function stubFetch(trackers: TrackerInfo[]): void {
@@ -48,7 +47,6 @@ function stubFetch(trackers: TrackerInfo[]): void {
   }) as unknown as typeof fetch;
 }
 
-/** Await the handler's fire-and-forget refresh chain. */
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -70,8 +68,7 @@ afterEach(() => {
 
 describe("handleFilesChanged — plugin declarations (docs/262)", () => {
   it("refetches the plugin snapshot when shipit.yaml changes", async () => {
-    // The snapshot gates the Plugins tab itself, so this refetch happens
-    // whether or not the tab is open.
+
     stubFetch([tracker()]);
     useUiStore.setState({ rightTab: "files" });
 
@@ -111,9 +108,9 @@ describe("handleFilesChanged — tracker declarations (planning#323)", () => {
   });
 
   it("does not refetch the issue list when the declaration is unchanged", async () => {
-    // An edit elsewhere in shipit.yaml (agent.install, compose path) still
+
     // re-reads the cheap local tracker list, but must not spend a tracker-API
-    // round-trip on the issue list.
+
     useIssuesStore.setState({ trackers: [tracker()] });
     stubFetch([tracker()]);
 

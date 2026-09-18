@@ -4,12 +4,12 @@ import { Button } from "../ui/button.js";
 import { WithTooltip } from "../ui/tooltip.js";
 
 interface AttentionViewToggleProps {
-  /** True when the sidebar is showing the needs-attention view. */
+
   active: boolean;
-  /** Sessions needing attention RIGHT NOW — not the settled rows still listed. */
+
   count: number;
   onToggle: () => void;
-  /** Tooltip side — the collapsed rail anchors to the right, like its siblings. */
+
   side?: "top" | "right";
 }
 
@@ -41,9 +41,7 @@ interface AttentionViewToggleProps {
  * `attention-contrast.test.ts` (req 16).
  */
 export function AttentionViewToggle({ active, count, onToggle, side }: AttentionViewToggleProps) {
-  // The label names the view the press goes TO. The count rides along in both
-  // states — in the pressed one it is the only way a screen reader hears the
-  // number the sighted user can see on the chip.
+
   const label = active
     ? count === 0
       ? "Show all sessions"

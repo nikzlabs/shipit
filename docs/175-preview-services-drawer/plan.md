@@ -132,6 +132,19 @@ Two refinements once the drawer shipped (visual reference:
   crashed service shows its error + "Ask the agent to fix" above the log.
   Multiple services still render the compact `ServiceList`, and clicking one
   drills into the existing toolbar+log view.
+- **The crash banner is bounded, and the log takes the leftover space.**
+  `svc.error` is raw Compose stderr, so it is unbounded, and the banner is
+  `shrink-0` in the same column as the log — a long error could not shrink and
+  pushed the log clean out of the card. Two things keep the card readable: the
+  message box is capped at `max-h-20` with `overflow-y-auto` (plus a `tabIndex`
+  so the clipped text is keyboard-reachable), and `<LogView>` sits in a
+  `flex-1 min-h-0` slot like its sibling branches. The slot matters on its own:
+  `LogView`'s root is `h-full`, whose min-content height (search row + xterm
+  rows) is a floor it cannot shrink past, so as a bare flex child it overflowed
+  the card's `overflow-hidden` — 41px of it clipped even with a healthy service
+  and no banner at all. Measured at the default 260px drawer: a 24-line stderr
+  went from zero log visible (and the banner's own "Ask the agent to fix" link
+  clipped) to a 97px banner over a 51px log, both inside the card.
 - **Controls grouped on the left.** The per-service action buttons used to be
   pushed to the far right by a `flex-1` spacer on the name column, so on wide
   monitors the cursor had to travel the whole drawer to reach them. The spacer

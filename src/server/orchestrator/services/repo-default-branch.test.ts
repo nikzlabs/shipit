@@ -23,7 +23,6 @@ afterEach(() => {
   dbManager.close();
 });
 
-/** Deps whose "git" is a lookup table and whose cache always exists. */
 function makeDeps(
   branches: Record<string, string | Error>,
   overrides: Partial<Parameters<typeof refreshRepoDefaultBranch>[0]> = {},

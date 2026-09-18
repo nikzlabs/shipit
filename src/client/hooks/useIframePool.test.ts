@@ -9,11 +9,12 @@ afterEach(() => {
 const slot = (overrides: Partial<IframeSlot> = {}): IframeSlot => ({
   url: "http://session-a--3000.localhost:3001/",
   containerMode: true,
+  generation: 0,
   ...overrides,
 });
 
 /**
- * Fill a pool the way the health poller does: mark the key created, add the
+ * Fill a pool the way `usePreviewSlot` does: mark the key created, add the
  * slot, promote it. The iframe ref is seeded separately because only the
  * real DOM (PreviewFrame's render) populates that one.
  */
@@ -41,8 +42,7 @@ describe("useIframePool", () => {
 
   it("dropSlot removes the slot from everything the pool tracks", () => {
     // planning#394: the ownership drop must clean exactly what LRU eviction
-    // cleans — the two share `dropSlot`, so a departing slot has one cleanup
-    // path however it leaves.
+
     const { result } = renderHook(() => useIframePool());
     createSlot(result.current, "session-a:3000");
     createSlot(result.current, "session-a:5173");
@@ -53,8 +53,20 @@ describe("useIframePool", () => {
     expect(result.current.slotOrder).not.toContain("session-a:3000");
     expect(result.current.iframeRefs.current.has("session-a:3000")).toBe(false);
     expect(result.current.createdSlotsRef.current.has("session-a:3000")).toBe(false);
-    // The untouched slot survives.
+
     expect(result.current.slots.has("session-a:5173")).toBe(true);
+  });
+
+  it("stamps a rebuilt slot with a new generation, so its iframe is a fresh element", () => {
+
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+    expect(result.current.slots.get("session-a:3000")?.generation).toBe(0);
+
+    act(() => result.current.dropSlot("session-a:3000"));
+    createSlot(result.current, "session-a:3000");
+
+    expect(result.current.slots.get("session-a:3000")?.generation).toBe(1);
   });
 
   it("dropSlot on a key the pool doesn't hold is a no-op", () => {
@@ -81,7 +93,7 @@ describe("useIframePool", () => {
     for (let i = 0; i <= MAX_IFRAME_SLOTS + 1; i++) {
       createSlot(result.current, `a:${i}`);
     }
-    // Promoting the 22nd key evicted the two oldest (0 and 1).
+
     expect(result.current.slots.size).toBe(MAX_IFRAME_SLOTS);
     expect(result.current.slots.has("a:0")).toBe(false);
     expect(result.current.slots.has("a:1")).toBe(false);
@@ -89,9 +101,64 @@ describe("useIframePool", () => {
     expect(result.current.slots.has(`a:${MAX_IFRAME_SLOTS + 1}`)).toBe(true);
     expect(result.current.slotOrder[0]).toBe(`a:${MAX_IFRAME_SLOTS + 1}`);
     expect(result.current.slotOrder).toHaveLength(MAX_IFRAME_SLOTS);
-    // The evicted keys are gone from the shared refs too, or a later promote
-    // would treat them as still-created slots.
+
     expect(result.current.createdSlotsRef.current.has("a:0")).toBe(false);
     expect(result.current.iframeRefs.current.has("a:1")).toBe(false);
+  });
+});
+
+describe("dropSessionSlots", () => {
+  it("drops every port of the named session and leaves other sessions alone", () => {
+
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+    createSlot(result.current, "session-a:5173");
+    createSlot(result.current, "session-b:3000");
+
+    let dropped: string[] = [];
+    act(() => {
+      dropped = result.current.dropSessionSlots("session-a");
+    });
+
+    expect(dropped.sort()).toEqual(["session-a:3000", "session-a:5173"]);
+    expect([...result.current.slots.keys()]).toEqual(["session-b:3000"]);
+    expect(result.current.slotOrder).toEqual(["session-b:3000"]);
+  });
+
+  it("cleans up everything dropSlot cleans up, so a revisit rebuilds the iframe", () => {
+
+    // and the iframe is never actually recreated — planning#394).
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+
+    act(() => { result.current.dropSessionSlots("session-a"); });
+
+    expect(result.current.createdSlotsRef.current.has("session-a:3000")).toBe(false);
+    expect(result.current.iframeRefs.current.has("session-a:3000")).toBe(false);
+
+    createSlot(result.current, "session-a:3000");
+    expect(result.current.slots.get("session-a:3000")?.generation).toBe(1);
+  });
+
+  it("does not match a session whose id merely starts the same", () => {
+
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+    createSlot(result.current, "session-ab:3000");
+
+    act(() => { result.current.dropSessionSlots("session-a"); });
+
+    expect([...result.current.slots.keys()]).toEqual(["session-ab:3000"]);
+  });
+
+  it("is a no-op for a session the pool holds nothing for", () => {
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+
+    let dropped: string[] = [];
+    act(() => { dropped = result.current.dropSessionSlots("session-zzz"); });
+
+    expect(dropped).toEqual([]);
+    expect([...result.current.slots.keys()]).toEqual(["session-a:3000"]);
   });
 });

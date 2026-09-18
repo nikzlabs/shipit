@@ -14,7 +14,6 @@ export function serviceLabel(serviceId: string): string {
   return getService(serviceId)?.name ?? serviceId;
 }
 
-/** The pill beside the service name. Deliberately the words the picker uses. */
 export function billingModeLabel(mode: BillingMode): string {
   return mode === "sub" ? "Subscription" : "API key";
 }

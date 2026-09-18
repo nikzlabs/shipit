@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   UNASSIGNED,
-  activeFilterCount,
   anyFilterActive,
   distinctAssignees,
   distinctLabels,
@@ -172,17 +171,16 @@ describe("distinctLabels", () => {
   });
 });
 
-describe("anyFilterActive / activeFilterCount", () => {
+describe("anyFilterActive", () => {
   it("is false for empty filters", () => {
     expect(anyFilterActive(emptyFilters())).toBe(false);
-    expect(activeFilterCount(emptyFilters())).toBe(0);
   });
 
   it("counts a whitespace-only query as inactive", () => {
     expect(anyFilterActive(emptyFilters({ query: "   " }))).toBe(false);
   });
 
-  it("counts each selection plus a search tick", () => {
+  it("is active when several filters are selected", () => {
     const filters = emptyFilters({
       query: "bug",
       priorities: new Set(["urgent", "high"]),
@@ -190,12 +188,10 @@ describe("anyFilterActive / activeFilterCount", () => {
       labels: new Set(["design"]),
     });
     expect(anyFilterActive(filters)).toBe(true);
-    expect(activeFilterCount(filters)).toBe(5); // 1 search + 2 priorities + 1 status + 1 label
   });
 
   it("is active when only a label facet is set", () => {
     const filters = emptyFilters({ labels: new Set(["bug"]) });
     expect(anyFilterActive(filters)).toBe(true);
-    expect(activeFilterCount(filters)).toBe(1);
   });
 });

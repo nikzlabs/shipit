@@ -73,12 +73,10 @@ interface DevicePreset {
   category: "phone" | "tablet" | "custom";
 }
 
-// Session-specific state fields
-devicePreset: DevicePreset | null;     // null = responsive (fill panel)
-isLandscape: boolean;                   // swap width/height when true
+devicePreset: DevicePreset | null;
+isLandscape: boolean;
 customSize: { width: number; height: number } | null;
 
-// Actions
 setDevicePreset: (preset: DevicePreset | null) => void;
 toggleLandscape: () => void;
 setCustomSize: (size: { width: number; height: number } | null) => void;

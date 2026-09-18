@@ -1,11 +1,3 @@
-/**
- * Tests for Node runtime provisioning (docs/248, nikzlabs/shipit#1728).
- *
- * The network and tar are injected, so these cover the decision table — which
- * outcome each repo/pin combination produces, and what lands on PATH — without
- * downloading 50 MB of Node.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -35,7 +27,6 @@ function v(text: string): NodeVersion {
   return parsed;
 }
 
-/** A fake toolchain on disk: enough for `listCachedVersions` to accept it. */
 function seedCached(cacheDir: string, version: string): string {
   const dir = path.join(cacheDir, installDirName(v(version), ARCH));
   fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
@@ -48,7 +39,6 @@ describe("node-runtime provisioning", () => {
   let cacheDir: string;
   let originalPath: string | undefined;
 
-  /** Records what the fake installer was asked for. */
   let installed: string[];
 
   function deps(overrides: Partial<ProvisionDeps> = {}): Partial<ProvisionDeps> {
@@ -88,7 +78,6 @@ describe("node-runtime provisioning", () => {
   });
 
   it("provisions the pinned major and puts it first on PATH — the reported bug", async () => {
-    // The exact repro from nikzlabs/shipit#1728: `.nvmrc` says 22, container is 24.
     fs.writeFileSync(path.join(workspace, ".nvmrc"), "22\n");
 
     const status = await provisionNodeRuntime({ workspaceDir: workspace, cacheDir, deps: deps() });
@@ -96,7 +85,6 @@ describe("node-runtime provisioning", () => {
     expect(status.state).toBe("provisioned");
     expect(status.pinSource).toBe(".nvmrc");
     expect(status.pinRaw).toBe("22");
-    // Newest release in the pinned line, not merely the first match.
     expect(status.resolvedVersion).toBe("22.20.1");
     expect(status.activeVersion).toBe("22.20.1");
     expect(status.imageVersion).toBe("24.15.0");
@@ -125,7 +113,6 @@ describe("node-runtime provisioning", () => {
     expect(status.activeVersion).toBe("24.15.0");
     expect(status.mismatch).toBe(false);
     expect(installed).toEqual([]);
-    // No PATH churn and no key change for the overwhelmingly common range pin.
     expect(process.env.PATH).toBe(originalPath);
     expect(process.env.SHIPIT_PINNED_NODE).toBeUndefined();
   });
@@ -160,8 +147,6 @@ describe("node-runtime provisioning", () => {
   });
 
   it("refuses to activate a pin below the floor, and says why", async () => {
-    // Honoring this would leave the session with no working agent CLI, so the
-    // pin falls back to the reporting path (requirement 6) instead.
     fs.writeFileSync(path.join(workspace, ".nvmrc"), "18");
 
     const status = await provisionNodeRuntime({ workspaceDir: workspace, cacheDir, deps: deps() });
@@ -190,7 +175,6 @@ describe("node-runtime provisioning", () => {
     expect(status.state).toBe("failed");
     expect(status.mismatch).toBe(true);
     expect(status.reason).toContain("checksum mismatch");
-    // The session keeps running on the image's Node rather than failing to start.
     expect(status.activeVersion).toBe("24.15.0");
   });
 
@@ -221,9 +205,6 @@ describe("node-runtime provisioning", () => {
   });
 });
 
-// docs/248 review finding 1 — Codex runs every tool command as `bash -lc`, and
-// Debian's /etc/profile overwrites PATH. The profile.d snippet reads this file,
-// so publishing it correctly is what makes the pin reach those commands.
 describe("login-shell PATH handoff", () => {
   let workspace: string;
   let cacheDir: string;
@@ -264,8 +245,6 @@ describe("login-shell PATH handoff", () => {
   });
 
   it("retracts a stale handoff when the repo no longer pins anything", async () => {
-    // A previous container pinned 22; the repo has since dropped its .nvmrc.
-    // Leaving the file would keep login shells on a Node we aren't using.
     fs.writeFileSync(path.join(stateDir, PATH_HANDOFF_FILE), "/stale/bin");
     const status = await provisionNodeRuntime({
       workspaceDir: workspace,
@@ -295,8 +274,6 @@ describe("login-shell PATH handoff", () => {
   });
 });
 
-// docs/248 requirement 5 — reported, never resolved: a Compose image is
-// deliberately not a pin source, so the disagreement has to be visible.
 describe("findComposeNodeConflicts", () => {
   let workspace: string;
 
@@ -345,8 +322,6 @@ describe("findComposeNodeConflicts", () => {
   });
 });
 
-// docs/248-repo-node-version req 8 — the agent shouldn't have to ask. Before this, an un-honored
-// pin lived only in the diagnostics panel, which the agent cannot reach.
 describe("formatNodeRuntimeNotice", () => {
   const base = {
     pinSource: null,
@@ -375,8 +350,6 @@ describe("formatNodeRuntimeNotice", () => {
   });
 
   it("fires on every un-honored state, not just a failed download", () => {
-    // `unsupported` and `below-floor` are the same thing from the agent's point
-    // of view: the repo asked for a Node it isn't getting.
     for (const state of ["failed", "unsupported", "below-floor"] as const) {
       const notice = formatNodeRuntimeNotice({
         ...base,
@@ -449,8 +422,6 @@ describe("listCachedVersions", () => {
   });
 
   it("skips a half-extracted tree left by a crash", () => {
-    // Directory present, `bin/node` absent — PATH-prepending it would give the
-    // session a `node` that doesn't exist.
     fs.mkdirSync(path.join(cacheDir, installDirName(v("22.20.1"), ARCH)), { recursive: true });
     expect(listCachedVersions(cacheDir, ARCH)).toEqual([]);
   });
@@ -484,9 +455,6 @@ describe("resolveNodeCacheDir", () => {
   });
 
   it("does not treat a plain directory as the shared cache", () => {
-    // The container entrypoint `mkdir -p`s /dep-cache unconditionally, so mere
-    // existence would park ~200 MB on the container's writable layer, shared
-    // with nobody and discarded on the next container.
     const plain = fs.mkdtempSync(path.join(os.tmpdir(), "dep-cache-"));
     try {
       expect(isMountPoint(plain)).toBe(false);

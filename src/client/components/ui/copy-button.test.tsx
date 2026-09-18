@@ -2,10 +2,6 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { CopyButton } from "./copy-button.js";
 
-/**
- * Install a stub `navigator.clipboard.writeText` and return the spy. jsdom does
- * not provide a usable clipboard, so each test defines one fresh.
- */
 function stubClipboard(impl: () => Promise<void> = () => Promise.resolve()) {
   const writeText = vi.fn(impl);
   Object.defineProperty(navigator, "clipboard", {
@@ -15,8 +11,6 @@ function stubClipboard(impl: () => Promise<void> = () => Promise.resolve()) {
   return writeText;
 }
 
-// Flush the microtasks queued by the awaited clipboard write so the `copied`
-// state update lands before we assert.
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -58,7 +52,6 @@ describe("CopyButton", () => {
     fireEvent.click(screen.getByRole("button"));
     await flush();
 
-    // Called at click time (not render time), so the counter has incremented.
     expect(writeText).toHaveBeenCalledWith("v1");
   });
 
@@ -68,7 +61,7 @@ describe("CopyButton", () => {
     render(<CopyButton text="hello" timeout={1500} />);
 
     fireEvent.click(screen.getByRole("button"));
-    // Flush the clipboard write microtask without the real event loop.
+
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -89,7 +82,6 @@ describe("CopyButton", () => {
     fireEvent.click(screen.getByRole("button"));
     await flush();
 
-    // Stayed in the idle state; no throw bubbled out.
     expect(screen.getByText("Copy")).toBeInTheDocument();
   });
 });

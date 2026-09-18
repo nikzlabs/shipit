@@ -1,23 +1,3 @@
-/**
- * A background task finishing MID-TURN must not wipe the running turn's
- * accumulator.
- *
- * docs/235 gives a self-woken turn — one the orchestrator never started — a
- * clean accumulator by calling `resetRunnerTurnState` on `agent_self_wake`. The
- * signal it rides on is the CLI's `task_notification`, which fires whenever a
- * `Bash(run_in_background)` job finishes. That is NOT only between turns: a job
- * started earlier in the current turn commonly reports back while that same turn
- * is still streaming.
- *
- * `resetRunnerTurnState` clears `runner.chatMessageGroups`, and the next
- * tool-result boundary calls `replaceInProgress`, which DELETES every
- * `in_progress` row for the session and re-inserts from that (now truncated)
- * accumulator. So the part of the turn before the notification is erased from
- * chat history permanently — the live viewer still shows it (it never re-reads),
- * but a reload or a session switch shows the turn missing its opening, and it
- * never comes back.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -86,7 +66,7 @@ describe("Integration: background-task notification mid-turn", () => {
 
   it("keeps the running turn's earlier messages in chat history", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
     const sessionId = client.sessionId;
 
     client.send({ type: "send_message", text: "Run the suite in the background" });
@@ -94,8 +74,6 @@ describe("Integration: background-task notification mid-turn", () => {
     lastClaude.initSession("self-wake-session");
     await client.receiveType("session_started");
 
-    // The turn starts a background job and reaches a tool-result boundary, which
-    // persists everything so far as in_progress rows.
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -113,7 +91,6 @@ describe("Integration: background-task notification mid-turn", () => {
     expect(chatHistoryManager.load(sessionId).map((m) => m.text))
       .toEqual(["Run the suite in the background", "GROUP-ONE"]);
 
-    // The background job reports back WHILE the same turn is still streaming.
     lastClaude.emit("event", {
       type: "agent_self_wake",
       taskId: "bg-1",
@@ -122,7 +99,6 @@ describe("Integration: background-task notification mid-turn", () => {
     });
     await settle();
 
-    // The turn continues and hits its next tool-result boundary.
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -138,8 +114,6 @@ describe("Integration: background-task notification mid-turn", () => {
     });
     await settle();
 
-    // GROUP-ONE must survive: `replaceInProgress` rewrites the in_progress rows
-    // from the accumulator, so a mid-turn reset deletes it from the DB for good.
     expect(chatHistoryManager.load(sessionId).map((m) => m.text))
       .toEqual(["Run the suite in the background", "GROUP-ONE", "GROUP-TWO"]);
 
@@ -173,11 +147,9 @@ describe("Integration: background-task notification mid-turn", () => {
       type: "user",
       message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "started" }] },
     });
-    // The user's turn ENDS. Its rows are finalized.
     lastClaude.finish("self-wake-session-2");
     await settle(250);
 
-    // Now the job finishes and the CLI wakes itself — a turn nobody started.
     lastClaude.emit("event", {
       type: "agent_self_wake",
       taskId: "bg-1",
@@ -200,21 +172,11 @@ describe("Integration: background-task notification mid-turn", () => {
     });
     await settle();
 
-    // The wake turn forms its own group instead of re-persisting the finished
-    // turn's content as a duplicate (docs/235 §6).
     expect(chatHistoryManager.load(sessionId).map((m) => m.text))
       .toEqual(["Kick off the job", "TURN-ONE", "WAKE-TURN"]);
     client.close();
   });
 
-  /**
-   * The `background_tasks` WS message is emit-only live state buffered into the
-   * turn-event log, which the next turn start clears. A client that hydrates a
-   * between-turns session from `GET /history` therefore has no way to learn the
-   * session is *waiting* rather than idle — it cleared the status line a beat
-   * after the switch, while the sidebar (fed by the SSE attention snapshot)
-   * correctly kept showing the session as working.
-   */
   it("reports outstanding background tasks in GET /history", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
@@ -225,9 +187,7 @@ describe("Integration: background-task notification mid-turn", () => {
     lastClaude.initSession("bg-history-session");
     await client.receiveType("session_started");
 
-    // The tracker gates its count on a resident streaming process (a background
-    // task cannot outlive the CLI), and this fixture pins live steering off, so
-    // stand the flag up explicitly to model the production streaming path.
+    // Model a resident process; this fixture disables live steering.
     const runner = app.runnerRegistry.get(sessionId)!;
     runner.isStreamingActive = true;
 
@@ -235,9 +195,7 @@ describe("Integration: background-task notification mid-turn", () => {
       type: "agent_background_tasks",
       tasks: [{ id: "bg-1", type: "local_bash", description: "npm test" }],
     });
-    // The user's turn ENDS with the job still outstanding — `result` only, no
-    // process exit: a resident streaming process is exactly the case where the
-    // tasks outlive the turn (a one-shot CLI reaps them on exit).
+    // End the turn without exiting the process that owns the background task.
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "bg-history-session" });
     await settle(250);
 
@@ -246,7 +204,6 @@ describe("Integration: background-task notification mid-turn", () => {
     expect(body.agentRunning).toBe(false);
     expect(body.backgroundTasks).toEqual(["npm test"]);
 
-    // Drained: the payload must stop claiming the session is waiting.
     lastClaude.emit("event", { type: "agent_background_tasks", tasks: [] });
     await settle();
     const after = await fetch(`http://127.0.0.1:${port}/api/sessions/${sessionId}/history`);

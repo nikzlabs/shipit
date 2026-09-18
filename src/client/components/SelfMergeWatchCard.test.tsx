@@ -56,7 +56,7 @@ describe("SelfMergeWatchCard", () => {
     expect(JSON.parse(init.body)).toEqual({ watchId: "watch-abc" });
 
     await screen.findByText(/Cancelled/);
-    // The copy is honest about the one thing cancelling does NOT stop.
+
     expect(screen.getByText(/already running will still finish/)).toBeTruthy();
   });
 

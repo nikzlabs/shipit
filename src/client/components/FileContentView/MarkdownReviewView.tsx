@@ -3,13 +3,6 @@ import { MarkdownSelectionComments } from "../MarkdownSelectionComments.js";
 import type { SelectionCommentData } from "../MarkdownSelectionComments.js";
 import { useFileReviewStore } from "../../stores/file-review-store.js";
 
-/**
- * Markdown viewer with frontmatter header + selection review comments, shared by
- * the file-viewer dialog and the Present tab (docs/219). Moved verbatim from
- * `FilePreviewModal`'s `MarkdownViewer`. When `readOnly` (a non-workspace
- * artifact, e.g. a `/persist` present file that the review API can't address)
- * the comments render but can't be mutated and the add-button is hidden.
- */
 export function MarkdownReviewView({
   filePath,
   content,
@@ -17,6 +10,7 @@ export function MarkdownReviewView({
   comments,
   lineComments = [],
   readOnly = false,
+  shipitLinks = false,
 }: {
   filePath: string;
   content: string;
@@ -24,14 +18,13 @@ export function MarkdownReviewView({
   comments: SelectionCommentData[];
   lineComments?: { id: string; line: number; text: string }[];
   readOnly?: boolean;
+  shipitLinks?: boolean;
 }) {
   const addSelectionComment = useFileReviewStore((s) => s.addSelectionComment);
   const editComment = useFileReviewStore((s) => s.editComment);
   const deleteComment = useFileReviewStore((s) => s.deleteComment);
   const setComposing = useFileReviewStore((s) => s.setComposing);
 
-  // An open comment editor blocks "Send comments" in the footer, so an
-  // accidental submit can't drop a half-typed comment.
   const handleComposingChange = useCallback(
     (composing: boolean) => { setComposing(sessionId, filePath, composing); },
     [sessionId, filePath, setComposing],
@@ -93,6 +86,7 @@ export function MarkdownReviewView({
         onDeleteComment={handleDelete}
         onComposingChange={handleComposingChange}
         readOnly={readOnly}
+        shipitLinks={shipitLinks}
       />
     </div>
   );

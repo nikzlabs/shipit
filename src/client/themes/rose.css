@@ -1,6 +1,6 @@
-/* Rose theme — warm pink/mauve dark theme */
+
 .rose {
-  /* Surfaces */
+
   --color-bg-primary: #150c14;
   --color-bg-secondary: #1f1320;
   --color-bg-tertiary: #2c1a2e;
@@ -9,25 +9,21 @@
   --color-bg-hover: rgba(244, 114, 182, 0.08);
   --color-bg-active: rgba(244, 114, 182, 0.14);
 
-  /* Text */
   --color-text-primary: #f0e4ee;
   --color-text-secondary: #b899b5;
   --color-text-tertiary: #866a83;
   --color-text-inverse: #150c14;
   --color-text-link: #f9a8d4;
 
-  /* Borders */
   --color-border-primary: #3b213b;
   --color-border-secondary: #432e44;
   --color-border-focus: #ec4899;
 
-  /* Accent */
   --color-accent: #ec4899;
   --color-accent-hover: #db2777;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(236, 72, 153, 0.15);
 
-  /* Status */
   --color-success: #4ade80;
   --color-success-subtle: rgba(74, 222, 128, 0.15);
   --color-success-border: rgba(74, 222, 128, 0.3);
@@ -38,7 +34,6 @@
   --color-info: #f9a8d4;
   --color-info-subtle: rgba(249, 168, 212, 0.15);
 
-  /* Domain-specific */
   --color-pr: #c4b5fd;
   --color-pr-subtle: rgba(196, 181, 253, 0.15);
   --color-pr-border: rgba(196, 181, 253, 0.3);
@@ -47,17 +42,14 @@
   --color-attention: #f59e0b;
   --color-attention-text: #f59e0b;
 
-  /* Context meter */
   --color-context-ok: #4ade80;
   --color-context-mid: #fbbf24;
   --color-context-high: #fb923c;
   --color-context-full: #fb7185;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(134, 106, 131, 0.4);
   --color-scrollbar-thumb-hover: rgba(184, 153, 181, 0.5);
 
-  /* Syntax highlighting (Rosé Pine inspired) */
   --color-syntax-base: #e0def4;
   --color-syntax-bg: #1a0f19;
   --color-syntax-keyword: #eb6f92;
@@ -75,6 +67,5 @@
   --color-syntax-deletion: #eb6f92;
   --color-syntax-deletion-bg: #2d1519;
 
-  /* Typography */
   --font-size-code: 13px;
 }

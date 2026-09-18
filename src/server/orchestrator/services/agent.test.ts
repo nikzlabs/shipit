@@ -20,8 +20,6 @@ describe("dispatchAgentMessage authentication", () => {
         get: () => ({ hasRunnableModels: true }),
       },
       credentialStore: {},
-      // Regression boundary: this is the obsolete value that rejected added
-      // account rows before the account-aware AgentRegistry could route them.
       authManager: { authenticated: false, checkCredentials: vi.fn() },
       sessionManager: { get: () => ({ warm: false }) },
       graduation: {},
@@ -32,5 +30,40 @@ describe("dispatchAgentMessage authentication", () => {
     expect(refreshAuth).toHaveBeenCalledWith("claude");
     expect(deps.authManager.checkCredentials).not.toHaveBeenCalled();
     expect(dispatch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("dispatchAgentMessage image admission (planning#460)", () => {
+  function depsFor(session: Record<string, unknown>) {
+    return {
+      runnerRegistry: {
+        get: () => ({
+          disposed: false,
+          agentId: "claude",
+          sessionDir: "/tmp/session",
+          running: false,
+          assertCanDispatch: vi.fn(),
+          dispatch: vi.fn(),
+        }),
+      },
+      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ hasRunnableModels: true }) },
+      credentialStore: {},
+      authManager: { authenticated: true, checkCredentials: vi.fn() },
+      sessionManager: { get: () => session },
+      graduation: {},
+    };
+  }
+  const PNG = [{ data: "aGk=", mediaType: "image/png", filename: "shot.png" }];
+
+  it("refuses an image dispatched at a session pinned to a text-only model", async () => {
+    const deps = depsFor({ warm: false, serviceId: "openrouter", billingMode: "key", model: "deepseek/deepseek-v4-flash" });
+    await expect(dispatchAgentMessage(deps as never, "session", { text: "what is this?", images: PNG }))
+      .rejects.toThrow(/cannot read images/s);
+  });
+
+  it("dispatches the same image at a session pinned to a model that can see", async () => {
+    const deps = depsFor({ warm: false, serviceId: "anthropic", billingMode: "sub", model: "claude-sonnet-5" });
+    await expect(dispatchAgentMessage(deps as never, "session", { text: "what is this?", images: PNG }))
+      .resolves.toEqual({ ok: true, queued: false });
   });
 });

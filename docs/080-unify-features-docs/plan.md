@@ -22,11 +22,8 @@ Replace `FeatureInfo` with metadata on doc entries:
 export type DocStatus = "planned" | "in-progress" | "done" | "paused";
 
 export interface DocEntry {
-  /** Relative path from workspace root, e.g. "docs/001-websocket-protocol/plan.md" */
   path: string;
-  /** Status from YAML frontmatter, if present. Undefined for plain docs. */
   status?: DocStatus;
-  /** Human-readable title. Derived from frontmatter `title:` field, or from filename. */
   title: string;
 }
 ```

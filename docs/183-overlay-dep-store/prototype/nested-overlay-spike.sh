@@ -1,49 +1,9 @@
 #!/usr/bin/env bash
-# PROTOTYPE — nested overlay volume under the /workspace bind (docs/183, dep-dir design).
-#
-# WHY THIS EXISTS. The earlier spikes (volume-driver-overlay-spike.sh,
-# shared-volume-spike.sh) proved the daemon-performed `type=overlay` volume at
-# the /workspace **root** — the whole-workspace design. The design then pivoted to
-# the DEPENDENCY-DIRECTORY model: /workspace stays a normal bind mount (the host
-# clone — source + .git, authoritative), and EACH declared dep dir is a SEPARATE
-# `type=overlay` volume mounted at a NESTED subpath:
-#
-#     /workspace                         <- bind (host clone: source + .git)
-#     /workspace/node_modules            <- overlay volume  (base + per-session upper)
-#     /workspace/packages/app/node_modules <- another overlay volume
-#
-# Nothing in the prior runs exercised an overlay volume mounted onto a SUBDIRECTORY
-# of an already-mounted parent. That is the one unproven topology gating the dep-dir
-# mount wiring. This spike answers, per host:
-#
-#   1. Does the daemon mount a `type=overlay` volume cleanly at a path nested under
-#      another mount, and does the merged (lower+upper) view appear there?
-#   2. Do source + .git on the parent bind COEXIST with the nested overlay?
-#   3. Copy-up isolation: writes under the dep dir land in the per-session UPPER
-#      (base immutable); writes to source land on the BIND, never in the dep upper.
-#   4. Multiple dep dirs at DIFFERENT nesting depths merge simultaneously, and the
-#      daemon auto-creates an absent leaf mountpoint (e.g. packages/app/node_modules).
-#   5. Two sessions share one read-only base via nested overlays — no EBUSY.
-#   6. ONE per-session overlay volume refcount-shares across agent + service
-#      containers WHILE nested (the compose/preview pattern, under nesting).
-#   7. (native Linux only) the same, with a REAL host bind as the parent — the exact
-#      prod VPS topology.
-#
-# Run on a Docker host:  bash nested-overlay-spike.sh
-#   Runs the SAME on Linux/VPS, Docker Desktop/Mac, Docker Desktop/Windows-WSL2.
-#   Rungs 2–6 use named volumes for the parent (portable everywhere) — the nesting
-#   mechanism is identical whether the parent is a bind or a volume (the daemon
-#   orders mounts by destination depth and mounts parent-then-child regardless).
-#   Rung 7 adds the real-bind parent on native Linux to nail the literal VPS case.
-#
-# No --privileged anywhere: the daemon performs every overlay mount; our containers
-# stay unprivileged (matches ShipIt's orchestrator model). Paste each host's summary
-# into ../FINDINGS.md next to the other overlay verdicts.
 set -u
 
 IMG="ubuntu:24.04"
-BIND="dn-bind"                 # named volume standing in for the host clone (-> /workspace)
-STORE="dn-store"               # named volume holding overlay base/upper/work subtrees (opts only)
+BIND="dn-bind"
+STORE="dn-store"
 NM_LOWER="NM_FROM_LOWER"
 PKG_LOWER="PKG_FROM_LOWER"
 SRC_MARK="SOURCE_ON_BIND"
@@ -68,7 +28,7 @@ cleanup() {
   rm -f dn-err.txt
 }
 trap cleanup EXIT
-cleanup  # clear any leftovers from a prior aborted run
+cleanup
 
 hdr "0. Environment"
 DOCKER_OS="$(docker info -f '{{.OperatingSystem}}' 2>/dev/null)"
@@ -77,11 +37,6 @@ echo "    daemon name: $(docker info -f '{{.Name}}' 2>/dev/null)  ($DOCKER_OS)"
 IS_DESKTOP=0
 case "$DOCKER_OS" in *"Docker Desktop"*) IS_DESKTOP=1 ;; esac
 
-# 1. Seed. BIND = the clone stand-in (source + .git + an empty node_modules leaf +
-#    a packages/app dir WITHOUT a node_modules leaf, to test leaf auto-creation).
-#    STORE = the overlay subtrees (bases + per-session uppers/works) referenced by
-#    the overlay `o=` opts via STORE's daemon-host mountpoint; plus a `clone/` copy
-#    for the native-Linux real-bind rung.
 docker volume create "$BIND"  >/dev/null
 docker volume create "$STORE" >/dev/null
 MP="$(docker volume inspect -f '{{.Mountpoint}}' "$STORE")"
@@ -107,14 +62,12 @@ seed_out="$(docker run --rm -v "$BIND":/b -v "$STORE":/s "$IMG" bash -c "
 [ "$seed_out" = "seeded" ] && pass "seeded bind(clone) + overlay subtrees" \
                           || { fail "seed failed: $seed_out"; echo "Summary: PASS=$PASS FAIL=$FAIL"; exit 1; }
 
-# Helper: create a local-driver overlay volume from STORE-relative subpaths.
-make_ovl() { # name  lowerSub  upperSub  workSub
+make_ovl() {
   docker volume create "$1" --driver local \
     --opt type=overlay --opt device=overlay \
     --opt "o=lowerdir=$MP/$2,upperdir=$MP/$3,workdir=$MP/$4" >/dev/null
 }
 
-# 2. Single nested overlay at /workspace/node_modules, parent = BIND volume.
 hdr "2. Nested overlay under /workspace — merged dep view + source/.git coexist"
 if ! make_ovl dn-nm-A overlay-base/nm sessions/sessA/nm-upper sessions/sessA/nm-work 2>dn-err.txt; then
   fail "overlay volume create rejected: $(cat dn-err.txt 2>/dev/null)"
@@ -137,7 +90,6 @@ else
     || warn "a write failed (read-only env?): $(echo "$out" | tr '\n' ' ')"
 fi
 
-# 3. Copy-up isolation — dep write -> overlay upper (base clean); source write -> bind.
 hdr "3. Copy-up isolation — dep delta in the per-session UPPER, source on the BIND"
 chk="$(docker run --rm -v "$STORE":/s -v "$BIND":/b "$IMG" bash -c "
   [ -f /s/sessions/sessA/nm-upper/added.js ] && echo UPPER_HAS_DEP || echo UPPER_NO_DEP
@@ -149,7 +101,6 @@ echo "$chk" | grep -q BASE_CLEAN       && pass "shared dep BASE stayed immutable
 echo "$chk" | grep -q BIND_HAS_SRC     && pass "source write landed on the BIND (host checkout authoritative)" || fail "source write not on bind: $chk"
 echo "$chk" | grep -q UPPER_NO_SRC_LEAK && pass "source did NOT leak into the dep overlay upper"     || fail "source leaked into dep upper: $chk"
 
-# 4. Multiple dep dirs at different depths + absent-leaf auto-create.
 hdr "4. Two dep dirs at distinct depths merge at once; absent leaf auto-created"
 make_ovl dn-pkg-A overlay-base/pkg sessions/sessA/pkg-upper sessions/sessA/pkg-work 2>/dev/null || true
 out4="$(docker run --rm \
@@ -163,7 +114,6 @@ out4="$(docker run --rm \
   && pass "two overlays at /node_modules and /packages/app/node_modules merge simultaneously; daemon auto-created the absent leaf" \
   || { fail "multi-depth nested mount failed:"; echo "$out4" | sed 's/^/      /'; }
 
-# Data point (non-gating): does the daemon also auto-create an absent PARENT chain?
 make_ovl dn-ghost overlay-base/nm sessions/ghost/nm-upper sessions/ghost/nm-work 2>/dev/null || true
 gout="$(docker run --rm -v "$BIND":/workspace -v dn-ghost:/workspace/ghost/deep/node_modules "$IMG" \
   bash -c 'cat /workspace/ghost/deep/node_modules/marker.txt 2>/dev/null || echo MISSING' 2>&1)"
@@ -174,7 +124,6 @@ else
   warn "DATA: absent-parent mount did not surface the lower (got: $gout) — prod must pre-create parents."
 fi
 
-# 5. Two sessions share one read-only base via nested overlays — no EBUSY.
 hdr "5. Two sessions, one shared dep base, concurrent nested mounts — isolation + no EBUSY"
 make_ovl dn-nm-B overlay-base/nm sessions/sessB/nm-upper sessions/sessB/nm-work 2>/dev/null || true
 docker run -d --name dn-c1 -v "$BIND":/workspace -v dn-nm-A:/workspace/node_modules "$IMG" sleep 120 >/dev/null 2>&1
@@ -194,7 +143,6 @@ else
 fi
 docker rm -f dn-c1 dn-c2 >/dev/null 2>&1 || true
 
-# 6. One overlay volume refcount-shared across agent + service, WHILE nested.
 hdr "6. One dep overlay volume shared across 2 containers under nesting (compose/preview)"
 docker run -d --name dn-svc -v "$BIND":/workspace -v dn-nm-A:/workspace/node_modules "$IMG" sleep 120 >/dev/null 2>&1
 agt_err="$(docker run -d --name dn-agt -v "$BIND":/workspace -v dn-nm-A:/workspace/node_modules "$IMG" sleep 120 2>&1)" && agt_ok=1 || agt_ok=0
@@ -210,7 +158,6 @@ else
 fi
 docker rm -f dn-svc dn-agt >/dev/null 2>&1 || true
 
-# 7. Native-Linux only: REAL host bind as the parent (the literal prod VPS topology).
 hdr "7. Real host-bind parent (native Linux) — nested overlay under a true bind mount"
 if [ "$IS_DESKTOP" = 1 ]; then
   warn "SKIPPED on Docker Desktop — the named-volume parent in rungs 2–6 already exercises the nesting"

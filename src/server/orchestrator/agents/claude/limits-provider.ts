@@ -1,30 +1,3 @@
-/**
- * ClaudeLimitsProvider — snapshot of the user's Claude subscription
- * rate-limit windows for the header badge, from two sources:
- *
- *   1. **Event stream (free, primary near the limit).** The Claude CLI emits
- *      `rate_limit_event` messages in its `--output-format=stream-json` stream;
- *      `ClaudeAdapter` parses them and the orchestrator routes them here via
- *      `setRateLimits()`. The catch: Claude CLI only includes `utilization`
- *      once a warning threshold trips (anthropics/claude-code#50518), so at
- *      **low usage** these windows have `usedPct: null` — a reset time but no
- *      number. Same pattern as `CodexLimitsProvider`.
- *
- *   2. **`/api/oauth/usage` (on-demand, the only low-usage number).** The
- *      undocumented OAuth endpoint that backs Claude Code's `/usage` screen
- *      reports the real percentage at any usage level. But Anthropic
- *      aggressively rate-limits it (429 after a handful of calls, then ~30 min
- *      lockout — anthropics/claude-code#31637). So we never poll it: it's
- *      fetched only on an explicit `refreshNow()` (the user's refresh button,
- *      plus one seed fetch per sign-in), guarded by single-flight + a 429
- *      lockout. See docs/161.
- *
- * `fetch()` merges the two: per window, a known number wins over a null one,
- * and when both are known the fresher source wins. This means the live event
- * number stays authoritative near the limit while the API number fills in the
- * low-usage gap.
- */
-
 import type { AuthManager } from "./auth-manager.js";
 import type { LimitsProvider } from "../types.js";
 import type {
@@ -33,11 +6,8 @@ import type {
   SubscriptionLimitsWindow,
 } from "../../../shared/types.js";
 
-/** OAuth usage endpoint backing Claude Code's `/usage` slash command. */
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-/** Beta header the CLI sends on every OAuth call; a no-op here, sent for parity. */
 export const CLAUDE_CLIENT_BETA_HEADER = "oauth-2025-04-20";
-/** Default lockout when a 429 carries no usable `Retry-After`. */
 const DEFAULT_429_LOCKOUT_MS = 30 * 60_000;
 
 interface WindowSnapshot {
@@ -48,62 +18,25 @@ interface WindowSnapshot {
 
 export interface ClaudeLimitsDeps {
   authManager: Pick<AuthManager, "getAccessToken">;
-  /**
-   * docs/150 — every connected account for this provider, whether or not it has
-   * reported quota yet.
-   *
-   * Without this, `routeIds()` could only name routes that already had a cached
-   * snapshot, which made the once-per-sign-in seed fetch a no-op for a freshly
-   * connected account: you needed data before you were allowed to fetch data,
-   * so the pill sat at "—" until a turn happened to push an event. Optional —
-   * tests and pre-docs/150 wiring fall back to the cached keys alone.
-   */
+  /** Includes accounts without readings, so their first usage fetch can run. */
   listAccountRouteIds?: () => string[];
-  /**
-   * docs/150 — the credential dir backing a route, so the usage fetch reads
-   * THAT account's token.
-   *
-   * Returning `undefined` selects the legacy/env path, which is correct for the
-   * reserved `claude-env-oauth` / API-key routes. Getting this wrong is not a
-   * missing number but a wrong one: without it the fetch reads the root config
-   * dir (or `ANTHROPIC_AUTH_TOKEN`) for every route and attributes one
-   * subscription's usage to another.
-   */
+  /** Undefined selects the legacy/environment credential path. */
   credentialDirForRoute?: (routeId: string) => string | undefined;
-  /** Inject for tests; defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
-  /** Inject for deterministic tests; defaults to `Date.now`. */
   now?: () => number;
 }
 
 export class ClaudeLimitsProvider implements LimitsProvider {
-  // docs/252 req 10 — Anthropic's SUBSCRIPTION is what has an allowance;
-  // `claude-api-key` is metered and reports no quota, which is why a key-mode
-  // route's snapshot is dropped upstream rather than filed here.
   readonly serviceId = "anthropic";
   readonly billingMode = "sub" as const;
   private authManager: Pick<AuthManager, "getAccessToken">;
   private fetchImpl: typeof fetch;
   private now: () => number;
 
-  /**
-   * docs/150 — every cache below is keyed by **route id** (a provider-account
-   * id, or a reserved route like `claude-env-oauth`). Two connected Anthropic
-   * subscriptions have two independent 5h windows, two independent
-   * `/api/oauth/usage` results, and two independent 429 lockouts — a 429
-   * against one account's token says nothing about another's. Sharing any of
-   * these across routes produces plausible numbers attributed to the wrong
-   * subscription, which is worse than no numbers.
-   */
-  /** Latest windows pushed from the CLI stream (`rate_limit_event`), per route. */
   private eventLatest = new Map<string, WindowSnapshot>();
-  /** Latest windows pulled from `/api/oauth/usage` via `refreshNow()`, per route. */
   private apiLatest = new Map<string, WindowSnapshot>();
-  /** Epoch ms until which `/api/oauth/usage` is locked out after a 429, per route. */
   private lockedUntil = new Map<string, number>();
-  /** Single-flight guard so concurrent refreshes share one request, per route. */
   private inFlight = new Map<string, Promise<LimitsRefreshResult>>();
-  /** Invalidates responses that started before a route's credential changed. */
   private routeGeneration = new Map<string, number>();
 
   private listAccountRouteIds: (() => string[]) | undefined;
@@ -117,12 +50,6 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     this.credentialDirForRoute = deps.credentialDirForRoute;
   }
 
-  /**
-   * Record a fresh rate-limit snapshot pushed from a Claude turn. Called by the
-   * orchestrator's `recordAgentRateLimits` when an `agent_rate_limits`
-   * AgentEvent arrives. Follow with `LimitsRegistry.markAuthRefreshed("claude")`
-   * to rebroadcast.
-   */
   setRateLimits(
     session: SubscriptionLimitsWindow | null,
     weekly: SubscriptionLimitsWindow | null,
@@ -131,12 +58,6 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     this.eventLatest.set(routeId, { session, weekly, at: this.now() });
   }
 
-  /**
-   * Routes this provider can be asked about: every connected account (so a
-   * newly connected one is refreshable before it has ever reported), unioned
-   * with anything already cached (so a reserved env/API-key route, which only
-   * appears once a turn pushes a snapshot, is not dropped).
-   */
   routeIds(): string[] {
     return [...new Set([
       ...(this.listAccountRouteIds?.() ?? []),
@@ -158,19 +79,8 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     const apiLatest = this.apiLatest.get(routeId) ?? null;
     const lockedUntilNow = this.lockedUntil.get(routeId) ?? 0;
     const locked = lockedUntilNow > this.now();
-    // A route with no readings but an active lockout still has something the
-    // user needs: the countdown. Returning null here (the old behavior) dropped
-    // `lockedUntil` on the floor for exactly the route whose refresh button
-    // looks broken — an account that got 429'd before it ever reported a
-    // number renders an enabled button that silently no-ops for ~30 minutes.
     if (!eventLatest && !apiLatest && !locked) return null;
 
-    // Plan tier isn't in either payload — derive from the credentials file.
-    // Account-scoped for the same reason `doRefresh` is (docs/150-multiple-provider-subscriptions req 19): the
-    // unscoped read hits the singleton config root, which since the aliases
-    // were retired holds nothing on a migrated install — so every account's
-    // pill lost its plan label, and before that they all showed the migrated
-    // default's label regardless of whose usage the numbers were.
     let plan: string | null = null;
     const tokenResult = await this.authManager.getAccessToken(this.credentialDirForRoute?.(routeId));
     if (tokenResult.token !== null) plan = tokenResult.plan;
@@ -189,15 +99,7 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     );
 
     const fetchedAt = Math.max(eventLatest?.at ?? 0, apiLatest?.at ?? 0);
-    // No `availableWindows` here, and the omission is the decision
-    // (planning#454). Every other reader states which windows its plan has, so
-    // the pill can drop a slot the plan does not have. This one CANNOT say it:
-    // `rate_limit_event` carries one window per event, so a null side means
-    // "not delivered yet" on a plan that has both — and the `/api/oauth/usage`
-    // seed that would fill the gap is rate-limited to a handful of calls before
-    // a ~30 minute lockout. Claiming completeness here would have hidden a real
-    // 7d meter for the whole of a first turn. Silence draws both, which is what
-    // this pill has always done.
+    // Omit availableWindows: a missing event window may simply not have arrived yet.
     return {
       serviceId: this.serviceId,
       billingMode: this.billingMode,
@@ -210,15 +112,6 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     };
   }
 
-  /**
-   * On-demand `/api/oauth/usage` fetch. Single-flight and lockout-guarded so a
-   * user mashing the refresh button (or back-to-back seeds) can't trip the
-   * upstream 429. `"seed"` self-skips once an API snapshot already exists;
-   * `"manual"` always attempts (subject only to the lockout). Never throws.
-   *
-   * Resolves with the outcome rather than `void`: every early return here is a
-   * state the user is entitled to see on the button that just did nothing.
-   */
   async refreshNow(reason: "manual" | "seed", routeId: string): Promise<LimitsRefreshResult> {
     if (reason === "seed" && this.apiLatest.has(routeId)) {
       return { routeId, outcome: "skipped" };
@@ -239,9 +132,6 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   }
 
   private async doRefresh(routeId: string, generation: number): Promise<LimitsRefreshResult> {
-    // Account-scoped: `getAccessToken()` with no dir prefers ANTHROPIC_AUTH_TOKEN
-    // and otherwise reads the ROOT config dir, so passing nothing here fetched
-    // the wrong subscription's usage (or none at all, leaving the pill at "—").
     const tokenResult = await this.authManager.getAccessToken(this.credentialDirForRoute?.(routeId));
     if (tokenResult.token === null) {
       console.warn(`[claude-limits] /usage skipped for ${routeId}: ${tokenResult.reason}`);
@@ -251,9 +141,6 @@ export class ClaudeLimitsProvider implements LimitsProvider {
         detail: tokenResult.reason === "api-key" ? "route uses an API key, not a subscription" : "no OAuth credentials on disk",
       };
     }
-    // Skip a doomed call against an idle-expired access token — the shared
-    // credential file is refreshed by the CLI on each turn; we don't refresh
-    // it ourselves (blast radius). The badge keeps its last numbers.
     if (
       tokenResult.expiresAt !== null &&
       tokenResult.expiresAt <= this.now() + 60_000
@@ -310,21 +197,12 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     if ((this.routeGeneration.get(routeId) ?? 0) !== generation) {
       return { routeId, outcome: "skipped" };
     }
-    // A successful fetch clears any prior lockout for this route.
     this.lockedUntil.delete(routeId);
     this.apiLatest.set(routeId, { session: parsed.session, weekly: parsed.weekly, at: this.now() });
     return { routeId, outcome: "updated" };
   }
 }
 
-// ---- Merge ----
-
-/**
- * Pick the better of an event window and an API window. A known `usedPct`
- * beats a `null` one; when both are known the fresher source wins; when both
- * are unknown the event window's `resetAt` is preferred (it's the one the CLI
- * just reported). Returns null only when neither source has the window.
- */
 function mergeWindow(
   ev: SubscriptionLimitsWindow | null,
   evAt: number,
@@ -347,8 +225,6 @@ function tag(
 ): SubscriptionLimitsWindow {
   return { ...w, source };
 }
-
-// ---- /usage parsing (session + weekly only) ----
 
 function parseUsageWindows(
   body: unknown,
@@ -382,10 +258,7 @@ function parseWindow(obj: Record<string, unknown>): SubscriptionLimitsWindow | n
     pickIso(obj, "resets_at") ?? pickIso(obj, "reset_at") ?? pickIso(obj, "resetAt");
   if (!resetAt) return null;
   if (usedRaw === null) return { usedPct: null, resetAt };
-  // `/api/oauth/usage` reports percent on a 0–100 scale (e.g. a weekly value of
-  // 46 means 46%). Do NOT treat small values as 0–1 fractions: a real low
-  // session reading of `1` means 1%, and a fraction heuristic would inflate it
-  // to 100% (the bug behind the badge showing "5h 100%" at 1% actual usage).
+  // Usage is a percentage: 1 means 1%, not 100%.
   const usedPct = clampPct(usedRaw);
   return { usedPct, resetAt };
 }
@@ -417,9 +290,7 @@ function retryAfterMs(response: Response): number {
   const header = response.headers.get("retry-after");
   if (header) {
     const secs = Number(header);
-    // `retry-after: 0` is the documented Anthropic bug value — treat any
-    // non-positive / unparseable header as "use the default lockout" so we
-    // don't immediately re-fire into another 429.
+    // Anthropic can return Retry-After: 0; use the lockout instead of retrying immediately.
     if (Number.isFinite(secs) && secs > 0) return secs * 1000;
   }
   return DEFAULT_429_LOCKOUT_MS;

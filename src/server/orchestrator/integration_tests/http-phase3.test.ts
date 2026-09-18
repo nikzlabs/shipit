@@ -40,8 +40,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-phase3-"));
     generateTextResult = "## Summary\nTest PR description";
 
-    // `POST /api/repos` warms a session, and the warm pool fetches the
-    // workspace clone's origin for real against the fake github.com URL.
+    // Block warm-session fetches to the fixture's fake GitHub URL.
     restoreGitTransports = pinGitToLocalTransports();
 
     sessionManager = new SessionManager(dbManager);
@@ -80,7 +79,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     }
   });
 
-  /** Helper: create a session with a git repo and initial commit. */
   async function createSession(id: string, title: string): Promise<string> {
     const sessionDir = path.join(tmpDir, "sessions", id);
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -95,7 +93,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   describe("GET /api/sessions/:id/history", () => {
     it("returns messages and commits, but not the file tree", async () => {
       const dir = await createSession("s1", "Session 1");
-      // Add some chat history
       chatHistoryManager.append("s1", {
         role: "user",
         text: "Hello",
@@ -104,7 +101,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
         role: "assistant",
         text: "Hi there!",
       });
-      // Add a file so file tree is non-empty
       fs.writeFileSync(path.join(dir, "hello.txt"), "world");
 
       const res = await app.inject({ method: "GET", url: "/api/sessions/s1/history" });
@@ -115,19 +111,11 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(body.messages[0]).toMatchObject({ role: "user", text: "Hello" });
       expect(body.commits.length).toBeGreaterThanOrEqual(1);
       expect(body.commits.some((c: any) => c.message === "initial commit")).toBe(true);
-      // planning#375 — the workspace file tree was 325 KB of this payload on a
-      // real repo and changes on a different cadence from the transcript, so it
-      // moved to `GET /api/sessions/:id/files`.
       expect(body.fileTree).toBeUndefined();
       const filesRes = await app.inject({ method: "GET", url: "/api/sessions/s1/files" });
       expect(filesRes.json().tree.length).toBeGreaterThan(0);
     });
 
-    /**
-     * planning#375 — a session switch used to re-download the whole
-     * conversation (2.67 MB on the traced session). The response now carries an
-     * ETag so the client can revalidate.
-     */
     it("answers 304 when the client already holds the current transcript", async () => {
       await createSession("etag-s", "ETag session");
       chatHistoryManager.append("etag-s", { role: "user", text: "Hello" });
@@ -136,8 +124,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(first.statusCode).toBe(200);
       const etag = first.headers.etag!;
       expect(etag).toBeTruthy();
-      // Never served blind from the browser cache — a stale transcript is worse
-      // than a round trip.
       expect(first.headers["cache-control"]).toBe("no-cache");
 
       const revalidated = await app.inject({
@@ -148,10 +134,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(revalidated.statusCode).toBe(304);
       expect(revalidated.body).toBe("");
 
-      // The form that actually arrives in production. Cloudflare re-compresses
-      // (zstd) and hands the browser `W/"…"`, which is what the browser echoes
-      // back — so an exact-match comparison meant the 304 never once fired
-      // through the CDN, and every attach re-downloaded the transcript.
+      // CDN recompression can weaken the ETag.
       const viaCdn = await app.inject({
         method: "GET",
         url: "/api/sessions/etag-s/history",
@@ -177,7 +160,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(second.json().messages).toHaveLength(2);
     });
 
-    /** planning#375 — the tree left `/history`, so it needs its own validator. */
     it("answers 304 for an unchanged file tree", async () => {
       await createSession("tree-s", "Tree session");
       const first = await app.inject({ method: "GET", url: "/api/sessions/tree-s/files" });
@@ -206,8 +188,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     });
   });
 
-  // ---- POST /api/sessions/:id/pr/description ----
-
   describe("POST /api/sessions/:id/pr/description", () => {
     it("generates a PR description", async () => {
       await createSession("s1", "Session 1");
@@ -229,8 +209,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(res.statusCode).toBe(404);
     });
   });
-
-  // ---- POST /api/sessions/:id/fork ----
 
   describe("POST /api/sessions/:id/fork", () => {
     it("forks a session into a new branch", async () => {
@@ -282,13 +260,10 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     });
   });
 
-  // ---- POST /api/sessions/:id/git/merge ----
-
   describe("POST /api/sessions/:id/git/merge", () => {
     it("merges a session branch", async () => {
       await createSession("s1", "Session 1");
 
-      // Fork first to create a session with a branch
       const forkRes = await app.inject({
         method: "POST",
         url: "/api/sessions/s1/fork",
@@ -297,7 +272,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       const childId = forkRes.json().session.id;
       const childSession = sessionManager.get(childId);
 
-      // Make a commit on the child branch
       if (childSession?.workspaceDir) {
         fs.writeFileSync(path.join(childSession.workspaceDir, "new-file.txt"), "from fork");
         const childGit = new GitManager(childSession.workspaceDir);
@@ -338,21 +312,9 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     });
   });
 
-  // ---- POST /api/repos ----
-
   describe("POST /api/repos", () => {
-    // The only test in this file that drives the whole template-creation path,
-    // and the only one that needs a raised timeout. Network is out of the
-    // picture — `push` and `fetchCache` are stubbed in `beforeEach` (5809d53d)
-    // and `GIT_ALLOW_PROTOCOL=file` in `server-test-setup.ts` fails the origin
-    // fetch this path also makes, instantly. What remains is ~8 real git
-    // subprocesses (init, addRemote, autoCommit, cloneBare, setRemoteUrl) plus
-    // scaffolding and a session clone: ~700ms on an idle box, against a 5s
-    // default, on a CI runner sharing cores with 600+ other test files that
-    // also shell out to git. A raised limit is the fix rather than a mask —
-    // the work is genuinely serial process spawns, and a real hang still fails.
+    // Allow extra time for template creation's serial Git subprocesses.
     it("creates a repo with template when authenticated", async () => {
-      // Authenticate with GitHub first via HTTP
       await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
       const res = await app.inject({
@@ -412,13 +374,6 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     });
   });
 
-  // ---- Retired singleton subscription sign-in (docs/150-multiple-provider-subscriptions reqs 16, 19) ----
-  //
-  // These were the "connect your first account" endpoints. They took no
-  // account id, so whatever they authenticated could not afterwards be
-  // renamed, reordered, or failed over — a second way for provider auth to
-  // work, which req 19 says must not survive the migration. The account-scoped
-  // replacements are covered in http-mutations.test.ts.
   describe("singleton subscription auth endpoints are gone", () => {
     it.each([
       ["POST", "/api/auth/start"],

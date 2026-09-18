@@ -64,8 +64,6 @@
 <div class="wrap">
   <h1>Issue-write provenance card — v2</h1>
   <p class="sub">Explicit verb per card · comment is unmistakable · no attribution line — the card is self-evidently the agent’s, so authorship is dropped entirely.</p>
-
-  <!-- ============ NOW ============ -->
   <div class="col-label now">Now</div>
   <div class="card"><div class="row">
     <span class="icon">✎</span>
@@ -73,11 +71,7 @@
     <a class="chip" href="#">⧉ planning#50</a>
     <button class="btn">↶ Undo</button>
   </div></div>
-
-  <!-- ============ PROPOSED ============ -->
   <div class="col-label new">Proposed</div>
-
-  <!-- comment: distinct filled bubble + explicit "Commented" verb -->
   <div class="card">
     <div class="row">
       <span class="icon">🗨</span>
@@ -88,8 +82,6 @@
     <div class="title-line">Rewind handle hugs long user bubbles</div>
     <div class="content"><div class="quote">Confirmed on staging — the handle overlaps the bubble past ~3 lines. Proposing we clamp the offset to the bubble’s top edge. PR incoming.</div></div>
   </div>
-
-  <!-- edit -->
   <div class="card">
     <div class="row">
       <span class="icon">✎</span>
@@ -102,8 +94,6 @@
       <div class="faint">description updated</div>
     </div>
   </div>
-
-  <!-- status -->
   <div class="card">
     <div class="row">
       <span class="icon">◆</span>
@@ -114,8 +104,6 @@
     <div class="title-line">Rewind handle hugs long user bubbles</div>
     <div class="content delta"><span class="del">In Progress</span> <span class="arrow">→</span> <span class="ins">In Review</span></div>
   </div>
-
-  <!-- assignee -->
   <div class="card">
     <div class="row">
       <span class="icon">＠</span>
@@ -126,8 +114,6 @@
     <div class="title-line">Rewind handle hugs long user bubbles</div>
     <div class="content"><span class="ins">→ Nik Zherebtsov</span></div>
   </div>
-
-  <!-- GitHub case: same card, just a different identifier shape -->
   <div class="col-label new" style="color:var(--text-3)">GitHub issue — identical card, owner/repo#N identifier</div>
   <div class="card">
     <div class="row">
@@ -139,8 +125,6 @@
     <div class="title-line">Dark-mode toggle flickers on first paint</div>
     <div class="content"><div class="quote">Repro’d — it’s the theme class landing after hydration. Moving the read to an inline script in &lt;head&gt;.</div></div>
   </div>
-
-  <!-- undone -->
   <div class="col-label faint" style="color:var(--text-3)">Undone (terminal)</div>
   <div class="card" style="opacity:.7">
     <div class="row">

@@ -1,18 +1,3 @@
-/**
- * Integration tests for the read-only ShipIt source surface (docs/162).
- *
- * Exercises the orchestrator routes end-to-end against a *real* throwaway git
- * repo wired up as the "running source" via SHIPIT_SOURCE_DIR / SHIPIT_BUILD_ID:
- *
- *   GET /api/sessions/:id/source/status
- *   GET /api/sessions/:id/source/tree
- *   GET /api/sessions/:id/source/search
- *   GET /api/sessions/:id/source/cat
- *
- * Verifies the Ops-only gate (403 for non-ops), redaction (403 on `.env`),
- * and that reads reflect the exact build commit.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -55,7 +40,6 @@ describe("Integration: read-only ShipIt source surface (docs/162)", () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-source-"));
 
-    // Build a real git repo to stand in for the deployed ShipIt source.
     sourceDir = path.join(tmpDir, "source");
     fs.mkdirSync(path.join(sourceDir, "src"), { recursive: true });
     fs.writeFileSync(path.join(sourceDir, "src", "index.ts"), "export const ContainerSessionRunner = 1;\n");
@@ -188,8 +172,6 @@ describe("Integration: read-only ShipIt source surface (docs/162)", () => {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${id}/source/show?commit=${headSha}` });
     expect(res.statusCode).toBe(200);
     const content = res.json().content as string;
-    // The init commit added src/index.ts AND .env — the source file shows, the
-    // secret does not, and the omission is noted.
     expect(content).toContain("src/index.ts");
     expect(content).not.toContain("topsecret");
     expect(content).toMatch(/file diff\(s\) hidden/);

@@ -29,7 +29,6 @@
   }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-  /* ---- modal shell ---- */
   .modal {
     display: flex; background: var(--bg-modal); border: 1px solid var(--border);
     border-radius: 14px; overflow: hidden; min-height: 540px; position: relative;
@@ -44,7 +43,6 @@
   .pane-title { margin: 0 0 5px; font-size: 16px; font-weight: 600; }
   .pane-desc { margin: 0 0 18px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; }
 
-  /* ---- buttons ---- */
   .btn {
     font: inherit; font-size: 12px; padding: 6px 11px; border-radius: 7px; cursor: pointer;
     background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-secondary);
@@ -57,7 +55,6 @@
   .btn.lg { font-size: 13px; padding: 9px 16px; }
   .btn.tiny { font-size: 11px; padding: 3px 7px; line-height: 1.2; }
 
-  /* ---- empty state ---- */
   .empty {
     border: 1px dashed var(--border); border-radius: 11px; padding: 44px 24px;
     text-align: center; color: var(--text-tertiary);
@@ -65,7 +62,6 @@
   .empty .big { font-size: 14px; color: var(--text-secondary); margin-bottom: 6px; }
   .empty .small { font-size: 12.5px; line-height: 1.6; max-width: 430px; margin: 0 auto 18px; }
 
-  /* ---- one card per (service, billing mode) ---- */
   .grp {
     border: 1px solid var(--border); border-radius: 11px; background: var(--bg-modal);
     margin-bottom: 12px; overflow: hidden;
@@ -87,7 +83,6 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
-  /* ---- accounts inside a subscription group ---- */
   .accts { margin-top: 10px; border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
   .acct {
     display: flex; align-items: center; gap: 9px; padding: 8px 10px;
@@ -108,7 +103,6 @@
   .usage-fill { height: 100%; background: var(--accent); }
   .usage-txt { display: block; font-size: 10.5px; color: var(--text-tertiary); margin-top: 4px; }
 
-  /* ---- routing settings, only on subscription groups ---- */
   .routing {
     border-top: 1px solid var(--border-soft); background: var(--bg-secondary);
     padding: 12px 14px 13px;
@@ -147,7 +141,6 @@
   .pill.key { border-color: #2f4a3a; background: #16241c; color: #86c9a3; }
   .pill.prim { border-color: #33336a; background: #1d1d3a; color: #a5a5e8; }
 
-  /* ---- add dialog ---- */
   .scrim {
     position: absolute; inset: 0; background: rgba(0,0,0,.6);
     display: flex; align-items: center; justify-content: center; z-index: 20;
@@ -176,7 +169,6 @@
   }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
-  /* ---- notes ---- */
   .note {
     border: 1px solid var(--border); border-left: 2px solid var(--accent);
     background: var(--bg-modal); border-radius: 9px; padding: 12px 15px;

@@ -69,9 +69,6 @@ describe("Integration: PR description generation", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
-  /**
-   * Helper: create a session so that git operations work.
-   */
   async function createSession(client: TestClient) {
     client.send({ type: "send_message", text: "hello" });
     const claude = await waitForClaude(() => lastClaude);
@@ -81,7 +78,6 @@ describe("Integration: PR description generation", () => {
       session_id: "agent-1",
     });
     claude.finish("agent-1");
-    // Drain messages until we're clear
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
       try {
@@ -95,12 +91,11 @@ describe("Integration: PR description generation", () => {
 
   it("generates a PR description with markdown content via HTTP", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await createSession(client);
     client.close();
 
-    // Get session ID from bootstrap
     const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap" });
     const sessionId = bootstrap.json().sessions[0]?.id;
     expect(sessionId).toBeTruthy();
@@ -116,7 +111,6 @@ describe("Integration: PR description generation", () => {
   });
 
   it("returns description when minimal git history via HTTP", async () => {
-    // Build a separate app with an empty git repo (no commits beyond init)
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-pr-empty-"));
     let emptyLastClaude: FakeClaudeProcess | null = null;
 
@@ -142,16 +136,13 @@ describe("Integration: PR description generation", () => {
 
     try {
       const client = await TestClient.connect(emptyPort);
-      await client.receive(); // preview_status
+      await client.receive();
 
-      // Create session
       client.send({ type: "send_message", text: "hello" });
       const claude = await waitForClaude(() => emptyLastClaude);
       claude.emit("event", { type: "system", subtype: "init", session_id: "agent-empty" });
-      // Don't emit any file changes — finish immediately so git has minimal history
       claude.finish("agent-empty");
 
-      // Drain messages
       const deadline = Date.now() + 3000;
       while (Date.now() < deadline) {
         try {
@@ -163,7 +154,6 @@ describe("Integration: PR description generation", () => {
       }
       client.close();
 
-      // Get session ID and call HTTP endpoint
       const bootstrap = await emptyApp.inject({ method: "GET", url: "/api/bootstrap" });
       const sessionId = bootstrap.json().sessions[0]?.id;
       expect(sessionId).toBeTruthy();
@@ -182,16 +172,14 @@ describe("Integration: PR description generation", () => {
 
   it("returns 500 when text generation fails via HTTP", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await createSession(client);
     client.close();
 
-    // Get session ID
     const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap" });
     const sessionId = bootstrap.json().sessions[0]?.id;
 
-    // Set up the generateText stub to fail
     generateTextError = new Error("Claude process crashed");
 
     const res = await app.inject({

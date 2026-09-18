@@ -5,11 +5,14 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { useNarrowContainer } from "../../hooks/useNarrowContainer.js";
-import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon } from "@phosphor-icons/react";
+import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon, BroomIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore } from "../../stores/pr-store.js";
-import { PermissionModeSelector, isGuardedModelOk } from "../PermissionModeSelector.js";
-import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
+import {
+  PermissionModeSelector,
+  type NetworkSectionProps,
+} from "../PermissionModeSelector.js";
+import { HarnessSelector, ModelSelector, useHarnessPickerState } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
 import { SkillAutoComplete, type SlashCommand } from "../SkillAutoComplete.js";
@@ -26,11 +29,19 @@ import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
-import { getSavedRoleName } from "../../utils/local-storage.js";
+import {
+  getSavedRoleName,
+  saveRoleName,
+  getSavedMergeContinueOptOut,
+  type MergeContinueControl,
+} from "../../utils/local-storage.js";
 import { applyRoleSeeds } from "../../utils/role-seed.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
+import { isLargePaste, buildPastedTextFile } from "./large-paste.js";
+import { isCompactCommand } from "../../../server/shared/compact-command.js";
+import { isGoalCommand } from "../../../server/shared/goal-command.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
@@ -45,7 +56,25 @@ import type { ModelInfo } from "../../utils/model-info.js";
  */
 const COMPOSER_NARROW_PX = 700;
 
-/** Render a hotkey string like "ctrl+shift+space" as "Ctrl+Shift+Space" for tooltips. */
+/** docs/297 — offer only the goal actions the active harness has; absent means all. */
+export function goalSlashCommands(actions: AgentOption["goalActions"]): SlashCommand[] {
+  const offers = (action: "get" | "set" | "clear" | "pause" | "resume"): boolean =>
+    !actions || actions[action] !== undefined;
+  return [
+    ...(offers("get")
+      ? [{
+          name: "goal",
+          description: offers("set")
+            ? "Show the goal — or type /goal <objective> to set one"
+            : "Show the goal",
+        }]
+      : []),
+    ...(offers("clear") ? [{ name: "goal clear", description: "Remove the goal" }] : []),
+    ...(offers("pause") ? [{ name: "goal pause", description: "Pause the goal" }] : []),
+    ...(offers("resume") ? [{ name: "goal resume", description: "Resume a paused goal" }] : []),
+  ];
+}
+
 function formatHotkeyLabel(hotkey: string): string {
   return hotkey
     .split("+")
@@ -55,40 +84,18 @@ function formatHotkeyLabel(hotkey: string): string {
     .join("+");
 }
 
-/**
- * Payload handed to `onSend`. Carries everything the parent needs to dispatch
- * the prompt — the typed text, plus the upload state at submission time. The
- * payload shape is the same regardless of `sessionId` presence: in session
- * mode (`sessionId` set), `uploadRefs` carries already-POSTed `/uploads/...`
- * paths and `deferredFiles` is empty; in session-less mode (no `sessionId`,
- * e.g. the quick-capture overlay), uploads weren't sent anywhere yet and the
- * raw `File[]` lives in `deferredFiles` for the parent to multipart-POST.
- *
- * Both parents see the same contract — the upload backend swap is internal to
- * MessageInput. See `docs/145-quick-capture-overlay/plan.md` for why the
- * sessionless case exists.
- */
 export interface SendPayload {
   text: string;
   uploadRefs: UploadRef[];
-  /** Full upload items at send time — used by chat for optimistic image/file display. */
+
   uploads: UploadItem[];
-  /** Raw File objects for session-less callers that POST multipart themselves. */
+
   deferredFiles: File[];
-  /**
-   * docs/218 — per-send intent for the "start from the latest base" control.
-   * Only set when the control was visible at send time: `false` = the user
-   * unticked it (skip the reset this turn), `true` = leave it on. Undefined when
-   * the control wasn't shown (no eligible reset) — the server follows the global
-   * setting. Non-sticky.
-   */
+
   resetMergedBranch?: boolean;
-  /**
-   * docs/144 — some or all of `text` was dictated by voice rather than typed.
-   * Forwarded to the server, which adds a `<dictated_input>` note to the prompt
-   * so the agent reads mis-heard terms and absent punctuation as transcription
-   * artifacts instead of intent. Absent when nothing was dictated.
-   */
+
+  compactContext?: boolean;
+
   dictated?: boolean;
 }
 
@@ -122,8 +129,16 @@ export function MessageInput({
   focusKey,
   liveSteeringActive = false,
   surface = "chat",
+  network,
 }: {
-  onSend: (payload: SendPayload) => void;
+  /**
+   * Dispatch this send, and say whether it happened. `false` means **refused**:
+   * nothing went out, so the composer keeps its text and its attachments
+   * instead of clearing them into a message that never existed (docs/293
+   * req 4). Required rather than optional on purpose — a handler that has to
+   * answer cannot forget to, which is exactly how the original loss happened.
+   */
+  onSend: (payload: SendPayload) => boolean;
   disabled: boolean;
   /**
    * docs/257 req 3 — when set, the composer is dead **as a whole** and this
@@ -147,24 +162,17 @@ export function MessageInput({
   onRemoveFile?: (index: number) => void;
   onAddFile?: (filePath: string) => void;
   fileTree?: FileTreeNode[];
-  /** User-invocable skills for `/` autocomplete (doc 138). */
+
   skills?: SkillInfo[];
-  /**
-   * The session this composer's uploads belong to. When set, the "+" button
-   * and drop-zone POST through `useFileUpload(sessionId)` and chip state lives
-   * in the global file-store (so the FileTree side panel sees them too). When
-   * undefined (e.g. the quick-capture overlay), files are buffered as raw
-   * `File[]` in component-local state and surfaced via `SendPayload.deferredFiles`
-   * for the parent to multipart-POST alongside the prompt.
-   */
+
   sessionId?: string;
   agents?: AgentOption[];
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
   onModelChange?: (selection: ModelChoice) => void;
-  /** docs/217 — per-session reasoning effort change; `null` clears to default. */
+
   onReasoningChange?: (effort: string | null) => void;
-  /** docs/217 — the active session's persisted reasoning effort, if any. */
+
   sessionReasoning?: string;
   /**
    * docs/272-user-selectable-roles reqs 5, 13 — the role currently IN FORCE, if any.
@@ -176,114 +184,89 @@ export function MessageInput({
    * stands in their place.
    */
   sessionRoleName?: string;
-  /**
-   * docs/272 reqs 1, 18 — start this session on the named role, or take the role
-   * off it with `undefined`. Absent ⇒ no role control at all.
-   */
+
   onRoleChange?: (roleName: string | undefined) => void;
-  /**
-   * docs/272 req 4 — the session has taken its first turn, so no role applies any
-   * more. The same fact that pins the harness, and shown the same way.
-   */
+
   roleLocked?: boolean;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
-  /**
-   * Click handler for the cost / usage entry point. The standalone cost pill
-   * was removed when the cost surface was merged into the context dial — the
-   * dial's popover now wires this to its "Total cost" row.
-   */
+
   onOpenUsageDetails?: () => void;
-  /** Changed value triggers textarea focus (e.g. session ID or route change). */
+
   focusKey?: string;
-  /** When true, show both Stop and Send buttons simultaneously (live steering active). */
+
   liveSteeringActive?: boolean;
   surface?: "chat" | "overlay";
+  /**
+   * docs/285 — the session's network mode, rendered as the second section of the
+   * permission-mode control (reqs 5, 6). Supplied by the caller rather than read
+   * here, because the two surfaces get it from different places: the chat
+   * composer from the server (through `useComposerNetworkMode`), Quick Capture
+   * from a local draft it sends with the create request, since that session does
+   * not exist yet.
+   *
+   * Omitted for a sandbox session, whose network access IS one of its capability
+   * grants (docs/211, docs/279) — two controls over one session's egress.
+   */
+  network?: NetworkSectionProps & {
+
+     saving: boolean;
+  };
 }) {
   const isMobile = useIsMobile();
-  // docs/260-composer-toolbar-layout req 2/3 — measured on the COMPOSER, not the window. The chat panel
-  // is a draggable split, so a wide window with a narrow panel is exactly the
+
   // case a media query cannot see and the reported bug. `useNarrowContainer`
-  // reports `false` until measured and where ResizeObserver is absent (jsdom),
-  // so the first paint and every existing test get the wide row.
+
   const composerRef = useRef<HTMLDivElement>(null);
   const narrowComposer = useNarrowContainer(composerRef, COMPOSER_NARROW_PX);
-  // The same gate `PermissionModeSelector` applies to itself, hoisted so the
-  // narrow row's settings menu offers exactly the modes the wide row would.
-  const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
-  /**
-   * docs/260 req 19 — the one control the compact layout gives back, and only
-   * in the quick-capture overlay on a desktop viewport.
-   *
-   * Not a width test, deliberately: the overlay's panel is `max-w-2xl` (672px)
-   * at every window size, so it is ALWAYS under the 700px breakpoint and its
-   * measurement never carried req 3's "space is scarce" meaning. The viewport is
-   * what says whether there is room beside it — and below 768px there is not,
-   * which is the ordinary narrow case the fold was designed for.
-   *
-   * Read by the narrow row (which renders the control) and by the settings menu
-   * (which drops its Mode row), so the setting is offered in exactly one place.
-   */
-  const modeInRow = surface === "overlay" && !isMobile;
-  // docs/257 req 3 — "disabled as a whole". Every affordance below reads this
-  // rather than `disabled`, which guards submission only.
+
   const inert = !!disabledReason;
-  const [text, setText] = useState("");
-  // ── docs/272-user-selectable-roles — the role control's three states ─────────────────────
-  // 1. no roles configured → nothing at all, the row exactly as it is today (req 16)
-  // 2. roles exist, none in force → today's three controls plus the bare mark
-  // 3. a role in force → the role's name INSTEAD of the three controls (req 5)
-  //
-  // `roleParamsRevealed` is the fourth thing that can happen and is not a fourth
-  // state: "Adjust parameters…" brings the three controls back beside the name
-  // (req 15). The role stays in force until one of them actually moves, and the
-  // reveal is deliberately local and unpersisted — it is a look, not a setting.
-  // Keyed off the role name so switching role folds the parameters away again,
-  // which is what stops a revealed row from outliving the decision that opened
-  // it.
-  const { roles, hasRoles } = useRolePickerState();
-  const [revealedFor, setRevealedFor] = useState<string | undefined>(undefined);
-  // **Before a session is active there is no row to read the role from**, and
-  // that is where this was reported broken: on `/{repo}/new` the composer sits
-  // on a WARM session, `SessionManager.list()` filters `warm = 0`, so the
-  // browser's session list has no row for it — the server applied the role and
-  // its answer landed on nothing, leaving the control reading "None" forever.
-  // Quick Capture has no session at all and reaches the same place.
-  //
-  // So before a session is active the seed IS the display, exactly as
-  // `seedFromHistory` makes the seed the display for the harness, model and
-  // reasoning pickers on this same route. Held in state as well as in
-  // localStorage because React cannot subscribe to localStorage, and initialised
-  // from it so a role chosen before a reload is still named after one.
-  const [pendingRole, setPendingRole] = useState<string | undefined>(() => getSavedRoleName());
-  // Once a session IS active its role is the SERVER's answer and nothing else.
-  // The seed may name a role this session never took — it is chosen for the
-  // *next* one — so falling back to it there would name a role the session is
-  // not running, which is the one thing req 13 rules out.
-  const roleInForce = hasActiveSession ? sessionRoleName : (sessionRoleName ?? pendingRole);
   /**
-   * req 15, for the session-less composer: moving one of the three controls a
-   * role set leaves the role here too.
+   * docs/285 — the network-mode save barrier. Send waits for the write the user
+   * just triggered, because a first turn dispatched before it lands resolves the
+   * OLD mode server-side, finds no mismatch to reconcile, and runs under the
+   * wrong policy.
    *
-   * A bound session gets this from the server, which answers on the row and only
-   * when something actually moved. With no session there is no server to ask, so
-   * the local rule is the blunter one — any pick from those three menus drops the
-   * pending role. It errs toward *not* naming a role, which is the safe
-   * direction: the alternative is a composer claiming a role the session it
-   * creates will not be started on.
+   * Deliberately narrow: it gates Send alone, never the composer as a whole, and
+   * never the network control itself — the user must be able to correct a pick
+   * (or undo one whose write failed) without waiting on anything.
    */
-  const leavePendingRole = () => setPendingRole(undefined);
+  const networkSaving =
+    (network?.saving ?? false)
+    // req 10 — the control must state what it will do BEFORE the user commits.
+
+    || (network ? !network.loaded : false);
+
+  const settingsLocked = isLoading || (disabled && !!sessionId);
+  const [text, setText] = useState("");
+
+  // folds the parameters away again, while switching sessions cannot carry an
+
+  const { roles, hasRoles } = useRolePickerState();
+  const roleRevealScope = sessionId ?? focusKey ?? surface;
+  const [revealedRoleByScope, setRevealedRoleByScope] = useState<Record<string, string>>({});
+
+  // localStorage because React cannot subscribe to localStorage, and initialised
+
+  const [pendingRole, setPendingRole] = useState<string | undefined>(() => getSavedRoleName());
+
+  // The seed may name a role this session never took — it is chosen for the NEXT
+  // one — so a live session's row is the only authority over it (req 13). A warm
+  // session has no row (`SessionManager.list()` filters `warm = 0`), and "no row"
+  // is not an answer of "no role": until one exists the seed still shows, which
+  // is optimistic and can outlive a seed the server refused (docs/272 plan, "the
+  // seed is the display").
+  const sessionRowKnown = useSessionStore((s) => s.sessions.some((row) => row.id === sessionId));
+  const sessionAnswered = hasActiveSession && sessionRowKnown;
+  const roleInForce = sessionAnswered ? sessionRoleName : (sessionRoleName ?? pendingRole);
+
+  const leavePendingRole = () => {
+    setPendingRole(undefined);
+    if (!hasActiveSession) saveRoleName(undefined);
+  };
   const roleView = roles.find((r) => r.name === roleInForce);
-  // The seed slots the three pickers DISPLAY have to hold the role's own
-  // parameters, or the composer names a role beside a model that role will not
-  // run — reported as "the model name is incorrect".
-  //
-  // Picking a role writes them (`handleRoleChange`), but a role can also arrive
-  // from the slot on a page load, and then nothing has written them this
-  // session: a seed left over from earlier work stays on screen under the
-  // role's name. So they are reconciled here too. `applyRoleSeeds` reports
-  // whether it moved anything, which is what keeps this from looping, and the
+
   // bump is needed because localStorage is not something React can subscribe to.
   const [, noteSeedWrite] = useState(0);
   // eslint-disable-next-line no-restricted-syntax -- reconciles an external store (localStorage) the pickers read during render; there is nothing else to subscribe to
@@ -291,24 +274,35 @@ export function MessageInput({
     if (!roleInForce || hasActiveSession) return;
     if (applyRoleSeeds(roleView)) noteSeedWrite((n) => n + 1);
   }, [roleInForce, hasActiveSession, roleView]);
-  // req 4, second half — **the lock takes the CHOICE of role, and nothing else.**
-  //
-  // Note what is NOT in this condition: `roleLocked`. It was, briefly, and that
-  // was the second of two opposite mistakes. As first shipped a locked role had
-  // no menu at all (a readout does not open) and "Adjust parameters…" lives
-  // inside that menu, so a session started on a role lost its model and reasoning
+
   // controls at the first turn and never got them back — while an identical
-  // hand-configured session kept both. Nothing server-side was refusing them; the
-  // composer would not draw them. `|| roleLocked` un-caged that by showing the
-  // three controls unconditionally, which grows the row a role exists to shorten,
-  // at the first turn, without being asked (req 5).
-  //
-  // A cage is fixed by giving it a door, not by removing it: the LOCKED CONTROL
-  // OPENS (see `RoleSelector`), and offers the parameters and no role. So the
-  // reveal stays what it has always been — the user's own act — and req 5 holds
-  // for the whole of a session's life rather than for its first turn.
-  const roleParamsRevealed = !roleInForce || revealedFor === roleInForce;
+
+  const roleParamsRevealed =
+    !roleInForce || revealedRoleByScope[roleRevealScope] === roleInForce;
+  const revealRoleParameters = () => {
+    if (!roleInForce) return;
+    setRevealedRoleByScope((current) => ({
+      ...current,
+      [roleRevealScope]: roleInForce,
+    }));
+  };
+  const foldRoleParameters = () => {
+    setRevealedRoleByScope((current) => {
+      if (!(roleRevealScope in current)) return current;
+      const next = { ...current };
+      Reflect.deleteProperty(next, roleRevealScope);
+      return next;
+    });
+  };
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
+  // The harness the picker beside it names: `activeAgentId` was a second rule,
+  // and the two disagree wherever no session is bound.
+  const displayedHarnessAgent = useHarnessPickerState({
+    agents,
+    activeAgentId,
+    hasActiveSession,
+    seedFromHistory: !sessionId,
+  }).displayAgent;
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
   const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
@@ -318,24 +312,60 @@ export function MessageInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
 
-  // ── docs/218 — "start from the latest base" control ───────────────────────
-  // Shown only when the session is reset-eligible (server signal: merged +
-  // branch untouched since the merge + clean tree) AND the global setting is on.
-  // Checked by default; the per-send untick is non-sticky (re-checks each time
-  // the control reappears). Correctness is server-side — the checkbox is intent.
+  // docs/218 — shown only when the session is reset-eligible (merged + branch
+  // untouched since the merge + clean tree) AND the global setting is on.
+  // Correctness is server-side; the checkbox is intent.
   const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
   const resetEligible = usePrStore((s) => (sessionId ? s.resetEligibleBySession[sessionId] ?? false : false));
-  const showResetControl = resetEligible && autoResetMergedBranch;
-  const [resetChecked, setResetChecked] = useState(true);
-  // eslint-disable-next-line no-restricted-syntax -- syncs local opt-out to the external (WS-driven) eligibility signal: re-check whenever the control reappears so the untick is non-sticky
-  useEffect(() => {
-    // Non-sticky: default back to checked whenever the control (re)appears.
-    if (showResetControl) setResetChecked(true);
-  }, [showResetControl]);
+  // Hidden while a turn runs: the intent is read and spent when a frame goes, so
+  // a tick changed now governs nothing in flight, and the reset and compaction
+  // the running turn is performing are what end the eligibility anyway. Shown
+  // mid-turn the controls read as switches over work already under way. Any
+  // untick outlives the hide (it lives in the store, not in the control), so a
+  // send made while they are away still carries it.
+  const showResetControl = resetEligible && autoResetMergedBranch && !isLoading;
 
-  // ── Upload backend ───────────────────────────────────────────────────────
-  // Two modes share the same surface (chip rendering, +/drop-zone, submit
-  // clear), split by `surface`. See `useUploadBackend` for the full rationale.
+  // docs/295 — offered whenever the reset control is (reqs 1, 3, 11), if the
+  // backend can compact (req 10). No occupancy threshold (req 3).
+  const agentSupportsCompaction =
+    agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
+  const showCompactControl = showResetControl && agentSupportsCompaction;
+
+  /**
+   * Both controls' tick state, and why it is not component state.
+   *
+   * It was two `useState(true)` flags re-armed by an effect keyed on the
+   * control becoming visible, and each half could silently discard an untick
+   * the user was still looking at. The visibility is not an episode boundary
+   * and is not under the user's control: several server paths recompute
+   * eligibility between turns (including a debounced file-change recompute),
+   * and `computeResetEligibility` fails closed, so a git read that throws
+   * answers `false` for an eligible session. One such `false` re-ticks the box
+   * on the way back to `true`, and a send made while the control is away used
+   * to omit the field entirely. And the composer is remounted by more than a
+   * reload — `AppLayout` swaps a Fragment for a `div` across the mobile
+   * breakpoint, and App drops the composer whenever `showHomeScreen` turns
+   * true — through all of which the draft text and the chips came back from
+   * their stores while this one checkbox silently did not.
+   *
+   * So the untick belongs to the message being drafted and lives as long as
+   * that draft does — in the store, mirrored to localStorage, keyed by session
+   * — and only the send it was made for clears it (req 5). Nothing keys on a
+   * transition. Read through the store, falling back to the durable mirror for
+   * the reload case where localStorage is the only record.
+   */
+  const storedOptOut = usePrStore((s) => (sessionId ? s.mergeContinueOptOutBySession[sessionId] : undefined));
+  const mergeOptOut = useMemo(
+    () => storedOptOut ?? (sessionId ? getSavedMergeContinueOptOut(sessionId) : {}),
+    [storedOptOut, sessionId],
+  );
+  const resetChecked = !mergeOptOut.reset;
+  const compactChecked = !mergeOptOut.compact;
+  const toggleMergeControl = (control: MergeContinueControl, currentlyChecked: boolean) => {
+    if (!sessionId) return;
+    usePrStore.getState().setMergeContinueOptOut(sessionId, control, currentlyChecked);
+  };
+
   const {
     isOverlay,
     localFiles,
@@ -348,11 +378,6 @@ export function MessageInput({
     clearUploads,
   } = useUploadBackend({ surface, sessionId });
 
-  // ── Voice dictation (docs/144) ───────────────────────────────────────────
-  // Mode A wires into the chat MessageInput; Mode B into the overlay's. The
-  // hook is mode-agnostic — it produces a cleaned transcript and we splice it
-  // into `text`. There is no path from here to a send action: the textarea
-  // always gets the words, the user always presses Send.
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
   const cleanupEnabled = useSettingsStore((s) => s.cleanupEnabled);
   const voiceLanguage = useSettingsStore((s) => s.voiceLanguage);
@@ -362,37 +387,25 @@ export function MessageInput({
   const quickCaptureAutoMic = useUiStore((s) => s.quickCaptureAutoMic);
 
   const voice = useVoiceInput({
-    // docs/257 req 3 — `!inert` is what actually turns dictation off. Hiding the
-    // mic button is not enough: the hook registers GLOBAL push-to-talk keydown
-    // listeners off `enabled`, so a hidden mic would still record on the hotkey
+
     // and splice the transcript into a draft that cannot be sent.
     enabled: voiceInputEnabled && !inert,
     hotkey: isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA,
     cleanup: cleanupEnabled,
     language: voiceLanguage || undefined,
     sttProvider,
-    // Distinct ids so a session switch aborts a chat recording; the overlay
+
     // is its own short-lived surface and never "switches" underneath itself.
     sessionId: isOverlay ? "overlay" : sessionId,
   });
-  // Destructured so the effects below can depend on the individual callbacks
-  // rather than the whole `voice` object — both are `useCallback`s with stable
-  // identities, so an effect keyed on them wires up exactly once.
+
   const { onTranscript, cancelRecording } = voice;
 
-  // docs/144 — whether the draft currently in the composer contains dictated
-  // text. Set when a transcript is spliced in, cleared on send and whenever the
-  // composer goes empty (the transcript is gone, so anything typed next is
-  // typed, not spoken). Ships to the server as `dictated` so the agent is told
-  // the message was transcribed and can read mis-hearings as artifacts. A
-  // partly-dictated message still counts: the artifacts are in there either way.
   const [draftDictated, setDraftDictated] = useState(false);
   const markTyped = useCallback((next: string) => {
     if (next.trim() === "") setDraftDictated(false);
   }, []);
 
-  // The single transcript→textarea splice. Cursor/selection come from the
-  // live textarea so dictation stitches into partially-typed text.
   // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
   useEffect(() => {
     return onTranscript((transcript) => {
@@ -417,27 +430,17 @@ export function MessageInput({
     });
   }, [onTranscript]);
 
-  // docs/257 req 3 — the install can lose its last credential mid-recording
-  // (another tab signs out). Dropping the hotkey listeners does not stop a
-  // capture already running, and its transcript would land in a hidden draft.
   // eslint-disable-next-line no-restricted-syntax -- abort an external capture when the composer dies under it
   useEffect(() => {
     if (inert) cancelRecording();
   }, [inert, cancelRecording]);
 
-  // Mode B: when the overlay was opened via the voice hotkey, auto-start mic.
-  // `voice.startRecording` is deliberately not a dependency: unlike the other
-  // voice callbacks its identity changes with the recorder's own `state`, so
-  // depending on it would re-run this arm-the-mic effect on every transition
-  // of the recording it just started. Keyed on the open/eligibility inputs only.
   // eslint-disable-next-line no-restricted-syntax -- one-shot auto-start on overlay open
   useEffect(() => {
     if (!isOverlay) return;
-    // docs/257 req 3 — Quick Capture can be opened by the voice hotkey, which
+
     // auto-arms the mic. On an install that cannot run a turn that would start
-    // recording a message with nowhere to go, so the auto-start is skipped
-    // along with the mic itself. The pending flag is cleared either way, so a
-    // later open doesn't inherit an arm the user has forgotten about.
+
     if (quickCaptureAutoMic && voiceInputEnabled) {
       if (!inert) voice.startRecording();
       useUiStore.getState().setQuickCaptureAutoMic(false);
@@ -445,36 +448,25 @@ export function MessageInput({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `voice.startRecording`'s identity changes with the recorder's own state, so depending on it would re-run this one-shot arm-the-mic effect mid-recording
   }, [isOverlay, quickCaptureAutoMic, voiceInputEnabled, inert]);
 
-  // Per-session draft persistence: remember/restore typed text across session
-  // switches and reloads. Skipped for the overlay surface. See `useMessageDraft`.
   const persistDraft = surface !== "overlay";
   useMessageDraft({ focusKey, persistDraft, text, setText });
 
-  // docs/144 — a session switch swaps the draft underneath us. Drafts persist
-  // their text, not their provenance, so a restored draft is treated as typed
-  // rather than inheriting the outgoing session's dictation flag.
   // eslint-disable-next-line no-restricted-syntax -- reset per-draft state when the composer's session changes
   useEffect(() => {
     setDraftDictated(false);
   }, [focusKey]);
 
-  // Fallback auto-grow for browsers without `field-sizing: content` support.
   useTextareaSizing(textareaRef, text);
 
-  // Consume prefill text from store (e.g. "Start Session" from docs viewer, "Send to Agent" from services panel)
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (surface === "overlay") return undefined;
     const consume = (prefill: string | undefined) => {
       if (!prefill) return;
-      // docs/257 req 3 — DEFER while the composer is dead, don't consume. The
-      // textarea renders empty, so consuming here would silently replace the
-      // user's retained draft with text they can neither see nor send. Leaving
-      // it in the store means this effect (which depends on `inert`) picks it up
-      // the moment the install becomes runnable.
+
       if (inert) return;
       setText(prefill);
-      // Prefill REPLACES the draft, so whatever was dictated into it is gone.
+
       setDraftDictated(false);
       useSessionStore.getState().setPrefillText(undefined);
       requestAnimationFrame(() => {
@@ -485,33 +477,25 @@ export function MessageInput({
         }
       });
     };
-    // Check on mount
+
     consume(useSessionStore.getState().prefillText);
-    // Subscribe to future changes
+
     return useSessionStore.subscribe((state) => {
       consume(state.prefillText);
     });
   }, [surface, inert]);
 
-  // planning#12 — consume a quote-reply blockquote from the store and *append* it to
-  // the current draft (unlike prefill, which replaces). This lets the user
-  // quote a passage from a chat bubble without losing what they've already
-  // typed. We focus the textarea and drop the cursor on the trailing blank line
-  // below the quote so they can start typing their reply immediately.
   // eslint-disable-next-line no-restricted-syntax -- consume quote-reply text from external store
   useEffect(() => {
     if (surface === "overlay") return undefined;
     const consume = (quote: string | undefined) => {
       if (!quote) return;
-      // docs/257 req 3 — deferred for the same reason as the prefill above: this
-      // one APPENDS to the draft, so consuming it into an invisible textarea
+
       // would leave the user with a quote they cannot see, send, or undo.
       if (inert) return;
       useSessionStore.getState().setQuoteReplyText(undefined);
       setText((prev) => {
-        // Separate from existing draft with a blank line; the blockquote needs
-        // a trailing blank line of its own so markdown closes the quote and the
-        // reply lands as a normal paragraph.
+
         const lead = prev.trim() === "" ? "" : prev.endsWith("\n") ? "\n" : "\n\n";
         const next = `${prev}${lead}${quote}\n\n`;
         requestAnimationFrame(() => {
@@ -530,58 +514,29 @@ export function MessageInput({
     });
   }, [surface, inert]);
 
-  // Auto-focus textarea on mount and on session change (e.g. "New Session" click,
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
-  // so the very first render with a defined focusKey triggers focus — otherwise focus
-  // would be deferred until focusKey transitions from the new-session view's key
-  // to the real session ID, which causes a visible delay on "New Session" clicks.
-  //
-  // Skip on mobile: focusing the textarea pops the on-screen keyboard, which is
-  // intrusive when the user is just navigating between sessions. The user can tap
-  // the input to summon the keyboard when they actually want to type. We still
-  // advance prevFocusKeyRef so a later viewport resize from mobile → desktop
-  // doesn't retroactively fire focus for a session change we already saw.
+
   const prevFocusKeyRef = useRef<string | undefined>(undefined);
   if (surface === "chat" && focusKey && focusKey !== prevFocusKeyRef.current) {
     prevFocusKeyRef.current = focusKey;
     if (!isMobile) {
-      // Schedule focus after paint — safe to call during render since it's a microtask
+
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
     }
   }
 
-  // The quick-capture overlay suppresses the chat/session focus path above so
   // it cannot race the underlying chat composer, but it still needs to focus
-  // its own textarea when mounted. Focus on both desktop and mobile — the
-  // overlay is a deliberate, user-initiated surface, so popping the mobile
-  // keyboard on open is the wanted behavior, not focus theft.
+
   // eslint-disable-next-line no-restricted-syntax -- overlay mount autofocus
   useEffect(() => {
     if (surface !== "overlay") return;
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, [surface]);
 
-  // Guard against iframe focus theft on LOAD only: when the textarea is focused
-  // and an iframe (e.g. the preview reloading after an edit) finishes loading and
-  // pulls focus to itself, the textarea fires a blur with no relatedTarget
-  // (cross-origin iframes don't expose it). That steal is involuntary — the user
-  // was typing, not navigating — so we reclaim it.
-  //
   // EVERY other focus loss is the user's own doing and must be left alone:
-  //   - mousedown on non-focusable chat text to start a selection (activeElement
-  //     becomes <body>) — reclaiming there cancels the in-progress selection;
-  //   - deliberately clicking into the preview iframe (canvas/WebGL games,
-  //     embedded apps), switching to the Present tab, or interacting with a doc —
-  //     reclaiming there fights the user for the cursor while they work on the
-  //     right side, which is the annoyance this guard now avoids.
-  //
-  // So the reclaim is gated strictly on "an iframe just fired a load event": we
-  // record the timestamp of the most-recent iframe load via a capture-phase
-  // listener (load doesn't bubble, but a capture-phase listener on the document
-  // still sees it for any descendant iframe) and only reclaim if the blur lands
-  // within a short window after that load.
+
   const lastIframeLoadRef = useRef(0);
   useEventListener(document, "load", (e) => {
     const target = e.target as Element | null;
@@ -591,20 +546,13 @@ export function MessageInput({
   }, true);
 
   const handleBlur = useCallback((e: React.FocusEvent<HTMLTextAreaElement>) => {
-    // relatedTarget is set when focus moves to another focusable element in the
-    // same document (e.g. a button click). When an iframe steals focus, or when
-    // mousedown happens on a non-focusable element, relatedTarget is null — we
-    // need the activeElement check below to disambiguate those two cases.
+
     if (e.relatedTarget) return;
     requestAnimationFrame(() => {
-      // Only an iframe taking focus is a candidate. Body becoming the active
-      // element means the user clicked outside any focusable widget (typically to
-      // start a text selection); leave focus alone there.
+
       const active = document.activeElement;
       if (active?.tagName !== "IFRAME") return;
-      // Reclaim ONLY if an iframe just finished loading — that's the involuntary
-      // load-time focus steal. With no recent load, the user deliberately moved
-      // into the iframe (preview click, Present tab, doc), so leave focus there.
+
       if (Date.now() - lastIframeLoadRef.current > 500) return;
       textareaRef.current?.focus();
     });
@@ -618,50 +566,89 @@ export function MessageInput({
     [handleAddFiles],
   );
 
+  /**
+   * docs/294 reqs 5-6 — `/compact` in quick capture. Reqs 5 and 6 say the
+   * attachment stays in the composer and the command carries none; on this
+   * surface the composer is unmounted on send, so "stays" and "carries none"
+   * cannot both hold for a message that goes. Refusing the send is what makes
+   * them both true — and a brand-new session has no conversation to compact
+   * anyway, so there was nothing for the command to do.
+   */
+  const compactInOverlay = isOverlay && isCompactCommand(text.trim());
+
+  const uploadsInFlight = displayUploads.some((u) => u.status === "uploading");
+  const uploadsFailed = displayUploads.some((u) => u.status === "error");
+
+  const hasAttachment = pendingFiles.length > 0 || displayUploads.length > 0;
+  const sendBlocked =
+    disabled || inert || networkSaving
+    || (!text.trim() && !hasAttachment)
+    || uploadsInFlight                      
+    || uploadsFailed                        
+    || compactInOverlay;                       
+
+  const sendBlockedReason = uploadsInFlight
+    ? "Waiting for attachments to finish uploading"
+    : uploadsFailed
+      ? "An attachment failed to upload — retry or remove it"
+      : compactInOverlay
+        ? "There is nothing to compact in a new session"
+        : undefined;
+
   const handleSubmit = () => {
     const trimmed = text.trim();
-    // `inert` as well as `disabled`: a retained draft still lives in `text`
-    // while the input is dead (it is simply not rendered), so submission has to
-    // be refused here and not just hidden behind an empty-looking textarea.
-    if (!trimmed || disabled || inert) return;
-    const uploadRefs = getUploadRefs();
+    // `sendBlocked` covers every bar, and it must be re-read HERE and not only
+
+    if (sendBlocked) return;
+
+    const isCompact = isCompactCommand(trimmed);
+    const uploadRefs = isCompact ? [] : getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,
       uploadRefs,
-      uploads: displayUploads,
-      deferredFiles: isOverlay ? localFiles : [],
-      // docs/218 — only carry the intent when the control was actually shown.
-      ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
-      // docs/144 — omitted entirely when the draft was typed.
+      uploads: isCompact ? [] : displayUploads,
+      deferredFiles: isCompact || !isOverlay ? [] : localFiles,
       ...(draftDictated ? { dictated: true } : {}),
     };
-    // docs/218 — when this send carries the reset intent, the branch is about to
-    // be reset to the latest base, which makes the session no longer
-    // reset-eligible. Optimistically clear the signal so the control disappears
-    // immediately instead of lingering through the turn until the post-turn
-    // `reset_eligible: false` arrives. The server's post-turn recompute is
-    // authoritative and reconciles (re-arming the control if the reset was
-    // unticked or didn't run).
-    if (showResetControl && resetChecked && sessionId) {
+    // docs/293 req 4 — the parent may refuse a send it never dispatched:
+
+    // were lost for a send that never happened — an attachment dropped without
+
+    if (!onSend(payload)) return;
+
+    // docs/218 req 6 — either answer ends the offer, so the optimistic hide no
+    // longer depends on which one it was: ticked resets the branch, unticked is
+    // recorded as declined for this merge. It used to be `&& resetChecked`,
+    // which is why an unticked send left both controls standing.
+    //
+    // A control command answers nothing: the server skips the whole reset hook
+    // for `/compact` and for a `/goal` that rides the turn, and a `/goal` that
+    // does not ride one starts no turn at all — so hiding the controls here
+    // would leave the user unable to re-tick a choice nothing had spent. Same
+    // exclusion the untick itself already has, for the same reason. Predicting
+    // nothing is safe in only one direction: a control that lingers is
+    // corrected by the post-turn recompute, one that vanished wrongly is not.
+    const startsContinuation = !isCompact && !isGoalCommand(trimmed);
+    if (showResetControl && sessionId && startsContinuation) {
       usePrStore.getState().setResetEligible(sessionId, false);
     }
-    onSend(payload);
+    // NOT cleared here. `sendUserTurn` spends the untick when the frame goes,
+    // and only then — a `/goal` submitted from this composer starts no turn and
+    // carries no intent, so clearing on every accepted submit spent a choice
+    // the user had made for their next real message.
     setText("");
     setDraftDictated(false);
-    // The transcript the cleanup notice referred to has now left the composer —
-    // drop the notice so it doesn't linger over an empty input.
+
     voice.dismissCleanupWarning();
-    clearUploads();
+    if (!isCompact) clearUploads();
     setShowAutoComplete(false);
     setShowSkillMenu(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Don't handle Enter/Escape if an autocomplete menu is open — let it handle them
+
     if (showAutoComplete || showSkillMenu) return;
-    // On mobile, Enter inserts a newline (matches native chat-app behavior — the
-    // on-screen keyboard's return key shouldn't fire-and-forget a message). The
-    // user sends via the send button instead.
+
     if (isMobile) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -677,15 +664,6 @@ export function MessageInput({
     const cursorPos = e.target.selectionStart ?? newText.length;
     const textBeforeCursor = newText.slice(0, cursorPos);
 
-    // Detect a leading `/` for skill autocomplete. Skills only resolve when the
-    // `/name` token sits at the very start of the prompt (the CLI requirement),
-    // so the menu only opens while the cursor is inside that first token.
-    //
-    // The `:` is allowed for plugin-namespaced skills installed via docs/149's
-    // `<plugin>__<skill>/SKILL.md` layout with frontmatter `name: <plugin>:<skill>`
-    // — typing `/foo:bar` should keep the menu open through the namespace
-    // separator. The companion regex in `agent-execution.ts` is not end-anchored,
-    // so it already handles `:` correctly; no change needed there.
     const slashMatch = /^\/([a-zA-Z0-9._:-]*)$/.exec(textBeforeCursor);
     if (slashMatch && (skills.length > 0 || slashCommands.length > 0)) {
       setSkillQuery(slashMatch[1]);
@@ -695,9 +673,8 @@ export function MessageInput({
     }
     setShowSkillMenu(false);
 
-    // Detect @ trigger for file autocomplete
     if (onAddFile && fileTree.length > 0) {
-      // Find the last @ that's not preceded by a word character (to avoid email addresses)
+
       const atMatch = /(?:^|[^a-zA-Z0-9])@([^\s]*)$/.exec(textBeforeCursor);
       if (atMatch) {
         const query = atMatch[1];
@@ -709,29 +686,23 @@ export function MessageInput({
     }
   };
 
-  // The `/` trigger that opens the skill menu stays the same for both
-  // backends (doc 138 §5) — only the inserted token differs. The prefix
-  // travels over the wire from the agent registry's `skillInvocationPrefix`
-  // capability, so a new backend's character is one entry in `AGENT_DEFS`
-  // rather than another inline branch here. (docs/155)
   const skillTokenPrefix =
     agents.find((a) => a.id === activeAgentId)?.skillInvocationPrefix ?? "/";
 
-  // docs/178 — ShipIt-native `/` commands offered in the `/` menu, gated by the
-  // active agent's capabilities. `/compact` only when the backend can compact.
   const slashCommands = useMemo<SlashCommand[]>(() => {
-    const supportsCompaction =
-      agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
-    return supportsCompaction
-      ? [{ name: "compact", description: "Summarize the conversation to free up context" }]
-      : [];
+    const active = agents.find((a) => a.id === activeAgentId);
+    return [
+      ...(active?.supportsCompaction
+        ? [{ name: "compact", description: "Summarize the conversation to free up context" }]
+        : []),
+      ...(active?.supportsGoals ? goalSlashCommands(active.goalActions) : []),
+    ];
   }, [agents, activeAgentId]);
 
   const handleCommandSelect = useCallback(
     (commandName: string) => {
       // Commands are ShipIt constructs — always `/`-prefixed (never the skill
-      // token). Insert `/<name>` at the start; no trailing space since commands
-      // take no argument, so the user can press Enter to send immediately.
+
       const cursorPos = textareaRef.current?.selectionStart ?? text.length;
       const newText = `/${commandName}${text.slice(cursorPos)}`;
       setText(newText);
@@ -739,7 +710,7 @@ export function MessageInput({
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
         if (ta) {
-          const pos = commandName.length + 1; // "/" + name
+          const pos = commandName.length + 1;              
           ta.focus();
           ta.setSelectionRange(pos, pos);
         }
@@ -751,15 +722,14 @@ export function MessageInput({
   const handleSkillSelect = useCallback(
     (skillName: string) => {
       const cursorPos = textareaRef.current?.selectionStart ?? text.length;
-      // The token is always at index 0, so replace everything up to the cursor
-      // with `<prefix><name> ` and keep the rest of the message intact.
+
       const newText = `${skillTokenPrefix}${skillName} ${text.slice(cursorPos)}`;
       setText(newText);
       setShowSkillMenu(false);
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
         if (ta) {
-          const pos = skillName.length + 2; // prefix + name + " "
+          const pos = skillName.length + 2;                       
           ta.focus();
           ta.setSelectionRange(pos, pos);
         }
@@ -777,7 +747,7 @@ export function MessageInput({
       if (onAddFile) {
         onAddFile(filePath);
       }
-      // Replace the @query in the text with just @filepath
+
       const cursorPos = textareaRef.current?.selectionStart ?? text.length;
       const textBeforeCursor = text.slice(0, cursorPos);
       const atMatch = /(?:^|[^a-zA-Z0-9])@([^\s]*)$/.exec(textBeforeCursor);
@@ -799,7 +769,7 @@ export function MessageInput({
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
       // docs/257 req 3 — attaching to a message that cannot be sent is the same
-      // dead input as typing one.
+
       if (inert) return;
       const items = e.clipboardData.items;
       const imageFiles: File[] = [];
@@ -812,6 +782,13 @@ export function MessageInput({
       if (imageFiles.length > 0) {
         e.preventDefault();
         addFiles(imageFiles);
+        return;
+      }
+
+      const pastedText = e.clipboardData.getData("text/plain");
+      if (isLargePaste(pastedText)) {
+        e.preventDefault();
+        addFiles([buildPastedTextFile(pastedText)]);
       }
     },
     [addFiles, inert],
@@ -820,7 +797,7 @@ export function MessageInput({
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // docs/257 req 3 — no drop-zone affordance over a dead input.
+
     if (inert) return;
     dragCountRef.current++;
     if (dragCountRef.current === 1) {
@@ -850,7 +827,6 @@ export function MessageInput({
       setIsDragging(false);
       if (inert) return;
 
-      // Check for ShipIt file drag from file tree
       const fileData = e.dataTransfer?.getData("application/x-shipit-file");
       if (fileData && onAddFile) {
         try {
@@ -877,7 +853,7 @@ export function MessageInput({
     if (e.target.files && e.target.files.length > 0) {
       addFiles(e.target.files);
     }
-    // Reset so the same file can be re-selected
+
     e.target.value = "";
   };
 
@@ -918,31 +894,62 @@ export function MessageInput({
               when the session is reset-eligible AND the setting is on; the
               per-send untick is non-sticky. */}
           {showResetControl && (
-            <button
-              type="button"
-              data-testid="reset-merged-branch-control"
-              aria-pressed={resetChecked}
-              onClick={() => setResetChecked((v) => !v)}
-              className="flex items-start gap-2.5 px-3 py-2.5 text-left rounded-t-xl border-b border-(--color-border-secondary) bg-(--color-accent-subtle)"
-            >
-              <span
-                className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
-                  resetChecked
-                    ? "bg-(--color-accent) text-white"
-                    : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
-                }`}
+            <div className="rounded-t-xl border-b border-(--color-border-secondary) bg-(--color-accent-subtle)">
+              <button
+                type="button"
+                data-testid="reset-merged-branch-control"
+                aria-pressed={resetChecked}
+                onClick={() => toggleMergeControl("reset", resetChecked)}
+                className="w-full flex items-start gap-2.5 px-3 pt-2.5 pb-1 text-left"
               >
-                {resetChecked && <CheckIcon size={12} weight="bold" />}
-              </span>
-              <span className="min-w-0">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
-                  <GitBranchIcon size={ICON_SIZE.XS} /> Start from the latest base
+                <span
+                  className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
+                    resetChecked
+                      ? "bg-(--color-accent) text-white"
+                      : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
+                  }`}
+                >
+                  {resetChecked && <CheckIcon size={12} weight="bold" />}
                 </span>
-                <span className="block text-[11px] text-(--color-text-tertiary) mt-0.5">
-                  Your PR merged — this branch will reset to the latest base before your message runs, so the agent builds on current code.
+                <span className="min-w-0">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
+                    <GitBranchIcon size={ICON_SIZE.XS} /> Start from the latest base
+                  </span>
+                  <span className="block text-[11px] text-(--color-text-tertiary) mt-0.5">
+                    Your PR merged — this branch will reset to the latest base before your message runs, so the agent builds on current code.
+                  </span>
                 </span>
-              </span>
-            </button>
+              </button>
+              {/* docs/295 — subordinate to the row above: one line, no description.
+                  Its own top padding, not the reset row's bottom padding: the two
+                  buttons abut, so the apparent breathing room above this checkbox
+                  used to be a live hit target for the OTHER control, and a
+                  near-miss silently unticked the branch reset while the tick the
+                  user was aiming at stayed on. Same total gap, split between the
+                  rows it looks like. */}
+              {showCompactControl && (
+                <button
+                  type="button"
+                  data-testid="compact-context-control"
+                  aria-pressed={compactChecked}
+                  onClick={() => toggleMergeControl("compact", compactChecked)}
+                  className="w-full flex items-center gap-2.5 px-3 pt-1.5 pb-2.5 text-left"
+                >
+                  <span
+                    className={`shrink-0 grid place-items-center w-4 h-4 rounded ${
+                      compactChecked
+                        ? "bg-(--color-accent) text-white"
+                        : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
+                    }`}
+                  >
+                    {compactChecked && <CheckIcon size={12} weight="bold" />}
+                  </span>
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
+                    <BroomIcon size={ICON_SIZE.XS} /> Compact the context
+                  </span>
+                </button>
+              )}
+            </div>
           )}
           {/* Attachment chips — rendered inside the input box, above the
               textarea, so they're visually contained within the input dialog
@@ -967,7 +974,10 @@ export function MessageInput({
               returns the moment the install becomes runnable. */}
           <textarea
             ref={textareaRef}
-            data-chat-input
+            // Carries the surface so a hotkey can tell the conversation
+            // composer from the quick-capture overlay's copy of it
+            // (`useChatSearchHotkey`).
+            data-chat-input={surface}
             value={inert ? "" : text}
             disabled={inert}
             onChange={handleTextChange}
@@ -1007,55 +1017,46 @@ export function MessageInput({
                   </button>
                 </WithTooltip>
 
-                {/* docs/260 req 19 — **the mode comes back out of the menu in
-                    the quick-capture overlay on desktop.**
+                {/* docs/285 reqs 5, 6 — mode AND network access, in one control, on
+                    every viewport. It is offered here and nowhere else: the
+                    settings menu below no longer carries a Mode row, so there is
+                    one place to change one setting.
 
-                    The overlay's composer is under 700px because its PANEL is a
-                    fixed `max-w-2xl` (672px), and it is that width on a 1400px
-                    window as much as on a 900px one. So the measurement that
-                    means "space is scarce" in the chat panel — where the user
-                    chose the width by dragging the split — means nothing here,
-                    and req 3's fold takes a control the surface needs most: this
-                    overlay starts a session and sends its first message in one
-                    act, and the mode is what decides whether the agent asks
-                    before it acts.
-
-                    Only the mode. Everything else stays folded, and it is
-                    offered here INSTEAD of in the menu (`modeInRow` below), never
-                    in both — one setting, one control.
+                    docs/260 req 19 previously gave the mode back to this row
+                    only in the desktop quick-capture overlay, on the reasoning
+                    that a surface which starts a session and sends its first
+                    message in one act needs it most. That reasoning now applies
+                    everywhere, because the network mode has exactly the same
+                    "decided before the first turn" character.
 
                     Placed before the settings anchor rather than after it because
                     the anchor is the group's one elastic item: req 8's clipping
                     depends on it being last, so it truncates before anything is
                     cut at the mic's edge. */}
-                {modeInRow && onPermissionModeChange && (
+                {(onPermissionModeChange ?? network) && (
                   <div className="flex shrink-0 items-center">
                     <PermissionModeSelector
                       mode={permissionMode}
-                      onChange={onPermissionModeChange}
+                      onChange={onPermissionModeChange ?? (() => {})}
                       agents={agents}
                       activeAgentId={activeAgentId}
                       modelInfo={modelInfo}
                       disabled={inert}
+                      {...(network ? { network } : {})}
                     />
                   </div>
                 )}
 
                 <ComposerSettingsMenu
-                  // Keyed on the session so an optimistic pick can't linger across a switch,
-                  // for the same reason `ReasoningSelector` is keyed in the wide row.
-                  key={sessionId ?? "__new__"}
+                  // Remount after a role change so picker state cannot outlive the role.
+                  key={`${sessionId ?? "__new__"}:${roleInForce ?? ""}`}
                   agents={agents}
                   activeAgentId={activeAgentId}
                   onAgentChange={onAgentChange}
                   onModelChange={onModelChange}
                   onReasoningChange={onReasoningChange}
                   sessionReasoning={sessionReasoning}
-                  // docs/272 req 15 — the same fact in docs/260's shape: below
-                  // 700px the role folds into this one menu, alongside the
-                  // controls it sets. The reveal state is shared with the wide
-                  // row so crossing the breakpoint does not re-fold what the
-                  // user just opened.
+
                   {...(onRoleChange
                     ? {
                         onRoleChange: (name: string | undefined) => {
@@ -1066,29 +1067,17 @@ export function MessageInput({
                     : {})}
                   {...(roleInForce ? { sessionRoleName: roleInForce } : {})}
                   roleParamsRevealed={roleParamsRevealed}
-                  onAdjustRoleParameters={() => { if (roleInForce) setRevealedFor(roleInForce); }}
-                  onRoleSelected={() => setRevealedFor(undefined)}
+                  onAdjustRoleParameters={revealRoleParameters}
+                  onRoleSelected={foldRoleParameters}
                   onLeaveRole={leavePendingRole}
                   roleLocked={roleLocked}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
-                  // Same split the wide row makes three lines apart: the harness
-                  // and model pickers key off "is a session bound", reasoning off
-                  // "is a session active".
+
                   seedFromHistory={!sessionId}
-                  permissionMode={permissionMode}
-                  onPermissionModeChange={onPermissionModeChange}
-                  // docs/260 req 19 — the menu drops its Mode row when the row
-                  // carries the control. The handler still goes in: the menu
-                  // reads the mode for nothing else, and a menu that could not
-                  // be told the mode would have to guess it back.
-                  modeInRow={modeInRow}
-                  guardedModelOk={guardedModelOk}
-                  // Only `inert` closes the anchor. A running turn locks the
-                  // three pickers instead, so the mode stays changeable and the
-                  // settings stay readable — matching the wide row exactly.
+
                   disabled={inert}
-                  pickersLocked={disabled || isLoading}
+                  pickersLocked={settingsLocked}
                 />
 
                 {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
@@ -1134,7 +1123,8 @@ export function MessageInput({
                   {liveSteeringActive && (
                     <button
                       onClick={handleSubmit}
-                      disabled={disabled || inert || !text.trim()}
+                      disabled={sendBlocked}
+                      {...(sendBlockedReason ? { title: sendBlockedReason } : {})}
                       className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
                       aria-label="Send message"
                       data-testid="send-button"
@@ -1146,7 +1136,8 @@ export function MessageInput({
               ) : (
                 <button
                   onClick={handleSubmit}
-                  disabled={disabled || inert || !text.trim()}
+                  disabled={sendBlocked}
+                  {...(sendBlockedReason ? { title: sendBlockedReason } : {})}
                   className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
                   aria-label="Send message"
                   data-testid="send-button"
@@ -1216,16 +1207,22 @@ export function MessageInput({
                 (fixed) and null when idle, so its default order is harmless. */}
             {voiceInputEnabled && !inert && isMobile && <MobileRecordingOverlay voice={voice} />}
 
-            {/* Permission mode selector (3-state, agent-aware — docs/138) */}
-            {onPermissionModeChange && (
+            {/* Permission mode selector (3-state, agent-aware — docs/138), which
+                docs/285 also made the session's network control (reqs 5, 6): one
+                trigger, the same on every viewport, for new and running sessions
+                alike. It renders for a network section alone, so a harness with
+                one permission mode (Codex) keeps the control rather than taking
+                network access down with it. */}
+            {(onPermissionModeChange ?? network) && (
               <div className="flex items-center shrink-0" style={{ order: isMobile ? 20 : 30 }}>
                 <PermissionModeSelector
                   mode={permissionMode}
-                  onChange={onPermissionModeChange}
+                  onChange={onPermissionModeChange ?? (() => {})}
                   agents={agents}
                   activeAgentId={activeAgentId}
                   modelInfo={modelInfo}
                   disabled={inert}
+                  {...(network ? { network } : {})}
                 />
               </div>
             )}
@@ -1283,19 +1280,16 @@ export function MessageInput({
                   roles={roles}
                   {...(roleInForce ? { selectedRole: roleInForce } : {})}
                   onSelectRole={(name) => {
-                    // A fresh pick folds the parameters away: they described the
-                    // role the user has just left behind. "No role" (req 18)
-                    // needs no fold — with nothing in force the three controls
-                    // are back on their own (`roleParamsRevealed`).
-                    setRevealedFor(undefined);
+
+                    foldRoleParameters();
                     setPendingRole(name);
                     onRoleChange?.(name);
                   }}
                   {...(roleInForce && !roleParamsRevealed
-                    ? { onAdjustParameters: () => setRevealedFor(roleInForce) }
+                    ? { onAdjustParameters: revealRoleParameters }
                     : {})}
                   locked={roleLocked}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1313,21 +1307,13 @@ export function MessageInput({
                 <HarnessSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
-                  // docs/272 req 15 — see `leavePendingRole`.
+
                   onAgentChange={(id) => { leavePendingRole(); onAgentChange(id); }}
                   hasActiveSession={hasActiveSession}
-                  // No session bound to this composer at all (Quick Capture, or
-                  // the new-session route before its warm session is claimed),
-                  // so the picker previews what the next session inherits rather
-                  // than describing whichever session is active behind it.
+
                   seedFromHistory={!sessionId}
-                  // `inert` too — req 3 disables the composer "as a whole", and
-                  // these three were the affordances left live: with no runnable
-                  // service the harness menu opened onto rows that are all
-                  // unselectable and the model menu onto nothing at all. The
-                  // compact row already read `inert` on its anchor, so the two
-                  // layouts disagreed about the same fact.
-                  disabled={disabled || isLoading || inert}
+
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1340,7 +1326,7 @@ export function MessageInput({
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   seedFromHistory={!sessionId}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1352,10 +1338,10 @@ export function MessageInput({
                 <ReasoningSelector
                   // Key on the session so the optimistic pick never lingers across a switch.
                   key={sessionId ?? "__new__"}
-                  agent={agents.find((a) => a.id === activeAgentId)}
+                  agent={displayedHarnessAgent}
                   sessionReasoning={sessionReasoning}
                   onChange={(effort) => { leavePendingRole(); onReasoningChange(effort); }}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                   seedFromHistory={!hasActiveSession}
                 />
               </div>
@@ -1383,7 +1369,8 @@ export function MessageInput({
                 {liveSteeringActive && (
                   <button
                     onClick={handleSubmit}
-                    disabled={disabled || inert || !text.trim()}
+                    disabled={sendBlocked}
+                    {...(sendBlockedReason ? { title: sendBlockedReason } : {})}
                     className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                     aria-label="Send message"
                     data-testid="send-button"
@@ -1395,7 +1382,8 @@ export function MessageInput({
             ) : (
               <button
                 onClick={handleSubmit}
-                disabled={disabled || inert || !text.trim()}
+                disabled={sendBlocked}
+                {...(sendBlockedReason ? { title: sendBlockedReason } : {})}
                 className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                 aria-label="Send message"
                 data-testid="send-button"

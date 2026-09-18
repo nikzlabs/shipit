@@ -1,18 +1,7 @@
-/**
- * Test for the preview-proxy `preview_error` reporter wiring.
- *
- * Verifies that when the proxy can't reach a container (or HMR upgrade
- * fails), the reporter emits both a `preview_error` WS message (drives
- * the inline PreviewFrame banner) and a `log_entry` (Logs panel record),
- * and that repeats for the same (sessionId, port) within the throttle
- * window are suppressed.
- *
- * See docs/124-session-rescue-and-diagnostics §1.5.
- */
-
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { createPreviewErrorReporter } from "../preview-proxy.js";
+import { markStackUp, forgetStackUp } from "../preview-timing.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
@@ -52,7 +41,7 @@ function makeFakeRegistry(runners: Record<string, SessionRunnerInterface>): Sess
 }
 
 describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
-  it("emits preview_error + log_append once a failure persists past the grace window", () => {
+  it("emits log_append once a failure persists past the grace window", () => {
     const { runner, emitted } = makeFakeRunner("sess-1");
     let nowMs = 1_000_000;
     const report = createPreviewErrorReporter(
@@ -60,26 +49,11 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
       { now: () => nowMs, graceMs: 2_000 },
     );
 
-    // First error only starts the streak clock — nothing surfaces yet.
     report("sess-1", 5173, "Connection refused", false);
     expect(emitted.length).toBe(0);
 
-    // A later error, still unresolved past the grace window, surfaces.
     nowMs += 2_500;
     report("sess-1", 5173, "Connection refused", false);
-
-    const types = emitted.map((m) => m.type);
-    expect(types).toContain("preview_error");
-    expect(types).toContain("log_append");
-
-    const previewErr = emitted.find((m) => m.type === "preview_error");
-    expect(previewErr).toMatchObject({
-      type: "preview_error",
-      sessionId: "sess-1",
-      port: 5173,
-      message: "Connection refused",
-      upgrade: false,
-    });
 
     const logAppend = emitted.find((m) => m.type === "log_append");
     expect(logAppend).toMatchObject({
@@ -91,6 +65,29 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     });
   });
 
+  it("persists the record, not just the live line", () => {
+    const { runner, emitted } = makeFakeRunner("sess-p");
+    const persisted: { sessionId: string; source: string; text: string }[] = [];
+    let nowMs = 1_000_000;
+    const report = createPreviewErrorReporter(
+      makeFakeRegistry({ "sess-p": runner }),
+      {
+        now: () => nowMs,
+        graceMs: 2_000,
+        broadcastLog: (sessionId, source, text) => { persisted.push({ sessionId, source, text }); },
+      },
+    );
+
+    report("sess-p", 5173, "Connection refused", false);
+    nowMs += 2_500;
+    report("sess-p", 5173, "Connection refused", false);
+
+    expect(emitted.some((m) => m.type === "log_append")).toBe(true);
+    expect(persisted).toEqual([
+      { sessionId: "sess-p", source: "preview", text: expect.stringContaining("Preview unreachable on port 5173") as string },
+    ]);
+  });
+
   it("suppresses a transient error that recovers within the grace window", () => {
     const { runner, emitted } = makeFakeRunner("sess-tr");
     let nowMs = 1_000_000;
@@ -99,16 +96,12 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
       { now: () => nowMs, graceMs: 2_000 },
     );
 
-    // EHOSTUNREACH during container bring-up — held back.
     report("sess-tr", 3000, "connect EHOSTUNREACH 172.16.2.2:3000", false);
     expect(emitted.length).toBe(0);
 
-    // The next request reaches the upstream — streak cleared.
     nowMs += 500;
     report.success("sess-tr", 3000);
 
-    // Even well past the grace window, a fresh lone error stays silent
-    // because the streak was reset.
     nowMs += 5_000;
     report("sess-tr", 3000, "connect EHOSTUNREACH 172.16.2.2:3000", false);
     expect(emitted.length).toBe(0);
@@ -142,27 +135,42 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
       { now: () => nowMs, throttleMs: 5_000, graceMs: 2_000 },
     );
 
-    // Start the streak, then push past the grace window so errors surface.
     report("sess-3", 5173, "boom", false);
     nowMs += 2_500;
     report("sess-3", 5173, "boom", false);
-    expect(emitted.filter((m) => m.type === "preview_error").length).toBe(1);
+    expect(emitted.filter((m) => m.type === "log_append").length).toBe(1);
 
-    // Inside the throttle window — suppressed.
     nowMs += 1_000;
     report("sess-3", 5173, "boom", false);
-    expect(emitted.filter((m) => m.type === "preview_error").length).toBe(1);
+    expect(emitted.filter((m) => m.type === "log_append").length).toBe(1);
 
-    // Different port — needs its own streak past the grace window.
     report("sess-3", 5174, "boom", false);
     nowMs += 2_500;
     report("sess-3", 5174, "boom", false);
-    expect(emitted.filter((m) => m.type === "preview_error").length).toBe(2);
+    expect(emitted.filter((m) => m.type === "log_append").length).toBe(2);
 
-    // After the throttle window — releases for port 5173 (streak still open).
     nowMs += 6_000;
     report("sess-3", 5173, "boom", false);
-    expect(emitted.filter((m) => m.type === "preview_error").length).toBe(3);
+    expect(emitted.filter((m) => m.type === "log_append").length).toBe(3);
+  });
+
+  it("closes the activation→preview-ready measurement on the first answered request", () => {
+    const report = createPreviewErrorReporter(makeFakeRegistry({}));
+    markStackUp("sess-timing", [{ name: "web", port: 5173 }]);
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) logged.push(msg);
+    });
+
+    try {
+      report.success("sess-timing", 5173);
+    } finally {
+      spy.mockRestore();
+      forgetStackUp("sess-timing");
+    }
+
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("preview.first-connect for sess-timing port=5173");
   });
 
   it("no-ops when no runner is registered for the session", () => {

@@ -29,13 +29,65 @@ describe("assertSessionCanDispatch", () => {
   });
 });
 
-/**
- * planning#246 — the sidebar's "busy outside a turn" marker reaches other sessions
- * over the global SSE, and this factory holds the ONE subscriber that puts it
- * there. The runner announces its own changes (`background_work`) precisely so
- * no clear can be silent; that only pays off if the announcement is actually
- * wired, so this pins the wiring rather than the runner's own bookkeeping.
- */
+describe("createRunnerRegistry — docs/288 merge-hold seeding", () => {
+  function makeRegistry(isAgentMergeInFlight?: (sessionId: string) => boolean) {
+    return createRunnerRegistry({
+      effectiveRunnerFactory: undefined,
+      sessionManager: { get: () => undefined, getPrStatus: () => undefined } as never,
+      repoStore: { isTrusted: () => true } as never,
+      createGitManager: (() => ({})) as never,
+      githubAuthManager: { authenticated: false } as never,
+      agentFactory: undefined,
+      chatHistoryManager: {} as never,
+      autoPushScheduler: {
+        schedule: () => {}, cancel: () => {}, cancelAll: () => {}, pending: () => false,
+      },
+      sseBroadcast: () => {},
+      enforceIdleContainerLimit: () => {},
+      getDepCacheDir: () => "",
+      serviceManagers: new Map(),
+      composeStopPromises: new Map(),
+      composeWarnings: new Map(),
+      composeNotConfigured: new Set(),
+      containerManager: null,
+      serviceEnvDir: "/tmp/service-env",
+      runtimeMode: "local",
+      broadcastLog: () => {},
+      usageManager: {} as never,
+      ...(isAgentMergeInFlight ? { isAgentMergeInFlight } : {}),
+    });
+  }
+
+  it("creates a runner already held when its session's merge is in flight", () => {
+    const registry = makeRegistry((sessionId) => sessionId === "merging-session");
+    const runner = registry.getOrCreate("merging-session", "/tmp/s1", "claude");
+    expect(runner.mergeHold).toBe(true);
+    runner.dispose({ force: true });
+  });
+
+  it("also leases the seeded runner against reclamation", () => {
+    const registry = makeRegistry(() => true);
+    const runner = registry.getOrCreate("merging-session", "/tmp/s1", "claude");
+    expect(runner.postTurnWorkInFlight).toBe(true);
+    expect(runner.agentBusy).toBe(true);
+    runner.dispose({ force: true });
+  });
+
+  it("creates an ordinary runner unheld", () => {
+    const registry = makeRegistry((sessionId) => sessionId === "merging-session");
+    const runner = registry.getOrCreate("other-session", "/tmp/s2", "claude");
+    expect(runner.mergeHold).toBe(false);
+    expect(runner.postTurnWorkInFlight).toBe(false);
+    runner.dispose({ force: true });
+  });
+
+  it("creates an unheld runner when no merge executor is wired at all", () => {
+    const runner = makeRegistry().getOrCreate("s1", "/tmp/s1", "claude");
+    expect(runner.mergeHold).toBe(false);
+    runner.dispose({ force: true });
+  });
+});
+
 describe("createRunnerRegistry — background-work marker wiring", () => {
   function makeRegistry() {
     const sseBroadcast = vi.fn();
@@ -59,8 +111,6 @@ describe("createRunnerRegistry — background-work marker wiring", () => {
       composeNotConfigured: new Set(),
       containerManager: null,
       serviceEnvDir: "/tmp/service-env",
-      // Skips the ServiceManager wiring entirely — irrelevant here and the
-      // heaviest part of `onRunnerCreated`.
       runtimeMode: "local",
       broadcastLog: () => {},
       usageManager: {} as never,
@@ -86,9 +136,6 @@ describe("createRunnerRegistry — background-work marker wiring", () => {
     runner.dispose({ force: true });
   });
 
-  // The clears that had no announcement of their own before planning#246: a
-  // spawn-identity change, a credential rotation, the stuck-running reconciler,
-  // and dispose. Each left a green dot on a session with nothing running.
   it("broadcasts the drain on a bare clearBackgroundTasks", () => {
     const { runner, attention } = makeRegistry();
     runner.isStreamingActive = true;

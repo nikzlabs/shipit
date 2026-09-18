@@ -4,14 +4,6 @@ import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 
-/**
- * docs/202 — `quickCreatePr` re-arm overrides: when re-arming a merged-then-
- * rebased session, the new PR must target the prior PR's base (not auto-detected
- * main/master) and push with `--force-with-lease` (the old remote branch often
- * survives and the rebased branch has diverged). Gated on the re-arm options so
- * a normal create is never force-pushed.
- */
-
 const REMOTE = "https://github.com/o/r.git";
 
 function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitManager {
@@ -58,7 +50,6 @@ describe("quickCreatePr (docs/202 re-arm overrides)", () => {
 
     expect(git.forcePush).toHaveBeenCalledWith("origin", "shipit/x");
     expect(git.push).not.toHaveBeenCalled();
-    // The base is the prior PR's base, not auto-detected main.
     expect(git.listRemoteBranches).not.toHaveBeenCalled();
     expect(github.createPullRequest).toHaveBeenCalledWith(
       expect.objectContaining({ base: "release/v2", head: "shipit/x" }),
@@ -85,17 +76,39 @@ describe("quickCreatePr (docs/202 re-arm overrides)", () => {
   });
 });
 
-/**
- * docs/252 phase 7 (req 9) — a failed or unavailable generation must yield the
- * generic description, not an empty one.
- *
- * This was the actual production behaviour before phase 7 and it was invisible:
- * the orchestrator has no resident agent, so the default text generator
- * returned `""`, the generic prose lived only in the `catch`, and every
- * containerized pull request got an empty body with nothing anywhere saying
- * why. The requirement calls this half a *change*, so both paths — a rejection
- * and a blank success — are pinned separately.
- */
+describe("quickCreatePr — created vs discovered (docs/287)", () => {
+  it("reports `alreadyExisted: false` and the repository when it creates the PR", async () => {
+    const github = makeGitHub();
+
+    const result = await quickCreatePr(
+      makeGit(), github, chatHistory, generateText, "s1", "Title", "/ws/s1", REMOTE,
+    );
+
+    expect(github.createPullRequest).toHaveBeenCalled();
+    expect(result.alreadyExisted).toBe(false);
+    expect(result).toMatchObject({ owner: "o", repo: "r" });
+  });
+
+  it("reports `alreadyExisted: true` for a pull request it merely found", async () => {
+    const github = makeGitHub();
+    (github.findPullRequest as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      number: 41,
+      url: "https://github.com/o/r/pull/41",
+      title: "Opened by someone else",
+      body: "",
+      base: "main",
+    });
+
+    const result = await quickCreatePr(
+      makeGit(), github, chatHistory, generateText, "s1", "Title", "/ws/s1", REMOTE,
+    );
+
+    expect(github.createPullRequest).not.toHaveBeenCalled();
+    expect(result.number).toBe(41);
+    expect(result.alreadyExisted).toBe(true);
+  });
+});
+
 describe("quickCreatePr description fallback (docs/252 req 9)", () => {
   it("falls back to the generic description when generation returns nothing", async () => {
     const git = makeGit();
@@ -144,14 +157,6 @@ describe("quickCreatePr description fallback (docs/252 req 9)", () => {
   });
 });
 
-/**
- * docs/252 phase 7 (req 9) — the DIRECT "generate a description" endpoint
- * (`POST /api/sessions/:id/pr/description`) needs the same normalization.
- *
- * Cross-backend review found it still returning the empty string: the user
- * pressed the button and got nothing back, which is exactly the behaviour the
- * requirement calls a change rather than one to preserve.
- */
 describe("generatePrDescription fallback (docs/252 req 9)", () => {
   it("returns the generic description when generation returns nothing", async () => {
     const git = makeGit();
@@ -163,8 +168,6 @@ describe("generatePrDescription fallback (docs/252 req 9)", () => {
   it("returns nothing at all when the branch has no commits to describe", async () => {
     const git = makeGit({ log: vi.fn(async () => []) });
     const { description } = await generatePrDescription(git, async () => "", "/ws/s1", "s1");
-    // No commits means there is nothing to summarize — the pre-existing
-    // short-circuit, unchanged.
     expect(description).toBe("");
   });
 

@@ -1,15 +1,3 @@
-/**
- * Unit/integration test for the stack_error subscriber wiring.
- *
- * Verifies that when a ServiceManager emits stack_error, the wiring in
- * `app-lifecycle.ts` routes the failure to:
- *   1. The per-session log ring via `broadcastLog`.
- *   2. Attached viewers via `runner.emitMessage` (both a `log_entry` and
- *      the dedicated `stack_error` WS type).
- *
- * See docs/124-session-rescue-and-diagnostics §1.1.
- */
-
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { handleStackError } from "../app-lifecycle.js";
@@ -21,7 +9,6 @@ function makeFakeRunner(sessionId: string): {
   emitted: WsServerMessage[];
 } {
   const emitted: WsServerMessage[] = [];
-  // Minimal runner stub — only the fields handleStackError reads matter.
   const runner = Object.assign(new EventEmitter(), {
     sessionId,
     sessionDir: "/tmp/x",

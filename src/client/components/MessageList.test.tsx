@@ -4,9 +4,9 @@ import { MessageList, parseMessageSegments, type ChatMessage, type ChatMessageIm
 import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import type { SessionInfo } from "../../server/shared/types.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+import type { SessionInfo, SessionStatus } from "../../server/shared/types.js";
 
-// jsdom doesn't implement scrollIntoView
 beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
 });
@@ -198,14 +198,13 @@ describe("MessageList", () => {
       expect(card).toBeInTheDocument();
       expect(card.textContent).toContain("Sent 3 comments");
       expect(card.textContent).toContain("docs/149/plan.md");
-      // Shaped like a user bubble, not an agent-side left-border card — that
-      // similarity is what made it blend into the surrounding agent turns.
+
       expect(card.className).toContain("bg-(--color-accent-subtle)");
       expect(card.className).not.toContain("border-l-2");
-      // Prompt body is collapsed by default — the toggle is visible, the body isn't.
+
       expect(screen.getByTestId("user-review-prompt-toggle")).toBeInTheDocument();
       expect(screen.queryByTestId("user-review-prompt")).not.toBeInTheDocument();
-      // Clicking the toggle expands the prompt body.
+
       fireEvent.click(screen.getByTestId("user-review-prompt-toggle"));
       expect(screen.getByTestId("user-review-prompt").textContent).toContain("comment 1");
     });
@@ -240,7 +239,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // shell/Bash deliberately shows no tool word — just the command, flush.
+
       expect(screen.queryByText("Bash")).toBeNull();
       expect(screen.getByText("npm test")).toBeInTheDocument();
     });
@@ -353,7 +352,7 @@ describe("MessageList", () => {
       expect(groups).toHaveLength(1);
       expect(groups[0].className).toContain("max-h-30");
       expect(groups[0].className).toContain("overflow-y-auto");
-      // All tools render inside the group (Bash shows its command, no icon)
+
       expect(screen.getByText("npm test")).toBeInTheDocument();
       expect(screen.getByText("app.ts")).toBeInTheDocument();
       expect(screen.getByText("TODO")).toBeInTheDocument();
@@ -373,7 +372,7 @@ describe("MessageList", () => {
       );
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(1);
-      // DiffBlock verbs render as labeled icons inside the group
+
       expect(screen.getByLabelText("Edit")).toBeInTheDocument();
       expect(screen.getByLabelText("Write")).toBeInTheDocument();
     });
@@ -388,7 +387,7 @@ describe("MessageList", () => {
       render(<MessageList messages={messages} isLoading={false} />);
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(1);
-      // All three tools are inside the single group (Glob → files icon + "Glob" verb)
+
       expect(within(groups[0]).getByText("Glob")).toBeInTheDocument();
       expect(groups[0].textContent).toContain("a.ts");
       expect(groups[0].textContent).toContain("b.ts");
@@ -400,10 +399,10 @@ describe("MessageList", () => {
         { role: "assistant", text: "Now editing", toolUse: [{ type: "tool_use", id: "t2", name: "Edit", input: { file_path: "a.ts", old_string: "a", new_string: "b" } }] },
       ];
       render(<MessageList messages={messages} isLoading={false} />);
-      // Text bubbles should be visible
+
       expect(screen.getByText(/Let me check/)).toBeInTheDocument();
       expect(screen.getByText(/Now editing/)).toBeInTheDocument();
-      // Each message's tools form a separate group (order preserved)
+
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(2);
     });
@@ -498,7 +497,7 @@ describe("MessageList", () => {
           searchMatches={searchMatches}
         />
       );
-      // The full text should be present (split across text nodes)
+
       expect(screen.getByText(/abc/)).toBeInTheDocument();
       expect(screen.getByText(/xyz/)).toBeInTheDocument();
     });
@@ -506,7 +505,7 @@ describe("MessageList", () => {
     it("highlights text in non-code segments when message has code blocks", () => {
       const text = "find hello here\n```js\ncode\n```\nmore text";
       const messages = [msg("user", text)];
-      // "hello" starts at index 5 in the original text, within the first text segment
+
       const searchMatches = [{ messageIndex: 0, start: 5, length: 5 }];
 
       const { container } = render(
@@ -630,10 +629,9 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Code block should exist
+
       expect(container.querySelectorAll("pre code.hljs")).toHaveLength(1);
-      // Header is always rendered (it hosts the Copy button) — the label
-      // reads "code" when no explicit language was given.
+
       const headerLabel = container.querySelector(
         ".border-b.border-\\(--color-border-primary\\) > span"
       );
@@ -676,7 +674,7 @@ describe("MessageList", () => {
     });
 
     it("applies break-words to user message bubble so long unbroken strings wrap", () => {
-      // Reproduces overflow seen when a user pastes a long JSON/error blob with no whitespace.
+
       const longBlob = "a".repeat(500);
       render(
         <MessageList
@@ -697,7 +695,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // The message bubble should NOT have whitespace-pre-wrap on the parent
+
       const bubble = container.querySelector("div[class*='bg-(--color-bg-secondary)']");
       expect(bubble?.className).not.toContain("whitespace-pre-wrap");
     });
@@ -711,7 +709,7 @@ describe("MessageList", () => {
         />
       );
       const codeEl = container.querySelector("pre code.hljs");
-      // highlight.js wraps tokens in <span> tags with hljs-* classes
+
       expect(codeEl?.innerHTML).toContain("hljs-");
     });
   });
@@ -765,8 +763,7 @@ describe("MessageList", () => {
     });
 
     it("offers fork-only at intermediate gaps while loading (planning#184)", () => {
-      // While a turn runs, in-place rewind (chat/code/both) is hidden but fork
-      // stays available — it spins off a new session and doesn't mutate this one.
+
       const onRewindAtGap = vi.fn();
       const errorMsg: ChatMessage = { role: "user", text: "bad", isError: true, streaming: false };
       render(
@@ -779,8 +776,7 @@ describe("MessageList", () => {
       const forkControl = screen.getAllByLabelText("Fork as new session")[0];
       expect(forkControl).toBeInTheDocument();
       expect(forkControl).not.toBeDisabled();
-      // The full rewind menu is suppressed mid-turn, and the current-state fork
-      // handle (rendered only when idle) is absent.
+
       expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
       expect(screen.queryByLabelText("Fork current state")).not.toBeInTheDocument();
     });
@@ -843,10 +839,9 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Initially no modal — result not visible
+
       expect(screen.queryByText("greet output")).toBeNull();
 
-      // Click to open modal
       fireEvent.click(screen.getByLabelText("Show output"));
       expect(screen.getByText("greet output")).toBeInTheDocument();
     });
@@ -864,11 +859,10 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Open modal
+
       fireEvent.click(screen.getByLabelText("Show output"));
       expect(screen.getByText("hello world output")).toBeInTheDocument();
 
-      // Close modal
       fireEvent.click(screen.getByLabelText("Close"));
       expect(screen.queryByText("hello world output")).toBeNull();
     });
@@ -888,7 +882,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Both tools should have show output buttons
+
       const buttons = screen.getAllByLabelText("Show output");
       expect(buttons).toHaveLength(2);
     });
@@ -906,7 +900,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Edit tools are rendered as DiffBlock, not with the button
+
       expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
@@ -939,7 +933,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // No match — no button should appear
+
       expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
@@ -968,9 +962,7 @@ describe("MessageList", () => {
           input: { title: "Sales Chart" },
         },
       ];
-      // Real shape: the MCP bridge returns a content-block array, which
-      // agent-event.ts JSON-stringifies into result.content. Use that exact
-      // shape (not a bare object) so this test exercises the production path.
+
       const results: ToolResultBlock[] = [
         {
           toolUseId: "t1",
@@ -996,9 +988,7 @@ describe("MessageList", () => {
     });
 
     it("renders a view chip when the bridge payload is a bare JSON object (legacy shipit-present name)", () => {
-      // planning#130 consolidated the per-tool servers into `shipit`, but pre-planning#130
-      // sessions persisted the tool call under `mcp__shipit-present__present`.
-      // isPresentTool still recognizes the legacy server name so those cards render.
+
       usePresentStore.getState().hydrate([
         {
           presentId: "pres_bare",
@@ -1030,7 +1020,7 @@ describe("MessageList", () => {
 
   describe("image rendering in messages", () => {
     const testImage: ChatMessageImage = {
-      data: "iVBORw0KGgo=", // tiny fake base64
+      data: "iVBORw0KGgo=",                    
       mediaType: "image/png",
     };
 
@@ -1285,15 +1275,8 @@ describe("MessageList", () => {
     });
   });
 
-  // Phase 1 of docs/153 deleted the MessageList freeze hack that snapshotted
-  // the message array while the user had an active text selection. The freeze
   // existed because the old `marked` + `dangerouslySetInnerHTML` pipeline
-  // rewrote whole subtrees on every streaming token, which detached the text
-  // nodes the browser's Selection Range pointed into. With `react-markdown`
-  // the React tree reconciles in place: appending text into a paragraph
-  // updates `nodeValue` on the same text node, leaving the selection anchor
-  // intact. These tests pin that property so the freeze hack doesn't have to
-  // be reintroduced.
+
   describe("streaming-selection stability (react-markdown)", () => {
     it("preserves the existing paragraph text node when a streaming token is appended", () => {
       const { container, rerender } = render(
@@ -1348,7 +1331,6 @@ describe("MessageList", () => {
     });
   });
 
-
   describe("task panel rendering (CLI 2.1.220 Task* tools)", () => {
     const create = (id: string, subject: string): ToolUseBlock => ({
       type: "tool_use",
@@ -1380,7 +1362,7 @@ describe("MessageList", () => {
       expect(screen.getByText("Read the code")).toBeInTheDocument();
       expect(screen.getByText("Write the fix")).toBeInTheDocument();
       expect(screen.getByText("0/2 completed")).toBeInTheDocument();
-      // The regression: the call used to fall through to the compact tool line.
+
       expect(screen.queryByText("TaskCreate")).not.toBeInTheDocument();
     });
 
@@ -1468,10 +1450,10 @@ describe("MessageList", () => {
       const { container } = render(
         <MessageList messages={messages} isLoading={false} />
       );
-      // Only one full panel (the latest)
+
       const panels = container.querySelectorAll('[data-testid="todo-panel"]');
       expect(panels).toHaveLength(1);
-      // Older TodoWrite is hidden, not shown as a one-liner
+
       expect(screen.queryByText("Updated task list")).not.toBeInTheDocument();
     });
 
@@ -1536,22 +1518,19 @@ describe("MessageList", () => {
       ];
       render(<MessageList messages={messages} isLoading={false} />);
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-      // The subagent's own work is reachable — this is what the Task-only gate
-      // discarded. It sits behind its (collapsed-by-default) disclosure.
+
       expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId("subagent-work-toggle"));
       expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
       expect(screen.getByText(/Running the command/)).toBeInTheDocument();
-      // And its final report.
+
       expect(screen.getByTestId("subagent-final-report")).toBeInTheDocument();
       expect(screen.getByText(/Output/)).toBeInTheDocument();
       expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
     });
 
     it("keeps the description, subagent type and prompt an Agent call carried before", () => {
-      // The pre-fix strip showed `Agent (general-purpose): <description>` plus
-      // an inline prompt preview. None of that may be lost by routing into
-      // `SubagentCall` — the prompt just moves behind its disclosure.
+
       const tools: ToolUseBlock[] = [
         {
           type: "tool_use",
@@ -1615,7 +1594,7 @@ describe("MessageList", () => {
       );
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
       expect(screen.getByText("Plan UI beautification approach")).toBeInTheDocument();
-      // Prompt is collapsed by default — toggle is visible, prompt body is not.
+
       expect(screen.getByTestId("subagent-prompt-toggle")).toBeInTheDocument();
       expect(screen.queryByTestId("subagent-prompt")).not.toBeInTheDocument();
     });
@@ -1687,14 +1666,12 @@ describe("MessageList", () => {
       ];
       render(<MessageList messages={messages} isLoading={false} />);
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-      // Final report is always visible
+
       expect(screen.getByTestId("subagent-final-report")).toBeInTheDocument();
       expect(screen.getByText(/Findings/)).toBeInTheDocument();
-      // "Done" status badge once final report has arrived
+
       expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
-      // Work is collapsed by default — the toggle advertises the action count
-      // so the reader can see something happened without the timeline eating
-      // the transcript. Clicking it reveals the tool calls and per-step text.
+
       expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
       expect(screen.getByTestId("subagent-work-toggle")).toHaveTextContent("2 actions");
       fireEvent.click(screen.getByTestId("subagent-work-toggle"));
@@ -1759,7 +1736,7 @@ describe("MessageList", () => {
         { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t3", name: "Read", input: { file_path: "a.ts" } }] },
       ];
       render(<MessageList messages={messages} isLoading={false} />);
-      // Task should break the tool group, resulting in two separate tool-call-groups
+
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(2);
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
@@ -1773,8 +1750,8 @@ describe("MessageList", () => {
         { role: "assistant", text: "Editing", toolUse: [{ type: "tool_use", id: "t2", name: "Edit", input: { file_path: "b.ts", old_string: "a", new_string: "b" } }], streaming: true },
       ];
       render(<MessageList messages={messages} isLoading={true} />);
-      // There should be exactly one spinner (the tool-spinner class) in the DOM
-      const spinners = document.querySelectorAll(".tool-spinner");
+
+      const spinners = document.querySelectorAll(".spinner");
       expect(spinners).toHaveLength(1);
     });
 
@@ -1789,63 +1766,12 @@ describe("MessageList", () => {
         },
       ];
       render(<MessageList messages={messages} isLoading={true} />);
-      expect(document.querySelector(".tool-spinner")).not.toBeInTheDocument();
+      expect(document.querySelector(".spinner")).not.toBeInTheDocument();
     });
   });
 
-  describe("compacting indicator placement (docs/178)", () => {
-    afterEach(() => {
-      useSessionStore.setState({ compacting: false, compactingAnchor: null });
-    });
-
-    it("renders above a message the user sent while the compaction was running", () => {
-      // The anchor is the transcript length when the compaction started, so
-      // "/compact" is above the spinner and the message typed after it is below.
-      useSessionStore.setState({ compacting: true, compactingAnchor: 1 });
-
-      render(
-        <MessageList
-          messages={[msg("user", "/compact"), msg("user", "go ahead with phase 1")]}
-          isLoading={true}
-        />,
-      );
-
-      const indicator = screen.getByTestId("compacting-indicator");
-      const compactBubble = screen.getByText("/compact");
-      const laterBubble = screen.getByText("go ahead with phase 1");
-      expect(compactBubble.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(indicator.compareDocumentPosition(laterBubble) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it("renders at the end when nothing was appended after the compaction started", () => {
-      useSessionStore.setState({ compacting: true, compactingAnchor: 2 });
-
-      render(
-        <MessageList messages={[msg("user", "/compact"), msg("assistant", "working")]} isLoading={true} />,
-      );
-
-      const indicator = screen.getByTestId("compacting-indicator");
-      const last = screen.getByText("working");
-      expect(last.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it("falls back to the end of the list when no anchor was captured", () => {
-      useSessionStore.setState({ compacting: true, compactingAnchor: null });
-
-      render(<MessageList messages={[msg("user", "/compact"), msg("user", "later")]} isLoading={true} />);
-
-      const indicator = screen.getByTestId("compacting-indicator");
-      const last = screen.getByText("later");
-      expect(last.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-  });
-
-  // Reproduces the user-reported "missed questions" bug: an
-  // AskUserQuestion shown in chat history (or after Claude has continued
   // streaming after the prompt) used to be disabled because the question's
-  // message wasn't the last in the array. The fix is to gate disabling on
-  // whether the tool has a result, not on isLastMessage / streaming /
-  // isLoading.
+
   describe("AskUserQuestion clickability", () => {
     const askToolInput = {
       questions: [
@@ -1876,14 +1802,12 @@ describe("MessageList", () => {
         <MessageList messages={messages} isLoading={true} onAnswerQuestion={onAnswerQuestion} />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" }, "Redis");
     });
 
     it("remains clickable when its message is no longer the last in chat", () => {
-      // Reproduces the case where Claude has continued streaming text
-      // after the AskUserQuestion (or where any other event has bumped
-      // the question off the end of the messages array) before the user
-      // got to answer. Without this fix the click was dropped silently.
+
       const onAnswerQuestion = vi.fn();
       const messages: ChatMessage[] = [
         msg("user", "Help me decide"),
@@ -1899,12 +1823,12 @@ describe("MessageList", () => {
         <MessageList messages={messages} isLoading={false} onAnswerQuestion={onAnswerQuestion} />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" }, "Redis");
     });
 
     it("renders the answered state (and ignores clicks) when the tool has a result", () => {
-      // After a page reload, the persisted tool_result is the only
-      // signal that a historical AskUserQuestion has already been
+
       // answered. The component must read it and render the answered
       // state; clicks must not re-fire onAnswerQuestion.
       const onAnswerQuestion = vi.fn();
@@ -1929,10 +1853,7 @@ describe("MessageList", () => {
   });
 
   // planning#80 — the spawned-session card's "Open" button must route through the
-  // router-aware onResumeSession handler (which resets per-session stores and
-  // navigates), not the bare setSessionId fallback. The bare fallback left a
-  // stale URL and stale messages, which on mobile surfaced as a truncated
-  // dialogue behind an unchanged session.
+
   describe("spawned-session card open wiring", () => {
     function seedChild(id: string): void {
       useSessionStore.setState({
@@ -1982,12 +1903,6 @@ describe("MessageList", () => {
   });
 });
 
-/**
- * docs/258 — agent-authored pointers are live in assistant messages and nowhere
- * else. Worth guarding here rather than only at `MarkdownContent`: this is the
- * one call site that turns the capability on, and the messages it renders
- * include ones ShipIt did not author.
- */
 describe("MessageList — agent-authored pointers", () => {
   const POINTER = "[start it](shipit-preview://web/x?shipit-render=button)";
 
@@ -1997,9 +1912,7 @@ describe("MessageList — agent-authored pointers", () => {
   });
 
   it("does not render one in a message a preview page composed", () => {
-    // The Agent Interface SDK lets an arbitrary page the user built compose a
-    // message into this transcript. It arrives as `role: "user"`, which renders
-    // as plain text — no markdown, so no pointer and no way to start a service.
+
     render(<MessageList messages={[{
       role: "user",
       text: POINTER,
@@ -2020,5 +1933,446 @@ describe("MessageList — agent-authored pointers", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "start it" })).toBeNull();
+  });
+});
+
+// docs/303 req 6 — the card is the last element of the conversation, inside the
+// scroll container, and is read from the session record rather than the transcript.
+describe("session status card slot", () => {
+  const status: SessionStatus = {
+    status: "Billing routes done; PR #212 ready to merge.",
+    actions: [],
+    fresh: true,
+    writeSeq: 1,
+  };
+
+  function seed(sessionStatus?: SessionStatus): void {
+    useSessionStore.setState({
+      sessionId: "s1",
+      sessions: [{
+        id: "s1",
+        title: "Billing",
+        createdAt: "2026-01-01T00:00:00Z",
+        lastUsedAt: "2026-01-01T00:00:00Z",
+        ...(sessionStatus ? { sessionStatus } : {}),
+      } as SessionInfo],
+      activeRunnerSessions: new Set<string>(),
+    });
+    useSettingsStore.setState({ sessionStatusCard: true });
+  }
+
+  afterEach(() => {
+    useSessionStore.setState({ sessionId: undefined, sessions: [], activeRunnerSessions: new Set<string>() });
+    useSettingsStore.setState({ sessionStatusCard: false });
+  });
+
+  it("renders the card as the last child of the scrolling content, after every transcript row", () => {
+    seed(status);
+    const { container } = render(
+      <MessageList
+        messages={[msg("user", "do it"), msg("assistant", "done")]}
+        isLoading={false}
+        // The trailing rewind point renders only with the controls wired; the
+        // card sits after it (docs/303 → Client).
+        onRewindAtGap={() => {}}
+      />,
+    );
+    const card = screen.getByTestId("session-status-card");
+    const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+    expect(card.parentElement).toBe(content);
+    expect(content.lastElementChild).toBe(card);
+    expect(content.contains(screen.getByText("done"))).toBe(true);
+  });
+
+  it("renders nothing for a session with no stored card", () => {
+    seed(undefined);
+    render(<MessageList messages={[msg("assistant", "done")]} isLoading={false} />);
+    expect(screen.queryByTestId("session-status-card")).toBeNull();
+  });
+
+  it("renders nothing while the setting is off", () => {
+    seed(status);
+    useSettingsStore.setState({ sessionStatusCard: false });
+    render(<MessageList messages={[msg("assistant", "done")]} isLoading={false} />);
+    expect(screen.queryByTestId("session-status-card")).toBeNull();
+  });
+
+  // docs/303 req 30 — at the bottom only once the agent has stopped.
+  describe("while a turn runs", () => {
+    const settled = [msg("user", "do it"), msg("assistant", "done")];
+
+    /** Whether `first` comes before `second` in the rendered document. */
+    function precedes(first: Element, second: Element): boolean {
+      return (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    }
+
+    it("keeps the place it had, so the turn's output renders below it", () => {
+      seed(status);
+      const { rerender } = render(<MessageList messages={settled} isLoading={false} />);
+      rerender(<MessageList messages={[...settled, msg("user", "next")]} isLoading={true} />);
+      rerender(
+        <MessageList
+          messages={[...settled, msg("user", "next"), msg("assistant", "working on it")]}
+          isLoading={true}
+        />,
+      );
+      const card = screen.getByTestId("session-status-card");
+      expect(precedes(screen.getByText("done"), card)).toBe(true);
+      // The user's own message belongs to the turn that is starting, not to the
+      // finished conversation, so it renders below the card too.
+      expect(precedes(card, screen.getByText("next"))).toBe(true);
+      expect(precedes(card, screen.getByText("working on it"))).toBe(true);
+    });
+
+    it("is the last element again once the turn stops", () => {
+      seed(status);
+      const running = [...settled, msg("user", "next"), msg("assistant", "finished")];
+      // Idle first, so the anchor is frozen above the turn and has to clear.
+      const { container, rerender } = render(<MessageList messages={settled} isLoading={false} />);
+      rerender(<MessageList messages={running} isLoading={true} />);
+      rerender(<MessageList messages={running} isLoading={false} />);
+      const card = screen.getByTestId("session-status-card");
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild).toBe(card);
+      expect(precedes(screen.getByText("finished"), card)).toBe(true);
+    });
+
+    it("moves without remounting, so a row the user has just ticked stays ticked", () => {
+      seed({
+        ...status,
+        actions: [{
+          offerId: "o1",
+          offeredAt: "2026-09-16T00:00:00Z",
+          id: "wire-webhook",
+          label: "Wire the Stripe webhook",
+          description: "Adds /webhooks/stripe.",
+          payload: "Wire the Stripe webhook.",
+        }],
+      });
+      const { rerender } = render(<MessageList messages={settled} isLoading={false} />);
+      const offer = screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ });
+      fireEvent.click(offer);
+      expect(screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ })).toBeChecked();
+
+      const running = [...settled, msg("user", "go"), msg("assistant", "on it")];
+      rerender(<MessageList messages={[...settled, msg("user", "go")]} isLoading={true} />);
+      rerender(<MessageList messages={running} isLoading={true} />);
+      expect(screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ })).toBeChecked();
+
+      // And back again: the return to the end is the other half of the move.
+      rerender(<MessageList messages={running} isLoading={false} />);
+      expect(screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ })).toBeChecked();
+    });
+
+    it("keeps a submitted offer greyed and tagged through the move and back", () => {
+      seed({
+        ...status,
+        actions: [{
+          offerId: "o1",
+          offeredAt: "2026-09-16T00:00:00Z",
+          id: "wire-webhook",
+          label: "Wire the Stripe webhook",
+          description: "Adds /webhooks/stripe.",
+          payload: "Wire the Stripe webhook.",
+        }],
+        needsYou: ["Add the Stripe test key."],
+      });
+      const { rerender } = render(
+        <MessageList messages={settled} isLoading={false} onSendFollowUp={() => true} />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ }));
+      fireEvent.click(screen.getByRole("checkbox", { name: /Add the Stripe test key/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+      expect(screen.getAllByText("SENT")).toHaveLength(2);
+
+      const running = [...settled, msg("user", "go"), msg("assistant", "on it")];
+      rerender(<MessageList messages={running} isLoading={true} onSendFollowUp={() => true} />);
+      expect(screen.getAllByText("SENT")).toHaveLength(2);
+      rerender(<MessageList messages={running} isLoading={false} onSendFollowUp={() => true} />);
+      expect(screen.getAllByText("SENT")).toHaveLength(2);
+    });
+
+    // The card's anchor flushes a row group early, which shifts every later
+    // group's ordinal. Groups are keyed by the row they start at so that only
+    // the split group is re-parented; an ordinal key would remount the tail of
+    // the transcript every time a turn starts or stops.
+    it("leaves the groups past its own untouched when the anchor moves", () => {
+      seed(status);
+      const line = (i: number) => msg("assistant", `line ${i}`);
+      const settledRows = Array.from({ length: 50 }, (_, i) => line(i));
+      const turnRows = Array.from({ length: 15 }, (_, i) => line(50 + i));
+      const { rerender } = render(<MessageList messages={settledRows} isLoading={false} />);
+      rerender(<MessageList messages={settledRows} isLoading={true} />);
+      rerender(<MessageList messages={[...settledRows, ...turnRows]} isLoading={true} />);
+      const tail = screen.getByText("line 60");
+      rerender(<MessageList messages={[...settledRows, ...turnRows]} isLoading={false} />);
+      expect(screen.getByText("line 60")).toBe(tail);
+    });
+
+    it("does not anchor on the empty transcript a session switch leaves behind", () => {
+      seed(status);
+      // Switching to a running session clears the messages and sets isLoading
+      // before the history arrives.
+      const { rerender } = render(<MessageList messages={[]} isLoading={true} />);
+      rerender(<MessageList messages={settled} isLoading={true} />);
+      rerender(<MessageList messages={[...settled, msg("assistant", "the rest")]} isLoading={true} />);
+      const card = screen.getByTestId("session-status-card");
+      expect(precedes(screen.getByText("done"), card)).toBe(true);
+      expect(precedes(card, screen.getByText("the rest"))).toBe(true);
+    });
+
+    it("puts a streaming reply below the card rather than growing it above", () => {
+      seed(status);
+      const streaming = (text: string) => ({ ...msg("assistant", text), streaming: true });
+      const { rerender } = render(
+        <MessageList messages={[...settled, streaming("half a sen")]} isLoading={true} />,
+      );
+      rerender(<MessageList messages={[...settled, streaming("half a sentence and more")]} isLoading={true} />);
+      const card = screen.getByTestId("session-status-card");
+      expect(precedes(screen.getByText("done"), card)).toBe(true);
+      expect(precedes(card, screen.getByText("half a sentence and more"))).toBe(true);
+    });
+
+    // A turn with no user row of its own — a dispatched one — can leave its
+    // first tools in the same group as the settled turn's last ones. One row
+    // cannot sit on both sides of the anchor: the whole group goes below the
+    // card, so the turn's output is never above it, at the cost of taking a
+    // settled tool down with it. The trade-off is argued in plan.md.
+    it("puts a tool group that straddles the boundary below the card, not the card below it", () => {
+      seed(status);
+      const read = (id: string, path: string): ChatMessage => ({
+        role: "assistant",
+        text: "",
+        toolUse: [{ type: "tool_use", id, name: "Read", input: { file_path: path } }],
+      });
+      const before = [msg("assistant", "done"), read("t1", "settled.ts")];
+      const { rerender } = render(<MessageList messages={before} isLoading={false} />);
+      rerender(<MessageList messages={before} isLoading={true} />);
+      rerender(<MessageList messages={[...before, read("t2", "live.ts")]} isLoading={true} />);
+      const card = screen.getByTestId("session-status-card");
+      const group = screen.getByTestId("tool-call-group");
+      expect(group.textContent).toContain("live.ts");
+      expect(precedes(screen.getByText("done"), card)).toBe(true);
+      expect(precedes(card, group)).toBe(true);
+    });
+
+    it("anchors at the end of what a viewer joining mid-turn already has", () => {
+      seed(status);
+      const joined = [...settled, msg("assistant", "half done")];
+      const { rerender } = render(<MessageList messages={joined} isLoading={true} />);
+      rerender(<MessageList messages={[...joined, msg("assistant", "the rest")]} isLoading={true} />);
+      const card = screen.getByTestId("session-status-card");
+      expect(precedes(screen.getByText("half done"), card)).toBe(true);
+      expect(precedes(card, screen.getByText("the rest"))).toBe(true);
+    });
+  });
+
+  // docs/303 req 32 — a card that waits for the user's answer is the last
+  // element of the conversation, so the view lands on the control they need.
+  describe("a card waiting for an answer goes last", () => {
+    const ASK_INPUT = {
+      questions: [
+        {
+          question: "Which cache?",
+          header: "Cache",
+          options: [
+            { label: "Redis", description: "External" },
+            { label: "Memcached", description: "Simple" },
+          ],
+          multiSelect: false,
+        },
+      ],
+    };
+
+    const question = (over: Partial<ChatMessage> = {}): ChatMessage => ({
+      role: "assistant",
+      text: "",
+      toolUse: [{ type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT }],
+      ...over,
+    }) as ChatMessage;
+
+    const voiceCard = (): ChatMessage => ({
+      role: "assistant",
+      text: "",
+      voiceNote: { id: "v1", headline: "Question on screen.", kind: "ask", createdAt: "t" },
+    }) as ChatMessage;
+
+    function precedes(first: Element, second: Element): boolean {
+      return (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    }
+
+    const asked = [msg("user", "decide"), question(), voiceCard()];
+
+    it("puts the status card and the voice note above the question, and the question last", () => {
+      seed(status);
+      const { container } = render(<MessageList messages={asked} isLoading={false} />);
+
+      const card = screen.getByTestId("session-status-card");
+      const ask = screen.getByTestId("option-Redis");
+      const voice = screen.getByText("Question on screen.");
+      expect(precedes(voice, card)).toBe(true);
+      expect(precedes(card, ask)).toBe(true);
+
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild!.contains(ask)).toBe(true);
+    });
+
+    it("holds even while the status card offers actions, which wait and the question does not", () => {
+      seed({
+        ...status,
+        actions: [{
+          offerId: "o1",
+          offeredAt: "2026-09-16T00:00:00Z",
+          id: "wire-webhook",
+          label: "Wire the Stripe webhook",
+          description: "Adds /webhooks/stripe.",
+          payload: "Wire the Stripe webhook.",
+        }],
+      });
+      render(<MessageList messages={asked} isLoading={false} />);
+
+      expect(precedes(
+        screen.getByRole("checkbox", { name: /Wire the Stripe webhook/ }),
+        screen.getByTestId("option-Redis"),
+      )).toBe(true);
+    });
+
+    it("is not about the status card: the question is last with no card stored", () => {
+      seed(undefined);
+      const { container } = render(<MessageList messages={asked} isLoading={false} />);
+      expect(screen.queryByTestId("session-status-card")).toBeNull();
+      expect(precedes(
+        screen.getByText("Question on screen."),
+        screen.getByTestId("option-Redis"),
+      )).toBe(true);
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild!.contains(screen.getByTestId("option-Redis"))).toBe(true);
+    });
+
+    it("does not remount the question when the voice note lands after it", () => {
+      seed(status);
+      const { rerender } = render(
+        <MessageList messages={[msg("user", "decide"), question()]} isLoading={true} />,
+      );
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      const chosen = screen.getByTestId("option-Redis");
+      expect(chosen.className).toContain("accent-subtle");
+
+      rerender(<MessageList messages={asked} isLoading={true} />);
+      rerender(<MessageList messages={asked} isLoading={false} />);
+      // The same DOM node, so the selection the user made is still there:
+      // `AskUserQuestion` keeps it in component state, and an interrupted
+      // question never gets a tool result to rebuild it from.
+      expect(screen.getByTestId("option-Redis")).toBe(chosen);
+      expect(screen.getByTestId("option-Redis").className).toContain("accent-subtle");
+    });
+
+    it("keeps the answer the user typed when the conversation moves past the question", () => {
+      seed(status);
+      const { rerender } = render(<MessageList messages={asked} isLoading={false} />);
+      fireEvent.click(screen.getByTestId("option-other"));
+      const typed = screen.getByTestId("other-input");
+      fireEvent.change(typed, { target: { value: "Only the src folder" } });
+
+      // The answer starts a turn, so the question stops being what the
+      // conversation ends with and returns to its place in the transcript.
+      // Its container is keyed by its tool, so that return is a reorder.
+      rerender(
+        <MessageList messages={[...asked, msg("user", "Only the src folder")]} isLoading={true} />,
+      );
+      rerender(
+        <MessageList
+          messages={[...asked, msg("user", "Only the src folder"), msg("assistant", "on it")]}
+          isLoading={true}
+        />,
+      );
+      expect(screen.getByTestId("other-input")).toBe(typed);
+      expect((typed as HTMLTextAreaElement).value).toBe("Only the src folder");
+    });
+
+    // req 19 — the transcript's own follow-up action card keeps working, and a
+    // card the user has ticked sits exactly where this change moves rows
+    // around: between the question and the end of the conversation.
+    it("keeps a trailing action card's selection when the question is answered", () => {
+      seed(status);
+      const checklistCard = {
+        role: "assistant",
+        text: "",
+        actionChecklist: {
+          cardId: "c1",
+          title: "Follow-ups",
+          createdAt: "2026-09-16T00:00:00Z",
+          // Two, so the card is a checklist rather than its single-button form.
+          actions: [
+            { id: "doc", label: "Write the ADR", payload: "Write the ADR." },
+            { id: "bench", label: "Benchmark it", payload: "Benchmark it." },
+          ],
+        },
+      } as ChatMessage;
+      const withCard = [msg("user", "decide"), question(), checklistCard];
+      const { rerender } = render(<MessageList messages={withCard} isLoading={false} />);
+      const tick = screen.getByRole("checkbox", { name: /Write the ADR/ });
+      fireEvent.click(tick);
+      expect(tick).toBeChecked();
+
+      rerender(<MessageList messages={[...withCard, msg("user", "Redis")]} isLoading={true} />);
+      rerender(
+        <MessageList messages={[...withCard, msg("user", "Redis"), msg("assistant", "on it")]} isLoading={true} />,
+      );
+      expect(screen.getByRole("checkbox", { name: /Write the ADR/ })).toBe(tick);
+      expect(tick).toBeChecked();
+    });
+
+    // A split that lands exactly on a `ROWS_PER_GROUP` boundary has already
+    // opened the next chunk's group, and a movable row can sit in that gap —
+    // so the boundary test has to compare keys, not count rows.
+    it("gives every row group a distinct key when an answer card splits a chunk at a boundary", () => {
+      seed(status);
+      const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+      const plain = (i: number) => msg("assistant", `line ${i}`);
+      const answeredWithTasks = {
+        role: "assistant",
+        text: "",
+        toolUse: [
+          {
+            type: "tool_use",
+            id: "todo-1",
+            name: "TodoWrite",
+            input: { todos: [{ content: "pick a cache", status: "in_progress", activeForm: "picking" }] },
+          },
+          { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT },
+        ],
+        toolResults: [{ toolUseId: "ask-1", content: "Redis" }],
+      } as ChatMessage;
+      const messages = [
+        ...Array.from({ length: 20 }, (_, i) => plain(i)),
+        answeredWithTasks,
+        msg("assistant", "after the panel"),
+      ];
+
+      const { rerender } = render(<MessageList messages={messages} isLoading={false} />);
+      rerender(<MessageList messages={[...messages, msg("assistant", "one more")]} isLoading={false} />);
+      // And through the next turn, where the status card's anchor adds a second
+      // split to the same chunk — the sequence the answer itself starts.
+      const next = [...messages, msg("user", "Redis")];
+      rerender(<MessageList messages={next} isLoading={true} />);
+      rerender(<MessageList messages={[...next, msg("assistant", "on it")]} isLoading={true} />);
+      rerender(<MessageList messages={[...next, msg("assistant", "on it")]} isLoading={false} />);
+
+      expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).not.toContain("same key");
+      expect(screen.getByText("after the panel")).toBeInTheDocument();
+      expect(screen.getByText("on it")).toBeInTheDocument();
+      warn.mockRestore();
+    });
+
+    it("leaves a question the user replied past where it is", () => {
+      seed(status);
+      const replied = [...asked, msg("user", "never mind"), msg("assistant", "doing that instead")];
+      const { container } = render(<MessageList messages={replied} isLoading={false} />);
+
+      expect(precedes(screen.getByTestId("option-Redis"), screen.getByText("never mind"))).toBe(true);
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild).toBe(screen.getByTestId("session-status-card"));
+    });
   });
 });

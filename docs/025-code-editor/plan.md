@@ -137,9 +137,7 @@ function languageExtension(filePath: string): Extension | null {
 Replace `FileContentViewer` rendering in the right panel:
 
 ```typescript
-// In rightPanel (App.tsx), change:
 <FileContentViewer filePath={viewingFile} content={viewingFileContent} ... />
-// To:
 <FileEditor
   filePath={viewingFile}
   content={viewingFileContent}
@@ -154,20 +152,15 @@ Replace `FileContentViewer` rendering in the right panel:
 #### New Message Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsSaveFile {
   type: "save_file";
   path: string;
   content: string;
 }
 
-// Server → Client
 export interface WsFileSaved {
   type: "file_saved";
   path: string;
-  /** Git commit hash if auto-commit was performed. */
   commitHash?: string;
 }
 ```
@@ -186,7 +179,6 @@ if (msg.type === "save_file") {
     return;
   }
 
-  // Prevent path traversal
   const resolved = path.resolve(activeSessionDir, filePath);
   if (!resolved.startsWith(activeSessionDir)) {
     send({ type: "error", message: "Invalid file path" });
@@ -194,11 +186,9 @@ if (msg.type === "save_file") {
   }
 
   try {
-    // Ensure parent directory exists
     await fs.mkdir(path.dirname(resolved), { recursive: true });
     await fs.writeFile(resolved, content, "utf-8");
 
-    // Auto-commit the manual edit
     const git = getActiveGitManager();
     const hash = await git.autoCommit(`Manual edit: ${filePath}`);
 
@@ -208,7 +198,6 @@ if (msg.type === "save_file") {
       commitHash: hash ?? undefined,
     });
 
-    // Broadcast git commit if one was made
     if (hash) {
       send({
         type: "git_committed",
@@ -237,16 +226,11 @@ When Claude edits a file that the user also has open in the editor, there's a po
 4. If the editor has **no unsaved changes**: silently reload the file content
 
 ```typescript
-// In App.tsx files_changed handler, extend:
 if (data.type === "files_changed") {
-  // ... existing logic ...
-
-  // Check for editor conflicts
   if (viewingFile && paths.some(p => viewingFile.endsWith(p))) {
     if (editorHasUnsavedChanges) {
       setFileConflict({ path: viewingFile, type: "external_modify" });
     } else {
-      // Silently reload
       send({ type: "get_file_content", path: viewingFile });
     }
   }

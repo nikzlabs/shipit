@@ -1,0 +1,8 @@
+label:        pwd-probe
+cli_version:  1.1.27
+model:        gemini-3.1-pro  effort: high
+prompt_file:  /persist/agy-review-probe/pwd-prompt.txt
+exit_code:    0
+wall_seconds: 74
+date_utc:     2026-09-14T10:48:34Z
+stderr_bytes: 0

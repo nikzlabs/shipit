@@ -2,12 +2,6 @@ import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { SessionRenamedCard } from "./SessionRenamedCard.js";
 
-/**
- * The session-renamed card (docs/250, requirement 9). Static payload, no
- * actions — it exists so a title that changed mid-session is explainable after
- * the fact, which means both the old and the new name have to be on screen.
- */
-
 const CARD = {
   cardId: "session-renamed-1",
   from: "Fix the flaky test",
@@ -27,7 +21,7 @@ describe("SessionRenamedCard", () => {
 
   it("tells the user their own rename is final", () => {
     render(<SessionRenamedCard card={CARD} />);
-    // The card is the only place this precedence rule surfaces in the UI.
+
     expect(screen.getByText(/never changed again/i)).toBeTruthy();
   });
 

@@ -27,15 +27,6 @@ import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import type { ReviewerSlotView } from "../../shared/types/agent-types.js";
 
-/**
- * docs/261 phase 3 (reqs 1, 5, 8) — the reviewer settings **over HTTP**.
- *
- * The unit tests exercise the projection and the validation directly, and the
- * component tests mock `fetch`, so between them **both suites pass if the route
- * forgets to forward or persist `reviewers` at all**. Cross-backend review
- * found that hole. This closes it end to end: real app, real route, real store,
- * one assertion per hop the value has to cross.
- */
 describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
@@ -44,11 +35,7 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
-    // This install starts with NO credential, so the reviewers below are
-    // whatever this test seeds — neither what the host exports nor what the
-    // previous test's `addCredential` left in `process.env`. Both are
-    // `server-test-setup.ts`'s job for the whole server suite; clearing two
-    // variables here as well would imply the other six are somebody else's.
+    // server-test-setup.ts isolates provider credentials between tests.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-reviewer-api-"));
     initGlobalGitConfig(tmpDir);
     setGitIdentity("Test User", "test@test.com");
@@ -80,7 +67,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     }
   });
 
-  /** Store an API-key credential through the real route, as the UI does. */
   async function addCredential(serviceId: string): Promise<void> {
     const res = await app.inject({
       method: "POST",
@@ -96,12 +82,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     return res.json().settings.reviewers as ReviewerSlotView[];
   }
 
-  /**
-   * The whole hop chain in one test: the route accepts a pin, the STORE holds
-   * it, and the RESPONSE carries the re-resolved pair. Any one of those being
-   * dropped fails here — which is exactly what the mocked-`fetch` component
-   * tests cannot see.
-   */
   it("round-trips a pin through the route, the store and the response", async () => {
     await addCredential("anthropic");
 
@@ -126,14 +106,11 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     });
     expect(res.statusCode, res.body).toBe(200);
 
-    // The response carries the resolution — the tab renders straight off this.
     const answered = res.json().reviewers as ReviewerSlotView[];
     expect(answered[0].source).toBe("pinned");
     expect(answered[0].resolved?.modelId).toBe("claude-sonnet-5");
     expect(answered[0].resolved?.reasoningEffort).toBe("low");
 
-    // The STORE holds a complete pin (req 8's atomicity, at the only layer that
-    // can prove it), and a fresh bootstrap agrees with the response.
     expect(credentialStore.getReviewerPin("first")).toEqual({
       serviceId: "anthropic",
       billingMode: "key",
@@ -143,11 +120,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     expect(await bootstrapReviewers()).toEqual(answered);
   });
 
-  /**
-   * Req 8's "pinning is atomic" at the API edge: the wire may omit the level —
-   * the model-changed case — and the STORED pin is complete regardless, with
-   * the level derived from the harness the server itself derived.
-   */
   it("stores a complete pin when the level is omitted", async () => {
     await addCredential("anthropic");
     const res = await app.inject({
@@ -163,7 +135,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
 
     const stored = credentialStore.getReviewerPin("first");
     expect(stored?.modelId).toBe("claude-opus-5");
-    // Not merely present — a real level, and the same one the response reports.
     expect(stored?.reasoningEffort).toBeTruthy();
     expect((res.json().reviewers as ReviewerSlotView[])[0].resolved?.reasoningEffort).toBe(
       stored?.reasoningEffort,
@@ -193,12 +164,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     expect((res.json().reviewers as ReviewerSlotView[])[0].source).toBe("auto");
   });
 
-  /**
-   * **The partial-mutation bug, pinned.** Validating and writing in one loop
-   * persisted `first` and then answered 400 for `second` — the caller told the
-   * write failed while half of it landed. Found by cross-backend review; every
-   * slot is now validated before any slot is written.
-   */
   it("writes nothing when any slot in the request is invalid", async () => {
     await addCredential("anthropic");
     const res = await app.inject({
@@ -207,7 +172,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
       payload: {
         reviewers: {
           first: { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" },
-          // No credential for OpenAI on this install, so this slot is refused.
           second: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-sol" },
         },
       },
@@ -217,17 +181,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     expect(credentialStore.getReviewerPin("second")).toBeUndefined();
   });
 
-  /**
-   * planning#352 at the API edge — a level the derived selection does not offer
-   * is **re-derived, not refused**.
-   *
-   * This case used to sit in the 400 table below. It is here instead because
-   * refusing it blocked an edit the user is entitled to make: a service change
-   * that keeps the model derives its own harness, and the level came along with
-   * the model rather than being chosen for the new one. The replacement is
-   * visible where it has to be — in the response and in the store, both of which
-   * report the level that is actually in force.
-   */
   it("re-derives a level the derived selection does not offer, and says what it stored", async () => {
     await addCredential("anthropic");
     const res = await app.inject({
@@ -239,8 +192,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
             serviceId: "anthropic",
             billingMode: "key",
             modelId: "claude-opus-5",
-            // Codex declares `minimal`; Claude Code, which this triple derives
-            // onto, does not.
             reasoningEffort: "minimal",
           },
         },
@@ -249,12 +200,9 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     expect(res.statusCode, res.body).toBe(200);
 
     const stored = credentialStore.getReviewerPin("first");
-    // The MODEL half of the pin landed — the edit is not lost over the level.
     expect(stored?.modelId).toBe("claude-opus-5");
     expect(stored?.reasoningEffort).toBeTruthy();
     expect(stored?.reasoningEffort).not.toBe("minimal");
-    // And the caller is told, by being handed the pin that is actually in force
-    // rather than the one it sent.
     expect((res.json().reviewers as ReviewerSlotView[])[0].resolved?.reasoningEffort).toBe(
       stored?.reasoningEffort,
     );
@@ -270,12 +218,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     expect(credentialStore.getReviewerPin("first")).toBeUndefined();
   });
 
-  /**
-   * The container itself. `null` is an object to `typeof` and reached
-   * `Object.entries` as a 500; a scalar iterated to nothing and was accepted as
-   * a silent no-op — a write the caller believes succeeded and that changed
-   * nothing. Both are caller bugs and both now say so.
-   */
   it.each([
     ["null", null],
     ["a scalar", 42],
@@ -285,11 +227,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  /**
-   * Req 8's re-derivation, over the real stack: the same untouched
-   * configuration answers differently once the install gains a service, with no
-   * write and no migration.
-   */
   it("re-derives an untouched slot when the install gains a service", async () => {
     await addCredential("anthropic");
     const oneService = await bootstrapReviewers();
@@ -297,19 +234,11 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
 
     await addCredential("deepseek");
     const twoServices = await bootstrapReviewers();
-    // A different family now exists, so slot 2 moves onto it — untouched, and
-    // still reported as auto-configured.
     expect(twoServices[1].resolved?.serviceId).toBe("deepseek");
     expect(twoServices.map((r) => r.source)).toEqual(["auto", "auto"]);
     expect(credentialStore.getReviewerPin("second")).toBeUndefined();
   });
 
-  /**
-   * The re-broadcast carrier. `plan.md` claims the reviewer resolution rides
-   * the `agent_list` payload so an open tab follows a credential change — this
-   * is the assertion that the payload actually carries it, which neither the
-   * projection tests nor the store-mutating component test can make.
-   */
   it("carries the resolution on the agent_list payload, not only on bootstrap", async () => {
     await addCredential("anthropic");
     const { buildAgentListPayload } = await import("../services/settings.js");

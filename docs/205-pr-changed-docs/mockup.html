@@ -42,7 +42,6 @@
 
   .panel { border: 1px solid var(--color-border-primary); border-radius: 10px; overflow: hidden; background: var(--color-bg-primary); }
 
-  /* Row 1: PR header bar — height NEVER changes between collapsed/expanded */
   .pr-bar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--color-border-primary); }
   .badge { width: 20px; height: 20px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--color-success-subtle); color: var(--color-success); border: 1px solid var(--color-success-border); }
   .branch { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -56,19 +55,15 @@
   .iconbtn { color: var(--color-text-tertiary); padding: 4px; border-radius: 6px; display: flex; cursor: pointer; background:none; border:none; }
   .iconbtn:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 
-  /* the changed-docs toggle: two-doc glyph + caret, sits left of the ⋯ menu.
-     Caret points UP (collapsed) → DOWN (expanded), pointing at the open panel below. */
   .docs-toggle { display:flex; align-items:center; gap:2px; padding:3px 5px; border-radius:6px; cursor:pointer; background:none; border:1px solid transparent; color: var(--color-text-tertiary); }
   .docs-toggle:hover { color: var(--color-text-secondary); background: var(--color-bg-hover); }
   .docs-toggle .caret { transition: transform .15s ease; display:flex; transform: rotate(180deg); }
   .docs-toggle.active { color: var(--color-pr); background: var(--color-pr-subtle); border-color: var(--color-pr-border); }
   .docs-toggle.active .caret { transform: rotate(0deg); }
 
-  /* Row 2: the expandable panel — only rendered when open, so collapsed adds 0px */
   .changed { border-bottom: 1px solid var(--color-border-primary); background: color-mix(in srgb, var(--color-bg-secondary) 45%, transparent); }
   .changed[hidden] { display:none; }
 
-  /* Option B — compact wrapping badges (several per line) */
   .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; max-height: 132px; overflow-y: auto; }
   .chip {
     display:inline-flex; align-items:center; gap:6px;
@@ -95,7 +90,6 @@
   <h1>PR card — changed-docs quick access</h1>
   <p class="caption">A <b>two-document icon left of the ⋯ menu</b> appears only when the PR changed docs/config — its presence is the signal, no count. <b>Collapsed adds zero height</b> (default; remembered per session in localStorage). Click → icon turns active, caret flips down toward the panel, and the changed files appear as <b>compact chips</b> (Option B). Click a chip to open the doc in the rich-markdown preview — no Docs-page detour. Status is a colored dot (amber = modified, green = new, red = deleted); full path on hover.</p>
 
-  <!-- Collapsed (default) -->
   <div class="stage">
     <p class="label">Collapsed — default (per-session, localStorage) · header height unchanged</p>
     <div class="panel">
@@ -115,7 +109,6 @@
     </div>
   </div>
 
-  <!-- Expanded -->
   <div class="stage">
     <p class="label">Expanded — compact chips (Option B)</p>
     <div class="panel">

@@ -22,7 +22,6 @@ import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js"
 
 type Listener = (event: MessageEvent) => void;
 
-/** The minimum of `EventSource` the hook touches, plus a way to emit into it. */
 class FakeEventSource {
   static last: FakeEventSource | undefined;
   readonly listeners = new Map<string, Listener[]>();
@@ -48,7 +47,6 @@ class FakeEventSource {
     this.readyState = 2;
   }
 
-  /** Deliver one server event, exactly as the browser would. */
   emit(type: string, data: unknown): void {
     for (const listener of this.listeners.get(type) ?? []) {
       listener(new MessageEvent(type, { data: JSON.stringify(data) }));
@@ -79,9 +77,21 @@ const reviewers: ReviewerSlotView[] = [
   { slot: "second", source: "auto", unavailableReason: "nothing_eligible" },
 ];
 
+const backgroundWorkModels = [
+  {
+    serviceId: "deepseek",
+    serviceName: "DeepSeek",
+    billingMode: "key" as const,
+    modelId: "deepseek-v4",
+    label: "V4",
+    canonicalModelKey: "deepseek-v4",
+  },
+];
+
 beforeEach(() => {
   vi.stubGlobal("EventSource", FakeEventSource);
   useSettingsStore.getState().setReviewers([]);
+  useSettingsStore.getState().setBackgroundWorkModels([]);
 });
 
 afterEach(() => {
@@ -99,16 +109,9 @@ describe("useServerEvents — agent_list carries the reviewer resolution", () =>
       es?.emit("agent_list", { agents: AGENTS, canRunTurns: true, reviewers });
     });
 
-    // The whole point: a credential change fires this event, and the open
-    // Reviewer tab re-renders off the store rather than off a reload.
     expect(useSettingsStore.getState().reviewers).toEqual(reviewers);
   });
 
-  /**
-   * A newer server always sends the array, so absence means an OLDER server —
-   * and clearing the store on that would empty the Reviewer tab rather than say
-   * anything. "No news" has to leave the last good answer alone.
-   */
   it("leaves the last known resolution alone when the payload omits it", () => {
     useSettingsStore.getState().setReviewers(reviewers);
     renderHook(() => useServerEvents());
@@ -118,5 +121,35 @@ describe("useServerEvents — agent_list carries the reviewer resolution", () =>
     });
 
     expect(useSettingsStore.getState().reviewers).toEqual(reviewers);
+  });
+});
+
+/**
+ * docs/299 req 3 — the same hop for the background-work option list, and for the
+ * same reason: adding a model provider credential has to fill those two pickers
+ * while Settings is open. A list that is right at boot and stale afterwards is a
+ * bug, and `BackgroundWorkSection`'s own tests set the store directly, so this
+ * is the only test that fails if this hop drops the field.
+ */
+describe("useServerEvents — agent_list carries the background-work options", () => {
+  it("applies a pushed option list to the store", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last?.emit("agent_list", { agents: AGENTS, canRunTurns: true, backgroundWorkModels });
+    });
+
+    expect(useSettingsStore.getState().backgroundWorkModels).toEqual(backgroundWorkModels);
+  });
+
+  it("leaves the last known options alone when the payload omits them", () => {
+    useSettingsStore.getState().setBackgroundWorkModels(backgroundWorkModels);
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last?.emit("agent_list", { agents: AGENTS, canRunTurns: true });
+    });
+
+    expect(useSettingsStore.getState().backgroundWorkModels).toEqual(backgroundWorkModels);
   });
 });

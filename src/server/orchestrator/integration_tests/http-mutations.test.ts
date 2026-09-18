@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
 
-// Stub generatePackageLock to avoid spawning npm in integration tests.
+// Avoid spawning npm.
 vi.mock("../templates.js", async (importOriginal) => {
   const mod = await importOriginal() as Record<string, unknown>;
   return { ...mod, generatePackageLock: vi.fn().mockResolvedValue(undefined) };
@@ -41,7 +41,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
-    // Save and clear OPENAI_API_KEY so codex agent starts with hasRunnableModels=false
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-mutations-"));
@@ -77,7 +76,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     } catch {
       // Ignore cleanup errors
     }
-    // Restore OPENAI_API_KEY
     if (savedOpenAIKey !== undefined) {
       process.env.OPENAI_API_KEY = savedOpenAIKey;
     } else {
@@ -85,20 +83,16 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     }
   });
 
-  /** Helper: create a session with a git repo. */
   async function createSession(id: string, title: string): Promise<string> {
     const sessionDir = path.join(tmpDir, "sessions", id);
     fs.mkdirSync(sessionDir, { recursive: true });
     sessionManager.track(id, title, sessionDir);
     const git = new GitManager(sessionDir);
     await git.init();
-    // Create an initial commit so git log works
     fs.writeFileSync(path.join(sessionDir, "init.txt"), "init");
     await git.autoCommit("initial commit");
     return sessionDir;
   }
-
-  // ---- Session mutations ----
 
   describe("PATCH /api/sessions/:id (rename)", () => {
     it("renames a session", async () => {
@@ -134,7 +128,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // docs/250 — the agent's own rename, and the precedence between the two routes.
   describe("POST /api/sessions/:id/rename (agent)", () => {
     it("renames the session and records the agent as the source", async () => {
       await createSession("s1", "Fix the flaky test");
@@ -331,8 +324,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         method: "PUT", url: "/api/sessions/keep-b/keep-preview-running", payload: { enabled: true },
       });
       expect(overflow.statusCode).toBe(409);
-      // The refusal names the session holding the slot — the count alone left
-      // the user with nothing to act on (docs/241).
       expect(overflow.json()).toMatchObject({ error: expect.stringContaining('"A"') });
       expect(sessionManager.get("keep-b")?.keepPreviewRunning).toBeUndefined();
     });
@@ -358,7 +349,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     it("unarchives a session and returns updated list", async () => {
       await createSession("s1", "Session 1");
       await createSession("s2", "Session 2");
-      // Archive s1 first
       const archiveRes = await app.inject({
         method: "DELETE",
         url: "/api/sessions/s1",
@@ -366,7 +356,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(archiveRes.statusCode).toBe(200);
       expect(archiveRes.json().sessions.map((s: any) => s.id)).not.toContain("s1");
 
-      // Unarchive s1
       const res = await app.inject({
         method: "POST",
         url: "/api/sessions/s1/unarchive",
@@ -398,17 +387,13 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // ---- Git mutations ----
-
   describe("POST /api/sessions/:id/git/rollback", () => {
     it("rolls back to a previous commit", async () => {
       const dir = await createSession("s1", "Session 1");
-      // Make a second commit
       fs.writeFileSync(path.join(dir, "file2.txt"), "content");
       const git = new GitManager(dir);
       await git.autoCommit("second commit");
 
-      // Get the commits
       const logRes = await app.inject({ method: "GET", url: "/api/sessions/s1/git/log" });
       const commits = logRes.json().commits;
       const firstHash = commits[commits.length - 1].hash;
@@ -431,8 +416,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(res.statusCode).toBe(404);
     });
   });
-
-  // ---- Settings mutations ----
 
   describe("POST /api/settings/git-identity", () => {
     it("sets git identity", async () => {
@@ -518,13 +501,11 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
 
     it("empty system prompt deletes the file", async () => {
-      // Create a prompt first
       await app.inject({
         method: "PUT",
         url: "/api/settings",
         payload: { systemPrompt: "Something" },
       });
-      // Now clear it
       const res = await app.inject({
         method: "PUT",
         url: "/api/settings",
@@ -597,10 +578,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   });
 
   describe("provider account settings endpoints", () => {
-    // docs/252 req 21 — "makes primary" is gone from this list, and so is
-    // `POST …/:id/primary`: "primary" was never a property, only position 0,
-    // and the endpoint behind that button was `reorder([this, …rest])`.
-    // Reordering is the verb that survived, and it is what this now exercises.
     it("creates, renames, reorders, and disconnects provider accounts", async () => {
       const created = await app.inject({
         method: "POST",
@@ -635,8 +612,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         payload: { accountIds: [secondId, accountId] },
       });
       expect(primary.statusCode).toBe(200);
-      // `isPrimary` still crosses the wire, still derived from position — what
-      // went is the UI that read it and the setter that wrote it.
       const primaryAccounts = (primary.json() as { accounts: { id: string; isPrimary: boolean }[] }).accounts;
       expect(primaryAccounts.find((account) => account.id === secondId)?.isPrimary).toBe(true);
       expect(primaryAccounts.find((account) => account.id === accountId)?.isPrimary).toBe(false);
@@ -651,14 +626,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         .map((account) => account.id)).toEqual([secondId]);
     });
 
-    // docs/260-turn-level-account-routing req 3 — deleting an account never enumerates, moves, or reports
-    // sessions. The old wire shape carried `switchedSessionIds` /
-    // `strandedSessionIds`; both are gone: the response is the remaining
-    // account list and nothing else, and each session's next turn routes
-    // normally among the accounts that remain. The one per-session effect is
-    // revoking the session's own credential COPY, found by the session's
-    // recorded marker (docs/260 §6), which is asserted here over HTTP so the
-    // route is known to thread `credentialsDir` into the service.
     it("disconnects the last account over HTTP: {accounts} only, no stranded/switched reporting (docs/260-turn-level-account-routing req 3)", async () => {
       const created = await app.inject({
         method: "POST",
@@ -666,8 +633,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         payload: { provider: "codex", label: "Team ChatGPT" },
       });
       const accountId = (created.json() as { account: { id: string } }).account.id;
-      // An idle session whose subtree holds (and is marked as holding) the
-      // account's copy — the thing disconnect must revoke by recorded identity.
       await createSession("codex-session", "Codex session");
       sessionManager.setAgentId("codex-session", "codex");
       const tokenPath = path.join(tmpDir, "sessions", "codex-session", ".codex", "auth.json");
@@ -683,24 +648,14 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(deleted.statusCode).toBe(200);
       const body = deleted.json() as Record<string, unknown> & { accounts: { serviceId: string; id: string }[] };
       expect(body.accounts.filter((account) => account.serviceId === "openai")).toEqual([]);
-      // Rename-proof: the filter above went vacuous once already, when the wire
-      // shape lost `provider` (planning#342) and every row stopped matching.
-      // An id cannot be renamed out from under the assertion.
+      // Check the ID too: a renamed service field can make the filter pass vacuously.
       expect(body.accounts.map((account) => account.id)).not.toContain(accountId);
-      // req 3 — no session bookkeeping in the response, under any name.
       expect(body).not.toHaveProperty("switchedSessionIds");
       expect(body).not.toHaveProperty("strandedSessionIds");
-      // The session's recorded copy is revoked, and the marker cleared so the
-      // next turn's identity check reprovisions from whatever it selects.
       expect(fs.existsSync(tokenPath)).toBe(false);
       expect(readSessionAccountMarker(tmpDir, "codex-session").codex).toBeUndefined();
     });
 
-    // docs/260-turn-level-account-routing req 13 — the one refusal left, and it is process-scoped, not
-    // pin-scoped: a live process on the account with a running turn (or
-    // in-progress background work) blocks the disconnect, because killing it
-    // loses the tokens already spent and rewriting credentials under a live
-    // turn is a mid-turn 401. Waiting clears it, so the 409 names the session.
     it("refuses to disconnect while a live process on the account is busy, and allows it once idle (docs/260-turn-level-account-routing req 13)", async () => {
       const created = await app.inject({
         method: "POST",
@@ -710,8 +665,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const accountId = (created.json() as { account: { id: string } }).account.id;
       const session = sessionManager.track("running-session", "Running session", path.join(tmpDir, "session"));
       sessionManager.setAgentId(session.id, "codex");
-      // The account identity is the PROCESS's (docs/260 §5): the runner's
-      // residentRoute, typed at spawn — no session row is consulted.
       const runner = app.runnerRegistry.getOrCreate(session.id, path.join(tmpDir, "session"), "codex");
       runner.residentRoute = { kind: "account", id: accountId };
       runner.running = true;
@@ -725,8 +678,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect((blocked.json() as { error: string }).error).toMatch(/"Running session"/);
       expect((blocked.json() as { error: string }).error).toMatch(/wait/i);
 
-      // The turn ends; a merely-resident (idle) process no longer blocks — it
-      // is retired and the disconnect returns the account list only.
       runner.running = false;
       const deleted = await app.inject({
         method: "DELETE",
@@ -737,10 +688,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         .filter((account) => account.serviceId === "openai")).toEqual([]);
     });
 
-    // docs/150-multiple-provider-subscriptions req 2 — the reorder control's whole job is to change the order
-    // the user *sees*. Writing `priority` while every wire response still
-    // carried storage order is what made the buttons read as broken, so this
-    // asserts the order over HTTP, where the client actually reads it.
     it("PUT /order changes the order returned by the reorder response AND by GET", async () => {
       const mk = async (label: string): Promise<string> => {
         const res = await app.inject({
@@ -757,7 +704,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
           .filter((row) => row.serviceId === "anthropic")
           .map((row) => row.id);
 
-      // Creation order to start with.
       expect(claudeIds((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json()))
         .toEqual([a, b, c]);
 
@@ -767,20 +713,15 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         payload: { accountIds: [c, a, b] },
       });
       expect(reordered.statusCode).toBe(200);
-      // The response the button's own fetch feeds straight into the store.
       expect(claudeIds(reordered.json())).toEqual([c, a, b]);
-      // ...and a fresh read agrees, so a reload doesn't snap the rows back.
       expect(claudeIds((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json()))
         .toEqual([c, a, b]);
-      // Position 0 owns the primary badge, so the order and the badge agree.
       const rows = ((await app.inject({ method: "GET", url: "/api/provider-accounts" })).json() as
         { accounts: { id: string; isPrimary?: boolean }[] }).accounts;
       expect(rows.find((row) => row.id === c)?.isPrimary).toBe(true);
     });
 
     it("starts, feeds a code to, and cancels an account-scoped login (docs/150)", async () => {
-      // The Claude auth manager is the StubAuthManager here, so the scoped
-      // login flow never spawns a real CLI.
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
@@ -795,7 +736,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(login.statusCode).toBe(202);
       expect((login.json() as { account: { status: string } }).account.status).toBe("authenticating");
 
-      // The list reflects the in-flight status too.
       const listed = await app.inject({ method: "GET", url: "/api/provider-accounts" });
       const row = (listed.json() as { accounts: { id: string; status: string }[] }).accounts
         .find((a) => a.id === accountId);
@@ -808,8 +748,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       });
       expect(code.statusCode).toBe(200);
 
-      // Cancel resets the row from the on-disk credential check (the stub
-      // reports configured, so it lands on "ready").
+      // The auth stub reports configured, so cancellation restores "ready".
       const cancelled = await app.inject({
         method: "POST",
         url: `/api/provider-accounts/claude/${accountId}/login/cancel`,
@@ -818,8 +757,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect((cancelled.json() as { account: { status: string } }).account.status).toBe("ready");
     });
 
-    // docs/150 — one CLI login per provider. A second concurrent sign-in is a
-    // conflict the user resolves, not a 500.
     it("refuses a second concurrent sign-in with 409, and frees up after cancel", async () => {
       const mk = async (label: string): Promise<string> => {
         const res = await app.inject({
@@ -838,18 +775,14 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         method: "POST", url: `/api/provider-accounts/claude/${second}/login`,
       });
       expect(blocked.statusCode).toBe(409);
-      // The message has to name the row holding the flow — "conflict" alone
-      // leaves the user with no idea what to go cancel.
       expect((blocked.json() as { error: string }).error).toContain("First Anthropic");
 
-      // A code pasted on the row that does not own the challenge is refused too.
       expect((await app.inject({
         method: "POST",
         url: `/api/provider-accounts/claude/${second}/login/code`,
         payload: { code: "abc-123" },
       })).statusCode).toBe(409);
 
-      // Cancelling the owner frees the provider.
       await app.inject({ method: "POST", url: `/api/provider-accounts/claude/${first}/login/cancel` });
       expect((await app.inject({
         method: "POST", url: `/api/provider-accounts/claude/${second}/login`,
@@ -878,8 +811,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(unknown.statusCode).toBe(404);
     });
   });
-
-  // ---- Auth mutations ----
 
   describe("POST /api/auth/api-key", () => {
     it("sets a valid API key", async () => {
@@ -913,7 +844,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
   describe("DELETE /api/auth/api-key", () => {
     it("signs out: clears the key and returns the refreshed agent list", async () => {
-      // Set a key first
       await app.inject({
         method: "POST",
         url: "/api/auth/api-key",
@@ -926,25 +856,13 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.success).toBe(true);
-      // Mirrors DELETE /api/codex-auth: the response carries the refreshed
-      // agent list so the client can repaint the card immediately. The stub
-      // auth manager flips to unauthenticated on signOut(), so claude should
-      // no longer be auth-configured.
       expect(Array.isArray(body.agents)).toBe(true);
       const claude = body.agents.find((a: { id: string }) => a.id === "claude");
       expect(claude?.hasRunnableModels).toBe(false);
     });
 
-    // docs/260-turn-level-account-routing req 13 — provider-wide sign-out drops every account row, so it
-    // needs the same busy-process guard the per-account disconnect has: a live
-    // process working on a CONNECTED account (running turn or in-progress
-    // background work, keyed on the runner's residentRoute — no pins) blocks
-    // it. Signing out mid-turn rewrites credentials under a live agent, and
-    // the user gets a 401 instead of an answer.
     it("refuses while a live process on a connected account is mid-turn, and allows it once idle (docs/260-turn-level-account-routing req 13)", async () => {
-      // The guard is scoped to CONNECTED accounts, so the account must exist
-      // as a row the manager lists — a route id on a session row means nothing
-      // any more.
+      // The busy-process guard only checks connected accounts.
       const now = Date.now();
       credentialStore.upsertCredentialRoute({
         id: "acct_live", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Live", isPrimary: true,
@@ -960,22 +878,10 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(blocked.statusCode).toBe(409);
       expect((blocked.json() as { error: string }).error).toMatch(/mid-turn/i);
 
-      // The turn ends; sign-out proceeds.
       runner.running = false;
       expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
     });
 
-    // A session that ran on a signed-out account is NOT stranded and nothing
-    // reports it as such (docs/260-turn-level-account-routing req 3): its next turn simply routes among
-    // whatever accounts remain (or surfaces auth_required). Only the mid-turn
-    // case is unrecoverable, which is why that is the only thing guarded.
-    //
-    // planning#285 / docs/260 §6 — but it does have to actually *lose* the
-    // account. The row is not where the token lives: the session holds its own
-    // copy, that copy is what the CLI in its container reads, and it is found
-    // by the session's own recorded MARKER (`readSessionAccountMarker`) —
-    // never a session row, never token-byte compares. Scoping detail is
-    // covered by `services/provider-signout.test.ts`.
     it("still signs out with an idle session holding the account's copy, revoking it by marker", async () => {
       const now = Date.now();
       credentialStore.upsertCredentialRoute({
@@ -993,19 +899,11 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
       expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
 
-      // Signed out has to mean the CLI can no longer spend the subscription.
       expect(fs.existsSync(sessionToken)).toBe(false);
-      // The conversation is not collateral damage — reconnecting resumes it.
       expect(fs.existsSync(resume)).toBe(true);
-      // The marker is cleared with the copy, so the next turn's identity check
-      // reprovisions from whatever account that turn selects.
       expect(readSessionAccountMarker(tmpDir, "signout-2").claude).toBeUndefined();
     });
 
-    // docs/150-multiple-provider-subscriptions req 19 — the route used to drop the account rows and clear only
-    // the singleton path, which on a migrated install aliased the *first*
-    // account. Every account connected after that kept live OAuth tokens on
-    // disk, with its row deleted so nothing in the UI could reach them.
     it("erases the on-disk credentials of every connected account, not just the first", async () => {
       const now = Date.now();
       const accountDirs = ["claude-default", "acct_work"].map((id, index) => {
@@ -1027,8 +925,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       }
     });
   });
-
-  // ---- GitHub mutations ----
 
   describe("POST /api/github/token", () => {
     it("returns 400 for empty token", async () => {
@@ -1055,7 +951,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
   describe("POST /api/github/logout", () => {
     it("clears GitHub credentials", async () => {
-      // Authenticate first, then logout
       await githubAuthManager.setToken("ghp_some_token");
       expect(githubAuthManager.authenticated).toBe(true);
       const res = await app.inject({
@@ -1067,12 +962,9 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // ---- PR mutations ----
-
   describe("POST /api/sessions/:id/pr", () => {
     it("returns 401 when not authenticated", async () => {
       await createSession("s1", "Session 1");
-      // githubAuthManager starts unauthenticated by default
       const res = await app.inject({
         method: "POST",
         url: "/api/sessions/s1/pr",
@@ -1105,7 +997,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // docs/133 Phase 4 — Conversation composer
   describe("POST /api/sessions/:id/pr/comments", () => {
     it("returns 400 for an empty comment body", async () => {
       await createSession("s1", "Session 1");
@@ -1130,7 +1021,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     it("posts a PR-level comment to the current-branch PR", async () => {
       await createSession("s1", "Session 1");
       await githubAuthManager.setToken("ghp_test");
-      // Point origin at a GitHub repo so the remote resolves.
       await app.inject({
         method: "POST",
         url: "/api/sessions/s1/git/remotes",
@@ -1154,8 +1044,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(githubAuthManager.lastIssueComment).toEqual({ pullNumber: 7, body: "Looks good to me" });
     });
   });
-
-  // ---- Git remote mutations ----
 
   describe("POST /api/sessions/:id/git/remotes", () => {
     it("adds a remote and returns remotes list", async () => {
@@ -1205,8 +1093,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // ---- Git push/pull ----
-
   describe("POST /api/sessions/:id/git/push", () => {
     it("returns 401 when not authenticated", async () => {
       await createSession("s1", "Session 1");
@@ -1231,8 +1117,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // ---- Preview error ----
-
   describe("POST /api/sessions/:id/preview-errors", () => {
     it("returns 400 for empty message", async () => {
       await createSession("s1", "Session 1");
@@ -1255,8 +1139,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // ---- Template mutations ----
-
   describe("POST /api/sessions/:id/template", () => {
     it("scaffolds files for react-vite-ts template", async () => {
       const dir = await createSession("s1", "Session 1");
@@ -1269,7 +1151,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const body = res.json();
       expect(body.templateId).toBe("react-vite-ts");
       expect(body.name).toBe("React + Vite");
-      // Verify files were written
       expect(fs.existsSync(path.join(dir, "package.json"))).toBe(true);
       expect(fs.existsSync(path.join(dir, "src/App.tsx"))).toBe(true);
     });
@@ -1295,8 +1176,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
-  // ---- Full reset ----
-
   describe("POST /api/reset", () => {
     it("resets and returns success", async () => {
       await createSession("s1", "Session 1");
@@ -1309,7 +1188,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
 
     it("deletes all persistent data from workspace", async () => {
-      // Create some persistent state
       const sessionsDir = path.join(tmpDir, "sessions", "test-session");
       fs.mkdirSync(sessionsDir, { recursive: true });
       fs.writeFileSync(path.join(sessionsDir, "file.txt"), "hello");
@@ -1321,7 +1199,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const res = await app.inject({ method: "POST", url: "/api/reset" });
       expect(res.statusCode).toBe(200);
 
-      // Verify workspace is empty
       const remaining = fs.readdirSync(tmpDir);
       expect(remaining).toEqual([]);
     });
@@ -1333,8 +1210,6 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 });
-
-// ---- Separate describe for agent env tests (needs custom registry) ----
 
 describe("Integration: Phase 2 HTTP agent mutations", () => {
   let app: FastifyInstance;
@@ -1398,7 +1273,6 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
 
   describe("POST /api/agents/:id/env", () => {
     it("sets env var and updates auth status", async () => {
-      // Initially Codex auth is not configured
       const beforeRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
       const codexBefore = beforeRes.json().agents.find((a: any) => a.id === "codex");
       expect(codexBefore.hasRunnableModels).toBe(false);
@@ -1411,7 +1285,6 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       expect(res.statusCode).toBe(200);
       expect(res.json().key).toBe("OPENAI_API_KEY");
 
-      // Verify auth status updated
       const afterRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
       const codexAfter = afterRes.json().agents.find((a: any) => a.id === "codex");
       expect(codexAfter.hasRunnableModels).toBe(true);

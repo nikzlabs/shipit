@@ -4,17 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createShipitBridgeServer, selectTools, TOOL_REGISTRY } from "./mcp-shipit-bridge.js";
 import type { ToolDescriptor } from "./mcp-tools/types.js";
 
-/**
- * planning#130 — the consolidated `shipit` bridge serves a configurable subset of all
- * internal tools from ONE stdio process. These tests drive a real MCP `Client`
- * over an in-memory transport, with `globalThis.fetch` stubbed, so they exercise
- * the production ListTools/CallTool path: tool selection, per-tool dispatch and
- * forwarding, the permission tool's resilient request→await poll, and the unknown
- * tool guard.
- */
-
 const WORKER = "http://worker.test";
-/** Instant backoff so the permission retry/poll loop doesn't actually sleep. */
 const deps = { workerUrl: WORKER, sleep: () => Promise.resolve() };
 
 async function connect(tools: ToolDescriptor[]): Promise<{ client: Client; close: () => Promise<void> }> {
@@ -39,7 +29,6 @@ function jsonResponse(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
-/** Extract the text of the first content block of a CallTool result. */
 function firstText(result: unknown): string {
   const content = (result as { content?: { type: string; text?: string }[] }).content ?? [];
   return content[0]?.text ?? "";
@@ -63,7 +52,7 @@ describe("selectTools", () => {
 
   it("registers all internal tools", () => {
     expect(Object.keys(TOOL_REGISTRY).sort()).toEqual(
-      ["ask", "bug", "permission", "present", "propose_actions", "voice"],
+      ["ask", "bug", "permission", "present", "propose_actions", "propose_repo_session", "session_status", "voice"],
     );
   });
 });
@@ -81,8 +70,39 @@ describe("createShipitBridgeServer — ListTools", () => {
     expect(tools.map((t) => t.name).sort()).toEqual(
       ["permission_prompt", "present", "propose_actions", "report_shipit_bug", "voice_note"],
     );
-    // ask was not selected.
     expect(tools.find((t) => t.name === "AskUserQuestion")).toBeUndefined();
+  });
+
+  it("declares the option bound `AskUserQuestion` actually enforces", async () => {
+    bridge = await connect(selectTools("ask"));
+    const askSchema = (await bridge.client.listTools()).tools.find(
+      (t) => t.name === "AskUserQuestion",
+    )?.inputSchema as {
+      properties?: { questions?: { minItems?: number; items?: { properties?: { options?: { minItems?: number } } } } };
+    };
+
+    expect(askSchema?.properties?.questions?.minItems).toBe(1);
+    expect(askSchema?.properties?.questions?.items?.properties?.options?.minItems).toBe(1);
+
+    const result = await bridge.client.callTool({
+      name: "AskUserQuestion",
+      arguments: { questions: [{ question: "Which?", header: "Pick", options: [] }] },
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+  });
+
+  it("rejects a blank-labelled option in-box, not after a round trip", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("ask"));
+
+    const result = await bridge.client.callTool({
+      name: "AskUserQuestion",
+      arguments: { questions: [{ question: "Which?", header: "Pick", options: [{ label: "" }] }] },
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("exposes a different subset for Codex (ask, no permission)", async () => {
@@ -160,6 +180,23 @@ describe("createShipitBridgeServer — CallTool dispatch", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("fails `propose_actions` fast on an over-long payload, naming the size and the fix", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("propose_actions"));
+
+    const result = await bridge.client.callTool({
+      name: "propose_actions",
+      arguments: { actions: [{ id: "a1", label: "Open a PR", payload: "x".repeat(4200) }] },
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(firstText(result)).toContain("4200 chars");
+    expect(firstText(result)).toContain("4000");
+    expect(firstText(result)).toMatch(/call propose_actions again/);
+  });
+
   it("surfaces the orchestrator's validation error to the model", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(400, { error: "Duplicate action id \"dup\"" })));
     bridge = await connect(selectTools("propose_actions"));
@@ -189,9 +226,9 @@ describe("permission tool — resilient request → await poll", () => {
 
   it("opens the request, polls past `pending`, and returns an allow envelope", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, { requestId: "req-1" })) // /request
-      .mockResolvedValueOnce(jsonResponse(200, { pending: true })) //       /await #1
-      .mockResolvedValueOnce(jsonResponse(200, { behavior: "allow" })); // /await #2
+      .mockResolvedValueOnce(jsonResponse(200, { requestId: "req-1" }))
+      .mockResolvedValueOnce(jsonResponse(200, { pending: true }))
+      .mockResolvedValueOnce(jsonResponse(200, { behavior: "allow" }));
     vi.stubGlobal("fetch", fetchMock);
     bridge = await connect(selectTools("permission"));
 
@@ -200,7 +237,6 @@ describe("permission tool — resilient request → await poll", () => {
       arguments: { tool_name: "Edit", input: { file_path: ".env" }, tool_use_id: "tu-1" },
     });
 
-    // `updatedInput` echoes the original input back (mandatory on allow).
     expect(JSON.parse(firstText(result))).toEqual({
       behavior: "allow",
       updatedInput: { file_path: ".env" },
@@ -218,7 +254,136 @@ describe("permission tool — resilient request → await poll", () => {
       arguments: { tool_name: "Edit", input: {}, tool_use_id: "tu-2" },
     });
     expect(JSON.parse(firstText(result)).behavior).toBe("deny");
-    // A definite HTTP rejection is not retried.
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("session_status (docs/303)", () => {
+  let bridge: { client: Client; close: () => Promise<void> };
+  afterEach(async () => {
+    await bridge.close();
+    vi.restoreAllMocks();
+  });
+
+  it("relays a bare confirmation and reports each offer's taken state", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {
+      ok: true,
+      actions: [
+        { offerId: "o1", id: "pr", label: "Open a PR", taken: true },
+        { offerId: "o2", id: "docs", label: "Update the docs", taken: false },
+      ],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({ name: "session_status", arguments: {} });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${WORKER}/agent-ops/session-status`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    const text = firstText(result);
+    expect(text).toContain("pr: Open a PR (taken");
+    expect(text).toContain("Update the docs");
+    expect((result as { isError?: boolean }).isError).toBeFalsy();
+  });
+
+  it("forwards every field of the delta to the worker", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true, actions: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("session_status"));
+
+    await bridge.client.callTool({
+      name: "session_status",
+      arguments: {
+        status: "Half done.",
+        needsYou: ["Paste the key."],
+        replaceActions: true,
+        actions: [{
+          id: "pr",
+          label: "Open a PR",
+          description: "Opens it against main.",
+          payload: "Open a PR.",
+        }],
+      },
+    });
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as { body: string }).body,
+    ) as Record<string, unknown>;
+    expect(body).toEqual({
+      status: "Half done.",
+      needsYou: ["Paste the key."],
+      replaceActions: true,
+      actions: [{
+        id: "pr",
+        label: "Open a PR",
+        description: "Opens it against main.",
+        payload: "Open a PR.",
+      }],
+    });
+  });
+
+  it.each([
+    ["a body that is not the envelope", { written: true }],
+    ["an envelope without the offered list", { ok: true }],
+    ["an offered list of malformed entries", { ok: true, actions: [{}] }],
+    ["an offered list with a null entry", { ok: true, actions: [null] }],
+  ])("does not claim the card is current given %s", async (_label, body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(200, body)));
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({ name: "session_status", arguments: {} });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).not.toContain("up to date");
+    // The worker answered; saying it could not be reached would send the agent
+    // looking for a connection problem that is not there.
+    expect(firstText(result)).not.toContain("could not reach");
+  });
+
+  it("rejects an over-long status in-box, without a round trip", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({
+      name: "session_status",
+      arguments: { status: "x".repeat(2000) },
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).toContain("session_status failed");
+  });
+
+  it("refuses an offer with no description in-box, without a round trip (req 26)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({
+      name: "session_status",
+      arguments: {
+        status: "Done.",
+        actions: [{ id: "pr", label: "Open a PR", payload: "Open a PR." }],
+      },
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).toContain("description");
+  });
+
+  it("surfaces the route's refusal rather than claiming the card is current", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse(400, { error: "This session has no status card yet, so `status` is required" }),
+    ));
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({ name: "session_status", arguments: {} });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).toContain("`status` is required");
   });
 });

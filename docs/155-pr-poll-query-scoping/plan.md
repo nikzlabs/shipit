@@ -68,8 +68,8 @@ After Phase 0 measurement, this is the entire production fix. Two small changes 
 `pr-status-poller.ts:713` issues `pullRequests(first: 30, ...)` unconditionally. Replace 30 with the count of tracked, non-merged sessions on the repo, plus a small discovery floor for branches whose PR was opened out-of-band:
 
 ```ts
-const trackedCount = this.countTrackedSessions(repoKey); // already derivable from sessionRepos
-const DISCOVERY_FLOOR = 5; // see below
+const trackedCount = this.countTrackedSessions(repoKey);
+const DISCOVERY_FLOOR = 5;
 const first = Math.min(30, Math.max(trackedCount, DISCOVERY_FLOOR));
 ```
 
@@ -90,13 +90,10 @@ The cost-measurement script's "mixed" variant proves the fix is cheap: aliased K
 ```graphql
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
-    # Light fields for the full visible window
     pullRequests(first: ${first}, states: [OPEN]) {
       nodes { ...PrLightFields }
     }
-    # Heavy fields for the focused PR(s) only, by number
     focused0: pullRequest(number: $focused0) { ...PrLightFields ...PrConversationFields }
-    # repeat for each session whose PR tab is currently active
   }
 }
 ```
@@ -156,7 +153,6 @@ Becomes (built dynamically per tick):
 repository(owner: $owner, name: $name) {
   pr1: pullRequest(number: 42) { ...PrStatusFields }
   pr2: pullRequest(number: 99) { ...PrStatusFields }
-  # … only sessions whose interval elapsed this tick
 }
 ```
 

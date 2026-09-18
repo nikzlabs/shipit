@@ -1,13 +1,5 @@
-/**
- * GitHub CI check operations — extracted from GitHubAuthManager.
- * Functions in this module handle check status, annotations, and job logs.
- */
-
 import { fetchGitHub } from "./github-api.js";
 
-/**
- * Get CI check status for a PR's head commit.
- */
 export async function getCheckStatus(
   token: string,
   owner: string,
@@ -16,7 +8,6 @@ export async function getCheckStatus(
 ): Promise<{ state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number }> {
   let passed = 0, failed = 0, pending = 0;
 
-  // Get combined status (legacy status API)
   try {
     const statusRes = await fetchGitHub(
       `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/status`,
@@ -35,7 +26,6 @@ export async function getCheckStatus(
     // ignore
   }
 
-  // Also get check runs (GitHub Actions uses this API)
   try {
     const checksRes = await fetchGitHub(
       `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/check-runs`,
@@ -60,10 +50,6 @@ export async function getCheckStatus(
   return { state, total, passed, failed, pending };
 }
 
-/**
- * Get check run annotations (structured failure details with file paths and line numbers).
- * Returns empty array if the API call fails.
- */
 export async function getCheckRunAnnotations(
   token: string,
   owner: string,
@@ -103,11 +89,6 @@ export async function getCheckRunAnnotations(
   }
 }
 
-/**
- * Get raw job logs for a check run (fallback when annotations aren't available).
- * Returns the last 100 lines of the log, or empty string on failure.
- * Note: the check run databaseId maps to the job ID for GitHub Actions.
- */
 export async function getJobLogs(
   token: string,
   owner: string,

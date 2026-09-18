@@ -3,7 +3,6 @@ const MARKDOWN_EXTENSIONS = new Set(["md", "mdx"]);
 
 export type FilePreviewType = "markdown" | "code" | "image" | "binary";
 
-/** Determine preview mode from file extension. */
 export function detectFilePreviewType(filePath: string): FilePreviewType {
   const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
   if (MARKDOWN_EXTENSIONS.has(ext)) return "markdown";
@@ -11,7 +10,6 @@ export function detectFilePreviewType(filePath: string): FilePreviewType {
   return "code";
 }
 
-/** True when the file path should expose the manual text-edit affordance. */
 export function isEditableFilePath(filePath: string): boolean {
   if (filePath.startsWith("/uploads/") || filePath.startsWith("uploads/")) return false;
   const type = detectFilePreviewType(filePath);

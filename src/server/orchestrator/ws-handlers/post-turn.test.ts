@@ -1,28 +1,9 @@
-/**
- * docs/128 / docs/211 — the auto-commit invariant at the post-turn commit
- * boundary: ShipIt performs NO automatic commit for `kind === "ops"` or
- * `kind === "sandbox"`.
- *
- * `postTurnCommit` runs `git.autoCommit()` on the session dir unconditionally
- * otherwise, which would error on a sandbox's non-repo root; for ops it would
- * write turn commits into a workspace whose agent is told (in its own system
- * prompt) that it owns git itself. Both skip the whole session-level git flow
- * (commit + push + the PR card it gates) — explicitly by kind, NOT inferred
- * from `remoteUrl`. The shared rule lives in `services/auto-commit-gate.ts`.
- *
- * This REVERSES docs/128's original "ops COMMITS but never auto-pushes", at the
- * operator's request.
- */
-
 import { describe, it, expect, vi } from "vitest";
 import { postTurnCommit } from "./post-turn.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
-import type { SessionInfo } from "../../shared/types.js";
+import type { SessionInfo, WorkspaceBlockKind } from "../../shared/types.js";
 
-// The real helper walks `.git` on the filesystem. Every case here passes
-// `sessionDir: "/workspace"`, so unmocked it would walk this repo's own
-// checkout twice per test for no assertion's benefit. Mocked, it also becomes
-// observable — which is what the ordering block at the bottom needs.
+// Mock ownership changes: /workspace is the actual checkout.
 vi.mock("../session-worker-uid.js", () => ({
   chownWorkspaceGitToSessionWorker: vi.fn(),
 }));
@@ -37,6 +18,7 @@ function makeCtx(kind?: SessionInfo["kind"]) {
     chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn() },
     sessionManager: {
       get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)),
+      setWorkspaceBlock: vi.fn(() => false),
       getSecretBlock: vi.fn(() => undefined),
       setSecretBlock: vi.fn(),
     },
@@ -56,9 +38,6 @@ describe("postTurnCommit — auto-commit gate", () => {
         turnSummary: "did stuff",
       });
       expect(result).toBeNull();
-      // The gate returns BEFORE constructing a GitManager — the unconditional
-      // autoCommit (which would error on a sandbox's non-repo root) never runs,
-      // and no push is scheduled (so no PR card downstream).
       expect(createGitManager).not.toHaveBeenCalled();
       expect(autoCommit).not.toHaveBeenCalled();
       expect(scheduleAutoPush).not.toHaveBeenCalled();
@@ -73,16 +52,10 @@ describe("postTurnCommit — auto-commit gate", () => {
       emit: vi.fn(),
       turnSummary: "did stuff",
     });
-    // No kind → the gate doesn't fire and autoCommit is attempted as usual.
     expect(autoCommit).toHaveBeenCalledTimes(1);
   });
 });
 
-/**
- * The gate must not widen: an ordinary session still commits AND pushes, and
- * the ops/sandbox refusal reaches the moved-HEAD branch too (where the push is
- * armed off a HEAD move rather than off a commit we made).
- */
 describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push", () => {
   function makeCommittingCtx(kind?: SessionInfo["kind"]) {
     const autoCommit = vi.fn(async () => ({
@@ -96,6 +69,7 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1) },
       sessionManager: {
       get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)),
+      setWorkspaceBlock: vi.fn(() => false),
       getSecretBlock: vi.fn(() => undefined),
       setSecretBlock: vi.fn(),
     },
@@ -125,12 +99,6 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
     expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
   });
 
-  /**
-   * The `deferPushArm` contract, at the boundary the production wirings use.
-   * The turn executor relies on it to keep the debounced push behind the PR
-   * flow's own synchronous push; if `postTurnCommit` armed anyway, the ordering
-   * upstream would be decorative.
-   */
   describe("deferPushArm", () => {
     it("hands the arm over instead of firing it, and the arm pushes exactly what the inline one would", async () => {
       const { ctx, scheduleAutoPush } = makeCommittingCtx(undefined);
@@ -144,27 +112,20 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
         deferPushArm: (arm) => { handed = arm; },
       });
 
-      // Nothing armed during the commit — that is the whole point.
       expect(scheduleAutoPush).not.toHaveBeenCalled();
       expect(handed).toBeTypeOf("function");
 
       handed!();
       expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
-      // Same session id the inline call passes, so the two paths push identically.
       expect(scheduleAutoPush).toHaveBeenCalledWith(expect.anything(), "s1");
     });
 
     it("hands over nothing when the merged-branch guard refuses the push", async () => {
-      // A refused push must not become an arm the caller fires later — that
-      // would route around the guard entirely.
       const { ctx, scheduleAutoPush } = makeCommittingCtx(undefined);
       const sm = (ctx as unknown as {
         sessionManager: { get: ReturnType<typeof vi.fn>; getPrStatus?: ReturnType<typeof vi.fn> };
       }).sessionManager;
       sm.get = vi.fn(() => ({ id: "s1", mergedAt: new Date().toISOString() } as unknown as SessionInfo));
-      // The guard reads this to WORD its notice. Absent, it throws and the
-      // guard fails open — which is how this test first passed for the wrong
-      // reason, and is worth knowing about the stub.
       sm.getPrStatus = vi.fn(() => null);
       let handed: (() => void) | null = null;
 
@@ -182,9 +143,6 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
   });
 
   it("skips the moved-HEAD push for an ops session too", async () => {
-    // The agent ran its own `git commit` — the SUPPORTED way to keep work in an
-    // ops session now. autoCommit would find a clean tree and the push would be
-    // armed off the HEAD move; the gate returns before any of that.
     const autoCommit = vi.fn(async () => ({
       commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
     }));
@@ -199,6 +157,7 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
       chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -213,12 +172,6 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
   });
 });
 
-/**
- * docs/213 — when the agent moves HEAD itself this turn (its own `git commit`),
- * autoCommit makes no new commit but post-turn auto-pushes the moved HEAD. Guard
- * that push: scan the added commits, refuse on a secret — but only when HEAD is a
- * pure addition (turnStartHead is an ancestor), to avoid false-blocking a rebase.
- */
 describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () => {
   // Built at runtime so this (non-allowlisted) test file carries no literal token.
   const FAKE_PAT = `ghp_${"A".repeat(36)}`;
@@ -244,6 +197,7 @@ describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () =>
       chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append },
       sessionManager: {
         get: vi.fn(() => undefined),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -260,7 +214,7 @@ describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () =>
     });
     expect(result).toBeNull();
     expect(scheduleAutoPush).not.toHaveBeenCalled();
-    expect(append).toHaveBeenCalled(); // persisted warning notice
+    expect(append).toHaveBeenCalled();
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "system_notice", level: "warn" }));
   });
 
@@ -282,13 +236,6 @@ describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () =>
   });
 });
 
-/**
- * planning#297 — a merged session's post-turn auto-push RECREATES the branch GitHub
- * deleted at merge, stranding the commit as an orphan that belongs to no pull
- * request. The commit still happens (work is never lost); only the silent push is
- * refused, and the refusal always leaves a persisted notice — the silence is what
- * made the user report this twice as "changes are missing from the merged PR".
- */
 describe("postTurnCommit — merged sessions never silently auto-push", () => {
   const MERGED_SHA = "025e9609";
 
@@ -296,7 +243,6 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     session?: Partial<SessionInfo>;
     prStatus?: unknown;
     commitHash?: string | null;
-    /** Is the merged tip still an ancestor of HEAD (i.e. not rebased away)? */
     stackedOnMergedTip?: boolean;
   }) {
     const autoCommit = vi.fn(async () => ({
@@ -321,6 +267,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
           ...opts.session,
         } as SessionInfo)),
         getPrStatus: vi.fn(() => opts.prStatus ?? { prNumber: 1963, baseBranch: "main" }),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -334,12 +281,10 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     const hash = await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "Added, in both places",
     });
-    // The work is committed — the guard never costs the user their edits.
     expect(hash).toBe("0d9a31d1");
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "git_committed" }));
-    // …but it does not silently land on a branch whose PR already merged.
     expect(scheduleAutoPush).not.toHaveBeenCalled();
-    expect(append).toHaveBeenCalled(); // persisted, so it survives a reload
+    expect(append).toHaveBeenCalled();
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({ type: "system_notice", level: "warn", message: expect.stringContaining("#1963") }),
     );
@@ -355,9 +300,6 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
   });
 
   it("pushes normally once the branch has been rebased off the merged tip", async () => {
-    // The prescribed keep-shipping flow: rebase onto the fresh base, commit, open
-    // a new PR. `mergedAt` is still set (docs/202 re-arms AFTER this), so without
-    // the ancestry test this legitimate push would be blocked and mis-explained.
     const { ctx, scheduleAutoPush, append } = makeMergedCtx({ stackedOnMergedTip: false });
     await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "next slice",
@@ -384,7 +326,6 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     const hash = await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "x",
     });
-    // The commit — and the caller's PR flow, which is gated on this hash — survive.
     expect(hash).toBe("0d9a31d1");
     expect(scheduleAutoPush).not.toHaveBeenCalled();
     expect(err).toHaveBeenCalled();
@@ -392,11 +333,6 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
   });
 });
 
-/**
- * planning#317 — the refusal has to reach BOTH actors from the real post-turn path,
- * not just the transcript. These pin the wiring; `services/secret-block.test.ts`
- * pins the state machine itself.
- */
 describe("postTurnCommit — a secret-blocked commit is sticky and announced", () => {
   const FINDING = {
     rule: "github-pat",
@@ -426,6 +362,7 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => stored),
         setSecretBlock: vi.fn((_id: string, b: unknown) => {
           stored = b ?? undefined;
@@ -448,21 +385,16 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
     });
 
     expect(hash).toBeNull();
-    // 1. Sticky state — survives the runner and a reload.
     expect(setSecretBlock).toHaveBeenCalledWith("s1", expect.objectContaining({ notifyCount: 1 }));
-    // 2. The banner.
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({ type: "secret_block_status", sessionId: "s1" }),
     );
-    // 3. The transcript row (unchanged behavior).
     expect(append).toHaveBeenCalled();
-    // 4. The agent is told its work did not land — the part that was missing.
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("clears the block once a commit lands", async () => {
     const { ctx, emit } = makeSecretCtx({ findings: [], commitHash: "abc1234" });
-    // Pre-arm a standing block so the clear has something to retire.
     ctx.sessionManager.setSecretBlock("s1", { findings: [FINDING], at: "x", notifyCount: 2 } as never);
     emit.mockClear();
 
@@ -474,9 +406,6 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
   });
 
   it("does NOT clear the block on a conflict refusal — that path never scanned", async () => {
-    // `autoCommit` returns before staging when the tree is conflicted, so a
-    // secret may still be sitting there unscanned. Clearing here would retire
-    // the banner on a lie.
     const setSecretBlock = vi.fn();
     const ctx = {
       createGitManager: vi.fn(() => ({
@@ -488,6 +417,7 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => ({ findings: [FINDING], at: "x", notifyCount: 2 })),
         setSecretBlock,
       },
@@ -502,16 +432,99 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
   });
 });
 
-/**
- * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — the two permission states reach the user, and the
- * `blocked` one does NOT retire a standing secret block.
- *
- * That last part is the subtle one. `blocked` means `git add -A` exited 128 and
- * staged nothing, so the secret scan never ran — retiring the banner there would
- * clear it on exactly the lie planning#317's condition exists to prevent. It is
- * the same reasoning as the conflict/rebase early return, and it is easy to
- * regress because the happy path looks identical.
- */
+describe("docs/298: postTurnCommit clears the broken-workspace marker", () => {
+  // The fake holds real state: a setter that always reports a change would make
+  // "no marker to clear" pass without the production gate existing.
+  function makeCtx(opts: {
+    commitResult?: Record<string, unknown>;
+    block?: WorkspaceBlockKind | undefined;
+    rebasing?: boolean;
+    sequencing?: boolean;
+  } = {}) {
+    let block = "block" in opts ? opts.block : ("conflict" as WorkspaceBlockKind | undefined);
+    const sseBroadcast = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit: vi.fn(async () => ({
+          commitHash: "abc1234", conflictedFiles: [], rebaseInProgress: false,
+          secretFindings: [], ...opts.commitResult,
+        })),
+        getHeadHash: vi.fn(async () => "head"),
+        isRebaseInProgress: vi.fn(async () => opts.rebasing ?? false),
+        isMergeOrSequencerInProgress: vi.fn(async () => opts.sequencing ?? false),
+      })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1", ...(block ? { workspaceBlock: block } : {}) } as SessionInfo)),
+        list: vi.fn(() => [{ id: "s1" } as SessionInfo]),
+        setWorkspaceBlock: vi.fn((_id: string, kind: WorkspaceBlockKind | null) => {
+          if (block === (kind ?? undefined)) return false;
+          block = kind ?? undefined;
+          return true;
+        }),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      sseBroadcast,
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, sseBroadcast, blockNow: () => block };
+  }
+
+  async function run(ctx: Parameters<typeof postTurnCommit>[0]) {
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "fixed it",
+    });
+  }
+
+  it("clears it and announces the new list when the commit held nothing back", async () => {
+    const { ctx, sseBroadcast, blockNow } = makeCtx();
+    await run(ctx);
+    expect(blockNow()).toBeUndefined();
+    expect(sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [{ id: "s1" }] });
+  });
+
+  it("leaves it alone while the auto-commit reports the rebase", async () => {
+    const { ctx, blockNow } = makeCtx({
+      commitResult: { commitHash: null, rebaseInProgress: true },
+    });
+    await run(ctx);
+    expect(blockNow()).toBe("conflict");
+  });
+
+  // The incident's exact shape: autoCommit reports nothing wrong, and the tree IS
+  // clean — the unfinished rebase lives in .git, where only these calls see it.
+  it("leaves it alone when the clean tree still holds rebase state", async () => {
+    const { ctx, blockNow } = makeCtx({ rebasing: true });
+    await run(ctx);
+    expect(blockNow()).toBe("conflict");
+  });
+
+  it("leaves it alone when the clean tree still holds merge/cherry-pick state", async () => {
+    const { ctx, blockNow } = makeCtx({ sequencing: true });
+    await run(ctx);
+    expect(blockNow()).toBe("conflict");
+  });
+
+  it("leaves it alone while a path is still unreadable, `omitted` included", async () => {
+    const { ctx, blockNow } = makeCtx({
+      commitResult: { unreadable: { kind: "omitted", detail: "data/db" } },
+    });
+    await run(ctx);
+    expect(blockNow()).toBe("conflict");
+  });
+
+  it("asks git nothing, and announces nothing, when there is no marker", async () => {
+    const { ctx, sseBroadcast } = makeCtx({ block: undefined });
+    await run(ctx);
+    const git = (ctx.createGitManager as unknown as { mock: { results: { value: {
+      isRebaseInProgress: { mock: { calls: unknown[] } };
+    } }[] } }).mock.results[0]!.value;
+    expect(git.isRebaseInProgress.mock.calls).toHaveLength(0);
+    expect(sseBroadcast).not.toHaveBeenCalled();
+  });
+});
+
 describe("postTurnCommit — unreadable workspace content", () => {
   function makeCtx(unreadable: { kind: "omitted" | "blocked"; detail: string } | null, commitHash: string | null) {
     const autoCommit = vi.fn(async () => ({
@@ -524,6 +537,7 @@ describe("postTurnCommit — unreadable workspace content", () => {
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => ({ findings: [], at: 1 })),
         setSecretBlock,
       },
@@ -543,14 +557,6 @@ describe("postTurnCommit — unreadable workspace content", () => {
     expect(notices).toContain("short");
   });
 
-  /**
-   * `omitted` does NOT imply a commit. When the unreadable directory hides the
-   * turn's only changes, `autoCommit` takes its clean-tree return — null hash,
-   * `unreadable: omitted` — and the notice used to say "this commit is short…
-   * everything else was committed normally" about a commit that does not exist.
-   * That is req 15's outcome wearing req 14's words, which is precisely the
-   * collapse the two requirements were split to prevent.
-   */
   it("does not call a commit short when the turn produced no commit at all", async () => {
     const emit = vi.fn();
     const { ctx } = makeCtx({ kind: "omitted", detail: "pgdata/" }, null);
@@ -575,8 +581,6 @@ describe("postTurnCommit — unreadable workspace content", () => {
   });
 
   it("does not retire a standing secret block when nothing was staged", async () => {
-    // `blocked` returns before staging and before the scan. Clearing here would
-    // tell the user a secret is gone when nothing looked for it.
     const { ctx, setSecretBlock } = makeCtx({ kind: "blocked", detail: "d/server.key" }, null);
     await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
@@ -593,17 +597,6 @@ describe("postTurnCommit — unreadable workspace content", () => {
   });
 });
 
-/**
- * docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — a commit that failed for a reason ShipIt could
- * not classify is still a turn that committed nothing, and requirement 15 says
- * "a log line is not a report".
- *
- * This is the half the classifier does not cover, on purpose: `autoCommit`
- * rethrows anything that is not the measured permission case (an EIO, a file
- * deleted mid-add, a leftover `index.lock`), and the throw used to reach
- * `postTurnStep`, which logs and continues. The user saw a finished turn and an
- * empty branch.
- */
 describe("postTurnCommit — an auto-commit that threw", () => {
   function makeThrowingCtx(err: Error) {
     const append = vi.fn();
@@ -615,6 +608,7 @@ describe("postTurnCommit — an auto-commit that threw", () => {
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -631,7 +625,6 @@ describe("postTurnCommit — an auto-commit that threw", () => {
       sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
     })).rejects.toThrow("index.lock");
 
-    // Persisted, not just emitted: the user must still find it after a reload.
     expect(append).toHaveBeenCalled();
     const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
     expect(notices).toContain("NOT committed");
@@ -647,20 +640,6 @@ describe("postTurnCommit — an auto-commit that threw", () => {
   });
 });
 
-/**
- * docs/266 — `.git` is made writable BEFORE the commit, not only after it.
- *
- * This is the whole observable effect of the `.git/COMMIT_EDITMSG` fix, and
- * nothing else in the suite can fail on it: the ownership tests in
- * `session-worker-uid.test.ts` prove the helper targets the right uid, but they
- * pass just as happily if this call site is deleted and only the post-turn
- * `finally` remains. Ordering is the assertion, so ordering is what is asserted.
- *
- * Why it has to be *before*: git raises the permission failure at commit time,
- * after `git add -A` has already staged the turn's work. Repairing only
- * afterwards fixes the NEXT turn, and the stranded turn is `CLAUDE.md`
- * invariant 2's unrecoverable case.
- */
 describe("postTurnCommit — .git is reconciled before the commit, not only after", () => {
   const chown = vi.mocked(chownWorkspaceGitToSessionWorker);
 
@@ -670,6 +649,7 @@ describe("postTurnCommit — .git is reconciled before the commit, not only afte
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -693,9 +673,6 @@ describe("postTurnCommit — .git is reconciled before the commit, not only afte
   });
 
   it("still chowns first when the commit throws — the reported production path", async () => {
-    // The `.git/COMMIT_EDITMSG` case itself. The pre-commit repair is what gives
-    // this turn a chance to land at all; the `finally` repair is what stops the
-    // NEXT one failing the same way. Both must fire.
     chown.mockClear();
     const err = new Error("fatal: could not open '.git/COMMIT_EDITMSG': Permission denied");
     const autoCommit = vi.fn(() => Promise.reject(err));
@@ -709,14 +686,13 @@ describe("postTurnCommit — .git is reconciled before the commit, not only afte
   });
 
   it("does not touch .git at all for a kind that never commits", async () => {
-    // The auto-commit gate returns before the lock, so an ops/sandbox session
-    // gains no filesystem work from this change.
     chown.mockClear();
     const ctx = {
       createGitManager: vi.fn(),
       chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -728,5 +704,99 @@ describe("postTurnCommit — .git is reconciled before the commit, not only afte
     });
 
     expect(chown).not.toHaveBeenCalled();
+  });
+});
+
+describe("postTurnCommit — a branch already ahead of its remote", () => {
+  function makeIdleTurnCtx(opts: {
+    ahead: number;
+    behind?: number;
+    branch?: string | null;
+    session?: Partial<SessionInfo>;
+    secretBlocked?: boolean;
+  }) {
+    const autoCommit = vi.fn(async () => ({
+      commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+    }));
+    // HEAD never moves: the shape of every recovery turn on a clean tree.
+    const getHeadHash = vi.fn(async () => "head1");
+    const currentBranchOrNull = vi.fn(async () => opts.branch === undefined ? "shipit/abc" : opts.branch);
+    const aheadBehind = vi.fn(async () => ({ ahead: opts.ahead, behind: opts.behind ?? 0 }));
+    const isAncestor = vi.fn(async () => true);
+    const scheduleAutoPush = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({ autoCommit, getHeadHash, currentBranchOrNull, aheadBehind, isAncestor })),
+      chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => (opts.session ? ({ id: "s1", ...opts.session } as SessionInfo) : undefined)),
+        getPrStatus: vi.fn(() => null),
+        setWorkspaceBlock: vi.fn(() => false),
+        getSecretBlock: vi.fn(() => (opts.secretBlocked ? { findings: [], at: "", notifyCount: 0 } : undefined)),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush,
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, scheduleAutoPush, aheadBehind };
+  }
+
+  const runTurn = (ctx: Parameters<typeof postTurnCommit>[0]) =>
+    postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a recovery turn",
+      turnStartHeadHash: "head1",
+    });
+
+  it("arms no push when nothing moved and the branch matches its remote", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 0 });
+    expect(await runTurn(ctx)).toBeNull();
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("arms the push when the branch is ahead, though this turn moved nothing", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 2 });
+    expect(await runTurn(ctx)).toBeNull();
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+    expect(scheduleAutoPush).toHaveBeenCalledWith(expect.anything(), "s1");
+  });
+
+  it("leaves a diverged branch alone — a plain push is rejected and a force push discards the remote", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 2, behind: 3 });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("leaves a branch that is only behind alone", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 0, behind: 4 });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("still refuses an ahead branch stacked on a merged pull request", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({
+      ahead: 2,
+      session: { mergedAt: new Date().toISOString(), mergedHeadSha: "merged1" },
+    });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("reads local refs only — the clean turn must not grow a network fetch", async () => {
+    const { ctx, aheadBehind } = makeIdleTurnCtx({ ahead: 1 });
+    await runTurn(ctx);
+    expect(aheadBehind).toHaveBeenCalledWith("refs/remotes/origin/shipit/abc");
+  });
+
+  // The block is cleared earlier in this same call once the working tree is
+  // clean, so the reading has to be taken before that — otherwise the repair
+  // becomes the thing that publishes the commit the scan just refused.
+  it("does not repair a session that was secret-blocked when the turn ended", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 2, secretBlocked: true });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet on a detached HEAD, where there is no branch to push", async () => {
+    const { ctx, scheduleAutoPush } = makeIdleTurnCtx({ ahead: 2, branch: null });
+    await runTurn(ctx);
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
   });
 });

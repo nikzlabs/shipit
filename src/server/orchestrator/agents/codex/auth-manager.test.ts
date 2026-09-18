@@ -1,12 +1,3 @@
-/**
- * CodexAuthManager unit tests.
- *
- * Drives the manager with a fake `spawn` so we can deterministically replay
- * the stdout/stderr the real `codex login --device-auth` produces, plus
- * malformed and error variants. The credentials-on-disk check is also
- * injected so the suite doesn't need to touch /credentials.
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -23,22 +14,13 @@ import {
   type CodexAuthPendingEvent,
   type SpawnFn,
 } from "./auth-manager.js";
+import type { AgentAuthLogPayload, AgentAuthProgressPayload } from "../auth-diagnostics.js";
 
-/** Build a fake JWT (header.payload.signature) carrying the OpenAI auth claim. */
 function fakeJwt(authClaim: Record<string, unknown>): string {
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
   return `${b64({ alg: "none" })}.${b64({ "https://api.openai.com/auth": authClaim })}.sig`;
 }
 
-// ---------------------------------------------------------------------------
-// Fake child_process
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal stand-in for a ChildProcess. Only implements what the manager
- * touches: stdout / stderr Readable streams, an `on("close" | "error")`
- * registration, and a `kill()` method.
- */
 class FakeChildProcess extends EventEmitter {
   pid = 12345;
   stdout = new Readable({ read() { /* no-op */ } });
@@ -53,7 +35,6 @@ class FakeChildProcess extends EventEmitter {
 interface SpawnContext {
   proc: FakeChildProcess;
   spawnFn: SpawnFn;
-  /** Calls captured (command, args). */
   calls: { cmd: string; args: readonly string[] }[];
 }
 
@@ -67,7 +48,6 @@ function makeSpawn(): SpawnContext {
   return { proc, spawnFn, calls };
 }
 
-/** Push a chunk onto a Readable so the manager's listener fires synchronously. */
 function emitStdout(stream: Readable, text: string): void {
   stream.push(Buffer.from(text, "utf-8"));
 }
@@ -75,10 +55,6 @@ function emitStdout(stream: Readable, text: string): void {
 afterEach(() => {
   vi.useRealTimers();
 });
-
-// ---------------------------------------------------------------------------
-// Regex sanity checks
-// ---------------------------------------------------------------------------
 
 describe("extractCodexPlan", () => {
   it("reads and title-cases the chatgpt_plan_type claim from the id token", () => {
@@ -110,8 +86,8 @@ describe("CodexAuthManager / regex", () => {
 
   it("USER_CODE_PATTERN ignores unrelated tokens", () => {
     expect("hello world".match(USER_CODE_PATTERN)).toBeNull();
-    expect("abc-defgh".match(USER_CODE_PATTERN)).toBeNull(); // lowercase
-    expect("AB-CDEFG".match(USER_CODE_PATTERN)).toBeNull(); // wrong shape
+    expect("abc-defgh".match(USER_CODE_PATTERN)).toBeNull();
+    expect("AB-CDEFG".match(USER_CODE_PATTERN)).toBeNull();
   });
 
   it("VERIFICATION_URL_PATTERN matches the canonical OpenAI device URL", () => {
@@ -124,10 +100,6 @@ describe("CodexAuthManager / regex", () => {
     expect(text.match(VERIFICATION_URL_PATTERN)?.[0]).toBe("https://auth.openai.com/codex/device?foo=bar");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
 
 describe("CodexAuthManager / startDeviceFlow", () => {
   it("spawns codex login --device-auth", () => {
@@ -167,7 +139,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     mgr.startDeviceFlow();
     emitStdout(proc.stdout, "https://auth.openai.com/codex/device\nK8RE-8MIGC\n");
     emitStdout(proc.stdout, "https://auth.openai.com/codex/device\nK8RE-8MIGC\n");
-    // Let the Readable flush through to data listeners.
     await new Promise((r) => setImmediate(r));
     expect(events).toHaveLength(1);
   });
@@ -179,7 +150,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
       mgr.once("codex_auth_pending", (ev: CodexAuthPendingEvent) => resolve(ev));
     });
     mgr.startDeviceFlow();
-    // Bold / colored output the CLI sometimes emits.
     emitStdout(proc.stdout, "\x1b[1mhttps://auth.openai.com/codex/device\x1b[0m\n\x1b[33mK8RE-8MIGC\x1b[0m\n");
     const ev = await pending;
     expect(ev.verificationUri).toBe("https://auth.openai.com/codex/device");
@@ -246,12 +216,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     expect(calls).toHaveLength(1);
   });
 
-  // Regression: page reload mid-flow used to leave the Sign-in button dead
-  // because (a) the server's `proc` was still polling, so a second
-  // `startDeviceFlow()` no-op'd, and (b) the original `codex_auth_pending`
-  // event was already consumed by the previous browser tab. Now the manager
-  // re-emits the cached pending event so a fresh click after reload swaps
-  // the UI back to the Step 1 / Step 2 view.
   it("re-emits the cached pending event when start is called against a running flow", async () => {
     const { proc, spawnFn } = makeSpawn();
     const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
@@ -266,8 +230,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     await new Promise((r) => setImmediate(r));
     expect(events).toHaveLength(1);
 
-    // Second click — simulates the user hitting "Sign in" after a page
-    // reload. The manager must re-broadcast so the new UI catches up.
     mgr.startDeviceFlow();
     expect(events).toHaveLength(2);
     expect(events[1]).toEqual(events[0]);
@@ -279,7 +241,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     expect(mgr.getPendingEvent()).toBeNull();
 
     mgr.startDeviceFlow();
-    // No URL/code yet — still null.
     expect(mgr.getPendingEvent()).toBeNull();
 
     emitStdout(proc.stdout, "https://auth.openai.com/codex/device\nK8RE-8MIGC\n");
@@ -329,10 +290,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Cancel + signOut
-// ---------------------------------------------------------------------------
-
 describe("CodexAuthManager / cancel + signOut", () => {
   it("cancel kills the running process and is idempotent", () => {
     const { proc, spawnFn } = makeSpawn();
@@ -342,7 +299,6 @@ describe("CodexAuthManager / cancel + signOut", () => {
     mgr.cancel();
     expect(proc.killed).toBe(true);
     expect(mgr.pending).toBe(false);
-    // Second call must not throw.
     expect(() => mgr.cancel()).not.toThrow();
   });
 
@@ -353,8 +309,6 @@ describe("CodexAuthManager / cancel + signOut", () => {
     mgr.on("codex_auth_failed", () => { failedFired = true; });
     mgr.startDeviceFlow();
     mgr.cancel();
-    // After cancel, the underlying process firing 'close' should be a no-op
-    // because the listener was removed. Re-emit anyway to verify.
     proc.emit("close", 0);
     await new Promise((r) => setImmediate(r));
     expect(failedFired).toBe(false);
@@ -370,10 +324,6 @@ describe("CodexAuthManager / cancel + signOut", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Account-scoped flows (docs/150)
-// ---------------------------------------------------------------------------
-
 describe("CodexAuthManager / account-scoped (docs/150)", () => {
   let tmp: string;
 
@@ -385,7 +335,6 @@ describe("CodexAuthManager / account-scoped (docs/150)", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  /** Spawn fake that also captures the per-call options (env, etc.). */
   function makeSpawnWithOpts(): { proc: FakeChildProcess; spawnFn: SpawnFn; opts: Parameters<SpawnFn>[2][] } {
     const proc = new FakeChildProcess();
     const opts: Parameters<SpawnFn>[2][] = [];
@@ -408,12 +357,10 @@ describe("CodexAuthManager / account-scoped (docs/150)", () => {
   it("checkCredentials reads the account's auth.json, ignoring the injected singleton check", () => {
     const { spawnFn } = makeSpawnWithOpts();
     const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => true });
-    // No file yet → scoped check is false even though the singleton check is true.
     expect(mgr.checkCredentials(tmp)).toBe(false);
     fs.mkdirSync(path.join(tmp, ".codex"), { recursive: true });
     fs.writeFileSync(path.join(tmp, ".codex", "auth.json"), "{}");
     expect(mgr.checkCredentials(tmp)).toBe(true);
-    // The singleton path is unaffected.
     expect(mgr.checkCredentials()).toBe(true);
   });
 
@@ -430,7 +377,6 @@ describe("CodexAuthManager / account-scoped (docs/150)", () => {
     await new Promise((r) => setImmediate(r));
 
     expect(observed).toBe("acct-9");
-    // Scope is cleared after the terminal event.
     expect(mgr.getActiveAccountId()).toBeNull();
   });
 
@@ -442,5 +388,295 @@ describe("CodexAuthManager / account-scoped (docs/150)", () => {
     fs.writeFileSync(authPath, "{}");
     mgr.signOut({ credentialDir: tmp });
     expect(fs.existsSync(authPath)).toBe(false);
+  });
+});
+
+/**
+ * The sign-in diagnostics panel in Settings renders whatever a manager reports,
+ * for any harness. This one reported nothing: a `codex login` that failed left
+ * the user `codex login exited with code 1`, while the CLI's own explanation
+ * went to the orchestrator log, truncated at 500 characters, where no user can
+ * read it.
+ */
+describe("what the Codex sign-in reports to the panel", () => {
+  const URL = "https://auth.openai.com/codex/device";
+  const settle = () => new Promise((r) => setImmediate(r));
+  /** Empty, so `credentials=absent` is the real answer rather than a stub's. */
+  const diagDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "codex-auth-diag-"));
+
+  /** `makeSpawn` reuses one process; a stale-run test needs a fresh one each time. */
+  function makeSpawnPerCall(): { procs: FakeChildProcess[]; spawnFn: SpawnFn } {
+    const procs: FakeChildProcess[] = [];
+    const spawnFn: SpawnFn = () => {
+      const proc = new FakeChildProcess();
+      procs.push(proc);
+      return proc as unknown as ChildProcess;
+    };
+    return { procs, spawnFn };
+  }
+
+  function startWithDiagnostics() {
+    const { proc, spawnFn } = makeSpawn();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    const logs: AgentAuthLogPayload[] = [];
+    const progress: AgentAuthProgressPayload[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("progress", (p) => progress.push(p));
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+    return { proc, mgr, logs, progress, panel: () => logs.map((l) => l.message).join("\n") };
+  }
+
+  it("relays the CLI's own output, scoped to this login and account", async () => {
+    const { proc, logs } = startWithDiagnostics();
+    emitStdout(proc.stdout, "Welcome to Codex\n");
+    await settle();
+
+    const cli = logs.filter((l) => l.source === "cli_stdout");
+    expect(cli.map((l) => l.message)).toContain("Welcome to Codex");
+    expect(cli[0]).toMatchObject({ loginId: "openai-chatgpt", accountId: "acct-1" });
+    expect(cli[0]?.attemptId).toBeTruthy();
+  });
+
+  /**
+   * `codex login` writes to both streams, so a stderr line is ordinary progress
+   * and not a failure. The source says which stream; the level must not claim
+   * the line was an error.
+   */
+  it("labels stderr by its stream without levelling it an error", async () => {
+    const { proc, logs } = startWithDiagnostics();
+    emitStdout(proc.stderr, "Opening your browser…\n");
+    await settle();
+
+    const line = logs.find((l) => l.message === "Opening your browser…");
+    expect(line?.source).toBe("cli_stderr");
+    expect(line?.level).toBe("info");
+  });
+
+  /**
+   * The heart of it: every redaction protecting this panel is a whole-STRING
+   * rule, so relaying a chunk at a time defeats them. A device code split
+   * anywhere stops matching the pattern that removes it, and a URL split inside
+   * its query string leaves the second half looking like ordinary text.
+   */
+  it("redacts a device code the CLI's output split across two chunks", async () => {
+    const { proc, logs, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, "   K8RE");
+    emitStdout(proc.stdout, "-8MIGC\n");
+    await settle();
+
+    expect(panel()).toContain("[code-redacted]");
+    // Not just "the whole code is absent": a chunk relay would emit the two
+    // halves as separate entries, and joining them would hide that.
+    expect(logs.some((l) => /K8RE|8MIGC/.test(l.message)), "leaked half the code").toBe(false);
+  });
+
+  it("redacts a verification URL's query string when the split lands inside it", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    // `device_code`, not `state`: no assignment rule names it and it is under the
+    // long-secret threshold, so ONLY the URL rule can remove it.
+    const url = `${URL}?foo=bar&device_code=private-grant`;
+    const at = url.indexOf("&dev") + 4;
+    emitStdout(proc.stdout, `Open this link: ${url.slice(0, at)}`);
+    emitStdout(proc.stdout, `${url.slice(at)}\n`);
+    await settle();
+
+    expect(panel(), "leaked the link's query string").not.toContain("private-grant");
+  });
+
+  /**
+   * The marker is substituted into the line the URL rule then has to match, so
+   * it must contain no whitespace: a URL ends at the first space, and a spaced
+   * marker inside a link truncates what the sanitizer sees, publishing every
+   * query parameter after the code in the clear.
+   */
+  it("does not let the code's removal expose the query parameters after it", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, `   ${URL}?user_code=K8RE-8MIGC&device_code=private-grant\n`);
+    await settle();
+
+    expect(panel(), "leaked a parameter after the redacted code").not.toContain("private-grant");
+    expect(panel()).not.toContain("K8RE-8MIGC");
+  });
+
+  /**
+   * The order is the guarantee, not the three steps. An escape sequence sitting
+   * INSIDE the code hides its shape from the pattern, so the strip has to come
+   * first — and the code has to go before the generic rules, which may rewrite
+   * the text it sits in.
+   *
+   * Driven through the spawn failure rather than the CLI's output on purpose:
+   * that is the one path to the emitter that does NOT pass the relay, so it is
+   * where the emitter's own strip is the only thing standing between an escape
+   * and the panel. Everything the CLI prints arrives already stripped.
+   */
+  it("removes a code an escape sequence is sitting in the middle of", () => {
+    const failingSpawn: SpawnFn = () => {
+      throw new Error("spawn failed near K8RE\x1b[0m-8MIGC");
+    };
+    const mgr = new CodexAuthManager({ spawn: failingSpawn, checkAuthFile: () => false });
+    const logs: AgentAuthLogPayload[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("failed", () => { /* the spawn's own failure */ });
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+
+    const panel = logs.map((l) => l.message).join("\n");
+    expect(panel, "an escape inside the code hid it from the pattern").not.toContain("8MIGC");
+    expect(panel).toContain("[code-redacted]");
+  });
+
+  /**
+   * The escape sequence can straddle a chunk boundary, and each half is
+   * unrecognisable alone — so `\x1b[90m` stays glued to the text, `m` is a word
+   * character, and the `\b` the code pattern needs is gone.
+   *
+   * **This is an end-to-end guard, not a one-line one.** Two layers stop it
+   * independently — the relay strips ANSI off the assembled line, and the
+   * redaction runs after the sanitizer rather than before — so it goes red only
+   * when BOTH are lost. Each layer has its own single-line guard elsewhere; this
+   * pins the property the user actually has.
+   */
+  it("redacts a code an ANSI sequence split across two chunks would have exposed", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, "   \x1b[9");
+    emitStdout(proc.stdout, "0mK8RE-8MIGC\x1b[0m\n");
+    await settle();
+
+    expect(panel(), "an ANSI split exposed the code").not.toContain("K8RE-8MIGC");
+    expect(panel()).toContain("[code-redacted]");
+  });
+
+  /**
+   * A CLI that hangs part-way through its last sentence is exactly the failure
+   * whose explanation has no newline after it — and the timeout path kills the
+   * process with `killProc`, which detaches the `close` handler that flushes.
+   */
+  it("flushes the unterminated final line when the flow times out", async () => {
+    const { proc, spawnFn } = makeSpawn();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false, timeoutMs: 20 });
+    const logs: AgentAuthLogPayload[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("failed", () => { /* the timeout's own failure */ });
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+    emitStdout(proc.stdout, "Error: your account is not eligible.");
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(logs.map((l) => l.message).join("\n")).toContain("Error: your account is not eligible.");
+  });
+
+  it("says the device code arrived without putting the link or the code in the panel", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, `${URL}\nK8RE-8MIGC\n`);
+    await settle();
+
+    expect(panel()).toContain("Device code received");
+    expect(panel()).not.toContain("K8RE-8MIGC");
+  });
+
+  /** A CLI's last word — the sentence explaining a failure — carries no newline. */
+  it("flushes the unterminated final line when the process exits", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, "Error: your account is not eligible.");
+    await settle();
+    proc.emit("close", 1);
+    await settle();
+
+    expect(panel()).toContain("Error: your account is not eligible.");
+  });
+
+  /**
+   * The one line that says which branch the exit took. It was on the terminal
+   * only, which the user cannot read — and a failure is exactly when they need it.
+   */
+  it("puts the line that explains the ending in the panel, not only the terminal", async () => {
+    const { proc, logs } = startWithDiagnostics();
+    proc.emit("close", 1);
+    await settle();
+
+    const ending = logs.find((l) => l.message.startsWith("sign-in ended"));
+    expect(ending?.message).toContain("exit=1");
+    expect(ending?.message).toContain("credentials=absent");
+  });
+
+  /**
+   * The terminal used to get each CHUNK, redacted on its own — which is half a
+   * secret when the split fell inside one, and `console.log` has no relay behind
+   * it to put the halves back together. The panel was clean the whole time.
+   */
+  it("logs the relayed line, never the chunk it arrived in", async () => {
+    const written: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      written.push(args.map((a) => String(a)).join(" "));
+    });
+    try {
+      const { proc } = startWithDiagnostics();
+      emitStdout(proc.stdout, "  Waiting for con");
+      await settle();
+      emitStdout(proc.stdout, "firmation of the device code\n");
+      await settle();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const output = written.filter((line) => line.includes("codex-auth output"));
+    expect(output.some((line) => line.trimEnd().endsWith("con")), "logged a chunk on its own").toBe(false);
+    expect(output.some((line) => line.includes("Waiting for confirmation"))).toBe(true);
+  });
+
+  /**
+   * `cancel()` detaches `close`, so the flush that path does never runs — and a
+   * CLI that stopped part-way through its last sentence is exactly the failure
+   * the user is cancelling to read about.
+   */
+  it("flushes the unterminated final line when the sign-in is cancelled", async () => {
+    const { mgr, proc, panel } = startWithDiagnostics();
+    emitStdout(proc.stdout, "Error: your account is not eligible.");
+    await settle();
+
+    mgr.cancel();
+
+    expect(panel()).toContain("Error: your account is not eligible.");
+  });
+
+  /**
+   * A cancelled run keeps draining — `cancel()` detaches `close` and `error`,
+   * never `data` — and by then the manager may be running the NEXT account's
+   * flow, so unguarded output lands on that account's panel and its expired
+   * challenge is replayed as that account's code.
+   */
+  it("ignores a cancelled run's output instead of charging it to the next account", async () => {
+    const { procs, spawnFn } = makeSpawnPerCall();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+    const stale = procs[0];
+    const logs: AgentAuthLogPayload[] = [];
+    const pending: CodexAuthPendingEvent[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("codex_auth_pending", (ev: CodexAuthPendingEvent) => pending.push(ev));
+
+    // Both halves of the guard: every kill path clears `this.proc` BEFORE the
+    // signal, so a dead run is already foreign whether or not a successor
+    // exists — the identity compared is the process object, which a cancel
+    // cannot leave stale the way an un-advanced generation counter can.
+    mgr.cancel();
+    emitStdout(stale.stdout, `stale line\n${URL}\nK8RE-8MIGC\n`);
+    await settle();
+    expect(logs, "a cancelled run kept reporting").toEqual([]);
+
+    mgr.startDeviceFlow({ accountId: "acct-2", credentialDir: diagDir() });
+    emitStdout(stale.stdout, `more stale\n${URL}\nK8RE-8MIGC\n`);
+    await settle();
+
+    expect(logs, "charged a dead run's output to the next account").toEqual([]);
+    expect(pending, "replayed the cancelled run's challenge").toEqual([]);
+  });
+
+  it("says where the sign-in has got to, before and after the challenge arrives", async () => {
+    const { proc, progress } = startWithDiagnostics();
+    expect(progress.map((p) => p.phase)).toEqual(["starting", "waiting_for_url"]);
+    expect(progress[0]).toMatchObject({ loginId: "openai-chatgpt", accountId: "acct-1" });
+
+    emitStdout(proc.stdout, `${URL}\nK8RE-8MIGC\n`);
+    await settle();
+    expect(progress.at(-1)).toMatchObject({ phase: "waiting_for_code" });
   });
 });

@@ -6,7 +6,6 @@ import {
   type ShipitLink,
 } from "./shipit-link.js";
 
-/** Narrow to a successfully parsed link, failing the test with the reason if not. */
 function ok(link: ShipitLink | null): Exclude<ShipitLink, { kind: "invalid" }> {
   expect(link).not.toBeNull();
   if (link === null) throw new Error("unreachable");
@@ -14,7 +13,6 @@ function ok(link: ShipitLink | null): Exclude<ShipitLink, { kind: "invalid" }> {
   return link;
 }
 
-/** Narrow to a rejected pointer — one that still renders and toasts on click. */
 function rejected(link: ShipitLink | null): string {
   expect(link).not.toBeNull();
   if (link === null) throw new Error("unreachable");
@@ -74,8 +72,7 @@ describe("parseShipitLink — preview", () => {
   });
 
   it("reads the service from the raw href, preserving case", () => {
-    // `URL.hostname` would lowercase this and silently fail the exact match
-    // against a Compose service actually named `webUI`.
+
     expect(ok(parseShipitLink("shipit-preview://webUI/x"))).toMatchObject({ service: "webUI" });
   });
 
@@ -90,8 +87,7 @@ describe("parseShipitLink — preview", () => {
   });
 
   it("rejects characters that make a URL parse differently from how it reads", () => {
-    // WHATWG parsing folds `\` into `/`, so this would resolve to a foreign host
-    // while passing a naive "starts with a single slash" test.
+
     expect(rejected(parseShipitLink("shipit-preview://web/\\evil.example/x"))).toBeTruthy();
     expect(rejected(parseShipitLink("shipit-preview://web/\tevil.example/x"))).toBeTruthy();
     expect(rejected(parseShipitLink("shipit-preview://web/a\nb"))).toBeTruthy();
@@ -104,8 +100,7 @@ describe("parseShipitLink — preview", () => {
   });
 
   it("rejects rather than truncates an overlong address", () => {
-    // A truncated destination is a different destination — the reason this
-    // parser does not reuse `sanitizePreviewPath`'s repair behaviour.
+
     const long = `shipit-preview://web/${"a".repeat(4000)}`;
     expect(rejected(parseShipitLink(long))).toMatch(/too long/);
   });
@@ -180,8 +175,7 @@ describe("parseShipitLink — the render form (req 1)", () => {
   });
 
   it("passes the rest of the query through byte-for-byte", () => {
-    // Round-tripping through URLSearchParams would re-encode these and hand the
-    // page a different string than the agent wrote.
+
     const link = ok(parseShipitLink("shipit-preview://web/x?q=a%7Eb+c&shipit-render=link"));
     expect(link.kind === "preview" && link.target).toBe("/x?q=a%7Eb+c");
   });
@@ -197,9 +191,7 @@ describe("parseShipitLink — the render form (req 1)", () => {
   });
 
   it("keeps a rejected pointer's requested form, so it renders as authored", () => {
-    // Req 10: an unopenable pointer still renders — as the form the agent chose,
-    // not silently demoted to an inline link. True on both schemes, which means
-    // the form has to be read BEFORE the rest of the address is validated.
+
     for (const href of [
       "shipit-present:?shipit-render=button",
       "shipit-preview://web:3000/x?shipit-render=button",
@@ -218,6 +210,51 @@ describe("parseShipitLink — the render form (req 1)", () => {
   });
 });
 
+describe("parseShipitLink — shipit-render written after the fragment", () => {
+
+  // scrolled to a heading that cannot exist and a Preview pointer handed the
+
+  it("reads the form from the fragment's own query, on both schemes", () => {
+    expect(ok(parseShipitLink("shipit-preview://web/reqs#req-7?shipit-render=button")).render)
+      .toBe("button");
+    expect(ok(parseShipitLink("shipit-present:/persist/reqs.html#req-7?shipit-render=badge")).render)
+      .toBe("badge");
+  });
+
+  it("strips it, so the destination is the one the author meant", () => {
+    expect(ok(parseShipitLink("shipit-preview://web/reqs#req-7?shipit-render=button")))
+      .toMatchObject({ target: "/reqs#req-7" });
+    expect(ok(parseShipitLink("shipit-present:/persist/reqs.html#req-7?shipit-render=button")))
+      .toMatchObject({ fragment: "req-7" });
+  });
+
+  it("keeps a real query string in its own position", () => {
+    expect(ok(parseShipitLink("shipit-preview://web/reqs?focus=7#req-7?shipit-render=badge")))
+      .toMatchObject({ target: "/reqs?focus=7#req-7", render: "badge" });
+  });
+
+  it("leaves a hash router's own query alone, taking only ShipIt's parameter", () => {
+
+    expect(ok(parseShipitLink("shipit-preview://web/app#/items?focus=7")))
+      .toMatchObject({ target: "/app#/items?focus=7", render: "link" });
+    expect(ok(parseShipitLink("shipit-preview://web/app#/items?focus=7&shipit-render=button")))
+      .toMatchObject({ target: "/app#/items?focus=7", render: "button" });
+
+    expect(ok(parseShipitLink("shipit-present:/x.md#req-7?"))).toMatchObject({ fragment: "req-7?" });
+  });
+
+  it("rejects the parameter appearing in both positions", () => {
+
+    expect(rejected(parseShipitLink("shipit-preview://web/x?shipit-render=button#f?shipit-render=badge")))
+      .toMatch(/repeats/);
+  });
+
+  it("rejects an unknown form there too", () => {
+    expect(rejected(parseShipitLink("shipit-present:/x.md#req-7?shipit-render=card")))
+      .toMatch(/must be one of/);
+  });
+});
+
 describe("slugifyHeading", () => {
   it("lowercases, strips punctuation and hyphenates whitespace", () => {
     expect(slugifyHeading("Requirement 7")).toBe("requirement-7");
@@ -227,7 +264,7 @@ describe("slugifyHeading", () => {
   });
 
   it("keeps the text of inline code and emphasis", () => {
-    // Callers pass rendered `textContent`, so the marks are already gone.
+
     expect(slugifyHeading("Using parseShipitLink()")).toBe("using-parseshipitlink");
   });
 

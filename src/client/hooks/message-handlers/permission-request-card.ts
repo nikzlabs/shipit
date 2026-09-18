@@ -3,18 +3,6 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { usePermissionStore } from "../../stores/permission-store.js";
 import type { Handler } from "./types.js";
 
-/**
- * docs/193 / planning#114 — the inline permission-request card. Seed the payload into
- * the permission store (keyed by requestId so a later resolved update can swap
- * it in place) and append a marker chat message so it renders inline where the
- * agent's action was gated.
- *
- * Idempotent by requestId: the card is both persisted to chat history and
- * buffered into the turn-event log, so a reconnect can deliver it twice (once
- * from `loadSessionHistory`, once from the buffer replay). Skip the duplicate
- * append when a card with this id is already present; `upsertCard` is itself
- * non-clobbering so it can't reset a card already rehydrated as resolved.
- */
 export const handlePermissionRequestCard: Handler<WsPermissionRequestCard> = (_ctx, data) => {
   usePermissionStore.getState().upsertCard({
     requestId: data.requestId,

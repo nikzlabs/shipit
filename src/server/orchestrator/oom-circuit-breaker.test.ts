@@ -36,7 +36,6 @@ describe("createOomCircuitBreaker", () => {
     expect(tripping.justTripped).toBe(true);
     expect(tripping.countInWindow).toBe(3);
 
-    // A subsequent OOM keeps it tripped but doesn't re-flip the edge.
     const next = breaker.recordOom("s");
     expect(next.tripped).toBe(true);
     expect(next.justTripped).toBe(false);
@@ -55,12 +54,11 @@ describe("createOomCircuitBreaker", () => {
 
   it("evicts old OOMs outside the window", () => {
     const { breaker, advance } = mkBreaker();
-    breaker.recordOom("s"); // window starts here
+    breaker.recordOom("s");
     advance(30_000);
     breaker.recordOom("s");
-    advance(40_000); // first OOM now outside the 60s window
+    advance(40_000);
     const result = breaker.recordOom("s");
-    // First OOM evicted; we should still only have 2 in window.
     expect(result.countInWindow).toBe(2);
     expect(result.tripped).toBe(false);
   });
@@ -97,7 +95,6 @@ describe("createOomCircuitBreaker", () => {
     expect(breaker.isTripped("s")).toBe(false);
     expect(breaker.getState("s").countInWindow).toBe(0);
 
-    // After reset, two more OOMs should NOT re-trip — we're starting over.
     breaker.recordOom("s");
     const second = breaker.recordOom("s");
     expect(second.tripped).toBe(false);

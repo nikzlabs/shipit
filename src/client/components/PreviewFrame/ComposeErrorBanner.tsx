@@ -2,7 +2,6 @@ import { WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
 
-/** Maps known Docker/Compose error patterns to user-facing remediation hints. */
 export function getComposeErrorHint(error: string): string | null {
   if (error.includes("address pools have been fully subnetted")) {
     return "Your Docker host has run out of network address space. Run \"docker network prune\" to remove unused networks, then retry. To permanently increase the limit, add {\"default-address-pools\": [{\"base\": \"172.16.0.0/12\", \"size\": 24}]} to /etc/docker/daemon.json and restart Docker.";
@@ -20,13 +19,12 @@ export function getComposeErrorHint(error: string): string | null {
 }
 
 interface ComposeErrorBannerProps {
-  /** The raw Docker Compose error text to surface. */
+
   composeError: string;
-  /** Called when the user clicks "Send to agent" to fix the compose error. */
+
   onSendToAgent?: () => void;
 }
 
-/** Overlay shown when Docker Compose fails to bring the stack up. */
 export function ComposeErrorBanner({ composeError, onSendToAgent }: ComposeErrorBannerProps) {
   const hint = getComposeErrorHint(composeError);
   return (

@@ -1,8 +1,3 @@
-/**
- * File-watcher controller — owns the worker's recursive `FileWatcher` and
- * registers the file endpoints (`/files/watch`, `/files/unwatch`,
- * `/files/tree`, `/codex/skills`). Relays debounced change batches over SSE.
- */
 
 import type { FastifyInstance } from "fastify";
 import os from "node:os";
@@ -48,14 +43,6 @@ export class FileWatcherController {
       return { tree };
     });
 
-    // GET /codex/skills — Codex's built-in system skills, scanned from
-    // `~/.codex/skills/<name>/SKILL.md` *inside the container*. os.homedir()
-    // resolves against the worker's HOME — `/home/shipit` post-migration
-    // (docs/150), `/root` in local mode — and the §4 symlink
-    // `~/.codex -> /credentials/.codex` makes this reach the right place. It's
-    // a container-only path the orchestrator cannot read over the HTTP link.
-    // The orchestrator merges these into GET /api/sessions/:id/skills as
-    // `source: "bundled"`. See docs/138-skill-invocation (change #5b).
     app.get("/codex/skills", async () => {
       const skillsDir = path.join(os.homedir(), ".codex", "skills");
       const skills = await scanSkillsDir(skillsDir, "bundled");
@@ -64,7 +51,6 @@ export class FileWatcherController {
     });
   }
 
-  /** Stop watching (worker shutdown). */
   stop(): void {
     if (this.fileWatcher) {
       this.fileWatcher.stop();
@@ -73,7 +59,6 @@ export class FileWatcherController {
     }
   }
 
-  /** Wire file watcher events to the SSE stream. */
   private wireFileWatcherEvents(watcher: FileWatcher): void {
     watcher.on("changes", (paths: string[]) => {
       this.deps.broadcast({ type: "file_changes", data: { paths } });

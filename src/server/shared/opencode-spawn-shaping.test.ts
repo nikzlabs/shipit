@@ -12,7 +12,6 @@ const ROUTING: ServiceRouting = {
   credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
 };
 
-/** The single provider block a shaped spawn writes, for the given routing. */
 function block(routing: ServiceRouting, modelId = "claude-haiku-4-5") {
   const config = opencodeProviderConfig(routing, modelId);
   return (config?.shipit ?? {}) as {
@@ -37,11 +36,6 @@ describe("opencodeProviderConfig", () => {
   });
 
   it("declares image input, which is what makes an attachment reach the model (planning#458)", () => {
-    // The block is the ONLY source of modality for a synthetic `shipit/<id>` —
-    // there is no models.dev entry to fall back to, and OpenCode resolves a
-    // missing declaration to image:false, which silently drops the `read` tool's
-    // file part. Probed live 2026-08-20 (CLI 1.18.18): without this the model is
-    // blind to an attached image; with it, it reads pixel-only content verbatim.
     for (const style of ["anthropic-messages", "openai-chat-completions"] as const) {
       const modalities = block({ ...ROUTING, style }).models?.["claude-haiku-4-5"]?.modalities;
       expect(modalities?.input).toEqual(["text", "image"]);
@@ -49,15 +43,25 @@ describe("opencodeProviderConfig", () => {
     }
   });
 
+  it("withholds image input for a model the catalogue knows is text-only (planning#460)", () => {
+    const modalities = block(
+      { ...ROUTING, style: "openai-chat-completions", baseUrl: "https://opencode.ai/zen/v1" },
+      "deepseek-v4-flash",
+    ).models?.["deepseek-v4-flash"]?.modalities;
+    expect(modalities?.input).toEqual(["text"]);
+    expect(modalities?.output).toEqual(["text"]);
+  });
+
+  it("declares image input for a model it cannot resolve — not knowing is not a refusal", () => {
+    const modalities = block(ROUTING, "no-such-model").models?.["no-such-model"]?.modalities;
+    expect(modalities?.input).toEqual(["text", "image"]);
+  });
+
   it("never inlines the secret — the key is OpenCode's {env:VAR} indirection", () => {
     expect(block(ROUTING).options?.apiKey).toBe("{env:OPENCODE_PROVIDER_API_KEY}");
   });
 
   it("omits the levels @ai-sdk/anthropic refuses, and keeps the rest (docs/272 §7)", () => {
-    // Measured 2026-08-17 against Zen: the package validates `effort` against a
-    // zod enum, so a declared `none` variant threw AI_TypeValidationError before
-    // any request went out — it did not degrade to the default. An unknown
-    // `--variant` IS ignored by the CLI, so not declaring one is the safe half.
     const variants = block(ROUTING).models?.["claude-haiku-4-5"]?.variants ?? {};
     expect(Object.keys(variants)).not.toContain("none");
     expect(Object.keys(variants)).not.toContain("minimal");
@@ -74,7 +78,27 @@ describe("opencodeProviderConfig", () => {
   });
 
   it("refuses a style the harness cannot speak instead of shaping a wrong spawn", () => {
-    expect(opencodeProviderConfig({ ...ROUTING, style: "openai-responses" }, "gpt-5.6-sol")).toBeUndefined();
+    expect(opencodeProviderConfig({ ...ROUTING, style: "gemini-generate-content" }, "gemini-3-pro")).toBeUndefined();
+  });
+
+  // Uses a style that IS supported, so only the credential branch can refuse;
+  // with openai-responses the result would be undefined either way.
+  it("refuses a credential the spawn cannot carry as an env var", () => {
+    const target = { kind: "config-file", path: "auth.json", pointer: "/key" } as const;
+    expect(opencodeProviderConfig({ ...ROUTING, credentialTarget: target }, "claude-haiku-4-5")).toBeUndefined();
+    expect(opencodeProviderConfig(ROUTING, "claude-haiku-4-5")).toBeDefined();
+  });
+
+  // @ai-sdk/openai is the package that posts to <base>/responses; the
+  // openai-compatible one never does, whatever baseURL it is given.
+  it("shapes openai-responses onto the Responses-capable provider package", () => {
+    const shaped = block(
+      { ...ROUTING, style: "openai-responses", baseUrl: "https://opencode.ai/zen/v1" },
+      "gpt-6-astra",
+    );
+    expect(shaped.npm).toBe("@ai-sdk/openai");
+    expect(shaped.options?.baseURL).toBe("https://opencode.ai/zen/v1");
+    expect(shaped.models?.["gpt-6-astra"]?.variants?.medium).toEqual({ reasoningEffort: "medium" });
   });
 
   it("names the model in ShipIt's own provider namespace", () => {

@@ -1,12 +1,3 @@
-/**
- * docs/262 — the session-level resolver: a `shipit.yaml` on disk in, the compose
- * services that session surfaces out.
- *
- * Exercised through a `repo: self` declaration, which is the one shape that
- * needs no fetch and no Docker (req 27): the "checkout" is the workspace itself,
- * so the whole path runs against the integration fakes the way plan §5 asks.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Docker from "dockerode";
 import fs from "node:fs";
@@ -43,18 +34,9 @@ services:
 
 afterEach(() => {
   fs.rmSync(sessionDir, { recursive: true, force: true });
-  // Every test shares one session id, and a surfaced tracked repository leaves
-  // a generation hold behind on purpose (req 15) — it is released when the
-  // session is disposed, which is what this stands in for.
   releaseSessionGenerationHolds(SESSION_ID);
 });
 
-/**
- * The tracked fixture: a live generation on disk under `stateDir`, declared by
- * `owner/name` rather than `self`, so the paths that only a fetched repository
- * reaches — the runtime overlay layer and the consumer lease over it — are
- * exercised. Returns the commit it published.
- */
 function publishTrackedGeneration(commit = "abc123"): string {
   const stateDir = path.join(sessionDir, SESSION_STATE_SUBDIR);
   const generation = path.join(stateDir, "plugins", "tools", "generations", commit);
@@ -72,9 +54,6 @@ services:
 `);
   fs.writeFileSync(
     path.join(generation, ".shipit-generation.json"),
-    // `source` is what proves this generation belongs to the declaration that
-    // names it; a record without it reads as unverified everywhere since
-    // #2225, so the fixture has to carry it to reach the runtime-layer step.
     JSON.stringify({ repoName: "tools", source: "someone/tools", commit, exports: ["probe"] }),
   );
   fs.symlinkSync(
@@ -124,17 +103,11 @@ describe("resolveSessionPluginServices", () => {
     writeConfig(SELF_DECLARATION);
     const services = await resolve();
     expect(services).toHaveLength(1);
-    // One number (docs/266-plugin-service-ports req 10) — the consumer's, straight from `plugins.use`.
     expect(services[0]).toMatchObject({ name: "probe", port: 4820 });
     expect(getPluginServiceFailures(SESSION_ID, "mine")).toEqual([]);
   });
 
   it("does NOT move a plugin around the project's ports — that pair is refused, not allocated", async () => {
-    // docs/266-plugin-service-ports req 7. This resolver reads the project's compose file
-    // separately from the stack that actually runs, and those two readings
-    // disagreeing is what #2325 was. So it no longer decides anything about
-    // ports at all: the plugin keeps the number the consumer wrote, and
-    // `ServiceManager` — which has the authoritative parse — refuses the pair.
     writeConfig(`compose: docker-compose.yml\n${SELF_DECLARATION}`);
     fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), `
 services:
@@ -147,17 +120,6 @@ services:
     expect(services[0].port).toBe(4820);
   });
 
-  /**
-   * req 20 — the project's own service names are read HERE, from the compose
-   * file as it is right now, and they always win. That is what makes re-running
-   * this resolver the answer when the project's file changes: the collision
-   * judgement itself lives in `collectPluginFragments` and needs no second
-   * implementation, it just needs to be asked again with the current file.
-   *
-   * The REASON is not remembered here — the snapshot route recomputes it from
-   * the same pure collector (`api-routes-plugin-repos.ts`), which is why a
-   * re-resolution that changes the surfaced set tells viewers to refetch.
-   */
   it("withholds a plugin service whose name the project's own compose file has taken", async () => {
     writeConfig(`compose: docker-compose.yml\n${SELF_DECLARATION}`);
     fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), `
@@ -175,9 +137,6 @@ services:
   });
 
   it("drops a tracked plugin with no runtime layer and remembers why", async () => {
-    // A tracked repository with a live generation on disk, and no Docker to
-    // build its overlay volume from — which is the state a `repo: self` session
-    // can reach only by declaring one, so it is built here directly.
     publishTrackedGeneration();
     writeConfig(TRACKED_DECLARATION);
 
@@ -191,20 +150,11 @@ services:
     expect(getPluginServiceFailures(SESSION_ID, "tools")).toEqual([]);
   });
 
-  /**
-   * The wiring, which is where the production-only defect re-enters: the mount
-   * builders translate correctly, and translate NOTHING if this layer stops
-   * handing them the volume and the root it is anchored at. A bind of an
-   * orchestrator path is invisible in dev and dogfood — the paths are real
-   * there — so it has to be asserted on the SPEC, never on a filesystem effect.
-   */
   describe("the production layout", () => {
     const resolveInVolume = (): ReturnType<typeof resolveSessionPluginServices> =>
       resolveSessionPluginServices(SESSION_ID, workspaceDir, {
         containEgress: false,
         workspaceVolume: "shipit-workspace-vol",
-        // The orchestrator-visible root that maps onto that volume; the temp
-        // session tree stands in for a session under it.
         stateRoot: path.dirname(sessionDir),
       });
 
@@ -231,8 +181,6 @@ services:
         target: "/plugin-state",
         volume: { subpath: `${rel}/plugin-data/probe/state` },
       });
-      // The override generator declares this alias `external: true` with the
-      // real volume's name, so a plugin service mounting it must ask for it.
       expect(services[0].externalVolumes).toContain("shipit-workspace");
     });
 
@@ -249,16 +197,6 @@ services:
   });
 });
 
-/**
- * docs/262 req 15 — the service half of the consumer lease
- * (`../plugin-leases.ts`).
- *
- * A plugin service container outlives the call that created it, so its lease has
- * two parts: the container's own attachment to the generation volume, which only
- * the daemon can report, and the in-process hold taken here for the window
- * before that container exists. Only the second is testable without Docker, and
- * it is the one a prune racing a compose-up would otherwise win.
- */
 describe("resolveSessionPluginServices — the consumer lease", () => {
   const generation = (generationId = "abc123") => ({
     sessionId: SESSION_ID,
@@ -282,9 +220,6 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
     await resolve();
     await resolve();
 
-    // Rounds fire on session activation, on a `shipit.yaml` edit and whenever an
-    // activation settles, so an accumulating hold would pin the generation for
-    // the life of the session.
     expect(generationHoldCount(generation())).toBe(1);
   });
 
@@ -293,27 +228,12 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
     writeConfig(TRACKED_DECLARATION);
     await resolve();
 
-    // The declaration drops its plugins. Nothing calls a release here — the set
-    // is replaced wholesale, which is what makes "the releasing side never runs"
-    // impossible rather than merely unlikely.
     writeConfig("compose: docker-compose.yml\n");
     await resolve();
 
     expect(generationHoldCount(generation())).toBe(0);
   });
 
-  /**
-   * The review finding this closes: the hold used to be taken inside
-   * `ensurePluginVolumes`, AFTER the Docker round-trip that resolves the
-   * workspace volume's daemon-host mountpoint. A refresh could publish, claim,
-   * fully delete generation A and release its claim during that await, and the
-   * round would then hold a generation that no longer existed, re-create its
-   * work directories and build an overlay whose lowerdir was gone.
-   *
-   * Asserted as an ORDERING against the first daemon call, because that is the
-   * property — "no await between resolving a generation and holding it" — rather
-   * than against an interleaving a test would have to manufacture.
-   */
   it("holds it before the first daemon round-trip, not after", async () => {
     publishTrackedGeneration();
     writeConfig(TRACKED_DECLARATION);
@@ -338,17 +258,6 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
     expect(heldAtFirstDaemonCall).toBe(1);
   });
 
-  /**
-   * The "never throws, never fails a session" contract, at the one place on this
-   * function's own path that talks to the daemon.
-   *
-   * It matters beyond tidiness: every caller resolves INSIDE the session's stack
-   * queue and compares the answer against what the stack has consumed. A throw
-   * leaves them holding the PREVIOUS answer, and after a project compose edit
-   * that answer is a set nothing has checked against the file about to run
-   * (req 20). Degrading here turns that into the visible per-repository
-   * degradation req 13 asks for instead.
-   */
   it("degrades with a reason when the daemon will not answer, rather than throwing", async () => {
     publishTrackedGeneration();
     writeConfig(TRACKED_DECLARATION);
@@ -370,12 +279,6 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
     expect(getPluginServiceFailures(SESSION_ID, "tools")[0]).toContain("writable layer is not available");
   });
 
-  // planning#451 — the catch used to return `{}`, which is also the legitimate
-  // "no workspace volume" answer. Under the opts-match skip that is a mismatch
-  // against a live overlay translated onto daemon-host paths, so a transient
-  // inspect failure would delete or recreate a volume a CLI container still
-  // holds. Skip ensure entirely: the empty map is the same degradation the
-  // test above already asked for.
   it("does not touch a live overlay when the workspace-volume inspect fails", async () => {
     publishTrackedGeneration();
     writeConfig(TRACKED_DECLARATION);
@@ -420,9 +323,6 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
     const done = claimGenerationDeletion(generation())!;
     try {
       expect(await resolve()).toEqual([]);
-      // Not held, so the prune that claimed it is not blocked by this round —
-      // the round the newer generation settles is the one that brings the
-      // services back.
       expect(generationHoldCount(generation())).toBe(0);
     } finally {
       done();
@@ -430,16 +330,6 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
   });
 });
 
-/**
- * planning#377 — the project's own name domain, and WHY it is unknowable when
- * it is.
- *
- * The flag alone collapsed two different events into one, and the caller that
- * must fail closed on it (`plugin-preflight.ts`) could then only say "could not
- * read this file". For a contained session that was wrong in the way that costs
- * the most: docs/263 refuses a STOCK compose file for a missing `user:`, so the
- * first thing a user saw was a card blaming a file that is perfectly valid.
- */
 describe("readProjectServices carries why the name domain is unknown", () => {
   const read = (containEgress: boolean): ReturnType<typeof readProjectServices> =>
     readProjectServices(workspaceDir, resolveShipitConfig(workspaceDir), containEgress);
@@ -459,8 +349,6 @@ describe("readProjectServices carries why the name domain is unknown", () => {
   });
 
   it("reports a file the containment rules refuse as refused, naming the fix", () => {
-    // Valid YAML the containment rules decline on a rule: a declared ROOT user.
-    // It was an absent `user:` until docs/271 stopped refusing that one.
     declareStack(`
 services:
   web:
@@ -472,8 +360,6 @@ services:
     expect(project.unknown).toBe(true);
     expect(project.failure?.kind).toBe("refused");
     expect(project.failure?.message).toContain("`user:`");
-    // The SAME file on an Open session is not refused at all, which is the
-    // whole reason "could not read it" misled: the file never changed.
     const open = read(false);
     expect(open).toMatchObject({ names: ["web"], unknown: false });
     expect(open.failure).toBeUndefined();

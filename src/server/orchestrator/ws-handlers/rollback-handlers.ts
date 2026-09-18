@@ -8,6 +8,7 @@ import { archiveSession, forkSession, forkReportSinks } from "../services/sessio
 import { gitRemoteCredentialResolver } from "../services/github.js";
 import type { PersistedMessage, RewindSnapshotInfo } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { clearConversationThread } from "../services/session-status.js";
 import { generateBranchSlug, generateBranchPrefix } from "../git-utils.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { onWorkspaceRewritten, type WorkspaceRewriteRunner } from "../workspace-rewrite.js";
@@ -18,36 +19,11 @@ type WsRewindRestoreRequest = Extract<WsClientMessage, { type: "rewind_restore_r
 
 type RewindCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
-/**
- * `git.rollback` + the LFS restore it owes (nikzlabs/shipit#2349).
- *
- * A rewind's rollback is a `reset --hard` run by the ORCHESTRATOR against the
- * session's bind-mounted workspace, and the orchestrator's git has the LFS
- * smudge filter disabled by design (see `git-lfs.ts`). So it re-materializes
- * every LFS-tracked path the rewind moved as ~130 bytes of pointer text, while
- * `git status` still reports the tree clean because the pointer in the index
- * never changed. Rewind is a first-class chat action, which makes it the most
- * reachable version of that bug — hence one helper rather than four call sites
- * each remembering.
- *
- * Best-effort and never throws: the rollback has already happened by the time
- * the restore runs, so a failure here must not turn a completed rewind into a
- * reported failure. `restoreLfsAfterTreeRewrite` warns on every outcome that
- * leaves stubs behind.
- */
+// Orchestrator git disables LFS smudging, so rollback alone leaves pointer files.
 async function rollbackAndRestoreLfs(
   git: { rollback: (commitHash: string) => Promise<void> },
   workspaceDir: string | null,
   commitHash: string,
-  /**
-   * nikzlabs/shipit#2429 — the session whose tree this rewound, when it has a live
-   * runner. A rewind can land on a commit whose lockfile differs from the one
-   * the container installed, which leaves the preview failing on imports that
-   * no longer resolve while nothing anywhere says the two are out of step. The
-   * HTTP rollback route (`api-routes-git.ts`) does the same; passing the runner
-   * here keeps rewind — the *first-class chat* version of that action — from
-   * being the one path that does not.
-   */
   runner?: WorkspaceRewriteRunner | null,
 ): Promise<void> {
   await git.rollback(commitHash);
@@ -96,8 +72,23 @@ function collectUploadPaths(messages: PersistedMessage[]): string[] {
   return [...paths];
 }
 
-async function deleteUploadsFromMessages(messages: PersistedMessage[], uploadsDir: string): Promise<void> {
-  await Promise.all(collectUploadPaths(messages).map((p) => fs.unlink(path.join(uploadsDir, path.basename(p))).catch(() => {})));
+/**
+ * An upload can be referenced by more than one message — it stays in the Files
+ * tab and can be re-attached — so a discarded reference only earns a delete
+ * when no retained message still points at the same file.
+ */
+async function deleteUploadsFromMessages(
+  removed: PersistedMessage[],
+  retained: PersistedMessage[],
+  uploadsDir: string,
+): Promise<void> {
+  const stillReferenced = new Set(collectUploadPaths(retained).map((p) => path.basename(p)));
+  await Promise.all(
+    collectUploadPaths(removed)
+      .map((p) => path.basename(p))
+      .filter((name) => !stillReferenced.has(name))
+      .map((name) => fs.unlink(path.join(uploadsDir, name)).catch(() => {})),
+  );
 }
 
 async function copyUploadsForFork(messages: PersistedMessage[], sourceUploadsDir: string, targetUploadsDir: string): Promise<void> {
@@ -113,12 +104,6 @@ function clearQueuedMessages(ctx: RewindCtx, sessionId: string): void {
   const queuedCount = runner?.messageQueue.length ?? 0;
   if (queuedCount === 0 || !runner) return;
   runner.clearQueue();
-  // Deliberately emit-only (not persisted). This is transient action-feedback
-  // for a rewind the user is actively performing — and it fires here, BEFORE
-  // the branch-specific `saveMessages(truncated)` below, which would wipe any
-  // appended row anyway. The rewind's durable result (the truncated history and
-  // the "Code rolled back" notice that IS appended post-truncation) survives a
-  // reload; this "cleared N queued" footnote is a toast, not transcript content.
   runner.emitMessage({
     type: "system_notice",
     sessionId,
@@ -196,10 +181,6 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
     return;
   }
 
-  // Fork spins off a NEW session from an already-committed SHA — it does not
-  // mutate the current workspace, so a running turn is no reason to block it
-  // (planning#184). In-place rewind (chat/code/both) DOES mutate this session and
-  // conflicts with an agent that's editing the workspace, so keep it gated.
   const runner = resolveRunner(ctx, sessionId);
   if (runner?.running && action !== "fork") {
     ctx.send({ type: "error", message: "Cannot rewind while a turn is running." });
@@ -217,7 +198,6 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
     return;
   }
 
-  // Fork needs a session title — the user types it; the branch is derived.
   const trimmedSessionName = action === "fork" ? msg.sessionName?.trim() : undefined;
   if (action === "fork" && !trimmedSessionName) {
     ctx.send({ type: "error", message: "Session name is required to fork." });
@@ -225,21 +205,17 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
   }
 
   try {
-    // Fork leaves the parent session intact (it only appends a breadcrumb), so
-    // the parent's queued messages must survive — only in-place rewind, which
-    // truncates this session, clears them. This matters now that fork can run
-    // mid-turn (planning#184), the one time a queue actually exists.
     if (action !== "fork") clearQueuedMessages(ctx, sessionId);
 
     if (action === "chat") {
       const truncated = allMessages.slice(0, gapPosition);
       const removed = allMessages.slice(gapPosition);
       const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "chat", messages: allMessages });
-      if (sessionDir) await deleteUploadsFromMessages(removed, path.join(path.dirname(sessionDir), "uploads"));
+      if (sessionDir) await deleteUploadsFromMessages(removed, truncated, path.join(path.dirname(sessionDir), "uploads"));
       ctx.chatHistoryManager.saveMessages(sessionId, truncated);
       const replay = buildConversationReplay(truncated);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      clearConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -252,28 +228,16 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       return;
     }
 
-    // Fork spins off a NEW session from a committed SHA — it neither mutates the
-    // current session nor needs a per-message commit, so it's handled before the
-    // code/both base guard below (which is terminal for a null base).
     if (action === "fork") {
       if (!sessionDir) {
         ctx.send({ type: "error", message: "No active session directory" });
         return;
       }
-      // The base is a concrete committed SHA: HEAD for a current-state fork, or
-      // the most recent commit before the gap for a past-point fork. A session
-      // with no auto-commits has no per-message commit (findCommitBeforeGap →
-      // null), so fall back to HEAD rather than erroring (planning#186). Resolving up
-      // front pins the base so a concurrent end-of-turn auto-commit can't shift
-      // it under the clone (planning#184). A null base (no HEAD at all) is tolerated
-      // by forkSession, which then forks at the clone's HEAD.
+      // Pin before cloning so a concurrent auto-commit cannot shift the fork base.
       const forkBase = gapPosition === allMessages.length
         ? await ctx.getActiveGitManager().getHeadHash()
         : findCommitBeforeGap(allMessages, gapPosition) ?? (await ctx.getActiveGitManager().getHeadHash());
 
-      // Derive the fork branch from the active session's branch by swapping the
-      // random slug (or generating a fresh `shipit/<slug>` if the current branch
-      // doesn't follow that convention). The user names the session, not the branch.
       const parentBranch = ctx.sessionManager.get(sessionId)?.branch;
       const branchName = parentBranch?.startsWith("shipit/")
         ? `shipit/${generateBranchSlug()}`
@@ -300,10 +264,6 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
           prStatusPoller: ctx.prStatusPoller,
           sseBroadcast: ctx.sseBroadcast,
         },
-        // planning#426 — same two duties as the REST fork route: a credential for
-        // the dropped-uid `fetch origin` / `git lfs pull`, and a report when the
-        // fork's LFS content did not resolve. A rewind is the more reachable of
-        // the two entry points, so it must not be the one that stays silent.
         gitRemoteCredentialResolver(ctx.githubAuthManager),
         forkReportSinks({ sessionManager: ctx.sessionManager, sseBroadcast: ctx.sseBroadcast }),
       );
@@ -325,9 +285,6 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         breadcrumbMessageId,
       });
       ctx.getRunnerRegistry().get(sessionId)?.emitMessage({ type: "fork_breadcrumb", parentSessionId: sessionId, message: breadcrumb });
-      // The session_list SSE broadcast that used to live here is now owned by
-      // graduateSession (docs/156 "Removing the duplicate session_list broadcasts").
-      // Do NOT re-add — it would double-fire on every rewind-driven fork.
       ctx.send({
         type: "session_forked",
         parentSessionId: sessionId,
@@ -345,18 +302,15 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
 
     const rollbackHash = findCommitBeforeGap(allMessages, gapPosition);
     if (!rollbackHash) {
-      // "both" degrades to chat-only when there's nothing on the code side
-      // to undo (session has had no auto-commits). The user asked to rewind
-      // both — satisfy the chat half rather than failing the whole action.
       if (action === "both") {
         const truncated = allMessages.slice(0, gapPosition);
         const removed = allMessages.slice(gapPosition);
         const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "chat", messages: allMessages });
-        if (sessionDir) await deleteUploadsFromMessages(removed, path.join(path.dirname(sessionDir), "uploads"));
+        if (sessionDir) await deleteUploadsFromMessages(removed, truncated, path.join(path.dirname(sessionDir), "uploads"));
         ctx.chatHistoryManager.saveMessages(sessionId, truncated);
         const replay = buildConversationReplay(truncated);
         if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-        ctx.sessionManager.clearAgentSessionId(sessionId);
+        clearConversationThread(ctx, sessionId);
         ctx.send({
           type: "rewind_complete",
           gapPosition,
@@ -388,7 +342,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "code", headHash, flippedMessageIds });
       const replay = buildConversationReplay(allMessages);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      clearConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -411,7 +365,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       await rollbackAndRestoreLfs(ctx.getActiveGitManager(), sessionDir, rollbackHash, ctx.getRunnerRegistry().get(sessionId));
       const truncated = allMessages.slice(0, gapPosition);
       const removed = allMessages.slice(gapPosition);
-      if (sessionDir) await deleteUploadsFromMessages(removed, path.join(path.dirname(sessionDir), "uploads"));
+      if (sessionDir) await deleteUploadsFromMessages(removed, truncated, path.join(path.dirname(sessionDir), "uploads"));
       ctx.chatHistoryManager.saveMessages(sessionId, truncated);
       ctx.chatHistoryManager.append(sessionId, {
         role: "assistant",
@@ -421,7 +375,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       });
       const replay = buildConversationReplay(truncated);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(sessionId);
+      clearConversationThread(ctx, sessionId);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -463,7 +417,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       ctx.chatHistoryManager.saveMessages(targetSessionId, snapshot.messages);
       const replay = buildConversationReplay(snapshot.messages);
       if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      clearConversationThread(ctx, targetSessionId);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "chat" });
       return;
     }
@@ -474,16 +428,13 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       : targetSessionId === ctx.getActiveAppSessionId()
         ? ctx.getActiveGitManager()
         : null;
-    // The workspace `git` operates on, resolved the same two ways — the LFS
-    // restore has to run against the tree the rollback rewrote, not the active
-    // session's (nikzlabs/shipit#2349).
     const restoreDir = targetSession?.workspaceDir ?? ctx.getActiveSessionDir();
 
     if (snapshot.action === "code") {
       if (!git) throw new Error("No workspace available for code restore");
       await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash, ctx.getRunnerRegistry().get(targetSessionId));
       ctx.chatHistoryManager.clearRolledBack(targetSessionId, snapshot.flippedMessageIds);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      clearConversationThread(ctx, targetSessionId);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "code" });
       return;
     }
@@ -492,7 +443,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       ctx.chatHistoryManager.saveMessages(targetSessionId, snapshot.messages);
       const replay = buildConversationReplay(snapshot.messages);
       if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
-      ctx.sessionManager.clearAgentSessionId(targetSessionId);
+      clearConversationThread(ctx, targetSessionId);
       if (!git) throw new Error("No workspace available for code restore");
       await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash, ctx.getRunnerRegistry().get(targetSessionId));
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "both" });
@@ -505,8 +456,11 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       ctx.getSharedRepoDir,
       snapshot.childSessionId,
       undefined,
-      undefined,
+      // Without this the fork's agent container survives an archive that gives it no way
+      // back: an archived session is refused a runner, so nothing reclaims the container.
+      ctx.containerManager,
       ctx.removeSessionLogs,
+      ctx.createGitManager,
     );
     ctx.chatHistoryManager.deleteMessageById(targetSessionId, snapshot.breadcrumbMessageId);
     ctx.sseBroadcast("session_list", { sessions: result.sessions });

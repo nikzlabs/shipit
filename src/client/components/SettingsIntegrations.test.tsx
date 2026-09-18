@@ -1,22 +1,22 @@
 /**
- * Component tests for SettingsIntegrations (docs/201).
+ * The Integrations tab's shape (docs/201), now that all of it is generated from
+ * the declarations (docs/308-data-driven-settings slices 5 and 6).
  *
- * The Integrations tab tiers three previously-separate surfaces into one:
- * curated "Connected services" (GitHub, Linear) over "MCP servers". These
- * assertions pin the tiering, the "Managed by ShipIt" badge that signals the
- * credential-brokering difference, and that the GitHub connection + PR toggle
- * moved here intact.
+ * What is asserted here is the TAB: which sections it has, in what order, and
+ * that every panel on it is placed by its own declaration rather than by the tab
+ * file. What each connection does lives beside its component.
  */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { SettingsIntegrations } from "./SettingsIntegrations.js";
+import { DeclaredSettings } from "./Settings/DeclaredSettings.js";
 import { useMcpStore } from "../stores/mcp-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+import { GLOBAL_SETTINGS } from "../../server/shared/settings-catalogue/index.js";
 
 const originalFetch = globalThis.fetch;
 
-/** Permissive GET stub — the embedded MCP/tracker panels fetch their state on
- * mount; every route resolves to an empty-but-ok payload. */
 function installFetchStub() {
   globalThis.fetch = ((input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : "url" in input ? input.url : input.href;
@@ -29,15 +29,10 @@ function installFetchStub() {
   }) as typeof fetch;
 }
 
-const baseProps = {
-  onGitHubLogout: vi.fn(),
-  onGitHubTokenSubmit: vi.fn(),
-  hasActiveSession: false,
-};
-
 describe("SettingsIntegrations (docs/201)", () => {
   beforeEach(() => {
     useMcpStore.getState().reset();
+    useSettingsStore.getState().setGithubStatus({ authenticated: false });
     installFetchStub();
   });
 
@@ -47,39 +42,48 @@ describe("SettingsIntegrations (docs/201)", () => {
     vi.clearAllMocks();
   });
 
-  it("renders both tiers: Connected services over MCP servers", async () => {
-    render(<SettingsIntegrations {...baseProps} githubStatus={{ authenticated: false }} />);
-    expect(screen.getByText("Connected services")).toBeInTheDocument();
-    expect(screen.getByText("MCP servers")).toBeInTheDocument();
-    // Linear lives in the curated tier, next to GitHub — not as an MCP.
-    await waitFor(() => expect(screen.getByText("Linear")).toBeInTheDocument());
+  it("renders the tiers in order: connected services, then SSH hosts, then MCP", async () => {
+    const { container } = render(<SettingsIntegrations />);
+
+    const headings = [...container.querySelectorAll("h3")]
+      .map((h) => h.textContent)
+      .filter((text): text is string => Boolean(text));
+    // Every one of these is a declaration's own place and a declaration's own
+    // words: the section headings from `section`, the four below them from the
+    // label of the setting that names each component.
+    expect(headings).toEqual([
+      "Connected services", "GitHub", "Linear", "SSH hosts", "MCP servers",
+    ]);
+
+    await waitFor(() => expect(screen.getByTestId("settings-trackers")).toBeInTheDocument());
+    expect(screen.getByTestId("settings-github")).toBeInTheDocument();
   });
 
-  it("badges curated services as Managed by ShipIt", () => {
-    render(
-      <SettingsIntegrations
-        {...baseProps}
-        githubStatus={{ authenticated: true, username: "octocat" }}
-      />,
-    );
-    // One badge for GitHub, one for Linear.
+  /*
+    The tab file places nothing but a section note, so the generated block alone
+    has to produce both list editors. Rendered without the tab around it, which
+    is what makes this fail when a declaration stops naming its component.
+  */
+  it("places both list panels from their declarations, not from the tab", async () => {
+    render(<DeclaredSettings tab="integrations" />);
+    await waitFor(() => expect(screen.getByTestId("ssh-hosts-settings")).toBeInTheDocument());
+    expect(screen.getByTestId("mcp-settings")).toBeInTheDocument();
+  });
+
+  it("badges both curated services as Managed by ShipIt", () => {
+    render(<SettingsIntegrations />);
     expect(screen.getAllByText("Managed by ShipIt").length).toBeGreaterThanOrEqual(2);
   });
 
-  it("shows the GitHub token form when not authenticated", () => {
-    render(<SettingsIntegrations {...baseProps} githubStatus={{ authenticated: false }} />);
-    expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
-  });
-
-  it("shows the connected GitHub card + PR-automation toggle when authenticated", () => {
-    render(
-      <SettingsIntegrations
-        {...baseProps}
-        githubStatus={{ authenticated: true, username: "octocat" }}
-      />,
-    );
-    expect(screen.getByText("octocat")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-disconnect")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-auto-create-pr")).toBeInTheDocument();
+  /*
+    It led this tab for one release, above the GitHub connection it depends on.
+    It is on Advanced → Automation now, and its req 4 visibility — the row is
+    shown whether or not GitHub is connected — is asserted where it renders.
+  */
+  it("does not carry the auto-create-PR row, which moved to Advanced", () => {
+    render(<SettingsIntegrations />);
+    expect(screen.queryByRole("switch", {
+      name: GLOBAL_SETTINGS["integrations.autoCreatePr"].label,
+    })).toBeNull();
   });
 });

@@ -10,19 +10,19 @@ import {
 
 interface OverflowMenuProps {
   children: ReactNode;
-  /** Accessible label and title for the trigger button. */
+
   label?: string;
-  /** Alignment passed through to the Radix dropdown content. */
+
   align?: "start" | "center" | "end";
-  /** Side passed through to the Radix dropdown content. */
+
   side?: "top" | "right" | "bottom" | "left";
-  /** Optional width/content styling for the dropdown panel. */
+
   contentClassName?: string;
-  /** Optional trigger styling for local sizing/spacing. */
+
   triggerClassName?: string;
-  /** Render menu content through a portal; disable when nested inside modal dialogs. */
+
   portaled?: boolean;
-  /** Called whenever the menu opens or closes. */
+
   onOpenChange?: (open: boolean) => void;
 }
 

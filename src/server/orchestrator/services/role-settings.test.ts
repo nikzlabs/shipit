@@ -1,24 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { AgentRole, CredentialRoute } from "../../shared/types.js";
 import type { RolePinnedParams } from "../../shared/types/agent-types.js";
+import type { ApplyOutcome } from "../../shared/settings-catalogue/index.js";
 import { applyRoleWrites, parseRoleWrite, planRoleWrites } from "./role-settings.js";
 import { ServiceError } from "./types.js";
-
-/**
- * docs/264 phase 2 (reqs 5, 6, 8, 9, 17, 18) — role CRUD through the settings
- * mutation surface.
- *
- * **Driven against the real catalogue**, like `roles.test.ts`: what these
- * assertions say about which harness can carry which model, and which levels
- * each declares, are statements about ShipIt's own catalogue, and a fabricated
- * one would let them pass while disagreeing with what actually runs.
- *
- * The dual-harness pair is real and is the fixture: `deepseek-v4-flash` is
- * carried by both `claude` and `codex` (`services.ts` declares all three styles
- * on it), and their level sets differ — `max` is Claude Code's and not Codex's.
- * That pair is what makes the harness a *choice* a role has to express (req 6)
- * rather than something derivable from the model.
- */
 
 const EMPTY_ENV: NodeJS.ProcessEnv = {};
 
@@ -39,20 +24,16 @@ function route(serviceId: string, billingMode: "sub" | "key"): CredentialRoute {
 
 const DEEPSEEK_KEY = route("deepseek", "key");
 
-/**
- * A store that answers the two verbs the write path uses, recording what was
- * written in order — the order is the assertion for a rename, which must write
- * the new name before deleting the old one.
- */
 function storeWith(roles: AgentRole[] = [], routes: CredentialRoute[] = [DEEPSEEK_KEY]) {
   const byName = new Map(roles.map((role) => [role.name, role]));
   const writes: { name: string; role: AgentRole | null }[] = [];
   const store = {
     getRole: (name: string) => byName.get(name),
-    setRole: (name: string, role: AgentRole | null) => {
+    setRole: (name: string, role: AgentRole | null): ApplyOutcome => {
       writes.push({ name, role });
       if (role === null) byName.delete(name);
       else byName.set(name, role);
+      return { status: "applied" };
     },
     listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
       routes.filter(
@@ -76,13 +57,12 @@ function depsFor(store: ReturnType<typeof storeWith>["store"]) {
 
 const REVIEWER: AgentRole = { name: "reviewer", params: { kind: "auto" } };
 
-/** A tuple the catalogue really accepts: DeepSeek's flash model under Claude Code. */
 const PINNED = {
   kind: "pinned",
   harnessId: "claude",
   serviceId: "deepseek",
   billingMode: "key",
-  modelId: "deepseek-v4-flash",
+  modelId: "deepseek-flash",
   reasoningEffort: "high",
 } satisfies RolePinnedParams;
 
@@ -106,8 +86,6 @@ function refusal(fn: () => unknown): ServiceError {
   throw new Error("expected a ServiceError");
 }
 
-// ---- Create, edit, delete (reqs 5, 17) --------------------------------------
-
 describe("applyRoleWrites — one editor, one write (req 17)", () => {
   it("creates a role with its name, description, standing instructions and params at once", () => {
     const { byName } = apply({
@@ -128,7 +106,6 @@ describe("applyRoleWrites — one editor, one write (req 17)", () => {
       [REVIEWER, existing],
     );
     expect(byName.get("deep-dive")?.description).toBe("new");
-    // One write, and no delete: an in-place edit is not a rename.
     expect(writes).toHaveLength(1);
   });
 
@@ -154,8 +131,6 @@ describe("applyRoleWrites — one editor, one write (req 17)", () => {
     expect(byName.has("deep-dive")).toBe(false);
   });
 });
-
-// ---- Rename (req 18) --------------------------------------------------------
 
 describe("applyRoleWrites — a rename is a write plus a delete", () => {
   it("writes the new name BEFORE deleting the old one", () => {
@@ -199,8 +174,6 @@ describe("applyRoleWrites — a rename is a write plus a delete", () => {
 
   it("accepts any name the user types — spaces, case and punctuation all (req 18)", () => {
     const { byName } = apply({ "  Deep Dive (v2)!  ": write() });
-    // Stored EXACTLY as typed: nothing is normalized, so a name with spaces
-    // round it stays a distinct name rather than colliding with the trimmed one.
     expect([...byName.keys()]).toContain("  Deep Dive (v2)!  ");
   });
 
@@ -208,8 +181,6 @@ describe("applyRoleWrites — a rename is a write plus a delete", () => {
     expect(refusal(() => apply({ "   ": write() })).message).toContain("blank");
   });
 });
-
-// ---- The reviewer (req 2) ---------------------------------------------------
 
 describe("applyRoleWrites — the reviewer is present, editable, and neither renamed nor deleted", () => {
   it("refuses to delete it", () => {
@@ -257,38 +228,30 @@ describe("applyRoleWrites — the reviewer is present, editable, and neither ren
   });
 });
 
-// ---- The harness-explicit validator does the params (reqs 6, 7) -------------
-
 describe("applyRoleWrites — params are refused at SAVE, naming the parameter (req 6)", () => {
   it("refuses a level the named harness does not declare, for a model both harnesses carry", () => {
-    // `max` is Claude Code's level and not Codex's, and `deepseek-v4-flash` runs
-    // on both — so this is refusable only because the role NAMES its harness.
     const err = refusal(() =>
-      apply({ "deep-dive": write({ params: { ...PINNED, harnessId: "codex", reasoningEffort: "max" } }) }),
+      apply({ "deep-dive": write({ params: { ...PINNED, reasoningEffort: "minimal" } }) }),
     );
-    expect(err.message).toContain("max");
+    expect(err.message).toContain("minimal");
   });
 
-  it("accepts that same tuple when the role names Claude Code", () => {
+  it("accepts that same tuple when the role names Codex", () => {
     const { byName } = apply({
-      "deep-dive": write({ params: { ...PINNED, reasoningEffort: "max" } }),
+      "deep-dive": write({ params: { ...PINNED, harnessId: "codex", reasoningEffort: "minimal" } }),
     });
-    expect(byName.get("deep-dive")?.params).toMatchObject({ reasoningEffort: "max" });
+    expect(byName.get("deep-dive")?.params).toMatchObject({ reasoningEffort: "minimal" });
   });
 
   it("accepts an OMITTED level — Default is a level a role may name (req 1)", () => {
     const { reasoningEffort: _dropped, ...atDefault } = PINNED;
     const { byName } = apply({ "deep-dive": write({ params: atDefault }) });
     const params = byName.get("deep-dive")?.params;
-    expect(params).toMatchObject({ harnessId: "claude", modelId: "deepseek-v4-flash" });
-    // Stored as the ABSENCE of the key, so a round-trip through the credential
-    // store's JSON cannot turn Default into a level.
+    expect(params).toMatchObject({ harnessId: "claude", modelId: "deepseek-flash" });
     expect(params && "reasoningEffort" in params).toBe(false);
   });
 
   it("refuses a BLANK level — a client that meant Default and encoded it wrong", () => {
-    // `""` is not Default, and accepting it would store a level no harness
-    // declares. The message names the parameter and how to say Default.
     const err = refusal(() =>
       apply({ "deep-dive": write({ params: { ...PINNED, reasoningEffort: "" } }) }),
     );
@@ -328,20 +291,7 @@ describe("applyRoleWrites — params are refused at SAVE, naming the parameter (
   });
 });
 
-/**
- * **A save checks compatibility, never live availability** — `plan.md`'s rule and
- * phase 1's own checklist bullet, which the write path did not obey.
- *
- * A missing credential is the *service's* state: `resolveRoleView` reports it as
- * `disconnected` and says the remedy is to reconnect the service and leave the
- * role alone. Validating it at save contradicted that where it mattered most —
- * the whole role is revalidated on every write (one editor, one write, req 17),
- * so a disconnected role could not be edited AT ALL. Changing only its
- * description was rejected for a credential the edit did not touch and could not
- * restore. Every catalogue check still refuses, which is what req 6 asks for.
- */
 describe("applyRoleWrites — a disconnected role is still editable (req 5)", () => {
-  /** The role's service has no credential here: the disconnected state exactly. */
   const NO_ROUTES: CredentialRoute[] = [];
 
   function applyWithoutCredentials(roles: unknown, seed: AgentRole[] = [REVIEWER]) {
@@ -364,26 +314,19 @@ describe("applyRoleWrites — a disconnected role is still editable (req 5)", ()
   });
 
   it("creates a role for a service this install has not connected yet", () => {
-    // Nothing about the tuple is wrong, and the list will say `disconnected`
-    // with "reconnect the service" as the remedy — which is a better answer than
-    // refusing the role and leaving the user nothing to reconnect it FOR.
     const { byName } = applyWithoutCredentials({ "deep-dive": write() });
     expect(byName.get("deep-dive")?.params).toEqual(PINNED);
   });
 
   it("still refuses a tuple fault on the same uncredentialed install", () => {
-    // The save did not stop checking — it stopped checking the one fact that
-    // changes without anyone editing a role.
     const err = refusal(() =>
       applyWithoutCredentials({
-        "deep-dive": write({ params: { ...PINNED, harnessId: "codex", reasoningEffort: "max" } }),
+        "deep-dive": write({ params: { ...PINNED, reasoningEffort: "minimal" } }),
       }),
     );
-    expect(err.message).toContain("max");
+    expect(err.message).toContain("minimal");
   });
 });
-
-// ---- Nothing is written until everything validates ---------------------------
 
 describe("planRoleWrites — every entry validated before any is written", () => {
   it("persists nothing when a later entry in the batch is invalid", () => {
@@ -403,9 +346,6 @@ describe("planRoleWrites — every entry validated before any is written", () =>
   });
 
   it("refuses an entry whose sibling already took the name it renames away from", () => {
-    // Rename a → b while also creating a. The create is checked against the
-    // store as it stands BEFORE the batch, where "a" still exists, so it is
-    // refused rather than racing the rename's delete.
     const fixture = storeWith([REVIEWER, { name: "a", params: PINNED }]);
     const err = refusal(() =>
       applyRoleWrites(
@@ -431,8 +371,6 @@ describe("planRoleWrites — every entry validated before any is written", () =>
     expect(fixture.writes).toEqual([]);
   });
 });
-
-// ---- Shape errors name the field --------------------------------------------
 
 describe("parseRoleWrite", () => {
   it("null is a delete", () => {

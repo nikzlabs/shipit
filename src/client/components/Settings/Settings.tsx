@@ -1,136 +1,62 @@
-import { useState, useRef } from "react";
-import type { AgentOption } from "../../agent-types.js";
+// eslint-disable-next-line no-restricted-imports -- useEffect: the dialog's own teardown, dropping uncommitted drafts
+import { useEffect } from "react";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs.js";
 import { SettingsIntegrations } from "../SettingsIntegrations.js";
 import { SettingsEgress } from "../SettingsEgress.js";
 import { SkillsTab } from "../SkillsTab.js";
-import { KeybindingSettings } from "../KeybindingSettings.js";
+import { DeclaredSettings } from "./DeclaredSettings.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import { ServicesPanel } from "./ServicesPanel.js";
-import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
-import { RolesTab } from "./tabs/RolesTab.js";
+// One map for the dialog's own tab strip and for anything else that names where
+// a setting lives, so the two cannot say different words for the same tab.
+import { SETTING_TAB_LABELS } from "../../../server/shared/settings-catalogue/index.js";
 
-// On mobile the tab list collapses from a vertical sidebar into a horizontal
-// scrollable strip — each trigger sizes to its label and gets pill-like styling
-// so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-/**
- * docs/252 — there is no per-vendor tab, and Services leads.
- *
- * Settings used to open on an **Agent** group whose two tabs (`Claude`,
- * `Codex`) each held a copy of the accounts card plus the sub-agent defaults.
- * Both halves were wrong for this feature: a credential belongs to a *service*,
- * not to the harness that happens to drive it, so listing them per harness is
- * the conflation docs/252 exists to remove — and the accounts card is now one
- * of the Services cards, so the tab was a second editor for one fact. The tabs
- * are gone, Services is first, and Services is where Settings opens.
- */
-type Tab = "services" | "roles" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
+/** Every tab this dialog renders, in order. */
+const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
-// docs/261 phase 3 — this tab sits directly after `services`, because it is the
-// one setting that reads entirely off the credentials that tab configures: an
-// auto-configured reviewer changes the moment a service is added, and a role
-// reports itself disconnected the moment its service loses its credential.
-// Services stays first and stays the default (docs/252 D1); nothing here
-// reorders it. docs/264 phase 2 renamed it `reviewer` → `roles`, since the
-// reviewer is now one role among many rather than the only one.
-const TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
+type Tab = (typeof SETTINGS_TABS)[number];
 
 export interface SettingsProps {
-  initialContent: string;
-  onSaveInstructions: (content: string) => void;
-  githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
-  onGitHubTokenSubmit: (token: string) => Promise<void> | void;
-  onGitHubLogout: () => void;
-  agentList?: AgentOption[];
   onFullReset?: () => void;
-  gitIdentity: { name: string; email: string };
-  onGitIdentitySave: (name: string, email: string) => void;
-  maxIdleContainers: number;
-  onMaxIdleContainersSave: (n: number) => void;
-  agentSystemInstructionsEnabled: boolean;
-  agentSystemInstructions: string;
-  onToggleAgentSystemInstructions: (enabled: boolean) => void;
-  hasActiveSession: boolean;
   onClose: () => void;
 }
 
 export function Settings({
-  initialContent,
-  onSaveInstructions,
-  githubStatus,
-  onGitHubTokenSubmit,
-  onGitHubLogout,
-  agentList = [],
   onFullReset,
-  gitIdentity,
-  onGitIdentitySave,
-  maxIdleContainers,
-  onMaxIdleContainersSave,
-  agentSystemInstructionsEnabled,
-  agentSystemInstructions,
-  onToggleAgentSystemInstructions,
-  hasActiveSession,
   onClose,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "services";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
-  const [content, setContent] = useState(initialContent);
-  const savedRef = useRef(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleSave = () => {
-    savedRef.current = true;
-    onSaveInstructions(content);
-  };
-
-  const handleClose = () => {
-    if (!savedRef.current) {
-      onClose();
-    }
-  };
+  /*
+    An edit nobody saved is discarded when the dialog goes, which is what the
+    drafts did when they lived in this component's own state. They live in the
+    store now because the Save that commits them is a tab's rather than a
+    control's (docs/308-data-driven-settings, `DeclaredCommit.tsx`).
+  */
+  // eslint-disable-next-line no-restricted-syntax -- cleanup: drafts outlive this component, so closing has to drop them
+  useEffect(() => () => { useSettingsStore.getState().clearSettingDrafts(); }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       e.preventDefault();
       onClose();
     }
-    if (activeTab === "instructions" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      handleSave();
-    }
   };
 
-  const tabLabel = (tab: Tab) => {
-    switch (tab) {
-      case "services": return "Services";
-      case "roles": return "Roles";
-      case "integrations": return "Integrations";
-      case "git": return "Git";
-      case "instructions": return "Instructions";
-      case "skills": return "Skills";
-      case "keyboard": return "Keyboard";
-      case "voice": return "Voice";
-      case "network": return "Network";
-      case "advanced": return "Advanced";
-    }
-  };
-  // Skills tab renders a two-pane layout (catalog list + Monaco preview when
-  // the install sheet opens) and wants more horizontal room than the existing
-  // form-shaped tabs. Swap the dialog class per active tab so other tabs keep
-  // their tight 672 px width.
   const dialogClass = activeTab === "skills"
     ? "rounded-lg border-(--color-border-secondary) max-w-5xl w-full md:mx-4 flex flex-col md:h-[80vh] max-md:h-full"
     : "rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full";
 
   return (
-    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
+    <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent
         className={dialogClass}
         data-testid="settings-backdrop"
@@ -142,87 +68,63 @@ export function Settings({
         </div>
 
         {/* Body: sidebar tabs + content (vertical sidebar on desktop, horizontal scroll strip on mobile) */}
-        <Tabs value={activeTab} onValueChange={(v) => {
-          const tab = v as Tab;
-          setActiveTab(tab);
-          if (tab === "instructions") {
-            requestAnimationFrame(() => textareaRef.current?.focus());
-          }
-        }} className="flex max-md:flex-col flex-1 min-h-0" orientation="vertical">
+        <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v as Tab); }} className="flex max-md:flex-col flex-1 min-h-0" orientation="vertical">
           {/* Tab list — vertical sidebar on desktop, horizontal scroll on mobile */}
           <TabsList className="md:w-40 md:shrink-0 md:min-h-0 md:overflow-y-auto md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
-            {TABS.map((tab) => (
+            {SETTINGS_TABS.map((tab) => (
               <TabsTrigger key={tab} value={tab} data-testid={`settings-tab-${tab}`} className={mobileTabClass}>
-                {tabLabel(tab)}
+                {SETTING_TAB_LABELS[tab]}
               </TabsTrigger>
             ))}
           </TabsList>
 
           {/* Right content area */}
           <TabsContent value="instructions">
-            <InstructionsTab
-              content={content}
-              onContentChange={setContent}
-              textareaRef={textareaRef}
-              onSave={handleSave}
-              onClose={onClose}
-              agentSystemInstructionsEnabled={agentSystemInstructionsEnabled}
-              agentSystemInstructions={agentSystemInstructions}
-              onToggleAgentSystemInstructions={onToggleAgentSystemInstructions}
-            />
+            <InstructionsTab />
           </TabsContent>
 
           <TabsContent value="skills">
             <SkillsTab />
           </TabsContent>
 
+          {/* The chord list is the component `keyboard.keybindings` names
+              (docs/308 slice 6); this tab is the scroll container around it. */}
           <TabsContent value="keyboard">
-            <KeybindingSettings />
+            <div className="px-5 py-4 flex flex-col gap-6 overflow-y-auto h-full">
+              <DeclaredSettings tab="keyboard" />
+            </div>
           </TabsContent>
 
           <TabsContent value="voice">
             <VoiceTab />
           </TabsContent>
 
-          {/* docs/252 phase 2 — the one place credentials live. The panel takes
-              no Settings props and brings no chrome, because docs/257's
-              onboarding hosts the same component; the tab supplies the padding
-              and the scroll container every other tab here supplies.
+          {/* Both panes are the components their declarations name (docs/308
+              slice 6b); each tab is the padding and the scroll container around
+              them. docs/257's onboarding hosts `ServicesPanel` the same way,
+              which is why the panel brings no chrome of its own.
 
-              docs/252 phase 7 (req 9) — the background-work model sits under the
-              services it draws from: it is a `(service, billing mode, model)`
-              choice like any other, and the list it offers is exactly what the
-              cards above made eligible. It lives at this level rather than
-              inside the panel so that onboarding, which hosts the panel, does
-              not ask a first-run user to pick one — the setting defaults to
-              whatever the install can run. */}
+              The background-work model renders BENEATH the providers it draws
+              from, which its declaration's `order` states — declaration order
+              alone puts a payload setting first (plan.md → Placement). */}
           <TabsContent value="services">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
-              <ServicesPanel agentList={agentList} />
-              <div className="border-t border-(--color-border-secondary) pt-4">
-                <BackgroundWorkSection agentList={agentList} />
-              </div>
+              <DeclaredSettings tab="services" />
             </div>
           </TabsContent>
 
-          {/* docs/264 phase 2 (reqs 5, 17) — every agent role: the reviewer with
-              its two ranked candidate slots (docs/261 phase 3, reqs 1, 5, 8),
-              then the list of pinned roles, each edited in the role editor. */}
           <TabsContent value="roles">
-            <RolesTab agentList={agentList} />
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
+              <DeclaredSettings tab="roles" />
+            </div>
           </TabsContent>
 
           <TabsContent value="integrations">
-            <SettingsIntegrations
-              githubStatus={githubStatus}
-              onGitHubLogout={onGitHubLogout}
-              onGitHubTokenSubmit={onGitHubTokenSubmit}
-              hasActiveSession={hasActiveSession}
-            />
+            <SettingsIntegrations />
           </TabsContent>
 
           <TabsContent value="git">
-            <GitTab gitIdentity={gitIdentity} onGitIdentitySave={onGitIdentitySave} />
+            <GitTab />
           </TabsContent>
 
           <TabsContent value="network">
@@ -232,11 +134,7 @@ export function Settings({
           </TabsContent>
 
           <TabsContent value="advanced">
-            <AdvancedTab
-              onFullReset={onFullReset}
-              maxIdleContainers={maxIdleContainers}
-              onMaxIdleContainersSave={onMaxIdleContainersSave}
-            />
+            <AdvancedTab onFullReset={onFullReset} />
           </TabsContent>
 
         </Tabs>

@@ -2,7 +2,23 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
 import { listTemplates, getTemplate, applyTemplate, generatePackageLock, OPS_TEMPLATE_ID } from "./templates.js";
+
+interface ComposeShape {
+  services?: Record<
+    string,
+    {
+      command?: string | string[];
+      ports?: unknown[];
+      "x-shipit-preview"?: string;
+      "x-shipit-depends-on-install"?: boolean;
+    }
+  >;
+}
+interface ShipitYamlShape {
+  agent?: { install?: string[] };
+}
 
 describe("listTemplates", () => {
   it("returns all 17 templates", () => {
@@ -38,8 +54,6 @@ describe("listTemplates", () => {
   });
 });
 
-// The empty template is the "start from scratch" option — a blank repo with
-// just a README, no build tooling or preview config.
 describe("empty template", () => {
   it("is listed in the utility category", () => {
     const meta = listTemplates().find((t) => t.id === "empty");
@@ -51,7 +65,6 @@ describe("empty template", () => {
     const t = getTemplate("empty")!;
     expect(Object.keys(t.files)).toEqual(["README.md"]);
     expect(t.files["README.md"]).toContain("# My Project");
-    // No build tooling / preview wiring — it really is empty.
     expect(t.files["package.json"]).toBeUndefined();
     expect(t.files["shipit.yaml"]).toBeUndefined();
     expect(t.files["docker-compose.yml"]).toBeUndefined();
@@ -71,9 +84,6 @@ describe("getTemplate", () => {
     expect(getTemplate("nonexistent")).toBeUndefined();
   });
 
-  // docs/128 — the ops template is resolvable by id (the gated Settings route
-  // applies it) but deliberately absent from listTemplates() so it never shows
-  // up in the ordinary "new project" picker.
   it("resolves the ops template by id but hides it from listTemplates()", () => {
     const ops = getTemplate(OPS_TEMPLATE_ID);
     expect(ops).toBeDefined();
@@ -96,24 +106,18 @@ describe("getTemplate", () => {
         "prompts/read-session-logs.md",
       ]),
     );
-    // docs/162 — the remediation prompt drives the inspect-source → spawn-fix flow.
     expect(ops.files["prompts/remediate-shipit-bug.md"]).toContain("shipit source status");
     expect(ops.files["prompts/remediate-shipit-bug.md"]).toContain("--shipit-source");
-    // docs/264 — every ops workspace ships the "docker logs is not the whole
-    // story" recipe, and the two host-facing recipes point at it rather than
-    // dead-ending at the orchestrator's stdout.
     expect(ops.files["prompts/read-session-logs.md"]).toContain("shipit session logs");
     expect(ops.files["prompts/read-session-logs.md"]).toContain("broadcastLog");
     expect(ops.files["prompts/diagnose-stuck-session.md"]).toContain("shipit session logs");
     expect(ops.files["prompts/trace-a-pr.md"]).toContain("shipit session logs");
     expect(ops.files["README.md"]).toContain("shipit session logs");
-    // The proxy mounts the real socket read-only; nothing else gets it.
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-preview: auto");
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-depends-on-install: false");
     expect(ops.files["docker-compose.yml"]).toContain("/var/run/docker.sock:/var/run/docker.sock:ro");
     expect(ops.files["docker-compose.yml"]).toContain("POST: 0");
-    // Only the journal paths are declared as host mounts — never the socket.
     expect(ops.files["shipit.yaml"]).toContain("docker-socket: true");
     expect(ops.files["shipit.yaml"]).toContain("x-shipit-host-mounts");
     expect(ops.files["shipit.yaml"]).toContain("/var/log/journal");
@@ -149,7 +153,6 @@ describe("applyTemplate", () => {
     expect(written).toContain("src/App.tsx");
     expect(written).toContain("index.html");
 
-    // Verify files actually exist on disk
     const pkg = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
     expect(pkg).toContain("react");
 
@@ -198,7 +201,6 @@ describe("applyTemplate", () => {
       const written = await applyTemplate(template, tmpDir);
       expect(written.length).toBeGreaterThan(0);
 
-      // Verify at least one file was created
       for (const filePath of written) {
         expect(fs.existsSync(path.join(tmpDir, filePath))).toBe(true);
       }
@@ -208,9 +210,6 @@ describe("applyTemplate", () => {
   });
 });
 
-// docs/168 — Python web framework templates. The defining invariant is the
-// venv-ownership design: the preview service installs its own deps (no
-// package.json, so no npm lockfile is generated for these).
 describe("Python templates (docs/168)", () => {
   const PY_IDS = ["streamlit", "fastapi", "gradio", "dash"] as const;
 
@@ -231,17 +230,12 @@ describe("Python templates (docs/168)", () => {
     for (const id of PY_IDS) {
       const t = getTemplate(id)!;
       const compose = t.files["docker-compose.yml"];
-      // The service builds its own venv and installs before launching.
       expect(compose).toContain("python -m venv .venv");
       expect(compose).toContain(".venv/bin/pip install");
-      // Bound to all interfaces so the preview proxy can reach it — either via a
-      // run flag (Streamlit/Uvicorn) or in the app's own launch call (Gradio/Dash).
       const bindsAllInterfaces = [compose, t.files["app.py"], t.files["streamlit_app.py"]]
         .filter(Boolean)
         .some((src) => src!.includes("0.0.0.0"));
       expect(bindsAllInterfaces).toBe(true);
-      // Single-writer: the install gate is explicitly off, and shipit.yaml has
-      // no Python agent.install step.
       expect(compose).toContain("x-shipit-depends-on-install: false");
       expect(t.files["shipit.yaml"]).not.toContain("install:");
     }
@@ -251,11 +245,90 @@ describe("Python templates (docs/168)", () => {
     const compose = getTemplate("streamlit")!.files["docker-compose.yml"];
     expect(compose).toContain("--server.headless true");
     expect(compose).toContain("8501:8501");
-    // Both flags are required for the WebSocket to survive the preview proxy's
-    // cross-origin host — XSRF protection silently re-enables CORS otherwise.
     expect(compose).toContain("--server.enableCORS false");
     expect(compose).toContain("--server.enableXsrfProtection false");
   });
+});
+
+function installsJsDeps(command: string | string[] | undefined): boolean {
+  const text = (Array.isArray(command) ? command.join(" ") : (command ?? "")).trim();
+  if (!text) return false;
+  for (const segment of text.split(/(?:&&|\|\||[;|\n])+/)) {
+    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+    const words = tokens
+      .map((t) => t.replace(/^["']|["']$/g, ""))
+      .filter((t) => t && !["sh", "bash", "-c", "-lc", "exec"].includes(t));
+    const tool = words[0];
+    if (!tool) continue;
+    if (!["npm", "pnpm", "bun", "yarn"].includes(tool)) continue;
+    const positionals = words.slice(1).filter((w) => !w.startsWith("-"));
+    if (["run", "exec", "start", "test"].includes(positionals[0] ?? "")) continue;
+    // Flag values remain positional, so the subcommand may not be first.
+    if (positionals.some((p) => ["install", "i", "ci", "add"].includes(p))) return true;
+    if (tool === "yarn" && positionals.length === 0) return true;
+  }
+  return false;
+}
+
+describe("Node templates keep dependency installs single-writer", () => {
+  const nodeServiceTemplates = [...listTemplates().map((t) => t.id), OPS_TEMPLATE_ID]
+    .map((id) => getTemplate(id)!)
+    .filter((t) => t.files["package.json"] && t.files["docker-compose.yml"]);
+
+  it.each([
+    ['sh -c "npm install && npm run dev"', true],
+    ["npm ci", true],
+    ["npm i", true],
+    ["npm --prefix x install", true],
+    ["yarn", true],
+    ["yarn --frozen-lockfile", true],
+    ["pnpm i", true],
+    ["pnpm --frozen-lockfile install", true],
+    ["bun install", true],
+    ["npm install &&\nnpm run dev\n", true],
+    [["sh", "-c", "npm install && npm run dev"], true],
+    ["npm run dev", false],
+    [["npm", "run", "dev"], false],
+    ["npm run install-check", false],
+    ["node server.js", false],
+    ["", false],
+    [undefined, false],
+  ])("detects whether %j installs JS deps", (command, expected) => {
+    expect(installsJsDeps(command)).toBe(expected);
+  });
+
+  it("covers every Node template that ships a compose service", () => {
+    expect(nodeServiceTemplates.map((t) => t.id).sort()).toEqual([
+      "astro",
+      "express-ts",
+      "fastify-ts",
+      "hono-ts",
+      "nextjs",
+      "react-tailwind-vite-ts",
+      "react-vite-ts",
+      "svelte-vite-ts",
+      "vanilla-vite",
+      "vue-vite-ts",
+    ]);
+  });
+
+  for (const t of nodeServiceTemplates) {
+    it(`${t.id}: installs from agent.install only, never the compose command`, () => {
+      const services = (parseYaml(t.files["docker-compose.yml"]!) as ComposeShape).services ?? {};
+      expect(Object.keys(services).length).toBeGreaterThan(0);
+
+      for (const [name, svc] of Object.entries(services)) {
+        expect({ [name]: installsJsDeps(svc.command) }).toEqual({ [name]: false });
+
+        const preview = svc["x-shipit-preview"] ?? (svc.ports?.length ? "auto" : "manual");
+        expect({ [name]: preview }).toEqual({ [name]: "auto" });
+        expect({ [name]: svc["x-shipit-depends-on-install"] ?? true }).toEqual({ [name]: true });
+      }
+
+      const shipitYaml = parseYaml(t.files["shipit.yaml"]!) as ShipitYamlShape;
+      expect(shipitYaml.agent?.install).toContain("npm install");
+    });
+  }
 });
 
 describe("generatePackageLock", () => {
@@ -271,7 +344,6 @@ describe("generatePackageLock", () => {
     const lock = path.join(tmpDir, "package-lock.json");
     fs.writeFileSync(lock, '{"sentinel":true}');
 
-    // Resolves immediately without shelling out — the sentinel content is intact.
     await generatePackageLock(tmpDir);
     expect(JSON.parse(fs.readFileSync(lock, "utf-8"))).toEqual({ sentinel: true });
   });

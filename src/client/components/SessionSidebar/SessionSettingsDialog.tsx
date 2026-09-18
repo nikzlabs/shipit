@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: load this session's egress override when the dialog opens (external system sync)
 import { useEffect, useState } from "react";
+import { Spinner } from "../Spinner.js";
 import {
   GlobeIcon,
   ShieldCheckIcon,
@@ -7,9 +8,7 @@ import {
   WarningIcon,
   CheckCircleIcon,
   ClockClockwiseIcon,
-  ArrowsClockwiseIcon,
-  CircleNotchIcon,
-} from "@phosphor-icons/react";
+  ArrowsClockwiseIcon, } from "@phosphor-icons/react";
 import {
   Dialog,
   DialogContent,
@@ -24,23 +23,28 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useApi, ApiError } from "../../hooks/useApi.js";
 import { SandboxCapabilityToggles } from "../SandboxCapabilityToggles.js";
+import { SessionSshHostGrants } from "../SessionSshHostGrants.js";
 import { DEFAULT_SANDBOX_CAPABILITIES } from "../../../server/shared/types.js";
+import {
+  NETWORK_MODE_LABEL,
+  enforcementWarning,
+  useSessionNetworkMode,
+} from "../../hooks/useSessionNetworkMode.js";
 import type {
-  EgressAllowlistView,
-  EgressSessionSettings,
   SandboxCapabilitiesView,
   SessionCapabilities,
 } from "../../../server/shared/types.js";
 
 /**
- * Per-session settings dialog (docs/172 / planning#92, docs/279).
+ * Per-session settings dialog (docs/172 / planning#92, docs/279, docs/305).
  *
  * Holds everything scoped to ONE session:
  *   - for a **sandbox**, its capability grants (docs/279 req 5) — editable after
  *     creation, rendered from the same `SandboxCapabilityToggles` the creation
  *     dialog uses;
  *   - for every **other** session, the network containment override
- *     (Inherit / Contained / Open).
+ *     (Inherit / Contained / Open);
+ *   - for **every** session kind, its SSH destination grants (docs/305 req 6).
  *
  * The two are mutually exclusive on purpose. A sandbox's Network access IS a
  * capability (docs/211: it only ever tightens), so showing the containment radio
@@ -67,12 +71,6 @@ import type {
 
 type Mode = "inherit" | "contained" | "open";
 
-const modeFromOverride = (override: boolean | null): Mode =>
-  override === null ? "inherit" : override ? "contained" : "open";
-
-const overrideFromMode = (mode: Mode): boolean | null =>
-  mode === "inherit" ? null : mode === "contained";
-
 export function SessionSettingsDialog({
   sessionId,
   open,
@@ -82,66 +80,44 @@ export function SessionSettingsDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  // undefined = not yet loaded; the options render disabled until it resolves.
-  const [mode, setMode] = useState<Mode | undefined>(undefined);
-  // Deployment-level facts (not changed by this session's override): the global
-  // containment switch and whether this deployment can actually ENFORCE
-  // containment. Optimistic `true` so a capable host never flashes the warning.
-  const [globalEnabled, setGlobalEnabled] = useState(true);
-  const [enforcementActive, setEnforcementActive] = useState(true);
-  // Server-computed: the now-resolved containment differs from what this
-  // session's live container was created with, so the change applies only on the
-  // next container start. Null while loading / when no container is running.
-  const [pendingRestart, setPendingRestart] = useState(false);
+
+  const [capabilityPendingRestart, setCapabilityPendingRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  // docs/279 — a sandbox's capability grants. `undefined` until the fetch
+
   // resolves (the toggles render disabled meanwhile); never fetched at all for a
-  // non-sandbox session, which has no capability set.
+
   const [capabilities, setCapabilities] = useState<SessionCapabilities | undefined>(undefined);
   const [savingCapabilities, setSavingCapabilities] = useState(false);
 
   const api = useApi();
-  // docs/279 — which half of this dialog applies. Read from the session list
-  // (the same source the sandbox banner and the sidebar badge use) rather than
-  // inferred from a failed capabilities fetch, so the dialog renders the right
-  // shape on the first frame instead of flipping after a round-trip.
+
   const isSandbox = useSessionStore(
     (s) => s.sessions.find((session) => session.id === sessionId)?.kind === "sandbox",
   );
-  // The active session's live "is an agent turn running" flag. The dialog only
-  // renders for the current session, so this is the right session's state. A
+
   // restart would kill the running agent (see CLAUDE.md never-kill rules), so it
-  // gates the restart action.
+
   const agentRunning = useSessionStore((s) => s.isLoading);
 
-  // eslint-disable-next-line no-restricted-syntax -- external system sync: read the session's current override when the dialog opens
-  useEffect(() => {
-    if (!open || isSandbox) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/egress/allowlist?session=${encodeURIComponent(sessionId)}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const view = (await res.json()) as EgressAllowlistView;
-        if (!cancelled) {
-          setMode(modeFromOverride(view?.session?.override ?? null));
-          setGlobalEnabled(view?.globalEnabled ?? true);
-          setEnforcementActive(view?.session?.enforcementActive ?? view?.enforcementActive ?? true);
-          setPendingRestart(view?.session?.pendingRestart ?? false);
-        }
-      } catch {
-        if (!cancelled) setMode("inherit");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, open, isSandbox]);
+  /**
+   * docs/285 req 7 — the session's network mode comes from the SHARED hook, the
+   * same one the composer's control uses.
+   *
+   * This dialog used to own a parallel fetch, mapping and PUT. That was two
+   * clients of one value with no ordering between them: a change made in the
+   * composer (or in another tab) left an open dialog stale, and the two sets of
+   * writes were sequenced against nothing. Requirement 7 asks for one
+   * authoritative value — which is a shared mutation clock and a shared
+   * invalidation, not merely one control.
+   *
+   * Passed `null` while closed or for a sandbox, so it neither fetches nor holds
+   * state for a half of this dialog that is not rendered.
+   */
+  const net = useSessionNetworkMode(open && !isSandbox ? sessionId : null);
+  const mode: Mode | undefined = net.loaded ? net.mode : undefined;
 
-  // docs/279 — a sandbox's grants + the server's pending-restart verdict. A
   // separate fetch from the egress one above because the two are mutually
-  // exclusive halves of this dialog: a sandbox has no containment override to
-  // read, and every other session has no capability set.
+
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read this sandbox's grants when the dialog opens
   useEffect(() => {
     if (!open || !isSandbox) return;
@@ -153,12 +129,10 @@ export function SessionSettingsDialog({
         const view = (await res.json()) as SandboxCapabilitiesView;
         if (!cancelled) {
           setCapabilities(view.capabilities);
-          setPendingRestart(view.pendingRestart);
+          setCapabilityPendingRestart(view.pendingRestart);
         }
       } catch (err) {
-        // Leave the toggles disabled rather than rendering a guessed set the
-        // user could act on: an optimistic default here would show grants this
-        // session may not have.
+
         console.error("[session-capabilities] failed to read grants:", err);
       }
     })();
@@ -166,28 +140,6 @@ export function SessionSettingsDialog({
       cancelled = true;
     };
   }, [sessionId, open, isSandbox]);
-
-  const handleChange = async (next: Mode) => {
-    const prev = mode;
-    setMode(next);
-    try {
-      const res = await fetch(`/api/egress/session/${encodeURIComponent(sessionId)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ override: overrideFromMode(next) }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // The PUT returns the fresh session view, including the recomputed
-      // pendingRestart (resolved-now vs the live container's started-with mode),
-      // so the indicator reflects the selection without a second round-trip.
-      const settings = (await res.json()) as EgressSessionSettings;
-      setPendingRestart(settings?.pendingRestart ?? false);
-    } catch (err) {
-      setMode(prev);
-      useUiStore.getState().setToast({ message: "Failed to update this session's network mode" });
-      console.error("[session-egress] failed to set override:", err);
-    }
-  };
 
   /**
    * docs/279 — write the whole capability set. Optimistic: the toggle moves
@@ -213,7 +165,7 @@ export function SessionSettingsDialog({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const view = (await res.json()) as SandboxCapabilitiesView;
       setCapabilities(view.capabilities);
-      setPendingRestart(view.pendingRestart);
+      setCapabilityPendingRestart(view.pendingRestart);
     } catch (err) {
       setCapabilities(prev);
       useUiStore.getState().setToast({ message: "Failed to update this session's capabilities" });
@@ -228,13 +180,10 @@ export function SessionSettingsDialog({
     setRestarting(true);
     try {
       await api.post(`/api/sessions/${encodeURIComponent(sessionId)}/container/restart`);
-      // Re-handshake the WS so the worker reattaches to the freshly-restarted
-      // container (mirrors the SessionHealthStrip rescue flow). Bridged to App's
-      // `reconnect()` via the window-event listener in useAppBootstrap.
+
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
-      // The new container starts with the now-resolved mode, so nothing is
-      // pending anymore.
-      setPendingRestart(false);
+
+      setCapabilityPendingRestart(false);
       useUiStore.getState().setToast({
         message: isSandbox
           ? "Restarting container to apply the new capabilities"
@@ -249,15 +198,13 @@ export function SessionSettingsDialog({
     }
   };
 
-  // Would this session resolve to Contained? "inherit" follows the global switch;
-  // "contained"/"open" force it. Computed from the live `mode` so toggling to
-  // Open hides the warning immediately (Open isn't claiming containment).
-  const sessionContained = mode === "open" ? false : mode === "contained" ? true : globalEnabled;
-  // Policy says contain but the deployment can't enforce → warn instead of
-  // silently implying protection. Mirrors the Settings → Network egress banner.
-  const showEnforcementWarning = mode !== undefined && sessionContained && !enforcementActive;
+  const pendingRestart = isSandbox ? capabilityPendingRestart : net.pendingRestart;
+  const sessionContained = mode === "open" ? false : mode === "contained" ? true : net.globalEnabled;
 
-  const globalLabel = globalEnabled ? "Contained" : "Open";
+  const enforcementNotice =
+    mode !== undefined && sessionContained ? enforcementWarning(net.enforcementStatus) : null;
+
+  const globalLabel = net.globalEnabled ? "Contained" : "Open";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -292,11 +239,11 @@ export function SessionSettingsDialog({
           <div className="px-5 pt-2 pb-1" role="radiogroup" aria-label="Network access">
             <ModeOption
               icon={<ShieldCheckIcon size={ICON_SIZE.SM} />}
-              title="Inherit global"
+              title={NETWORK_MODE_LABEL.inherit}
               desc={`Follow the workspace setting (currently ${globalLabel}). Change it in Settings → Network.`}
               selected={mode === "inherit"}
               disabled={mode === undefined}
-              onSelect={() => void handleChange("inherit")}
+              onSelect={() => net.setMode("inherit")}
             />
             <ModeOption
               icon={<ShieldCheckIcon size={ICON_SIZE.SM} weight="fill" />}
@@ -304,7 +251,7 @@ export function SessionSettingsDialog({
               desc="Default-deny — only the allowlist (LLM API, GitHub, registries, your added hosts) is reachable, with inline prompts for new hosts."
               selected={mode === "contained"}
               disabled={mode === undefined}
-              onSelect={() => void handleChange("contained")}
+              onSelect={() => net.setMode("contained")}
             />
             <ModeOption
               icon={<ShieldSlashIcon size={ICON_SIZE.SM} />}
@@ -312,10 +259,17 @@ export function SessionSettingsDialog({
               desc="Unrestricted outbound network access — no allowlist, no prompts."
               selected={mode === "open"}
               disabled={mode === undefined}
-              onSelect={() => void handleChange("open")}
+              onSelect={() => net.setMode("open")}
             />
           </div>
         )}
+
+        {/* docs/305 req 6 — any session kind may be granted a destination, so
+            this sits OUTSIDE the sandbox/other split above. Its edit route is
+            deliberately not behind the capability editor's sandbox guard. */}
+        <div className="px-5 pt-2 pb-1">
+          <SessionSshHostGrants sessionId={sessionId} open={open} />
+        </div>
 
         {/* Pending — the selected mode resolves to a different containment than the
             live container was started with. Egress is plumbed at container
@@ -349,7 +303,7 @@ export function SessionSettingsDialog({
                   data-testid="session-settings-restart"
                 >
                   {restarting
-                    ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+                    ? <Spinner size={ICON_SIZE.XS} />
                     : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
                   Restart to apply now
                 </Button>
@@ -358,16 +312,14 @@ export function SessionSettingsDialog({
           </div>
         )}
 
-        {showEnforcementWarning && (
+        {enforcementNotice && (
           <Alert
             variant="warning"
             className="mx-5 mb-1"
             data-testid="session-settings-enforcement-warning"
           >
             <span className="mt-0.5 shrink-0 text-(--color-warning)"><WarningIcon size={ICON_SIZE.SM} weight="fill" /></span>
-            <p>
-              Not enforced on this deployment — contained sessions fail to start. See the install notes.
-            </p>
+            <p>{enforcementNotice}</p>
           </Alert>
         )}
 

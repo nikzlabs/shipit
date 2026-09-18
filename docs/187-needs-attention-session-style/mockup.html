@@ -49,8 +49,6 @@
   .meta{display:flex;align-items:center;gap:5px;margin-top:3px;color:var(--txt3);font-size:10px;}
   .statusdot{width:5px;height:5px;border-radius:999px;background:var(--ok);flex:none;}
   .row.attn .statusdot{background:var(--am);}
-
-  /* ============ ROW BORDER (no new tokens) ============ */
   .both .row.attn{border-left-color:var(--am);border-right-color:var(--am);}
   .rail .row.attn{border-left:3px solid var(--am);border-radius:6px;}
   .grail .row.attn{border-left:3px solid var(--am);margin-top:0;margin-bottom:0;}
@@ -62,8 +60,6 @@
   .edge .row.attn::after{content:"";position:absolute;right:7px;top:50%;transform:translateY(-50%);width:6px;height:6px;border-radius:999px;background:var(--am);}
   .pulse .row.attn{border-left:3px solid var(--am);animation:rp 1.7s infinite;}
   @keyframes rp{0%,100%{box-shadow:-2px 0 7px -2px rgba(217,119,6,0);}50%{box-shadow:-2px 0 8px -1px rgba(217,119,6,.7);}}
-
-  /* ============ ROW BACKGROUND (collision handling) ============ */
   .bgfill .row.attn{background:var(--a12);}
   .bgfill .row.attn.sel{background:var(--a12);box-shadow:inset 0 0 0 1.5px var(--bd2);}
   .bgsel .row.attn{background:var(--a12);}
@@ -72,8 +68,6 @@
   .bgdeep .row.attn.sel{background:var(--a22);color:var(--txt);}
   .bgtint .row.attn{background:var(--a08);border-left:3px solid var(--am);border-radius:6px;}
   .bgtint .row.attn.sel{background:var(--sel);border-left:3px solid var(--am);}
-
-  /* ============ TITLE FILL (2 new tokens / theme) ============ */
   .tdeep .row.attn .title,.ttoken .row.attn .title,.tchip .row.attn .title,.tbar .row.attn .title{
     display:inline-block;max-width:100%;vertical-align:bottom;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     color:#fff;font-weight:600;padding:1px 6px;border-radius:5px;}
@@ -81,8 +75,6 @@
   .ttoken .row.attn .title{background:var(--am);}
   .tchip .row.attn .title{background:var(--am700);border-radius:999px;padding:1px 9px;}
   .tbar .row.attn .title{background:var(--am);display:block;max-width:none;border-radius:6px;}
-
-  /* ============ TITLE OUTLINE (no new tokens) ============ */
   .opill .row.attn .title,.ochip .row.attn .title,.odash .row.attn .title{
     display:inline-block;max-width:100%;vertical-align:bottom;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     padding:0 6px;border-radius:5px;border:1.5px solid var(--am);}
@@ -105,8 +97,6 @@
     <div class="hcard"><b>Title fill</b>Solid color behind the title, white text. Boldest. Needs a fill+text token pair per theme.<span class="cost some">+2 tokens × 14 themes</span></div>
     <div class="hcard"><b>Title outline</b>Border around the title only; text/bg untouched. Quiet &amp; cheap.<span class="cost free">no new tokens</span></div>
   </div>
-
-  <!-- ROW BORDER -->
   <section>
     <div class="sechead"><h2>A · Row border</h2><span class="meta">no new tokens · reuses <code>--color-attention</code></span></div>
     <div class="grid">
@@ -119,8 +109,6 @@
       <div class="card pulse"><div class="clabel"><span class="n">A6 · Pulsing rail</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
     </div>
   </section>
-
-  <!-- ROW BACKGROUND -->
   <section>
     <div class="sechead"><h2>B · Row background</h2><span class="meta">strongest · each handles the selected+attention collision differently (bottom row)</span></div>
     <div class="grid">
@@ -130,8 +118,6 @@
       <div class="card bgtint"><div class="clabel"><span class="n">B4 · Tint + rail</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
     </div>
   </section>
-
-  <!-- TITLE FILL -->
   <section>
     <div class="sechead"><h2>C · Title fill</h2><span class="meta">boldest · needs a fill + on-fill token pair per theme</span></div>
     <div class="grid">
@@ -141,8 +127,6 @@
       <div class="card tchip"><div class="clabel"><span class="n">C4 · Rounded chip</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
     </div>
   </section>
-
-  <!-- TITLE OUTLINE -->
   <section>
     <div class="sechead"><h2>D · Title outline</h2><span class="meta">quiet &amp; cheap · text/background untouched · no new tokens</span></div>
     <div class="grid">

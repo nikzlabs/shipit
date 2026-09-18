@@ -45,7 +45,7 @@ describe("handleActionChecklistCard (docs/207 / planning#155)", () => {
 
   it("is idempotent by cardId — a reconnect replay appends once", () => {
     handleActionChecklistCard(ctx, event());
-    handleActionChecklistCard(ctx, event()); // same cardId (history load + buffer replay)
+    handleActionChecklistCard(ctx, event());                                              
     expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 

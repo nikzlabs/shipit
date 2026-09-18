@@ -581,8 +581,8 @@ When the worker receives the call, it:
 
    ```ts
    { type: "send_review_message",
-     text: string,            // the composed prompt body
-     reviewFilePath: string } // the authorized file
+     text: string,
+     reviewFilePath: string }
    ```
 
    This lets the WS handler distinguish a button/slash-command

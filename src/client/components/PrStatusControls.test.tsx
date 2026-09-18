@@ -22,8 +22,6 @@ const openCard: PrCardState = {
   },
 };
 
-// Mirrors how PrLifecycleCard / PrStatusSection host the close item inside a
-// Radix OverflowMenu: the menu owner holds the useClosePr state and resets it
 // on close so a partial confirm never carries over.
 function OverflowCloseHarness({ sessionId }: { sessionId: string }) {
   const state = useClosePr(sessionId);
@@ -48,17 +46,13 @@ afterEach(() => {
   cleanup();
 });
 
-// Close lives in two places, both backed by the shared useClosePr state machine:
-// the merge button's bespoke dropdown (regular, mergeable case) and a Radix
-// overflow menu (shown when the merge button is hidden, e.g. merge conflicts).
-// The confirm / re-arm / failure contract is asserted against both.
 const surfaces = [
   {
     name: "MergeButton dropdown",
     render: () => render(<MergeButton sessionId="s1" />),
     open: (user: ReturnType<typeof userEvent.setup>) =>
       user.click(screen.getByLabelText("Select merge method")),
-    // Bespoke dropdown: clicking the caret again closes it.
+
     close: (user: ReturnType<typeof userEvent.setup>) =>
       user.click(screen.getByLabelText("Select merge method")),
   },
@@ -67,7 +61,7 @@ const surfaces = [
     render: () => render(<OverflowCloseHarness sessionId="s1" />),
     open: (user: ReturnType<typeof userEvent.setup>) =>
       user.click(screen.getByLabelText("More pull request actions")),
-    // Radix menu: Escape dismisses it (firing onOpenChange(false) → reset).
+
     close: (user: ReturnType<typeof userEvent.setup>) => user.keyboard("{Escape}"),
   },
 ] as const;
@@ -87,7 +81,6 @@ describe.each(surfaces)("close pull request via $name", ({ render: renderSurface
     await open(user);
     await user.click(screen.getByText("Close pull request"));
 
-    // First click only arms the confirm — no request yet.
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.getByText("Click again to confirm")).toBeInTheDocument();
 
@@ -108,7 +101,6 @@ describe.each(surfaces)("close pull request via $name", ({ render: renderSurface
     await user.click(screen.getByText("Close pull request"));
     expect(screen.getByText("Click again to confirm")).toBeInTheDocument();
 
-    // Dismiss the menu, then reopen — the item is back to its un-armed label.
     await close(user);
     await open(user);
     expect(screen.getByText("Close pull request")).toBeInTheDocument();
@@ -155,7 +147,7 @@ describe("AutoMergeToggle — managed-merge explanation", () => {
     expect(screen.queryByLabelText("Auto-merge requirements")).toBeNull();
 
     await user.hover(info);
-    // Radix renders the tooltip body twice (visible + the aria live copy).
+
     expect((await screen.findAllByText(/This session is still working/)).length).toBeGreaterThan(0);
     expect(screen.queryByText("Configure in GitHub settings")).toBeNull();
   });
@@ -174,7 +166,7 @@ describe("AutoMergeToggle — managed-merge explanation", () => {
 
     await user.hover(info);
     expect((await screen.findAllByText(/commits GitHub has not got yet/)).length).toBeGreaterThan(0);
-    // No settings link: the repository is configured perfectly well.
+
     expect(screen.queryByText("Configure in GitHub settings")).toBeNull();
   });
 
@@ -235,9 +227,9 @@ describe("MergeButton — unsynced local work", () => {
   });
 
   it("keeps the dropdown reachable while the merge is held", async () => {
-    // An unsynced branch can stay unsynced for a long time (a push that keeps
+
     // being rejected), and closing the PR or changing the merge method must not
-    // be locked away behind that wait.
+
     const user = userEvent.setup();
     withSync({ state: "ahead", ahead: 1, behind: 0 });
     render(<MergeButton sessionId="s1" />);
@@ -248,10 +240,10 @@ describe("MergeButton — unsynced local work", () => {
 
   it.each([
     ["in sync", { state: "in-sync", ahead: 0, behind: 0 }],
-    // The remote is a superset of local work — the merge ships more, not less.
+
     ["behind the remote", { state: "behind", ahead: 0, behind: 3 }],
     // "Cannot tell" is never a reason to block: a session whose workspace was
-    // reclaimed has no tracking ref to read.
+
     ["unknown", undefined],
   ])("leaves the merge enabled when the branch is %s", (_case, branchSync) => {
     withSync(branchSync);

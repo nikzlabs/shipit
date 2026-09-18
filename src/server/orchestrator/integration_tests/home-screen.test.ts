@@ -19,10 +19,6 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
-// ---------------------------------------------------------------------------
-// home_create_repo_with_template
-// ---------------------------------------------------------------------------
-
 describe("Integration: home_create_repo_with_template (HTTP)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
@@ -34,8 +30,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-home-create-"));
 
-    // `POST /api/repos` warms a session, and the warm pool fetches the
-    // workspace clone's origin for real against the fake github.com URL.
+    // Prevent warm-pool fetches from reaching the fake GitHub URL.
     restoreGitTransports = pinGitToLocalTransports();
 
     const sessionManager = new SessionManager(dbManager);
@@ -69,7 +64,6 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
   });
 
   it("creates a GitHub repo, applies template, and returns success", async () => {
-    // Authenticate with GitHub first via HTTP
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
     const res = await app.inject({
@@ -88,8 +82,6 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     expect(body.repoUrl).toBe("https://github.com/test-user/my-new-app.git");
     expect(body.sessionId).toBeTruthy();
 
-    // docs/178 — a ShipIt-scaffolded repo has no attacker-authored config, so
-    // it is trusted by construction and never shows the trust gate.
     const list = await app.inject({ method: "GET", url: "/api/repos" });
     const created = (list.json().repos as { url: string; trusted?: boolean }[])
       .find((r) => r.url === body.repoUrl);
@@ -112,9 +104,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.success).toBe(true);
-    // The clone URL is namespaced under the org, not the personal account.
     expect(body.repoUrl).toBe("https://github.com/acme/team-app.git");
-    // And the org login was threaded all the way to createRepo's options.
     expect(githubAuthManager.createRepoCalls).toHaveLength(1);
     expect(githubAuthManager.createRepoCalls[0].options.owner).toBe("acme");
   });
@@ -184,6 +174,3 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     expect(res.statusCode).toBe(401);
   });
 });
-
-// home_send_with_repo handler was removed — replaced by claim-session + send_message flow.
-// See warm-sessions.test.ts for the equivalent lifecycle tests.

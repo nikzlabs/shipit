@@ -1,13 +1,3 @@
-/**
- * `POST /api/sessions/:id/actions/runs/rerun` — the route behind `gh run rerun`.
- *
- * The service's guardrails are unit-tested in `services/github-rerun-run.test.ts`
- * against a stubbed GitManager. This exercises the parts only a real route can
- * cover: body parsing and coercion refusal, `ServiceError` → status/message
- * propagation, and the guardrails running against a REAL git repo's branch and
- * HEAD rather than a mock's return value — which is what they read in production.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,7 +22,6 @@ import { DatabaseManager } from "../../shared/database.js";
 
 const REMOTE = "https://github.com/o/r.git";
 
-/** A stub that records the rerun call and serves whatever run the test sets. */
 class ActionsStub extends StubGitHubAuthManager {
   run: Record<string, unknown> | null = null;
   rerunCalls: { runId: number; onlyFailed: boolean }[] = [];
@@ -71,9 +60,7 @@ describe("Integration: POST /actions/runs/rerun", () => {
     sessionId = crypto.randomUUID();
     const sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
-    // Build the repo with raw git rather than `GitManager.init()`: that helper
-    // inherits identity from the global config, which isn't guaranteed on a
-    // stock CI runner. Repo-local identity + --no-gpg-sign keeps it hermetic.
+    // Set repository identity and disable signing without relying on host configuration.
     const git = new GitManager(sessionDir);
     const run = (...args: string[]) => execFileSync("git", args, { cwd: sessionDir });
     run("init", "--initial-branch=main", "-q");
@@ -166,7 +153,6 @@ describe("Integration: POST /actions/runs/rerun", () => {
   });
 
   it("propagates the off-branch refusal as 403 with the reason", async () => {
-    // Guardrails read the REAL repo here, so this is the production comparison.
     github.run = makeRun({ headBranch: "stable" });
     const res = await post({ id: "42" });
     expect(res.statusCode).toBe(403);

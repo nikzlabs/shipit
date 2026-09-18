@@ -5,12 +5,6 @@ import { IssueDetail } from "./IssueDetail.js";
 import type { IssueSelection } from "../stores/issues-store.js";
 import type { RepoInfo, TrackerComment, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
-/**
- * Tests for the inline single-issue detail view (docs/189): it paints the
- * hydrated issue (title, status, priority, labels, body), keeps the tracker
- * deep link as the ONLY escape hatch, and degrades to a skeleton / error state.
- */
-
 const SELECTION: IssueSelection = {
   tracker: "linear",
   id: "node-1",
@@ -155,7 +149,6 @@ describe("IssueDetail label editing", () => {
     render(<IssueDetail {...props} />);
     await user.click(screen.getByRole("button", { name: "Edit labels" }));
     expect(props.onFetchLabels).toHaveBeenCalled();
-    // "design" is in the pickable set but not yet on the issue → toggling adds it.
     await user.click(screen.getByRole("menuitemcheckbox", { name: "design" }));
     expect(props.onSetLabels).toHaveBeenCalledWith(["security", "bug", "design"]);
   });
@@ -169,7 +162,6 @@ describe("IssueDetail label editing", () => {
     render(<IssueDetail {...baseProps()} canEditLabels={false} />);
     expect(screen.queryByRole("button", { name: "Edit labels" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove security" })).toBeNull();
-    // The labels themselves still render read-only.
     expect(screen.getByText("security")).toBeInTheDocument();
   });
 });
@@ -186,7 +178,6 @@ describe("IssueDetail comments (docs/189 follow-up)", () => {
     render(<IssueDetail {...baseProps()} comments={[COMMENT]} />);
     expect(screen.getByText("Reviewer")).toBeInTheDocument();
     expect(screen.getByText("First reply on the thread.")).toBeInTheDocument();
-    // The count chip reflects the thread length.
     expect(screen.getByText("· 1")).toBeInTheDocument();
   });
 
@@ -237,7 +228,6 @@ describe("IssueDetail comment anchoring (planning#105)", () => {
     { id: "c-2", body: "Second reply, the target.", author: { name: "B" } },
   ];
 
-  // jsdom doesn't implement scrollIntoView; stub it so the anchor effect runs.
   function stubScroll() {
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
@@ -257,7 +247,6 @@ describe("IssueDetail comment anchoring (planning#105)", () => {
     );
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
     expect(onAnchorConsumed).toHaveBeenCalled();
-    // The target row is flashed (background utility applied), the others aren't.
     const target = container.querySelector('[data-comment-id="c-2"]');
     expect(target?.className).toMatch(/bg-\(--color-bg-hover\)/);
     const other = container.querySelector('[data-comment-id="c-1"]');

@@ -2,10 +2,6 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
 import { PreviewToolbar } from "./PreviewToolbar.js";
 
-// jsdom implements neither ResizeObserver nor layout. The stub keeps the
-// collapse hook's callback ref from throwing; the hook then reads clientWidth
-// as 0 and leaves the bar expanded, which is what these tests want — they drive
-// the stage flags directly rather than trying to provoke a measurement jsdom
 // could never perform.
 vi.stubGlobal("ResizeObserver", class {
   observe() {}
@@ -43,7 +39,6 @@ const baseProps = {
   previewFullUrl: "http://a--5173.localhost/requirements?focus=7",
 };
 
-/** The element the collapse hook writes its stage flags onto. */
 function toolbar(container: HTMLElement): HTMLElement {
   const el = container.querySelector<HTMLElement>(".group\\/ptb");
   if (!el) throw new Error("toolbar root (group/ptb) not found");
@@ -60,7 +55,7 @@ function toolbar(container: HTMLElement): HTMLElement {
  * spent and the original clipping comes back.
  */
 function classOf(el: Element): string {
-  // Not `el.className` — on an SVG that is an SVGAnimatedString, not a string.
+
   return el.getAttribute("class") ?? "";
 }
 
@@ -69,13 +64,12 @@ function unladderedLabels(root: HTMLElement): string[] {
   const walk = (node: Node, covered: boolean) => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent?.trim() ?? "";
-      // Separators and the error count pill are glyphs, not labels.
+
       if (text && text !== "|" && !/^\d+$/.test(text) && !covered) orphans.push(text);
       return;
     }
     if (!(node instanceof Element)) return;
-    // The address is deliberately NOT in the ladder: it shrinks rather than
-    // hides, which is the whole point of the design. Exclude its subtree.
+
     if (node.hasAttribute("data-preview-address")) return;
     const hides = classOf(node).includes("group-data-[hide-");
     node.childNodes.forEach((child) => walk(child, covered || hides));
@@ -99,8 +93,7 @@ describe("PreviewToolbar collapse wiring", () => {
   });
 
   it("leaves no label outside the ladder without the port dropdown either", () => {
-    // The branch that shipped the defect: `showSelector: false` rendered the
-    // service name as a bare text node, which no hide class can reach.
+
     const { container } = render(<PreviewToolbar {...baseProps} showSelector={false} />);
     expect(unladderedLabels(toolbar(container))).toEqual([]);
   });
@@ -136,8 +129,7 @@ describe("PreviewToolbar collapse wiring", () => {
   });
 
   it("keeps the auto-fix checkbox named once its label is hidden", () => {
-    // display:none takes the visible text out of accessible-name computation,
-    // so without an explicit aria-label the collapse produces an unnamed
+
     // checkbox — a control a screen reader cannot announce.
     const { container } = render(<PreviewToolbar {...baseProps} />);
     toolbar(container).dataset.hideAutofix = "true";

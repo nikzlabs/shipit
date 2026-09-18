@@ -4,7 +4,7 @@ ShipIt injects environment variables into compose services from a per-repo
 secret store. Declare what each service needs in its compose definition with
 `x-shipit-secrets` — the same `x-shipit-*` extension pattern as
 `x-shipit-preview`. Users configure the actual values once per repo in the
-**Settings → Secrets** panel; the values are then auto-loaded into every
+**Project Settings → Secrets** panel; the values are then auto-loaded into every
 session for that repo and survive container restarts.
 
 ## Why declare secrets?
@@ -45,7 +45,7 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_PASSWORD: dev    # not a secret — dev-only default
+      POSTGRES_PASSWORD: dev    # Development only.
 ```
 
 Each name must be a valid env var identifier
@@ -62,20 +62,15 @@ services:
   api:
     image: node:24-slim
     x-shipit-secrets:
-      # Simple shorthand
       - SENTRY_DSN
 
-      # With description — shown in the secrets panel as a placeholder
       - name: STRIPE_SECRET_KEY
         description: Stripe API key (starts with sk_live_ or sk_test_)
 
-      # Required — surfaces a "Configure secrets to run" banner if missing
       - name: DATABASE_URL
         description: PostgreSQL connection string
         required: true
 
-      # Also exposed inside the agent container (Phase 3 — for migrations,
-      # codegen, tests that need to talk to the running stack)
       - name: DATABASE_URL
         agent: true
 ```
@@ -83,12 +78,12 @@ services:
 ### Compose services receive user-supplied secrets
 
 Every value injected into a compose service comes from the **per-repo secret
-store** — values the user entered in **Settings → Secrets**, keyed by the
+store** — values the user entered in **Project Settings → Secrets**, keyed by the
 declared `name`. To give a service a credential, the user sets a secret of the
 same name.
 
 > **MCP OAuth tokens reach the agent through a separate path.** Connecting a
-> one-click provider (e.g. Notion) under Settings → MCP Servers wires the token
+> one-click provider (e.g. Notion) under Settings → Integrations wires the token
 > into the *agent's* MCP servers via the `$platform:<id>` placeholder (resolved
 > from the `MCP_PLATFORM_<ID>` env var). That is the user wiring an MCP server
 > into their own agent — distinct from compose-service secret resolution.
@@ -117,11 +112,10 @@ For each service that declares secrets, ShipIt writes a per-service env file
 and references it via `env_file:` in the generated compose override:
 
 ```yaml
-# compose.override.yml (generated, in the session's state dir — never your clone)
+# Generated compose.override.yml
 services:
   api:
     env_file: [/workspace/service-env/<sessionId>/.env.api]
-    # ... other override fields
 ```
 
 ```
@@ -227,7 +221,7 @@ a host that can't enforce it — but an operator **can** disable it
 (`SESSION_EGRESS_ENFORCE=0`, e.g. when the host can't run the required NET_ADMIN
 sidecar; the installer detects this and asks). When containment is disabled or
 unenforceable, the old unrestricted-egress exposure returns, so still scope
-`agent: true` to non-sensitive values. The Settings → Network egress panel shows
+`agent: true` to non-sensitive values. The Settings → Network panel shows
 whether containment is actually **enforced** on this deployment (it warns
 "Contained — NOT enforced" when policy says contain but the host can't).
 

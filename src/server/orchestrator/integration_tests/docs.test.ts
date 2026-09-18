@@ -30,7 +30,6 @@ describe("Integration: Docs", () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-docs-"));
 
-    // Create a session with a doc file
     sessionId = crypto.randomUUID();
     sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -59,7 +58,7 @@ describe("Integration: Docs", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Ignore cleanup errors.
     }
   });
 

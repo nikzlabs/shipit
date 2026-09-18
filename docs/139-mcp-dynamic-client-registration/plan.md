@@ -268,9 +268,8 @@ status alone is reason enough to keep the two concerns separate.)
 **Decision (settled): add a separate `mcpOAuthClients` map** (option B).
 
 ```ts
-// CredentialData
 mcpOAuthClients?: Record<
-  string, // provider source id (e.g. "notion_oauth")
+  string,
   { clientId: string; clientSecret?: string; registeredAt: number }
 >;
 ```

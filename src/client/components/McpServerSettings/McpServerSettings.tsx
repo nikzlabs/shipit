@@ -1,17 +1,9 @@
-/**
- * Settings → MCP Servers panel (docs/088-mcp-integration).
- *
- * Account-level CRUD for user-configured MCP servers. Server config blobs
- * carry `$secret:` placeholders; the form collects raw secret values
- * separately and the store sends them as a `secrets` map that the server
- * stores in `CredentialStore.agentEnv` (never echoed back). Per-server
- * runtime status arrives via `mcp_server_status` WS messages.
- */
-
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot fetch of account-level MCP servers on panel mount (external system sync)
 import { useEffect, useState } from "react";
 import { Button } from "../ui/button.js";
 import { useMcpStore } from "../../stores/mcp-store.js";
+import { useSessionStore } from "../../stores/session-store.js";
+import { SettingCopy } from "../Settings/declared.js";
 import { OAuthProviderCards } from "./OAuthProviderCards.js";
 import { McpServerRow } from "./McpServerRow.js";
 import { McpServerForm } from "./McpServerForm.js";
@@ -20,16 +12,16 @@ import { useMcpOAuthFlow } from "./hooks/useMcpOAuthFlow.js";
 import { oauthSourceForServer } from "./utils/auth.js";
 import type { McpServerConfig, McpTestResult } from "../../../server/shared/types.js";
 
-export function McpServerSettings({
-  hasActiveSession,
-  embedded = false,
-}: {
-  hasActiveSession: boolean;
-  /** When rendered inside the Integrations tab (docs/201), the parent owns the
-   * scroll container and section heading, so drop our own to avoid double
-   * padding and a redundant title. */
-  embedded?: boolean;
-}) {
+/**
+ * The panel `mcp.servers` and `mcp.oauthProvider` name
+ * (docs/308-data-driven-settings).
+ *
+ * A registered component takes the setting's key and nothing else, so whether a
+ * session is running — which decides whether there is anywhere to run a test —
+ * is read here rather than drilled in from `App.tsx`.
+ */
+export function McpServerSettings() {
+  const hasActiveSession = useSessionStore((s) => s.sessionId !== undefined);
   const servers = useMcpStore((s) => s.servers);
   const loading = useMcpStore((s) => s.loading);
   const error = useMcpStore((s) => s.error);
@@ -40,10 +32,6 @@ export function McpServerSettings({
   const oauthProviders = useMcpStore((s) => s.oauthProviders);
   const oauthError = useMcpStore((s) => s.oauthError);
   const fetchOAuthProviders = useMcpStore((s) => s.fetchOAuthProviders);
-  // Pulled in so the provider cards re-render when a `mcp_server_status`
-  // event flips an OAuth-managed server to/from auth-required (used by
-  // `isAuthRequired` below to decide whether "Connected" needs downgrading
-  // to a Reconnect CTA).
   const statuses = useMcpStore((s) => s.statuses);
 
   const { form, formError, saving, startAdd, startEdit, cancel, updateForm, save } =
@@ -51,11 +39,6 @@ export function McpServerSettings({
   const { oauthInFlight, connectProvider, disconnectProvider } = useMcpOAuthFlow();
 
   const [testResults, setTestResults] = useState<Record<string, McpTestResult | "loading">>({});
-  /**
-   * Per-server in-flight tracking for the row action buttons (Enable/Disable,
-   * Delete). Prevents fast double-clicks from firing duplicate
-   * updateServer/removeServer requests against the orchestrator.
-   */
   const [toggleInFlight, setToggleInFlight] = useState<Record<string, boolean>>({});
   const [deleteInFlight, setDeleteInFlight] = useState<Record<string, boolean>>({});
 
@@ -110,19 +93,8 @@ export function McpServerSettings({
   }
 
   return (
-    <div
-      className={embedded ? "flex flex-col gap-4" : "px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full"}
-      data-testid="mcp-settings"
-    >
-      {!embedded && (
-        <div>
-          <h3 className="text-sm font-medium text-(--color-text-primary)">MCP Servers</h3>
-          <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-            Connect your own Model Context Protocol servers (Sentry, Notion, …) so the
-            agent can use their tools. Configured once per account — available in every session.
-          </p>
-        </div>
-      )}
+    <div className="flex flex-col gap-4" data-testid="mcp-settings">
+      <SettingCopy settingKey="mcp.servers" heading />
 
       {error && (
         <div className="rounded-md border border-(--color-error) bg-(--color-bg-secondary) px-3 py-2 text-xs text-(--color-error)">
@@ -151,11 +123,7 @@ export function McpServerSettings({
       />
 
       {(() => {
-        // Hide OAuth-managed servers from the standalone list — their
-        // controls (Test / Enable / Disable / status) are now folded into
-        // the connection card above. We still render the row if the
-        // provider isn't connected (e.g. tokens revoked at provider side)
-        // so the user can still see/delete the orphan entry.
+        // Disconnected provider entries remain visible so they can be deleted.
         const connectedSources = new Set(
           oauthProviders.filter((p) => p.status.connected).map((p) => p.id),
         );
@@ -210,7 +178,12 @@ export function McpServerSettings({
           onCancel={cancel}
         />
       ) : (
-        <Button size="md" variant="secondary" onClick={startAdd} data-testid="mcp-add-server">
+        <Button
+          size="md"
+          variant="secondary"
+          onClick={startAdd}
+          data-testid="mcp-add-server"
+        >
           + Add MCP Server
         </Button>
       )}

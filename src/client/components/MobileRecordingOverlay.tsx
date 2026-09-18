@@ -39,11 +39,10 @@
  */
 
 import { useEventListener } from "../hooks/useEventListener.js";
+import { Spinner } from "./Spinner.js";
 import { createPortal } from "react-dom";
 import {
-  StopIcon,
-  SpinnerGapIcon,
-  XIcon,
+  StopIcon, XIcon,
   WarningCircleIcon,
   ArrowClockwiseIcon,
 } from "@phosphor-icons/react";
@@ -64,13 +63,9 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
   const transcribing = state === "transcribing";
   const error = state === "error";
   const active = recording || transcribing || error;
-  // After a transcription failure the audio is retained, so the primary
-  // recovery is to resend it verbatim rather than make the user re-speak.
+
   const canResend = error && canRetryTranscription;
 
-  // Escape cancels an active recording or dismisses an error (no-op once
-  // transcribing — the audio is already in flight). Harmless on mobile where
-  // there's no keyboard; useful for desktop testing of this view.
   useEventListener(recording || error ? window : null, "keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
@@ -80,17 +75,11 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
 
   if (!active) return null;
 
-  // The Back button routes through here via the shared Dialog wrapper. Map it to
-  // the same state-specific exit as Escape; transcribing has no dismiss.
   const handleDismissRequest = () => {
     if (recording) voice.cancelRecording();
     else if (error) voice.dismissError();
   };
 
-  // Deliberately theme-independent: a recording surface is dark-with-light-text
-  // in every app (Voice Memos, WhatsApp), and the themeable text tokens flip to
-  // dark in light themes, blending into the scrim. A fixed dark scrim + explicit
-  // light text keeps contrast high in every theme.
   return (
     <Dialog open onOpenChange={(o) => { if (!o) handleDismissRequest(); }}>
       {createPortal(
@@ -128,13 +117,17 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
               data-testid="mobile-recording-stop"
               className="relative flex h-32 w-32 items-center justify-center rounded-full bg-(--color-error) text-white shadow-2xl transition-transform active:scale-95"
             >
-              <span className="absolute inset-0 rounded-full bg-(--color-error)/40 motion-safe:animate-ping" />
+              {/* `animate-ping` scales, and an infinite transform animation costs a
+                  main-thread rendering pass per frame (docs/265). `animate-pulse`
+                  animates opacity only, which is free, and reads the same here: a
+                  halo breathing behind the stop button. */}
+              <span className="absolute inset-0 rounded-full bg-(--color-error)/40 motion-safe:animate-pulse" />
               <StopIcon size={ICON_SIZE.XL} weight="fill" className="relative" />
             </button>
           )}
           {transcribing && (
             <div className="flex h-32 w-32 items-center justify-center rounded-full bg-white/10">
-              <SpinnerGapIcon size={ICON_SIZE.XL} className="animate-spin text-white/80" />
+              <Spinner size={ICON_SIZE.XL} className="text-white/80" />
             </div>
           )}
           {error && (

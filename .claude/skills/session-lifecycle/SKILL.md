@@ -137,7 +137,7 @@ warmSessionForRepo(repoUrl):
   6. Configure git credentials; materialize LFS; hand the tree back to the worker uid
   7. repoStore.setWarmSessionId(repoUrl, appSessionId)
   8. createStandby(...) + runPreInstall(...) [fire-and-forget], gated on: the OOM
-     breaker not tripped, idle headroom (realCount < maxIdleContainers), and —
+     breaker not tripped, memory headroom (not at the docs/284 memory budget), and —
      for the pre-install only — the remote being trusted (docs/178)
   9. sseBroadcast("repo_warm_ready", ...)
 ```

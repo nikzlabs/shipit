@@ -1,23 +1,4 @@
-/**
- * GrokAdapter conformance tests (docs/274 req 5, docs/272 conventions).
- *
- * **The fixtures are real captures, replayed byte-for-byte.** Grok Build's
- * streaming schema is undocumented — docs.x.ai's headless page covers neither
- * output format — so the only honest basis for the mapping is transcripts the
- * CLI actually produced. `__fixtures__/tool-tour-grok-4.6.ndjson` and
- * `tool-tour-grok-4.20.ndjson` are the docs/272 Step 1 tool-tour turns (CLI
- * 1.0.1, 2026-08-18, API-key mode, a sandbox repo), copied unmodified from the
- * capture directory. Nothing here hand-writes a line of Grok's wire.
- *
- * That is what makes these tests worth their weight on the NEXT version bump:
- * re-capture a tour, drop the file in, and a schema change shows up as a failed
- * assertion about a specific event rather than as a quietly emptier transcript.
- *
- * The lossy paths are asserted too — a truncated stream and a crash — because
- * the one thing a captured happy path cannot prove is what happens when the
- * capture stops early.
- */
-
+// Tool-tour fixtures were captured from Grok CLI 1.0.1 on 2026-08-18.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -28,13 +9,16 @@ import type { ChildProcess } from "node:child_process";
 import { GrokAdapter, resolveGrokBinary } from "./adapter.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
+vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- the mock factory's signature requires the inline import type
+  const real = await importOriginal<typeof import("../../../shared/kill-child.js")>();
+  return { ...real, killProcessTree: vi.fn(real.killProcessTree) };
+});
+import { killProcessTree } from "../../../shared/kill-child.js";
+
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "__fixtures__");
 
-// `grokHome()` honours `process.env.GROK_HOME` first. A grok-pinned session
-// (and this test file, when run from one) exports it as the throwaway spawn
-// root of the *parent* CLI, which would make every adapter here treat that
-// live directory as its shared config root — including copying a test fixture
-// over a real `auth.json`. Pin it off for the file (planning#448).
+// An inherited GROK_HOME could make these tests overwrite the parent CLI's auth.json.
 const ORIGINAL_GROK_HOME = process.env.GROK_HOME;
 beforeEach(() => {
   delete process.env.GROK_HOME;
@@ -48,7 +32,6 @@ function capture(name: string): string[] {
   return fs.readFileSync(path.join(FIXTURES, name), "utf8").split("\n").filter((l) => l.trim());
 }
 
-/** A scriptable stand-in for the spawned CLI. */
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
@@ -81,8 +64,6 @@ interface Harness {
 function makeHarness(params?: Partial<AgentRunParams>): Harness {
   const child = new FakeChild();
   const events: AgentEvent[] = [];
-  // A real directory, because run() writes `config.toml` into the config root
-  // and restores it afterwards — the file lifecycle is part of what is tested.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-adapter-test-"));
   const captured: { args: string[]; env: Record<string, string> } = { args: [], env: {} };
   const adapter = new GrokAdapter({
@@ -109,11 +90,6 @@ describe("GrokAdapter — spawn shape", () => {
   });
 
   it("declares supportsReview, and names the two tools that earn it", () => {
-    // planning#459 / docs/266 item 15 — chat-native review needs a shell tool
-    // and a subagent primitive, and (since docs/220) no MCP surface at all.
-    // Probed live at depth 0: a grok session ran
-    // `shipit agent run --role reviewer --prompt-file -` itself and returned
-    // material findings; on a non-zero exit it fell back to `spawn_subagent`.
     const h = makeHarness();
     homes.push(h.home);
     expect(h.adapter.capabilities.supportsReview).toBe(true);
@@ -122,11 +98,24 @@ describe("GrokAdapter — spawn shape", () => {
     h.child.close(0);
   });
 
+  it("trusts the workspace folder, so the repo's own project config is not skipped", () => {
+    for (const params of [
+      {},
+      { sessionId: "01a01473-26aa-7a21-ac7c-2ca7c9cb4944" },
+      { permissionMode: "plan" as const },
+      { permissionMode: "guarded" as const },
+    ]) {
+      const h = makeHarness(params);
+      homes.push(h.home);
+      expect(h.args, JSON.stringify(params)).toContain("--trust");
+      h.child.close(0);
+    }
+  });
+
   it("passes the prompt as a FILE, never on argv", () => {
     const h = makeHarness({ prompt: "x".repeat(300_000) });
     homes.push(h.home);
     expect(h.args).toContain("--prompt-file");
-    // The whole point: a 300 KB prompt would blow the 128 KiB argv ceiling.
     expect(h.args.some((a) => a.includes("x".repeat(1000)))).toBe(false);
     const promptPath = h.args[h.args.indexOf("--prompt-file") + 1];
     expect(fs.readFileSync(promptPath, "utf8")).toHaveLength(300_000);
@@ -138,7 +127,6 @@ describe("GrokAdapter — spawn shape", () => {
     homes.push(fresh.home);
     expect(fresh.args).toContain("-s");
     expect(fresh.args).not.toContain("-r");
-    // A real UUID, not a placeholder — it is what ShipIt will resume with.
     expect(fresh.args[fresh.args.indexOf("-s") + 1]).toMatch(/^[0-9a-f-]{36}$/);
     fresh.child.close(0);
 
@@ -154,8 +142,6 @@ describe("GrokAdapter — spawn shape", () => {
     const cases: [AgentRunParams["permissionMode"], string[]][] = [
       ["auto", ["--always-approve"]],
       ["plan", ["--permission-mode", "plan"]],
-      // Grok's `auto` is its CLASSIFIER-gated mode — the same spelling ShipIt
-      // uses for "approve everything", which is why this row exists.
       ["guarded", ["--permission-mode", "auto"]],
     ];
     for (const [mode, expected] of cases) {
@@ -168,21 +154,6 @@ describe("GrokAdapter — spawn shape", () => {
     }
   });
 
-  /**
-   * Passes the level it is GIVEN, and passes nothing when given nothing.
-   *
-   * This replaces a "never passes it" assertion, and the inversion is
-   * planning#435's finding rather than a relaxation: under a subscription the
-   * CLI puts `--reasoning-effort` on the wire (recorder-verified with a negative
-   * control), so an adapter that dropped it would silently ignore a level the
-   * user picked and paid for.
-   *
-   * The gate that keeps the flag off a key-billed turn is upstream, in the
-   * catalogue's harness×mode axis — a key-billed grok selection offers no level
-   * for anything to pick, which `catalogue.test.ts` and `reviewer-model.test.ts`
-   * pin. Re-testing the billing mode here would be a second copy of that rule,
-   * and the adapter does not receive a billing mode to test.
-   */
   it("passes the reasoning level it is handed, and none when handed none", () => {
     const withEffort = makeHarness({ reasoningEffort: "xhigh" });
     homes.push(withEffort.home);
@@ -217,8 +188,6 @@ describe("GrokAdapter — spawn shape", () => {
       });
       homes.push(h.home);
       expect(h.env.XAI_API_KEY).toBe("routed-right-account");
-      // `GROK_AUTH` redirects the CLI at a different token store, which defeats
-      // the scoped home just as thoroughly as a stale key would.
       expect(h.env.GROK_AUTH).toBeUndefined();
       expect(h.env.GROK_XAI_API_BASE_URL).toBe("https://api.x.ai/v1");
       h.child.close(0);
@@ -232,12 +201,8 @@ describe("GrokAdapter — spawn shape", () => {
   it("states every harness-compat toggle, leaving only Claude skills and rules on", () => {
     const h = makeHarness();
     homes.push(h.home);
-    // ON: the two ShipIt wants — `.claude/skills` disclosure and CLAUDE.md.
     expect(h.env.GROK_CLAUDE_SKILLS_ENABLED).toBe("1");
     expect(h.env.GROK_CLAUDE_RULES_ENABLED).toBe("1");
-    // OFF: everything that could execute code or redirect a tool behind
-    // ShipIt's back. Asserted by NAME, because a toggle silently left unset is
-    // the failure mode — the CLI defaults them all ON.
     for (const off of [
       "GROK_CLAUDE_MCPS_ENABLED", "GROK_CLAUDE_HOOKS_ENABLED",
       "GROK_CLAUDE_AGENTS_ENABLED", "GROK_CLAUDE_SESSIONS_ENABLED",
@@ -247,7 +212,6 @@ describe("GrokAdapter — spawn shape", () => {
       expect(h.env[off], off).toBe("0");
     }
     expect(h.env.GROK_DISABLE_AUTOUPDATER).toBe("1");
-    // A per-spawn root, not `$HOME/.grok` — see the config-root suite below.
     expect(h.env.GROK_HOME).toMatch(/grok-home-/);
     h.child.close(0);
   });
@@ -271,15 +235,33 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
         h.child.close(0);
 
         const kinds = h.events.map((e) => e.type);
-        // One init, one result, and every message envelope in between mapped —
-        // nothing silently dropped.
         expect(kinds.filter((k) => k === "agent_init")).toHaveLength(1);
         expect(kinds.filter((k) => k === "agent_result")).toHaveLength(1);
         expect(kinds.filter((k) => k === "agent_assistant").length).toBeGreaterThan(0);
         expect(kinds.filter((k) => k === "agent_tool_result").length).toBeGreaterThan(0);
-        // The union is closed: an unrecognized `type` must not leak through.
         for (const k of kinds) {
           expect(["agent_init", "agent_assistant", "agent_tool_result", "agent_result"]).toContain(k);
+        }
+      });
+
+      it("tears down the whole process tree when the post-result kill fires", async () => {
+        vi.useFakeTimers();
+        try {
+          vi.mocked(killProcessTree).mockClear();
+          const h = makeHarness();
+          homes.push(h.home);
+          h.child.emitStdout(capture(file));
+          expect(vi.mocked(killProcessTree)).not.toHaveBeenCalled();
+
+          await vi.advanceTimersByTimeAsync(6_000);
+          expect(vi.mocked(killProcessTree)).toHaveBeenCalledWith(
+            h.child,
+            "SIGTERM",
+            expect.objectContaining({ label: "grok" }),
+          );
+          h.child.close(143);
+        } finally {
+          vi.useRealTimers();
         }
       });
 
@@ -305,12 +287,6 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
           .flatMap((e) => (e as { content?: { type: string; name?: string }[] }).content ?? [])
           .filter((b) => b.type === "tool_use")
           .map((b) => b.name);
-        // The docs/272 tour's load-bearing surfaces: the task panel, a read, an
-        // edit, a shell command and a search — persisted under the Claude-spelled
-        // names the recognition registries key on (planning#437), never the raw
-        // wire ids. A mapping that dropped tool_use blocks would still produce
-        // assistant text, which is exactly why this asserts on the calls rather
-        // than on the turn's final prose.
         for (const expected of ["TodoWrite", "Read", "Bash", "Grep", "Edit", "Write"]) {
           expect(toolNames, `${label} tour drove ${expected}`).toContain(expected);
         }
@@ -335,7 +311,6 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
         const glob = calls.find((c) => c.name === "Glob");
         expect(glob?.input?.path).toBeTruthy();
         expect(glob?.input?.target_directory).toBeUndefined();
-        // Edit/Write bodies are already snake_case on this wire — untouched.
         const edit = calls.find((c) => c.name === "Edit");
         expect(edit?.input?.file_path).toBeTruthy();
         expect(edit?.input?.old_string).toBeTruthy();
@@ -361,8 +336,6 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
             .filter((b) => b.type === "tool_result")
             .map((b) => b.tool_use_id),
         );
-        // Unpaired ids are how a transcript ends up with a call that never
-        // visibly finishes.
         for (const id of callIds) expect(resultIds, `no result for ${String(id)}`).toContain(id);
       });
 
@@ -381,12 +354,7 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
           .filter((e) => e.type === "agent_tool_result")
           .flatMap((e) => (e as { content?: { type: string; tool_use_id?: string; content?: string }[] }).content ?? [])
           .find((b) => b.type === "tool_result" && b.tool_use_id === spawnId);
-        // 4.6's foreground spawn unwraps to the report ("3"); 4.20's background
-        // spawn unwraps to the launch acknowledgement. Either way, no raw
-        // `{"type":…}` envelope reaches the SubagentCall card.
         expect(result?.content?.startsWith("{")).toBe(false);
-        // Every OTHER result keeps its envelope verbatim — the honest wire
-        // content, modal-only.
         const todoResult = h.events
           .filter((e) => e.type === "agent_tool_result")
           .flatMap((e) => (e as { content?: { type: string; tool_use_id?: string; content?: string }[] }).content ?? [])
@@ -413,8 +381,6 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
           usage: Record<string, number>;
           total_cost_usd: number;
         };
-        // Passed through unchanged — no normalizer, because the figures do not
-        // overlap (verified arithmetically on this very event).
         expect(result.tokens).toEqual({
           input: raw.usage.input_tokens,
           output: raw.usage.output_tokens,
@@ -422,10 +388,7 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
           cacheWrite: raw.usage.cache_creation_input_tokens,
         });
         expect(result.cost?.totalUsd).toBe(raw.total_cost_usd);
-        // The window comes from `modelUsage`, the only place the wire states it.
         expect(result.contextWindow).toBeGreaterThan(0);
-        // Context occupancy is the LAST call's prompt, not the summed totals —
-        // summing would report a multiple of the real figure.
         expect(result.contextTokens).toBeLessThan(
           raw.usage.input_tokens + raw.usage.cache_read_input_tokens + raw.usage.output_tokens,
         );
@@ -443,8 +406,6 @@ describe("GrokAdapter — the paths a capture cannot show", () => {
   it("synthesizes a failed result when the stream is truncated by a crash", () => {
     const h = makeHarness();
     homes.push(h.home);
-    // The tour, cut off before its terminal `result` — the shape a killed or
-    // OOM'd CLI leaves behind.
     h.child.emitStdout(capture("tool-tour-grok-4.6.ndjson").slice(0, 5));
     h.child.close(1);
 
@@ -457,8 +418,6 @@ describe("GrokAdapter — the paths a capture cannot show", () => {
     const h = makeHarness();
     homes.push(h.home);
     h.child.emitStdout(capture("tool-tour-grok-4.6.ndjson").slice(0, 5));
-    // A null exit code is what a signal death reports. Emitting a result here
-    // would settle a user's interrupt as a completed turn.
     h.child.close(null);
     expect(h.events.filter((e) => e.type === "agent_result")).toHaveLength(0);
   });
@@ -503,21 +462,96 @@ describe("GrokAdapter — the paths a capture cannot show", () => {
   });
 });
 
-/**
- * planning#444 second half — WHICH grok a spawn runs.
- *
- * `@xai-official/grok` ships two programs called `grok`: the npm `.bin` shim is
- * a JS launcher that bootstraps ~157MB into `$GROK_HOME` when it finds no binary
- * there, and the platform package's `bin/grok` is the real CLI. Every image
- * prepends `/opt/agent-cli/node_modules/.bin` to `PATH`, AHEAD of the
- * `/usr/local/bin` link the installer creates — so a bare-name spawn got the
- * launcher (measured live: `command -v grok` answered the `.bin` path). Combined
- * with this adapter's fresh per-spawn `GROK_HOME`, that is a 157MB bootstrap per
- * TURN, written into the per-session credentials volume.
- *
- * The installer now unlinks the shim; this pins the adapter's own half, so an
- * image built before that change still spawns the real binary.
- */
+// The 429 fixture is CLI 1.0.1 output from a local HTTP recorder, 2026-08-23.
+describe("GrokAdapter — an errored terminal event (planning#453)", () => {
+  const homes: string[] = [];
+  afterEach(() => {
+    for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
+  });
+
+  function capturedRefusal(): string {
+    const line = capture("rate-limited-429-grok-4.5.ndjson")
+      .map((l) => JSON.parse(l) as { type: string; errors?: string[] })
+      .find((e) => e.type === "result");
+    return line?.errors?.[0] ?? "";
+  }
+
+  it("reports the provider's own refusal, not a placeholder naming the subtype", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    h.child.emitStdout(capture("rate-limited-429-grok-4.5.ndjson"));
+    h.child.close(1);
+
+    const result = h.events.find((e) => e.type === "agent_result") as { status: string; error?: string };
+    expect(result.status).toBe("error");
+    expect(result.error).toBe(capturedRefusal());
+    expect(result.error).not.toContain("error_during_execution");
+  });
+
+  it("puts that text where the exhaustion classifier can reach it", () => {
+    expect(capturedRefusal()).toMatch(/out of credits/i);
+    expect(capturedRefusal()).toMatch(/^Out of credits: /);
+  });
+
+  it("keeps a SUCCESS reading its text off `result`, which is where success puts it", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    h.child.emitStdout(capture("tool-tour-grok-4.6.ndjson"));
+    h.child.close(0);
+    const result = h.events.find((e) => e.type === "agent_result") as { status: string; error?: string };
+    expect(result.status).toBe("success");
+    expect(result.error).toBeUndefined();
+  });
+
+  it("forwards a fatal `error` event's message instead of naming the exit code", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    h.child.emitStdout([JSON.stringify({ type: "error", message: "usage limit reached" })]);
+    h.child.close(1);
+    const result = h.events.find((e) => e.type === "agent_result") as { status: string; error?: string };
+    expect(result.status).toBe("error");
+    expect(result.error).toBe("usage limit reached");
+  });
+
+  it("still names the exit code when the CLI died without saying anything", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    h.child.emitStdout(capture("tool-tour-grok-4.6.ndjson").slice(0, 5));
+    h.child.close(1);
+    const result = h.events.find((e) => e.type === "agent_result") as { error?: string };
+    expect(result.error).toContain("exited with code 1");
+  });
+
+  it("does not carry one turn's fatal message into the next", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-adapter-test-"));
+    homes.push(home);
+    const children: FakeChild[] = [];
+    const events: AgentEvent[] = [];
+    const adapter = new GrokAdapter({
+      resolveHome: () => home,
+      spawnFn: () => {
+        const c = new FakeChild();
+        children.push(c);
+        return c as unknown as ChildProcess;
+      },
+    });
+    adapter.on("event", (e) => events.push(e));
+
+    adapter.run({ prompt: "first", cwd: "/workspace" });
+    children[0].emitStdout([JSON.stringify({ type: "error", message: "usage limit reached" })]);
+    children[0].close(1);
+
+    adapter.run({ prompt: "second", cwd: "/workspace" });
+    children[1].emitStdout(capture("tool-tour-grok-4.6.ndjson").slice(0, 5));
+    children[1].close(1);
+
+    const results = events.filter((e) => e.type === "agent_result") as { error?: string }[];
+    expect(results).toHaveLength(2);
+    expect(results[0].error).toBe("usage limit reached");
+    expect(results[1].error).toContain("exited with code 1");
+  });
+});
+
 describe("GrokAdapter — which binary a spawn resolves to (planning#444)", () => {
   let root: string;
   let npmBin: string;
@@ -525,7 +559,6 @@ describe("GrokAdapter — which binary a spawn resolves to (planning#444)", () =
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-path-test-"));
-    // The production shape, in order: the npm launcher first, the real link second.
     npmBin = path.join(root, "opt/agent-cli/node_modules/.bin");
     realBin = path.join(root, "usr/local/bin");
     for (const dir of [npmBin, realBin]) fs.mkdirSync(dir, { recursive: true });
@@ -554,8 +587,6 @@ describe("GrokAdapter — which binary a spawn resolves to (planning#444)", () =
   });
 
   it("falls back to the bare name rather than refusing to spawn", () => {
-    // A launcher-only install is still worse than no turn at all, so the bare
-    // name stays the floor — with a warning, which is the part that was missing.
     put(npmBin);
     expect(resolveGrokBinary([npmBin].join(path.delimiter))).toBe("grok");
     expect(resolveGrokBinary("")).toBe("grok");
@@ -601,10 +632,8 @@ describe("GrokAdapter — the per-spawn config root", () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  const start = (adapter: GrokAdapter, child: FakeChild, captured: { env: Record<string, string> }): void => {
+  const start = (adapter: GrokAdapter, _child: FakeChild, _captured: { env: Record<string, string> }): void => {
     adapter.run({ prompt: "p", cwd: "/workspace" });
-    void child;
-    void captured;
   };
 
   function build(): {
@@ -642,7 +671,6 @@ describe("GrokAdapter — the per-spawn config root", () => {
     const { adapter, child, env } = build();
     start(adapter, child, { env: {} });
     const spawnHome = env().GROK_HOME;
-    // The whole point: two concurrent spawns must not share one config.toml.
     expect(spawnHome).not.toBe(path.join(home, ".grok"));
     expect(fs.existsSync(path.join(spawnHome, "config.toml"))).toBe(true);
     child.close(0);
@@ -677,7 +705,6 @@ describe("GrokAdapter — the per-spawn config root", () => {
 
     const keyMode = build();
     keyMode.adapter.run({ prompt: "p", cwd: "/workspace" });
-    // Key mode has no auth.json; a dangling link would be worse than none.
     expect(fs.existsSync(path.join(keyMode.env().GROK_HOME, "auth.json"))).toBe(false);
     keyMode.child.close(0);
 
@@ -690,16 +717,11 @@ describe("GrokAdapter — the per-spawn config root", () => {
     subMode.child.close(0);
   });
 
-  // 2026-08-21 incident — a same-harness sub-agent spawn's isolated per-spawn
-  // HOME (`AgentRunParams.homeDir`) outranks the constructor resolver: the
-  // throwaway config root links its durable auth.json (and HOME itself) out of
-  // THAT root's `.grok`, never the session's.
   it("prefers a per-spawn homeDir over the resolver for HOME and the auth source", () => {
     const spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-spawn-home-"));
     try {
       fs.mkdirSync(path.join(spawnHome, ".grok"), { recursive: true });
       fs.writeFileSync(path.join(spawnHome, ".grok", "auth.json"), '{"scope":{"key":"isolated"}}');
-      // The SESSION root has its own auth — the spawn must not read it.
       fs.mkdirSync(path.join(home, ".grok"), { recursive: true });
       fs.writeFileSync(path.join(home, ".grok", "auth.json"), '{"scope":{"key":"session"}}');
 
@@ -714,20 +736,6 @@ describe("GrokAdapter — the per-spawn config root", () => {
     }
   });
 
-  /**
-   * planning#435 — the SUBSCRIPTION turn's whole credential handling, and the
-   * failure it prevents is silent rather than loud.
-   *
-   * An account-delivered credential carries no `serviceRouting` at all (a login
-   * IS the vendor's own, bound to the vendor's own endpoint), so the routed
-   * branch never runs. Meanwhile the worker is handed every stored service
-   * credential regardless of the turn's route — so on any install that has ever
-   * saved an xAI key, the CLI would prefer `XAI_API_KEY` over the login on disk
-   * and bill the key while ShipIt attributed the turn to the subscription.
-   *
-   * The gate is the auth FILE and not a scoped home, because `resolveHome` is
-   * undefined inside a container — the one place this matters most.
-   */
   it("scrubs inherited env credentials when a subscription login is on disk", () => {
     const configRoot = path.join(home, ".grok");
     fs.mkdirSync(configRoot, { recursive: true });
@@ -741,16 +749,9 @@ describe("GrokAdapter — the per-spawn config root", () => {
       sub.adapter.run({ prompt: "p", cwd: "/workspace" });
       expect(sub.env().XAI_API_KEY).toBeUndefined();
       expect(sub.env().GROK_AUTH).toBeUndefined();
-      // No endpoint override either: the CLI reaches cli-chat-proxy by itself
-      // off auth.json, and a base URL meant for the key mode would redirect it.
       expect(sub.env().GROK_XAI_API_BASE_URL).toBeUndefined();
       sub.child.close(0);
 
-      // The OTHER direction, which is why the scrub cannot simply be
-      // unconditional: with no login on disk an unrouted spawn keeps the
-      // ambient key, because "use the key in my environment" is the only thing
-      // such a spawn could mean. Removing it would fail the turn with an auth
-      // error naming no cause.
       fs.rmSync(path.join(configRoot, "auth.json"));
       const keyed = build();
       keyed.adapter.run({ prompt: "p", cwd: "/workspace" });
@@ -776,20 +777,10 @@ describe("GrokAdapter — the per-spawn config root", () => {
     child.close(0);
 
     expect(fs.existsSync(spawnHome)).toBe(false);
-    // The durable state is what the links point AT. A cleanup that followed
-    // them would delete this session's resume history and its credentials.
     expect(fs.existsSync(path.join(configRoot, "sessions", "conversation.json"))).toBe(true);
     expect(fs.readFileSync(path.join(configRoot, "auth.json"), "utf8")).toBe('{"scope":{"key":"secret"}}');
   });
 
-  /**
-   * planning#448 — the grok CLI refreshes by atomic-rename onto
-   * `$GROK_HOME/auth.json`, which replaces the symlink `makeSpawnHome` created
-   * with a regular file. Without a copy-back, the live token lives only in the
-   * throwaway root: the session credentials the orchestrator watches never
-   * move, publish-back is a no-op, and `rmSync` at turn end deletes the
-   * rotation.
-   */
   it("copies a CLI-replaced auth.json back onto the shared root before deleting the throwaway home", () => {
     const configRoot = path.join(home, ".grok");
     fs.mkdirSync(configRoot, { recursive: true });
@@ -920,34 +911,18 @@ describe("GrokAdapter — the per-spawn config root", () => {
   });
 
   it("gives two concurrent spawns two different roots", () => {
-    // The container case this design exists for: a turn and a `shipit agent
-    // run` sub-agent alive at the same time, both built with the same home.
     const first = build();
     first.adapter.run({ prompt: "turn", cwd: "/workspace" });
     const second = build();
     second.adapter.run({ prompt: "consult", cwd: "/workspace" });
 
     expect(first.env().GROK_HOME).not.toBe(second.env().GROK_HOME);
-    // And one finishing must not disturb the other's config.
     first.child.close(0);
     expect(fs.existsSync(path.join(second.env().GROK_HOME, "config.toml"))).toBe(true);
     second.child.close(0);
   });
 
-  /**
-   * planning#444 — THE regression guard. Every session image symlinks
-   * `~/.grok` at `/credentials/.grok`, and key-billed Grok writes no credential
-   * material, so nothing created the target: the link DANGLED in every session
-   * container. `mkdirSync(realRoot, {recursive: true})` through a dangling
-   * symlink throws, and the old `catch` returned that same dangling path as
-   * `GROK_HOME` — the CLI then died at its own session creation with
-   * `duration_ms: 0`, before any stream event.
-   *
-   * These build the shape literally (a symlink whose target does not exist), so
-   * a fallback that ever again hands the CLI an unopenable root fails here.
-   */
   describe("when the shared config root is a DANGLING symlink (planning#444)", () => {
-    /** The container shape: `<home>/.grok` -> a target nothing ever created. */
     function danglingGrokHome(): string {
       const missing = path.join(home, "credentials-that-do-not-exist", ".grok");
       fs.symlinkSync(missing, path.join(home, ".grok"));
@@ -959,15 +934,10 @@ describe("GrokAdapter — the per-spawn config root", () => {
       const { adapter, child, env, spawned } = build();
       adapter.run({ prompt: "p", cwd: "/workspace" });
 
-      // The turn still starts — the old behaviour started it too, but pointed
-      // at a root the CLI could not open.
       expect(spawned()).toBe(true);
       const spawnHome = env().GROK_HOME;
       expect(spawnHome).not.toBe(path.join(home, ".grok"));
       expect(spawnHome).not.toBe(missing);
-      // And the root it DID get is genuinely usable: a real directory, with the
-      // `sessions` dir whose absence is what killed the CLI, and this turn's
-      // MCP config.
       expect(fs.statSync(spawnHome).isDirectory()).toBe(true);
       expect(fs.statSync(path.join(spawnHome, "sessions")).isDirectory()).toBe(true);
       expect(fs.existsSync(path.join(spawnHome, "config.toml"))).toBe(true);
@@ -981,7 +951,6 @@ describe("GrokAdapter — the per-spawn config root", () => {
       adapter.on("log", (_channel, line) => logs.push(line));
       adapter.run({ prompt: "p", cwd: "/workspace" });
 
-      // A silent fallback is what made this cost a process watcher to diagnose.
       expect(logs.join("\n")).toMatch(/config root/i);
       expect(logs.join("\n")).toMatch(/resume/i);
       child.close(0);
@@ -992,9 +961,6 @@ describe("GrokAdapter — the per-spawn config root", () => {
       const { adapter, child } = build();
       adapter.run({ prompt: "p", cwd: "/workspace" });
 
-      // Repairing the tree belongs to the orchestrator and the entrypoint: it is
-      // per-session and uid-sensitive (docs/150, docs/270), so an adapter running
-      // as the session uid must not conjure directories inside it.
       expect(fs.existsSync(missing)).toBe(false);
       expect(fs.existsSync(path.dirname(missing))).toBe(false);
       child.close(0);
@@ -1026,19 +992,7 @@ describe("GrokAdapter — the per-spawn config root", () => {
   });
 });
 
-/**
- * docs/276 — compaction. The fixture is a real capture of a manual `/compact`
- * run (CLI 1.0.1, `--output-format streaming-messages-json`, the format this
- * adapter parses), replayed byte-for-byte like every other capture here.
- *
- * The assertion that earns its keep is the TRIGGER one. Grok stamps
- * `compact_metadata.trigger: "auto"` on the wire even for a compaction ShipIt
- * asked for — the fixture line says `"auto"` and was produced by an explicit
- * `/compact` — so a mapping that forwarded the field would mislabel every
- * user-triggered compaction as spontaneous. If a future version starts telling
- * the truth there, this test still passes and the correlation stays correct;
- * what it forbids is trusting the field.
- */
+// CLI 1.0.1 captured this fixture from a manual /compact, but reported trigger="auto".
 describe("GrokAdapter — compaction (docs/276)", () => {
   const homes: string[] = [];
   afterEach(() => {
@@ -1048,8 +1002,6 @@ describe("GrokAdapter — compaction (docs/276)", () => {
   it("needs no special argv — `/compact` rides the prompt file", () => {
     const h = makeHarness({ prompt: "/compact", sessionId: "01a01f5d-b222-72c1-ba3d-a00426df1c32", compact: true });
     homes.push(h.home);
-    // The trigger is in-band (Claude's shape), so the spawn is an ordinary
-    // resumed turn whose prompt happens to be the slash command.
     expect(h.args).toContain("--prompt-file");
     const promptPath = h.args[h.args.indexOf("--prompt-file") + 1];
     expect(fs.readFileSync(promptPath, "utf8")).toBe("/compact");
@@ -1074,13 +1026,9 @@ describe("GrokAdapter — compaction (docs/276)", () => {
     expect(compacted).toHaveLength(1);
     expect(compacted[0]).toEqual({
       type: "agent_compacted",
-      // NOT the wire's "auto" — this fixture line came from an explicit
-      // `/compact`, which is precisely why the field cannot be forwarded.
       trigger: "manual",
       preTokens: 12322,
     });
-    // Grok reports no post-compaction figure and no duration; the card degrades
-    // rather than inventing them.
     expect(compacted[0]).not.toHaveProperty("postTokens");
     expect(compacted[0]).not.toHaveProperty("durationMs");
   });
@@ -1094,7 +1042,6 @@ describe("GrokAdapter — compaction (docs/276)", () => {
     const compacted = h.events.filter((e) => e.type === "agent_compacted");
     expect(compacted).toHaveLength(1);
     expect(compacted[0]).toMatchObject({ trigger: "auto" });
-    // And an ordinary turn must not claim ShipIt asked for it.
     expect(h.events).not.toContainEqual({ type: "agent_compaction_started", trigger: "manual" });
   });
 
@@ -1111,8 +1058,6 @@ describe("GrokAdapter — compaction (docs/276)", () => {
     const errors: Error[] = [];
     const adapter = new GrokAdapter({ spawnFn: () => child as unknown as ChildProcess });
     adapter.on("error", (e) => errors.push(e));
-    // Unlike sendUserMessage, this must NOT emit an error: a best-effort
-    // compaction failing must not tear down the turn it was asked about.
     expect(() => adapter.compact()).not.toThrow();
     expect(errors).toHaveLength(0);
   });
@@ -1131,5 +1076,247 @@ describe("GrokAdapter — the contract it declines", () => {
 
   it("declares itself non-streaming, matching startsOwnTurns: false", () => {
     expect(new GrokAdapter().isStreaming).toBe(false);
+  });
+});
+
+// docs/298 — goal state lives in the CLI; ShipIt reads it with zero-cost control spawns.
+describe("GrokAdapter — goals", () => {
+  const homes: string[] = [];
+  afterEach(() => {
+    for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
+  });
+
+  const CONTROL_PROMPTS = new Set(["/goal status", "/goal pause", "/goal clear"]);
+
+  function resultLine(text: string): string {
+    return JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text });
+  }
+
+  /**
+   * Answers control spawns from a queue and hands back the turn's own child, which
+   * a test drives. The two are told apart by the prompt: a control spawn sends one
+   * of the CLI's local goal commands, a turn sends the user's text.
+   */
+  function goalHarness(answers: string[]) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-goal-test-"));
+    homes.push(home);
+    const controlArgs: string[][] = [];
+    const controlPrompts: string[] = [];
+    const turnChildren: FakeChild[] = [];
+    const adapter = new GrokAdapter({
+      resolveHome: () => home,
+      spawnFn: (_cmd, args) => {
+        const prompt = fs.readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8");
+        const child = new FakeChild();
+        if (!CONTROL_PROMPTS.has(prompt)) {
+          turnChildren.push(child);
+          return child as unknown as ChildProcess;
+        }
+        controlArgs.push(args);
+        controlPrompts.push(prompt);
+        const answer = answers.shift();
+        queueMicrotask(() => {
+          if (answer !== undefined) child.emitStdout([resultLine(answer)]);
+          child.close(0);
+        });
+        return child as unknown as ChildProcess;
+      },
+    });
+    return { adapter, controlArgs, controlPrompts, turnChildren, home };
+  }
+
+  const REPORT = "Goal: ship it\nStatus: UserPaused | Phase: Idle\nGoal tokens used: 120\nElapsed: 1m5s";
+
+  it("declares goals, and routes set and resume to a turn because they run the agent", () => {
+    const caps = new GrokAdapter().capabilities;
+    expect(caps.supportsGoals).toBe(true);
+    expect(caps.goalActions).toEqual({
+      get: "control", pause: "control", clear: "control", set: "turn", resume: "turn",
+    });
+  });
+
+  it("reads a goal in a control spawn that resumes the thread in plan mode", async () => {
+    const g = goalHarness([REPORT]);
+    await expect(g.adapter.goalCommand("thread-1", { action: "get" })).resolves.toEqual({
+      goal: {
+        objective: "ship it",
+        status: "user_paused",
+        tokenBudget: null,
+        tokensUsed: 120,
+        timeUsedSeconds: 65,
+        updatedAt: expect.any(Number) as number,
+      },
+    });
+    expect(g.controlPrompts).toEqual(["/goal status"]);
+    const args = g.controlArgs[0];
+    expect(args[args.indexOf("-r") + 1]).toBe("thread-1");
+    // Measured: a plan-mode run asked to write a file wrote nothing, so a command the
+    // CLI stops recognising reaches the model without the means to act on it.
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("plan");
+    expect(args).not.toContain("--always-approve");
+  });
+
+  // Two processes on one session write the same goal files; a mid-turn read was measured doing it.
+  it("refuses a goal command while a turn is running", async () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    await expect(h.adapter.goalCommand("thread-1", { action: "get" })).rejects.toThrow(/turn is running/);
+    h.child.close(0);
+  });
+
+  // The orchestrator drains its queue on agent_result, so holding the result until the
+  // read has finished is what stops the next turn spawning while the read runs.
+  it("holds the turn's result until the goal it left behind has been read", async () => {
+    const g = goalHarness([REPORT]);
+    const order: string[] = [];
+    g.adapter.on("event", (e) => {
+      if (e.type === "agent_goal_updated") order.push(`goal:${e.goal?.objective ?? "none"}`);
+      if (e.type === "agent_result") order.push("result");
+    });
+    const done = new Promise<void>((resolve) => g.adapter.on("done", () => { order.push("done"); resolve(); }));
+    g.adapter.run({ prompt: "/goal ship it", cwd: "/workspace", sessionId: "thread-9" });
+    g.turnChildren[0].emitStdout([JSON.stringify({
+      type: "result", subtype: "success", is_error: false, session_id: "thread-9", result: "done",
+    })]);
+    expect(order).toEqual([]);
+    g.turnChildren[0].close(0);
+    await done;
+    expect(order).toEqual(["goal:ship it", "result", "done"]);
+    expect(g.controlPrompts).toEqual(["/goal status"]);
+  });
+
+  // The result gates the commit, the queue drain and every viewer's "finished", so the
+  // hold must end even when the read never answers.
+  it("releases the turn's result when the goal read never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-goal-test-"));
+      homes.push(home);
+      const order: string[] = [];
+      const adapter = new GrokAdapter({
+        resolveHome: () => home,
+        // The control child never emits and never closes.
+        spawnFn: () => new FakeChild() as unknown as ChildProcess,
+      });
+      adapter.on("event", (e) => { if (e.type === "agent_result") order.push("result"); });
+      const done = new Promise<void>((resolve) => adapter.on("done", () => { order.push("done"); resolve(); }));
+      adapter.run({ prompt: "/goal ship it", cwd: "/workspace", sessionId: "thread-9" });
+      const turnChild = (adapter as unknown as { proc: FakeChild }).proc;
+      turnChild.emitStdout([JSON.stringify({
+        type: "result", subtype: "success", is_error: false, session_id: "thread-9", result: "done",
+      })]);
+      turnChild.close(0);
+      expect(order).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await done;
+      expect(order).toEqual(["result", "done"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not hold an ordinary turn's result", () => {
+    const g = goalHarness([REPORT]);
+    const order: string[] = [];
+    g.adapter.on("event", (e) => { if (e.type === "agent_result") order.push("result"); });
+    g.adapter.run({ prompt: "fix the build", cwd: "/workspace", sessionId: "thread-9" });
+    g.turnChildren[0].emitStdout([JSON.stringify({
+      type: "result", subtype: "success", is_error: false, session_id: "thread-9", result: "done",
+    })]);
+    expect(order).toEqual(["result"]);
+  });
+
+  // The prompt carries file context and any pre-turn prefix, so an exact match would miss this.
+  // WS frames are not serialised, so a user can send a turn while a control spawn runs.
+  it("refuses to start a turn while a goal command is still running on that session", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-goal-test-"));
+    homes.push(home);
+    const errors: Error[] = [];
+    let spawns = 0;
+    const control = new FakeChild();
+    const adapter = new GrokAdapter({
+      resolveHome: () => home,
+      spawnFn: () => { spawns++; return control as unknown as ChildProcess; },
+    });
+    adapter.on("error", (e) => errors.push(e));
+
+    const pending = adapter.goalCommand("thread-1", { action: "get" });
+    adapter.run({ prompt: "fix the build", cwd: "/workspace", sessionId: "thread-1" });
+    expect(spawns).toBe(1);
+    expect(errors.map((e) => e.message)).toEqual([expect.stringMatching(/still running on this session/) as unknown as string]);
+
+    control.emitStdout([resultLine("No goal is currently set.")]);
+    control.close(0);
+    await expect(pending).resolves.toEqual({ goal: null });
+
+    // Once it has finished, the same turn starts.
+    adapter.run({ prompt: "fix the build", cwd: "/workspace", sessionId: "thread-1" });
+    expect(spawns).toBe(2);
+    (adapter as unknown as { proc: FakeChild }).proc.close(0);
+  });
+
+  it("reads the goal when the /goal command arrives inside an assembled prompt", async () => {
+    const g = goalHarness([REPORT]);
+    const goals: string[] = [];
+    g.adapter.on("event", (e) => { if (e.type === "agent_goal_updated") goals.push(e.goal?.objective ?? "none"); });
+    const done = new Promise<void>((resolve) => g.adapter.on("done", () => { resolve(); }));
+    g.adapter.run({
+      prompt: "The branch was reset.\n\n/goal ship it\n\nFiles: src/a.ts",
+      cwd: "/workspace",
+      sessionId: "thread-9",
+    });
+    g.turnChildren[0].close(0);
+    await done;
+    expect(goals).toEqual(["ship it"]);
+  });
+
+  it("spawns nothing extra after an ordinary turn", async () => {
+    const g = goalHarness([REPORT]);
+    const done = new Promise<void>((resolve) => g.adapter.on("done", () => { resolve(); }));
+    g.adapter.run({ prompt: "fix the build", cwd: "/workspace", sessionId: "thread-9" });
+    g.turnChildren[0].close(0);
+    await done;
+    expect(g.controlPrompts).toEqual([]);
+  });
+
+  it("still reports the turn done when the goal read fails", async () => {
+    const g = goalHarness(["Goal mode is off."]);
+    const events: AgentEvent[] = [];
+    g.adapter.on("event", (e) => events.push(e));
+    const done = new Promise<void>((resolve) => g.adapter.on("done", () => { resolve(); }));
+    g.adapter.run({ prompt: "/goal ship it", cwd: "/workspace", sessionId: "thread-9" });
+    g.turnChildren[0].close(0);
+    await done;
+    expect(events.filter((e) => e.type === "agent_goal_updated")).toEqual([]);
+  });
+});
+
+/**
+ * docs/299 — measured: `--tools ""` alone still sent all 27 built-ins, and an
+ * unknown name in the allowlist falls back to the full set. Both halves are
+ * required, and the allowlisted name must be a tool grok actually has.
+ */
+describe("GrokAdapter — tools off", () => {
+  const homes: string[] = [];
+  afterEach(() => {
+    for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
+  });
+
+  it("pairs a real allowlist entry with a denylist that removes it", () => {
+    const h = makeHarness({ toolsOff: true });
+    homes.push(h.home);
+    expect(h.args[h.args.indexOf("--tools") + 1]).toBe("read_file");
+    expect(h.args[h.args.indexOf("--disallowed-tools") + 1])
+      .toBe("read_file,search_tool,use_tool,Agent");
+    h.child.close(0);
+  });
+
+  it("leaves an ordinary turn's tools alone", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    expect(h.args).not.toContain("--tools");
+    expect(h.args).not.toContain("--disallowed-tools");
+    h.child.close(0);
   });
 });

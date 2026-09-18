@@ -5,8 +5,8 @@ alongside) the production ShipIt host with a deliberately narrow set of
 privileges for **read-only** debugging. This doc is your contract: what you can
 do, what you cannot, and where to look.
 
-An ops session is created from ShipIt's Settings ("Ops / Host" → "Create ops
-session for this host"). It is marked server-side with `kind: "ops"`, which is
+An ops session is created from the session sidebar's **New advanced session**
+menu → **Ops session**. It is marked server-side with `kind: "ops"`, which is
 the *only* thing that unlocks the privileges below. Copying this session's
 `shipit.yaml` into an ordinary session does nothing — the host mounts are
 dropped unless the session was created as an ops session.
@@ -49,13 +49,13 @@ dropped unless the session was created as an ops session.
   the source code that runs *this host* — the exact deployed commit, served by
   the orchestrator (not a generic clone, not the repo's default branch):
   ```bash
-  shipit source status                                   # which commit, exact or approximate
-  shipit source tree src/server/orchestrator              # list a directory
-  shipit source search "ContainerSessionRunner"           # git grep at that commit
+  shipit source status
+  shipit source tree src/server/orchestrator
+  shipit source search "ContainerSessionRunner"
   shipit source cat src/server/orchestrator/session-container.ts
-  shipit source log src/server/orchestrator/container-lifecycle.ts  # recent commits touching a path
-  shipit source blame src/server/orchestrator/container-lifecycle.ts # who last changed each line
-  shipit source show <commit> [path]                      # a commit's metadata + diff
+  shipit source log src/server/orchestrator/container-lifecycle.ts
+  shipit source blame src/server/orchestrator/container-lifecycle.ts
+  shipit source show <commit> [path]
   ```
   This is strictly read-only. Credentials, `.env` files, and `.git` internals
   are redacted (including inside `show` diffs). `shipit source status` tells you
@@ -67,11 +67,11 @@ dropped unless the session was created as an ops session.
   every branch, PR, and container on this host. Ask it instead of correlating
   journal timestamps against container names:
   ```bash
-  shipit session find --branch shipit/kmwodw            # branch → the session
-  shipit session find --pr 1744                          # PR number → the session
-  shipit session find --container agent-83292266-744     # container → the session
-  shipit session find --id 83292266                      # a truncated id from a log line
-  shipit session list --all                              # the whole host inventory
+  shipit session find --branch shipit/kmwodw
+  shipit session find --pr 1744
+  shipit session find --container agent-83292266-744
+  shipit session find --id 83292266
+  shipit session list --all
   ```
   `--container` takes a name exactly as `docker ps` or the journal prints it —
   the session container (`agent-<id-slice>`) or one of its Compose siblings
@@ -117,8 +117,8 @@ dropped unless the session was created as an ops session.
   notices all live there. From the host, a failure in that class looks like
   nothing happened:
   ```bash
-  shipit session logs 7bc72326                       # full id or the prefix from a log line
-  shipit session logs 7bc72326 --since 2h            # ISO-8601, or a relative age: 90s/30m/2h/3d
+  shipit session logs 7bc72326
+  shipit session logs 7bc72326 --since 2h
   shipit session logs 7bc72326 --since 2026-08-14T20:00:00Z --until 2026-08-15T02:00:00Z
   shipit session logs 7bc72326 --lines 500 --json
   ```
@@ -131,11 +131,25 @@ dropped unless the session was created as an ops session.
   below). Matched lines are then redacted like the rest of the ops surface.
 
   Lines that were withheld are **counted and reported**, not silently dropped —
-  `withheld: N server line(s) …`. Most of those legitimately carry workspace or
-  raw error text and never will be returned. But a count that looks too high for
-  the incident is also the only signal that a producer's wording has drifted off
-  its template, so treat it as "ask the operator to read the session's Logs panel
-  for this window", not as noise.
+  `withheld: N server line(s) …`, followed by a `by shape:` breakdown. The
+  breakdown is ShipIt's own label for each producer plus a count; no part of a
+  withheld line is in it. Read it as triage: one label carrying almost all of the
+  count is a chatty producer and usually not your incident, while a spread — or a
+  large `unclassified ×N`, which is where a producer whose wording drifted off
+  its template lands — is a reason to ask the operator to read the session's Logs
+  panel for that window.
+
+  **Push outcomes are reported on both sides, so silence means something.** A
+  successful auto-push writes `Auto-push completed in Nms: N commit(s) were
+  ahead of the last known remote tip.` — or `nothing was ahead …` — alongside
+  the existing rejection, deferral and failure lines. So "did the last five
+  turns push?" is answerable here: a run of completions, a run of `nothing was
+  ahead`, or an explicit failure. Read the two halves of that line differently:
+  the push **completing** is a fact, the **count** is ShipIt's own pre-push
+  measurement against its local view of the remote, which can be stale. What the
+  failure lines do NOT carry is git's own message: a failure prints
+  `Auto-push failed (<class>). …` and puts git's words on a separate `Git said:`
+  line that stays withheld.
 
   It reads the durable store, so a session whose container is already gone still
   answers. If a session's logs were pruned — archive, delete, or full reset
@@ -156,7 +170,7 @@ dropped unless the session was created as an ops session.
   shipit session create --shipit-source --prompt-file - --title "Fix container recreate loop" <<'EOF'
   <diagnosis + suspected files + constraints>
   EOF
-  shipit session wait <child-id>      # follow it; view / message it like any spawned session
+  shipit session wait <child-id>
   ```
   `--shipit-source` **requires `--title`** — the diagnosis lives in the incident
   packet, so it can't name the session; pass a short, human-readable title
@@ -202,8 +216,7 @@ apply here.
 - There is no remote, so a commit here does not travel: this history has exactly
   one reader, this session. A finding that must outlive this workspace belongs in
   an issue, in a `report_shipit_bug` filing, or in the `--shipit-source` fix
-  session that owns the code change. A new or corrected `prompts/` recipe goes
-  upstream too — see "Adding a recipe" below.
+  session that owns the code change.
 - `git status` / `git diff` / `git log` are trustworthy here, unlike in an
   ordinary session: the tree is exactly what you left it.
 
@@ -262,21 +275,6 @@ apply here.
 
 These are paste-and-go recipes. The session's chat history doubles as the
 incident log, so investigations are self-documenting for the next time.
-
-### Adding a recipe
-
-These files are **not** authored in this workspace. Each one is a string constant
-in `src/server/orchestrator/templates-ops.ts`, listed in `OPS_TEMPLATE.files` and
-written into every ops workspace at session creation. A `prompts/*.md` you write
-and commit here is therefore read by this session only — the next ops session gets
-a fresh workspace from the template and never sees it.
-
-So when an investigation produces a command sequence worth keeping — and that is
-worth doing — draft it locally, then send it upstream through a `--shipit-source`
-fix session (see "Spawn a ShipIt fix session" above): add the constant to
-`templates-ops.ts`, register it in `OPS_TEMPLATE.files`, and add a line to the
-list above. That is the same channel as any other ShipIt code change, and it gives
-a file shipped to every future ops session a review step before it lands.
 
 ## Why read-only
 

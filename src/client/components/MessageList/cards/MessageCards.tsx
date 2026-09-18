@@ -14,10 +14,13 @@ import { CompactionCard } from "../../CompactionCard.js";
 import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
+import { RepoSessionProposalCard } from "../../RepoSessionProposalCard.js";
 import { PresentInlineCard } from "../../PresentInlineCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
 import { SessionRenamedCard } from "../../SessionRenamedCard.js";
 import { SessionSettingsChangeCard } from "../../SessionSettingsChangeCard.js";
+import { SshHostKeyCard } from "../../SshHostKeyCard.js";
+import { SettingsProposalCard } from "../../SettingsProposalCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
@@ -26,45 +29,40 @@ import type { ReleaseMechanism } from "../../../../server/shared/types.js";
 import { SubAgentConsultCardRow } from "./SubAgentCards.js";
 import type { TrackerId } from "../../../../server/shared/types.js";
 
-/** Callbacks the inline transcript cards may invoke. */
 export interface MessageCardCallbacks {
-  /**
-   * docs/239 — the session that owns the rendered transcript. Cards whose action
-   * targets their OWN session (the self merge-watch Cancel) need it; it is not a
-   * callback, but it rides here so `renderMessageCard` keeps one context param.
-   */
+
   sessionId?: string;
-  /** Opens a spawned/fork child session. */
+
   onResumeSession?: (sessionId: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
   onDismissBugReport?: (cardId: string) => void;
-  /** docs/172 — resolve an egress allow-once card (allow-once / add / deny). */
+
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
-  /** docs/193 — answer a permission request (approve/deny + remember). */
+
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
-  /** docs/177 — undo a recorded issue write (fires a reverse brokered write). */
+
   onUndoIssueWrite?: (cardId: string) => void;
-  /** docs/189 — open an issue's inline detail view from a chat card. */
+
   onOpenIssue?: (ref: {
     tracker: TrackerId;
     id?: string;
     identifier: string;
     title?: string;
     url?: string;
-    /** Comment to scroll to + highlight once the thread lands (planning#105). */
+
     anchorCommentId?: string;
   }) => void;
-  /** Returns whether the message actually reached the wire (see `sendUserMessage`). */
-  onSendFollowUp?: (text: string) => boolean;
-  /** docs/171 — confirm a proposed release (sends the "yes, ship it" reply). */
+
+  onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
+  /** docs/299-agent-settings-access req 4 — the click that moves a setting. */
+  onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
+
+  onStartRepoSession?: (cardId: string) => Promise<void>;
+
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
-  /** docs/171 — cancel a proposed release (sends the cancel reply). */
+
   onReleaseCancel?: (version: string) => void;
-  /**
-   * docs/280 — dispatch a message an INLINE presentation composed through the
-   * Agent Interface SDK. Same handler the Present tab and the service Preview
-   * use; the card only ever calls it while it is on screen.
-   */
+
   onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
 }
 
@@ -94,9 +92,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/117 Phase 2 — spawned-session marker carries no chat content
-  // of its own; render the inline card and skip the bubble path. The
-  // card itself reads live session state from the session store.
   if (msg.spawnedSession) {
     return (
       <div className="flex justify-start">
@@ -114,9 +109,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/196 — child-merged marker carries no chat text of its own; render
-  // the inline `ChildMergedCard` and skip the bubble path. Static payload,
-  // no client store — renders identically live and after a reload.
   if (msg.childMerged) {
     return (
       <div className="flex justify-start">
@@ -138,8 +130,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/239 — the self merge-watch arm card. Static payload; the only action is
-  // Cancel, whose result is component-local (no store, no persisted transition).
   if (msg.selfMergeWatch) {
     return (
       <div className="flex justify-start">
@@ -150,9 +140,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/233 — a session report carries no chat text of its own; render the
-  // inline `SessionReportCard` and skip the bubble path. Static payload, no
-  // client store — renders identically live and after a reload.
   if (msg.sessionReport) {
     return (
       <div className="flex justify-start">
@@ -172,10 +159,8 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/252 phase 7 (req 9) — the non-turn-work failure notice carries no chat
-  // text of its own. Rendered whether or not it is dismissed: dismissal is state
   // on the row (the card collapses to one muted line), never its removal, so a
-  // recurring failure stays visible in the scrollback.
+
   if (msg.nonTurnFailure && cb.sessionId) {
     return (
       <div className="flex justify-start">
@@ -197,9 +182,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/203 — plain-text AI review card carries no chat text of its own;
-  // render the inline `ReviewCard` (markdown findings) and skip the bubble
-  // path. Self-contained — no lazy fetch, no modal.
   if (msg.aiReview) {
     return (
       <div className="flex justify-start">
@@ -210,9 +192,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/163 — voice note: ear-shaped headline with a play control.
-  // Carries no chat text of its own; render the inline card and skip the
-  // bubble path.
   if (msg.voiceNote) {
     return (
       <div className="flex justify-start">
@@ -223,8 +202,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/178 — "Context compacted" card. Carries no chat text of its own;
-  // render the inline `CompactionCard` and skip the bubble path.
   if (msg.compaction) {
     return (
       <div className="flex justify-start">
@@ -235,9 +212,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/144 — "Consulted Codex · 47s" card. Carries no chat text of its
-  // own; render the inline terminal record and skip the bubble path. Lands
-  // where the consultation happened and persists across switch/reload.
   if (msg.subAgentConsult) {
     return (
       <div className="flex justify-start">
@@ -246,9 +220,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/164 — bug-report consent card. Carries no chat text of its own;
-  // render the inline `BugReportCard` (which reads its live payload +
-  // lifecycle from the bug-report store) and skip the bubble path.
   if (msg.bugReport) {
     return (
       <div className="flex justify-start">
@@ -263,9 +234,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/172 / planning#92 — egress allow-once card. Carries no chat text of its
-  // own; render the inline `EgressPromptCard` (which reads its payload +
-  // phase from the egress-prompt store) and skip the bubble path.
   if (msg.egressPrompt) {
     return (
       <div className="flex justify-start">
@@ -276,9 +244,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/193 / planning#114 — permission-request card. Carries no chat text of
-  // its own; render the inline `PermissionRequestCard` (which reads its
-  // payload + phase from the permission store) and skip the bubble path.
   if (msg.permissionPrompt) {
     return (
       <div className="flex justify-start">
@@ -289,9 +254,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/177 — issue-write provenance card. Carries no chat text of its
-  // own; render the inline `IssueWriteCard` (which reads its payload +
-  // undo lifecycle from the issue-write store) and skip the bubble path.
   if (msg.issueWrite) {
     return (
       <div className="flex justify-start">
@@ -302,9 +264,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/188 — issue read navigation card. Carries no chat text of its
-  // own; renders the read-only `IssueRefCard` straight from the message
-  // payload (no store, no lifecycle) and skips the bubble path.
   if (msg.issueRef) {
     return (
       <div className="flex justify-start">
@@ -315,11 +274,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/207 / planning#155 — action checklist card. Carries no chat text of
-  // its own; renders the interactive `ActionChecklistCard` straight from the
-  // message payload (no store, no lifecycle). Submit reuses the same
-  // follow-up sender as the rest of the chat (queue-aware, one message →
-  // one turn); Add comment seeds the composer client-side.
   if (msg.actionChecklist) {
     return (
       <div className="flex justify-start">
@@ -330,9 +284,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/280 — inline presentation card. Carries no chat text of its own: the
-  // message holds the artifact's METADATA and the component pulls the bytes from
-  // the present store on demand, which is what lets a re-present refresh the card
+  if (msg.repoSessionProposal) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <RepoSessionProposalCard
+            card={msg.repoSessionProposal}
+            onStart={cb.onStartRepoSession}
+            onOpenSession={cb.onResumeSession}
+          />
+        </div>
+      </div>
+    );
+  }
+
   // in place. Wider than the other cards because an artifact needs room to read.
   if (msg.presentInline) {
     return (
@@ -347,10 +312,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/218 — branch-updated card. Carries no chat text of its own; renders the
-  // static `BranchUpdatedCard` straight from the message payload (no store, no
-  // lifecycle). Shown right after the user's message when a merged session's
-  // branch was auto-reset to the latest base before the turn ran.
   if (msg.branchAutoReset) {
     return (
       <div className="flex justify-start">
@@ -361,10 +322,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/250 — session-renamed card. Carries no chat text of its own; renders the
-  // static `SessionRenamedCard` straight from the message payload (no store, no
-  // lifecycle). Shown at the point in the turn where the agent retitled the
-  // session, so a name that changed mid-session is explainable after the fact.
   if (msg.sessionRenamed) {
     return (
       <div className="flex justify-start">
@@ -375,10 +332,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/279 — session-settings-changed card. Carries no chat text of its own;
-  // renders the static `SessionSettingsChangeCard` straight from the message
-  // payload (no store, no lifecycle). The durable record that a sandbox
-  // capability grant or a session's network mode moved, and when.
   if (msg.sessionSettingsChange) {
     return (
       <div className="flex justify-start">
@@ -389,10 +342,29 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/221 — "Synced with <base>" card. Carries no chat text of its own;
-  // renders the static `BranchSyncedCard` straight from the message payload (no
-  // store, no lifecycle). Shown after a manual "Sync with <base>" that rebased
-  // the session branch and/or fast-forwarded the local base ref.
+  if (msg.sshHostKey) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SshHostKeyCard card={msg.sshHostKey} />
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.settingsProposal) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SettingsProposalCard
+            card={msg.settingsProposal}
+            {...(cb.onSettingsProposalDecision ? { onDecide: cb.onSettingsProposalDecision } : {})}
+          />
+        </div>
+      </div>
+    );
+  }
+
   if (msg.branchSynced) {
     return (
       <div className="flex justify-start">
@@ -403,11 +375,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/171 — release lifecycle card. Carries no chat text of its own; renders
-  // the inline `ReleaseLifecycleCard` straight from the message snapshot (no
-  // store — the `release_card` WS upserts this field by cardId, and reload
-  // rehydrates it from history). `proposed` shows Confirm/Cancel; every later
-  // phase collapses to a compact row.
   if (msg.releaseCard) {
     return (
       <div className="flex justify-start">
@@ -422,16 +389,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // User-side review submission — renders the dedicated "Sent comments"
-  // card in place of a raw text bubble so the user gets a clear receipt
-  // that their doc/diff comments shipped to the agent. The prompt body
-  // lives on `msg.text` (kept as the source of truth so chat-history
-  // reload, search, and existing text-handling still work).
-  //
-  // The row mirrors a plain user bubble's: `justify-end` with a `min-w-0`
-  // child that HUGS its content rather than the old `max-w-2xl w-full`. A
-  // fixed-width block reads as a full-bleed agent card no matter which side
-  // it's on; hugging is what actually makes it land on the user's side.
   if (msg.role === "user" && msg.userReview) {
     return (
       <div className="flex justify-end">
@@ -446,9 +403,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/117 cross-cutting follow-up — failure counterpart to
-  // `spawnedSession`. Renders the inline `SpawnFailedCard` so a quota
-  // hit / archived-parent rejection is visible alongside successful spawns.
   if (msg.spawnFailed) {
     return (
       <div className="flex justify-start">

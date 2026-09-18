@@ -57,7 +57,6 @@
   }
   .stage { max-width: 1180px; margin: 0 auto 52px; }
 
-  /* ---- modal shell ---- */
   .modal {
     background: var(--bg-modal);
     border: 1px solid var(--border);
@@ -95,7 +94,6 @@
   .pane-title { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
   .pane-desc { font-size: 12.5px; color: var(--text-secondary); margin: 0 0 18px; line-height: 1.55; }
 
-  /* ---- cards ---- */
   .card {
     border: 1px solid var(--border); border-radius: 10px;
     background: var(--bg-secondary); margin-bottom: 14px; overflow: hidden;
@@ -107,7 +105,6 @@
   .card-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
   .card-head .hint { font-size: 11.5px; color: var(--text-tertiary); }
 
-  /* ---- service rows ---- */
   .svc { display: flex; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border-soft); }
   .svc:last-child { border-bottom: none; }
   .svc-logo {
@@ -150,13 +147,11 @@
   }
   .chip.dim { opacity: .45; }
 
-  /* usage bar */
   .usage { margin-top: 9px; max-width: 320px; }
   .usage-bar { height: 4px; border-radius: 3px; background: var(--bg-elevated); overflow: hidden; }
   .usage-fill { height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); }
   .usage-txt { font-size: 10.5px; color: var(--text-tertiary); margin-top: 4px; }
 
-  /* key input */
   .keyrow { display: flex; gap: 8px; margin-top: 9px; align-items: center; }
   .input {
     flex: 1; background: var(--bg-page); border: 1px solid var(--border);
@@ -166,7 +161,6 @@
   .input.placeholder { color: var(--text-tertiary); }
   .input.focused { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,102,241,.15); }
 
-  /* accounts sub-rows */
   .accts { margin-top: 9px; border: 1px solid var(--border-soft); border-radius: 7px; overflow: hidden; }
   .acct {
     display: flex; align-items: center; gap: 8px; padding: 6px 10px;
@@ -177,7 +171,6 @@
   .acct .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex: none; }
   .acct .grow { flex: 1; }
 
-  /* ---- billing modes within one service ---- */
   .modes { margin-top: 10px; display: flex; flex-direction: column; gap: 9px; }
   .mode {
     border: 1px solid var(--border-soft); border-radius: 8px;
@@ -188,7 +181,6 @@
   .mode .svc-meta { margin-top: 5px; }
   .mode .models { margin-top: 7px; }
 
-  /* ---- harness table ---- */
   table.harness { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   table.harness th {
     text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
@@ -200,7 +192,6 @@
   .hname { font-weight: 600; font-size: 13px; }
   .hsub { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
 
-  /* ---- dropdown (session picker) ---- */
   .dropdown {
     width: 340px; background: var(--bg-modal); border: 1px solid var(--border);
     border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,.6); overflow: hidden;
@@ -225,7 +216,6 @@
     font-size: 11px; color: var(--text-tertiary); line-height: 1.5;
   }
 
-  /* ---- annotations ---- */
   .cols { display: grid; grid-template-columns: 1fr 340px; gap: 22px; align-items: start; }
   .notes { display: flex; flex-direction: column; gap: 12px; }
   .note {
@@ -261,8 +251,6 @@
   early versions of both; they were removed once those prototypes superseded them.
 </div>
 
-
-<!-- ============================ 2. HARNESSES ============================ -->
 <div class="section-label">Settings &rarr; Harnesses — where the join becomes legible</div>
 <div class="stage">
 <div class="cols">

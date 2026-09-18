@@ -1,13 +1,4 @@
-/**
- * PrDescriptionSection — renders the PR body as markdown, with inline editing
- * (docs/133 Phase 2).
- *
- * The body markdown source lives on the store (`pr.body`, populated by the
- * poller). When the PR is open, a pencil enters edit mode: a markdown-source
- * textarea with Save/Cancel. Saving calls `pr-store.updatePr`, which applies
- * the change optimistically and reverts on error (the failure surfaces in an
- * inline banner here).
- */
+
 
 import { useState } from "react";
 import { PencilSimpleIcon } from "@phosphor-icons/react";

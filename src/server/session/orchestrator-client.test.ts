@@ -3,7 +3,6 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   OrchestratorClient,
-  resolveOrchestratorBaseUrl,
   resolveOrchestratorBaseUrls,
 } from "./orchestrator-client.js";
 
@@ -20,7 +19,6 @@ describe("resolveOrchestratorBaseUrls", () => {
     process.env.SHIPIT_PORT = "4123";
     process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS = "shipit,shipit";
 
-    expect(resolveOrchestratorBaseUrl()).toBe("http://old-container-id:4123");
     expect(resolveOrchestratorBaseUrls()).toEqual([
       "http://old-container-id:4123",
       "http://shipit:4123",
@@ -31,7 +29,6 @@ describe("resolveOrchestratorBaseUrls", () => {
     delete process.env.SHIPIT_HOST;
     delete process.env.SHIPIT_PORT;
 
-    expect(resolveOrchestratorBaseUrl()).toBeNull();
     expect(resolveOrchestratorBaseUrls()).toEqual([]);
   });
 });
@@ -66,9 +63,6 @@ describe("OrchestratorClient", () => {
     );
   });
 
-  // Regression: the `shipit agent run` spawn relay passes `{ timeoutMs: 0 }`
-  // (unbounded). It must NOT use the global `fetch` (undici), whose default 300s
-  // headersTimeout would abort a long sub-agent consult with "fetch failed".
   describe("unbounded relay (timeoutMs: 0)", () => {
     it("round-trips a JSON body over Node http without touching global fetch", async () => {
       const server = http.createServer((req, res) => {
@@ -116,8 +110,6 @@ describe("OrchestratorClient", () => {
     });
 
     it("returns status 0 with an aggregated error when the orchestrator is unreachable", async () => {
-      // A closed port → ECONNREFUSED on the Node-http transport → the fallback
-      // loop exhausts and reports status 0 (not a thrown exception).
       process.env.SESSION_ID = "sess-1";
       const client = new OrchestratorClient({ baseUrl: "http://127.0.0.1:1" });
       const res = await client.request("POST", "/agent/spawn", { prompt: "x" }, { timeoutMs: 0 });

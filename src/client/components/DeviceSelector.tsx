@@ -18,46 +18,16 @@ import {
 } from "./device-presets.js";
 
 export interface DeviceSelectorProps {
-  /** Currently active preset, or null when "Responsive" (fill panel). */
   activePreset: DevicePreset | null;
-  /** Whether the active preset is rotated to landscape. */
   isLandscape: boolean;
-  /** Custom size, used when activePreset.category === "custom". */
   customSize: { width: number; height: number } | null;
-  /**
-   * What the panel can show at 100% scale, or null while unmeasured — the size
-   * the Freeform row activates on first use, so the drag handles appear around
-   * exactly what the user was looking at (docs/278).
-   */
+  /** Available size at 100% scale; null before measurement. */
   panelSize: { width: number; height: number } | null;
-  /** Called with a preset, or null to switch back to "Responsive". */
   onSelectPreset: (preset: DevicePreset | null) => void;
-  /** Called when the user clicks the rotate button. */
   onToggleLandscape: () => void;
-  /** Called with the width and height when a custom/freeform size is applied. */
   onCustomSize: (width: number, height: number) => void;
 }
 
-/**
- * Compact dropdown that lets the user pick a viewport size for the preview iframe.
- *
- * Default is "Responsive" (iframe fills the panel). Picking a named preset constrains
- * the iframe to phone or tablet dimensions and shows a rotate button. A custom width
- * and height can be entered at the bottom of the menu.
- */
-/**
- * The custom-size inputs, mounted as a child of `DropdownMenuContent` and
- * keyed by the parent's open counter.
- *
- * Both are the point (docs/278 req 10). Seeding input state from `initialSize`
- * on mount re-prefills on every open — with the state on `DeviceSelector`
- * itself the last-typed values survived, so a size applied elsewhere (a drag,
- * the Freeform row, a session switch restoring another session's viewport)
- * showed stale numbers on the next open. And the `key` is what *guarantees*
- * the remount: Radix does unmount the content on close, but only after the
- * exit animation, which `dropdown-menu.tsx` documents a quick close/reopen can
- * skip — the counter forces a fresh mount even then.
- */
 function CustomSizeInputs({
   initialSize,
   onApply,
@@ -83,7 +53,6 @@ function CustomSizeInputs({
   return (
     <div
       className="px-3 py-2 flex flex-col gap-1"
-      // Prevent dropdown from closing when interacting with the inputs
       onKeyDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -150,21 +119,14 @@ export function DeviceSelector({
   onCustomSize,
 }: DeviceSelectorProps) {
   const [open, setOpen] = useState(false);
-  // Counts open transitions; keys CustomSizeInputs so every open remounts it
-  // (see its docstring for why Radix's own unmount is not sufficient).
+  // Force fresh input values even if reopening interrupts Radix's exit animation.
   const [openCount, setOpenCount] = useState(0);
 
   const phones = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "phone"), []);
   const tablets = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "tablet"), []);
 
   const isCustomActive = activePreset?.category === "custom";
-  // What the Freeform row enters at: the active custom size when one is
-  // applied, else the panel's own size ("grab the edge of what you see"); a
-  // phone-ish fallback only while the panel is unmeasured.
   const freeformTarget = customSize ?? panelSize ?? { width: 390, height: 844 };
-  // What the inputs are seeded with on each open: the *currently applied*
-  // viewport (req 10) — so an active named preset seeds its own
-  // orientation-adjusted dims, which `freeformTarget` deliberately does not.
   const inputSeed =
     customSize ??
     (activePreset
@@ -190,15 +152,9 @@ export function DeviceSelector({
           <button
             className="flex items-center gap-1.5 text-(--color-text-primary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
             aria-label="Select device viewport"
-            // Names the active preset, not just the control: once the toolbar
-            // collapses this label away, the tooltip is what reports it.
             title={`Select device viewport (${triggerLabel})`}
           >
             <DeviceMobileIcon size={ICON_SIZE.SM} />
-            {/* First label the preview toolbar gives up when it runs short of
-                width (see usePreviewToolbarCollapse): the device icon still
-                carries the meaning, and the `title` keeps the exact preset
-                readable. Inert anywhere without a `group/ptb` ancestor. */}
             <span className="group-data-[hide-viewport=true]/ptb:hidden">{triggerLabel}</span>
             <CaretDownIcon size={ICON_SIZE.XS} />
           </button>
@@ -249,10 +205,6 @@ export function DeviceSelector({
           })}
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Custom</DropdownMenuLabel>
-          {/* Freeform: activate a custom size and resize it by dragging the
-              surface's edges. Enters at the last custom size, or at what the
-              panel currently shows on first use, so the handles appear around
-              exactly what the user was looking at (docs/278). */}
           <DropdownMenuItem
             onSelect={() => onCustomSize(freeformTarget.width, freeformTarget.height)}
             className={isCustomActive ? "text-(--color-text-primary) bg-(--color-bg-hover)" : ""}
@@ -277,9 +229,6 @@ export function DeviceSelector({
           size="sm"
           className="h-7 w-7 p-0"
           onClick={onToggleLandscape}
-          // A custom size has no portrait/landscape identity — it is stored as
-          // rendered and rotating just swaps the dims (docs/278) — so the
-          // control is a plain action there, not a pressed/unpressed toggle.
           title={isCustomActive ? "Swap width and height" : isLandscape ? "Switch to portrait" : "Switch to landscape"}
           aria-label={isCustomActive ? "Swap width and height" : isLandscape ? "Switch to portrait" : "Switch to landscape"}
           {...(isCustomActive ? {} : { "aria-pressed": isLandscape })}

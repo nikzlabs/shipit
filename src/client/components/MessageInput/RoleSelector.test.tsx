@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ROLE_PILL_CLASS, RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { MessageInput } from "./MessageInput.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
+import { handleModelSelectionChanged } from "../../hooks/message-handlers/model-selection-changed.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { RoleView } from "../../../server/shared/types/agent-types.js";
 
@@ -56,6 +58,62 @@ function setRoles(roles: RoleView[]) {
   useSettingsStore.setState({ roles } as never);
 }
 
+async function openRoleMenu() {
+  /*
+    **Let any scheduled textarea focus run BEFORE opening the menu.**
+
+    `MessageInput` focuses its textarea from a `requestAnimationFrame` whenever
+    `focusKey` changes — on first mount and on every session switch
+    (`MessageInput.tsx`, "Auto-focus textarea on mount and on session change").
+    Radix closes a dropdown as soon as focus leaves it, so a frame callback still
+    pending when the menu opens closes the menu again a few milliseconds later.
+
+    In CI that surfaced as "found `role-selector-menu`, could not find
+    `role-option-triage`" — the container outliving its rows by the moment Radix
+    takes to unmount them. It passed locally only because the synchronous
+    `getByTestId` ran before the frame callback did; the ordering was never
+    guaranteed. The `waitFor` below makes the same failure deterministic, which is
+    how this was finally pinned down: without this drain, two tests here fail
+    every run.
+
+    An rAF queued here runs after any already queued, so awaiting one means
+    "whatever focus was scheduled has now happened" — no timer constant to guess,
+    and it stays correct if the component changes how it schedules.
+  */
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => resolve(null));
+  });
+
+  // click sequence can race focus work when the full client suite runs.
+  fireEvent.pointerDown(screen.getByTestId("role-selector-trigger"), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: "mouse",
+  });
+  const menu = await screen.findByTestId("role-selector-menu", {}, { timeout: 2000 });
+  /*
+    **Wait for the menu to be POPULATED, not merely mounted.**
+
+    The container carrying `role-selector-menu` and the rows inside it are not
+    guaranteed to be queryable in the same tick, and callers go straight from
+    here to `getByTestId("role-option-…")` / `role-adjust-parameters`. In CI this
+    failed as "found `role-selector-menu`, could not find `role-option-triage`" —
+    the container present with its rows absent, on a run of the full 16k-test
+    suite.
+
+    Kept alongside the focus drain above rather than replaced by it: the drain
+    fixes the cause we found, and this asserts the property the callers actually
+    depend on. It cannot hide a real fault — a menu that never populates still
+    fails, just with an honest timeout instead of a race — and it is what turns
+    a regression in the drain back into a deterministic failure rather than a
+    once-per-few-thousand-runs flake.
+  */
+  await waitFor(() => {
+    expect(menu.querySelector('[role="menuitem"]')).not.toBeNull();
+  });
+  return menu;
+}
+
 afterEach(() => {
   cleanup();
   setRoles([]);
@@ -68,8 +126,7 @@ describe("useRolePickerState", () => {
   }
 
   it("does not count the reviewer as 'the user has a role' (reqs 10, 16)", () => {
-    // The reviewer is on every install, including one where nobody configured
-    // anything — counting it would make req 16 permanently true.
+
     setRoles([REVIEWER]);
     render(<Probe />);
     expect(screen.getByTestId("probe")).toHaveTextContent("false:");
@@ -91,8 +148,7 @@ describe("RoleSelector (wide row)", () => {
   it("is the mark alone with no role selected — no label to learn here (req 16)", () => {
     render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} />);
     const trigger = screen.getByTestId("role-selector-trigger");
-    // The word "Role" is deliberately absent: the mark is learned in Settings,
-    // where roles are created and it appears with its name.
+
     expect(trigger.textContent).toBe("");
     expect(trigger.getAttribute("aria-label")).toBe("Choose a role");
   });
@@ -127,15 +183,10 @@ describe("RoleSelector (wide row)", () => {
     );
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
     const row = screen.getByTestId("role-option-offline");
-    expect(row).toHaveTextContent("Its service is disconnected");
+    expect(row).toHaveTextContent("Its provider is disconnected");
     expect(row).toHaveAttribute("aria-disabled", "true");
   });
 
-  /**
-   * req 4 — a locked role is a READOUT. The two failures below shipped together
-   * and are one mistake: `locked` was handed to the button's `disabled`, which
-   * dimmed it to half contrast while leaving Radix's menu bound to it.
-   */
   describe("locked (req 4)", () => {
     it("opens nothing, because the menu is not rendered at all", async () => {
       render(
@@ -147,8 +198,6 @@ describe("RoleSelector (wide row)", () => {
         />,
       );
 
-      // ABSENCE, not a disabled attribute — Radix binds the trigger on
-      // `pointerdown`, so a test for the latter passes against the bug.
       expect(screen.queryByTestId("role-selector-menu")).toBeNull();
       await userEvent.click(screen.getByTestId("role-selector-trigger"));
       expect(screen.queryByTestId("role-selector-menu")).toBeNull();
@@ -163,20 +212,19 @@ describe("RoleSelector (wide row)", () => {
 
       expect(trigger).toHaveTextContent("deep dive");
       expect(trigger.className).not.toContain("opacity-50");
-      // Same pill, not a second appearance for the same state.
+
       expect(trigger.className).toContain("bg-(--color-accent-subtle)");
       expect(trigger.className).toContain("text-(--color-accent)");
     });
 
     it("goes entirely when there is no role to report", () => {
-      // The mark's only job is to offer the list; locked, it offers nothing.
+
       render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} locked />);
       expect(screen.queryByTestId("role-selector-trigger")).toBeNull();
     });
 
     it("says what is still changeable, not only what is not", () => {
-      // A lock stating a prohibition alone was read as "this session's settings
-      // are frozen" — the reading the vanished parameters appeared to confirm.
+
       render(
         <RoleSelector roles={[DEEP_DIVE]} selectedRole="deep dive" onSelectRole={vi.fn()} locked />,
       );
@@ -203,7 +251,7 @@ describe("RoleSelector (wide row)", () => {
 
   describe("No role (req 18)", () => {
     it("offers it in the list, and calls back with nothing selected", async () => {
-      // The act req 15's "changing a parameter is the whole of leaving a role"
+
       // cannot express: keep what the role set, drop the brief it carries.
       const onSelectRole = vi.fn();
       render(
@@ -217,8 +265,7 @@ describe("RoleSelector (wide row)", () => {
     it("is what the list shows as chosen while no role is in force", async () => {
       render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} />);
       await userEvent.click(screen.getByTestId("role-selector-trigger"));
-      // The same selected treatment every picker row wears, asserted the way
-      // this file already asserts the pill's tint.
+
       expect(screen.getByTestId("role-option-none").className).toContain("bg-(--color-accent-subtle)");
       expect(screen.getByTestId("role-option-deep dive").className).not.toContain(
         "bg-(--color-accent-subtle)",
@@ -226,8 +273,7 @@ describe("RoleSelector (wide row)", () => {
     });
 
     it("is not offered once the choice of role has locked (req 4)", async () => {
-      // Clearing IS a choice of role. By the first turn the standing
-      // instructions have been delivered, so un-naming them states nothing.
+
       render(
         <RoleSelector
           roles={[DEEP_DIVE]}
@@ -243,8 +289,6 @@ describe("RoleSelector (wide row)", () => {
     });
   });
 });
-
-// ---- The narrow layout (docs/260's one menu) --------------------------------
 
 const claude: AgentOption = {
   id: "claude",
@@ -267,6 +311,49 @@ const claude: AgentOption = {
   reasoning: { label: "Reasoning", options: [{ value: "high", label: "High" }] },
 };
 
+const codex: AgentOption = {
+  id: "codex",
+  name: "Codex",
+  installed: true,
+  hasRunnableModels: true,
+  models: ["gpt-6-astra"],
+  eligibleModels: [
+    {
+      serviceId: "openai",
+      serviceName: "OpenAI",
+      billingMode: "sub",
+      modelId: "gpt-6-astra",
+      label: "GPT-6 Astra",
+      canonicalModelKey: "gpt-6-astra",
+    },
+  ],
+  supportsReview: true,
+  supportedPermissionModes: [],
+  reasoning: { label: "Reasoning effort", options: [{ value: "low", label: "Low" }] },
+};
+
+const TRIAGE: RoleView = pinnedRole({
+  name: "triage",
+  params: {
+    kind: "pinned",
+    harnessId: "codex",
+    serviceId: "openai",
+    billingMode: "sub",
+    modelId: "gpt-6-astra",
+    reasoningEffort: "low",
+  },
+  resolved: {
+    harnessId: "codex",
+    harnessName: "Codex",
+    serviceId: "openai",
+    billingMode: "sub",
+    serviceName: "OpenAI",
+    modelId: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    reasoningEffort: "low",
+  },
+});
+
 const SESSION_ID = "11111111-1111-1111-1111-111111111111";
 
 function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsMenu>> = {}) {
@@ -279,8 +366,6 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsM
       onReasoningChange={vi.fn()}
       modelInfo={null}
       hasActiveSession
-      permissionMode="auto"
-      onPermissionModeChange={vi.fn()}
       {...props}
     />,
   );
@@ -288,14 +373,7 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsM
 
 describe("one appearance for 'a role is in force' (docs/272 req 5)", () => {
   it("dresses the wide row's control and the narrow anchor identically", () => {
-    // They had drifted: the wide row followed the approved prototype's tinted
-    // pill, the narrow anchor inherited docs/260's plain settings control, and
-    // the same state wore two faces on nothing but the composer's width.
-    //
-    // Asserting they IMPORT the constant would not catch the regression this
-    // exists to catch — an import can be present and the class overridden at the
-    // call site — so it compares what was actually rendered, exactly as
-    // `picker-consistency.test.tsx` does for the three pickers.
+
     setRoles([DEEP_DIVE]);
     const { unmount } = render(
       <RoleSelector roles={[DEEP_DIVE]} selectedRole="deep dive" onSelectRole={vi.fn()} />,
@@ -306,10 +384,8 @@ describe("one appearance for 'a role is in force' (docs/272 req 5)", () => {
     renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "deep dive" });
     const narrow = screen.getByTestId("composer-settings-trigger").className;
 
-    // Everything the shared constant carries — colour, radius, padding, type —
     // is on both. What differs is layout, which is each call site's own and must
-    // be: the wide control is `shrink-0`, the narrow anchor is the row's one
-    // elastic item (docs/260 req 8).
+
     for (const cls of ROLE_PILL_CLASS.split(/\s+/).filter(Boolean)) {
       expect(narrow, `narrow anchor is missing "${cls}"`).toContain(cls);
       expect(wide, `wide control is missing "${cls}"`).toContain(cls);
@@ -328,17 +404,12 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 
   it("names the role from the SEED, because there is no session row to read", () => {
-    // This is the bug this test exists for. `/{repo}/new` sits on a WARM
-    // session, and `SessionManager.list()` filters `warm = 0` — so the browser
-    // has no row for it, the server's answer to `set_role` lands on nothing, and
-    // the control read "None" forever however many times it was clicked. Before
-    // a session is active the seed IS the display, exactly as it is for the
-    // harness, model and reasoning pickers on that same route.
+
     localStorage.setItem("shipit-role-name", "deep dive");
     setRoles([DEEP_DIVE]);
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -352,43 +423,71 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
   });
 
-  it("ignores the seed once a session IS active — the server is the only authority (req 13)", () => {
-    // The seed names the role the NEXT session starts on. Reading it for a live
-    // session would name a role that session never took.
+  /*
+    The two states a live session can be in, and the composer must tell them
+    apart: a row that SAYS this session has no role, and no row at all.
+
+    The second is the first message of every new session. `hasActiveSession` flips
+    true while the session is still warm, and `SessionManager.list()` filters
+    `warm = 0` — so until the refresh that graduates it there is nothing to read,
+    and reading that silence as an answer blanked the pill for seconds.
+  */
+  const composer = () => (
+    <MessageInput
+      onSend={vi.fn().mockReturnValue(true)}
+      disabled={false}
+      agents={[claude]}
+      activeAgentId="claude"
+      onAgentChange={vi.fn()}
+      onModelChange={vi.fn()}
+      onReasoningChange={vi.fn()}
+      onRoleChange={vi.fn()}
+      hasActiveSession
+      sessionId={SESSION_ID}
+    />
+  );
+
+  it("ignores the seed once the session's row has answered (req 13)", () => {
+    // The seed is chosen for the NEXT session, so reading it for a live one
+    // would name a role that session never took.
     localStorage.setItem("shipit-role-name", "deep dive");
     setRoles([DEEP_DIVE]);
-    render(
-      <MessageInput
-        onSend={vi.fn()}
-        disabled={false}
-        agents={[claude]}
-        activeAgentId="claude"
-        onAgentChange={vi.fn()}
-        onModelChange={vi.fn()}
-        onReasoningChange={vi.fn()}
-        onRoleChange={vi.fn()}
-        hasActiveSession
-        sessionId={SESSION_ID}
-      />,
-    );
+    useSessionStore.setState({
+      sessionId: SESSION_ID,
+      sessions: [{ id: SESSION_ID, name: "s", agentId: "claude" }] as never,
+    });
+    render(composer());
+    expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
+  });
+
+  it("keeps naming the seed while the session has no row to answer with", () => {
+    localStorage.setItem("shipit-role-name", "deep dive");
+    setRoles([DEEP_DIVE]);
+    useSessionStore.setState({ sessionId: SESSION_ID, sessions: [] });
+    const { rerender } = render(composer());
+    expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
+
+    // And it yields the moment a row exists and says this session has no role.
+    act(() => {
+      useSessionStore.setState({
+        sessions: [{ id: SESSION_ID, name: "s", agentId: "claude" }] as never,
+      });
+    });
+    rerender(composer());
     expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
   });
 
   it("corrects a stale seed to the role's own parameters (req 15)", async () => {
-    // The seed slots are what the three pickers DISPLAY here, so a seed left
-    // over from earlier work showed a model the role would not run — reported as
-    // "the model name is incorrect". A role picked in this browser writes them;
-    // a role arriving from the slot on a page load has nothing that did, so the
-    // composer reconciles them.
+
     localStorage.setItem("shipit-role-name", "deep dive");
     localStorage.setItem(
       "vibe-model-id",
-      JSON.stringify({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" }),
+      JSON.stringify({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" }),
     );
     setRoles([DEEP_DIVE]);
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -409,7 +508,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     setRoles([DEEP_DIVE]);
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -420,13 +519,103 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
         hasActiveSession={false}
       />,
     );
-    // Reveal the parameters, then move one.
+
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
     await userEvent.click(screen.getByTestId("role-adjust-parameters"));
     await userEvent.click(screen.getByTestId("reasoning-trigger"));
     await userEvent.click(screen.getByTestId("reasoning-option-high"));
     expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
   });
+
+  it("shows the parameters of the role JUST PICKED, not the one before it", async () => {
+    // `/{repo}/new`: a warm session is bound but has no row. The wrapper reads
+    // `activeAgentId` from the store the way `App.tsx` does, so the fix can move it.
+    localStorage.setItem("shipit-role-name", "deep dive");
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem(
+      "vibe-model-id",
+      JSON.stringify({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" }),
+    );
+    useUiStore.setState({ activeAgentId: "claude" });
+    useSessionStore.setState({ sessionId: SESSION_ID, sessions: [] });
+    setRoles([DEEP_DIVE, TRIAGE]);
+
+    function Composer() {
+      const activeAgentId = useUiStore((s) => s.activeAgentId);
+      return (
+        <MessageInput
+          onSend={vi.fn().mockReturnValue(true)}
+          disabled={false}
+          agents={[claude, codex]}
+          activeAgentId={activeAgentId}
+          onAgentChange={vi.fn()}
+          onModelChange={vi.fn()}
+          onReasoningChange={vi.fn()}
+          onRoleChange={vi.fn()}
+          hasActiveSession={false}
+          sessionId={SESSION_ID}
+        />
+      );
+    }
+    render(<Composer />);
+
+    await openRoleMenu();
+    await userEvent.click(screen.getByTestId("role-option-triage"));
+    act(() => {
+      handleModelSelectionChanged(undefined as never, {
+        type: "model_selection_changed",
+        sessionId: SESSION_ID,
+        agentId: "codex",
+        selection: { serviceId: "openai", billingMode: "sub", modelId: "gpt-6-astra" },
+        modelId: "gpt-6-astra",
+        reasoningEffort: "low",
+        roleName: "triage",
+      });
+    });
+
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+    });
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("GPT-6 Astra");
+    expect(screen.getByTestId("reasoning-trigger")).toHaveTextContent("Low");
+  });
+
+  it("takes the level from the harness the row NAMES, not from the store's active one", async () => {
+    // No session bound, so no echo can reach it: this isolates the harness rule.
+    localStorage.setItem("shipit-role-name", "triage");
+    localStorage.setItem("shipit-reasoning-by-agent", JSON.stringify({ claude: "high" }));
+    setRoles([DEEP_DIVE, TRIAGE]);
+    useSessionStore.setState({ sessionId: undefined, sessions: [] });
+    render(
+      <MessageInput
+        onSend={vi.fn().mockReturnValue(true)}
+        disabled={false}
+        agents={[claude, codex]}
+        // The background session's harness — what Quick Capture is handed.
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+    });
+    const reasoning = screen.getByTestId("reasoning-trigger");
+    // The knob's name too: each harness calls it something different.
+    expect(reasoning).toHaveTextContent("Low");
+    expect(reasoning.getAttribute("aria-label")).toBe("Reasoning effort selector");
+  });
+
 });
 
 describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 15)", () => {
@@ -471,7 +660,7 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
   function renderLocked() {
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -496,32 +685,107 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
 
   it("opens, and brings the parameters back when asked (req 15)", async () => {
     renderLocked();
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
-    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-adjust-parameters"));
     expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
     expect(screen.getByTestId("reasoning-trigger")).toBeInTheDocument();
-    // The one parameter the lock genuinely reaches — and it reaches it for every
-    // session alike, role or no role.
+
     expect(screen.getByTestId("harness-trigger").getAttribute("title")).toContain(
       "fixed for this session",
     );
   });
 
+  it("keeps the revealed parameters in the session where they were requested", async () => {
+    const renderSession = (sessionId: string) => (
+      <MessageInput
+        onSend={vi.fn().mockReturnValue(true)}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession
+        focusKey={sessionId}
+        sessionId={sessionId}
+        sessionRoleName="deep dive"
+        roleLocked
+      />
+    );
+    const { rerender } = render(renderSession("session-a"));
+
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-adjust-parameters"));
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+
+    rerender(renderSession("session-b"));
+    expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
+    expect(screen.queryByTestId("model-trigger")).toBeNull();
+    expect(screen.queryByTestId("reasoning-trigger")).toBeNull();
+
+    rerender(renderSession("session-a"));
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+    expect(screen.getByTestId("reasoning-trigger")).toBeInTheDocument();
+  });
+
   it("offers no OTHER role while it is open (req 4)", async () => {
-    // req 4 is unchanged: what loosened is what the lock reaches, not the lock.
-    // The menu exists, and there is nothing in it but the parameters.
+
     renderLocked();
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await openRoleMenu();
     expect(screen.getByTestId("role-selector-menu")).toBeInTheDocument();
     expect(screen.queryByTestId("role-option-deep dive")).toBeNull();
   });
 
   it("stops opening once the parameters are out — no caret onto an empty menu", async () => {
     renderLocked();
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
-    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-adjust-parameters"));
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
     expect(screen.queryByTestId("role-selector-menu")).toBeNull();
+  });
+});
+
+describe("role parameter reveal is scoped to one session", () => {
+  const TRIAGE = pinnedRole({ name: "triage" });
+
+  beforeEach(() => {
+    setRoles([DEEP_DIVE, TRIAGE]);
+  });
+
+  it("folds a fresh role pick without clearing another session's reveal", async () => {
+    const onRoleChange = vi.fn();
+    const renderSession = (sessionId: string, sessionRoleName: string) => (
+      <MessageInput
+        onSend={vi.fn().mockReturnValue(true)}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={onRoleChange}
+        hasActiveSession
+        focusKey={sessionId}
+        sessionId={sessionId}
+        sessionRoleName={sessionRoleName}
+      />
+    );
+    const { rerender } = render(renderSession("session-a", "deep dive"));
+
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-adjust-parameters"));
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+
+    rerender(renderSession("session-b", "deep dive"));
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-option-triage"));
+    expect(onRoleChange).toHaveBeenLastCalledWith("triage");
+    rerender(renderSession("session-b", "triage"));
+    expect(screen.queryByTestId("model-trigger")).toBeNull();
+
+    rerender(renderSession("session-a", "deep dive"));
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
   });
 });
 
@@ -562,14 +826,12 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
       onAdjustRoleParameters,
     });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
-    expect(screen.getByTestId("composer-settings-row-role")).toHaveTextContent("deep dive");
+
     expect(screen.queryByTestId("composer-settings-row-harness")).toBeNull();
     expect(screen.queryByTestId("composer-settings-row-model")).toBeNull();
     expect(screen.queryByTestId("composer-settings-row-reasoning")).toBeNull();
+    expect(screen.getByTestId("composer-settings-trigger")).toHaveTextContent("deep dive");
 
-    // "Adjust parameters…" lives inside the Role panel, and the harness is in it
-    // — it pins irreversibly, and switching role can switch it.
-    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
     await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
     expect(onAdjustRoleParameters).toHaveBeenCalled();
 
@@ -582,8 +844,6 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
         onReasoningChange={vi.fn()}
         modelInfo={null}
         hasActiveSession
-        permissionMode="auto"
-        onPermissionModeChange={vi.fn()}
         onRoleChange={vi.fn()}
         sessionRoleName="deep dive"
         roleParamsRevealed
@@ -593,10 +853,7 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   });
 
   it("carries the ROLE's name on the anchor, not the model's (req 5)", () => {
-    // docs/260 gave the anchor the model name as the most consequential of the
-    // four things behind it. A role outranks it on that test — it IS the
-    // harness, the model and the level — and leaving the model there put two
-    // answers to "what does this session run on" on one row.
+
     setRoles([DEEP_DIVE]);
     renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "deep dive", roleParamsRevealed: false });
     expect(screen.getByTestId("composer-settings-model-name")).toHaveTextContent("deep dive");
@@ -614,9 +871,7 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   });
 
   it("still reaches the parameters under a locked role, and offers no role (reqs 4, 15)", async () => {
-    // The same door as the wide row, reaching here for free: this menu takes
-    // `roleParamsRevealed` as a prop rather than recomputing it, which is why one
-    // condition in `MessageInput` governs both layouts.
+
     setRoles([DEEP_DIVE]);
     const onAdjustRoleParameters = vi.fn();
     renderMenu({
@@ -628,7 +883,7 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
     expect(screen.queryByTestId("composer-settings-row-model")).toBeNull();
-    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+
     expect(screen.getByTestId("composer-settings-role-locked")).toBeInTheDocument();
     expect(screen.queryByTestId("composer-settings-role-deep dive")).toBeNull();
     await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
@@ -636,13 +891,12 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   });
 
   it("offers No role in the panel, and not once the choice has locked (req 18)", async () => {
-    // One fact, both layouts: the narrow menu is where a role is chosen below
-    // 700px, so a clear reachable only in the wide row would be no clear at all
-    // on a phone.
+
     setRoles([DEEP_DIVE]);
     const onRoleChange = vi.fn();
     const { rerender } = renderMenu({ onRoleChange, sessionRoleName: "deep dive" });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+
     await userEvent.click(screen.getByTestId("composer-settings-row-role"));
     await userEvent.click(screen.getByTestId("composer-settings-role-none"));
     expect(onRoleChange).toHaveBeenCalledWith(undefined);
@@ -656,8 +910,6 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
         onReasoningChange={vi.fn()}
         modelInfo={null}
         hasActiveSession
-        permissionMode="auto"
-        onPermissionModeChange={vi.fn()}
         onRoleChange={vi.fn()}
         sessionRoleName="deep dive"
         roleLocked
@@ -666,7 +918,10 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
       />,
     );
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
-    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+
+    // menu. "No role" is absent because the choice is locked, not because the
+    // panel was never reached.
+    expect(screen.getByTestId("composer-settings-role-locked")).toBeInTheDocument();
     expect(screen.queryByTestId("composer-settings-role-none")).toBeNull();
   });
 
@@ -682,5 +937,72 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     expect(screen.getByTestId("composer-settings-row-role")).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByTestId("composer-settings-row-model")).toBeInTheDocument();
     expect(screen.getByTestId("composer-settings-row-reasoning")).toBeInTheDocument();
+  });
+});
+
+// `useNarrowContainer` reports `false` without `ResizeObserver` (jsdom), so this
+// block stubs it to opt in to the narrow row.
+describe("a role folds away hand-picked parameters in the narrow menu too", () => {
+  class ResizeObserverStub {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 400,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // @ts-expect-error -- restoring the jsdom default (always 0)
+    delete HTMLElement.prototype.clientWidth;
+    localStorage.removeItem("shipit-role-name");
+    localStorage.removeItem("vibe-model-id");
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("shipit-reasoning-by-agent");
+  });
+
+  it("shows the role's level, not the one picked by hand before it", async () => {
+    setRoles([DEEP_DIVE, TRIAGE]);
+    useSessionStore.setState({ sessionId: undefined, sessions: [] });
+    render(
+      <MessageInput
+        onSend={vi.fn().mockReturnValue(true)}
+        disabled={false}
+        agents={[claude, codex]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+    expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
+
+    // A model and a level by hand: two different hooks, both must be cleared.
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-model"));
+    await userEvent.click(screen.getByTestId("composer-settings-model-claude-opus-5"));
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-reasoning"));
+    await userEvent.click(screen.getByTestId("composer-settings-reasoning-max"));
+
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+    await userEvent.click(screen.getByTestId("composer-settings-role-triage"));
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-settings-row-reasoning")).toHaveTextContent("Low");
+    });
+    expect(screen.getByTestId("composer-settings-row-harness")).toHaveTextContent("Codex");
+    expect(screen.getByTestId("composer-settings-row-model")).toHaveTextContent("GPT-6 Astra");
   });
 });

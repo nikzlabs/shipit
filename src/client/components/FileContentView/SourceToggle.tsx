@@ -1,10 +1,3 @@
-/**
- * SourceToggle — a small segmented "Rendered / Source" control for HTML/SVG.
- * Lives in each surface's own header (the dialog header, the Present carousel
- * header) so `FileContentView` stays a pure renderer with no chrome of its own
- * (docs/219). The surface owns the `viewMode` state and passes it down.
- */
-
 export type ViewMode = "rendered" | "source";
 
 export function SourceToggle({

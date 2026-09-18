@@ -24,7 +24,7 @@ Verified by reading the source on 2026-08-04, not inherited from the proposal.
 
 **A system turn is already visible too, at least at first.**
 
-4. Turns ShipIt starts on its own — a merge wake-turn (`merge-watch.ts` → `wake-session.ts`), a cohort report delivery (`services/session-report.ts`), rebase conflict resolution (`services/rebase-driver.ts`), CI auto-fix (`app-lifecycle.ts`, `services/github-ci-fix.ts`) — are dispatched with `systemTurn: true` and carry an activity label: "Resuming after your PR merged…", "Resuming after child PR merged…", "Reassessing after child PR closed…", "Resolving conflicts...", "Fixing CI…".
+4. Turns ShipIt starts on its own — a merge wake-turn (`merge-watch.ts` → `wake-session.ts`), a child-to-parent report delivery (`services/session-report.ts`), rebase conflict resolution (`services/rebase-driver.ts`), CI auto-fix (`app-lifecycle.ts`, `services/github-ci-fix.ts`) — are dispatched with `systemTurn: true` and carry an activity label: "Resuming after your PR merged…", "Resuming after child PR merged…", "Reassessing after child PR closed…", "Resolving conflicts...", "Fixing CI…".
 5. That label reaches the client twice: on the `system_user_message` echo and on the `session_agent_started` SSE, and both set the status-bar label (`message-handlers/system-user-message.ts`, `hooks/useServerEvents.ts:107`).
 6. The system turn's prompt is also appended to the transcript as a user-role bubble and persisted, so it survives a reload.
 7. While a system turn is in flight, live steering is suppressed on purpose (`shouldSteerMessage`, `dispatch-steering.ts`; docs/146), so a user message that would otherwise be injected mid-turn is queued instead. **This suppression is by design and is not in scope to change.**

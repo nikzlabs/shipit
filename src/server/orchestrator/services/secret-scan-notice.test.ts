@@ -29,7 +29,6 @@ describe("formatSecretScanNotice", () => {
   it("pluralizes and counts multiple findings", () => {
     const msg = formatSecretScanNotice([finding(), finding({ file: "a.env", line: undefined })]);
     expect(msg).toContain("2 likely secrets");
-    // A finding without a line number falls back to just the file path.
     expect(msg).toContain("`a.env`");
   });
 

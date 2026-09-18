@@ -1,21 +1,11 @@
-/**
- * Client helper for POST /api/sessions/:id/agent/dispatch (docs/150).
- *
- * Mirrors the optimistic-append pattern that WS `send_message` callsites already
- * use: append a synthetic user bubble (tagged `pendingDispatch: true` so the
- * `system_user_message` handler can dedupe by clearing the flag in place
- * instead of appending a duplicate), set the loading/activity state, then POST.
- *
- * On error, rolls back the optimistic bubble and surfaces a toast via the UI
- * store. The 401 case is the most common deliberate failure (the active agent
- * isn't authenticated); the toast routes through the standard error channel.
- */
+
 
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { randomId } from "./random-id.js";
 import type { ApiError } from "../hooks/useApi.js";
 import type { AgentInterfaceProvenance } from "../../server/shared/agent-interface-sdk/protocol.js";
+import { consumeMergeContinueIntent, mergeContinueFrameFields } from "./merge-continue-intent.js";
 
 export interface DispatchAgentMessageOptions {
   sessionId: string;
@@ -23,15 +13,25 @@ export interface DispatchAgentMessageOptions {
   activity: string;
   apiPost: <T>(path: string, body?: unknown) => Promise<T>;
   agentInterface?: AgentInterfaceProvenance;
+  /**
+   * docs/218 + docs/295 — the user clicked the thing that sent this, in the
+   * view the post-merge checkboxes are in, so it carries their untick and
+   * spends it (req 5). The distinction that matters is the INTERACTION, not
+   * the transport: a ShipIt button that POSTs must behave like one that opens
+   * a WebSocket frame.
+   *
+   * Left off for a continuation the user did not make — a CI auto-fix, a click
+   * inside an agent-built page — which follows the global setting (req 13).
+   */
+  userInitiated?: boolean;
 }
 
 export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): Promise<void> {
-  const { sessionId, text, activity, apiPost, agentInterface } = opts;
+  const { sessionId, text, activity, apiPost, agentInterface, userInitiated } = opts;
+  const intent = userInitiated ? mergeContinueFrameFields(sessionId) : {};
   const session = useSessionStore.getState();
   const requestId = randomId();
 
-  // Optimistic append — the server's `system_user_message` echo is deduped
-  // against this bubble via the `pendingDispatch` flag.
   session.setMessages((prev) => [...prev, {
     role: "user",
     text,
@@ -45,10 +45,14 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
   try {
     await apiPost<{ ok: true; queued: boolean }>(
       `/api/sessions/${sessionId}/agent/dispatch`,
-      { text, activity, ...(agentInterface ? { agentInterface } : {}) },
+      { text, activity, ...(agentInterface ? { agentInterface } : {}), ...intent },
     );
+    // Only a dispatch the server accepted spends the untick.
+    // Spend exactly what this request carried: the user may have unticked again
+    // while it was in flight, and that choice belongs to their next message.
+    if (userInitiated) consumeMergeContinueIntent(sessionId, intent);
   } catch (err) {
-    // Roll back only this request; another identical send may have landed.
+
     useSessionStore.getState().setMessages((prev) =>
       prev.filter((message) => message.clientRequestId !== requestId));
     useSessionStore.getState().setIsLoading(false);
@@ -60,5 +64,4 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
   }
 }
 
-/** Re-export so callers can `instanceof`-check the failure shape if needed. */
 export type { ApiError };

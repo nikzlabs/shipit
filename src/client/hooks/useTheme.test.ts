@@ -7,7 +7,7 @@ const ALL_THEME_CLASSES = THEME_OPTIONS.map((t) => t.id).filter((id) => id !== "
 afterEach(() => {
   cleanup();
   localStorage.clear();
-  // Remove all theme classes that tests may have applied
+
   document.documentElement.classList.remove(...ALL_THEME_CLASSES);
 });
 
@@ -44,7 +44,7 @@ describe("useTheme", () => {
   });
 
   it("defaults to light when no stored preference and matchMedia is unavailable", () => {
-    // jsdom has no window.matchMedia, so this exercises the catch fallback.
+
     const { result } = renderHook(() => useTheme());
     expect(result.current.theme).toBe("light");
     expect(document.documentElement.classList.contains("dark")).toBe(false);
@@ -81,7 +81,7 @@ describe("useTheme", () => {
     localStorage.setItem("shipit-theme", "solarized");
     const { result } = renderHook(() => useTheme());
     expect(result.current.theme).toBe("solarized");
-    // Custom theme class is applied to <html>
+
     expect(document.documentElement.classList.contains("solarized")).toBe(true);
   });
 
@@ -129,11 +129,11 @@ describe("useTheme", () => {
     });
 
     const { result } = renderHook(() => useTheme());
-    // Should default to light (matchMedia unavailable in jsdom) and not throw
+
     expect(result.current.theme).toBe("light");
 
     act(() => result.current.toggle());
-    // Should toggle without throwing
+
     expect(result.current.theme).toBe("dark");
 
     getItemSpy.mockRestore();
@@ -240,13 +240,13 @@ describe("useTheme", () => {
     expect(document.documentElement.classList.contains("midnight")).toBe(false);
   });
 
-  it("THEME_OPTIONS includes all eighteen themes", () => {
+  it("THEME_OPTIONS includes all twenty themes", () => {
     const ids = THEME_OPTIONS.map((t) => t.id);
     expect(ids).toEqual([
       "light", "warm-light", "cool-light", "solarized-light", "claude-light", "codex-light", "opencode-light",
-      "grok-light",
+      "grok-light", "antigravity-light",
       "dark", "midnight", "forest", "rose",
-      "claude", "codex", "opencode", "grok", "solarized", "high-contrast",
+      "claude", "codex", "opencode", "grok", "antigravity", "solarized", "high-contrast",
     ]);
   });
 });

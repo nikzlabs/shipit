@@ -1,17 +1,3 @@
-/**
- * docs/239 — self-merge wake: arm, cancel, and delivery.
- *
- * The feature is docs/196's merge-watch pointed back at the same session, so the
- * tests here pin only what is genuinely new — one each, not a matrix. Every one
- * of them corresponds to a race a review round actually found:
- *
- *   - the arm must read the PR from a LIVE lookup, because at a chain boundary
- *     the `pr_status` snapshot still describes the previous, just-merged PR;
- *   - delivery fires from the merge callback, after the merge bookkeeping;
- *   - a merged PR that isn't the anchor is a note, not a wake;
- *   - a settlement from the PREVIOUS link must not mark the NEW watch delivered;
- *   - a Cancel from a stale card must not cancel the current watch.
- */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
@@ -35,7 +21,6 @@ import type { PrTerminalStateInfo } from "./pr-status-poller.js";
 
 const SESSION_ID = "s1";
 
-/** Minimal runner: records dispatches and the emitted WS messages. */
 class FakeRunner {
   running = false;
   disposed = false;
@@ -47,13 +32,7 @@ class FakeRunner {
   recordedCards: { afterGroupIndex: number; message: Record<string, unknown> }[] = [];
   steeredMessages: unknown[] = [];
   lastPersistedBufferIndex = 0;
-  /** planning#266 — the delivery of the held wake-turn, so liveness is derivable. */
   activeDeliveryId: string | undefined;
-  /**
-   * planning#318 — the worker's `turnActive`, i.e. ground truth for "is a turn in
-   * flight?". Deliberately independent of `running`: in production the local
-   * mirror is exactly the thing that goes stale.
-   */
   workerTurnActive = false;
   private pending: ((o: TurnOutcome) => void)[] = [];
 
@@ -66,7 +45,6 @@ class FakeRunner {
   }
   hasDelivery(deliveryId: string): boolean { return this.activeDeliveryId === deliveryId; }
   async hasTurnInFlight(): Promise<boolean> { return this.running || this.workerTurnActive; }
-  /** Settle every held wake-turn — models the turn actually running. */
   completeTurns(outcome: TurnOutcome = TURN_COMPLETED): void {
     const pending = this.pending;
     this.pending = [];
@@ -111,8 +89,6 @@ function makeCtx() {
     dispose: () => { /* no teardown in these tests */ },
   } as unknown as SessionRunnerRegistry;
 
-  // The LIVE open-PR lookup the arm must use. Distinct from the `pr_status`
-  // snapshot on purpose — the two disagree at a chain boundary.
   const livePr = { value: { number: 43, url: "https://github.com/o/r/pull/43", base: "main", title: "Step two" } as { number: number; url: string; base: string; title: string } | null };
   const githubAuthManager = {
     authenticated: true,
@@ -143,7 +119,6 @@ function makeCtx() {
   return { db, sessionManager, chatHistoryManager, runner, manager, armDeps, livePr };
 }
 
-/** Mark the session merged exactly as the poller does before `onMergeDetectedCb`. */
 function markMerged(ctx: ReturnType<typeof makeCtx>, prNumber: number): void {
   ctx.sessionManager.setPrStatus(SESSION_ID, makePrStatus({ prNumber, prState: "merged" }));
   ctx.manager.setPrStatusLookup((id) => ctx.sessionManager.getPrStatus(id) ?? undefined);
@@ -160,10 +135,6 @@ describe("arming a self merge-watch (docs/239)", () => {
   });
 
   it("anchors to the LIVE open PR, not the stale pr_status snapshot", async () => {
-    // The chain boundary: the previous PR (#42) just merged and its snapshot is
-    // still what `pr_status` holds — the poller skips a session in
-    // `mergedSessions`, and `gh pr create` returns before awaiting a refresh. The
-    // live lookup already sees the new PR (#43).
     ctx.sessionManager.setPrStatus(SESSION_ID, makePrStatus({ prNumber: 42, prState: "merged" }));
     const result = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
     expect(result.prNumber).toBe(43);
@@ -181,9 +152,6 @@ describe("arming a self merge-watch (docs/239)", () => {
 
   it("always REPLACES an existing self-watch, including one mid-delivery", async () => {
     const first = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
-    // Simulate the wake turn running: the watch is `merge-observed` when the
-    // agent re-arms for the next PR. An idempotent "already armed" would make
-    // chaining impossible.
     const observed = ctx.sessionManager.getMergeWatch(SESSION_ID)!;
     ctx.sessionManager.setMergeWatch(SESSION_ID, { ...observed, state: "merge-observed" });
     ctx.livePr.value = { number: 44, url: "https://github.com/o/r/pull/44", base: "main", title: "Step three" };
@@ -240,7 +208,6 @@ describe("delivering a self merge wake (docs/239)", () => {
     expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("merge-observed");
     expect(ctx.runner.dispatched).toHaveLength(1);
     expect(ctx.runner.dispatched[0]!.systemTurn).toBe(true);
-    // The prompt is self-describing and leads with the reset.
     expect(ctx.runner.dispatched[0]!.text).toContain("#43");
     expect(ctx.runner.dispatched[0]!.text).toContain("shipit branch reset-to-base");
     expect(ctx.runner.dispatched[0]!.text.length).toBeLessThan(500);
@@ -261,8 +228,8 @@ describe("delivering a self merge wake (docs/239)", () => {
   });
 
   it("an anchor mismatch appends a note and wakes nothing", async () => {
-    await armSelfMergeWatch(ctx.armDeps, SESSION_ID); // anchored to #43
-    markMerged(ctx, 42); // a docs/202 re-arm replaced the work; #42 merged instead
+    await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
+    markMerged(ctx, 42);
 
     await ctx.manager.handleSelfMerge(SESSION_ID);
 
@@ -287,24 +254,19 @@ describe("delivering a self merge wake (docs/239)", () => {
   });
 
   it("an OLD wake turn's settlement does not mark a newly-armed watch delivered", async () => {
-    // The chain's core race: the wake turn re-arms for the NEXT PR before it
-    // settles, so the old settlement arrives against a watch that is already a
-    // different one.
     await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
     markMerged(ctx, 43);
     await ctx.manager.handleSelfMerge(SESSION_ID);
     expect(ctx.runner.dispatched).toHaveLength(1);
 
-    // The turn opens PR #44 and re-arms — still mid-turn.
     ctx.livePr.value = { number: 44, url: "https://github.com/o/r/pull/44", base: "main", title: "Step three" };
     const next = await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
 
-    // NOW the old turn finishes.
     ctx.runner.completeTurns();
 
     const watch = ctx.sessionManager.getMergeWatch(SESSION_ID)!;
     expect(watch.watchId).toBe(next.watchId);
-    expect(watch.state).toBe("armed"); // NOT "delivered"
+    expect(watch.state).toBe("armed");
   });
 
   it("restores an evicted checkout before waking", async () => {
@@ -329,27 +291,15 @@ describe("delivering a self merge wake (docs/239)", () => {
   it("reconcilePending re-fires a self-watch after a restart", async () => {
     await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
     markMerged(ctx, 43);
-    // The merge landed while the orchestrator was down: the watch is still
-    // `armed` and nothing in memory knows about it.
     await ctx.manager.reconcilePending();
     expect(ctx.runner.dispatched).toHaveLength(1);
   });
 });
 
-/**
- * planning#318 — one merge must produce exactly one wake, even when the wake turn is
- * cut short.
- *
- * The production incident: the wake ran for seven minutes, the user interrupted
- * it, and the retry supervisor — which cannot tell "the human stopped it" from
- * "the container never booted" — re-sent the identical prompt on its next tick,
- * retiring the session's resident agent process on the way in.
- */
 describe("a wake that reached the agent is not re-delivered (planning#318)", () => {
   let ctx: ReturnType<typeof makeCtx>;
   beforeEach(() => { ctx = makeCtx(); });
 
-  /** Fire the wake and leave the watch at `merge-observed`, one attempt spent. */
   async function deliverWake(): Promise<void> {
     await armSelfMergeWatch(ctx.armDeps, SESSION_ID);
     markMerged(ctx, 43);
@@ -357,7 +307,6 @@ describe("a wake that reached the agent is not re-delivered (planning#318)", () 
     expect(ctx.runner.dispatched).toHaveLength(1);
   }
 
-  /** Push `lastAttemptAt` past the 60s first-retry backoff. */
   function expireBackoff(): void {
     const watch = ctx.sessionManager.getMergeWatch(SESSION_ID)!;
     ctx.sessionManager.setMergeWatch(SESSION_ID, {
@@ -369,8 +318,6 @@ describe("a wake that reached the agent is not re-delivered (planning#318)", () 
   it("an interrupted wake turn is terminal — the retry supervisor never re-sends it", async () => {
     await deliverWake();
 
-    // The human read the wake prompt and stopped the turn (or its spawn was
-    // superseded by the session's next message — same outcome, same meaning).
     ctx.runner.completeTurns(turnInterrupted("the turn was interrupted before it produced a result"));
 
     expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("delivered");
@@ -380,8 +327,6 @@ describe("a wake that reached the agent is not re-delivered (planning#318)", () 
   });
 
   it("a wake that genuinely never ran is still retried", async () => {
-    // The guard above must not disable the supervisor: a `no-result` wake is the
-    // case planning#260 exists for and stays retryable.
     await deliverWake();
     ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
     expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("merge-observed");
@@ -396,17 +341,11 @@ describe("a wake that reached the agent is not re-delivered (planning#318)", () 
     ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
     expireBackoff();
 
-    // `running` is the stale local mirror — false — while the worker is midway
-    // through the user's turn. Dispatching here does NOT queue politely: it takes
-    // `dispatchOnRunner`'s start-now branch, and a system turn's spawn boundary
-    // then retires the session's resident process.
     ctx.runner.running = false;
     ctx.runner.workerTurnActive = true;
     await ctx.manager.retryStalledDeliveries();
     expect(ctx.runner.dispatched).toHaveLength(1);
 
-    // Once the session is genuinely idle the retry proceeds as before — the gate
-    // defers a retry, it does not cancel it.
     ctx.runner.workerTurnActive = false;
     await ctx.manager.retryStalledDeliveries();
     expect(ctx.runner.dispatched).toHaveLength(2);

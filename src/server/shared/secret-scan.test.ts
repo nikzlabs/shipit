@@ -7,15 +7,12 @@ import {
   SECRET_RULES,
 } from "./secret-scan.js";
 
-// Fixtures below are NOT real credentials — they are pattern-shaped strings used
-// to exercise the detector. This file is allowlisted by path in secret-scan.ts,
-// so it never trips the auto-commit guard on ShipIt's own branch.
+// Synthetic credentials; this test file is allowlisted in secret-scan.ts.
 const FAKE = {
   anthropic: "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA1234567890bbbb",
   githubPat: "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
   githubFineGrained:
     "github_pat_11ABCDEFG0aBcDeFgHiJk_LmNoPqRsTuVwXyZ0123456789AbCdEfGhIjKlMnOpQrStUvWx",
-  // 2026 stateless GitHub App / Actions token: ghs_<appid>_<JWT>.
   githubAppStateless:
     "ghs_123456_eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiIxMjM0NTYiLCJpYXQiOjE3MTgwMDAwMDB9.aGVsbG9zaWduYXR1cmVfdmFsdWVfaGVyZV9wYWRkaW5nX3RvX2xlbmd0aA",
   aws: "AKIAIOSFODNN7EXAMPLE",
@@ -25,7 +22,6 @@ const FAKE = {
   credUrl: "https://x-access-token:ghs_SomeTokenValue1234567890@github.com/o/r.git",
 };
 
-/** Build a minimal unified diff that ADDS `lines` to `file`. */
 function addedDiff(file: string, lines: string[]): string {
   const body = lines.map((l) => `+${l}`).join("\n");
   return [
@@ -55,13 +51,10 @@ describe("scanDiffForSecrets — detection", () => {
   it("detects a GitHub fine-grained PAT (github_pat_)", () => {
     const f = scanDiffForSecrets(addedDiff("a.txt", [FAKE.githubFineGrained]));
     expect(f.map((x) => x.rule)).toContain("github-fine-grained-pat");
-    // Must not also mis-fire the classic gh[pousr]_ rule on the same token.
     expect(f.map((x) => x.rule)).not.toContain("github-pat");
   });
 
   it("detects the 2026 stateless GitHub App / Actions token (ghs_…_JWT)", () => {
-    // The classic fixed-length ghs_ rule can't match this shape; the dedicated
-    // structural rule must. (The embedded JWT may also match the jwt rule.)
     const f = scanDiffForSecrets(addedDiff("ci.log", [`token=${FAKE.githubAppStateless}`]));
     expect(f.map((x) => x.rule)).toContain("github-app-token-stateless");
   });
@@ -123,8 +116,8 @@ describe("scanDiffForSecrets — no false positives", () => {
       "--- a/f.ts",
       "+++ b/f.ts",
       "@@ -1,2 +1,1 @@",
-      ` const old = "${FAKE.githubPat}";`, // context line — must be ignored
-      `-const removed = "${FAKE.anthropic}";`, // removed line — must be ignored
+      ` const old = "${FAKE.githubPat}";`,
+      `-const removed = "${FAKE.anthropic}";`,
       "+const clean = 1;",
     ].join("\n");
     expect(scanDiffForSecrets(diff)).toEqual([]);
@@ -152,13 +145,11 @@ describe("scanDiffForSecrets — allowlist overrides", () => {
   });
 
   it("does NOT allowlist a generic docs markdown file", () => {
-    // The historical leak was in docs/*.md — those must still be scanned.
     const f = scanDiffForSecrets(addedDiff("docs/099-foo/plan.md", [FAKE.githubPat]));
     expect(f.map((x) => x.rule)).toContain("github-pat");
   });
 
   it("does NOT allowlist a same-basename file outside its exact path (no bypass)", () => {
-    // A loose basename allowlist would exempt this; the anchored one must not.
     const f = scanDiffForSecrets(addedDiff("some/other/secret-scan.test.ts", [FAKE.githubPat]));
     expect(f.map((x) => x.rule)).toContain("github-pat");
   });

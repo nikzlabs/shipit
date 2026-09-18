@@ -1,55 +1,43 @@
-/**
- * HTTP utility functions and shared constants for the Docker API proxy.
- */
-
 import http from "node:http";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import { stackLabel } from "./stack-label.js";
 
 export interface SessionInfo {
   sessionId: string;
   hostWorkspaceDir: string;
   dockerAccess: boolean;
-  /** Session-specific bridge network name for child containers. */
   sessionNetworkName?: string;
-  /** Resource limits to enforce on child containers (from session config). */
   resourceLimits?: {
     /** Memory limit in bytes. */
     memory: number;
     /** CPU quota in microseconds per 100ms period. */
     cpuQuota: number;
-    /** Maximum PIDs. */
     pidsLimit: number;
   };
 }
 
 export interface DockerProxyDeps {
-  /** Resolve source IP → session info. */
   getSessionByContainerIp: (ip: string) => SessionInfo | undefined;
   /** Docker daemon socket path. Defaults to /var/run/docker.sock. */
   socketPath?: string;
+  /** Suspend cached API trust checks across container starts; return the release callback. */
+  onTopologyChange?: () => () => void;
+  /** DOCKER_STACK (planning#584). */
+  stackName?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 export const PARENT_SESSION_LABEL = "shipit-parent-session";
-export const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+
+/**
+ * Ownership the proxy writes over whatever labels the caller sent. The stack label is what the
+ * boot sweeps and stop scripts select by; without it a session's own `docker run` outlived them.
+ */
+export function ownershipLabels(ctx: Pick<RequestContext, "session" | "stackName">): Record<string, string> {
+  return { [PARENT_SESSION_LABEL]: ctx.session.sessionId, ...stackLabel(ctx.stackName) };
+}
+export const MAX_BODY_SIZE = 10 * 1024 * 1024;
 export const DOCKER_SOCKET = "/var/run/docker.sock";
 
-// Docker container names: [a-zA-Z0-9][a-zA-Z0-9_.-]*
-// Docker container IDs: [0-9a-f]{12,64}
-// We use a single permissive pattern that covers both. The `/` separator in URL
-// paths prevents path traversal, and `:` is excluded since it only appears in
-// image references (handled by image routes with a separate pattern).
 export const CONTAINER_NAME_RE = "[a-zA-Z0-9][a-zA-Z0-9_.-]*";
-
-// ---------------------------------------------------------------------------
-// Route matching
-// ---------------------------------------------------------------------------
 
 export interface Route {
   method: string;
@@ -62,11 +50,10 @@ export interface RequestContext {
   res: http.ServerResponse;
   session: SessionInfo;
   socketPath: string;
+  /** Open only after reading and authorizing a start request, to limit caller-controlled holds. */
+  beginTopologyChange?: () => () => void;
+  stackName?: string;
 }
-
-// ---------------------------------------------------------------------------
-// Response helpers
-// ---------------------------------------------------------------------------
 
 export function respond(res: http.ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body);
@@ -81,10 +68,6 @@ export function forbidden(res: http.ServerResponse, reason: string): void {
 export function badRequest(res: http.ServerResponse, reason: string): void {
   respond(res, 400, { message: `Bad request: ${reason}` });
 }
-
-// ---------------------------------------------------------------------------
-// Body reading
-// ---------------------------------------------------------------------------
 
 export async function readBody(req: http.IncomingMessage, maxSize: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -107,14 +90,6 @@ export async function readBody(req: http.IncomingMessage, maxSize: number): Prom
   });
 }
 
-// ---------------------------------------------------------------------------
-// Docker daemon forwarding
-// ---------------------------------------------------------------------------
-
-/**
- * Forward a request to the Docker daemon via Unix socket.
- * Returns the daemon's response body as a Buffer plus the status code.
- */
 export async function forwardToDocker(
   socketPath: string,
   method: string,
@@ -157,16 +132,12 @@ export async function forwardToDocker(
   });
 }
 
-/**
- * Pipe a request through to the Docker daemon (for streaming endpoints).
- * Copies the request and streams the response back to the client.
- */
 export function pipeToDocker(
   socketPath: string,
   req: http.IncomingMessage,
   res: http.ServerResponse,
   overridePath?: string,
-): void {
+): Promise<void> {
   const reqHeaders: Record<string, string | string[] | undefined> = { ...req.headers };
   delete reqHeaders.host;
   delete reqHeaders.connection;
@@ -192,10 +163,16 @@ export function pipeToDocker(
     }
   });
 
-  // Abort upstream request if client disconnects
   res.on("close", () => {
     if (!dockerReq.destroyed) dockerReq.destroy();
   });
 
   req.pipe(dockerReq);
+
+  // Await completion before releasing a topology hold.
+  return new Promise<void>((resolve) => {
+    res.on("close", resolve);
+    res.on("finish", resolve);
+    dockerReq.on("error", () => resolve());
+  });
 }

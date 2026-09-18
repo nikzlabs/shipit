@@ -1,16 +1,3 @@
-/**
- * Integration test for `GET /api/sessions/:id/diagnostics`.
- *
- * Verifies the route returns the shape the SessionDiagnosticsPanel polls
- * (health, services, runner, recentLogs, meta) without depending on Docker.
- * The component-level unit tests in `services/diagnostics.test.ts` cover
- * the aggregation logic; this test pins down the route wiring + response
- * envelope.
- *
- * See docs/124-session-rescue-and-diagnostics §3.3 (now §2.2 in the
- * delivered checklist).
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -89,15 +76,9 @@ describe("GET /api/sessions/:id/diagnostics", () => {
     expect(typeof body.generatedAt).toBe("number");
     expect(Array.isArray(body.services)).toBe(true);
     expect(Array.isArray(body.recentLogs)).toBe(true);
-    // No container manager wired in this app → health degrades to { error }.
     expect(body.health).toMatchObject({ error: expect.any(String) as string });
-    // No runner attached yet (no WS) → runner is null.
     expect(body.runner).toBeNull();
-    // No stack-start error in clean state.
     expect(body.stackStartError).toBeNull();
-    // No shipit.yaml in the workspace → parsedConfig falls back to defaults
-    // (the same shape the parser returns for an empty file). Memory sizing is
-    // auto-derived from host capacity and always present.
     expect(body.parsedConfig).toMatchObject({
       agent: { install: [] },
       warnings: [],
@@ -118,7 +99,6 @@ describe("GET /api/sessions/:id/diagnostics", () => {
         "compose:",
         "  file: docker-compose.yml",
         "  docker-socket: true",
-        // Old-format key — should appear in `warnings`, not silently honored.
         "resources:",
         "  memory: 8192",
         "",

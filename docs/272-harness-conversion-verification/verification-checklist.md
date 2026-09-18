@@ -39,8 +39,9 @@ named `checklist.md` — that name tracks docs/272's own branch work.
       persisted history; UI snapshot; reload + re-snapshot
 - [ ] Interactive surfaces (AskUserQuestion, ExitPlanMode) verified via
       fixture replay + one manual UI turn
-- [ ] Negative control run once against the checker (fabricated tool
-      name flagged)
+- [ ] Negative control run once against the checker: a fabricated tool
+      name is flagged as undeclared AND still flagged once declared,
+      because declaring a name is not rendering it (planning#337)
 - [ ] Step 5 record: one file per run —
       `docs/272-harness-conversion-verification/runs/YYYY-MM-DD-HHMM-<harness>-<cli-version>.md`
       with `run:` frontmatter metadata, inventories + per-surface

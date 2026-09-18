@@ -23,12 +23,6 @@ export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: W
   });
 }
 
-/**
- * docs/133 Phase 4: the PR detail tab became (in)active for a session. Toggle
- * the poller's conversation-field gate. App-wide state only — independent of
- * the WS connection lifecycle, so it reads `msg.sessionId` rather than the
- * connection's attached runner.
- */
 export function handlePrTabActive(ctx: AppCtx, msg: WsPrTabActive): void {
   if (!msg.sessionId) return;
   ctx.prStatusPoller.setPrTabActive(msg.sessionId, msg.active);
@@ -45,18 +39,9 @@ export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): v
   runner.wasInterrupted = true;
   agent.interrupt();
   ctx.broadcastLog("server", "Agent process interrupted by user");
-  // Emit via runner so all viewers see the interrupt and reconnects get it
-  // from the buffered turn-event log.
   runner.emitMessage({ type: "agent_interrupted" });
 
-  // The normal post-turn commit/PR flow in agent-execution.ts is wired to
-  // either the non-streaming `done` handler (process exit) or the streaming
-  // `agent_result` handler (turn boundary). Neither is reliable on a
-  // streaming-agent interrupt — the CLI doesn't exit, and may not emit
-  // `agent_result` for an aborted turn, so the partial work never gets
-  // committed. Schedule a deferred commit as a fallback; if `done` or
-  // `agent_result` lands first the commit here is a no-op (autoCommit
-  // returns null on a clean tree).
+  // Interrupted streaming turns may emit neither done nor agent_result.
   scheduleInterruptCommit({
     deps: {
       sessionManager: ctx.sessionManager,

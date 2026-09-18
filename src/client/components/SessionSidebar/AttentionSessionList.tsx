@@ -4,9 +4,9 @@ import { SessionItem } from "./SessionItem.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
 interface AttentionSessionListProps {
-  /** The sidebar's visible sessions — already filtered for hidden repos. */
+
   sessions: SessionInfo[];
-  /** Ids needing attention right now, from `useAttentionSessions`. */
+
   attentionIds: Set<string>;
   currentSessionId: string | undefined;
   onResume: (sessionId: string) => void;
@@ -57,18 +57,14 @@ export function AttentionSessionList({
   onArchive,
   isTouch,
 }: AttentionSessionListProps) {
-  // The rendered order, append-only for the lifetime of the view. This is state
-  // adjusted DURING render rather than a ref mutated in a memo (or an effect):
-  // React's documented "adjust state while rendering" path is concurrent-safe —
-  // an abandoned render's `setOrder` is discarded with it — while a ref written
+
   // during render survives a render that never commits, and an effect would let
-  // the list paint once without a row that already qualifies.
+
   const [order, setOrder] = useState<string[]>([]);
   const arrived = [...attentionIds].filter((id) => !order.includes(id));
   if (arrived.length > 0) {
     const createdAt = new Map(sessions.map((s) => [s.id, s.createdAt ?? ""]));
-    // Only the newcomers are sorted, and only against each other: the rows
-    // already on screen keep the indices they had.
+
     arrived.sort((a, b) => (createdAt.get(b) ?? "").localeCompare(createdAt.get(a) ?? ""));
     setOrder([...order, ...arrived]);
   }
@@ -99,11 +95,7 @@ export function AttentionSessionList({
             onResume={onResume}
             onSelectCurrent={onSelectCurrent}
             onArchive={onArchive}
-            // The repo NAME, not `owner/repo`: req 12 asks for the name, the
-            // approved drawing shows the name, and `owner/repo` is wide enough
-            // in a 240px rail to truncate itself and wrap the date beside it.
-            // (`AllSessionsDialog` passes the fuller label — it has a dialog's
-            // width to spend.)
+
             repoLabel={session.remoteUrl ? parseRepoName(session.remoteUrl) : undefined}
             isTouch={isTouch}
           />

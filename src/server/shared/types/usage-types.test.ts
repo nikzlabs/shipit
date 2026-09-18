@@ -24,9 +24,6 @@ describe("usageTotalsFrom (docs/252 req 16)", () => {
     const out = usageTotalsFrom([
       group({ key: "anthropic:sub", kind: "sub", tokens: 1000, atApiRatesUsd: 5 }),
       group({ key: "deepseek:key", kind: "key", tokens: 200, costUsd: 0.4 }),
-      // A legacy row's dollar figure is real money of unknown provenance. It
-      // must not join either headline, or the column req 16 exists to make
-      // honest gains a number nobody can account for.
       group({ key: "legacy", kind: "legacy", tokens: 90, costUsd: 12 }),
     ]);
     expect(out.meteredCostUsd).toBe(0.4);
@@ -38,10 +35,6 @@ describe("usageTotalsFrom (docs/252 req 16)", () => {
   });
 
   it("takes no at-API-rates figure from a key group, even if one is present", () => {
-    // The producer leaves it zero for a `key` group (that is where the rates
-    // already went — into `costUsd`). This is the second belt: a hand-built or
-    // future group carrying one still cannot reach the comparison column, which
-    // req 16 scopes to subscription rows.
     const out = usageTotalsFrom([
       group({ key: "deepseek:key", kind: "key", costUsd: 0.4, atApiRatesUsd: 0.39 }),
     ]);
@@ -56,13 +49,8 @@ describe("sessionRunningFigure (docs/252 req 16)", () => {
   });
 
   it("shows money when money moved, with the estimate left to the popover", () => {
-    // No token counts on either side, so the estimate cannot dominate and the
-    // money-first default stands — which is also how an older totals payload,
-    // carrying dollars but no volume, keeps behaving as it always did.
     expect(sessionRunningFigure(totals({ meteredCostUsd: 0.42, atApiRatesUsd: 6.9 })))
       .toEqual({ usd: 0.42, kind: "metered" });
-    // Same when the session is genuinely balanced: dominance needs BOTH axes,
-    // so equal volume leaves the figure that is money in front.
     expect(sessionRunningFigure(totals({
       meteredCostUsd: 5, meteredTokens: 1_000_000,
       atApiRatesUsd: 5, includedTokens: 1_000_000,
@@ -70,10 +58,6 @@ describe("sessionRunningFigure (docs/252 req 16)", () => {
   });
 
   it("does not let cheap volume eclipse money that was genuinely billed", () => {
-    // The symmetric trap, and the reason the rule is not "most tokens wins"
-    // (cross-backend review, 2026-08-20): an expensive metered model spends $50
-    // over 10K tokens while cheap plan work runs 10M. Ranking on volume alone
-    // would put `≈$2.00` — labelled "not billed" — on a session billed $50.
     expect(sessionRunningFigure(totals({
       meteredCostUsd: 50, meteredTokens: 10_000,
       atApiRatesUsd: 2, includedTokens: 10_000_000,
@@ -81,10 +65,6 @@ describe("sessionRunningFigure (docs/252 req 16)", () => {
   });
 
   it("leads with the mode that did the work, not with whichever figure is money", () => {
-    // The bug: one metered sub-agent consult inside a plan session put `$0.004`
-    // on the dial while the popover said `≈$131.58` — a 39-turn session
-    // reported as costing less than a cent. Money-first read the session's
-    // character off a dollar sign instead of off the session.
     expect(sessionRunningFigure(totals({
       meteredCostUsd: 0.004, meteredTokens: 12_000,
       atApiRatesUsd: 131.58, includedTokens: 208_600_000,
@@ -99,10 +79,6 @@ describe("sessionRunningFigure (docs/252 req 16)", () => {
   });
 
   it("never lets unpriced legacy volume win a comparison it has nothing to show for", () => {
-    // Forward-generated legacy rows (planning#343) carry real tokens and no
-    // price. The biggest token count in the record here is legacy's, and it
-    // must still not reach the dial: only a candidate with a dollar figure
-    // competes.
     expect(sessionRunningFigure(totals({
       atApiRatesUsd: 4, includedTokens: 100_000,
       legacyCostUsd: 0, legacyTokens: 9_000_000,
@@ -121,8 +97,6 @@ describe("sessionRunningFigure (docs/252 req 16)", () => {
 
 describe("compareSessionsBySpend (docs/252 req 16)", () => {
   it("ranks by the figure each row actually renders", () => {
-    // The tiebreak is the point: under the split most sessions are legitimately
-    // $0, so spend alone leaves the tail in insertion order.
     const ranked = [
       session("quiet", { includedTokens: 10 }),
       session("busy-plan", { atApiRatesUsd: 9, includedTokens: 900 }),
@@ -133,9 +107,6 @@ describe("compareSessionsBySpend (docs/252 req 16)", () => {
   });
 
   it("never ranks on a figure no row shows", () => {
-    // Regression (cross-backend review): ranking on `metered + legacy` was a
-    // hidden fourth figure — the $0.10 session outranked the $10.00 one, and it
-    // performed the one addition the split forbids.
     const ranked = [
       session("ten-dollars", { meteredCostUsd: 10 }),
       session("ten-cents-plus-old-money", { meteredCostUsd: 0.1, legacyCostUsd: 100 }),

@@ -39,7 +39,7 @@ describe("NewRepoDialog", () => {
     expect(screen.getByPlaceholderText("my-project")).toBeTruthy();
     expect(screen.getByPlaceholderText("A short description of the project")).toBeTruthy();
     expect(screen.getByText("Project template")).toBeTruthy();
-    // Templates are rendered
+
     expect(screen.getByText("React")).toBeTruthy();
     expect(screen.getByText("Vue")).toBeTruthy();
     expect(screen.getByText("Next.js")).toBeTruthy();
@@ -57,15 +57,12 @@ describe("NewRepoDialog", () => {
 
     const nameInput = screen.getByPlaceholderText("my-project");
 
-    // Type a name with spaces (invalid)
     fireEvent.change(nameInput, { target: { value: "my project" } });
     expect(screen.getByText("Only letters, numbers, hyphens, dots, and underscores allowed.")).toBeTruthy();
 
-    // Type a name with special chars
     fireEvent.change(nameInput, { target: { value: "repo@name!" } });
     expect(screen.getByText("Only letters, numbers, hyphens, dots, and underscores allowed.")).toBeTruthy();
 
-    // Type a valid name, error should disappear
     fireEvent.change(nameInput, { target: { value: "my-valid-repo" } });
     expect(screen.queryByText("Only letters, numbers, hyphens, dots, and underscores allowed.")).toBeNull();
   });
@@ -101,7 +98,6 @@ describe("NewRepoDialog", () => {
     const nameInput = screen.getByPlaceholderText("my-project");
     fireEvent.change(nameInput, { target: { value: "valid-name" } });
 
-    // Select a template
     fireEvent.click(screen.getByText("React"));
 
     const submitBtn = screen.getByText("Create & Setup");
@@ -147,33 +143,28 @@ describe("NewRepoDialog", () => {
   it("category filter pills filter the template list", () => {
     render(<NewRepoDialog {...defaultProps} />);
 
-    // Helper: get a filter pill button by label (pills are in the flex-wrap container)
     const getFilterPill = (label: string) => {
       const all = screen.getAllByText(label);
-      // The pill is the <button> with rounded-full class; the group header is an <h3>
+
       return all.find((el) => el.tagName === "BUTTON" && el.className.includes("rounded-full"))!;
     };
 
-    // All templates visible initially
     expect(screen.getByText("React")).toBeTruthy();
     expect(screen.getByText("Express")).toBeTruthy();
     expect(screen.getByText("Node Script")).toBeTruthy();
 
-    // Click "Frontend" filter pill
     fireEvent.click(getFilterPill("Frontend"));
     expect(screen.getByText("React")).toBeTruthy();
     expect(screen.getByText("Vue")).toBeTruthy();
-    // Backend and utility templates should be hidden
+
     expect(screen.queryByText("Express")).toBeNull();
     expect(screen.queryByText("Node Script")).toBeNull();
 
-    // Click "Backend" filter pill
     fireEvent.click(getFilterPill("Backend"));
     expect(screen.getByText("Express")).toBeTruthy();
     expect(screen.queryByText("React")).toBeNull();
     expect(screen.queryByText("Node Script")).toBeNull();
 
-    // Click "All" to reset
     fireEvent.click(screen.getByText("All"));
     expect(screen.getByText("React")).toBeTruthy();
     expect(screen.getByText("Express")).toBeTruthy();
@@ -183,8 +174,6 @@ describe("NewRepoDialog", () => {
   it("shows category group headers", () => {
     render(<NewRepoDialog {...defaultProps} />);
 
-    // Group headers are <h3> elements with CSS text-transform: uppercase
-    // The actual text content is mixed-case, rendered uppercase by CSS
     const headers = document.querySelectorAll("h3.uppercase");
     const headerTexts = Array.from(headers).map((h) => h.textContent);
     expect(headerTexts).toContain("Frontend");
@@ -203,10 +192,8 @@ describe("NewRepoDialog", () => {
     fireEvent.change(nameInput, { target: { value: "my-repo" } });
     fireEvent.change(descInput, { target: { value: "A cool project" } });
 
-    // Select template
     fireEvent.click(screen.getByText("Next.js"));
 
-    // Submit
     fireEvent.click(screen.getByText("Create & Setup"));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -257,11 +244,9 @@ describe("NewRepoDialog", () => {
     fireEvent.change(screen.getByPlaceholderText("my-project"), { target: { value: "my-repo" } });
     fireEvent.click(screen.getByText("React"));
 
-    // Default selection is the personal account → owner is undefined.
     fireEvent.click(screen.getByText("Create & Setup"));
     expect(onSubmit).toHaveBeenLastCalledWith("my-repo", "", true, "react", undefined);
 
-    // Selecting an org threads its login through as owner.
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "acme" } });
     fireEvent.click(screen.getByText("Create & Setup"));
     expect(onSubmit).toHaveBeenLastCalledWith("my-repo", "", true, "react", "acme");
@@ -271,7 +256,6 @@ describe("NewRepoDialog", () => {
     const onSubmit = vi.fn();
     render(<NewRepoDialog {...defaultProps} onSubmit={onSubmit} />);
 
-    // No name or template selected -- button should be disabled
     fireEvent.click(screen.getByText("Create & Setup"));
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -297,7 +281,6 @@ describe("NewRepoDialog", () => {
     const onClose = vi.fn();
     render(<NewRepoDialog {...defaultProps} onClose={onClose} />);
 
-    // Radix Dialog handles Escape natively
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -308,11 +291,9 @@ describe("NewRepoDialog", () => {
     expect(screen.getByText("Creating...")).toBeTruthy();
     expect(screen.queryByText("Create & Setup")).toBeNull();
 
-    // Inputs should be disabled
     expect(screen.getByPlaceholderText("my-project")).toBeDisabled();
     expect(screen.getByPlaceholderText("A short description of the project")).toBeDisabled();
 
-    // Cancel button should be disabled
     expect(screen.getByText("Cancel")).toBeDisabled();
   });
 
@@ -328,7 +309,6 @@ describe("NewRepoDialog", () => {
     const onClose = vi.fn();
     render(<NewRepoDialog {...defaultProps} onClose={onClose} />);
 
-    // Radix Dialog closes via overlay click; test with Escape as a reliable equivalent
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -337,7 +317,6 @@ describe("NewRepoDialog", () => {
     const onClose = vi.fn();
     render(<NewRepoDialog {...defaultProps} onClose={onClose} />);
 
-    // Click on the dialog content (not the backdrop)
     fireEvent.click(screen.getByText("Create New Repository"));
     expect(onClose).not.toHaveBeenCalled();
   });

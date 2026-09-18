@@ -11,7 +11,6 @@ ShipIt decides whether a PR can be merged purely from CI state and
 GitHub-reported mergeability. The review/approval dimension is missing entirely:
 
 ```ts
-// PrLifecycleCard.tsx (and PrStatusSection.tsx), today
 const canMerge = (isCiPassed || isCiNone) && !isConflicting;
 ```
 
@@ -99,7 +98,6 @@ requirement). This rule is applied in **three** places that must stay in lockste
 `PrReviewDecision` mirrors the GraphQL enum, lower-cased, with `null → "none"`:
 
 ```ts
-// github-types.ts
 export type PrReviewDecision =
   | "approved"
   | "changes_requested"

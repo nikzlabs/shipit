@@ -78,6 +78,30 @@ mechanism and, when it resolves, **overrides all three** — it is the thing tha
 applies only while the session is unpinned and carries no role of its own, which is the same guard
 the other three params take.
 
+**Applying it is only half: the connect answers with `model_selection_changed`.** The composer
+reads a live session's role from the session-list row the browser already holds, and that copy was
+fetched before the connect wrote to it — so the row said "no role" while the session ran on one.
+On `/{repo}/new` this never showed, because a warm session has no row at all and the seed is the
+display there (see [Before a session is active](#before-a-session-is-active-the-seed-is-the-display));
+it showed on every surface that **navigates the user straight onto a fresh session the browser has
+already listed** — an ops session (docs/128), a sandbox (docs/211), both of which refresh the
+session list and only then navigate — where the composer named no role and picking one again was
+the only way to get it back. The answer carries the service and billing mode as well as the name,
+harness, model and level, for the reason `set_role`'s does: the role wrote them together, and the
+model picker's checkmark lands on the `(service, billing mode)` pair rather than on the bare id.
+Emitted only when the seed actually applied, so an ordinary reconnect — the common case, on backoff
+after any blip — adds no frame.
+
+**Two convergence gaps stay open, both older than this and neither reachable from the flow above.**
+A **second viewer** does not get the frame: it is per-connection, and the connection that loses the
+race to the `!session.roleName` guard is told nothing, so it names no role until its next
+session-list refresh. Broadcasting the message as it stands would be worse rather than better —
+every unpinned recipient runs `saveRoleName`, so one viewer's pick would become another browser's
+req-12 default. And on a **cold load onto a session that has no role yet**, the frame can arrive
+before the bootstrap snapshot installs the list, where `handleModelSelectionChanged` drops it (it
+maps existing rows and adds none). Closing either means a session-state sync distinguishable from
+"this viewer selected a role", which is a mechanism this feature does not have and did not need.
+
 ## Selection is refused after the first turn (req 4)
 
 `agentPinned` is already the "this session has taken its first turn" fact — it is set when the
@@ -144,6 +168,40 @@ A role in force means the three fields were written together from one tuple the 
 are not two independent sources to reconcile — so the derivation is skipped. That is docs/264
 req 6's "nothing is ever derived" reaching a path that predates it.
 
+**A third path was the seed itself, and it is the one the argument below does not cover.**
+`reasoningEffort` is optional on a role, so `applyRoleToSession` writes `reasoning_effort = NULL`
+for a role that pins no level — and `selectedReasoning` filled that hole from `?reasoning=`, which
+is the browser's **global** last pick rather than anything about this session. The connect then read
+its own write as a parameter change and unnamed the role. Unlike the two clears above, a role
+cleared this way stays perfectly runnable, so `resolveUserRole` refuses nothing: the seed re-applied
+it on the next connect, and the connect after that cleared it again — once per reconnect on a
+flapping link, which is the oscillation cross-agent review predicted and this leg reaches. So the
+seed is ignored while a role is in force, the same rule `roleDecidesHarness` already states for the
+harness: a role that pinned no level decided that too.
+
+**And a clear that does happen is neither silent nor stuck.** It writes the row the `?role=` block
+reads, so that block re-reads it (`reconciled`) — against the connect-time snapshot the clear could
+never be repaired within the connection that made it, which is what left the repair to the next
+connect and the oscillation to the one after. **The re-read may only repair**
+(`repairsItsOwnClear`): the URL is memoized per session, so it goes on naming the role the page
+loaded with however many times the user picks another one — and answering "this role had to be
+dropped" by starting a *different* role, standing instructions and all, is something nothing
+authorised. So the seed is taken after a clear only when it names the role that was cleared.
+
+**That guard is worth nothing on its own, because the next connect has no clear in hand.** Refusing
+the stale role while the clear is a local variable, and then writing `NULL`, leaves a row that says
+"no role" — which is precisely the row a seed is allowed to fill, so the same URL simply arrives
+again a reconnect later and starts the role it was just refused. An unrepaired clear is therefore
+recorded the way req 18's clear is, with the `''` sentinel, and the one guard that reads it refuses
+every seed on that session from then on. The user still selects a role there, because `set_role`
+writes the name and nothing about this touches it.
+
+A clear that stands is logged, and answered with
+`model_selection_changed` carrying **`roleAutoCleared`**. The flag is what lets the browser tell
+ShipIt's decision from the user's: `handleModelSelectionChanged` writes the req-12 seed from a
+user's clear, and doing that here would take the user's default role off every session they start
+next because one session's model had to move.
+
 **What the two automatic clears deliberately do not need: a guard against the seed re-applying the
 role they just cleared.** The browser's seed outlives the clear, so a later connect does arrive
 naming the role — and `resolveUserRole` refuses it, because both things that clear a role here also
@@ -152,6 +210,15 @@ list, so `selectionExists` is already false; a model the harness cannot list fai
 Cross-agent review predicted an oscillation here and it does not reproduce for that reason — which
 is a property of the catalogue rather than of the connect block, so it is pinned by a test in
 `services/session-role.test.ts` rather than left to be re-derived.
+
+**The argument is sound and it was not the whole set.** It reasons about the two clears named in
+this section, and the third one — the reasoning seed, above — cleared a role that no catalogue check
+refuses, so the predicted oscillation did reproduce there. It also measures the wrong thing by one
+step: what the refusal tests is the tuple of the role the **URL** names, while what reconciliation
+found invalid is the tuple the **session** holds, and those are the same only while the user has
+picked no other role since the page loaded. Stated as a rule rather than as a count: a clear may be
+left unguarded only where the thing that caused it makes the very role the seed would re-apply
+unrunnable, and any new leg added to this block has to say which of the two it is.
 
 **req 18's clear is the case that argument does not cover, and it does need a guard** — the stale
 claim was found while implementing it, which is the whole reason to state a dependency as "verified
@@ -185,6 +252,25 @@ answer is the only thing it displays. The seed may name a role chosen for the *n
 reading it for a live session would name a role that session never took — which is req 13's own
 prohibition.
 
+**"Once one is active" means once the list has answered for it**, and taking it to mean "once one is
+bound" cost the pill the first seconds of every new session. Sending on `/{repo}/new` flips the
+composer to a live session while that session is still **warm**, and a warm session has no row — so
+the composer had an active session and nothing whatever to read, and named no role until the refresh
+that graduates it arrived. No row is not an answer of "no role": `sessionRowKnown` distinguishes the
+two, and the seed stays on screen until a row exists. Where one does exist it is still the only
+authority, which is the half of this rule req 13 requires. The composer reads the row's existence
+from the session store rather than taking it as a prop, so a caller cannot hand it a role name
+without the fact that decides whether the name means anything.
+
+**The rowless window is optimistic, and req 13 is not satisfied inside it.** "No row" says the list
+has not answered; it does not say the *server* accepted the seed. A role the connect refused —
+deleted in another tab, its credential gone — is named for the length of that window, and so is one
+the connect cleared, because the answering frame maps existing rows and finds none. That the
+composer was already in this state before the send explains the shape; it does not excuse it. What
+would close it is a per-session record of the server's own answer, which is the same mechanism the
+two convergence gaps above name and do not have: until something keeps that answer, a session with
+no row has nothing truthful to show but the seed the user last chose.
+
 Two consequences fell out of fixing it, and both are simplifications:
 
 - **The seed follows the server's answer** rather than being cleared by each of the three handlers
@@ -211,6 +297,29 @@ Two consequences fell out of fixing it, and both are simplifications:
   anything, which is what stops the write → re-render → write loop that reconciliation from an
   effect would otherwise be.
 
+### …and the harness the pickers read has to follow the server's answer
+
+Writing the seeds was necessary and not sufficient: the gap showed up as *"the parameters are from
+the previous role"*.
+
+`/{repo}/new` is a **third** case, distinct from both the ones `seedFromHistory` names. It claims a
+warm session, so a session IS bound — and that session has no row (`warm = 0`), so there is nothing
+to describe either. `displayedHarness` falls through to the ui store's `activeAgentId`, which
+`useUiStore.reset()` seeds once on arrival and `useConnectionSync` only ever syncs **from a session
+row**. Choosing a role rewrote the seeds and not that field, and the stale harness took the model
+list and the per-harness reasoning seed with it.
+
+So **`model_selection_changed` moves `activeAgentId` too**, for the session on screen. The seed
+would be the wrong source: it is *global*, so any other surface that writes it — Quick Capture
+choosing a role for the **next** session — would repaint this composer to describe a session it is
+not connected to. This message is per-connection. It is never written back to localStorage, which is
+`setActiveAgentId`'s standing contract.
+
+Two things were fixed alongside it, both a role changing the harness by a route nothing else watched:
+the wide row's reasoning control resolved its harness by a second rule (`activeAgentId` rather than
+`displayedHarness`, which disagree wherever no session is bound), and the skills were not refetched,
+though they are per-backend and only an explicit harness pick refreshed them.
+
 ## What the composer shows
 
 **Three states in the wide row**, and the row never grows: a selected role shows *fewer* controls
@@ -229,7 +338,13 @@ than today, not more (req 5).
 nothing else (req 4), so a locked session still shows the role's name in place of the three controls
 — and still reaches those controls the one way they have ever been reached, by asking for them
 inside the role control (req 15). `roleParamsRevealed` is therefore the user's own act and only
-that: `revealedFor === roleInForce`, with no lock clause in it.
+that: the role name must match the reveal entry for the current session ID (with the composer's
+`focusKey` as the session-less fallback), with no lock clause in it. The session scope is
+load-bearing: one mounted composer serves every session, so keying the reveal by the role name
+alone expanded the controls in every session that used the same role. The in-memory scope map
+keeps the look local without turning it into persisted session configuration, and restores it
+only when the user returns to the session where they asked for it while the composer remains
+mounted. A composer remount still folds it, as an unpersisted look should.
 
 **Both halves of that were shipped wrong, in opposite directions, and the second is the reason the
 first is worth reading.** As first shipped, a locked pill had *no menu at all* — "Adjust
@@ -334,7 +449,10 @@ no `ImplementerContext` to fabricate, and no `auto` branch to carry.
 
 - `client/components/MessageInput/RoleSelector.tsx` — **new.** The wide-row control and
   `useRolePickerState`, shared with the narrow menu so the two layouts cannot disagree.
-- `client/components/MessageInput/MessageInput.tsx` — the three-state row.
+- `client/components/MessageInput/MessageInput.tsx` — the three-state row, and `sessionRowKnown`
+  (read from the session store, not passed in).
+- `client/hooks/message-handlers/model-selection-changed.ts` — the server's answer, and the one
+  clear (`roleAutoCleared`) that must not move the remembered role.
 - `client/components/MessageInput/ComposerSettingsMenu.tsx` — the Role row and panel.
 - `client/utils/local-storage.ts` — the role seed slot (req 12).
 - `client/hooks/useSessionWebSocket.ts` — `?role=`.

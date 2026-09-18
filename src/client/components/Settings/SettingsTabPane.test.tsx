@@ -1,77 +1,60 @@
 /**
- * The one behaviour worth pinning here is structural: the Save button must sit
- * OUTSIDE the scrolling body, so it stays visible however long the form gets.
- * A footer rendered at the end of the scroll area looks identical in a static
- * DOM assertion but scrolls out of reach in the browser — hence the check that
- * the button is not a descendant of the element that scrolls.
+ * A tab's Save must stay in sight however long the form gets. It used to do so
+ * by sitting OUTSIDE the scrolling body, in this pane's footer; the renderer
+ * places it now, so it lives INSIDE the scroll area and sticks to the bottom of
+ * it.
+ *
+ * jsdom measures no layout, so what is checked here is that the bar is in the
+ * scrolling body and carries the offsets that stick it — not that it ends up
+ * visible, which was checked in a browser.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import { SettingsTabPane } from "./SettingsTabPane.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { InstructionsTab } from "./tabs/InstructionsTab.js";
-import { createRef } from "react";
+import { useSettingsStore } from "../../stores/settings-store.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useSettingsStore.setState({ agentSystemInstructions: "" });
+});
 
-/** The scrolling element of a tab pane: the pane root's first child. */
 function scrollBodyOf(root: HTMLElement): HTMLElement {
   const body = root.firstElementChild as HTMLElement;
   expect(body.className).toContain("overflow-y-auto");
   return body;
 }
 
-describe("SettingsTabPane", () => {
-  it("renders the footer outside the scrolling body", () => {
-    render(
-      <SettingsTabPane testId="pane" footer={<button>Save</button>}>
-        <p>body content</p>
-      </SettingsTabPane>,
-    );
+/** The Save's own bar, which is what has to stick. */
+function barOf(): HTMLElement {
+  return screen.getByRole("button", { name: "Save" }).closest<HTMLElement>(".sticky")!;
+}
 
-    const pane = screen.getByTestId("pane");
-    const body = scrollBodyOf(pane);
-    const save = screen.getByRole("button", { name: "Save" });
+describe("tab Save buttons stay in sight", () => {
+  it.each([
+    ["Git identity", <GitTab key="git" />],
+    ["Instructions", <InstructionsTab key="instructions" />],
+  ])("%s Save sticks to the bottom of the scroll area", (_name, tab) => {
+    const { container } = render(tab);
+    const body = scrollBodyOf(container.firstElementChild as HTMLElement);
 
-    expect(body).toContainElement(screen.getByText("body content"));
-    expect(body).not.toContainElement(save);
-    expect(pane).toContainElement(save);
+    expect(body).toContainElement(barOf());
+    expect(barOf().className).toContain("-bottom-4");
   });
 
-  it("omits the footer when no actions are given", () => {
-    render(
-      <SettingsTabPane testId="pane">
-        <p>body content</p>
-      </SettingsTabPane>,
-    );
-    expect(screen.getByTestId("pane").children).toHaveLength(1);
-  });
-});
+  // The built-in instructions are the toggle's own row note, so they sit under
+  // the control that shows them and inside the block rather than after the bar.
+  it("comes after the built-in instructions, which sit under their toggle", () => {
+    useSettingsStore.setState({ agentSystemInstructions: "Built-in context." });
+    render(<InstructionsTab />);
 
-describe("tab Save buttons stay pinned", () => {
-  it("Git identity Save is outside the scroll area", () => {
-    const { container } = render(
-      <GitTab gitIdentity={{ name: "A", email: "a@example.com" }} onGitIdentitySave={() => {}} />,
-    );
-    const pane = container.firstElementChild as HTMLElement;
-    expect(scrollBodyOf(pane)).not.toContainElement(screen.getByTestId("settings-git-save"));
-  });
+    const toggle = screen.getByRole("switch", { name: "ShipIt Agent Instructions" });
+    const disclosure = screen.getByTestId("agent-system-instructions");
+    const follows = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
-  it("Instructions Save is outside the scroll area", () => {
-    const { container } = render(
-      <InstructionsTab
-        content=""
-        onContentChange={() => {}}
-        textareaRef={createRef<HTMLTextAreaElement>()}
-        onSave={() => {}}
-        onClose={() => {}}
-        agentSystemInstructionsEnabled
-        agentSystemInstructions=""
-        onToggleAgentSystemInstructions={() => {}}
-      />,
-    );
-    const pane = container.firstElementChild as HTMLElement;
-    expect(scrollBodyOf(pane)).not.toContainElement(screen.getByTestId("settings-save"));
+    expect(follows(toggle, disclosure)).toBe(true);
+    expect(follows(disclosure, barOf())).toBe(true);
   });
 });

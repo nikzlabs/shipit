@@ -20,15 +20,13 @@ describe("window.shipit browser runtime", () => {
         agent: { sendMessage(input: { text: string }): Promise<{ status: "submitted" }> };
       };
     };
-    // The page navigated within the preview, so the referrer is its OWN origin rather
-    // than the host's. The handshake must not depend on it.
+    // A preview navigation makes the referrer differ from the host origin.
     Object.defineProperty(child.document, "referrer", { value: "https://session--3001.example.test/app", configurable: true });
     const parentOrigin = window.location.origin;
     const parentPost = vi.spyOn(child.parent, "postMessage").mockImplementation(() => undefined);
     child.eval(AGENT_INTERFACE_SDK_SOURCE);
 
     expect(child.shipit?.embedded).toBe(false);
-    // The handshake carries no page data and the host origin is not yet known.
     expect(parentPost).toHaveBeenCalledWith({ source: "shipit-preview", type: "ready" }, "*");
 
     child.dispatchEvent(new child.MessageEvent("message", {
@@ -49,7 +47,6 @@ describe("window.shipit browser runtime", () => {
       (message as { type?: string }).type === "agent_message");
     const request = agentCall?.[0] as { requestId: string };
     expect(request.requestId).toBeTruthy();
-    // Page-composed text goes to the origin the host proved, never to "*".
     expect(agentCall?.[1]).toBe(parentOrigin);
     child.dispatchEvent(new child.MessageEvent("message", {
       source: child.parent,
@@ -84,7 +81,6 @@ describe("window.shipit browser runtime", () => {
 
     post(window.location.origin, true);
     expect(child.shipit?.visibility.current).toBe(true);
-    // A later message claiming a different origin cannot move the pinned host.
     post("https://attacker.example", false);
     expect(child.shipit?.visibility.current).toBe(true);
   });

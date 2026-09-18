@@ -1,29 +1,15 @@
-/**
- * RebaseBanner — shows rebase status in the chat area.
- *
- * Displays a compact banner when:
- * - Push was rejected (non-fast-forward) — offers "Update branch" button
- * - Rebase is in progress — shows spinner
- * - Rebase has conflicts — shows conflict list + abort button
- */
+
 
 import { useGitStore } from "../stores/git-store.js";
+import { Spinner } from "./Spinner.js";
 import { useSessionDefaultBranch, useSessionHasBaseBranch } from "../utils/default-branch.js";
 import { Button } from "./ui/button.js";
 import {
-  ArrowsClockwiseIcon,
-  CircleNotchIcon,
-  WarningIcon,
+  ArrowsClockwiseIcon, WarningIcon,
   XCircleIcon,
   XIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-
-function Spinner() {
-  return (
-    <CircleNotchIcon size={14} className="animate-spin text-(--color-info) shrink-0" />
-  );
-}
 
 export function RebaseBanner({ sessionId }: { sessionId: string }) {
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
@@ -36,21 +22,12 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
 
   // The repo's real default branch — a `master` repo must not be told its
   // branch is behind "main" (and must not be rebased onto a ref that
-  // doesn't exist). Falls back to "main" until the repo list hydrates.
+
   const baseBranch = useSessionDefaultBranch(sessionId);
 
-  // …but only a repo-backed session HAS a base branch. On an ops or sandbox
-  // session (no remote, no PR lifecycle) `baseBranch` is the "main" fallback,
-  // so a stray push rejection rendered "Branch is behind main" against a branch
-  // that doesn't exist, with an "Update branch" button that would rebase onto
-  // an unresolvable ref. Suppress the nudge rather than the whole banner: a
-  // rebase that somehow got started still reports its own progress and errors.
   const hasBaseBranch = useSessionHasBaseBranch(sessionId);
   const showPushRejected = pushRejected && hasBaseBranch;
 
-  // Error state takes priority over the push-rejected / idle branches: a
-  // failed rebase was just attempted, so surface the reason even if a
-  // push-rejected nudge is also live.
   if (rebaseError && rebaseStatus === "idle") {
     return (
       <div className="mx-4 last:mb-2">
@@ -83,12 +60,8 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
     );
   }
 
-  // Nothing to show
   if (!showPushRejected && rebaseStatus === "idle") return null;
 
-  // `last:mb-2` provides 8px gap to the MessageInput only when this banner is
-  // the last rendered child of the bottom-stack wrapper. Otherwise the
-  // wrapper's `gap-2` handles spacing to the next card (e.g. the PR card).
   return (
     <div className="mx-4 last:mb-2">
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-xs">
@@ -113,7 +86,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
         {/* Rebase in progress */}
         {rebaseStatus === "in_progress" && (
           <>
-            <Spinner />
+            <Spinner size={14} className="text-(--color-info) shrink-0" />
             <span className="text-(--color-text-secondary) flex-1">
               Rebasing onto <code className="font-mono text-(--color-text-tertiary)">{baseBranch}</code>…
             </span>
@@ -149,7 +122,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
         {/* Resolving (agent is working on conflicts) */}
         {rebaseStatus === "resolving" && (
           <>
-            <Spinner />
+            <Spinner size={14} className="text-(--color-info) shrink-0" />
             <span className="text-(--color-text-secondary) flex-1">
               Rebase in progress — agent is resolving conflicts…
             </span>

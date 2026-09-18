@@ -1,10 +1,3 @@
-/**
- * Unit tests for `archiveSession` — specifically the container-destroy step
- * that prevents the workspace bind mount from being pinned to an
- * about-to-be-unlinked inode. See docs/154 for the empty-workspace bug
- * (session 1ab5751c-…) that motivated this.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -22,7 +15,6 @@ const remoteUrl = "https://github.com/test-user/test-repo.git";
 const getBareCacheDir = (_url: string) => "/fake/repo-cache/abc123";
 
 function makeSession(workspaceDir: string): string {
-  // Create the workspace dir so the archive fs.rm has something to remove.
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, "marker"), "x");
   const id = "sess-1";
@@ -56,14 +48,10 @@ describe("archiveSession container teardown", () => {
     const containerManager = {
       destroy: vi.fn(async (id: string) => {
         events.push(`destroy(${id})`);
-        // The fs.rm must NOT have run yet — the bind mount is still pinned
-        // until destroy() returns.
         expect(fs.existsSync(workspaceDir)).toBe(true);
       }),
     };
 
-    // Patch fs.rm to record when it ran. Since archiveSession uses
-    // node:fs/promises, we shim the module-level fs.promises.rm.
     const realRm = fs.promises.rm;
     const rmSpy = vi.spyOn(fs.promises, "rm").mockImplementation(async (...args) => {
       events.push(`fs.rm(${String(args[0])})`);
@@ -80,7 +68,6 @@ describe("archiveSession container teardown", () => {
     );
 
     expect(containerManager.destroy).toHaveBeenCalledWith(sessionId);
-    // The workspace dir's fs.rm must come AFTER container destroy.
     const destroyIdx = events.indexOf(`destroy(${sessionId})`);
     const rmIdx = events.indexOf(`fs.rm(${workspaceDir})`);
     expect(destroyIdx).toBeGreaterThanOrEqual(0);
@@ -128,14 +115,12 @@ describe("archiveSession container teardown", () => {
     );
 
     expect(sessionManager.get(sessionId)?.archived).toBe(true);
-    expect(fs.existsSync(workspaceDir)).toBe(false); // checkout removed
-    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false); // overlay reclaimed
-    expect(fs.existsSync(uploadFile)).toBe(true); // upload preserved for unarchive
+    expect(fs.existsSync(workspaceDir)).toBe(false);
+    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
+    expect(fs.existsSync(uploadFile)).toBe(true);
   });
 
   it("removes the session's durable logs (docs/192), even for a local-only session", async () => {
-    // Local-only session (no remoteUrl) — the workspace is preserved, but logs
-    // must still be dropped unconditionally.
     const workspaceDir = path.join(tmpDir, "ws-local");
     fs.mkdirSync(workspaceDir, { recursive: true });
     const sessionId = "sess-local";
@@ -153,14 +138,12 @@ describe("archiveSession container teardown", () => {
     );
 
     expect(removeSessionLogs).toHaveBeenCalledWith(sessionId);
-    // Local-only workspace is preserved (no recovery path), but logs were dropped.
     expect(fs.existsSync(workspaceDir)).toBe(true);
   });
 
   it("cascades to child sessions when archiving a parent", async () => {
     const parentWs = path.join(tmpDir, "parent-ws");
     const parentId = makeSession(parentWs);
-    // Swap the default sess-1 id by making children with explicit ids.
     const childWs = path.join(tmpDir, "child-ws");
     const grandchildWs = path.join(tmpDir, "grandchild-ws");
     fs.mkdirSync(childWs, { recursive: true });
@@ -192,10 +175,6 @@ describe("archiveSession container teardown", () => {
   });
 
   it("does NOT cascade from an Ops session to its spawned fix sessions", async () => {
-    // docs/162 — an Ops session is a per-host cockpit, not the root of a
-    // cohort. Its children are remediation sessions on the ShipIt source repo
-    // with their own branch and PR, spawned across unrelated incidents.
-    // Archiving the cockpit must leave them (and their workspaces) intact.
     const opsWs = path.join(tmpDir, "ops-ws");
     const opsId = makeSession(opsWs);
     sessionManager.setKind(opsId, "ops");
@@ -227,13 +206,10 @@ describe("archiveSession container teardown", () => {
     expect(sessionManager.get(grandchildId)?.archived).toBeFalsy();
     expect(fs.existsSync(fixWs)).toBe(true);
     expect(fs.existsSync(grandchildWs)).toBe(true);
-    // The breadcrumb survives, so unarchiving the Ops session re-links the tree.
     expect(sessionManager.get(fixId)?.parentSessionId).toBe(opsId);
   });
 
   it("still cascades from a non-Ops child OF an Ops session", async () => {
-    // The exemption is scoped to the Ops session itself — an ordinary session
-    // in the brood still takes its own descendants with it when archived.
     const opsWs = path.join(tmpDir, "ops-ws2");
     const opsId = makeSession(opsWs);
     sessionManager.setKind(opsId, "ops");
@@ -307,17 +283,12 @@ describe("archiveSession container teardown", () => {
       containerManager,
     );
 
-    // Archive still happened — fs.rm cleared the dir and the DB row flipped.
     expect(containerManager.destroy).toHaveBeenCalled();
     expect(sessionManager.get(sessionId)?.archived).toBe(true);
     expect(fs.existsSync(workspaceDir)).toBe(false);
   });
 
   it("archives a self-parented session without infinite recursion", async () => {
-    // A live bug (spawn's claim handed back the calling parent itself) produced
-    // a session whose parent_session_id is its own id. The child cascade then
-    // recursed forever — "Maximum call stack size exceeded" — making the
-    // session unarchivable. The in-progress guard must break the cycle.
     const workspaceDir = path.join(tmpDir, "ws");
     const sessionId = makeSession(workspaceDir);
     sessionManager.setParentSession(sessionId, sessionId);
@@ -342,7 +313,6 @@ describe("archiveSession container teardown", () => {
     sessionManager.setRemoteUrl("sess-a", remoteUrl);
     sessionManager.track("sess-b", "B", wsB);
     sessionManager.setRemoteUrl("sess-b", remoteUrl);
-    // a → parent b, b → parent a (mutual cycle).
     sessionManager.setParentSession("sess-a", "sess-b");
     sessionManager.setParentSession("sess-b", "sess-a");
 

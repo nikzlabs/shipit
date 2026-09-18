@@ -147,18 +147,104 @@ unguarded. That bound is not this change's to move.
 
 ## Logging (req 7)
 
-Three lines, no more:
+### The auto-merge lines
 
 - `[auto-merge] Merged PR #N (owner/repo) for <session> via managed merge (squash, reason=…)` — at the successful REST merge.
 - `[auto-merge] Holding merge of PR #N (owner/repo) for <session>: agent busy` — once per wait, not once per poll tick (a `busyLogged` set, cleared when the gate opens or the arming is retired).
-- `[auto-merge] PR #N for <session> reached merged with auto-merge armed: native | managed (reason)` — in the poller's terminal branch, just before the arming is dropped. This is the only place a **native** merge is attributable from ShipIt's side, since the merge itself happens inside GitHub. Gated on `!alreadyTerminal` so it fires once. It falls back to GitHub's own `autoMergeEnabled` from the last open summary, so an arming ShipIt never recorded (the merge button's pending-checks fallback) is still attributed — captured before `lastKnown` is overwritten with the terminal summary.
+- `[auto-merge] PR #N for <session> reached merged with auto-merge armed: native | managed (reason)` — in the poller's terminal branch, just before the arming is dropped. This is the only place a **native** ARMING is attributable from ShipIt's side, since the merge itself happens inside GitHub. Gated on `!alreadyTerminal` so it fires once. It falls back to GitHub's own `autoMergeEnabled` from the last open summary, so an arming ShipIt never recorded (the merge button's pending-checks fallback) is still attributed — captured before `lastKnown` is overwritten with the terminal summary.
 - `[auto-merge] … merged as a turn began` (warn) — the check/await race above, when it actually happens.
+
+### The merge record on every other path
+
+The first implementation gave the merge record to the managed loop only, which
+left the dead end this requirement was written to remove standing for every
+merge that was NOT a managed one — the common case. A later read-only ops
+session hit it exactly: the absence of any `[auto-merge]` line host-wide for the
+whole day proved managed auto-merge was not the actor (a useful negative, and
+evidence the existing line works), but nothing distinguished the ShipIt merge
+button from a merge performed in GitHub's own web UI. The only trace of the
+merge at all was `[pr-poller] Post-merge: marked <session> as merged`, which
+records that the merge was *observed*, not who performed it.
+
+Every path that can merge now records it, in one shape a single `Merged PR #`
+grep finds:
+
+| Path | Line |
+|---|---|
+| Managed loop (`auto-merge-manager.ts`) | `[auto-merge] Merged PR #N (owner/repo) for <session> via managed merge (squash, reason=…)` |
+| UI merge button (`POST /api/sessions/:id/pr/merge`) | `[pr] Merged PR #N (owner/repo) for <session> via the ShipIt merge button (squash)` |
+| Agent's `gh pr merge` (`POST /api/sessions/:id/pr/:number/merge`, docs/224) | `[pr] Merged PR #N (owner/repo) for <session> via gh pr merge (squash)` |
+| Merged outside ShipIt (web UI, a laptop, native auto-merge GitHub ran itself) | `[pr-poller] Merged PR #N (owner/repo) for <session> via a merge no ShipIt path recorded (observed, not performed by this orchestrator process)` |
+
+Three things decide the shape.
+
+**Arming is not merging.** Both merge routes can end in an ARMING rather than a
+merge when checks are still running, and `agentMergePullRequest` reports an
+already-merged PR without merging it. Neither is recorded — the line is written
+at the successful REST merge and nowhere else, so it never claims an action
+ShipIt did not take.
+
+**The fourth case has no local actor, so the record comes from the observer.**
+Nothing in ShipIt performs a web-UI merge, so the only attribution available is
+the poller's terminal branch. Its line says *observed*, not *performed*, which
+is what turns "we did not merge it" into a positive record instead of an
+inference from silence.
+
+**That observation must not contradict the other three.** A merge ShipIt
+performs is observed here seconds later, so `services/merge-attribution.ts`
+keeps a bounded, per-process set of the PRs this orchestrator merged
+(`owner/repo#number` lowercased, FIFO-evicted at 256) and the observation is
+silent for one of them.
+
+The key is **lowercased** because the two sides resolve the repository
+differently and GitHub treats the two forms as one: a performed merge parses the
+remote URL the user configured (`resolveGitHubRemote`), while the poller
+switches to GitHub's canonical `nameWithOwner` (`canonicalApiTarget`, added for
+transferred repos). Without the normalization a remote whose casing differs from
+GitHub's own would miss on **every** merge, so every ShipIt merge would also be
+reported as one ShipIt did not perform. Found in review.
+
+**The observed line states its own bound rather than over-claiming.** Three
+cases leave the set without an entry for a merge ShipIt did perform: an
+orchestrator restart between the two (the set is per-process), a poll already in
+flight observing the merge before the merge call's continuation records it, and
+a repository renamed in between. So the line does not say "nobody in ShipIt
+merged this" — it says no ShipIt path in this orchestrator process *recorded*
+merging it, which is exactly what is known. That is still the positive record
+req 7 asked for: it separates a merge ShipIt performed from one it did not, and
+names its bound instead of overstating. Persisting the set would close the
+restart case and neither of the other two, for a durable write on every merge.
+
+**The observation is emitted before the terminal state is persisted.**
+`alreadyTerminal` is computed from the state that persist overwrites, so a crash
+between the two would restart into `prevState === "merged"` and suppress the
+line forever — the record lost for exactly the merge an incident review came
+looking for. Found in review.
+
+Every field is a ShipIt-controlled token — a session id, a PR number, an
+owner/repo, a closed `MergeMethod`, a fixed verb from a closed `MergeVia`. No PR
+title, branch description, or GitHub error string goes in. The `owner/repo`
+field is load-bearing on the sandbox route in a way it is not on the others: a
+sandbox session merges an explicit PR number in a repository that need not be
+its own.
+
+`method` is typed closed at the formatter even though both routes take
+`method?: string` off the request body and cast it unchecked before calling
+GitHub. That cast is pre-existing and deliberately left alone — narrowing it
+would silently turn an invalid method into a `merge`, a behaviour change this
+observability fix has no business making — and it is not a hole in practice,
+since GitHub rejects a method outside the set and no line is written for a
+failed merge.
+
+`sessionId` is a *required* field on both service functions rather than an
+optional one, so a merge path that cannot name a session does not compile.
 
 ## Key files
 
-- `src/server/orchestrator/auto-merge-manager.ts` — the busy gate, `managedReason`, merge/hold logs.
-- `src/server/orchestrator/pr-status-poller.ts` — wires `getRunner`, adds `hasLiveRunner`, broadcasts `managedReason`, logs the terminal attribution.
-- `src/server/orchestrator/services/github.ts` — `activatePendingAutoMergeForPr` / `toggleAutoMerge` arm managed while the session is live; `mergePullRequest` takes `preferManaged` for its pending-checks fallback; `updateMergeMethod` no longer re-arms GitHub for a managed (or now-live) arming.
+- `src/server/orchestrator/services/merge-attribution.ts` — the merge record shared by every path that is not the managed loop, plus the per-process memory that keeps the observation from contradicting them.
+- `src/server/orchestrator/auto-merge-manager.ts` — the busy gate, `managedReason`, merge/hold logs; notes its own merge into the shared memory (its line is unchanged).
+- `src/server/orchestrator/pr-status-poller.ts` — wires `getRunner`, adds `hasLiveRunner`, broadcasts `managedReason`, logs the terminal attribution, and records a merge performed outside ShipIt.
+- `src/server/orchestrator/services/github.ts` — `activatePendingAutoMergeForPr` / `toggleAutoMerge` arm managed while the session is live; `mergePullRequest` takes `preferManaged` for its pending-checks fallback and logs the merge-button record; `agentMergePullRequest` logs the `gh pr merge` record; `updateMergeMethod` no longer re-arms GitHub for a managed (or now-live) arming.
 - `src/server/orchestrator/services/pr-lifecycle.ts` — both card payloads carry `managedReason`, so an agent-opened PR never flashes the misconfiguration tooltip.
 - `src/server/orchestrator/api-routes-github.ts` — UI merge route widened to `agentBusy`, and records a managed arming for a live session.
 - `src/server/shared/types/github-types.ts` — `AutoMergeManagedReason`, on the state and both broadcast shapes.
@@ -173,6 +259,10 @@ Three lines, no more:
 - `services/github-auto-merge-arming.test.ts` — a live session arms managed, not native, and carries no settings URL or GitHub error; a quiet session still arms native; the GitHub-refused fallback reports `native-unavailable`; the merge button's pending-checks fallback arms managed for a live session and native otherwise.
 - `integration_tests/pr-merge.test.ts` — the UI route 409s during post-turn work, not just mid-turn.
 - `PrStatusControls.test.tsx` — the live-session tooltip explains the wait and offers no settings link; the misconfiguration tooltip is unchanged.
+- `services/merge-attribution.test.ts` — each line's wording; the observation is silent for a merge this process performed (by route log or by the managed loop's bare note); the key matches across the casing difference between a remote URL and GitHub's canonical name (mutation-checked); a different PR or a same-numbered PR in another repo is not silenced; the memory is bounded and evicts oldest first; every line matches the one family pattern.
+- `auto-merge-manager.test.ts` — the managed line's own wording, that it matches the same family pattern, that a failed merge records nothing, and that the manager's merge silences the poller's observation. That last one is the WIRING, not the line: the note is invisible to every other assertion, so without it deleting the call left the whole suite green (mutation-checked).
+- `services/github-agent-merge.test.ts` / `services/github-auto-merge-arming.test.ts` — each route's record names the session, PR, repo and method; neither records an arming, and `gh pr merge` records nothing for an already-merged PR.
+- `pr-status-poller.test.ts` — the outside merge is recorded as observed; nothing is recorded when a ShipIt path performed it, when the PR closed unmerged, or a second time across a re-track. The re-track case asserts a second REST verification actually happened, so it cannot pass by proving nothing ran.
 
 The registry fake (`pr-poller-test-helpers.ts`) grew an `agentBusy` that follows
 `running` unless overridden. Without that it could never report the exact state —

@@ -1,10 +1,5 @@
 import type { McpTestResult as McpTestResultData } from "../../../server/shared/types.js";
 
-/**
- * Renders the inline outcome of a "Test" run — the transient "Testing…" line,
- * the connected tool list, or the failure message. Shared by the OAuth
- * provider cards and the standalone server rows.
- */
 export function McpTestResult({
   result,
 }: {

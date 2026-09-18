@@ -1,21 +1,10 @@
 #!/usr/bin/env bash
 #
-# Android "hot reload" loop for the emulator preview (docs/213).
-#
-# HONEST SCOPE: native Android has no headless hot-SWAP (Android Studio's "Apply
-# Changes" / Compose "Live Edit" are IDE-bound and not available from the CLI).
-# This is the practical agent-free equivalent: on every source change, rebuild
-# the debug APK, reinstall it (`-r` keeps app data), and relaunch — so the
-# emulator preview always reflects the current code. Coarser than web HMR (full
-# rebuild + reinstall, a few seconds to minutes), but it's the real story.
-#
-# Runs in the `android` Compose service (Dockerfile.android-dev: SDK + Gradle).
-# Reaches the budtmo `emulator` service over the Compose network by service DNS.
+# Rebuild, reinstall, and relaunch the Android preview after source changes.
 set -uo pipefail
 
 ADB_TARGET="${ADB_TARGET:-emulator:5555}"
-# Defaults target the in-repo native test app (android-snapshot-test). Override
-# APP_DIR/APK/PKG in the Compose service to point the loop at any other Gradle app.
+# Override these defaults for another Gradle app.
 APP_DIR="${APP_DIR:-/workspace/android-snapshot-test}"
 APK="${APK:-$APP_DIR/app/build/outputs/apk/debug/app-debug.apk}"
 PKG="${PKG:-com.shipit.snapshottest}"
@@ -39,9 +28,7 @@ build_deploy() {
   fi
 }
 
-# Signature of the watched source tree: any change to a tracked source file
-# flips the hash. Polling (not inotify) because Docker bind-mounts drop inotify
-# events — same rationale as CHOKIDAR_USEPOLLING on the web `dev` service.
+# Poll because Docker bind mounts can drop inotify events.
 sig() {
   find app/src build.gradle.kts app/build.gradle.kts settings.gradle.kts gradle.properties \
     -type f 2>/dev/null -printf '%T@ %p\n' | sort | md5sum
@@ -56,6 +43,6 @@ while true; do
   if [ "$now" != "$last" ]; then
     echo "[android] change detected — rebuilding"
     build_deploy
-    last="$(sig)"   # re-read: the build writes nothing under app/src, but re-stamp to be safe
+    last="$(sig)"
   fi
 done

@@ -41,7 +41,6 @@ function subscribe(onStoreChange: () => void): () => void {
   };
 }
 
-/** 1 is the honest fallback: no scaling correction, today's behavior. */
 const FALLBACK_DPR = 1;
 
 export function useDevicePixelRatio(): number {

@@ -44,7 +44,6 @@
   .cols { display: grid; grid-template-columns: 1fr 330px; gap: 22px; align-items: start; }
   .stage { margin-bottom: 46px; }
 
-  /* ---- panel ---- */
   .panel {
     background: var(--bg-modal); border: 1px solid var(--border);
     border-radius: 13px; overflow: hidden;
@@ -57,7 +56,6 @@
   .panel-head .sub { font-size: 12px; color: var(--text-tertiary); }
   .panel-head .grow { flex: 1; }
 
-  /* ---- headline ---- */
   .headline { display: flex; gap: 30px; padding: 17px 18px 16px; align-items: flex-start; }
   .hl { min-width: 0; }
   .hl .cap {
@@ -70,7 +68,6 @@
   .hl .why { font-size: 11.5px; color: var(--text-tertiary); margin-top: 6px; line-height: 1.5; max-width: 260px; }
   .hl-div { width: 1px; align-self: stretch; background: var(--border-soft); }
 
-  /* ---- breakdown ---- */
   .rows { border-top: 1px solid var(--border-soft); }
   .r {
     display: flex; align-items: center; gap: 12px;
@@ -102,8 +99,7 @@
   }
   .pill.sub { border-color: var(--incl-dim); background: var(--incl-bg); color: var(--incl); }
   .pill.key { border-color: var(--paid-dim); background: var(--paid-bg); color: var(--paid); }
-  /* The legacy bucket is deliberately colourless: it is neither of the two things the
-     split names, and tinting it either way would imply an attribution it does not have. */
+
   .r.legacy { opacity: 0.72; }
   .r.legacy .name { color: var(--text-secondary); }
   .r.legacy .v { color: var(--text-secondary); }
@@ -118,7 +114,6 @@
     line-height: 1.55;
   }
 
-  /* ---- weekly chart ---- */
   .chart { padding: 16px 18px 6px; }
   .chart-head {
     display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
@@ -146,7 +141,6 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums;
   }
 
-  /* ---- notes ---- */
   .notes { display: flex; flex-direction: column; gap: 12px; }
   .note {
     border: 1px solid var(--border); border-left: 2px solid var(--accent);
@@ -179,7 +173,6 @@
   <b>service &times; billing mode</b>.
 </p>
 
-<!-- ============================ 1. SESSION ============================ -->
 <div class="section-label"><span class="n">1</span> This session — mixed, the case that breaks a single total</div>
 <div class="stage"><div class="cols">
   <div class="panel">
@@ -335,7 +328,6 @@
   </div>
 </div></div>
 
-<!-- ============================ 2. SUBSCRIPTION-ONLY ============================ -->
 <div class="section-label"><span class="n">2</span> A session that cost nothing — say so, don&rsquo;t print $0.00</div>
 <div class="stage"><div class="cols">
   <div class="panel">
@@ -385,7 +377,6 @@
   </div>
 </div></div>
 
-<!-- ============================ 3. GLOBAL ============================ -->
 <div class="section-label"><span class="n">3</span> All sessions — the same split, plus what it costs over time</div>
 <div class="stage"><div class="cols">
   <div class="panel">

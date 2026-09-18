@@ -18,26 +18,25 @@ export interface SubAgentSpawnChip {
 }
 
 /**
- * Live state for an in-flight Rescue session ("Restart container") operation.
- * Populated from `container_restarting` WS messages so the SessionHealthStrip
- * can render a phased overlay. `null` outside of a rescue.
+ * A row in the queue strip above the composer.
  *
- * `startedAt` is the wall-clock timestamp when the user clicked the rescue or
- * restart-agent button. Lives here (not in React state inside the strip) so
- * the in-flight indicator survives the SessionHealthStrip being unmounted —
- * the right-panel tabs (Terminal / Preview / Docs) render via ternary, so
- * switching tabs during a restart would otherwise wipe the local React state
- * and leave the user staring at "Container missing" with no context. With
- * the timestamp in Zustand the poll loop can still filter stale create
- * errors (`lastCreateErrorAt >= startedAt`) after a remount.
- *
- * See docs/124-session-rescue-and-diagnostics §3.2.
+ * `requestId` and `bubble` are set on a **predicted** entry only — one this
+ * browser added at send time because a compaction is about to run ahead of the
+ * message (`utils/predicted-queue.ts`). A server-authoritative entry carries
+ * neither, which is what tells the two apart.
  */
+export interface QueuedMessageEntry {
+  text: string;
+  position: number;
+  requestId?: string;
+  bubble?: ChatMessage;
+}
+
 export interface RescueState {
   phase: RescuePhase;
   reason?: string;
   message?: string;
-  /** Wall-clock timestamp (Date.now()) when this restart was initiated. */
+
   startedAt?: number;
 }
 
@@ -53,21 +52,12 @@ interface SessionState {
   isLoading: boolean;
   activity: StreamingActivity | undefined;
   /**
-   * docs/178 — transient "Compacting…" indicator. Set true on a
-   * `compaction_status` with `active:true`, cleared on `active:false` (or when
-   * the matching card lands). Never persisted — purely a live progress signal.
+   * docs/178 — a compaction is in flight. Set true on a `compaction_status`
+   * with `active:true`, cleared on `active:false` (or when the matching card
+   * lands). Never persisted — purely a live progress signal; it is what the
+   * agent status bar says instead of the current activity.
    */
   compacting: boolean;
-  /**
-   * docs/178 — the transcript position the in-flight compaction started at:
-   * `messages.length` at the moment `compacting` went true, or `null` when no
-   * compaction is running. `MessageList` renders the transient indicator at
-   * this position instead of at the end of the list, so a message the user
-   * sends *while* the compaction runs lands BELOW the spinner — the order the
-   * two things actually happened in. Derived by `setCompacting`; never set
-   * directly.
-   */
-  compactingAnchor: number | null;
   /**
    * docs/144 — transient sub-agent spawn chips keyed by spawnId. Set from
    * `sub_agent_spawn` WS messages; "Asking Codex…" while in flight, replaced by
@@ -92,7 +82,26 @@ interface SessionState {
    */
   modelSelectionEcho: Record<string, number>;
   activeRunnerSessions: Set<string>;
-  /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
+  /**
+   * docs/285 — which runner GENERATION each session is on, as the server last
+   * reported it. Bumped server-side whenever a session's runner is created, so a
+   * value that moves means the runner this tab is attached to has been replaced
+   * (a network-mode rebuild, a Rescue).
+   *
+   * It matters because disposal leaves the viewer's socket open with no
+   * listeners on the other end: a tab that was watching when the container was
+   * rebuilt receives nothing at all, forever, with no error to notice.
+   */
+  runnerIncarnations: Record<string, number>;
+  /**
+   * docs/285 — bumped when the ACTIVE session's runner generation moved, so this
+   * tab's WebSocket reattaches to the replacement.
+   *
+   * A counter rather than a boolean because the same thing can happen twice, and
+   * the second occurrence has to be distinguishable from the first.
+   */
+  staleRunnerNonce: number;
+
   awaitingPermissionSessions: Set<string>;
   /**
    * docs/235 — sessions holding outstanding agent-initiated background tasks,
@@ -111,12 +120,12 @@ interface SessionState {
    * long gone. Keeping them here means the marker and its label can't drift.
    */
   backgroundTaskSessions: Map<string, string[]>;
-  queuedMessages: { text: string; position: number }[];
+  queuedMessages: QueuedMessageEntry[];
   rewindPreviews: Record<string, WsRewindPreview>;
   rewindRecoveries: Record<string, RewindRecovery>;
-  /** WS message to auto-send when the next per-session WS connection opens (e.g. new session from home). */
+
   pendingWsMessage: Record<string, unknown> | undefined;
-  /** Text to prefill into the message input (consumed and cleared by MessageInput). */
+
   prefillText: string | undefined;
   /**
    * planning#322 — the issue the Issues tab's "Start session" seeded this session
@@ -129,51 +138,21 @@ interface SessionState {
    * session it was seeded for is the one being sent to.
    */
   pendingIssueRef: { sessionId: string; ref: IssueRef } | undefined;
-  /**
-   * planning#12 — a pre-formatted markdown blockquote to *append* into the chat
-   * composer when the user clicks the floating "Reply" button on a selection
-   * inside a chat message bubble. Distinct from `prefillText` (which replaces
-   * the whole draft): this is consumed by MessageInput by appending to the
-   * existing draft so the user can quote a passage without losing what they've
-   * already typed. Consumed and cleared by MessageInput.
-   */
+
   quoteReplyText: string | undefined;
-  /** True once session history has been loaded from the server (prevents rocket flash on session switch). */
+
   historyLoaded: boolean;
-  /** Live Rescue session phase, or null when no rescue is in flight. */
+
   rescueState: RescueState | null;
-  /**
-   * Most recent error from a recovery action (Kill agent, Restart agent,
-   * Rescue session) issued from the SessionHealthStrip. Lives here so it
-   * survives the strip being unmounted by a right-panel tab switch — keeping
-   * it as React-local `useState` meant a tab switch wiped the error message
-   * before the user could read it.
-   */
+
   recoveryActionError: string | null;
-  /**
-   * Most recent best-effort kill failure (Interrupt or Rescue session).
-   * Cleared automatically after a short interval on the client. See
-   * docs/124-session-rescue-and-diagnostics §1.4.
-   */
+
   interruptError: string | null;
-  /**
-   * Most recent idle-disposal / memory-pressure notice for the active
-   * session. Lets the strip render a dedicated banner ("Session paused
-   * after N minutes idle. Send a message to resume.") instead of
-   * relying solely on the Logs entry. Cleared on session change or when
-   * the user dismisses. See docs/124-session-rescue-and-diagnostics §1.6.
-   */
-  pauseNotice: { reason: "idle-disposed" | "memory-pressure"; idleMs?: number; at: number } | null;
-  /**
-   * Agent-container OOM circuit-breaker trip notice. Set when the
-   * orchestrator sends a `session_memory_exhausted` WS message — the
-   * breaker has refused further container creation until the user
-   * explicitly retries via Rescue session / agent-container-restart.
-   * Cleared on session change and on successful container restart.
-   * See docs/124-session-rescue-and-diagnostics follow-up.
-   */
+
+  pauseNotice: { reason: "agent-reclaimed" | "memory-pressure"; idleMs?: number; at: number } | null;
+
   memoryExhausted: { countInWindow: number; windowMs: number; threshold: number; at: number } | null;
-  /** Runtime worker/orchestrator build comparison for the active session. */
+
   containerFreshness: ContainerFreshness | null;
   /**
    * docs/213 / planning#317 — non-null while the active session's auto-commit is
@@ -183,29 +162,20 @@ interface SessionState {
    * `secret_block_status` and cleared when a commit lands.
    */
   secretBlock: SessionSecretBlock | null;
-  /**
-   * Per-turn usage history keyed by session ID. Populated from
-   * `turn_usage_update` WS messages live, and seeded on session attach from
-   * `GET /api/sessions/:id/history` (sourced from the `usage_turns` table).
-   * Used by the context-dial UI to render the running context size and
-   * per-turn breakdown without losing data on session switches or WS
-   * reconnects.
-   */
+
   turnUsage: Record<string, TurnUsage[]>;
 
-  // Actions
   setSessionId: (id: string | undefined) => void;
   setMessages: (
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
-  appendMessage: (message: ChatMessage) => void;
   updateLastMessage: (updater: (msg: ChatMessage) => ChatMessage) => void;
   setIsLoading: (loading: boolean) => void;
   setActivity: (activity: StreamingActivity | undefined) => void;
   setCompacting: (compacting: boolean) => void;
-  /** docs/144 — upsert the in-flight "Asking Codex…" spinner keyed by spawnId. */
+
   upsertSubAgentSpawn: (chip: SubAgentSpawnChip) => void;
-  /** docs/144 — remove the in-flight spinner once its terminal consult card lands. */
+
   removeSubAgentSpawn: (spawnId: string) => void;
   setHistoryLoaded: (loaded: boolean) => void;
   setRescueState: (state: RescueState | null) => void;
@@ -218,39 +188,35 @@ interface SessionState {
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
-  /** docs/252 phase 4 — record that the server answered this session's selection. */
+
   bumpModelSelectionEcho: (sessionId: string) => void;
-  /**
-   * docs/186 — pause / resume the auto-fix-CI loop for a single session.
-   * Optimistically flips `autoFixCiPaused` on the session record, POSTs the
-   * change, and reverts if the request fails. The server re-broadcasts the
-   * session list so other tabs reconcile.
-   */
+
   setAutoFixCiPaused: (sessionId: string, paused: boolean) => Promise<void>;
-  /**
-   * docs/110 — pin/unpin a session. Pinning makes it persistent (top of its repo
-   * group, always visible, immune to disk reclamation). Optimistic; the
-   * authoritative `session_list` SSE broadcast reconciles.
-   */
+
   setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
-  /** docs/241 — reserve/release the session runtime for its managed preview. */
+
   setKeepPreviewRunning: (sessionId: string, enabled: boolean) => Promise<void>;
-  /**
-   * docs/277 — mute/unmute a session: while muted it is suppressed from every
-   * "needs you" surface. Optimistic; the server clears the mute on its own at
-   * the start of the session's next turn and broadcasts `session_list`.
-   */
+
   setMuted: (sessionId: string, muted: boolean) => Promise<void>;
-  /**
-   * docs/110 Phase 2 — reorder a repo's pinned sessions to the given id order
-   * (top-first). Optimistic; the authoritative `session_list` broadcast
-   * reconciles.
-   */
+
   reorderPins: (remoteUrl: string, ids: string[]) => Promise<void>;
   setSelectedRepoUrl: (url: string | null) => void;
   setCreatingRepo: (creating: boolean) => void;
   setActiveRunnerSessions: (
     updater: (prev: Set<string>) => Set<string>,
+  ) => void;
+  /**
+   * docs/285 — fold in the server's view of runner generations, and raise
+   * `staleRunnerNonce` if the ACTIVE session's moved.
+   *
+   * `merge` distinguishes the two shapes that arrive here: the SSE connect
+   * snapshot is authoritative and replaces the map, while a live per-session
+   * signal carries one entry and must not erase what it does not mention.
+   */
+  noteRunnerIncarnations: (
+    next: Record<string, number>,
+
+    opts?: { merge?: boolean; live?: boolean },
   ) => void;
   setAwaitingPermissionSessions: (
     updater: (prev: Set<string>) => Set<string>,
@@ -259,42 +225,22 @@ interface SessionState {
     updater: (prev: Map<string, string[]>) => Map<string, string[]>,
   ) => void;
   setQueuedMessages: (
-    messages:
-      | { text: string; position: number }[]
-      | ((
-          prev: { text: string; position: number }[],
-        ) => { text: string; position: number }[]),
+    messages: QueuedMessageEntry[] | ((prev: QueuedMessageEntry[]) => QueuedMessageEntry[]),
   ) => void;
   setRewindPreview: (preview: WsRewindPreview) => void;
-  clearRewindPreviews: () => void;
   setRewindRecovery: (recovery: RewindRecovery | null) => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
-  /**
-   * Fill the composer textarea with text the user is expected to edit before
-   * sending (docs/150).
-   *
-   * Use ONLY for affordances where the prefilled prompt is a starting point
-   * the user will refine — "Start Session from doc", "Start session from
-   * issue", and the services panel's "Send to Agent" (service logs are noisy,
-   * so the user trims/annotates them before sending). For send-direct
-   * affordances ("Create PR", "Auto-fix errors"), POST to
-   * `/api/sessions/:id/agent/dispatch` via the `dispatchAgentMessage` helper
-   * instead. Prefill there forces the user into a two-click dance for what
-   * should be a one-click action.
-   */
+
   setPrefillText: (text: string | undefined) => void;
   setPendingIssueRef: (pending: { sessionId: string; ref: IssueRef } | undefined) => void;
-  /** planning#12 — set the blockquote to append into the composer (see `quoteReplyText`). */
+
   setQuoteReplyText: (text: string | undefined) => void;
-  /** Append a per-turn usage record for the given session. */
+
   appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;
-  /** Replace the per-turn usage history for a session (e.g. on chat_history hydrate). */
+
   setTurnUsageForSession: (sessionId: string, turns: TurnUsage[]) => void;
-  /** Drop a session's per-turn usage (e.g. on archive). */
-  clearTurnUsageForSession: (sessionId: string) => void;
   reset: () => void;
 
-  // All sessions dialog
   allSessions: SessionInfo[];
   allSessionsDialogOpen: boolean;
   /**
@@ -309,38 +255,14 @@ interface SessionState {
   fetchAllSessions: () => Promise<void>;
   unarchiveSession: (sessionId: string) => Promise<void>;
 
-  // Async actions
   archiveSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
 
-  /**
-   * docs/128 — create a privileged ops session via the ops template. When
-   * `targetSessionId` is supplied (the "Investigate in Ops session" entry point
-   * off another session's row), the server names the new session after its
-   * quarry and returns a minimal `seedPrompt`, which we stash as the new
-   * session's composer draft. It identifies the target and read-only boundary;
-   * the operator supplies the incident-specific request. Returns the new
-   * session id, or `null` on failure (caller toasts).
-   */
   createOpsSession: (targetSessionId?: string) => Promise<string | null>;
 
-  /**
-   * docs/211 — create a repo-less, capability-scoped Sandbox session. The chosen
-   * `capabilities` are sent to the server, which stamps `kind = "sandbox"` and
-   * the (normalized) capability set authoritatively. Returns the new session id,
-   * or `null` on failure (caller toasts).
-   */
   createSandboxSession: (capabilities: SessionCapabilities) => Promise<string | null>;
 
-  /**
-   * docs/117 Phase 2 — return all sessions whose `parentSessionId` matches
-   * the supplied id. Used by the sidebar grouping (children rendered
-   * indented under their parent) and by the SpawnedSessionCard's
-   * "missing-child fallback" check. The selector reads from the current
-   * `sessions` snapshot synchronously; callers that need reactivity should
-   * subscribe via `useSessionStore((s) => s.getChildren(parentId))`.
-   */
   getChildren: (parentSessionId: string) => SessionInfo[];
 }
 
@@ -349,11 +271,10 @@ const initialResettableState = {
   isLoading: false,
   activity: undefined as StreamingActivity | undefined,
   compacting: false,
-  compactingAnchor: null as number | null,
   subAgentSpawns: {},
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
-  queuedMessages: [] as { text: string; position: number }[],
+  queuedMessages: [] as QueuedMessageEntry[],
   rewindPreviews: {} as Record<string, WsRewindPreview>,
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
   prefillText: undefined as string | undefined,
@@ -377,6 +298,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [] as SessionInfo[],
   modelSelectionEcho: {},
   activeRunnerSessions: new Set<string>(),
+  runnerIncarnations: {},
+  staleRunnerNonce: 0,
   awaitingPermissionSessions: new Set<string>(),
   backgroundTaskSessions: new Map<string, string[]>(),
   rewindRecoveries: {},
@@ -393,9 +316,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         typeof messages === "function" ? messages(state.messages) : messages,
     })),
 
-  appendMessage: (message) =>
-    set((state) => ({ messages: [...state.messages, message] })),
-
   updateLastMessage: (updater) =>
     set((state) => {
       if (state.messages.length === 0) return state;
@@ -408,19 +328,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setActivity: (activity) => set({ activity }),
 
-  // The anchor is captured here rather than at the call sites so every path
-  // that starts a compaction (live `compaction_status`, a replayed one after a
-  // reconnect) gets it. A repeated `active:true` keeps the original anchor —
-  // the replay must not move the spinner down past messages sent since.
-  setCompacting: (compacting) =>
-    set((s) => ({
-      compacting,
-      compactingAnchor: !compacting
-        ? null
-        : s.compacting && s.compactingAnchor !== null
-        ? s.compactingAnchor
-        : s.messages.length,
-    })),
+  setCompacting: (compacting) => set({ compacting }),
   upsertSubAgentSpawn: (chip) =>
     set((s) => ({ subAgentSpawns: { ...s.subAgentSpawns, [chip.spawnId]: chip } })),
   removeSubAgentSpawn: (spawnId) =>
@@ -469,7 +377,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ),
       }));
     const prev = get().sessions.find((s) => s.id === sessionId)?.autoFixCiPaused ?? false;
-    patch(paused); // optimistic
+    patch(paused);              
     try {
       const res = await fetch(`/api/sessions/${sessionId}/pr/auto-fix-pause`, {
         method: "POST",
@@ -479,11 +387,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!res.ok) {
         const data = await res.json().catch(() => ({})) as { error?: string };
         console.error("[session-store] Auto-fix pause toggle failed:", data.error);
-        patch(prev); // revert
+        patch(prev);          
       }
     } catch (err) {
       console.error("[session-store] Auto-fix pause toggle failed:", err);
-      patch(prev); // revert
+      patch(prev);          
     }
   },
 
@@ -495,7 +403,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ),
       }));
     const prev = get().sessions.find((s) => s.id === sessionId)?.pinnedAt;
-    patch(pinned ? new Date().toISOString() : undefined); // optimistic
+    patch(pinned ? new Date().toISOString() : undefined);              
     try {
       const res = await fetch(`/api/sessions/${sessionId}/pin`, {
         method: pinned ? "POST" : "DELETE",
@@ -504,20 +412,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!res.ok) {
         const data = await res.json().catch(() => ({})) as { error?: string };
         console.error("[session-store] Pin toggle failed:", data.error);
-        patch(prev); // revert
+        patch(prev);          
       }
       // On success the server broadcasts session_list, which reconciles ordering.
     } catch (err) {
       console.error("[session-store] Pin toggle failed:", err);
-      patch(prev); // revert
+      patch(prev);          
     }
   },
 
   setKeepPreviewRunning: async (sessionId, enabled) => {
-    // Patch both lists: the sidebar renders `sessions`, while the All Sessions
-    // dialog renders `allSessions` and is where a session demoted from the
-    // sidebar is toggled from. Patching one left the other showing the opposite
-    // state until the next fetch.
+
     const patch = (value: boolean) =>
       set((state) => ({
         sessions: state.sessions.map((s) =>
@@ -527,9 +432,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           s.id === sessionId ? { ...s, keepPreviewRunning: value || undefined } : s,
         ),
       }));
-    // Same reason as the patch above: a session toggled from the All Sessions
+
     // dialog may not be in `sessions` at all, and a revert must restore its
-    // real previous value rather than a default of false.
+
     const prev = (get().sessions.find((s) => s.id === sessionId)
       ?? get().allSessions.find((s) => s.id === sessionId))?.keepPreviewRunning ?? false;
     patch(enabled);
@@ -552,9 +457,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setMuted: async (sessionId, muted) => {
-    // Patched in both lists for the same reason as the reservation toggle above:
-    // the sidebar renders `sessions` and the All Sessions dialog renders
-    // `allSessions`, and either row can carry the control.
+
     const patch = (value: string | undefined) =>
       set((state) => ({
         sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, mutedAt: value } : s)),
@@ -562,9 +465,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     const prev = (get().sessions.find((s) => s.id === sessionId)
       ?? get().allSessions.find((s) => s.id === sessionId))?.mutedAt;
-    // Optimistic: the row's attention marker goes quiet on the click, not on the
-    // round-trip. The server's `session_list` broadcast reconciles the real
-    // timestamp a moment later.
+
     patch(muted ? new Date().toISOString() : undefined);
     try {
       const res = await fetch(`/api/sessions/${sessionId}/muted`, {
@@ -585,12 +486,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   reorderPins: async (remoteUrl, ids) => {
-    // Snapshot pinnedAt for the affected sessions so we can revert on failure.
+
     const prev = new Map(
       get().sessions.filter((s) => ids.includes(s.id)).map((s) => [s.id, s.pinnedAt]),
     );
-    // Optimistic: rewrite pinnedAt to a strictly-decreasing sequence so the
-    // requested order sorts correctly (mirrors SessionManager.reorderPins).
+
     const base = Date.now();
     set((state) => ({
       sessions: state.sessions.map((s) => {
@@ -632,6 +532,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeRunnerSessions: updater(state.activeRunnerSessions),
     })),
 
+  noteRunnerIncarnations: (next, opts) =>
+    set((state) => {
+      const merged = opts?.merge
+        ? { ...state.runnerIncarnations, ...next }
+        : next;
+      const active = state.sessionId;
+
+      const previous = active ? state.runnerIncarnations[active] : undefined;
+      const current = active ? merged[active] : undefined;
+
+      const replaced =
+        active !== null
+        && current !== undefined
+        && (opts?.live === true
+
+          ? previous === undefined || current > previous
+          : previous !== undefined && current > previous);
+      return {
+        runnerIncarnations: merged,
+        staleRunnerNonce: replaced ? state.staleRunnerNonce + 1 : state.staleRunnerNonce,
+      };
+    }),
+
   setAwaitingPermissionSessions: (updater) =>
     set((state) => ({
       awaitingPermissionSessions: updater(state.awaitingPermissionSessions),
@@ -658,15 +581,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       },
     })),
 
-  clearRewindPreviews: () => set({ rewindPreviews: {} }),
-
   setRewindRecovery: (recovery) =>
     set((state) => {
       if (!recovery) {
         const sid = state.sessionId;
         if (!sid || !(sid in state.rewindRecoveries)) return state;
         const { [sid]: _omit, ...rest } = state.rewindRecoveries;
-        void _omit;
         return { rewindRecoveries: rest };
       }
       return {
@@ -698,20 +618,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       turnUsage: { ...state.turnUsage, [sessionId]: turns },
     })),
 
-  clearTurnUsageForSession: (sessionId) =>
-    set((state) => {
-      if (!(sessionId in state.turnUsage)) return state;
-      // Destructure-and-rest to drop the entry without mutating the original
-      // and without `delete` on a dynamic key (lint: no-dynamic-delete).
-      const { [sessionId]: _omit, ...rest } = state.turnUsage;
-      void _omit;
-      return { turnUsage: rest };
-    }),
-
   reset: () => set(initialResettableState),
 
   setAllSessionsDialogOpen: (allSessionsDialogOpen, allSessionsDialogRepoUrl) =>
-    // Clear the scope on close as well as on a scope-less open, so the next
+
     // open never inherits the previous one's repo.
     set({ allSessionsDialogOpen, allSessionsDialogRepoUrl }),
 
@@ -752,19 +662,36 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const err = await res.json().catch(() => ({ error: "Unknown error" })) as { error?: string };
       throw new Error(err.error ?? `Failed to archive session (${res.status})`);
     }
-    const result = await res.json() as { sessions: SessionInfo[] };
+    const result = await res.json() as {
+      sessions: SessionInfo[];
+      checkoutsRetained?: { sessionId: string; message: string }[];
+    };
+    // The server keeps a checkout when its commits are on no remote; say so, or the
+    // session quietly keeps using disk with nothing to explain it. Archiving a parent
+    // archives its children too, so more than one can come back.
+    const retained = result.checkoutsRetained ?? [];
+    if (retained.length > 0) {
+      const others = retained.length - 1;
+      useUiStore.getState().setToast({
+        message: others > 0
+          ? `${retained[0].message} (and ${others} other archived session${others > 1 ? "s" : ""})`
+          : retained[0].message,
+        variant: "error",
+        duration: 15000,
+      });
+    }
+    const archivedTier = retained.some((r) => r.sessionId === sessionId)
+      ? "light" as const
+      : "evicted" as const;
     set((state) => {
-      // Destructure-and-rest to drop the entry without dynamic delete.
+
       const { [sessionId]: _omit, ...rest } = state.turnUsage;
-      void _omit;
       return {
         sessions: result.sessions,
         allSessions: state.allSessions.map((s) =>
           s.id === sessionId
-            // docs/241 — mirror the server's release of the reservation
-            // (`SessionManager.archive`), or this cached row keeps claiming an
-            // always-on preview the deployment has already handed back.
-            ? { ...s, archived: true, userArchived: true, diskTier: "evicted" as const, keepPreviewRunning: undefined }
+            // Mirror the server's released preview reservation in the cached row.
+            ? { ...s, archived: true, userArchived: true, diskTier: archivedTier, keepPreviewRunning: undefined }
             : s,
         ),
         turnUsage: rest,
@@ -811,11 +738,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const data = (await res.json()) as { session?: { id: string }; seedPrompt?: string };
       const id = data.session?.id;
       if (!id) return null;
-      // Seed the composer BEFORE the caller navigates: MessageInput loads the
-      // per-session draft on focusKey change, so writing it here means the
-      // operator lands in the new ops session with the investigation prompt
+
       // already typed (no race with container boot — this is a plain draft, not
-      // an auto-dispatched turn). See docs/128.
+
       if (data.seedPrompt) saveDraftMessage(id, data.seedPrompt);
       await get().refreshSessions();
       return id;

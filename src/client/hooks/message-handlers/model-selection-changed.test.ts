@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
+import { useFileStore } from "../../stores/file-store.js";
 import { handleModelSelectionChanged } from "./model-selection-changed.js";
 import type { HandlerContext } from "./types.js";
 import type { SessionInfo, WsModelSelectionChanged } from "../../../server/shared/types.js";
@@ -46,13 +47,9 @@ beforeEach(() => {
   useUiStore.setState({ toast: undefined });
 });
 
-/**
- * docs/252 phase 4 (req 4) — the server's confirmation of a selection change.
- */
 describe("handleModelSelectionChanged", () => {
   it("moves the session onto the confirmed service even when the model id is unchanged", () => {
-    // The case the whole message exists for: nothing else refreshes the session
-    // list after a selection change, so without this the picker's checkmark sits
+
     // on the service the user just left — invisible, because the id agrees.
     handleModelSelectionChanged(ctx, message());
     const updated = useSessionStore.getState().sessions.find((s) => s.id === "s1");
@@ -70,8 +67,7 @@ describe("handleModelSelectionChanged", () => {
 
   it("clears the service and mode when the server could not place the model id", () => {
     // The stored invariant: a selection either names a real catalogue row or
-    // carries no service and mode at all. Keeping the old pair would leave the
-    // picker claiming a service the session is not on.
+
     handleModelSelectionChanged(ctx, message({ selection: null, modelId: "some-legacy-slug" }));
     const updated = useSessionStore.getState().sessions.find((s) => s.id === "s1");
     expect(updated?.serviceId).toBeUndefined();
@@ -90,7 +86,7 @@ describe("handleModelSelectionChanged", () => {
       message({ sessionId: "s2", notice: "Codex moved to GPT-5.6 Sol." }),
     );
     expect(useUiStore.getState().toast).toBeUndefined();
-    // The store update still applies — it is keyed by id, so it is safe.
+
     expect(useSessionStore.getState().sessions.find((s) => s.id === "s2")?.serviceId).toBe("vercel");
   });
 
@@ -99,35 +95,39 @@ describe("handleModelSelectionChanged", () => {
     expect(useUiStore.getState().toast).toBeUndefined();
   });
 
-  /**
-   * docs/272-user-selectable-roles req 12 — the seed is "the role the user last
-   * SELECTED", and a role can only be selected before the first turn (req 4).
-   */
   describe("the role seed", () => {
     beforeEach(() => localStorage.setItem("shipit-role-name", "deep dive"));
     afterEach(() => localStorage.removeItem("shipit-role-name"));
 
     it("follows the session's role while the session has not started", () => {
-      // Before the first turn the seed is BOTH the composer's display (a warm
-      // session has no row to read) and the `?role=` the next connect applies,
-      // which overrides the harness, model and reasoning. A seed left naming a
-      // role the user has just moved away from would put it back.
+
       handleModelSelectionChanged(ctx, message({ roleName: null }));
       expect(localStorage.getItem("shipit-role-name")).toBeNull();
     });
 
+    it("is left alone when SHIPIT dropped the role, not the user (req 12)", () => {
+      // A connect-time clear says a parameter of THIS session had to move. It
+      // says nothing about what the user wants to start their next session on,
+      // and writing it here took their default role away over one session's
+      // retired model — while still clearing the role from the row it names.
+      useSessionStore.setState({
+        sessions: [session({ roleName: "deep dive" }), session({ id: "s2" })],
+      });
+      handleModelSelectionChanged(ctx, message({ roleName: null, roleAutoCleared: true }));
+      expect(localStorage.getItem("shipit-role-name")).toBe("deep dive");
+      expect(useSessionStore.getState().sessions.find((s) => s.id === "s1")?.roleName)
+        .toBeUndefined();
+    });
+
     it("is left alone once the session has started", () => {
-      // The reported bug: changing the model in an already-running session
-      // cleared the role the user had picked for everything they start NEXT.
-      // That session's role stopped being an answer to "what should the next new
-      // session be" at its first turn.
+
       useSessionStore.setState({ sessions: [session({ agentPinned: true }), session({ id: "s2" })] });
       handleModelSelectionChanged(ctx, message({ roleName: null }));
       expect(localStorage.getItem("shipit-role-name")).toBe("deep dive");
     });
 
     it("does not make an agent-started child's role the user's default either", () => {
-      // Same bound, other direction: a child session spawned on a role carries
+
       // one the user never selected in this browser.
       useSessionStore.setState({ sessions: [session({ agentPinned: true }), session({ id: "s2" })] });
       handleModelSelectionChanged(ctx, message({ roleName: "triage" }));
@@ -135,15 +135,33 @@ describe("handleModelSelectionChanged", () => {
     });
   });
 
+  // On `/{repo}/new` the warm session has no row, so this is what the pickers read.
+  describe("the ui store's active harness", () => {
+    it("follows the answer for the session on screen", () => {
+      useUiStore.setState({ activeAgentId: "claude" });
+      handleModelSelectionChanged(ctx, message({ agentId: "codex", roleName: "triage" }));
+      expect(useUiStore.getState().activeAgentId).toBe("codex");
+    });
+
+    it("refetches the skills when the harness actually moved", () => {
+      // Skills are per-backend; an explicit harness pick already refetches.
+      useUiStore.setState({ activeAgentId: "claude" });
+      const fetchSkills = vi.fn().mockResolvedValue(undefined);
+      useFileStore.setState({ fetchSkills } as never);
+      handleModelSelectionChanged(ctx, message({ agentId: "codex", roleName: "triage" }));
+      expect(fetchSkills).toHaveBeenCalledWith("s1", "codex");
+    });
+  });
+
   it("records that the server answered — including when it REFUSED and changed nothing", () => {
-    // The composer's optimistic pick has to be dropped either way, and a refusal
+
     // leaves the row exactly as it was, so "the row now matches" cannot be the
-    // signal. Cross-backend review found the picker sitting on a refused pick.
+
     const before = useSessionStore.getState().modelSelectionEcho.s1 ?? 0;
     handleModelSelectionChanged(
       ctx,
       message({
-        // A refusal: the selection reported is the one the session already had.
+
         selection: { serviceId: "openrouter", billingMode: "key", modelId: "anthropic/claude-opus-5" },
         notice: "vercel has no credential Claude Code can use.",
       }),

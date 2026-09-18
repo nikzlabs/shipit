@@ -1,18 +1,3 @@
-/**
- * docs/262 — the plugin install container.
- *
- * Most of these tests exist because a REVIEWER, not a test, caught the
- * corresponding defect in the withdrawn PR #2202. Each blocking finding gets an
- * assertion here, so the same mistake fails a build instead of a review:
- *
- *  - install must not see `/credentials`, the worker URL, or this process's
- *    environment (the credential boundary — req 19);
- *  - install must not be able to reach the session's own network;
- *  - the volume must be released when install ends, or the runtime volume for
- *    the same generation cannot be created over the same upper layer;
- *  - a failed install must report why, and must not stamp itself as done.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -26,6 +11,12 @@ import {
   PLUGIN_INSTALL_DIR,
   PLUGIN_INSTALL_NETWORK,
 } from "./plugin-install.js";
+import {
+  PLUGIN_BROWSERS_DIR,
+  PLUGIN_NPM_PREFIX_DIR,
+  PLUGIN_TOOLCHAIN_DIR_NAME,
+} from "./plugin-container-env.js";
+import { pluginBasePinDir } from "./plugin-dep-store.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
 import { handPluginCheckoutToWorker, chownTreeToSessionWorker } from "./session-worker-uid.js";
 import { readInstallRecord } from "./plugin-install-record.js";
@@ -34,10 +25,6 @@ import type { PluginInstallJob } from "./plugin-generations.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
 import { UNCONTAINED_PLUGIN_EGRESS, type PluginEgressPolicy } from "./plugin-egress.js";
 
-// docs/262 req 24 — the privileged tier launchers, stubbed at the same seam
-// `compose-service-egress.test.ts` uses (they need a live host, and
-// `buildTierAEgressInputs` fetches GitHub's meta endpoint). What stays real is
-// the decision this file is about: which namespace the install container runs in.
 vi.mock("./egress-firewall-install.js", async (load) => ({
   // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
   ...(await load<typeof import("./egress-firewall-install.js")>()),
@@ -55,13 +42,7 @@ vi.mock("./egress-proxy-install.js", async (load) => ({
   launchEgressProxy: vi.fn(async () => "proxy-id"),
 }));
 
-// planning#417 / docs/272-shared-cache-ownership req 3 — the ownership handover
-// is spied rather than faked out: WHICH helper the install path calls is the
-// whole finding, and it cannot be observed any other way. Both helpers no-op
-// below root (they resolve an identity first and return when there is none), so
-// a test that only looked at the resulting file modes would pass whichever one
-// was called — which is exactly why this shipped and had to be found by a human
-// reading two files side by side.
+// Both ownership helpers no-op below root, so file modes cannot distinguish them.
 vi.mock("./session-worker-uid.js", async (load) => ({
   // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
   ...(await load<typeof import("./session-worker-uid.js")>()),
@@ -69,7 +50,6 @@ vi.mock("./session-worker-uid.js", async (load) => ({
   chownTreeToSessionWorker: vi.fn(),
 }));
 
-/** A contained session's posture, as `ContainerSessionManager` would report it. */
 const CONTAINED_EGRESS: PluginEgressPolicy = {
   contained: true,
   config: { contained: true, extraHosts: [] },
@@ -77,8 +57,6 @@ const CONTAINED_EGRESS: PluginEgressPolicy = {
   dnsEnabled: true,
   proxyEnabled: true,
 };
-
-// --- fixtures ---------------------------------------------------------------
 
 function exportWith(name: string, install?: string): PluginExport {
   return {
@@ -94,33 +72,24 @@ function exportWith(name: string, install?: string): PluginExport {
 }
 
 interface CreatedContainer {
-  /** The daemon's id, so a `container:<holder>` namespace can be traced to one. */
   id: string;
   opts: Record<string, unknown>;
   killed: boolean;
   removed: boolean;
 }
 
-/**
- * A daemon that records what it was asked to build. `exit` decides how each
- * install container ends: a number is its status code, `"hang"` never finishes
- * on its own (so the timeout path has something to kill).
- */
 function fakeDocker(opts: {
   exit?: number | "hang";
   logs?: string | Buffer;
   heldVolume?: boolean;
-  /** What the install writes into the generation's writable layer. */
   onStart?: () => void;
+  removeError?: string;
 } = {}) {
   const containers: CreatedContainer[] = [];
-  /** Every `logs()` call's options — the line half of the bound lives here. */
   const logCalls: Record<string, unknown>[] = [];
   const createdVolumes: { Name: string; DriverOpts?: Record<string, string> }[] = [];
   const removedVolumes: string[] = [];
-  // A volume "exists" unless we removed it — so the workspace volume, which
-  // this fake never creates, still inspects fine (the daemon-path translation
-  // reads its mountpoint).
+  // Treat the workspace volume as present without creating it in this fake.
   const deleted = new Set<string>();
   const live = new Set<string>();
   const volumeOpts = new Map<string, Record<string, string>>();
@@ -131,8 +100,6 @@ function fakeDocker(opts: {
   };
 
   const docker = {
-    // The install network is created once and inspected for its subnet, which
-    // is what gets declared untrusted.
     getNetwork: (name: string) => ({
       inspect: async () => {
         if (!networksCreated.includes(name)) notFound();
@@ -146,11 +113,7 @@ function fakeDocker(opts: {
       createdVolumes.push(spec);
       deleted.delete(spec.Name);
       live.add(spec.Name);
-      // `createOverlayVolume` re-inspects after creating and throws unless the
-      // driver opts come back as the ones it asked for (Docker silently returns
-      // the pre-existing volume when the name is taken — the 2026-08-19 ops
-      // finding), so the double has to remember them. A name it already holds is
-      // NOT overwritten, which is what makes `heldVolume` model the real bug.
+      // Docker ignores new options when the named volume already exists.
       if (!volumeOpts.has(spec.Name)) volumeOpts.set(spec.Name, spec.DriverOpts ?? {});
     },
     listVolumes: async () => ({
@@ -166,8 +129,7 @@ function fakeDocker(opts: {
       },
       remove: async () => {
         removedVolumes.push(name);
-        // `heldVolume` models a container still holding it: the removal is
-        // accepted and the volume is still there afterwards.
+        // Model an accepted removal that leaves the volume mounted.
         if (opts.heldVolume) return;
         live.delete(name);
         deleted.add(name);
@@ -176,6 +138,17 @@ function fakeDocker(opts: {
     }),
     listContainers: async () => [],
     getContainer: (_id: string) => ({ remove: async () => undefined }),
+    getImage: (_name: string) => ({
+      inspect: async () => ({
+        Config: {
+          Env: [
+            "PATH=/home/shipit/.npm-global/bin:/opt/agent-cli/node_modules/.bin:/usr/bin:/bin",
+            "PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers",
+            "NPM_CONFIG_PREFIX=/home/shipit/.npm-global",
+          ],
+        },
+      }),
+    }),
     createContainer: async (createOpts: Record<string, unknown>) => {
       const record: CreatedContainer = {
         id: `c-${containers.length + 1}`,
@@ -202,6 +175,7 @@ function fakeDocker(opts: {
           return Buffer.isBuffer(opts.logs) ? opts.logs : Buffer.from(opts.logs ?? "");
         },
         remove: async () => {
+          if (opts.removeError) throw new Error(opts.removeError);
           record.removed = true;
         },
       };
@@ -244,12 +218,9 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-/** The runner over a hand-modified fake daemon. */
 function run2(docker: Docker) {
   return createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
 }
-
-// --- pure helpers -----------------------------------------------------------
 
 describe("installCommands", () => {
   it("keeps only exports that declare a non-empty install", () => {
@@ -257,8 +228,6 @@ describe("installCommands", () => {
       .toEqual([{ plugin: "a", command: "npm ci" }]);
   });
 });
-
-// --- the runner -------------------------------------------------------------
 
 describe("createPluginInstallRunner", () => {
   it("runs nothing when no selected export declares an install", async () => {
@@ -271,8 +240,6 @@ describe("createPluginInstallRunner", () => {
   });
 
   it("gives the install container the overlay volume and NOTHING else", async () => {
-    // The finding this encodes: in the agent container, install could read
-    // /credentials and call the worker's loopback credential broker.
     vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
     const { docker, containers } = fakeDocker();
     const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
@@ -287,26 +254,53 @@ describe("createPluginInstallRunner", () => {
       Cmd: string[];
       WorkingDir: string;
     };
-    // Exactly one mount, and it is the generation's own volume.
     expect(opts.HostConfig.Binds).toHaveLength(1);
     expect(opts.HostConfig.Binds[0]).toMatch(new RegExp(`^shipit-.*:${PLUGIN_INSTALL_DIR}$`));
-    // Nothing of the session, and nothing of this process.
     const env = opts.Env.join("\n");
     expect(env).not.toContain("ghp-should-never-be-inherited");
     expect(env).not.toContain("GITHUB_TOKEN");
     expect(env).not.toMatch(/WORKER|CREDENTIAL|SHIPIT_SESSION/i);
     expect(opts.Env).toContain(`SHIPIT_PLUGIN_COMMIT=${COMMIT}`);
-    // Its own network, never a session's and never the default bridge — see
-    // the dedicated test below for why that distinction is the security fix.
     expect(opts.HostConfig.NetworkMode).toBe(PLUGIN_INSTALL_NETWORK);
-    // The worker entrypoint is bypassed: it prepares session mounts this
-    // container deliberately does not have.
     expect(opts.Entrypoint).toEqual(["/bin/sh", "-c"]);
-    // docs/270 — `umask 002` so everything the install writes into the SHARED
-    // dep cache and the promoted dep base is group-writable; the session
-    // entrypoint that normally sets it is bypassed for this container.
-    expect(opts.Cmd).toEqual(["umask 002; npm ci"]);
+    expect(opts.Cmd).toEqual([
+      `umask 002; mkdir -p ${PLUGIN_BROWSERS_DIR} ${PLUGIN_NPM_PREFIX_DIR}; npm ci`,
+    ]);
     expect(opts.WorkingDir).toBe(PLUGIN_INSTALL_DIR);
+  });
+
+  it("overrides the image's worker-owned ENV paths with writable ones", async () => {
+    const { docker, containers } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(await run(job([exportWith("probe", "npx playwright install chromium")]))).toEqual({ ok: true });
+
+    const env = (containers[0]!.opts as { Env: string[] }).Env;
+    expect(env).toContain(`PLAYWRIGHT_BROWSERS_PATH=${PLUGIN_BROWSERS_DIR}`);
+    expect(env).toContain(`NPM_CONFIG_PREFIX=${PLUGIN_NPM_PREFIX_DIR}`);
+    for (const dir of [PLUGIN_BROWSERS_DIR, PLUGIN_NPM_PREFIX_DIR]) {
+      expect(dir.startsWith(`${PLUGIN_INSTALL_DIR}/`)).toBe(true);
+    }
+    expect(env).not.toContain("PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers");
+    expect(env).not.toContain("NPM_CONFIG_PREFIX=/home/shipit/.npm-global");
+    expect(env.filter((e) => !e.startsWith("PATH=")).join("\n")).not.toContain("/home/shipit");
+    expect(env).toContain(
+      `PATH=${PLUGIN_NPM_PREFIX_DIR}/bin:/home/shipit/.npm-global/bin:/opt/agent-cli/node_modules/.bin:/usr/bin:/bin`,
+    );
+  });
+
+  it("still overrides the writable paths when the image cannot be inspected", async () => {
+    const { docker, containers } = fakeDocker();
+    (docker as unknown as Record<string, unknown>).getImage = () => {
+      throw new Error("daemon says no");
+    };
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(await run(job([exportWith("probe", "npm ci")]))).toEqual({ ok: true });
+
+    const env = (containers[0]!.opts as { Env: string[] }).Env;
+    expect(env).toContain(`PLAYWRIGHT_BROWSERS_PATH=${PLUGIN_BROWSERS_DIR}`);
+    expect(env.some((e) => e.startsWith("PATH="))).toBe(false);
   });
 
   it("creates the writable layer, and releases the volume when install ends", async () => {
@@ -318,25 +312,12 @@ describe("createPluginInstallRunner", () => {
     const work = pluginWorkDir(stateDir, "tools", COMMIT);
     expect(fs.existsSync(path.join(work, "upper"))).toBe(true);
     expect(fs.existsSync(path.join(work, "work"))).toBe(true);
-    // The lowerdir is the STAGING tree — install runs before publish.
     expect(createdVolumes[0]!.DriverOpts!.o).toContain(`lowerdir=${stagingDir}`);
-    // Released on the way out: publish renames the lowerdir, and the runtime
-    // volume is created over the same upper layer, which the kernel forbids
-    // while another mount holds it.
     expect(removedVolumes).toContain(createdVolumes[0]!.Name);
     expect(containers[0]!.removed).toBe(true);
   });
 
   it("hands the staging checkout over object-aware, never with the plain recursive chown", async () => {
-    // planning#417. `job.stagingDir` was created by `git clone --local` from the
-    // shared plugin bare cache, so `.git/objects` is HARDLINKED into it and an
-    // inode has exactly one owner across every link. The plain
-    // `chownTreeToSessionWorker` descends into those data files, so calling it
-    // here handed the CACHE's objects to whichever session installed last —
-    // chmod and rewrite rights over content every sibling session reads.
-    // `handPluginCheckoutToWorker` chowns object DIRECTORIES and never the data
-    // files, while still handing over the checkout root and every worktree file
-    // the overlayfs lower-dir constraint needs.
     const { docker } = fakeDocker();
     const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
 
@@ -367,13 +348,9 @@ describe("createPluginInstallRunner", () => {
     expect(result.reason).toContain("`probe`");
     expect(result.reason).toContain("no-such-pkg");
     expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(false);
-    // Still released — a failed install must not strand the volume.
     expect(removedVolumes).toContain(createdVolumes[0]!.Name);
   });
 
-  // A container without a TTY has its output multiplexed: an 8-byte header per
-  // chunk. Read as text, that framing lands in the middle of the message the
-  // degraded card shows the user.
   it("strips Docker's stream framing from the reported output", async () => {
     const payload = Buffer.from("npm ERR! code E404\n");
     const header = Buffer.alloc(8);
@@ -444,9 +421,6 @@ describe("createPluginInstallRunner", () => {
     const byLabel: Record<string, string> = {
       "shipit-plugin-install": "install-1",
       "shipit-plugin-cli": "cli-1",
-      // req 24's netns holder. It matters MORE than the two above, not less: it
-      // is the only one with `RestartPolicy` sidecars attached, so a leak keeps
-      // a resolver and an SNI proxy alive for a call that ended at a crash.
       "shipit-plugin-netns": "netns-1",
     };
     const docker = {
@@ -461,19 +435,60 @@ describe("createPluginInstallRunner", () => {
       }),
     } as unknown as Docker;
 
-    // An install is awaited inside one activation and a companion-CLI call
-    // inside one request, so a survivor of either kind at boot is an orphan by
-    // definition — and until it is removed it holds the generation's overlay
-    // volume, which then cannot be removed either.
     expect(await reapOrphanPluginInstalls(docker)).toBe(3);
     expect(removed).toEqual(["install-1", "cli-1", "netns-1"]);
   });
 
-  // The finding this encodes: on ANY unregistered network the orchestrator's
-  // container-origin guard reads the source IP as a trusted browser/host
-  // caller, so the install could have asked
-  // /api/sessions/<id>/git/credential for a real GitHub token — more API
-  // reach than the agent container it was isolated from.
+  // planning#584 — another ShipIt instance on the same daemon may have an install mid-flight.
+  it("reaps only this stack's plugin containers and volumes, not another instance's", async () => {
+    const containers: { Id: string; Labels: Record<string, string> }[] = [
+      { Id: "install-a", Labels: { "shipit-plugin-install": "s1", "shipit-stack": "shipit-a" } },
+      { Id: "install-b", Labels: { "shipit-plugin-install": "s2", "shipit-stack": "shipit-b" } },
+      { Id: "cli-old", Labels: { "shipit-plugin-cli": "s3" } },
+    ];
+    const volumes = [
+      { Name: "vol-a", Labels: { "shipit-plugin-generation": "vol-a", "shipit-stack": "shipit-a" } },
+      { Name: "vol-b", Labels: { "shipit-plugin-generation": "vol-b", "shipit-stack": "shipit-b" } },
+    ];
+    const matches = (labels: Record<string, string>, filters: string[]): boolean =>
+      filters.every((f) => {
+        const eq = f.indexOf("=");
+        return eq < 0 ? f in labels : labels[f.slice(0, eq)] === f.slice(eq + 1);
+      });
+    const removed: string[] = [];
+    const docker = {
+      listContainers: async (opts: { filters: { label: string[] } }) =>
+        containers.filter((c) => matches(c.Labels, opts.filters.label)),
+      getContainer: (id: string) => ({ remove: async () => { removed.push(id); } }),
+      listVolumes: async (opts: { filters: { label: string[] } }) => ({
+        Volumes: volumes.filter((v) => matches(v.Labels, opts.filters.label)),
+      }),
+      getVolume: (name: string) => ({
+        remove: async () => { removed.push(name); },
+        inspect: async () => { throw Object.assign(new Error("gone"), { statusCode: 404 }); },
+      }),
+    } as unknown as Docker;
+
+    expect(await reapOrphanPluginInstalls(docker, { stackName: "shipit-a" })).toBe(2);
+    expect(removed).toEqual(["install-a", "vol-a"]);
+  });
+
+  it("stamps the stack on the netns holder, the install container and the generation volume", async () => {
+    const fake = fakeDocker();
+    const run = createPluginInstallRunner({
+      docker: fake.docker, image: "worker:test", sessionId: "s1", stateDir, stackName: "shipit-a",
+      egress: () => CONTAINED_EGRESS,
+    });
+
+    expect(await run(job([exportWith("probe", "npm ci")]))).toEqual({ ok: true });
+
+    const [holder, install] = fake.containers;
+    expect((holder.opts.Labels as Record<string, string>)["shipit-stack"]).toBe("shipit-a");
+    expect((install.opts.Labels as Record<string, string>)["shipit-stack"]).toBe("shipit-a");
+    const volume = fake.createdVolumes[0] as { Labels?: Record<string, string> };
+    expect(volume.Labels).toMatchObject({ "shipit-stack": "shipit-a" });
+  });
+
   it("denies its own subnet at the orchestrator API before any container joins", async () => {
     clearUntrustedContainerNetworks();
     const { docker, networksCreated } = fakeDocker();
@@ -484,20 +499,9 @@ describe("createPluginInstallRunner", () => {
 
     expect(networksCreated).toEqual([PLUGIN_INSTALL_NETWORK]);
     expect(isUntrustedContainerIp("172.28.0.7")).toBe(true);
-    // A session container's own bridge address is untouched by this.
     expect(isUntrustedContainerIp("172.18.0.4")).toBe(false);
   });
 
-  /**
-   * docs/262 req 24 — an install is repo-authored code with outbound access
-   * (`npm ci` fetches), and until this it had UNRESTRICTED outbound while the
-   * project's own `agent.install` ran under the session's allowlist. Now it runs
-   * in a ShipIt-owned holder carrying that same allowlist.
-   *
-   * The req-19 half is what the assertion is really about: the holder is on the
-   * install network, whose subnet the guard denies, so the namespace change buys
-   * the install no API reach. A SESSION container's namespace would have.
-   */
   it("runs a contained session's install in a holder on the install network", async () => {
     const { docker, containers } = fakeDocker();
 
@@ -514,14 +518,9 @@ describe("createPluginInstallRunner", () => {
     expect(holderHost.NetworkMode).toBe(PLUGIN_INSTALL_NETWORK);
     expect(holderHost.Binds ?? []).toEqual([]);
     expect(holder!.opts.Env ?? []).toEqual([]);
-    // Released when the install ends: the holder outlives every install
-    // container by construction, so nothing else can remove it.
     expect(holder!.removed).toBe(true);
   });
 
-  // One holder for the whole run, not one per command: a generation's install
-  // commands are one logical install, and each namespace costs a holder plus its
-  // sidecars.
   it("shares one namespace across a generation's install commands", async () => {
     const { docker, containers } = fakeDocker();
 
@@ -538,10 +537,6 @@ describe("createPluginInstallRunner", () => {
     }
   });
 
-  // Fail closed, and BEFORE the install container: a contained session whose
-  // deployment cannot install containment gets a failed activation (which
-  // degrades to the prior generation, req 15), never an install with
-  // unrestricted egress.
   it("fails a contained session's install when containment cannot be installed", async () => {
     const { docker, containers } = fakeDocker();
 
@@ -555,18 +550,9 @@ describe("createPluginInstallRunner", () => {
     expect(containers).toHaveLength(0);
   });
 
-  /**
-   * req 24's guided-onboarding clause, at the one moment the Plugins card cannot
-   * cover it. A plugin's FIRST activation has no live generation, so the card
-   * resolves no declared hosts and shows no "Allow" buttons — and containing
-   * `install` is what made that reachable, by turning a working install into a
-   * failing one. Without this the user gets a package-manager DNS error and is
-   * left to reverse-engineer the host, which is the phrase req 24 uses for what
-   * must not happen.
-   */
   it("names the declared hosts the session blocks when a contained install fails", async () => {
     const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! getaddrinfo EAI_AGAIN\n" });
-    const probe = { ...exportWith("probe", "npm ci"), hosts: ["downloads.vendor.example"] };
+    const probe = { ...exportWith("probe", "npm ci"), hosts: [{ name: "downloads.vendor.example", optional: false }] };
 
     const result = await createPluginInstallRunner({
       docker, image: "worker:test", sessionId: "s1", stateDir,
@@ -576,16 +562,62 @@ describe("createPluginInstallRunner", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("downloads.vendor.example");
     expect(result.reason).toContain("egress allowlist");
-    // The package manager's own output is still there — the clause is added to
-    // the failure, not substituted for it.
     expect(result.reason).toContain("EAI_AGAIN");
   });
 
-  // Saying "egress" about an install that failed for another reason points the
-  // user at the wrong thing, so a declared host that IS allowed stays silent.
+  it("does not blame egress for a failure that is not a network failure", async () => {
+    const { docker } = fakeDocker({
+      exit: 1,
+      logs: "Error: EACCES: permission denied, mkdir '/opt/playwright-browsers/__dirlock'\n",
+    });
+    const probe = {
+      ...exportWith("probe", "npm ci"),
+      hosts: [{ name: "api.vendor.example", optional: false }],
+    };
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([probe]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("Separately —");
+    expect(result.reason).toContain("If the failure above is a network error");
+    expect(result.reason).toContain("api.vendor.example");
+    expect(result.reason).toContain("egress allowlist");
+  });
+
+  it("says nothing about an OPTIONAL declared host the session blocks", async () => {
+    const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! syntax error\n" });
+    const probe = {
+      ...exportWith("probe", "npm ci"),
+      hosts: [{ name: "pixellab.ai", optional: true }],
+    };
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([probe]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).not.toContain("pixellab.ai");
+    expect(result.reason).not.toContain("egress allowlist");
+    const required = {
+      ...exportWith("probe", "npm ci"),
+      hosts: [{ name: "pixellab.ai", optional: false }],
+    };
+    const strict = await createPluginInstallRunner({
+      docker: fakeDocker({ exit: 1, logs: "npm ERR! syntax error\n" }).docker,
+      image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([required]));
+    expect(strict.ok).toBe(false);
+    expect(strict.reason).toContain("pixellab.ai");
+  });
+
   it("says nothing about egress when the declared host is already allowed", async () => {
     const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! syntax error\n" });
-    const probe = { ...exportWith("probe", "npm ci"), hosts: ["ok.example"] };
+    const probe = { ...exportWith("probe", "npm ci"), hosts: [{ name: "ok.example", optional: false }] };
 
     const result = await createPluginInstallRunner({
       docker, image: "worker:test", sessionId: "s1", stateDir,
@@ -599,8 +631,6 @@ describe("createPluginInstallRunner", () => {
     expect(result.reason).not.toContain("egress allowlist");
   });
 
-  // The other half of req 24's sentence: an uncontained session's plugin code
-  // must reach what its own code reaches, which there is everything.
   it("leaves an uncontained session's install on the plugin network unchanged", async () => {
     const { docker, containers } = fakeDocker();
 
@@ -617,8 +647,6 @@ describe("createPluginInstallRunner", () => {
   it("refuses to install when its network has no subnet it can deny", async () => {
     clearUntrustedContainerNetworks();
     const { docker, containers } = fakeDocker();
-    // A network that reports no IPv4 subnet — nothing to register, so
-    // nothing may run: fail closed.
     (docker as unknown as { getNetwork: (n: string) => unknown }).getNetwork = () => ({
       inspect: async () => ({ IPAM: { Config: [] } }),
     });
@@ -630,8 +658,6 @@ describe("createPluginInstallRunner", () => {
   });
 
   it("fails the install when the layer's volume cannot be released", async () => {
-    // Publishing here would produce a generation whose runtime mount cannot be
-    // built: the kernel forbids a second mount over the held upperdir.
     const { docker } = fakeDocker({ heldVolume: true });
     const result = await createPluginInstallRunner({
       docker, image: "worker:test", sessionId: "s1", stateDir,
@@ -689,21 +715,34 @@ describe("createPluginInstallRunner", () => {
       expect(part.split("=")[1]).toMatch(/^\/var\/lib\/docker\/volumes\/shipit-workspace\/_data\//);
     }
   });
+
+  it("logs a removal the daemon refused, and still reports the install's own outcome", async () => {
+    const { docker, containers } = fakeDocker({ removeError: "device or resource busy" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const result = await createPluginInstallRunner({
+        docker, image: "worker:test", sessionId: "s1", stateDir,
+      })(job([exportWith("probe", "npm ci")]));
+
+      expect(result).toEqual({ ok: true });
+      const line = warn.mock.calls.map((c) => c.join(" ")).find((c) => c.includes(containers[0]!.id));
+      expect(line).toBeDefined();
+      expect(line).toContain("tools");
+      expect(line).toContain("device or resource busy");
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
-// ---------------------------------------------------------------------------
-// req 28 — the shared dependency store
-// ---------------------------------------------------------------------------
-
 describe("createPluginInstallRunner and the shared dependency store", () => {
-  /** An export whose install is content-keyable, over a checkout that has inputs. */
   function npmExport(): PluginExport {
     fs.writeFileSync(path.join(stagingDir, "package.json"), `{"name":"probe"}`);
     fs.writeFileSync(path.join(stagingDir, "package-lock.json"), `{"lockfileVersion":3}`);
     return { ...exportWith("probe", "npm ci"), depDirs: ["node_modules"] };
   }
 
-  /** Where a generation's install output lands. */
   function upper(commit = COMMIT): string {
     return path.join(pluginWorkDir(stateDir, "tools", commit), "upper");
   }
@@ -712,6 +751,9 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     return () => {
       fs.mkdirSync(path.join(upper(commit), "node_modules", "left-pad"), { recursive: true });
       fs.writeFileSync(path.join(upper(commit), "node_modules", "left-pad", "index.js"), "1");
+      const browsers = path.join(upper(commit), PLUGIN_TOOLCHAIN_DIR_NAME, "playwright-browsers");
+      fs.mkdirSync(browsers, { recursive: true });
+      fs.writeFileSync(path.join(browsers, "chromium-1194"), "a browser this install downloaded");
     };
   }
 
@@ -721,12 +763,9 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     const cold = await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
 
     expect(first.containers).toHaveLength(1);
-    expect(cold.basePins).toHaveLength(1);
-    // The tree left the writable layer: the store holds one copy, not two.
+    expect(cold.basePins).toHaveLength(2);
     expect(fs.existsSync(path.join(upper(), "node_modules"))).toBe(false);
 
-    // A NEW commit of the same repository, whose dependency inputs did not
-    // change — the case req 28 names. Nothing runs.
     const nextCommit = "e".repeat(40);
     const next = fakeDocker({ onStart: installs(nextCommit) });
     const warm = await createPluginInstallRunner({ ...runner, docker: next.docker })({
@@ -737,14 +776,13 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     expect(next.createdVolumes).toHaveLength(0);
     expect(warm.ok).toBe(true);
     expect(warm.basePins).toEqual(cold.basePins);
+    const stored = warm.basePins!
+      .map((pin) => pluginBasePinDir(stateDir, pin)!)
+      .map((dir) => path.join(dir, PLUGIN_TOOLCHAIN_DIR_NAME, "playwright-browsers", "chromium-1194"));
+    expect(stored.some((f) => fs.existsSync(f))).toBe(true);
   });
 
   it("docs/266 — a forced retry installs even when the shared store has a hit", async () => {
-    // The store hit is the second shortcut that would make `--force` a no-op
-    // reporting success: it mounts a tree some other session produced and runs
-    // nothing. For an ordinary activation that is req 28 working; for a
-    // consumer retrying a version that is live and broken it is the failure
-    // itself, dressed as a fix.
     const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
     const first = fakeDocker({ onStart: installs() });
     await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
@@ -779,9 +817,7 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     });
 
     expect(second.containers).toHaveLength(1);
-    expect(moved.basePins).toHaveLength(1);
-    // A different dep state is a different scope, never an overwrite of the one
-    // an earlier commit's generations are still mounting.
+    expect(moved.basePins).toHaveLength(2);
     expect(moved.basePins).not.toEqual(cold.basePins);
   });
 
@@ -791,14 +827,8 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
       docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
     })(job([npmExport()]));
 
-    // The install's lowerdir is the staging checkout and nothing else: a base
-    // stacked under it would make the upper layer a delta, and a delta cannot be
-    // promoted by a rename. It is also what keeps the shared tree unreachable
-    // from plugin-authored code while it runs.
     const o = createdVolumes[0]!.DriverOpts!.o;
     expect(o.split(",")[0]).toBe(`lowerdir=${stagingDir}`);
-    // And the only thing the container holds besides that volume is the
-    // repository's own download cache.
     const host = containers[0]!.opts.HostConfig as {
       Binds: string[];
       Mounts?: { Source: string; Target: string; ReadOnly?: boolean }[];
@@ -833,23 +863,17 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     const first = fakeDocker({ onStart: installs() });
     const cold = await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
 
-    // A sweep took the base. The stamp still claims this commit is installed,
-    // and believing it would leave the plugin with no dependencies at all.
     fs.rmSync(path.join(stateDir, "overlay-base"), { recursive: true, force: true });
     const again = fakeDocker({ onStart: installs() });
     const redone = await createPluginInstallRunner({ ...runner, docker: again.docker })(job([npmExport()]));
 
     expect(again.containers).toHaveLength(1);
-    // Republished into the same scope: the content key did not change, only the
-    // tree went missing.
     expect(redone.basePins).toEqual(cold.basePins);
   });
 
   it("fails the activation when install output reached neither the layer nor the store", async () => {
     const { docker, containers } = fakeDocker({ onStart: installs() });
-    // The pointer directory is a file, so `publishBase` fails AFTER the rename
-    // has already emptied the writable layer. Publishing that generation would
-    // give the plugin no dependencies at all, with nothing saying why.
+    // Fail pointer publication after the base rename has emptied the layer.
     fs.writeFileSync(path.join(stateDir, "overlay-base-meta"), "not a directory");
 
     const result = await createPluginInstallRunner({
@@ -859,8 +883,66 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     expect(containers).toHaveLength(1);
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("its output was lost");
-    // A failed install is a failed activation, so nothing is stamped as done.
     expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(false);
+  });
+
+  const installRecord = () => readInstallRecord(path.join(stateDir, "plugins"), "tools");
+
+  it("records why an install ShipIt cannot content-key shares nothing", async () => {
+    const { docker, containers } = fakeDocker({ onStart: installs() });
+    const exp: PluginExport = {
+      ...exportWith("probe", "pip install --no-cache-dir --target vendor/py -r requirements.txt"),
+      depDirs: ["vendor/py"],
+    };
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([exp]));
+
+    expect(containers).toHaveLength(1);
+    expect(result).toEqual({ ok: true });
+    const record = installRecord();
+    expect(record?.outcome).toBe("succeeded");
+    expect(record?.depStoreReason).toContain("installed from scratch in every session");
+    expect(record?.depStoreReason).toContain("--target vendor/py");
+    expect(record?.depStoreReason).toContain("`install-inputs:`");
+  });
+
+  it("says nothing when the tree IS shared", async () => {
+    const { docker } = fakeDocker({ onStart: installs() });
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([npmExport()]));
+
+    expect(result.basePins).toHaveLength(2);
+    expect(installRecord()?.depStoreReason).toBeUndefined();
+  });
+
+  it("records a dep dir the install left empty, which no plan could have predicted", async () => {
+    const { docker, containers } = fakeDocker();
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([npmExport()]));
+
+    expect(containers).toHaveLength(1);
+    expect(result).toEqual({ ok: true });
+    const reason = installRecord()?.depStoreReason ?? "";
+    expect(installRecord()?.outcome).toBe("succeeded");
+    expect(reason).toContain("`node_modules`");
+    expect(reason).toContain(`\`${PLUGIN_TOOLCHAIN_DIR_NAME}\``);
+  });
+
+  it("keeps the reason when the same commit re-stages and skips the install", async () => {
+    const exp: PluginExport = {
+      ...exportWith("probe", "pip install --target vendor/py -r requirements.txt"),
+      depDirs: ["vendor/py"],
+    };
+    const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
+    await createPluginInstallRunner({ ...runner, docker: fakeDocker().docker })(job([exp]));
+    await createPluginInstallRunner({ ...runner, docker: fakeDocker().docker })(job([exp]));
+
+    const record = installRecord();
+    expect(record?.outcome).toBe("skipped-stamp");
+    expect(record?.depStoreReason).toContain("installed from scratch in every session");
   });
 
   it("does nothing different without a store configured", async () => {
@@ -875,13 +957,6 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
   });
 });
 
-/**
- * docs/266 — the retry (`--force`) and the record that says what happened.
- *
- * Both exist because of one measured episode: a live version whose install had
- * left nothing behind, no way to see that from the session, and no way to run
- * the install again without the plugin's author publishing a new commit.
- */
 describe("createPluginInstallRunner — forced retry and the install record", () => {
   const pluginsDir = (): string => path.join(stateDir, "plugins");
 
@@ -890,13 +965,10 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
     await run2(first.docker)(job([exportWith("probe", "npm ci")]));
     expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(true);
 
-    // Without force this is the no-op the ordinary path wants...
     const skipped = fakeDocker();
     await run2(skipped.docker)(job([exportWith("probe", "npm ci")]));
     expect(skipped.containers).toHaveLength(0);
 
-    // ...and a retry that reported success without running anything would be
-    // exactly the failure this feature exists to break out of.
     const forced = fakeDocker();
     const result = await run2(forced.docker)({ ...job([exportWith("probe", "npm ci")]), force: true });
     expect(result.ok).toBe(true);
@@ -909,16 +981,6 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
     expect(record).toMatchObject({ outcome: "succeeded", commit: COMMIT });
   });
 
-  /**
-   * planning#416 — the half that had nowhere to live at all.
-   *
-   * A FAILED install's tail rides the failure reason (the test below), and that
-   * is the case where the reader already knows something is wrong. The case
-   * nikzlabs/shipit#2315 could not settle from a session is this one: the
-   * install succeeded, so nothing anywhere says what it wrote, and the two
-   * conclusions the reporter and their reviewer drew from the same documentation
-   * had no artifact to be checked against.
-   */
   it("records what a SUCCESSFUL install printed", async () => {
     const docker = fakeDocker({ logs: "added 41 packages\nbuilt dist/index.js" }).docker;
     await run2(docker)(job([exportWith("probe", "npm ci && npm run build")]));
@@ -929,10 +991,6 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
   });
 
   it("asks the daemon for a bounded number of lines, not the whole log", async () => {
-    // The character clip alone would satisfy the size assertions below while
-    // pulling an entire multi-megabyte install log into this process first. The
-    // line bound is the one that keeps the read itself cheap, and nothing else
-    // here would notice it going missing (review finding).
     const { docker, logCalls } = fakeDocker({ logs: "added 41 packages" });
     await run2(docker)(job([exportWith("probe", "npm ci")]));
 
@@ -941,16 +999,11 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
   });
 
   it("bounds a successful install's output exactly as a failure's is bounded", async () => {
-    // The constraint is the point, not the number: this text is repo-authored
-    // and lands in agent context and in the UI, so an install that SUCCEEDS may
-    // not be allowed to say more than one that fails.
     const docker = fakeDocker({ logs: `${"x".repeat(9000)}\nTAIL-MARKER` }).docker;
     await run2(docker)(job([exportWith("probe", "npm ci")]));
 
     const output = readInstallRecord(pluginsDir(), "tools")?.output ?? "";
-    expect(output.length).toBeLessThanOrEqual(2001); // 2000 + the elision mark
-    // Clipped from the FRONT, so the end of the run — where a build says what it
-    // wrote — survives, and the mark says that something was dropped.
+    expect(output.length).toBeLessThanOrEqual(2001);
     expect(output.startsWith("…")).toBe(true);
     expect(output).toContain("TAIL-MARKER");
   });
@@ -961,34 +1014,20 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
 
     const output = readInstallRecord(pluginsDir(), "tools")?.output ?? "";
     expect(output.length).toBeLessThanOrEqual(2001);
-    // Which export produced what still has to be readable, or a two-plugin
-    // repository's output is one undifferentiated wall.
     expect(output).toContain("--- b");
   });
 
   it("does not erase the output when the same commit re-stages and skips", async () => {
-    // Review finding. The record is last-writer-wins, so a skip that recorded
-    // nothing would delete the artifact at the moment it matters: an install
-    // succeeds for C and records what it printed, the publish then fails, C
-    // re-stages, hits the stamp — and the version goes live with no output.
-    // The layer being reused is the one that install BUILT, so its output still
-    // describes what is live.
     await run2(fakeDocker({ logs: "built dist/index.js" }).docker)(job([exportWith("probe", "npm ci")]));
     await run2(fakeDocker({ logs: "ignored" }).docker)(job([exportWith("probe", "npm ci")]));
 
     const record = readInstallRecord(pluginsDir(), "tools");
-    // Still a skip: "it ran" and "it did not run this time" have opposite fixes
-    // and must stay distinguishable, which is what docs/266 is for.
     expect(record?.outcome).toBe("skipped-stamp");
     expect(record?.output).toContain("built dist/index.js");
-    // And the second round's container never ran, so its logs are not it.
     expect(record?.output).not.toContain("ignored");
   });
 
   it("does not carry an output forward onto a different commit", async () => {
-    // The layer is keyed by commit; a record for another commit describes a tree
-    // this one does not have. Carrying it would be the fabricated diagnosis
-    // `describesLive` exists to prevent, one level down.
     await run2(fakeDocker({ logs: "built dist/index.js" }).docker)(job([exportWith("probe", "npm ci")]));
     const other = { ...job([exportWith("probe", "npm ci")]), commit: "d".repeat(40) };
     await run2(fakeDocker({ logs: "added 3 packages" }).docker)(other);
@@ -1000,9 +1039,6 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
   });
 
   it("keeps a hung install's partial output instead of losing it with the container", async () => {
-    // A build that prints and then hangs is the case where the partial output is
-    // the whole diagnostic. `waitForContainerExit` kills and reaps before
-    // returning, so there is a stopped container to read.
     const { docker } = fakeDocker({ exit: "hang", logs: "compiling src/index.ts" });
     const result = await createPluginInstallRunner({
       docker, image: "worker:test", sessionId: "s1", stateDir, timeoutMs: 10,
@@ -1013,8 +1049,6 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
   });
 
   it("records a FAILED install with its output — the evidence that had nowhere to live", async () => {
-    // A failed install publishes no generation, so before docs/266 this text
-    // was returned to the round and then existed nowhere a session could read.
     const failing = fakeDocker({ exit: 1, logs: "npm ERR! missing script: build" });
     const result = await run2(failing.docker)(job([exportWith("probe", "npm run build")]));
 
@@ -1022,36 +1056,16 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
     const record = readInstallRecord(pluginsDir(), "tools");
     expect(record?.outcome).toBe("failed");
     expect(record?.detail).toContain("npm ERR! missing script: build");
-    // planning#416 — and in `output` as well, so one field answers "what did the
-    // install print" whatever the outcome. A reader that had to parse it back
-    // out of a prose reason is a reader that will get it wrong.
     expect(record?.output).toContain("npm ERR! missing script: build");
   });
 
   it("records a skip as a skip, not as a success", async () => {
-    // "The install succeeded" and "the install never ran" point at opposite
-    // fixes; a record that flattened them would have settled nothing.
     await run2(fakeDocker().docker)(job([exportWith("probe", "npm ci")]));
     await run2(fakeDocker().docker)(job([exportWith("probe", "npm ci")]));
     expect(readInstallRecord(pluginsDir(), "tools")?.outcome).toBe("skipped-stamp");
   });
 
-  /**
-   * **What this block cannot fail on** (review finding, stated rather than
-   * implied). `createPluginInstallRunner` now wraps its body so that an
-   * unexpected THROW — from the shared-store plan, the promotion, the stamp
-   * write, or the netns release, all of which sit outside every inner try —
-   * still records `failed` before propagating. That wrapper is not exercised
-   * here: every one of those code paths is itself defensive, so this fake
-   * daemon cannot make one throw (a store directory that is a plain file, a
-   * volume removal that rejects, and a daemon that answers 404 were each tried
-   * and each returned cleanly). The wrapper is defence in depth against a
-   * future path that is not defensive; the recorded outcomes below are what is
-   * actually pinned.
-   */
   it("writes nothing for a repository whose exports declare no install", async () => {
-    // Nothing ran, and nothing pretends to have: `status` renders the absence
-    // as "no install has run", which is the truth.
     await run2(fakeDocker().docker)(job([exportWith("probe")]));
     expect(readInstallRecord(pluginsDir(), "tools")).toBeNull();
   });

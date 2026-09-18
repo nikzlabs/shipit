@@ -1,0 +1,29 @@
+# Checklist — broken-workspace visibility
+
+- [x] `SessionInfo.workspaceBlock` (a bare `WorkspaceBlockKind`), `sessions.workspace_block` migration, `fromRow`
+- [x] `SessionManager.setWorkspaceBlock` — returns whether the stored value changed
+- [x] `filterVisibleInSidebar` exemption (req 1), cap-aware tests beside the existing ones
+- [x] Janitor records the block on a reasoned `blockedEvict`; withdraws it on a push-only block
+- [x] Janitor clears on the durable path **and** after `setDiskTier("evicted")` — an evicted session is never revisited (req 6)
+- [x] `restoreSessionWorkspace` clears the marker a fresh clone cannot still deserve
+- [x] `onSessionsChanged` → `sseBroadcast("session_list", …)`, fired only on a real change
+- [x] `postTurnCommit` clears only when the auto-commit held nothing back **and** git reports no rebase/merge/sequencer state — a clean tree with unfinished sequencer state is the incident's own shape
+- [x] `runPostInterruptCommit` carries the broadcaster, so the interrupt path's clear is published
+- [x] `computeAttentionReason` reason + placement: below `muted` and `awaitingPermission`, above the running/background and `resolved` short-circuits (reqs 3–5)
+- [x] Reason table is `Record<WorkspaceBlockKind, string>`, so a new kind cannot ship unnamed (req 2)
+- [x] `useAttentionSessions` / `useAttentionNotifications` / `SessionItem` pass the kind through
+- [x] Each new guard proven red with its production change reverted
+- [x] Independent review; the four clearing/visibility gaps it found are fixed and guarded
+- [x] `npm run typecheck`, `npm run lint:dev`, `npm test`
+- [x] Open-session check: `inspectCheckoutBlock` (read-only — never `ensureCheckoutDurable`, which commits and pushes), shared with `ensureCheckoutDurable`
+- [x] `recordWorkspaceBlock` moved to `services/workspace-block.ts` so both writers share the change-only write and the broadcast
+- [x] Activation raises and withdraws `conflict` only; a marker of any other kind is the janitor's and is neither cleared nor overwritten
+- [x] Marker re-read after the inspection's await; overlapping activations deduplicated by session
+- [x] Startup sweep: one pass after boot over every checkout still on disk, a third *caller* of `inspectCheckoutBlock` and `recordWorkspaceBlock`
+- [x] Sweep shares activation's ownership predicate rather than copying it; skips evicted, workspace-less, `.git`-less, unreadable-`.git` and ops/sandbox sessions
+- [x] Sweep prints its summary unconditionally, unlike its change-only neighbours
+- [x] A session evicted (or deleted) while the inspection ran is never marked from that stale answer
+- [x] Each new guard proven red with its production change reverted, including both write guards under a substituted `ensureCheckoutDurable`
+- [x] `isResolvedForGrouping` exempts a marked session from the "Recently resolved" demotion — the cap and the demotion are two independent filters and it must clear both
+- [x] The demotion exemption's reach into `sendChildMessage` decided deliberately: a parent may message a child whose workspace is blocked, and it is asserted
+- [ ] Follow-up: a click-to-repair action on the surfaced state — planning#533

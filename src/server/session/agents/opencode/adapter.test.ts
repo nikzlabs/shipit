@@ -1,15 +1,4 @@
-/**
- * OpencodeAdapter conformance tests (docs/268 req 4).
- *
- * The replayed stream lines are a REAL capture from `opencode run --format
- * json --auto` (CLI 1.18.15, 2026-08-16, DeepSeek turn in a container) —
- * trimmed of noise but byte-shaped as observed, not hand-idealized. The
- * decisive cases are the lossy ones: OpenCode has no terminal result event and
- * drops trailing events under its known upstream bugs, so the adapter must
- * synthesize `agent_result` from process exit — including when the final
- * `step_finish` never arrived — and must terminate the turn itself on a fatal
- * `error` event (the CLI hangs afterwards; verified).
- */
+import { ensureManagedOpenCodeData, openCodeAccessToken, writeOpenCodeAccount, OPENCODE_ACCOUNT_MARKER } from "../../../shared/opencode-account.js";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
@@ -20,7 +9,13 @@ import type { ChildProcess } from "node:child_process";
 import { OpencodeAdapter } from "./adapter.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
-/** A scriptable stand-in for the spawned CLI. */
+vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- the mock factory's signature requires the inline import type
+  const real = await importOriginal<typeof import("../../../shared/kill-child.js")>();
+  return { ...real, killProcessTree: vi.fn(real.killProcessTree) };
+});
+import { killProcessTree } from "../../../shared/kill-child.js";
+
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
@@ -50,8 +45,7 @@ class FakeChild extends EventEmitter {
   }
 }
 
-// Real capture: step_start → tool_use(write) → step_finish(tool-calls) →
-// step_start → text → step_finish(stop). Session/message ids shortened.
+// CLI 1.18.15 capture (2026-08-16), with shortened session/message IDs.
 const SESSION = "ses_ff550b5c6ffei9GXdIgdXXVuAD";
 const CAPTURED = [
   `{"type":"step_start","timestamp":1786885656568,"sessionID":"${SESSION}","part":{"id":"prt_1","messageID":"msg_1","sessionID":"${SESSION}","type":"step-start"}}`,
@@ -75,6 +69,17 @@ function makeAdapter(): { adapter: OpencodeAdapter; child: FakeChild; events: Ag
 
 const RUN_PARAMS: AgentRunParams = { prompt: "create hello.txt", cwd: "/tmp" };
 
+// The adapter writes XDG state even with a fake CLI; isolate it from real credentials.
+let testHome: string;
+beforeEach(() => {
+  testHome = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-adapter-test-"));
+  vi.stubEnv("AGENT_HOME", testHome);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  fs.rmSync(testHome, { recursive: true, force: true });
+});
+
 describe("OpencodeAdapter", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -84,11 +89,6 @@ describe("OpencodeAdapter", () => {
   });
 
   it("declares supportsReview, and names the two tools that earn it", () => {
-    // planning#459 / docs/266 item 15 — chat-native review needs a shell tool
-    // and a subagent primitive, and (since docs/220) no MCP surface at all.
-    // Probed live at depth 0: an opencode session ran
-    // `shipit agent run --role reviewer --prompt-file -` itself and returned
-    // material findings; on a non-zero exit it fell back to `task`.
     const { adapter } = makeAdapter();
     expect(adapter.capabilities.supportsReview).toBe(true);
     expect(adapter.capabilities.toolNames).toContain("bash");
@@ -111,10 +111,6 @@ describe("OpencodeAdapter", () => {
       expect(init.agentId).toBe("opencode");
     }
 
-    // The tool call surfaces as tool_use + tool_result back-to-back — with the
-    // wire's lowercase name and camelCase keys normalized to the transcript
-    // vocabulary (planning#432): `write`/`filePath` miss every recognition
-    // registry and would render as a bare row with no diff or path.
     const assistantToolUse = events.find(
       (e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "tool_use"),
     );
@@ -134,24 +130,18 @@ describe("OpencodeAdapter", () => {
     if (result?.type === "agent_result") {
       expect(result.status).toBe("success");
       expect(result.sessionId).toBe(SESSION);
-      // Token sums across both steps (disjoint semantics — verified live).
       expect(result.tokens).toEqual({
         input: 41 + 113,
         output: 72 + 6,
         cacheRead: 7296 + 7424,
         cacheWrite: 0,
       });
-      // Context occupancy = the LAST step's prompt side, not the sum.
       expect(result.contextTokens).toBe(113 + 0 + 7424 + 0);
       expect(result.cost?.totalUsd).toBeCloseTo(0.0000463288 + 0.0000382872, 10);
     }
   });
 
   it("unwraps the task result wrapper on the emitted tool result (planning#434 wiring)", () => {
-    // The normalizer's unwrap is covered next door; this pins the one line
-    // that connects it — mapEvent applying it to the emitted content — so
-    // dropping the call site goes red server-side, not only in the DOM test.
-    // Result shape verbatim from the 2026-08-18 docs/272 capture.
     const taskLine = `{"type":"tool_use","timestamp":1786885657565,"sessionID":"${SESSION}","part":{"type":"tool","tool":"task","callID":"call_00_task1","state":{"status":"completed","input":{"description":"Count files in repo root","prompt":"Count the files.","subagent_type":"general"},"output":"<task id=\\"ses_8f214c2af\\" state=\\"completed\\">\\n<task_result>\\n11\\n</task_result>\\n</task>"},"id":"prt_t","sessionID":"${SESSION}","messageID":"msg_1"}}`;
     const { adapter, child, events } = makeAdapter();
     adapter.run(RUN_PARAMS);
@@ -161,8 +151,6 @@ describe("OpencodeAdapter", () => {
     const toolResult = events.find((e) => e.type === "agent_tool_result");
     expect(toolResult).toBeDefined();
     if (toolResult?.type === "agent_tool_result") {
-      // The event type carries `unknown[]` blocks; the adapter emits the
-      // Claude-shaped tool_result block.
       const block = toolResult.content[0] as { type: string; content: string };
       expect(block.type).toBe("tool_result");
       expect(block.content).toBe("11");
@@ -173,15 +161,12 @@ describe("OpencodeAdapter", () => {
     const { adapter, child, events } = makeAdapter();
     adapter.run(RUN_PARAMS);
 
-    // The known upstream loss shape: the last text/step_finish never flush.
     child.emitStdout(CAPTURED.slice(0, 3));
     child.close(0);
 
     const result = events.at(-1);
     expect(result?.type).toBe("agent_result");
     if (result?.type === "agent_result") {
-      // Exit 0 with no error event is still a completed turn — what the
-      // accumulator saw is the truth the result reports.
       expect(result.status).toBe("success");
       expect(result.sessionId).toBe(SESSION);
       expect(result.tokens).toEqual({ input: 41, output: 72, cacheRead: 7296, cacheWrite: 0 });
@@ -198,7 +183,6 @@ describe("OpencodeAdapter", () => {
     expect(result?.type).toBe("agent_result");
     if (result?.type === "agent_result") {
       expect(result.status).toBe("error");
-      // Falls back to the resume id so the turn stays attributable.
       expect(result.sessionId).toBe("ses_resume_me");
       expect(result.error).toContain("exited with code 1");
     }
@@ -209,7 +193,6 @@ describe("OpencodeAdapter", () => {
     adapter.run(RUN_PARAMS);
 
     child.emitStdout([CAPTURED[0], ERROR_EVENT]);
-    // The CLI hangs after a fatal error (verified) — the adapter must kill it.
     vi.advanceTimersByTime(3_000);
     expect(child.kill).toHaveBeenCalled();
 
@@ -225,9 +208,6 @@ describe("OpencodeAdapter", () => {
   });
 
   it("kills a CLI that survives its own final step_finish, and the turn still succeeds", () => {
-    // Verified live (1.18.15): with MCP servers configured the process NEVER
-    // exits after the turn — the MCP children keep it alive — so the adapter
-    // must terminate it, and the resulting signal exit must not fail the turn.
     const { adapter, child, events } = makeAdapter();
     adapter.run(RUN_PARAMS);
 
@@ -235,6 +215,11 @@ describe("OpencodeAdapter", () => {
     expect(child.kill).not.toHaveBeenCalled();
     vi.advanceTimersByTime(6_000);
     expect(child.kill).toHaveBeenCalled();
+    expect(vi.mocked(killProcessTree)).toHaveBeenCalledWith(
+      child,
+      "SIGTERM",
+      expect.objectContaining({ label: "opencode" }),
+    );
 
     child.close(143);
     const result = events.at(-1);
@@ -249,9 +234,7 @@ describe("OpencodeAdapter", () => {
     const { adapter, child } = makeAdapter();
     adapter.run(RUN_PARAMS);
 
-    // A non-tool-calls finish arms the kill…
     child.emitStdout(CAPTURED.slice(0, 6));
-    // …but a following step_start (the turn continuing) must disarm it.
     child.emitStdout([CAPTURED[3]]);
     vi.advanceTimersByTime(6_000);
     expect(child.kill).not.toHaveBeenCalled();
@@ -260,9 +243,6 @@ describe("OpencodeAdapter", () => {
   it("a signal death mid-turn emits NO result, so the orchestrator settles it as interrupted", () => {
     const { adapter, child, events } = makeAdapter();
     adapter.run(RUN_PARAMS);
-    // Half a turn, then the user's interrupt kills the process: Node reports
-    // close(null, "SIGTERM"). Synthesizing a success here would record every
-    // user stop as a completed turn (review finding 1).
     child.emitStdout(CAPTURED.slice(0, 3));
     adapter.interrupt();
     child.close(null, "SIGTERM");
@@ -287,8 +267,6 @@ describe("OpencodeAdapter", () => {
     const adapter = new OpencodeAdapter({ spawnFn: () => children.shift() as unknown as ChildProcess });
     adapter.run(RUN_PARAMS);
     adapter.interrupt();
-    // The first turn dies on the SIGINT; a new turn starts inside the 5s
-    // escalation window.
     child1.close(null, "SIGINT");
     adapter.run(RUN_PARAMS);
     vi.advanceTimersByTime(6_000);
@@ -318,8 +296,6 @@ describe("OpencodeAdapter", () => {
   it("splits buffered chunks on line boundaries (block-buffered stdout arrives in one flush)", () => {
     const { adapter, child, events } = makeAdapter();
     adapter.run(RUN_PARAMS);
-    // One giant chunk — the whole turn in a single flush, as Bun's buffering
-    // actually delivers it.
     child.stdout.emit("data", Buffer.from(`${CAPTURED.join("\n")}\n`));
     child.close(0);
     expect(events.filter((e) => e.type === "agent_assistant").length).toBeGreaterThanOrEqual(2);
@@ -327,13 +303,6 @@ describe("OpencodeAdapter", () => {
   });
 
   it("delivers the Zen key through the provider block, never the CLI's own name (docs/272)", () => {
-    // Two variables, deliberately different. ShipIt stores OpenCode's own
-    // service credential under `OPENCODE_ZEN_API_KEY`, and the adapter must
-    // hand it to the CLI ONLY as the provider block's
-    // `OPENCODE_PROVIDER_API_KEY`. `OPENCODE_API_KEY` — the name the CLI
-    // auto-detects and would out-prefer the provider block with — stays
-    // scrubbed from the spawn even when the host exports one, which is the
-    // whole reason a redirected turn cannot silently bill the wrong product.
     vi.stubEnv("OPENCODE_ZEN_API_KEY", "sk-zen-secret");
     vi.stubEnv("OPENCODE_API_KEY", "sk-ambient-vendor-key");
     let spawnEnv: Record<string, string> = {};
@@ -362,12 +331,7 @@ describe("OpencodeAdapter", () => {
     child.close(0);
   });
 
-  // 2026-08-21 incident — a same-harness sub-agent spawn's isolated per-spawn
-  // HOME (`AgentRunParams.homeDir`) outranks the constructor resolver, so the
-  // CLI's XDG data root (auth.json + session store) resolves inside it instead
-  // of the session subtree the live primary reads.
   it("prefers a per-spawn homeDir over the resolver for the CLI's HOME", () => {
-    // A real, writable dir: run() materializes `$HOME/.local/share/opencode`.
     const spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "oc-spawn-home-"));
     try {
       let spawnEnv: Record<string, string> = {};
@@ -394,7 +358,37 @@ describe("OpencodeAdapter", () => {
     adapter.on("error", (e) => errors.push(e));
     adapter.run({
       ...RUN_PARAMS,
-      model: "gpt-5.5",
+      model: "gemini-3-pro",
+      serviceRouting: {
+        serviceId: "google",
+        serviceName: "Google",
+        billingMode: "key",
+        style: "gemini-generate-content",
+        baseUrl: "https://generativelanguage.googleapis.com",
+        credentialSourceEnv: "GEMINI_API_KEY",
+        credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+      },
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain("gemini-generate-content");
+    expect(events).toHaveLength(0);
+  });
+
+  it("shapes an openai-responses routing onto the Responses provider rather than refusing it (docs/310 req 1)", () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-openai-secret");
+    let spawnEnv: Record<string, string> = {};
+    const child = new FakeChild();
+    const adapter = new OpencodeAdapter({
+      spawnFn: (_cmd, _args, opts) => {
+        spawnEnv = (opts?.env ?? {}) as Record<string, string>;
+        return child as unknown as ChildProcess;
+      },
+    });
+    const errors: Error[] = [];
+    adapter.on("error", (e) => errors.push(e));
+    adapter.run({
+      ...RUN_PARAMS,
+      model: "gpt-6-astra",
       serviceRouting: {
         serviceId: "openai",
         serviceName: "OpenAI",
@@ -405,23 +399,15 @@ describe("OpencodeAdapter", () => {
         credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
       },
     });
-    expect(errors).toHaveLength(1);
-    expect(errors[0].message).toContain("openai-responses");
-    expect(events).toHaveLength(0);
+    expect(errors).toEqual([]);
+    expect(spawnEnv.OPENCODE_PROVIDER_API_KEY).toBe("sk-openai-secret");
+    // @ai-sdk/openai-compatible would post to /chat/completions instead.
+    expect(JSON.parse(fs.readFileSync(spawnEnv.OPENCODE_CONFIG, "utf8"))).toMatchObject({
+      provider: { shipit: { npm: "@ai-sdk/openai", options: { baseURL: "https://api.openai.com/v1" } } },
+    });
   });
 });
 
-/**
- * docs/276 — the compaction spawn. `compaction.test.ts` covers the HTTP
- * mechanism; what matters here is that this path SETTLES THE TURN on every
- * exit, including the ones that never reach the server.
- *
- * That is the load-bearing part. A compaction spawn starts no long-lived
- * `this.proc` whose `exit` would synthesize `agent_result` for it, and the
- * orchestrator's whole post-turn sequence — the local commit above all
- * (CLAUDE.md post-turn invariant 2) — hangs off that event. A refusal that
- * returned quietly would strand the session `running` forever.
- */
 describe("OpencodeAdapter — compaction (docs/276)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -450,8 +436,6 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     });
     adapter.run(COMPACT_PARAMS);
     expect(spawned).toHaveLength(1);
-    // `serve`, never `run`: `/compact` as an ordinary prompt would reach the
-    // model verbatim and burn a turn (verified — see compaction.ts).
     expect(spawned[0][0]).toBe("serve");
     expect(spawned[0]).not.toContain("run");
   });
@@ -495,8 +479,6 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
       "agent_compacted",
       "agent_result",
     ]);
-    // OpenCode's summarize answers a bare `true` — no figures to report, so the
-    // card degrades rather than inventing them.
     expect(events[1]).toEqual({ type: "agent_compacted", trigger: "manual" });
     expect(events[2]).toMatchObject({ status: "success", sessionId: SESSION });
   });
@@ -515,7 +497,6 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
     await vi.waitFor(() => expect(events.some((e) => e.type === "agent_result")).toBe(true));
 
-    // The whole point: no "Context compacted" card over work that did not happen.
     expect(events.some((e) => e.type === "agent_compacted")).toBe(false);
     const result = events.find((e) => e.type === "agent_result");
     expect(result).toMatchObject({ status: "error" });
@@ -534,13 +515,9 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
     await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
 
-    // A compaction sets no `this.proc`, so before docs/276 this was a no-op and
-    // the turn hung for the whole summarize window.
     adapter.kill();
     expect(child.kill).toHaveBeenCalled();
 
-    // Killing the server aborts the request; the turn settles through the
-    // ordinary failure path rather than hanging.
     rejectFetch?.(new Error("socket hang up"));
     await vi.waitFor(() => expect(events.some((e) => e.type === "agent_result")).toBe(true));
     expect(events.filter((e) => e.type === "agent_result")).toHaveLength(1);
@@ -559,6 +536,106 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     expect(child.kill).toHaveBeenCalled();
   });
 
+  describe("stall deadline", () => {
+    const DEADLINE_MS = 45 * 60_000;
+    const homes: string[] = [];
+    afterEach(() => {
+      for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
+    });
+
+    function tempHome(withLog: boolean): { home: string; logFile: string } {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-stall-"));
+      homes.push(home);
+      const logDir = path.join(home, ".local", "share", "opencode", "shipit-data", "opencode", "log");
+      if (withLog) fs.mkdirSync(logDir, { recursive: true });
+      return { home, logFile: path.join(logDir, "run.log") };
+    }
+
+    it("ends a turn that never produced output and never exited", () => {
+      const { adapter, child, events } = makeAdapter();
+      const { home } = tempHome(false);
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+
+      vi.advanceTimersByTime(DEADLINE_MS);
+      expect(child.kill).toHaveBeenCalled();
+
+      child.close(null, "SIGTERM");
+      const result = events.at(-1);
+      expect(result?.type).toBe("agent_result");
+      expect(result).toMatchObject({ status: "error" });
+      if (result?.type === "agent_result") {
+        expect(result.error).toMatch(/no output and showed no activity/);
+      }
+    });
+
+    it("postpones on a log heartbeat, and still fires once that goes stale", () => {
+      const { adapter, child } = makeAdapter();
+      const { home, logFile } = tempHome(true);
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+
+      const beat = new Date(Date.now() + 60_000);
+      fs.writeFileSync(logFile, "working");
+      fs.utimesSync(logFile, beat, beat);
+
+      vi.advanceTimersByTime(DEADLINE_MS);
+      expect(child.kill).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(61_000);
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    it("re-arms on output, so a turn still producing events is never cut short", () => {
+      const { adapter, child } = makeAdapter();
+      const { home } = tempHome(false);
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+
+      vi.advanceTimersByTime(DEADLINE_MS - 60_000);
+      child.emitStdout([CAPTURED[0]]);
+      vi.advanceTimersByTime(DEADLINE_MS - 60_000);
+      expect(child.kill).not.toHaveBeenCalled();
+    });
+
+    it("never turns a user interrupt into a stall failure", () => {
+      const { adapter, child, events } = makeAdapter();
+      const { home } = tempHome(false);
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+
+      vi.advanceTimersByTime(DEADLINE_MS - 1_000);
+      adapter.interrupt();
+      vi.advanceTimersByTime(10 * 60_000);
+
+      child.close(null, "SIGTERM");
+      expect(events.some((e) => e.type === "agent_result")).toBe(false);
+    });
+
+    it("carries no stall state into the next turn on a reused adapter", () => {
+      const children = [new FakeChild(), new FakeChild()];
+      let spawned = 0;
+      const adapter = new OpencodeAdapter({
+        spawnFn: () => children[spawned++] as unknown as ChildProcess,
+      });
+      const events: AgentEvent[] = [];
+      adapter.on("event", (e) => events.push(e));
+      const { home } = tempHome(false);
+
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+      vi.advanceTimersByTime(DEADLINE_MS);
+      children[0].close(null, "SIGTERM");
+      expect(events.filter((e) => e.type === "agent_result")).toHaveLength(1);
+
+      events.length = 0;
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+      vi.advanceTimersByTime(DEADLINE_MS - 1_000);
+      children[1].emitStdout(CAPTURED);
+      children[1].close(0);
+
+      expect(children[1].kill).not.toHaveBeenCalled();
+      const result = events.at(-1);
+      expect(result).toMatchObject({ type: "agent_result", status: "success" });
+      if (result?.type === "agent_result") expect(result.error).toBeUndefined();
+    });
+  });
+
   it("no-ops a mid-turn compact() instead of throwing", () => {
     const child = new FakeChild();
     const errors: Error[] = [];
@@ -566,5 +643,86 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     adapter.on("error", (e) => errors.push(e));
     expect(() => adapter.compact()).not.toThrow();
     expect(errors).toHaveLength(0);
+  });
+});
+
+
+describe("OpenCode ChatGPT account route", () => {
+  const routing = { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } as const;
+  function provision(home: string) {
+    const data = ensureManagedOpenCodeData(home);
+    const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "external-a" } })).toString("base64url")}.test`;
+    writeOpenCodeAccount(data, openCodeAccessToken({ tokens: { access_token, refresh_token: "never-copy" } }));
+    fs.writeFileSync(path.join(data, OPENCODE_ACCOUNT_MARKER), JSON.stringify({ accountId: "account-a" }));
+    return data;
+  }
+  it("uses native routing and a private home, scrubs ambient credentials, and preserves resume", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-account-adapter-"));
+    const data = provision(home);
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    vi.stubEnv("OPENAI_API_KEY", "wrong-key");
+    vi.stubEnv("ANTHROPIC_API_KEY", "wrong-provider");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "/credentials/.gitconfig");
+    vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", "/opt/playwright");
+    vi.stubEnv("JAVA_HOME", "/opt/java");
+    try {
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, homeDir: home, sessionId: SESSION });
+      expect(spawnFn).toHaveBeenCalledOnce();
+      const call = (spawnFn.mock.calls as unknown as [string, string[], { env: Record<string, string> }][])[0];
+      expect(call[1]).toContain("openai/gpt-5.5");
+      expect(call[1]).toContain(SESSION);
+      expect(call[2].env.XDG_DATA_HOME).toBe(data);
+      expect(call[2].env.OPENCODE_DISABLE_DEFAULT_PLUGINS).toBe("0");
+      expect(call[2].env.OPENAI_API_KEY).toBeUndefined();
+      expect(call[2].env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(call[2].env.GIT_CONFIG_GLOBAL).toBe("/credentials/.gitconfig");
+      expect(call[2].env.PLAYWRIGHT_BROWSERS_PATH).toBe("/opt/playwright");
+      expect(call[2].env.JAVA_HOME).toBe("/opt/java");
+      expect(JSON.parse(call[2].env.OPENCODE_CONFIG_CONTENT)).toMatchObject({ enabled_providers: ["openai"], small_model: "openai/gpt-5.5" });
+      child.close(0);
+    } finally { adapter.kill(); vi.unstubAllEnvs(); fs.rmSync(home, { recursive: true, force: true }); }
+  });
+  it("refuses a projection for another route and classifies the native empty-refresh failure", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-account-adapter-"));
+    const data = provision(home);
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    const authRequired = vi.fn(); adapter.on("auth_required", authRequired);
+    try {
+      fs.writeFileSync(path.join(data, OPENCODE_ACCOUNT_MARKER), JSON.stringify({ accountId: "account-b" }));
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, homeDir: home });
+      expect(spawnFn).not.toHaveBeenCalled(); expect(authRequired).toHaveBeenCalledOnce();
+      provision(home);
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, homeDir: home });
+      child.emitStdout([JSON.stringify({ type: "error", sessionID: SESSION, error: { name: "UnknownError", data: { message: "Token refresh failed: 400" } } })]);
+      expect(authRequired).toHaveBeenCalledTimes(2);
+    } finally { adapter.kill(); fs.rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+// docs/299 — OpenCode takes no tool flags, so tools-off rides its config file.
+describe("OpencodeAdapter — tools off", () => {
+  function configFromSpawn(params: Partial<AgentRunParams>): Record<string, unknown> {
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    try {
+      adapter.run({ ...RUN_PARAMS, ...params });
+      const call = (spawnFn.mock.calls as unknown as [string, string[], { env: Record<string, string> }][])[0];
+      return JSON.parse(fs.readFileSync(call[2].env.OPENCODE_CONFIG, "utf8")) as Record<string, unknown>;
+    } finally {
+      adapter.kill();
+    }
+  }
+
+  it("empties the tool set through the config wildcard", () => {
+    expect(configFromSpawn({ toolsOff: true }).tools).toEqual({ "*": false });
+  });
+
+  it("leaves an ordinary turn's config without a tools entry", () => {
+    expect(configFromSpawn({})).not.toHaveProperty("tools");
   });
 });

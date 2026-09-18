@@ -67,7 +67,7 @@ abstraction is **two named, decoupled operations**:
 
 ```
 prepareSessionAgentEnvironment(runner, { sessionId, agentId, deps })
-runner.sendSystemMessage(prompt)             // or agent.run(...) for the WS path
+runner.sendSystemMessage(prompt)
 ```
 
 At the call site it should be obvious what's environment and what's agent
@@ -146,7 +146,7 @@ export async function buildAgentRunParams(args: {
   sessionId: string;
   agentId: AgentId;
   prompt: string;
-  agentSessionId: string | undefined;   // for --resume
+  agentSessionId: string | undefined;
   sessionDir: string;
   permissionMode?: PermissionMode;
 }): Promise<AgentRunParams>;
@@ -189,10 +189,8 @@ and once in the non-streaming `done` handler
 Extract it to a single helper:
 
 ```ts
-// src/server/orchestrator/services/pr-lifecycle.ts
 export async function emitPrLifecycleAfterCommit(args: {
-  ctx: AppCtx;       // for sessionManager, prStatusPoller, githubAuthManager,
-                     // credentialStore, chatHistoryManager, generateText
+  ctx: AppCtx;
   sessionId: string;
   sessionDir: string;
   commitHash: string;

@@ -89,3 +89,24 @@
 - [x] Tests: a dispatched queue entry is released through the branded path with every
       field intact; the abandoned turn settles as `dropped` and stops publishing its
       delivery; an empty queue still signals `idle`
+
+## Fix F — the drain re-reads admission (planning#562)
+
+- [x] `turn-admission.ts` holds `residentBackgroundWork` + `systemTurnBlockedByResidentWork`;
+      `dispatchOnRunner` reads the shared gate instead of its own copy of the condition
+- [x] `takeRunnableQueuedTurn` gates and takes in one act, so no drain site carries a
+      separate read it can forget
+- [x] All three direct-execution drains take the head through it — `agent-execution.ts`
+      (gate moved ahead of the `queue_updated` + `running = true` claim), `dispatched-turn.ts`,
+      `turn-adoption.ts`
+- [x] A deferred entry stays at the head and is released by the `background_work` listener
+      in `runner-registry-factory.ts` (verified at the source, not inherited)
+- [x] Tests: unit coverage of the take, plus all three drain sites driven end-to-end; each
+      guard proved red by reverting its own site to a bare `dequeue()`
+- [x] `releaseQueuedTurn` takes through the same gate, so a release never moves a blocked
+      entry to the tail; the `background_work` listener calls it instead of hand-rolling
+- [x] `finishTurn` releases the queue after clearing the system hold — the predecessor's own
+      drain ran before the hold came off, so nothing else revisits the entry it passed over
+- [x] That release is gated on `drainSettled`, not `drainFired` (the flag is set before the
+      commit the drain awaits), and runs synchronously inside a `finally` so no successor can
+      appear in a gap and a throwing completion callback cannot strand the entry

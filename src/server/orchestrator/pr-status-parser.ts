@@ -1,12 +1,3 @@
-/**
- * Pure GraphQL → domain helpers extracted from PrStatusPoller.
- *
- * No class state, no I/O — these functions translate raw GitHub GraphQL
- * responses into ShipIt domain types, and compare those domain types for
- * equality. Kept side-effect-free so callers (the poller and its tests)
- * can exercise them in isolation.
- */
-
 import type {
   PrStatusSummary,
   PrReviewDecision,
@@ -16,15 +7,7 @@ import type {
 } from "../shared/types/github-types.js";
 import type { GitHubDeploymentStatus } from "../shared/types/deployment-types.js";
 
-/**
- * Light per-PR selections — every field except conversation. Used for every
- * PR in the bulk `pullRequests(first: N)` connection. See `buildPrStatusQuery`.
- *
- * NOTE: `files(first: 100)` is the hard ceiling — the GitHub GraphQL `files`
- * connection rejects any `first` above 100 with an EXCESSIVE_PAGINATION error
- * (the request 200s but the data is dropped). PRs touching more than 100 files
- * get a truncated file list here; do not raise this above 100.
- */
+// GitHub rejects files(first: N) above 100; larger PRs have truncated file lists.
 const PR_LIGHT_FIELDS = `
         number
         title
@@ -83,20 +66,6 @@ const PR_LIGHT_FIELDS = `
           }
         }`;
 
-/**
- * Conversation GraphQL selections (docs/133 Phase 4): PR-level issue comments
- * + review threads. Appended only to the focused-PR aliases — one alias per
- * session whose PR tab is currently the active right-panel tab. These fields
- * roughly double the per-PR payload, and the bulk-heavy variant's cost scaled
- * with the requested `first: N` (see docs/155-pr-poll-query-scoping/cost-
- * measurements.md), so we pay for conversation per-focused-PR rather than
- * per-bulk-view.
- *
- * `comments(last: 30)` mirrors how GitHub renders the conversation timeline
- * (most recent first matters more than the very first comment). Review-thread
- * comments are bounded at 50 — threads longer than that are vanishingly rare
- * and the panel renders read-only, so truncation is harmless.
- */
 const CONVERSATION_FIELDS = `
         comments(last: 30) {
           nodes {
@@ -125,37 +94,8 @@ const CONVERSATION_FIELDS = `
           }
         }`;
 
-/**
- * Build the PR status GraphQL query.
- *
- * Emits one bulk `pullRequests(first: N)` connection with light fields only,
- * followed by:
- *   - one `focused${i}: pullRequest(number: ...)` alias per number in
- *     `focusedPrNumbers`, carrying light + conversation fields (the PR the
- *     user's tab is open on), and
- *   - one `coverage${i}: pullRequest(number: ...)` alias per number in
- *     `coveragePrNumbers`, carrying light fields only.
- * See docs/155-pr-poll-query-scoping/plan.md Phase 1 for the rationale.
- *
- * The bulk connection is ordered `UPDATED_AT DESC` so the `first: N` window is
- * biased toward recently-active PRs — the ones backing the sessions a user is
- * working on — instead of GitHub's default (roughly oldest-open-first), which
- * pushed a busy repo's active session PRs out of a small window entirely.
- *
- * `coveragePrNumbers` is the hard guarantee on top of ordering: a tracked
- * session's *known* PR is aliased by number so it can never be windowed out of
- * the bulk view, regardless of how many other PRs are open on the repo. The
- * caller passes every tracked session's last-known PR number here. Light fields
- * only — conversation is reserved for the focused (PR-tab-active) alias to keep
- * the per-poll payload bounded.
- *
- * The connection sizes (`first: N` PRs, `first: 10` contexts, `last: 3`
- * deployments) are intentionally bounded to keep the query cost down. The
- * caller computes `first` as `min(30, max(trackedSessionCount, DISCOVERY_FLOOR))`
- * so the cost scales with the actual number of sessions being watched on this
- * repo, plus a small floor for out-of-band-PR discovery. Status rollups beyond
- * the first 10 contexts are an extreme edge case; if it bites, increase here
- * rather than dropping back to a paginated GraphQL.
+/** Coverage aliases retain tracked PRs outside the bulk window.
+ * Fetch conversation only for focused PRs to limit query cost.
  */
 export function buildPrStatusQuery(opts: {
   first: number;
@@ -171,8 +111,6 @@ export function buildPrStatusQuery(opts: {
       ${CONVERSATION_FIELDS}
     }`)
     .join("");
-  // A PR-tab-active session already gets a conversation-carrying focused alias;
-  // don't emit a second light alias for the same PR number.
   const coverageAliases = coveragePrNumbers
     .filter((n) => !focusedSet.has(n))
     .map((n, i) => `
@@ -194,7 +132,6 @@ query($owner: String!, $name: String!) {
 `;
 }
 
-/** Raw GraphQL response shape. */
 export interface GraphQLPrNode {
   number: number;
   title: string;
@@ -203,18 +140,11 @@ export interface GraphQLPrNode {
   author?: { login: string; avatarUrl: string | null } | null;
   url: string;
   state: string;
-  mergeable: string; // MERGEABLE, CONFLICTING, UNKNOWN
-  reviewDecision: string | null; // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or null
+  mergeable: string;
+  reviewDecision: string | null;
   autoMergeRequest: { mergeMethod: string } | null;
   headRefName: string;
-  /**
-   * The branch ref's current tip OID — the source of truth for "the PR's current
-   * head", distinct from `commits(last: 1)` below. GitHub advances `headRefOid`
-   * to a new commit immediately on push, but `commits(last: 1)` (and its
-   * `statusCheckRollup`) lag behind during the eventual-consistency window after
-   * a retrigger push. The auto-fix loop compares the two to drop a failure verdict
-   * whose rollup commit is no longer the current head (a superseded run). planning#64.
-   */
+  /** Ref tip; commits(last: 1) and its CI rollup can lag after a push. */
   headRefOid?: string;
   baseRefName: string;
   baseRefOid?: string;
@@ -252,7 +182,7 @@ export interface GraphQLPrNode {
       commit: {
         oid?: string;
         statusCheckRollup: {
-          state: string; // SUCCESS, FAILURE, PENDING, EXPECTED, ERROR
+          state: string;
           contexts: {
             nodes: (| { databaseId?: number; name: string; status: string; conclusion: string | null; title?: string | null; detailsUrl?: string | null }
               | { context: string; state: string })[];
@@ -274,13 +204,7 @@ export interface GraphQLPrNode {
 export interface GraphQLResponse {
   data?: {
     repository?: {
-      /**
-       * Canonical `owner/repo` as GitHub resolves it. GitHub's GraphQL
-       * `repository(owner, name)` follows transfer/rename redirect records, so
-       * querying a transferred repo by its OLD owner still returns the NEW
-       * `nameWithOwner`. The poller diffs this against the key it polled under
-       * to self-heal a stale cached owner after a repo transfer.
-       */
+      /** Canonical owner/repo after GitHub transfer or rename redirects. */
       nameWithOwner?: string;
       pullRequests?: {
         nodes: GraphQLPrNode[];
@@ -290,17 +214,6 @@ export interface GraphQLResponse {
   errors?: { message: string }[];
 }
 
-/**
- * Walk the per-number aliases off a GraphQL response and return a map of PR
- * number → node. Both `focused${i}` (PR-tab-active, light + conversation) and
- * `coverage${i}` (tracked-session guarantee, light only) aliases are collected.
- * The poller uses this map both to patch heavy conversation data onto bulk-view
- * summaries and to surface tracked PRs that fell outside the bulk `first: N`
- * window (matched back to a session by branch in `pollRepo`).
- *
- * Takes `unknown` because the alias keys are dynamic and don't fit cleanly into
- * the `GraphQLResponse` interface — the parser owns the response-shape knowledge.
- */
 export function extractFocusedPrNodes(result: unknown): Map<number, GraphQLPrNode> {
   const out = new Map<number, GraphQLPrNode>();
   const repository = (result as { data?: { repository?: Record<string, unknown> } })?.data?.repository;
@@ -315,11 +228,6 @@ export function extractFocusedPrNodes(result: unknown): Map<number, GraphQLPrNod
   return out;
 }
 
-/**
- * Map GitHub GraphQL `reviewDecision` to our typed state. GitHub returns `null`
- * when the base branch requires no review — collapse that to `"none"` so the
- * merge gate can treat it as non-blocking. docs/174.
- */
 export function mapReviewDecision(decision: string | null | undefined): PrReviewDecision {
   switch (decision) {
     case "APPROVED": return "approved";
@@ -329,7 +237,6 @@ export function mapReviewDecision(decision: string | null | undefined): PrReview
   }
 }
 
-/** Map GitHub GraphQL deployment state string to our typed state. */
 export function mapDeploymentState(state: string | undefined): GitHubDeploymentStatus["state"] {
   switch (state?.toUpperCase()) {
     case "SUCCESS": case "ACTIVE": return "success";
@@ -342,11 +249,7 @@ export function mapDeploymentState(state: string | undefined): GitHubDeploymentS
   }
 }
 
-/**
- * Parse the conversation selections (issue comments + review threads) off a
- * GraphQL PR node. Returns `undefined` for a field that wasn't selected (the
- * light query omits them), distinguishing "not fetched" from "fetched, empty".
- */
+/** undefined means not fetched; an empty array means fetched with no entries. */
 export function parseConversation(node: GraphQLPrNode): {
   issueComments?: PrIssueComment[];
   reviewThreads?: PrReviewThread[];
@@ -382,7 +285,6 @@ export function parseConversation(node: GraphQLPrNode): {
   return { issueComments, reviewThreads };
 }
 
-/** Parse a GraphQL PR node into a PrStatusSummary. */
 export function parsePrNode(
   node: GraphQLPrNode,
   sessionId: string,
@@ -396,7 +298,6 @@ export function parsePrNode(
   if (rollup?.contexts?.nodes) {
     for (const ctx of rollup.contexts.nodes) {
       if ("conclusion" in ctx && "name" in ctx && !("context" in ctx)) {
-        // CheckRun
         if (ctx.conclusion === "SUCCESS") passed++;
         else if (ctx.conclusion === "FAILURE" || ctx.conclusion === "CANCELLED" || ctx.conclusion === "TIMED_OUT") {
           failed++;
@@ -407,7 +308,6 @@ export function parsePrNode(
         }
         else if (ctx.status !== "COMPLETED") pending++;
       } else if ("context" in ctx) {
-        // StatusContext
         const sc = ctx as { context: string; state: string };
         if (sc.state === "SUCCESS") passed++;
         else if (sc.state === "FAILURE" || sc.state === "ERROR") {
@@ -426,7 +326,6 @@ export function parsePrNode(
     pending > 0 ? "pending" :
     "success";
 
-  // Parse deployments from commit
   const deploymentNodes = commit?.deployments?.nodes;
   let deployments: GitHubDeploymentStatus[] | undefined;
   if (deploymentNodes && deploymentNodes.length > 0) {
@@ -472,44 +371,20 @@ export function parsePrNode(
   };
 }
 
-/**
- * Extract the head SHA from a GraphQL PR node.
- *
- * This is the OID of `commits(last: 1)` — the latest commit GitHub has *indexed
- * into the PR's commit list*, and the commit its `statusCheckRollup` (CI verdict)
- * belongs to. It LAGS the branch ref's true tip during the consistency window
- * after a push; use {@link extractCurrentHeadOid} for "the PR's current head".
- */
+/** CI rollup commit, which can lag behind extractCurrentHeadOid after a push. */
 export function extractHeadSha(node: GraphQLPrNode): string | undefined {
   return node.commits.nodes[0]?.commit?.oid;
 }
 
-/**
- * Extract the PR branch ref's current tip OID (`headRefOid`).
- *
- * Unlike {@link extractHeadSha} (the rollup commit, which lags), `headRefOid`
- * reflects the ref tip immediately on push. When the two disagree, the
- * `commits(last: 1)` rollup is for a superseded commit and any failure it
- * reports is stale (planning#64). Undefined when the field wasn't selected.
- */
 export function extractCurrentHeadOid(node: GraphQLPrNode): string | undefined {
   return node.headRefOid;
 }
 
-/** Extract the base branch SHA from a GraphQL PR node. */
 export function extractBaseSha(node: GraphQLPrNode): string | undefined {
   return node.baseRefOid;
 }
 
-/**
- * Extract the list of changed file paths from a GraphQL PR node.
- *
- * Capped at 100 by the `files(first: 100)` selection in `PR_LIGHT_FIELDS`.
- * PRs that touch more than 100 files return a truncated list; callers should
- * treat the result as "best-effort" rather than authoritative for full-PR
- * diff analysis. For workflow-applies decisions, truncation is safe: a
- * 100+ file PR is exceedingly unlikely to be entirely `paths:`-filtered-out.
- */
+/** At most 100 paths from this query; not a complete diff for larger PRs. */
 export function extractChangedFiles(node: GraphQLPrNode): string[] {
   const nodes = node.files?.nodes;
   if (!nodes) return [];
@@ -540,7 +415,6 @@ function mapFileChangeType(changeType: string | undefined): string {
   }
 }
 
-/** Extract failed check run database IDs from a GraphQL PR node. */
 export function extractFailedCheckRuns(node: GraphQLPrNode): {
   databaseId: number;
   name: string;
@@ -571,16 +445,6 @@ export function extractFailedCheckRuns(node: GraphQLPrNode): {
   return failed;
 }
 
-/**
- * Shallow comparison of two PrStatusSummary objects.
- *
- * Title and body are included because the PR card renders them inline — when
- * the user (or the agent, or a teammate on github.com) edits the PR
- * description, the poller picks up the new value and we need to broadcast it
- * so the card refreshes without a reload. Without these checks, the
- * change-detection gate would swallow the update and the card would keep
- * showing the stale title/description until the next CI/state event.
- */
 export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
   return (
     a.prState === b.prState &&
@@ -597,9 +461,6 @@ export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
     a.checks.graceUntil === b.checks.graceUntil &&
     a.mergeable === b.mergeable &&
     a.reviewDecision === b.reviewDecision &&
-    // The merge button is disabled off this field, so a change in it has to
-    // reach the client on its own — a push that lands while nothing else about
-    // the PR changes is exactly the transition that re-enables the button.
     a.branchSync?.state === b.branchSync?.state &&
     a.branchSync?.ahead === b.branchSync?.ahead &&
     a.branchSync?.behind === b.branchSync?.behind &&
@@ -624,15 +485,6 @@ function filesEqual(a?: PrStatusSummary["files"], b?: PrStatusSummary["files"]):
   );
 }
 
-/**
- * Compare the conversation (issue comments + review threads) of two summaries.
- *
- * `undefined` means "not fetched this poll" (light query). The poller carries
- * the previous conversation forward onto a light-poll summary before calling
- * this, so in practice both sides are either both-undefined (never fetched) or
- * both-defined. We still treat a defined/undefined mismatch as "changed" so
- * the very first heavy poll — when comments first arrive — broadcasts.
- */
 export function conversationEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
   return (
     issueCommentsEqual(a.issueComments, b.issueComments) &&
@@ -663,7 +515,6 @@ function reviewThreadsEqual(a?: PrReviewThread[], b?: PrReviewThread[]): boolean
   });
 }
 
-/** Compare deployment arrays for equality. */
 export function deploymentsEqual(
   a: GitHubDeploymentStatus[] | undefined,
   b: GitHubDeploymentStatus[] | undefined,

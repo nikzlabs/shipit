@@ -4,13 +4,6 @@ import type { FileTreeNode } from "./types.js";
 
 import { isWorkspaceSkipDir, WORKSPACE_HIDDEN_FILES } from "./fs-constants.js";
 
-/**
- * Recursively scan a directory and return a tree of FileTreeNode objects.
- *
- * - Directories come before files (sorted alphabetically within each group)
- * - Skips common noise directories (node_modules, .git, dist, etc.)
- * - Paths are relative to the workspace root
- */
 export async function scanFileTree(dir: string, prefix = ""): Promise<FileTreeNode[]> {
   let entries;
   try {
@@ -24,9 +17,6 @@ export async function scanFileTree(dir: string, prefix = ""): Promise<FileTreeNo
 
   for (const entry of entries) {
     if (isWorkspaceSkipDir(entry.name)) continue;
-    // Dotfiles are shown by default — `.npmrc`, `.gitignore`, `.editorconfig`,
-    // etc. are editable source. Only pure junk / internal data is hidden here;
-    // directory-level noise is handled by WORKSPACE_SKIP_DIRS above.
     if (WORKSPACE_HIDDEN_FILES.has(entry.name)) continue;
 
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -48,7 +38,6 @@ export async function scanFileTree(dir: string, prefix = ""): Promise<FileTreeNo
     }
   }
 
-  // Sort directories first, then files, both alphabetically
   dirs.sort((a, b) => a.name.localeCompare(b.name));
   files.sort((a, b) => a.name.localeCompare(b.name));
 

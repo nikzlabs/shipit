@@ -22,13 +22,7 @@ export function contextMatches(
   );
 }
 
-/**
- * Locate a selection-anchored comment inside the rendered markdown body.
- * Context is captured from the whole rendered container, so matching must also
- * happen against the whole rendered text before mapping the winning occurrence
- * back to its top-level block. This keeps duplicate quotes in later blocks from
- * being stolen by the first block's fallback match.
- */
+/** Match against the full rendered text before mapping to a block. */
 export function locateInBlocks(
   blocks: IndexedMarkdownBlock[],
   renderedText: string,
@@ -52,10 +46,6 @@ export function locateInBlocks(
   return firstMatchBlock;
 }
 
-/**
- * Walk text nodes inside `root` and compute the character offset of
- * (node, offsetInNode) in the concatenated text content.
- */
 export function offsetWithin(root: Node, node: Node, offsetInNode: number): number {
   let offset = 0;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -66,6 +56,5 @@ export function offsetWithin(root: Node, node: Node, offsetInNode: number): numb
     }
     offset += text.data.length;
   }
-  // Fallback: if the node isn't under root (shouldn't happen for valid selections).
   return -1;
 }

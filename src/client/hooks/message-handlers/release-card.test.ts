@@ -52,7 +52,7 @@ describe("handleReleaseCard (docs/171)", () => {
 
   it("is idempotent on a reconnect replay (same cardId, no duplicate)", () => {
     handleReleaseCard(ctx, card());
-    handleReleaseCard(ctx, card()); // buffer replay re-delivers the same card
+    handleReleaseCard(ctx, card());                                           
     expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 

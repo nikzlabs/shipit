@@ -27,7 +27,7 @@ const thread: PrReviewThread = {
 
 describe("PrConversationSection", () => {
   beforeEach(() => {
-    // Default the store action to a no-op success so tests opt into behavior.
+
     usePrStore.setState({ postComment: vi.fn().mockResolvedValue(null) });
   });
 

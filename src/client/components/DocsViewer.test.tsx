@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { DocsViewer } from "./DocsViewer.js";
+import * as docPaths from "../utils/doc-paths.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import type { DocEntry } from "../../server/shared/types.js";
 
@@ -21,10 +22,7 @@ describe("DocsViewer", () => {
     onRefresh: vi.fn(),
   });
 
-  // docs/248 — an `issue:` pointer resolves against the trackers this
-  // repository declares, and the browser's view of those declarations is the
-  // tracker list the Issues store already holds. A pointer that resolves to
-  // nothing renders as a legible badge, so a chip test has to declare one.
+  // Issue pointers resolve only against trackers declared in this store.
   beforeEach(() => {
     useIssuesStore.setState({
       trackers: [
@@ -101,7 +99,6 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
       ];
       render(<DocsViewer {...props} />);
-      // req 15 — the chip renders the destination's name form.
       const chip = screen.getByText("roadmap#TRACKER-28");
       expect(chip).toBeInTheDocument();
       const link = chip.closest("a");
@@ -117,9 +114,7 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
       ];
       render(<DocsViewer {...props} />);
-      // req 15 — the chip renders the destination's name form.
       const chip = screen.getByText("roadmap#TRACKER-28");
-      // No external link — it's a button that opens the inline view.
       expect(chip.closest("a")).toBeNull();
       const button = chip.closest("button");
       expect(button).not.toBeNull();
@@ -219,8 +214,6 @@ describe("DocsViewer", () => {
       const items = screen.getAllByRole("button").filter(
         (btn) => (btn.querySelector("span")?.textContent ?? "").endsWith("-Doc"),
       );
-      // Highest feature number first (003 → 002 → 001), so the newest doc is at
-      // the top of the list without scrolling.
       expect(items.map((btn) => btn.querySelector("span")?.textContent)).toEqual([
         "C-Doc",
         "B-Doc",
@@ -285,7 +278,6 @@ describe("DocsViewer", () => {
         }),
       ];
       render(<DocsViewer {...props} />);
-      // The plan is the single primary row for the feature.
       expect(screen.getAllByText("Experiment")).toHaveLength(1);
       expect(screen.getByText("Primary plan summary.")).toBeInTheDocument();
       expect(screen.getByText("2/4")).toBeInTheDocument();
@@ -351,8 +343,6 @@ describe("DocsViewer", () => {
   });
 
   describe("modified-in-session group", () => {
-    // `modifiedAt` (mtime) now only orders the group; membership is driven by
-    // the server-computed `changedInSession` flag.
     const OLDER = "2026-01-02T00:00:00.000Z";
     const NEWER = "2026-01-03T00:00:00.000Z";
 
@@ -379,7 +369,6 @@ describe("DocsViewer", () => {
       );
       expect(items[0].textContent).toContain("Newest");
       expect(items[1].textContent).toContain("Recent");
-      // Old (not changed this session) appears in the regular Tracked section below.
       expect(items[2].textContent).toContain("Old");
     });
 
@@ -400,7 +389,6 @@ describe("DocsViewer", () => {
         makeDoc({ path: "README.md", title: "README" }),
       ];
       render(<DocsViewer {...props} />);
-      // "A" was changed in session → moved to top group, leaving 1 tracked + 1 other.
       expect(screen.getByText("Tracked (1)")).toBeInTheDocument();
       expect(screen.getByText("Other (1)")).toBeInTheDocument();
     });
@@ -414,9 +402,6 @@ describe("DocsViewer", () => {
     });
 
     it("hides an untracked sibling from the modified group when a tracked plan exists alongside it", () => {
-      // Both `plan.md` and `checklist.md` for the same feature got touched in
-      // this session. The two derive the same display title from the parent
-      // directory name, so listing both would render as a visual duplicate.
       const props = defaultProps();
       props.files = [
         makeDoc({
@@ -433,10 +418,34 @@ describe("DocsViewer", () => {
       ];
       render(<DocsViewer {...props} />);
       expect(screen.getByText("Modified in this session")).toBeInTheDocument();
-      // Only the tracked plan renders — exactly one row, not two.
       expect(screen.getAllByText("Feature")).toHaveLength(1);
-      // The plan's issue chip should still be present.
       expect(screen.getByText("roadmap#TRACKER-28")).toBeInTheDocument();
+    });
+  });
+
+  describe("grouping cost", () => {
+    it("does not rebuild the index or regroup when re-rendered with the same doc list", () => {
+      const buildSpy = vi.spyOn(docPaths, "buildDocIndex");
+      const trackedSpy = vi.spyOn(docPaths, "isTrackedIn");
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001-auth/plan.md", title: "Auth" }),
+        makeDoc({ path: "docs/001-auth/checklist.md", title: "Auth" }),
+        makeDoc({ path: "notes/scratch.md", title: "Scratch" }),
+      ];
+
+      const { rerender } = render(<DocsViewer {...props} />);
+      // Exact counts catch both per-render and per-document index rebuilds.
+      expect(buildSpy).toHaveBeenCalledTimes(1);
+      const groupingCalls = trackedSpy.mock.calls.length;
+      expect(groupingCalls).toBeGreaterThan(0);
+
+      for (let i = 0; i < 5; i++) rerender(<DocsViewer {...props} />);
+
+      expect(buildSpy).toHaveBeenCalledTimes(1);
+      expect(trackedSpy.mock.calls.length).toBe(groupingCalls);
+      buildSpy.mockRestore();
+      trackedSpy.mockRestore();
     });
   });
 

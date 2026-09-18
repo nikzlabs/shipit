@@ -2,14 +2,6 @@ import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { ShipitSourceStatusCard } from "./ShipitSourceStatusCard.js";
 
-/**
- * Tests for the Host-tab `ShipitSourceStatusCard` (docs/162).
- *
- * Informational, presentational component — the fetch lives in HostPanel and
- * is passed in as a prop. Tests cover the four render states: loading, error,
- * unavailable, and an available ref (exact vs. approximate).
- */
-
 afterEach(cleanup);
 
 describe("ShipitSourceStatusCard", () => {

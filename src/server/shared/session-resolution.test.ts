@@ -23,6 +23,12 @@ describe("session resolution", () => {
     expect(isResolvedForGrouping(resolved, { hasVisibleBrood: false })).toBe(true);
   });
 
+  it("keeps a session with a blocked workspace active", () => {
+    const resolved = make({ mergedAt: "2026-08-14 11:00:00" });
+    expect(isResolvedForGrouping({ ...resolved, workspaceBlock: "conflict" }, { hasVisibleBrood: false })).toBe(false);
+    expect(isResolvedForGrouping(resolved, { hasVisibleBrood: false })).toBe(true);
+  });
+
   it("keeps a running session active when its PR becomes terminal mid-turn", () => {
     const resolved = make({ mergedAt: "2026-08-14 11:00:00" });
     expect(isResolvedForGrouping(resolved, { hasVisibleBrood: false, isRunning: true })).toBe(false);

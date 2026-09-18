@@ -1,6 +1,6 @@
+import { settingCopy, settingOptions } from "../Settings/setting-copy.js";
 import { inputClass } from "./shared.js";
 
-/** stdio vs http selector for the MCP server form. */
 export function McpTypeSelector({
   value,
   onChange,
@@ -10,14 +10,19 @@ export function McpTypeSelector({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs text-(--color-text-secondary)">Type</span>
+      <span className="text-xs text-(--color-text-secondary)">
+        {settingCopy("mcp.servers[].type").label}
+      </span>
       <select
         className={inputClass}
         value={value}
         onChange={(e) => onChange(e.target.value as "stdio" | "http")}
       >
-        <option value="stdio">stdio (spawned process)</option>
-        <option value="http">http (remote endpoint)</option>
+        {settingOptions("mcp.servers[].type").map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
       </select>
     </label>
   );

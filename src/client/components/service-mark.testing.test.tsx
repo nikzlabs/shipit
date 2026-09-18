@@ -34,9 +34,7 @@ describe("queryServiceMark", () => {
   });
 
   it("refuses a Phosphor glyph — the whole reason it is not querySelector('svg')", () => {
-    // A checkmark is what a selected picker row carries beside its mark, and a
-    // caret is what every trigger carries, so this is the exact false positive
-    // the call sites are guarding against.
+
     const { container } = render(<CheckIcon />);
     expect(container.querySelector("svg")).not.toBeNull();
     expect(queryServiceMark(container)).toBeNull();

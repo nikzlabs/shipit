@@ -1,14 +1,4 @@
-/**
- * RebaseBanner — the banner used to hard-code `main` as the base branch, so on a
- * `master` repo it told the user their branch was behind a branch that doesn't
- * exist, and "Update branch" rebased onto an unresolvable ref. These cover the
- * branch name it renders and the one it hands to `startRebase`.
- *
- * The same claim is invented wholesale on a session that has no base branch at
- * all — an ops session (docs/128) reported "Branch is behind `main`" despite
- * having no remote and no PR lifecycle — so the nudge is gated on the session
- * actually being repo-backed.
- */
+
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
@@ -152,8 +142,7 @@ describe("RebaseBanner", () => {
   });
 
   it("still reports a rebase failure on a session with no base branch", () => {
-    // The nudge is suppressed, not the whole banner: a rebase that did run
-    // reports its outcome, minus the Retry button that has nothing to rebase.
+
     useSessionStore.setState({ sessions: [session({ kind: "ops", remoteUrl: undefined })] });
     useGitStore.setState({ pushRejected: true, rebaseError: "boom" });
     render(<RebaseBanner sessionId="s1" />);

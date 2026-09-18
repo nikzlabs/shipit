@@ -3,21 +3,15 @@ import type { CredentialRoute, NonTurnFailureCard, WsServerMessage } from "../..
 import type { PersistedMessage } from "../chat-history.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import { TEST_CREDENTIALS_DIR } from "../credentials-test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
+import { UsageManager } from "../usage.js";
+import { recordNonTurnUsage } from "./non-turn-work.js";
 
-/**
- * docs/252 phase 7 (req 9) — running the work outside a turn.
- *
- * The two properties the requirement is emphatic about are what these tests
- * pin: **a failed generation still lets the surrounding operation complete with
- * a fallback**, and **the notice is persisted, not merely emitted** — a card
- * that renders live and vanishes on reload is silent in practice.
- */
-
-function keyRoute(serviceId: string): CredentialRoute {
+function keyRoute(serviceId: string, billingMode: "key" | "sub" = "key"): CredentialRoute {
   return {
-    id: `${serviceId}-key`,
+    id: `${serviceId}-${billingMode}`,
     serviceId,
-    billingMode: "key",
+    billingMode,
     via: "string",
     status: "ready",
     priority: 0,
@@ -38,7 +32,6 @@ interface Harness {
 function buildDeps(opts: {
   routes?: CredentialRoute[];
   spawn?: (...args: never[]) => Promise<SubAgentRunResult>;
-  /** Omit the runner entirely — the container-is-gone path. */
   noRunner?: boolean;
   running?: boolean;
 }) {
@@ -53,7 +46,9 @@ function buildDeps(opts: {
     lastPersistedBufferIndex: 0,
     spawnSubAgent: opts.spawn ?? (() => Promise.reject(new Error("no spawn configured"))),
   };
-  const routes = opts.routes ?? [keyRoute("deepseek")];
+  // Z.AI's coding plan declares no direct call, so the default fixture is a
+  // credential background work has to carry on a harness.
+  const routes = opts.routes ?? [keyRoute("zai", "sub")];
   const deps = {
     credentialStore: {
       getNonTurnModel: () => undefined,
@@ -64,10 +59,9 @@ function buildDeps(opts: {
             && (billingMode === undefined || r.billingMode === billingMode),
         ),
       getCredentialSecret: () => "sk-test",
-      // docs/252 req 20 — spawn shaping asks the STORE whether a route id names
-      // a stored row, because an adopted credential keeps a legacy reserved id
-      // and can no longer be recognised by its id's shape.
       getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
+      getSelectionMode: () => "strict" as const,
+      getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
     },
     getRunnerRegistry: () => ({ get: () => (opts.noRunner ? undefined : runner) }),
     chatHistoryManager: {
@@ -82,7 +76,6 @@ function buildDeps(opts: {
       },
     },
   };
-  // The structural fakes above intentionally model only what this module reads.
   return { deps: deps as never, h };
 }
 
@@ -109,9 +102,6 @@ describe("makeNonTurnGenerateText", () => {
     vi.doUnmock("../../shared/installed-harnesses.js");
   });
 
-  // A call with no session is not non-turn *work* — it is the post-interrupt
-  // commit message, which has no session to attribute to and no notice to
-  // raise. It must keep running on whatever the caller injected.
   it("delegates to the fallback when the caller names no session", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps } = buildDeps({});
@@ -136,13 +126,10 @@ describe("makeNonTurnGenerateText", () => {
     expect(text).toBe(OK_RESULT.text);
     const req = (spawn.mock.calls as unknown as [{ agentId: string; model: string; serviceRouting?: unknown }][])[0][0];
     expect(req.agentId).toBe("claude");
-    expect(req.model).toBe("deepseek-v4-flash");
-    // A string-delivered credential is shaped: endpoint + credential target.
+    expect(req.model).toBe("glm-5.3[1m]");
     expect(req.serviceRouting).toBeTruthy();
   });
 
-  // req 16 — a user can point non-turn work at a metered service and be charged
-  // for every session they create. The spend has to land somewhere.
   it("records a usage row with the run's own attribution", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDeps({ spawn: async () => OK_RESULT });
@@ -156,19 +143,12 @@ describe("makeNonTurnGenerateText", () => {
     expect(h.recorded).toHaveLength(1);
     const row = h.recorded[0];
     expect(row.sessionId).toBe("s1");
-    // Not the pinned agent's turn — a one-shot spawn of the derived harness,
-    // which is what keeps it out of the primary delta chain and the context dial.
     expect(row.extra?.subAgentId).toBe("claude");
-    expect(row.extra?.attribution).toMatchObject({ serviceId: "deepseek", billingMode: "key" });
-    // Codex-style: no dollar figure reported, so the row is priced from the
-    // catalogue's persisted rates rather than recorded as free.
-    expect(row.costUsd).toBeGreaterThan(0);
+    expect(row.extra?.attribution).toMatchObject({ serviceId: "zai", billingMode: "sub" });
+    expect(row.costUsd).toBe(0);
     expect(row.extra?.costSource).toBe("per-turn");
   });
 
-  // The trap the cost rule's docstring is written around: an all-zero row
-  // priced through the rates says "this was free", which is a wrong number
-  // rather than a missing one.
   it("records nothing when the harness reported no telemetry", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDeps({
@@ -184,8 +164,6 @@ describe("makeNonTurnGenerateText", () => {
     expect(h.recorded).toHaveLength(0);
   });
 
-  // req 9 — the surrounding operation still completes with a fallback, AND the
-  // user is told. Returning "" is how the caller reaches its generic text.
   it("returns empty and persists a notice when the run fails", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDeps({
@@ -199,19 +177,14 @@ describe("makeNonTurnGenerateText", () => {
     const text = await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
 
     expect(text).toBe("");
-    // PERSISTED, not merely emitted: the turn is not running, so `emitChatCard`
-    // appends a finalized row. A card that only rode the WS would vanish on the
-    // next reload, which req 9 explicitly forbids.
     expect(h.appended).toHaveLength(1);
     const card = h.appended[0].nonTurnFailure;
     expect(card?.purpose).toBe("pr-description");
-    expect(card?.serviceName).toBe("DeepSeek");
+    expect(card?.serviceName).toBe("GLM (Z.ai)");
     expect(card?.detail).toContain("401");
     expect(h.emitted.some((m) => m.type === "non_turn_failure_card")).toBe(true);
   });
 
-  // A blank success is a failure from the user's side — the whole reason the PR
-  // half is a *change* rather than a preserved behaviour.
   it("treats a blank generation as a failure", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDeps({ spawn: async () => ({ ...OK_RESULT, text: "   " }) });
@@ -233,18 +206,9 @@ describe("makeNonTurnGenerateText", () => {
     } as never);
 
     expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
-    // No runner to emit through, so the row is appended directly — the notice
-    // still has to reach the transcript, which is the point of it being
-    // transcript content rather than a toast.
     expect(h.appended).toHaveLength(1);
   });
 
-  // "Nothing eligible" is ShipIt having no opinion, not a refusal to run.
-  // `listConfiguredCredentials` sees the credential store and the environment,
-  // not a CLI logged in on the host outside both — so a dev checkout and a
-  // hand-authenticated deployment land here, and both worked before this
-  // feature. Falling back is the only answer that cannot regress them; a notice
-  // would name nothing actionable and fire on every session.
   it("falls back to the pre-feature generator when nothing at all is eligible", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDeps({ routes: [] });
@@ -256,9 +220,6 @@ describe("makeNonTurnGenerateText", () => {
     expect(h.emitted).toHaveLength(0);
   });
 
-  // The opposite case, and the distinction is the whole point: a pin the
-  // install can no longer run is a service the USER chose that went away, so it
-  // stops and says so rather than quietly running something else.
   it("stops and reports a stale pin rather than falling back", async () => {
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDeps({ routes: [] });
@@ -274,24 +235,49 @@ describe("makeNonTurnGenerateText", () => {
     expect(h.appended[0].nonTurnFailure?.serviceName).toBe("OpenAI");
     expect(h.appended[0].nonTurnFailure?.pinned).toBe(true);
   });
+
+  /**
+   * docs/299-direct-provider-calls req 3. The notice states the cause the
+   * resolver reported. A Gemini subscription carried only by Antigravity —
+   * which refuses a tools-off run — fails with its credential present and its
+   * harness installed, and the damaging half of the old fixed sentence was
+   * sending that user to Settings to repair something that is fine.
+   */
+  it("never tells a user whose credential is present and working that it is gone", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const detailFor = async (routes: CredentialRoute[], pin: Record<string, string>) => {
+      const { deps, h } = buildDeps({ routes });
+      Object.assign((deps as { credentialStore: Record<string, unknown> }).credentialStore, {
+        getNonTurnModel: () => pin,
+      });
+      const generate = makeNonTurnGenerateText({
+        ...(deps as object),
+        fallback: async () => "unused",
+      } as never);
+      expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+      expect(h.appended).toHaveLength(1);
+      return h.appended[0].nonTurnFailure?.detail ?? "";
+    };
+
+    const carrier = await detailFor(
+      [{ ...keyRoute("google", "sub"), via: "account" }],
+      { serviceId: "google", billingMode: "sub", modelId: "gemini-3.8-flash" },
+    );
+    const gone = await detailFor([], {
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.4-mini",
+    });
+
+    expect(carrier).not.toBe(gone);
+    expect(gone).toMatch(/Model providers/);
+    expect(carrier).toMatch(/still configured/);
+    // Nothing under Model providers repairs this one.
+    expect(carrier).not.toMatch(/Model providers/);
+  });
 });
 
-/**
- * Cross-backend review found the credential window missing entirely. Non-turn
- * work is chosen INDEPENDENTLY of the session, so its harness and its account
- * are routinely not the ones the session's container holds — and Anthropic's
- * subscription is the first catalogue row, so that is the default install
- * rather than a corner.
- */
-/**
- * A runner that passes `instanceof ContainerSessionRunner` — the discriminator
- * the credential window keys on — without constructing a real container.
- *
- * Own data properties rather than `Object.assign`, because the real class
- * exposes most of this surface as accessors backed by collaborators a bare
- * `Object.create` does not have; an own property shadows the prototype's
- * accessor cleanly.
- */
+// Own properties bypass real accessors while preserving instanceof for credential provisioning.
 function fakeContainerRunner(
   ctor: new (...args: never[]) => unknown,
   over: Record<string, unknown>,
@@ -327,12 +313,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
     vi.doUnmock("../session-credentials.js");
   });
 
-  // 2026-08-21 incident — the default non-turn target IS this shape: the
-  // claude harness pointed at a non-Anthropic key (deepseek here, z.ai/GLM in
-  // the incident). Provisioning that into the session subtree swaps the
-  // credential file the LIVE primary claude CLI re-reads mid-turn (session
-  // naming races the first turn) and 401s it. A same-harness run therefore
-  // gets an ISOLATED per-spawn home and the borrow machinery stays untouched.
   it("gives a same-harness run an isolated spawn home and never borrows the session subtree", async () => {
     const calls: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
@@ -362,7 +342,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
-      // The session's primary agent IS the harness the run resolved to.
       sessionManager: { get: () => ({ agentId: "claude" }) },
       credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
@@ -370,9 +349,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
 
     await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
 
-    // Home provisioned BEFORE the spawn, released AFTER (sync-back + removal
-    // live inside the release) — and none of the borrow/wipe/restore calls
-    // that used to rewrite the primary's live subtree.
     expect(calls).toEqual(["provision-home", "spawn", "release-home"]);
     expect(seenHomeDir).toMatch(/^\/credentials\/sub-agent-homes\//);
   });
@@ -382,11 +358,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const restored: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
       provisionSubAgentCredentials: () => calls.push("provision"),
-      // docs/260 — the restore uses the credential subtree's own account
-      // MARKER, not session.providerRoute* (the row records no route any more).
-      // planning#445 — and the borrow reports it on release, having captured it
-      // when it overwrote the marker; a caller that re-reads the marker itself
-      // is the shape that lost it.
       releaseSubAgentCredentials: () => {
         calls.push("wipe");
         return "acct_marker";
@@ -403,8 +374,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
         restored.push(accountId);
       },
     }));
-    // The runner has to BE a ContainerSessionRunner for the window to open —
-    // local mode provisions nothing, by design (docs/138).
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const runner = fakeContainerRunner(ContainerSessionRunner, {
@@ -414,10 +383,7 @@ describe("makeNonTurnGenerateText — credential window", () => {
       },
     });
     const { deps } = buildDeps({});
-    // The isolation flag is captured at SPAWN time; the restore condition
-    // re-reads the row at RELEASE time by design (a session re-pinned onto the
-    // run's harness mid-flight is exactly the one that needs its account put
-    // back). Model that: codex at capture, claude at release.
+    // Model a session changing harness between capture and release.
     const agentIds = ["codex", "claude"];
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
@@ -429,10 +395,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
 
     await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
 
-    // Provision BEFORE the spawn, wipe AFTER — a background generation must not
-    // leave a credential behind in the session's container. Then the session's
-    // own account comes back from the MARKER, so the next turn is not left
-    // pointed at the consult's credentials (docs/260).
     expect(calls).toEqual(["provision", "spawn", "sync", "wipe", "restore"]);
     expect(restored).toEqual(["acct_marker"]);
   });
@@ -441,9 +403,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const calls: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
       provisionSubAgentCredentials: () => calls.push("provision"),
-      // docs/260 — the wipe path reports the account to restore; `undefined`
-      // means the subtree held none, which is fine: the wipe is what this test
-      // pins.
       releaseSubAgentCredentials: () => {
         calls.push("wipe");
         return undefined;
@@ -472,14 +431,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
     expect(calls).toContain("wipe");
   });
 
-  /**
-   * planning#445 — a provisioning failure must still close the credential window.
-   * The provision used to run BEFORE the try, so an ENOSPC (or a source root
-   * deleted between route resolution and copy) threw past every cleanup: the
-   * borrow it had already opened stayed open for the process's life, and a
-   * subtree recorded as lent out refuses the session's own token write-backs —
-   * the permanent-refusal state this whole fix exists to end.
-   */
   it("closes the credential window when provisioning itself throws", async () => {
     const calls: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
@@ -488,8 +439,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
         calls.push("wipe");
         return "acct_marker";
       },
-      // The same-harness path (the default target resolves the session's own
-      // claude harness) — its provision is the one that fails here.
       provisionSubAgentSpawnHome: () => {
         calls.push("provision-home");
         throw new Error("ENOSPC: no space left on device");
@@ -517,8 +466,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
       fallback: async () => "unused",
     } as never);
 
-    // The generation fails (nothing spawned), but the window closes: the
-    // per-spawn home is released, and the session subtree was never touched.
     expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
     expect(calls).toEqual(["provision-home", "release-home"]);
   });
@@ -549,10 +496,6 @@ describe("dismissNonTurnFailure", () => {
     expect(emitted[0].type).toBe("non_turn_failure_dismissed");
   });
 
-  // The clobber docs/164, docs/177 and docs/193 each hit: `recordedCards` is not
-  // cleared until the NEXT turn starts, so a database-only patch applied while
-  // the proposing turn is still running is rebuilt away when it finalizes, and
-  // the notice reappears on the next reload.
   it("patches the recorded card, not just the row, while its turn is still running", async () => {
     const { dismissNonTurnFailure } = await import("./non-turn-work.js");
     const dbPatches: string[] = [];
@@ -597,8 +540,6 @@ describe("dismissNonTurnFailure", () => {
     );
 
     expect(ok).toBe(true);
-    // The recorded card carries the dismissal, so the turn's own final persist
-    // writes it too rather than reverting it.
     const patched = runner.recordedCards[0].message.nonTurnFailure as { dismissedAt?: string };
     expect(patched.dismissedAt).toBeTruthy();
     expect(replaced).toHaveLength(1);
@@ -619,13 +560,6 @@ describe("dismissNonTurnFailure", () => {
   });
 });
 
-/**
- * planning#343 (req 16) — the row for work that resolved **no** model.
- *
- * Its tokens are real; its attribution does not exist. That is the same
- * condition as a pre-feature turn, reached forward in time rather than
- * historically, so it goes into the legacy group — and it is never priced.
- */
 describe("recordNonTurnUsage with no resolved target", () => {
   function recorder() {
     const rows: { costUsd: number; extra?: Record<string, unknown> }[] = [];
@@ -657,9 +591,6 @@ describe("recordNonTurnUsage with no resolved target", () => {
       sessionId: "s1",
       harnessId: "claude",
       purpose: "session-naming",
-      // Claude DOES report a dollar figure. Taking it would price a row nothing
-      // can attribute; `resolveTurnCost`'s no-attribution default would do
-      // exactly that, which is why this path does not go through it.
       telemetry: { durationMs: 800, costUsd: 0.017, inputTokens: 900, outputTokens: 25 },
     });
 
@@ -671,8 +602,6 @@ describe("recordNonTurnUsage with no resolved target", () => {
     expect(rows[0]!.extra?.costSource).toBe("per-turn");
   });
 
-  // Codex reports tokens and no dollar figure at all. The row is the same
-  // shape — the figure was never going to be used either way.
   it("writes the row for a harness that reports tokens and no cost", async () => {
     const { recordNonTurnUsage } = await import("./non-turn-work.js");
     const { rows, deps } = recorder();
@@ -690,8 +619,6 @@ describe("recordNonTurnUsage with no resolved target", () => {
     expect(rows[0]!.extra?.cacheRead).toBe(40);
   });
 
-  // Volume is the whole content of the row, so with none there is nothing to
-  // write — a cost-only report cannot carry an unattributed run on its own.
   it("records nothing when only a dollar figure was reported", async () => {
     const { recordNonTurnUsage } = await import("./non-turn-work.js");
     const { rows, deps } = recorder();
@@ -704,5 +631,533 @@ describe("recordNonTurnUsage with no resolved target", () => {
     });
 
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe("recordNonTurnUsage — what the selection says, not how it ran (docs/299-direct-provider-calls req 7)", () => {
+  let dbManager: DatabaseManager;
+  let usageManager: UsageManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+    usageManager = new UsageManager(dbManager);
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const telemetry = { durationMs: 900, inputTokens: 1_000_000, outputTokens: 0 };
+
+  const rowsOf = (sessionId: string) =>
+    dbManager.db.prepare("SELECT * FROM usage_turns WHERE session_id = ? ORDER BY id")
+      .all(sessionId) as Record<string, unknown>[];
+
+  // OpenCode Go is a `sub` mode carried by a pasted key over ordinary API
+  // endpoints, so calling it directly is still subscription usage.
+  it("keeps a direct call on a subscription as subscription usage, never metered spend", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      purpose: "pr-description",
+      target: { selection: { serviceId: "opencode", billingMode: "sub", modelId: "glm-5.3" } },
+      telemetry,
+    });
+
+    const row = rowsOf("s1")[0];
+    expect(row).toMatchObject({
+      service_id: "opencode",
+      billing_mode: "sub",
+      cost_usd: 0,
+      model: "glm-5.3",
+      background_work: 1,
+      sub_agent_id: null,
+    });
+    const group = usageManager.getSessionUsage("s1")!.groups!.find((g) => g.key === "opencode:sub")!;
+    expect(group.costUsd).toBe(0);
+    expect(group.atApiRatesUsd).toBeGreaterThan(0);
+  });
+
+  it("prices a direct call on a key from the catalogue, with no harness to report a cost", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      purpose: "pr-description",
+      target: { selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" } },
+      telemetry,
+    });
+
+    const row = rowsOf("s1")[0];
+    expect(row.billing_mode).toBe("key");
+    expect(row.cost_usd as number).toBeGreaterThan(0);
+    expect(usageManager.getSessionUsage("s1")!.totals.meteredCostUsd).toBeGreaterThan(0);
+  });
+
+  it("keeps a direct call carrying a session id out of that session's context dial", () => {
+    usageManager.record("s1", 0.1, 2000, 800, 100, { contextTokens: 1500, model: "claude-opus-5" });
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      purpose: "session-naming",
+      target: { selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" } },
+      telemetry: { ...telemetry, inputTokens: 4000 },
+    });
+
+    const dial = usageManager.getPerTurnUsage("s1");
+    expect(dial).toHaveLength(1);
+    expect(dial.at(-1)).toMatchObject({ contextTokens: 1500, model: "claude-opus-5" });
+  });
+
+  it("records work belonging to no session as install-level spend", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: null,
+      purpose: "pr-description",
+      target: { selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" } },
+      telemetry,
+    });
+
+    const stats = usageManager.getStats();
+    expect(stats.sessions).toEqual([]);
+    expect(stats.groups.map((g) => g.key)).toEqual(["install:deepseek:key"]);
+    expect(stats.totals.meteredCostUsd).toBeGreaterThan(0);
+  });
+
+  it("still names the harness that ran the work, where one did", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      harnessId: "claude",
+      purpose: "pr-description",
+      target: { selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" } },
+      telemetry,
+    });
+
+    expect(rowsOf("s1")[0]).toMatchObject({ sub_agent_id: "claude", background_work: 1 });
+  });
+});
+
+/**
+ * docs/299-direct-provider-calls reqs 2, 4 and 7. Both cases below fail before this feature: the
+ * no-session one returned the pre-feature fallback, and the reclaimed-container
+ * one reported "The session's container was not running."
+ */
+describe("makeNonTurnGenerateText — a direct call needs no session and no container", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doMock("../../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => false,
+      readInstalledHarnesses: () => [],
+    }));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../../shared/installed-harnesses.js");
+  });
+
+  interface DirectHarness {
+    requests: { url: string; headers: Record<string, string>; body: Record<string, unknown> }[];
+    recorded: {
+      sessionId: string | null;
+      costUsd: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      extra?: Record<string, unknown>;
+    }[];
+    appended: PersistedMessage[];
+  }
+
+  function buildDirectDeps(opts: { reply?: () => Response; noRunner?: boolean } = {}) {
+    const h: DirectHarness = { requests: [], recorded: [], appended: [] };
+    const routes = [keyRoute("anthropic")];
+    const fetchImpl = (async (url: string, init: { headers: Record<string, string>; body: string }) => {
+      h.requests.push({ url, headers: init.headers, body: JSON.parse(init.body) as Record<string, unknown> });
+      return opts.reply?.() ?? new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "## Summary\n\nDid a thing." }],
+          usage: { input_tokens: 900, output_tokens: 40, cache_read_input_tokens: 10 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const deps = {
+      credentialStore: {
+        getNonTurnModel: () => ({ serviceId: "anthropic", billingMode: "key", modelId: "haiku" }),
+        listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
+          routes.filter(
+            (r) =>
+              (serviceId === undefined || r.serviceId === serviceId)
+              && (billingMode === undefined || r.billingMode === billingMode),
+          ),
+        getCredentialSecret: () => "sk-direct",
+        getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
+        getSelectionMode: () => "strict" as const,
+        getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
+      },
+      getRunnerRegistry: () => ({ get: () => undefined }),
+      chatHistoryManager: {
+        append: (_s: string, m: PersistedMessage) => h.appended.push(m),
+        replaceInProgress: () => {},
+        updateNonTurnFailureCard: () => true,
+      },
+      usageManager: {
+        record: (
+          sessionId: string | null,
+          costUsd: number,
+          _d: number,
+          inputTokens?: number,
+          outputTokens?: number,
+          extra?: Record<string, unknown>,
+        ) => {
+          h.recorded.push({ sessionId, costUsd, inputTokens, outputTokens, extra });
+          return costUsd;
+        },
+      },
+      fetchImpl,
+    };
+    return { deps: deps as never, h };
+  }
+
+  it("runs with no session open at all", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps();
+    const fallback = vi.fn(async () => "from the fallback");
+    const generate = makeNonTurnGenerateText({ ...(deps as object), fallback } as never);
+
+    const text = await generate("prompt", "/ws", { purpose: "pr-description" });
+
+    expect(text).toContain("Did a thing");
+    expect(fallback).not.toHaveBeenCalled();
+    expect(h.recorded).toHaveLength(1);
+    // Install-level spend: real money that belongs to no session.
+    expect(h.recorded[0].sessionId).toBeNull();
+  });
+
+  it("runs with the session's container reclaimed", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({ noRunner: true });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    const text = await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+
+    expect(text).toContain("Did a thing");
+    expect(h.appended).toHaveLength(0);
+    expect(h.recorded[0].sessionId).toBe("s1");
+  });
+
+  it("sends the API's model id to the joined endpoint with the resolved key", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps();
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    await generate("write a description", "/ws", { sessionId: "s1" });
+
+    expect(h.requests).toHaveLength(1);
+    expect(h.requests[0].url).toBe("https://api.anthropic.com/v1/messages");
+    expect(h.requests[0].headers["x-api-key"]).toBe("sk-direct");
+    expect(h.requests[0].body.model).toBe("claude-haiku-4-5");
+    expect(h.requests[0].body.messages).toEqual([{ role: "user", content: "write a description" }]);
+  });
+
+  it("records what was selected and never a harness that did not run", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps();
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    await generate("prompt", "/ws", { sessionId: "s1", purpose: "session-naming" });
+
+    const row = h.recorded[0];
+    expect(row.extra?.subAgentId).toBeUndefined();
+    expect(row.extra?.backgroundWork).toBe(true);
+    expect(row.extra?.attribution).toMatchObject({ serviceId: "anthropic", billingMode: "key" });
+    expect(row.extra?.model).toBe("haiku");
+    expect(row.extra?.cacheRead).toBe(10);
+    expect(row.inputTokens).toBe(900);
+    expect(row.outputTokens).toBe(40);
+    expect(row.costUsd).toBeGreaterThan(0);
+  });
+
+  it("persists a failure notice for the session that asked, and returns nothing", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({
+      reply: () => new Response("no key", { status: 401 }),
+    });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(h.appended).toHaveLength(1);
+    expect(h.appended[0].nonTurnFailure?.serviceName).toBe("Anthropic");
+    expect(h.appended[0].nonTurnFailure?.detail).toContain("401");
+    expect(h.recorded).toHaveLength(0);
+  });
+
+  it("still records what a textless answer was billed", async () => {
+    // HTTP 200, all the tokens spent, no answer: the run failed and the money
+    // is real, so it has to appear in the totals exactly once (docs/299-direct-provider-calls req 7).
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({
+      reply: () => new Response(
+        JSON.stringify({
+          content: [],
+          stop_reason: "max_tokens",
+          usage: { input_tokens: 900, output_tokens: 4000 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(h.appended).toHaveLength(1);
+    expect(h.recorded).toHaveLength(1);
+    expect(h.recorded[0].extra?.attribution).toMatchObject({ serviceId: "anthropic" });
+    expect(h.recorded[0].inputTokens).toBe(900);
+    expect(h.recorded[0].outputTokens).toBe(4000);
+    expect(h.recorded[0].costUsd).toBeGreaterThan(0);
+  });
+
+  it("charges a billed failure with no session to the install", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({
+      reply: () => new Response(
+        JSON.stringify({
+          content: [],
+          stop_reason: "max_tokens",
+          usage: { input_tokens: 900, output_tokens: 4000 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws")).toBe("");
+    expect(h.appended).toHaveLength(0);
+    expect(h.recorded).toHaveLength(1);
+    expect(h.recorded[0].sessionId).toBeNull();
+    expect(h.recorded[0].outputTokens).toBe(4000);
+  });
+
+  it("writes no card for a failure belonging to no session", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({
+      reply: () => new Response("no key", { status: 401 }),
+    });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws")).toBe("");
+    expect(h.appended).toHaveLength(0);
+  });
+});
+
+/**
+ * The executor is shared with voice cleanup, which must write nothing to the
+ * chat transcript (docs/299-direct-provider-calls req 6). So it reports a failure to its caller and
+ * renders nothing itself; the caller that wants a card emits one.
+ */
+describe("runNonTurnDirect — reports failure, never renders it", () => {
+  const target = {
+    execution: "direct" as const,
+    selection: { serviceId: "anthropic", billingMode: "key" as const, modelId: "haiku" },
+    serviceName: "Anthropic",
+    source: "default" as const,
+    call: {
+      style: "anthropic-messages" as const,
+      baseUrl: "https://api.anthropic.com",
+      apiModelId: "claude-haiku-4-5",
+      storageEnv: "ANTHROPIC_API_KEY",
+    },
+    apiKey: "sk-direct",
+  };
+
+  it("returns the reason rather than empty text", async () => {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    const fetchImpl = (async () => new Response("no key", { status: 401 })) as unknown as typeof fetch;
+
+    const outcome = await runNonTurnDirect({ fetchImpl }, {
+      sessionId: "s1",
+      purpose: "voice-cleanup",
+      target,
+      prompt: "clean this",
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("expected a failure");
+    expect(outcome.detail).toContain("401");
+  });
+
+  it("returns the answer on success", async () => {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ content: [{ type: "text", text: "Add a React useEffect" }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as unknown as typeof fetch;
+
+    const outcome = await runNonTurnDirect({ fetchImpl }, {
+      sessionId: null,
+      purpose: "voice-cleanup",
+      target,
+      prompt: "clean this",
+    });
+
+    expect(outcome).toEqual({ ok: true, text: "Add a React useEffect" });
+  });
+});
+
+/**
+ * Voice cleanup's own deadline aborts the call, inserts the raw transcript and
+ * walks away — but the provider was already spending. A run nobody can price
+ * still has to appear somewhere (docs/299-direct-provider-calls req 7), so this
+ * reads the rows a real UsageManager wrote: an empty table and a table holding
+ * one amount-less row are the two outcomes that must not be confused.
+ */
+describe("runNonTurnDirect — a call cut off before its amount could be read still reports a run", () => {
+  let dbManager: DatabaseManager;
+  let usageManager: UsageManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+    usageManager = new UsageManager(dbManager);
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const target = {
+    execution: "direct" as const,
+    selection: { serviceId: "anthropic", billingMode: "key" as const, modelId: "haiku" },
+    serviceName: "Anthropic",
+    source: "default" as const,
+    call: {
+      style: "anthropic-messages" as const,
+      baseUrl: "https://api.anthropic.com",
+      apiModelId: "claude-haiku-4-5",
+      storageEnv: "ANTHROPIC_API_KEY",
+    },
+    apiKey: "sk-direct",
+  };
+
+  const allRows = () =>
+    dbManager.db.prepare("SELECT * FROM usage_turns ORDER BY id").all() as Record<string, unknown>[];
+
+  function abortingFetch(controller: AbortController): typeof fetch {
+    return (async () => {
+      controller.abort();
+      throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    }) as unknown as typeof fetch;
+  }
+
+  async function cleanWithDeadlineHit(controller: AbortController) {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    return runNonTurnDirect(
+      { usageManager, fetchImpl: abortingFetch(controller) },
+      {
+        sessionId: null,
+        purpose: "voice-cleanup",
+        target,
+        prompt: "clean this",
+        signal: controller.signal,
+      },
+    );
+  }
+
+  it("writes the run with no amounts rather than dropping it", async () => {
+    const controller = new AbortController();
+
+    expect((await cleanWithDeadlineHit(controller)).ok).toBe(false);
+
+    const rows = allRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      session_id: null,
+      service_id: "anthropic",
+      billing_mode: "key",
+      model: "haiku",
+      background_work: 1,
+      sub_agent_id: null,
+      cost_usd: 0,
+    });
+    // NULL, not zero: nobody measured these, and a zero would claim they were.
+    expect(rows[0]!.input_tokens).toBeNull();
+    expect(rows[0]!.output_tokens).toBeNull();
+    expect(rows[0]!.cache_read_tokens).toBeNull();
+    expect(rows[0]!.cache_create_tokens).toBeNull();
+  });
+
+  it("shows it install-wide, since a dictation belongs to no session", async () => {
+    await cleanWithDeadlineHit(new AbortController());
+
+    const stats = usageManager.getStats();
+    expect(stats.sessions).toEqual([]);
+    expect(stats.groups.map((g) => g.key)).toEqual(["install:anthropic:key"]);
+    expect(stats.groups[0]!.installLevel).toBe(true);
+    expect(stats.groups[0]!.models).toEqual(["haiku"]);
+    expect(stats.totalTurns).toBe(1);
+    // The amount is unknown, so no figure is invented for the money totals.
+    expect(stats.totals.meteredCostUsd).toBe(0);
+  });
+
+  // The provider answered 200 and was writing an answer when the socket died.
+  // Nobody cancelled anything, and the run was billed just the same.
+  it("writes the run when the response body is lost to a dropped socket", async () => {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    const fetchImpl = (async () => new Response(
+      new ReadableStream({
+        start: (c) => {
+          c.enqueue(new TextEncoder().encode('{"content":[{"type":"text"'));
+          c.error(new TypeError("terminated"));
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as unknown as typeof fetch;
+
+    await runNonTurnDirect({ usageManager, fetchImpl }, {
+      sessionId: null,
+      purpose: "voice-cleanup",
+      target,
+      prompt: "clean this",
+    });
+
+    const rows = allRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ service_id: "anthropic", cost_usd: 0, background_work: 1 });
+    expect(rows[0]!.output_tokens).toBeNull();
+  });
+
+  it("records nothing when the deadline had already passed before the request went out", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await cleanWithDeadlineHit(controller);
+
+    expect(allRows()).toEqual([]);
+  });
+
+  it("records nothing for a failure the provider answered, which it does not bill", async () => {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    const fetchImpl = (async () => new Response("no key", { status: 401 })) as unknown as typeof fetch;
+
+    await runNonTurnDirect({ usageManager, fetchImpl }, {
+      sessionId: null,
+      purpose: "voice-cleanup",
+      target,
+      prompt: "clean this",
+    });
+
+    expect(allRows()).toEqual([]);
   });
 });

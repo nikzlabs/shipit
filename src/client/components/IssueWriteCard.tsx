@@ -1,37 +1,3 @@
-/**
- * IssueWriteCard — inline do-then-surface provenance card for an agent issue
- * write (docs/177, redesigned docs/189).
- *
- * Rendered at the chat position where the agent's `shipit issue` write landed.
- * The write has ALREADY happened — this card is the review surface (consistent
- * with how ShipIt treats commits / PR creation, not a per-action gate).
- *
- * Layout (docs/189): the card leads with the issue and surfaces the actual
- * change, not just the verb.
- *   - Line 1 — an explicit verb word ("Commented on" / "Edited" / "Set status
- *     of" / "Assigned") + the bold identifier (once, no duplicate).
- *   - A faint issue title under line 1, so you know *which* issue without the
- *     link-out.
- *   - Line 2 — the verb-specific change: a comment-body preview, a title /
- *     status delta, or the new assignee.
- *
- * The whole card is the open affordance — clicking it (or Enter/Space when
- * focused) opens the issue in ShipIt's inline detail view, so there is no
- * separate open glyph. Undo is the one nested action; it stops propagation so
- * it doesn't also open the issue. For a comment write the card threads the
- * created comment's id into the open payload, so the detail view scrolls to and
- * highlights that exact comment (planning#105).
- *
- * The authorship line ("by the ShipIt agent (workspace token)") is gone: the
- * card is self-evidently the agent's (it lives in the agent's transcript and
- * carries an Undo), so spelling out the backing identity added nothing
- * actionable. The `attribution` field stays in the data model but is no longer
- * rendered.
- *
- * Lifecycle (from the issue-write store, keyed by cardId): available → undoing
- * → undone | (failed shows the error and re-offers Undo).
- */
-
 import type { KeyboardEvent } from "react";
 import {
   ArrowUUpLeftIcon,
@@ -53,18 +19,15 @@ import type { TrackerId, IssueWriteVerb } from "../../server/shared/types.js";
 export interface IssueWriteCardProps {
   cardId: string;
   onUndo?: (cardId: string) => void;
-  /** Open the inline detail view for this issue (docs/189). */
   onOpen?: (ref: {
     tracker: TrackerId;
     identifier: string;
     title?: string;
     url?: string;
-    /** Comment to land on inside the detail view (planning#105) — a comment write. */
     anchorCommentId?: string;
   }) => void;
 }
 
-/** The explicit verb word that leads line 1. `Set status of`, not `Moved`. */
 const VERB_LABEL: Record<IssueWriteVerb, string> = {
   comment: "Commented on",
   "comment-edit": "Edited a comment on",
@@ -76,13 +39,11 @@ const VERB_LABEL: Record<IssueWriteVerb, string> = {
   "label-edit": "Edited label",
 };
 
-/** Per-verb icon. The comment gets a filled bubble so the common write pops. */
 function VerbIcon({ verb }: { verb: IssueWriteVerb }) {
   const size = ICON_SIZE.SM;
   switch (verb) {
     case "comment":
       return <ChatCircleIcon size={size} weight="fill" />;
-    // Outline, so a rewrite reads as the quieter sibling of a new comment.
     case "comment-edit":
       return <ChatCircleIcon size={size} />;
     case "edit":
@@ -95,14 +56,11 @@ function VerbIcon({ verb }: { verb: IssueWriteVerb }) {
       return <PlusCircleIcon size={size} weight="fill" />;
     case "label":
       return <TagIcon size={size} weight="fill" />;
-    // Outline against the filled creation icon, the same quieter-sibling
-    // treatment `comment-edit` gets next to `comment`.
     case "label-edit":
       return <TagIcon size={size} />;
   }
 }
 
-/** A `before → after` delta: the prior value struck through, the new one plain. */
 function Delta({ before, after }: { before: string; after: string }) {
   return (
     <span className="tabular-nums">
@@ -125,12 +83,8 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   const isUnassign = card.verb === "assignee" && content?.assignee === null;
   const verbLabel = isUnassign ? "Unassigned" : VERB_LABEL[card.verb];
 
-  // Line 2 — the actual change, verb-specific. Absent on a create (no "before")
-  // and on a labels/priority-only edit that only sets `attrs`.
   const changeLine = (() => {
     if (!content) return null;
-    // A comment-edit shows the NEW body in the same blockquote — the prior text
-    // is one Undo click away, and two clamped quotes wouldn't fit the card.
     if ((card.verb === "comment" || card.verb === "comment-edit") && content.comment) {
       return (
         <blockquote className="border-l-2 border-(--color-border-secondary) pl-2 text-(--color-text-secondary) line-clamp-2">
@@ -154,8 +108,6 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
         </div>
       );
     }
-    // A label edit: line 1 already shows the name the label has NOW, so line 2
-    // carries the one it replaced (a rename) and/or the recolor (planning#88).
     if (card.verb === "label-edit" && (content.label || content.attrs)) {
       return (
         <div className="space-y-0.5">
@@ -183,25 +135,12 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
     return null;
   })();
 
-  // For a comment write the undo snapshot carries the created comment's id —
-  // thread it through so the detail view lands on that exact comment (planning#105).
   const anchorCommentId =
     card.undo.kind === "comment" || card.undo.kind === "comment-edit" ? card.undo.commentId : undefined;
 
-  // A label card records tracker CONFIG, not an issue — the identifier is the
-  // label name, so there is nothing to open inline (planning#232, planning#88).
   const isLabelCard = card.verb === "label" || card.verb === "label-edit";
 
-  // The whole card opens the issue inline. Derive the lookup id from the
-  // display identifier (uniform across trackers) rather than `card.issueId`,
-  // which for GitHub is the undo target, not a valid `getIssue` key.
-  //
-  // docs/248-declared-issue-trackers req 16 — "the UI shows what it now resolves to". A card written
-  // against a NAME must open wherever that name points today, not the
-  // destination frozen on the card, or the recorded reference would silently
-  // disagree with the Undo beside it (which does follow the name). When the name
-  // no longer resolves, the recorded destination is the fallback — the same
-  // carve-out req 11 grants Undo, for the same reason.
+  // Resolve tracker names at use time; keep the recorded destination as fallback.
   const openIssue = () => {
     const repointed = card.trackerName
       ? useIssuesStore.getState().trackers.find((t) => t.name === card.trackerName)
@@ -260,8 +199,6 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
           <Button
             variant="ghost"
             size="md"
-            // Stop the click from also opening the issue (the card is the open
-            // target); Undo is the one nested action.
             onClick={(e) => {
               e.stopPropagation();
               onUndo?.(cardId);
@@ -275,13 +212,10 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
         )}
       </div>
 
-      {/* Faint issue title — which issue, without the link-out. Hidden once
-          undone, where line 1 collapses to the struck-through summary. */}
       {!undone && card.title && (
         <div className="pl-[26px] mt-0.5 text-(--color-text-tertiary) truncate">{card.title}</div>
       )}
 
-      {/* Line 2 — the actual change. */}
       {!undone && changeLine && (
         <div className="pl-[26px] mt-1.5 leading-relaxed">{changeLine}</div>
       )}

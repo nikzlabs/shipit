@@ -4,12 +4,6 @@
 <meta charset="utf-8">
 <title>Variant 4 (header band) in the Claude themes</title>
 <style>
-/* ─────────────────────────────────────────────────────────────────────────
-   Tokens copied verbatim from src/client/themes/claude-light.css and
-   claude.css. Only these two themes — the point of this mock is that the
-   Claude palettes are unusually flat, so a fill-based band behaves very
-   differently here than it does in warm-light/dark.
-   ───────────────────────────────────────────────────────────────────────── */
 .claude-light {
   --color-bg-primary: #faf5ef;
   --color-bg-secondary: #f0e8de;
@@ -37,7 +31,7 @@
   --color-text-primary: #e8e0d8;
   --color-text-secondary: #a89a8c;
   --color-text-tertiary: #7a6e62;
-  --color-border-primary: #2e2519;   /* NOTE: identical to --color-bg-tertiary */
+  --color-border-primary: #2e2519;
   --color-border-secondary: #43382c;
   --color-accent: #d97757;
   --color-accent-subtle: rgba(217, 119, 87, 0.15);
@@ -49,7 +43,6 @@
   --accent-alpha: 0.15;
 }
 
-/* Per-repo hues, tuned against the terracotta-leaning Claude palettes. */
 .claude-light [data-accent="a0"] { --accent2: #a8683c; }
 .claude-light [data-accent="a1"] { --accent2: #2f6f6a; }
 .claude-light [data-accent="a2"] { --accent2: #7a4f9c; }
@@ -78,7 +71,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 }
 .callout b { color: #e8e0d8; }
 
-/* Contrast table */
 .ctab { border-collapse: collapse; font-size: 12px; margin: 14px 0 0; background: #1a1410; border-radius: 8px; overflow: hidden; }
 .ctab th, .ctab td { padding: 6px 12px; text-align: left; border-bottom: 1px solid #2e2519; }
 .ctab th { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #7a6e62; font-weight: 700; background: #231c16; }
@@ -89,7 +81,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .ctab tr:last-child td { border-bottom: 0; }
 .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(255,255,255,.14); vertical-align: -1px; margin-right: 6px; }
 
-/* Gallery */
 .gallery { display: flex; flex-wrap: wrap; gap: 40px 26px; align-items: flex-start; }
 .opt { flex: 0 0 auto; width: 760px; margin: 0; }
 .opt > figcaption { margin-bottom: 12px; min-height: 96px; }
@@ -105,7 +96,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .frame { flex: 0 0 auto; width: 368px; }
 .flabel { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #7a6e62; margin-bottom: 5px; }
 
-/* ── App context: real rail + real chat panel ──────────────────────────── */
 .app { display: flex; height: 560px; border-radius: 9px; overflow: hidden; border: 1px solid #2e2519; }
 .app .rail { width: 272px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--color-bg-primary); border-right: 1px solid var(--color-border-primary); }
 .app .railhead { height: 39px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--color-border-primary); font-size: 11.5px; color: var(--color-text-tertiary); background: var(--color-bg-primary); }
@@ -119,10 +109,7 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .skel { height: 6px; border-radius: 999px; background: var(--color-border-primary); margin: 6px 0; }
 .skel.s2 { width: 70%; } .skel.s3 { width: 52%; }
 
-/* ── Sidebar skeleton — identical DOM in every option ──────────────────── */
 .grp { display: flex; flex-direction: column; position: relative; }
-/* Sticky, like the real thing (SessionGroup.tsx:336). Every band option below
-   inherits this, so the scrolled state is what you're actually looking at. */
 .ghead { display: flex; align-items: center; gap: 6px; padding: 6px 12px 6px 14px; position: sticky; top: 0; z-index: 5; background: var(--color-bg-primary); }
 .caret { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-tertiary); }
 .glyph { display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-secondary); }
@@ -139,8 +126,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .row .title { font-size: 12.5px; line-height: 1.3; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .meta { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--color-text-tertiary); }
 .row .live { width: 6px; height: 6px; border-radius: 999px; background: var(--color-success); flex: 0 0 auto; }
-/* The collision the whole mock turns on: the current-session row is ALSO
-   --color-bg-secondary today (SessionGroup.tsx:431). */
 .row.current { background: var(--color-bg-secondary); }
 .row.current::after { content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 4px; background: var(--color-accent); border-radius: 0 6px 6px 0; }
 .row.child { padding-left: 22px; }
@@ -148,7 +133,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .row.new .plus { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; opacity: .7; }
 .row.new .title { color: var(--color-text-secondary); }
 
-/* ── 4a · Secondary band, as originally specced ────────────────────────── */
 .b-secondary .ghead {
   background: var(--color-bg-secondary);
   border-top: 1px solid var(--color-border-primary);
@@ -159,7 +143,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .b-secondary .gname { color: var(--color-text-primary); }
 .b-secondary .gbody { padding-top: 4px; }
 
-/* ── 4b · Tertiary band — the strongest plain fill available ───────────── */
 .b-tertiary .ghead {
   background: var(--color-bg-tertiary);
   border-top: 1px solid var(--color-border-primary);
@@ -170,12 +153,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .b-tertiary .gname { color: var(--color-text-primary); }
 .b-tertiary .gbody { padding-top: 4px; }
 
-/* ── 4c · Accent-tinted band ───────────────────────────────────────────── */
-/* --color-accent-subtle is rgba(), and this header is position:sticky — a
-   translucent sticky header lets the rows scroll THROUGH it. The tint has to be
-   composited over an opaque base. Double-gradient over bg-primary is the
-   token-preserving way to do that without hardcoding the resulting hex.
-   Option 4c-raw below keeps the naive version so the failure stays visible. */
 .b-accent .ghead {
   background:
     linear-gradient(var(--color-accent-subtle), var(--color-accent-subtle)),
@@ -184,7 +161,7 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
   padding-top: 7px; padding-bottom: 7px;
 }
 .b-accent-raw .ghead {
-  background: var(--color-accent-subtle);   /* the bug, on purpose */
+  background: var(--color-accent-subtle);
   border-bottom: 1px solid var(--color-accent-subtle);
   padding-top: 7px; padding-bottom: 7px;
 }
@@ -195,7 +172,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .b-accent .glyph { color: var(--color-accent); }
 .b-accent .gbody { padding-top: 4px; }
 
-/* ── 4d · Rules only — no fill at all ──────────────────────────────────── */
 .b-rules .ghead {
   border-top: 1px solid var(--color-border-secondary);
   border-bottom: 1px solid var(--color-border-secondary);
@@ -205,7 +181,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .b-rules .gname { color: var(--color-text-primary); }
 .b-rules .gbody { padding-top: 4px; }
 
-/* ── 4e · Tertiary band + per-repo accent edge ─────────────────────────── */
 .b-edge .ghead {
   background: var(--color-bg-tertiary);
   border-left: 3px solid var(--accent2);
@@ -217,7 +192,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .b-edge .gcount { display: inline; }
 .b-edge .gbody { padding-top: 4px; border-left: 3px solid transparent; }
 
-/* ── 4f · Tertiary band + typographic lift (color carries it) ──────────── */
 .b-type .ghead {
   background: var(--color-bg-tertiary);
   padding-top: 8px; padding-bottom: 8px;
@@ -228,7 +202,6 @@ h2 { font-size: 15px; margin: 46px 0 6px; }
 .b-type .sublabel { font-size: 9.5px; opacity: .8; }
 .b-type .gbody { padding-top: 4px; }
 
-/* Scroll-demo framing */
 .scrolldemo { display: flex; flex-wrap: wrap; gap: 26px; margin-top: 14px; }
 </style>
 </head>
@@ -303,7 +276,6 @@ const I = {
   dots: '<svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><circle cx="128" cy="60" r="14"/><circle cx="128" cy="128" r="14"/><circle cx="128" cy="196" r="14"/></svg>',
 };
 
-/* Deliberately long groups — a band's whole job happens while you scroll. */
 const REPOS = [
   { name: "personal", accent: "a0", sessions: [
       { title: "Deploy bare metal server wit…", time: "40d ago", icon: "branch" },
@@ -423,7 +395,6 @@ document.getElementById("scrolldemo").innerHTML = [
    </figure>`,
 ]).join("");
 
-/* Pre-scroll every frame so the sticky header is already engaged on load. */
 document.querySelectorAll(".scroll").forEach((el) => { el.scrollTop = Number(el.dataset.scroll || 0); });
 </script>
 </body>

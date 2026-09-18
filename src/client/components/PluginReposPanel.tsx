@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Spinner } from "./Spinner.js";
 import {
   WarningIcon,
   PlugsIcon,
@@ -6,28 +7,24 @@ import {
   GlobeIcon,
   CheckCircleIcon,
   ClockClockwiseIcon,
+  ArrowsClockwiseIcon,
   XIcon,
-  CircleNotchIcon,
+  HourglassMediumIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { usePluginReposStore, type PluginHostGrantScope } from "../stores/plugin-repos-store.js";
+import {
+  usePluginReposStore,
+  type PluginHostGrantScope,
+  type PluginRepoRefreshOutcome,
+} from "../stores/plugin-repos-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import type { PluginRepoCardView } from "../../server/shared/plugin-repos.js";
-import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
+import type { EgressHostGrantOutcome, EgressHostReach } from "../../server/shared/types.js";
 import { egressBlockedReason, summarizeEgressGrant } from "./egress-grant-summary.js";
 import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
 
-/**
- * docs/262 — the Plugins tab pane (plan §3, mockup-plugins-tab.html): one card
- * per declared repo, with the full repo identity always visible (req 19).
- * Renders declarations, self-use, per-repo issues, parse warnings, and each
- * plugin's credential needs (req 23) — an unset key named beside the plugin
- * that needs it, with the one action that closes it. Collision, settings and
- * install problems arrive as ordinary issue rows on the repository's card
- * (verified live in the dogfood instance for all three).
- */
 export function PluginReposPanel() {
   const snapshot = usePluginReposStore((s) => s.snapshot);
 
@@ -71,9 +68,8 @@ export function PluginReposPanel() {
   );
 }
 
-/** The status chip's words — the card's one-line answer to "is this live?". */
 const STATUS_LABEL: Record<PluginRepoCardView["status"], string | null> = {
-  // Healthy states carry no chip: the absence of one means "fine" (mock §3).
+
   self: null,
   active: null,
   activating: "activating…",
@@ -92,48 +88,56 @@ function PluginRepoCard({
 }) {
   const isSelf = repo.status === "self";
   const statusLabel = STATUS_LABEL[repo.status];
-  // req 23 — every declared credential this repo's plugins lack, kept with the
-  // plugin alias that needs it so the row can name the gap.
-  const missingKeys = repo.uses.flatMap((u) =>
-    (u.credentials ?? []).filter((c) => !c.satisfied).map((c) => ({ alias: u.alias, name: c.name })),
-  );
-  // req 23 asks the session to show which credentials a plugin requires AND
-  // whether they are satisfied — so a set key is stated too, quietly. Only the
-  // unsatisfied ones get an action row.
-  const setKeys = repo.uses.flatMap((u) =>
-    (u.credentials ?? []).filter((c) => c.satisfied).map((c) => ({ alias: u.alias, name: c.name })),
-  );
-  // req 24 — the same lists for declared external hosts. A host the session may
+
+  const keys = repo.uses.flatMap((u) => (u.credentials ?? []).map((c) => ({ alias: u.alias, ...c })));
+  const hosts = repo.uses.flatMap((u) => (u.hosts ?? []).map((h) => ({ alias: u.alias, ...h })));
+  // Every declared credential this repo's plugins LACK and cannot work without.
+  const missingKeys = keys.filter((c) => !c.satisfied && !c.optional);
+
+  // need: the project may have decided never to set it, and an alarm that
+  // cannot be cleared is one the reader learns to ignore.
+  const optionalKeys = keys.filter((c) => !c.satisfied && c.optional);
+
+  const setKeys = keys.filter((c) => c.satisfied);
+
   // reach is stated quietly, because the requirement asks the session to SHOW
-  // what a plugin needs, not only what is broken.
-  const allowedHosts = repo.uses.flatMap((u) =>
-    (u.hosts ?? []).filter((h) => h.reach === "allowed").map((h) => ({ alias: u.alias, host: h.host })),
-  );
-  // A gap the user closes deliberately — the only one that may carry a button.
-  const grantableHosts = repo.uses.flatMap((u) =>
-    (u.hosts ?? []).filter((h) => h.reach === "grantable").map((h) => ({ alias: u.alias, host: h.host })),
-  );
-  // planning#383 — and a gap NO user act closes: this deployment installs no
-  // resolver, or this session admits no user hosts at all. Both buttons would
-  // write a durable entry that changes nothing, so the card states the fact
+
+  const allowedHosts = hosts.filter((h) => h.reach === "allowed");
+
+  const grantableHosts = hosts.filter((h) => h.reach === "grantable" && !h.optional);
+
   // instead of offering one. Collapsed into a single row because the reason is a
-  // property of the session or the deployment, not of each host: repeating it
-  // per host would read as several different problems.
-  const ungrantableHosts = repo.uses.flatMap((u) =>
-    (u.hosts ?? [])
-      .filter((h) => h.reach === "blocked-by-session" || h.reach === "blocked-by-deployment")
-      .map((h) => ({ alias: u.alias, host: h.host, reach: h.reach })),
+
+  const ungrantableHosts = hosts.filter(
+    (h) => !h.optional && (h.reach === "blocked-by-session" || h.reach === "blocked-by-deployment"),
   );
+
+  const optionalHosts = hosts.filter((h) => h.optional && h.reach !== "allowed");
   const blockedReason = ungrantableHosts[0] ? egressBlockedReason(ungrantableHosts[0].reach) : null;
+
+  // and set", and a count that never reaches zero however much the user sets is
+
   const needCount = missingKeys.length + grantableHosts.length + ungrantableHosts.length;
-  // planning#376 — what the last grant on THIS card took effect on, and the
-  // failure if it had one. Both live here rather than in the row that made the
+
   // grant because the row unmounts on the way out: a success removes the gap the
-  // snapshot reported, and so does the 503 "saved, but the live refresh failed
-  // closed" — the host is durably allowed there too. An account left on the row
-  // goes with it, which is exactly the silence the issue records.
+
   const [grant, setGrant] = useState<EgressHostGrantOutcome | null>(null);
   const [failedHost, setFailedHost] = useState<string | null>(null);
+
+  const refreshRepo = usePluginReposStore((s) => s.refreshRepo);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshed, setRefreshed] = useState<PluginRepoRefreshOutcome | null>(null);
+
+  const canRefresh = !isSelf && !repo.pinned;
+  const runRefresh = async () => {
+    setRefreshing(true);
+    setRefreshed(null);
+    try {
+      setRefreshed(await refreshRepo(repo.name));
+    } finally {
+      setRefreshing(false);
+    }
+  };
   return (
     <div className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-secondary) overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-(--color-border-primary) px-3 py-2 text-sm">
@@ -141,10 +145,7 @@ function PluginRepoCard({
         {/* req 19 — the repo identity stays visible in every card state. */}
         <Chip mono>{isSelf ? "self · live working tree" : repo.source}</Chip>
         {!isSelf && (
-          // A live generation always has a commit; it has a ref unless its
-          // record predates ShipIt recording one, and then the commit stands
-          // alone rather than borrowing the declared ref (req 19 — the pair has
-          // to be one a round produced).
+
           <Chip mono>
             {repo.ref
               ? `${repo.ref} @ ${repo.commit ? repo.commit.slice(0, 9) : "—"}`
@@ -154,9 +155,7 @@ function PluginRepoCard({
         {statusLabel ? (
           <Chip tone={repo.status === "unavailable" ? "error" : "warn"}>{statusLabel}</Chip>
         ) : (
-          // A healthy status still needs a marker when the repo has problems of
-          // its own (a selector that names no exported plugin, say) — otherwise
-          // the header reads "fine" over a card full of issue rows.
+
           repo.issues.length > 0 && (
             <Chip tone="warn">{`${repo.issues.length} problem${repo.issues.length > 1 ? "s" : ""}`}</Chip>
           )
@@ -167,6 +166,30 @@ function PluginRepoCard({
             to the person reading the card — something to go and set. */}
         {needCount > 0 && (
           <Chip tone="warn">{`${needCount} need${needCount > 1 ? "s" : ""}`}</Chip>
+        )}
+        {/* req 12, mockup-plugins-tab.html §1 — the header's one action, right
+            of everything that identifies the version it would move. Disabled
+            while a round this session already started is running: refresh IS
+            that round (`plugin-refresh.ts`), and a second one would queue
+            behind the first and report on it. */}
+        {canRefresh && (
+          <CardAction
+            className="ml-auto"
+            disabled={refreshing || repo.status === "activating"}
+            title={
+              repo.status === "activating"
+                ? "This repository is already updating"
+                : `Fetch ${repo.name} at its declared ref and activate it now`
+            }
+            onClick={() => void runRefresh()}
+          >
+            {refreshing || repo.status === "activating" ? (
+              <Spinner size={ICON_SIZE.XS} className="mr-1 inline" />
+            ) : (
+              <ArrowsClockwiseIcon size={ICON_SIZE.XS} className="mr-1 inline" />
+            )}
+            Refresh
+          </CardAction>
         )}
       </div>
 
@@ -237,16 +260,7 @@ function PluginRepoCard({
             <code className="font-mono text-xs">{need.name}</code> is not set for this project —{" "}
             <span className="font-medium">{need.alias}</span> needs it
           </span>
-          {consumerRepoUrl && (
-            <CardAction
-              className="ml-auto"
-              onClick={() =>
-                useUiStore.getState().setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")
-              }
-            >
-              Add key…
-            </CardAction>
-          )}
+          <AddKeyAction consumerRepoUrl={consumerRepoUrl} />
         </div>
       ))}
 
@@ -258,6 +272,8 @@ function PluginRepoCard({
           key={`${need.alias}:${need.host}`}
           alias={need.alias}
           host={need.host}
+          reach={need.reach}
+          optional={false}
           onGranted={(outcome) => {
             setFailedHost(null);
             setGrant(outcome);
@@ -291,6 +307,49 @@ function PluginRepoCard({
         </div>
       )}
 
+      {/* reqs 23, 24 — the optional half of both lists, below every real need.
+          "`assetgen` can use `pixellab.ai`" has to read differently from
+          "`assetgen` needs `fal.run`": one is an offer, the other a gap. Same
+          rows, same actions, quieter voice — the user who wants to close it
+          still can, and the user who never will is not told off for it. */}
+      {optionalKeys.map((need) => (
+        <div
+          key={`${need.alias}:${need.name}`}
+          className="flex flex-wrap items-center gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm text-(--color-text-secondary)"
+          data-testid={`plugin-credential-optional-${need.alias}-${need.name}`}
+        >
+          <KeyIcon size={ICON_SIZE.SM} className="flex-none text-(--color-text-tertiary)" />
+          <span className="min-w-0 break-words">
+            <span className="font-medium">{need.alias}</span> can use{" "}
+            <code className="font-mono text-xs">{need.name}</code> — optional, and not set for this
+            project
+          </span>
+          <AddKeyAction consumerRepoUrl={consumerRepoUrl} />
+        </div>
+      ))}
+
+      {optionalHosts.map((need) => (
+        <HostNeedRow
+          key={`${need.alias}:${need.host}`}
+          alias={need.alias}
+          host={need.host}
+          reach={need.reach}
+          optional
+          onGranted={(outcome) => {
+            setFailedHost(null);
+            setGrant(outcome);
+          }}
+          onFailed={(host) => {
+            setGrant(null);
+            setFailedHost(host);
+          }}
+        />
+      ))}
+
+      {refreshed && (
+        <RefreshOutcomeRow outcome={refreshed} onDismiss={() => setRefreshed(null)} />
+      )}
+
       {grant && <HostGrantOutcomeRow grant={grant} onDismiss={() => setGrant(null)} />}
 
       {failedHost && (
@@ -305,7 +364,7 @@ function PluginRepoCard({
                 closed", and the browser cannot tell that from a write that
                 never landed. */}
             <RichErrorText
-              text={`Allowing \`${failedHost}\` failed. It may have been saved without the live refresh — check Settings → Network egress, then try again.`}
+              text={`Allowing \`${failedHost}\` failed. It may have been saved without the live refresh — check Settings → Network, then try again.`}
               links={false}
             />
           </p>
@@ -342,6 +401,22 @@ function PluginRepoCard({
         </div>
       ))}
 
+      {/* planning#511 — a cost, beside the problems and never among them. The
+          version is live and whole; what this says is that every session
+          re-installs its dependencies because the plugin's install does not
+          qualify for ShipIt's shared store. Tertiary text and no warning
+          colour, so a card with this row and nothing else still reads as
+          healthy — the count chip and the tab's attention dot both key off
+          `issues`, which this is not part of. */}
+      {repo.depStoreNotice && (
+        <div className="flex items-start gap-2 border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
+          <HourglassMediumIcon size={ICON_SIZE.SM} className="mt-0.5 flex-none" />
+          <span className="min-w-0 break-words">
+            <RichErrorText text={repo.depStoreNotice} links={false} />
+          </span>
+        </div>
+      )}
+
       {!isSelf && repo.status === "active" && (
         <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
           {/* This sentence used to end "…land with the remaining plugin
@@ -377,6 +452,104 @@ function PluginRepoCard({
           and settings, with edits applying without a refresh (req 27).
         </div>
       )}
+      {repo.pinned && (
+
+        <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
+          {/* Names the ONE edit that moves it, not "shipit.yaml changes":
+              editing a service, a setting or another plugin in the same file
+              leaves this repository exactly where it is (review finding). */}
+          Pinned to an exact revision — it moves only when this repository's{" "}
+          <code className="font-mono">pin:</code> in{" "}
+          <code className="font-mono">shipit.yaml</code> changes, so there is nothing to refresh.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * plan §3's store trap, in one place because both credential rows need it:
+ * "Add key…" opens the CONSUMING project's secret store, never the plugin
+ * repository's — `setProjectSettingsRepoUrl` selects the store `/api/secrets`
+ * writes to, so the plugin's URL would save the key where nothing reads it.
+ * Absent when the session has no repository to save into.
+ */
+function AddKeyAction({ consumerRepoUrl }: { consumerRepoUrl: string | null }) {
+  if (!consumerRepoUrl) return null;
+  return (
+    <CardAction
+      className="ml-auto"
+      onClick={() => useUiStore.getState().setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")}
+    >
+      Add key…
+    </CardAction>
+  );
+}
+
+/**
+ * req 12 — what the Refresh press did, said where it was pressed.
+ *
+ * It exists because THREE of the four outcomes are invisible in the card the
+ * refetch brings back. `unchanged` is the plain case: the branch tip is what is
+ * already live, so a correct refresh leaves the card byte-identical and the
+ * button reads as broken. A re-install lands on the same commit for the same
+ * reason (docs/266 reqs 5, 6). Even `activated` only moves nine characters of a
+ * commit chip, which is not an answer to "did that work?".
+ *
+ * The failure half is deliberately still reported here even though the card
+ * grows an issue row for it: the row is about the repository's state, this is
+ * about the act, and a user who pressed a button is owed the answer next to it.
+ * `RichErrorText` with `links={false}` because a detail carries git's output
+ * and a plugin's own install stderr — the same reason the issue rows do.
+ */
+function RefreshOutcomeRow({
+  outcome,
+  onDismiss,
+}: {
+  outcome: PluginRepoRefreshOutcome;
+  onDismiss: () => void;
+}) {
+  const short = outcome.commit ? outcome.commit.slice(0, 9) : null;
+  const headline = outcome.kind === "failed"
+    ? `Refresh failed${short ? ` — still on \`${short}\`` : ""}.`
+    : outcome.kind === "activated"
+      ? `Updated to \`${short ?? "a new commit"}\`.`
+      : outcome.kind === "reinstalled"
+
+        ? `Re-installed \`${short ?? "the live commit"}\`.`
+        : `Already at \`${short ?? "the declared version"}\` — nothing to update.`;
+  return (
+    <div
+      className="flex flex-wrap items-start gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
+      data-testid="plugin-refresh-outcome"
+    >
+      <span className="mt-0.5 flex-none">
+        {outcome.kind === "failed" ? (
+          <WarningIcon size={ICON_SIZE.SM} className="text-(--color-error)" />
+        ) : outcome.kind === "unchanged" ? (
+          <CheckCircleIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />
+        ) : (
+          <CheckCircleIcon size={ICON_SIZE.SM} className="text-(--color-success)" />
+        )}
+      </span>
+      <div className="min-w-0 flex-1 space-y-0.5 break-words">
+        <p className="text-(--color-text-primary)">
+          <RichErrorText text={headline} links={false} />
+        </p>
+        {outcome.detail && (
+          <p className="text-xs text-(--color-text-secondary)">
+            <RichErrorText text={outcome.detail} links={false} />
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="ml-auto flex-none text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast)"
+      >
+        <XIcon size={ICON_SIZE.SM} />
+      </button>
     </div>
   );
 }
@@ -395,15 +568,28 @@ function PluginRepoCard({
  * planning#376 — the OUTCOME is reported after the click, by the card
  * (`onGranted`), rather than predicted in these tooltips. The two scopes behave
  * very differently and only the server knows which reload it ran.
+ *
+ * `optional` (reqs 23, 24) changes the sentence and the tone, and nothing else:
+ * a host the plugin can use rather than needs is still named, still carries its
+ * true `reach`, and still offers the grant — because the user may want it after
+ * all, and the requirement's affordance is not theirs to lose for having
+ * declared the host honestly. Where no grant would work (planning#383) the row
+ * says why instead of offering a button, exactly as the required rows do; that
+ * reason is stated per row here rather than collapsed into one, because an
+ * optional row is already the quiet case and there is at most a handful.
  */
 function HostNeedRow({
   alias,
   host,
+  reach,
+  optional,
   onGranted,
   onFailed,
 }: {
   alias: string;
   host: string;
+  reach: EgressHostReach;
+  optional: boolean;
   onGranted: (outcome: EgressHostGrantOutcome) => void;
   onFailed: (host: string) => void;
 }) {
@@ -416,50 +602,69 @@ function HostNeedRow({
       const outcome = await allowHost(host, scope);
       if (outcome) onGranted(outcome);
     } catch {
-      // Reported to the CARD, not kept here: the snapshot is refetched either
-      // way, and on the 503 "saved, but the live refresh failed closed" the host
-      // is durably allowed — so this row unmounts and a message on it would go
-      // with it, silently (planning#376).
+
       onFailed(host);
     } finally {
       setBusy(false);
     }
   };
 
+  const blocked = egressBlockedReason(reach);
   return (
     <div
-      className="flex flex-wrap items-center gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
-      data-testid={`plugin-host-need-${alias}-${host}`}
+      className={`flex flex-wrap items-center gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm${
+        optional ? " text-(--color-text-secondary)" : ""
+      }`}
+      data-testid={`plugin-host-${optional ? "optional" : "need"}-${alias}-${host}`}
     >
-      <GlobeIcon size={ICON_SIZE.SM} className="flex-none text-(--color-warning)" />
-      <span className="min-w-0 break-words">
-        <code className="font-mono text-xs">{host}</code> is not in this session's egress allowlist —{" "}
-        <span className="font-medium">{alias}</span> declares it
-      </span>
-      <span className="ml-auto flex flex-none items-center gap-2">
-        {/* Both tooltips state only WHERE the entry lands, which is a fact
-            about the write. Neither predicts which surfaces end up live: the
-            old "a running service may need a restart to pick it up" was wrong
-            in both directions (the agent is equally stale; a plugin's own
-            command container is created per invocation and is allowed at once),
-            and any replacement guess would be wrong for an unenforced
-            deployment, an Open session, or one with no container. That answer
-            is now reported after the click, from the server (planning#376). */}
-        <CardAction
-          disabled={busy}
-          title="Add it to this session's allowlist — this session only. What it took effect on is reported here afterwards."
-          onClick={() => void grant("session")}
-        >
-          Allow for session
-        </CardAction>
-        <CardAction
-          disabled={busy}
-          title="Add it to the instance-wide allowlist, for this and future sessions. What it took effect on is reported here afterwards."
-          onClick={() => void grant("global")}
-        >
-          Allow for ShipIt
-        </CardAction>
-      </span>
+      <GlobeIcon
+        size={ICON_SIZE.SM}
+        className={`flex-none ${optional ? "text-(--color-text-tertiary)" : "text-(--color-warning)"}`}
+      />
+      <div className="min-w-0 flex-1 space-y-0.5 break-words">
+        {optional ? (
+
+          <p>
+            <span className="font-medium">{alias}</span> can use{" "}
+            <code className="font-mono text-xs">{host}</code> — optional, and{" "}
+            {blocked ? "not reachable from this session" : "not in this session's egress allowlist"}
+          </p>
+        ) : (
+          <p>
+            <code className="font-mono text-xs">{host}</code> is not in this session's egress
+            allowlist — <span className="font-medium">{alias}</span> declares it
+          </p>
+        )}
+        {/* planning#383 — where no grant can reach the host, say so instead of
+            offering a button that writes an inert entry. */}
+        {blocked && <p className="text-xs text-(--color-text-tertiary)">{blocked.headline}</p>}
+      </div>
+      {!blocked && (
+        <span className="ml-auto flex flex-none items-center gap-2">
+          {/* Both tooltips state only WHERE the entry lands, which is a fact
+              about the write. Neither predicts which surfaces end up live: the
+              old "a running service may need a restart to pick it up" was wrong
+              in both directions (the agent is equally stale; a plugin's own
+              command container is created per invocation and is allowed at once),
+              and any replacement guess would be wrong for an unenforced
+              deployment, an Open session, or one with no container. That answer
+              is now reported after the click, from the server (planning#376). */}
+          <CardAction
+            disabled={busy}
+            title="Add it to this session's allowlist — this session only. What it took effect on is reported here afterwards."
+            onClick={() => void grant("session")}
+          >
+            Allow for session
+          </CardAction>
+          <CardAction
+            disabled={busy}
+            title="Add it to the instance-wide allowlist, for this and future sessions. What it took effect on is reported here afterwards."
+            onClick={() => void grant("global")}
+          >
+            Allow for ShipIt
+          </CardAction>
+        </span>
+      )}
     </div>
   );
 }
@@ -494,8 +699,7 @@ function HostGrantOutcomeRow({
     setRestarting(true);
     try {
       await api.post(`/api/sessions/${encodeURIComponent(sessionId)}/container/restart`);
-      // Re-handshake the WS so the worker reattaches to the freshly-restarted
-      // container — the same bridge the session's own network dialog uses.
+
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
       useUiStore.getState().setToast({ message: "Restarting the container to apply the allowlist" });
       onDismiss();
@@ -540,7 +744,7 @@ function HostGrantOutcomeRow({
             onClick={() => void restart(summary.restartSessionId!)}
           >
             {restarting ? (
-              <CircleNotchIcon size={ICON_SIZE.XS} className="mr-1 inline animate-spin" />
+              <Spinner size={ICON_SIZE.XS} className="mr-1 inline" />
             ) : null}
             Restart to apply now
           </CardAction>
@@ -558,7 +762,6 @@ function HostGrantOutcomeRow({
   );
 }
 
-/** The card's small secondary action — one spelling for every row on it. */
 function CardAction({
   children,
   onClick,

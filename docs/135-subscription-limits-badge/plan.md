@@ -239,28 +239,19 @@ orchestrator-only — they do HTTP fetches against Anthropic / OpenAI
 and must not be reachable from client code.
 
 ```ts
-// src/server/shared/types/usage-limits-types.ts  (client-importable)
 import type { AgentId } from "./agent-types.js";
 
 export interface SubscriptionLimits {
-  /** Which agent these numbers belong to. */
   agentId: AgentId;
-  /** Subscription tier name to render in the tooltip (e.g. "Pro", "Max 20x", "Plus"). */
   plan: string | null;
-  /** Rolling short-window quota (Claude: 5h, Codex: 5h). */
-  session: { usedPct: number; resetAt: string /* ISO */ } | null;
-  /** Weekly quota across all models. */
-  weekly: { usedPct: number; resetAt: string /* ISO */ } | null;
-  /** Epoch ms when this snapshot was last updated. */
+  session: { usedPct: number; resetAt: string } | null;
+  weekly: { usedPct: number; resetAt: string } | null;
   fetchedAt: number;
 }
 
-// src/server/orchestrator/limits/types.ts  (orchestrator-only)
 export interface LimitsProvider {
   agentId: AgentId;
-  /** True once the first event-fed snapshot has landed. */
   canFetch(): boolean;
-  /** Returns the cached snapshot enriched with derived fields (plan tier). */
   fetch(): Promise<SubscriptionLimits | null>;
 }
 ```

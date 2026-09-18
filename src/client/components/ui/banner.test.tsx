@@ -13,7 +13,7 @@ describe("Banner (strip layout)", () => {
     expect(el.className).toContain("text-center");
     expect(el.className).toContain("bg-(--color-error-subtle)");
     expect(el.className).toContain("text-(--color-error)");
-    // No border width is applied in the strip layout.
+
     expect(el.className).not.toMatch(/(?:^|\s)border(?:\s|$)/);
   });
 
@@ -33,11 +33,11 @@ describe("Alert (inline layout)", () => {
     expect(el.className).toContain("items-start");
     expect(el.className).toContain("rounded-md");
     expect(el.className).toContain("border");
-    // Same color-token mapping as Banner — not a duplicated set.
+
     expect(el.className).toContain("bg-(--color-warning-subtle)");
     expect(el.className).toContain("text-(--color-warning)");
     expect(el.className).toContain("border-(--color-warning)");
-    // It is not the centered strip.
+
     expect(el.className).not.toContain("text-center");
   });
 

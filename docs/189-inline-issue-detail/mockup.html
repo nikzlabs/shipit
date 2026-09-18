@@ -40,8 +40,6 @@
   .caption { width: 100%; text-align: center; color: var(--text-tertiary);
     font-size: 12px; letter-spacing: .04em; text-transform: uppercase; margin-bottom: -12px; }
   .frame-label { color: var(--text-secondary); font-size: 12px; text-align: center; margin-top: 10px; }
-
-  /* Header */
   .hdr {
     display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px;
     border-bottom: 1px solid var(--border-secondary); background: var(--bg-secondary); flex-shrink: 0;
@@ -59,8 +57,6 @@
     font-size: 12px; color: var(--text-secondary); text-decoration: none; cursor: pointer;
   }
   .deeplink:hover { background: var(--bg-hover); color: var(--text-primary); }
-
-  /* Body */
   .body { flex: 1; overflow-y: auto; }
   article { padding: 20px; }
   .strip { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -85,8 +81,6 @@
     padding: 1px 5px; border-radius: 4px; color: var(--text-primary); }
   .prose ul { margin: 0 0 12px; padding-left: 18px; }
   .prose li { margin: 4px 0; }
-
-  /* Footer */
   .footer { flex-shrink: 0; border-top: 1px solid var(--border-secondary);
     background: var(--bg-secondary); padding: 10px 16px; }
   .btn-start {
@@ -96,8 +90,6 @@
   }
   .btn-start:hover { background: var(--bg-hover); }
   .ico { width: 15px; height: 15px; display: inline-block; vertical-align: -2px; }
-
-  /* Chat card (second frame) */
   .chat { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
   .card-btn {
     width: 100%; text-align: left; display: flex; align-items: center; gap: 8px;
@@ -123,7 +115,6 @@
 
   <div>
     <div class="frame">
-      <!-- Header -->
       <div class="hdr">
         <button class="btn-ghost">
           <svg class="ico" viewBox="0 0 256 256" fill="currentColor"><path d="M165 200a8 8 0 0 1-11 0l-64-64a8 8 0 0 1 0-11l64-64a8 8 0 0 1 11 11l-58 58 58 58a8 8 0 0 1 0 12Z"/></svg>
@@ -136,8 +127,6 @@
           Open in Linear
         </a>
       </div>
-
-      <!-- Body -->
       <div class="body">
         <article>
           <div class="strip">
@@ -172,8 +161,6 @@
           </div>
         </article>
       </div>
-
-      <!-- Footer -->
       <div class="footer">
         <button class="btn-start">
           <svg class="ico" viewBox="0 0 256 256" fill="currentColor"><path d="M223 35a9 9 0 0 0-7-7c-29-6-93 4-128 39l-15 15a72 72 0 0 0-15 1 38 38 0 0 0-25 16c-12 18-7 41-6 50a8 8 0 0 0 2 5l45 45a8 8 0 0 0 5 2 91 91 0 0 0 13 1c12 0 27-2 37-9a38 38 0 0 0 16-25 72 72 0 0 0 1-15l15-15c35-35 45-99 39-128ZM164 100a16 16 0 1 1 16-16 16 16 0 0 1-16 16Z"/></svg>
@@ -188,13 +175,11 @@
     <div class="frame" style="height:auto; align-self:flex-start">
       <div class="chat">
         <div class="frame-label" style="margin:0 0 4px; text-align:left">Chat cards — now open the detail view, not the tracker</div>
-        <!-- Read card -->
         <button class="card-btn">
           <svg class="ico" viewBox="0 0 256 256" fill="var(--text-tertiary)"><path d="M247 124c-1-2-28-61-95-61S58 122 57 124a8 8 0 0 0 0 8c1 2 28 61 95 61s94-59 95-61a8 8 0 0 0 0-8Zm-95 53a45 45 0 1 1 45-45 45 45 0 0 1-45 45Z"/></svg>
           <span><span class="muted">Agent viewed</span> <strong>planning#206</strong> <span class="muted">— Inline single-issue detail view · In Progress</span></span>
           <svg class="ico caret" viewBox="0 0 256 256" fill="currentColor"><path d="M181 133 117 197a8 8 0 0 1-11-11l58-58-58-58a8 8 0 0 1 11-11l64 64a8 8 0 0 1 0 11Z"/></svg>
         </button>
-        <!-- Write card -->
         <div class="write-card">
           <svg class="ico" viewBox="0 0 256 256" fill="var(--accent)"><path d="M227 67 189 29a14 14 0 0 0-20 0L33 165a14 14 0 0 0-4 10v38a14 14 0 0 0 14 14h38a14 14 0 0 0 10-4L227 87a14 14 0 0 0 0-20ZM79 213H43v-36l92-92 36 36Z"/></svg>
           <span style="flex:1"><span class="muted">Agent</span> commented on planning#206 <span class="muted">by you</span></span>

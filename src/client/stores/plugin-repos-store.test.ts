@@ -1,4 +1,4 @@
-// docs/262 — the session-scoped store behind the Plugins tab.
+
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
@@ -56,7 +56,6 @@ describe("plugin-repos store", () => {
     expect(usePluginReposStore.getState().snapshot).toBeNull();
   });
 
-  // Latest-wins: the seeding fetch and a files-changed refetch overlap freely,
   // so response order must not decide which declaration the tab gates on.
   it("an older same-session response cannot overwrite a newer one", async () => {
     const bodies = [
@@ -67,7 +66,7 @@ describe("plugin-repos store", () => {
     const resolvers: (() => void)[] = [];
     globalThis.fetch = (async () => {
       const body = bodies[call++];
-      // Hold both responses open, then release them in reverse order.
+
       await new Promise<void>((r) => resolvers.push(r));
       return new Response(JSON.stringify(body), { status: 200 });
     }) as unknown as typeof fetch;
@@ -111,7 +110,7 @@ describe("plugin-repos store", () => {
       await usePluginReposStore.getState().fetchSnapshot("sess-a");
       expect(impl).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(60_000);
-      // Two pending answers, then a real one — and no further polling.
+
       expect(impl).toHaveBeenCalledTimes(3);
       expect(usePluginReposStore.getState().snapshot?.pending).toBe(false);
     } finally {
@@ -126,8 +125,7 @@ describe("snapshotForSession", () => {
   it("returns the snapshot only for its owning session", () => {
     const state = { snapshot: snap, forSessionId: "sess-a" } as never;
     expect(snapshotForSession(state, "sess-a")).toBe(snap);
-    // The regression this guards: a switch that skipped the reset would leave
-    // the previous session's tab, dot and cards on screen.
+
     expect(snapshotForSession(state, "sess-b")).toBeNull();
     expect(snapshotForSession(state, null)).toBeNull();
   });
@@ -140,6 +138,7 @@ describe("tab gating and attention (plan §3)", () => {
     ref: "main",
     commit: null,
     status: "active" as const,
+    pinned: false,
     uses: [],
     issues: [] as string[],
   };
@@ -169,45 +168,49 @@ describe("tab gating and attention (plan §3)", () => {
   });
 
   it("an unsatisfied plugin credential fires the dot (req 23)", () => {
-    const use = (satisfied: boolean) => ({
+    const use = (satisfied: boolean, optional = false) => ({
       plugin: "palette",
       alias: "artk",
       found: true,
-      credentials: [{ name: "FAL_KEY", satisfied }],
+      credentials: [{ name: "FAL_KEY", satisfied, optional }],
       hosts: [],
     });
     // A closed tab may hide information, never a gap the user must close.
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(false)] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(true)] }] }))).toBe(false);
+    // reqs 23, 24 — an OPTIONAL key the project never set is not a gap the user
+    // must close, so it must not light a dot that can then never be cleared.
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(false, true)] }] }))).toBe(false);
   });
 
   it("a declared host the session may not reach fires the dot (req 24)", () => {
-    const use = (reach: EgressHostReach) => ({
+    const use = (reach: EgressHostReach, optional = false) => ({
       plugin: "palette",
       alias: "artk",
       found: true,
       credentials: [],
-      hosts: [{ host: "fal.run", reach }],
+      hosts: [{ host: "fal.run", reach, optional }],
     });
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("grantable")] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("allowed")] }] }))).toBe(false);
-    // planning#383 — a gap nobody the user can be will close is still a gap the
+
     // user should be told about: the plugin cannot do its job either way.
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-deployment")] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-session")] }] }))).toBe(true);
+
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("grantable", true)] }] }))).toBe(false);
+    expect(
+      pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-deployment", true)] }] })),
+    ).toBe(false);
   });
 
   it("a snapshot from an older client build has neither list and must not throw", () => {
-    // The store outlives a deploy: a cached response predating `hosts` (or
-    // `credentials`) reaches this predicate as `undefined`.
+
     const legacy = { plugin: "p", alias: "p", found: true } as unknown as (typeof card)["uses"][number];
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [legacy] }] }))).toBe(false);
   });
 });
 
-// req 24's affordance: the grant is the USER's act on the USER's allowlist —
-// the existing browser-only egress route, at one of the two scopes the
-// requirement names. Nothing plugin-shaped, and nothing a declaration triggers.
 describe("allowHost", () => {
   beforeEach(() => {
     usePluginReposStore.setState({ snapshot: snapshot(), forSessionId: "sess-a" });
@@ -222,8 +225,8 @@ describe("allowHost", () => {
   const captureFetch = (grantResponse: Response): ReturnType<typeof vi.fn> => {
     const impl = vi.fn(async (url: string) =>
       url === "/api/egress/hosts"
-        ? // Cloned per call: one grant response is reused across the two scopes,
-          // and a body can only be read once.
+        ?                                                                        
+
           grantResponse.clone()
         : new Response(JSON.stringify(snapshot()), { status: 200 }),
     );
@@ -238,9 +241,7 @@ describe("allowHost", () => {
 
     impl.mockClear();
     await usePluginReposStore.getState().allowHost("fal.run", "global");
-    // planning#376 — the session rides along for REPORTING only. The entry
-    // still lands at instance scope; the id says whose surfaces the route
-    // should report on, since a global add reaches them very differently.
+
     expect(JSON.parse(String(impl.mock.calls[0][1].body))).toEqual({
       host: "fal.run",
       scope: "global",
@@ -274,8 +275,7 @@ describe("allowHost", () => {
   });
 
   it("refetches on failure too, and rethrows", async () => {
-    // `POST /api/egress/hosts` answers 503 for "saved, but the live refresh
-    // failed closed" — the host may be allowed even though the call failed, so
+
     // the card must be re-read rather than left asserting the old answer.
     const impl = captureFetch(new Response("{}", { status: 503 }));
     await expect(usePluginReposStore.getState().allowHost("fal.run", "session")).rejects.toThrow();
@@ -288,6 +288,142 @@ describe("allowHost", () => {
     await usePluginReposStore.getState().allowHost("fal.run", "session");
     usePluginReposStore.setState({ forSessionId: "sess-a" });
     await usePluginReposStore.getState().allowHost("   ", "global");
+    expect(impl).not.toHaveBeenCalled();
+  });
+});
+
+describe("refreshRepo", () => {
+  const REFRESH_URL = "/api/sessions/sess-a/plugin/refresh";
+
+  beforeEach(() => {
+    usePluginReposStore.setState({ snapshot: snapshot(), forSessionId: "sess-a" });
+    useSessionStore.setState({ sessionId: "sess-a" });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  const captureFetch = (refreshResponse: Response): ReturnType<typeof vi.fn> => {
+    const impl = vi.fn(async (url: string) =>
+      url === REFRESH_URL
+        ? refreshResponse.clone()
+        : new Response(JSON.stringify(snapshot()), { status: 200 }),
+    );
+    globalThis.fetch = impl as unknown as typeof fetch;
+    return impl;
+  };
+
+  const rowResponse = (row: Record<string, unknown>): Response =>
+    new Response(JSON.stringify({ rows: [row] }), { status: 200 });
+
+  it("posts the one named repository, never a blanket refresh", async () => {
+    const impl = captureFetch(rowResponse({ repo: "tools", status: "unchanged", after: "abc" }));
+    await usePluginReposStore.getState().refreshRepo("tools");
+    expect(impl.mock.calls[0][0]).toBe(REFRESH_URL);
+    expect(JSON.parse(String(impl.mock.calls[0][1].body))).toEqual({ repo: "tools" });
+  });
+
+  it("reports the three successful shapes apart", async () => {
+    captureFetch(rowResponse({ status: "activated", before: "old", after: "new-commit" }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toEqual({
+      repo: "tools", kind: "activated", commit: "new-commit",
+    });
+
+    captureFetch(rowResponse({ status: "activated", reinstalled: true, after: "same" }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({
+      kind: "reinstalled", commit: "same",
+    });
+
+    captureFetch(rowResponse({ status: "unchanged", after: "same", detail: "tag moved" }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toEqual({
+      repo: "tools", kind: "unchanged", commit: "same", detail: "tag moved",
+    });
+  });
+
+  it("carries the failure and the commit that is STILL live (req 15)", async () => {
+    captureFetch(rowResponse({ status: "failed", after: "prior", detail: "fetch denied" }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toEqual({
+      repo: "tools", kind: "failed", commit: "prior", detail: "fetch denied",
+    });
+  });
+
+  it("turns a refused request into a reported failure rather than a throw", async () => {
+
+    captureFetch(new Response(JSON.stringify({ error: "`x` is not declared." }), { status: 400 }));
+    expect(await usePluginReposStore.getState().refreshRepo("x")).toEqual({
+      repo: "x", kind: "failed", commit: null, detail: "`x` is not declared.",
+    });
+
+    captureFetch(new Response("not json", { status: 500 }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({
+      kind: "failed", detail: "HTTP 500",
+    });
+
+    captureFetch(new Response(JSON.stringify({ rows: [] }), { status: 200 }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({ kind: "failed" });
+  });
+
+  it("refetches the snapshot on success AND on failure", async () => {
+
+    // issue row and the status becomes `degraded` — so the stale snapshot must
+
+    for (const response of [
+      rowResponse({ status: "activated", after: "new" }),
+      new Response(JSON.stringify({ error: "nope" }), { status: 400 }),
+    ]) {
+      const impl = captureFetch(response);
+      await usePluginReposStore.getState().refreshRepo("tools");
+      expect(impl.mock.calls.map((c) => c[0])).toEqual([
+        REFRESH_URL,
+        "/api/plugin-repos?sessionId=sess-a",
+      ]);
+    }
+  });
+
+  it("a refresh finishing after a session switch does not strand the new session", async () => {
+    // The two must OVERLAP for this to reproduce: a B fetch that has already
+    // landed cannot be invalidated retroactively. B's GET is therefore still in
+
+    const gate = (): [Promise<void>, () => void] => {
+      let open!: () => void;
+      const held = new Promise<void>((resolve) => { open = resolve; });
+      return [held, open];
+    };
+    const [refreshHeld, releaseRefresh] = gate();
+    const [seedHeld, releaseSeed] = gate();
+    const seeded = snapshot({ declared: true, warnings: ["session B"] });
+    globalThis.fetch = (async (url: string) => {
+      if (url === REFRESH_URL) {
+        await refreshHeld;
+        return new Response(JSON.stringify({ rows: [{ status: "unchanged", after: "x" }] }), { status: 200 });
+      }
+      if (url.endsWith("sessionId=sess-b")) {
+        await seedHeld;
+        return new Response(JSON.stringify(seeded), { status: 200 });
+      }
+      return new Response(JSON.stringify(snapshot()), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const refreshing = usePluginReposStore.getState().refreshRepo("tools");
+    useSessionStore.setState({ sessionId: "sess-b" });
+    usePluginReposStore.getState().reset();
+    const seedingB = usePluginReposStore.getState().fetchSnapshot("sess-b");
+
+    releaseRefresh();
+    await refreshing;
+    releaseSeed();
+    await seedingB;
+
+    expect(usePluginReposStore.getState().forSessionId).toBe("sess-b");
+    expect(usePluginReposStore.getState().snapshot?.warnings).toEqual(["session B"]);
+  });
+
+  it("does nothing without a session", async () => {
+    const impl = captureFetch(rowResponse({ status: "unchanged", after: "x" }));
+    usePluginReposStore.setState({ forSessionId: null });
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({ kind: "failed" });
     expect(impl).not.toHaveBeenCalled();
   });
 });

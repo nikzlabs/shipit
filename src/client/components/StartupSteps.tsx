@@ -1,4 +1,5 @@
-import { CheckCircleIcon, CircleNotchIcon, CircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { CheckCircleIcon, CircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { StartupStep } from "../stores/preview-store.js";
 
@@ -18,7 +19,7 @@ function StepIcon({ status }: { status: StartupStep["status"] }) {
     case "complete":
       return <CheckCircleIcon size={ICON_SIZE.SM} weight="fill" className="text-emerald-400 shrink-0" />;
     case "running":
-      return <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-accent) shrink-0" />;
+      return <Spinner size={ICON_SIZE.SM} className="text-(--color-accent) shrink-0" />;
     case "error":
       return <WarningCircleIcon size={ICON_SIZE.SM} weight="fill" className="text-orange-400 shrink-0" />;
     default:

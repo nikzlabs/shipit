@@ -2,11 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import { useMessageScroll } from "./useMessageScroll.js";
 import type { ChatMessage } from "../types.js";
+import type { SearchMatch } from "../../../hooks/useSearch.js";
 
-// Manual rAF pump: callbacks queue up and we flush them one frame at a time so a
-// test can mutate the container's scrollHeight between frames — simulating a tall
-// message whose real height only paints over several layout cycles (the
-// content-visibility:auto placeholder-then-grow behavior this hook compensates for).
 let rafQueue: FrameRequestCallback[] = [];
 
 function flushFrame(): void {
@@ -17,18 +14,11 @@ function flushFrame(): void {
   });
 }
 
-// jsdom has no ResizeObserver and no layout, so the observations the hook relies
-// on are driven by hand: `growContent()` plays the part of the browser reporting
-// that the transcript got taller.
 let observers: { cb: ResizeObserverCallback; targets: Element[] }[] = [];
 let observedTargets: Element[] = [];
 
-// The hook reads `performance.now()` to time the post-gesture grace window, so
-// the clock is ours to advance rather than something to wait out.
 let clock = 0;
 
-// Only an observer actually watching the content element hears about it growing —
-// so a hook that watched only the scroll container gets no callback here, and the
 // tests below fail rather than passing on a notification it would never receive.
 function growContent(): void {
   const content = document.querySelector('[data-testid="content"]');
@@ -39,7 +29,6 @@ function growContent(): void {
   });
 }
 
-// The mobile address bar collapsing mid-scroll resizes the SCROLL CONTAINER, not
 // the content — a resize the hook cannot tell apart from the transcript growing.
 function resizeContainer(): void {
   const scroller = document.querySelector('[data-testid="scroller"]');
@@ -55,10 +44,21 @@ function user(text: string): ChatMessage {
 }
 
 function Harness({ messages }: { messages: ChatMessage[] }) {
-  const { containerRef, contentRef } = useMessageScroll(messages, false, undefined);
+  const { containerRef, contentRef } = useMessageScroll(messages, false, undefined, "s1");
   return (
     <div ref={containerRef} data-testid="scroller">
       <div ref={contentRef} data-testid="content" />
+    </div>
+  );
+}
+
+function MatchHarness({ match }: { match: SearchMatch | undefined }) {
+  const { containerRef, contentRef, currentMatchRef } = useMessageScroll([], false, match, "s1");
+  return (
+    <div ref={containerRef} data-testid="scroller">
+      <div ref={contentRef} data-testid="content">
+        <span ref={currentMatchRef} data-testid="match" />
+      </div>
     </div>
   );
 }
@@ -90,7 +90,7 @@ beforeEach(() => {
     },
   );
   // Pin time so the settle loop terminates on height-stability, not the safety cap.
-  // Tests that need the gesture grace window to expire advance `clock` by hand.
+
   clock = 0;
   vi.spyOn(performance, "now").mockImplementation(() => clock);
 });
@@ -118,21 +118,18 @@ describe("useMessageScroll", () => {
       },
     });
 
-    // User sends a long message — an explicit send anchors the conversation.
     act(() => {
       view.rerender(<Harness messages={[user("a very long message")]} />);
     });
 
-    // Drive height growth across more than the old fixed 3-frame / 100ms budget.
     const sequence = [100, 300, 600, 900, 1200, 1200, 1200, 1200, 1200, 1200];
     for (const h of sequence) {
       height = h;
       flushFrame();
     }
 
-    // Settled at the true bottom (scrollTop === final scrollHeight), not partway.
     expect(scrollTop).toBe(1200);
-    // And the loop terminates once height is stable — no runaway scheduling.
+
     expect(rafQueue.length).toBe(0);
   });
 
@@ -144,10 +141,7 @@ describe("useMessageScroll", () => {
   });
 
   it("re-pins when the transcript grows after the settle loop has given up", () => {
-    // The loop stops once the height holds steady for a few frames — which an
-    // 80px `content-visibility` placeholder does before it paints, and which any
-    // card that expands asynchronously does long after. The height is stable
-    // here throughout the loop, so the growth lands with nothing else watching.
+
     let height = 300;
     let scrollTop = 0;
 
@@ -167,8 +161,8 @@ describe("useMessageScroll", () => {
       view.rerender(<Harness messages={[user("a very long message")]} />);
     });
     for (let i = 0; i < 6; i++) flushFrame();
-    expect(rafQueue.length).toBe(0); // the loop has given up
-    expect(scrollTop).toBe(300); // stranded at the placeholder's bottom
+    expect(rafQueue.length).toBe(0);                         
+    expect(scrollTop).toBe(300);                                        
 
     height = 2000;
     growContent();
@@ -177,11 +171,7 @@ describe("useMessageScroll", () => {
   });
 
   it("does not mistake the position its own re-pin corrected for the user scrolling away", () => {
-    // The observation lands in the same rendering update as the growth, so the
-    // scroll event that growth produces is delivered afterwards and reports the
-    // corrected position. Verified in a real browser: without the correction the
-    // event reports a position ~700px above the new bottom, and reading that as
-    // a user scroll is what stranded the view.
+
     let height = 300;
     let scrollTop = 0;
 
@@ -208,7 +198,6 @@ describe("useMessageScroll", () => {
       div.dispatchEvent(new Event("scroll"));
     });
 
-    // Auto-follow survived, so the next message still pins.
     act(() => {
       height = 2500;
       view.rerender(<Harness messages={[user("a very long message"), { role: "assistant", text: "reply" }]} />);
@@ -233,15 +222,13 @@ describe("useMessageScroll", () => {
       },
     });
 
-    // Mid-drag inside a message. Scrolling now would move the content out from
-    // under the pointer and wreck the selection — which is why the streaming
     // re-pin already stands down here, and why the observer must too.
     vi.spyOn(window, "getSelection").mockReturnValue({
       isCollapsed: false,
       anchorNode: view.getByTestId("content"),
     } as unknown as Selection);
 
-    height = 2600; // the streaming message wraps onto another line
+    height = 2600;                                                 
     growContent();
 
     expect(scrollTop).toBe(2000);
@@ -264,10 +251,10 @@ describe("useMessageScroll", () => {
     });
 
     act(() => {
-      div.dispatchEvent(new Event("scroll")); // scrolled to the top, far from the bottom
+      div.dispatchEvent(new Event("scroll"));                                            
     });
 
-    height = 2600; // a card further down expands
+    height = 2600;                               
     growContent();
 
     expect(scrollTop).toBe(0);
@@ -275,9 +262,9 @@ describe("useMessageScroll", () => {
 
   it("stops the in-flight settle loop the instant the user wheels — even within the near-bottom band", () => {
     const height = 2000;
-    // Park the user just inside the near-bottom threshold so isNearBottom stays
+
     // true: only the explicit wheel gesture (not the threshold) must stop us.
-    let scrollTop = height - 500 - 20; // 1480; gap of 20px < BOTTOM_THRESHOLD_PX
+    let scrollTop = height - 500 - 20;                                           
 
     const view = render(<Harness messages={[]} />);
     const div = view.getByTestId("scroller");
@@ -294,8 +281,7 @@ describe("useMessageScroll", () => {
     act(() => {
       view.rerender(<Harness messages={[user("a long message")]} />);
     });
-    // The layout effect pinned us to the bottom; re-park within the band so the
-    // wheel gesture is the only thing that can stop the loop.
+
     scrollTop = 1480;
 
     act(() => {
@@ -311,12 +297,10 @@ describe("useMessageScroll", () => {
 
   // A slow drag is the case the near-bottom threshold cannot cover: the thumb
   // stays inside the 40px band for many frames, so `autoScrollRef` never flips
-  // and every auto-scroll path keeps firing underneath the gesture. A fast flick
-  // leaves the band within one frame, which is exactly why only the slow scroll
-  // got dragged back — the bug was invisible unless you scrolled gently.
+
   describe("a gesture in progress outranks auto-follow", () => {
     function mountAtBottom(): { view: ReturnType<typeof render>; div: HTMLElement; state: { height: number; scrollTop: number } } {
-      const state = { height: 2000, scrollTop: 1500 }; // 2000 - 500 clientHeight: at the bottom
+      const state = { height: 2000, scrollTop: 1500 };                                          
       const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
       const div = view.getByTestId("scroller");
       Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => state.height });
@@ -334,15 +318,12 @@ describe("useMessageScroll", () => {
     it("leaves a slow drag alone while it is still inside the near-bottom band", () => {
       const { view, div, state } = mountAtBottom();
 
-      // A thumb walks the transcript up by 15px — less than BOTTOM_THRESHOLD_PX,
-      // so `isNearBottom` is still true and auto-follow is still armed.
       act(() => {
         div.dispatchEvent(new Event("touchmove"));
         state.scrollTop = 1485;
         div.dispatchEvent(new Event("scroll"));
       });
 
-      // Streaming continues underneath the finger. None of it may move the view.
       act(() => {
         state.height = 2400;
         view.rerender(<Harness messages={[{ role: "assistant", text: "hi, more tokens" }]} />);
@@ -351,7 +332,6 @@ describe("useMessageScroll", () => {
       growContent();
       expect(state.scrollTop).toBe(1485);
 
-      // Nor may the address bar collapsing, which resizes the container mid-scroll.
       resizeContainer();
       expect(state.scrollTop).toBe(1485);
     });
@@ -366,8 +346,6 @@ describe("useMessageScroll", () => {
         div.dispatchEvent(new Event("touchend"));
       });
 
-      // The gesture is over but the scroll is not: writing scrollTop here would
-      // kill the momentum dead.
       state.height = 2400;
       growContent();
       expect(state.scrollTop).toBe(1485);
@@ -383,23 +361,21 @@ describe("useMessageScroll", () => {
         div.dispatchEvent(new Event("touchend"));
       });
 
-      clock = 500; // past GESTURE_GRACE_MS
+      clock = 500;                         
       state.height = 2400;
       growContent();
 
-      // Still within the near-bottom band, so following the conversation is what
-      // the user asked for — the gesture only ever suspended it.
       expect(state.scrollTop).toBe(2400);
     });
 
     it("stands down for a trackpad scroll too, which reports `wheel` and never `touchmove`", () => {
-      // The wheel path has no drag flag to set — `wheel` has no end event, so a
+
       // sticky flag would never clear — and rides the timestamp grace alone.
       const { view, div, state } = mountAtBottom();
 
       act(() => {
         div.dispatchEvent(new Event("wheel"));
-        state.scrollTop = 1485; // still inside the near-bottom band
+        state.scrollTop = 1485;                                     
         div.dispatchEvent(new Event("scroll"));
       });
 
@@ -414,8 +390,7 @@ describe("useMessageScroll", () => {
     });
 
     it("hands a cancelled touch over to the grace window, not straight back to auto-follow", () => {
-      // `touchcancel` fires when the system takes the gesture away mid-drag — a
-      // notification, a system edge swipe. The scroll it started is still moving.
+
       const { div, state } = mountAtBottom();
 
       act(() => {
@@ -432,7 +407,7 @@ describe("useMessageScroll", () => {
 
     it("terminates a settle loop that was already running when the gesture began", () => {
       // The other ordering: the gesture starts BEFORE the loop in the tests above.
-      // Here the loop is mid-flight, so only `shouldContinue` can stop it.
+
       let height = 100;
       let scrollTop = 0;
 
@@ -452,12 +427,12 @@ describe("useMessageScroll", () => {
         view.rerender(<Harness messages={[user("a very long message")]} />);
       });
       height = 600;
-      flushFrame(); // loop is running and still correcting a growing message
+      flushFrame();                                                          
 
       act(() => {
         div.dispatchEvent(new Event("touchmove"));
       });
-      scrollTop = 550; // where the finger put us
+      scrollTop = 550;                           
 
       height = 900;
       flushFrame();
@@ -472,7 +447,7 @@ describe("useMessageScroll", () => {
 
       act(() => {
         div.dispatchEvent(new Event("touchmove"));
-        state.scrollTop = 1200; // dragged well clear of the bottom
+        state.scrollTop = 1200;                                    
         div.dispatchEvent(new Event("scroll"));
       });
 
@@ -487,7 +462,7 @@ describe("useMessageScroll", () => {
 
   it("does not re-pin a message the user has scrolled away from when no new user message arrives", () => {
     let height = 2000;
-    let scrollTop = 0; // user scrolled to the top, far from the bottom
+    let scrollTop = 0;                                                 
 
     const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
     const div = view.getByTestId("scroller");
@@ -501,14 +476,10 @@ describe("useMessageScroll", () => {
       },
     });
 
-    // Simulate the user scrolling up: dispatch a scroll event so the hook records
-    // that we are no longer near the bottom.
     act(() => {
       div.dispatchEvent(new Event("scroll"));
     });
 
-    // A streaming assistant update (not a new user message) should NOT yank the
-    // view back to the bottom.
     act(() => {
       height = 2500;
       view.rerender(<Harness messages={[{ role: "assistant", text: "hi there, more tokens" }]} />);
@@ -516,5 +487,130 @@ describe("useMessageScroll", () => {
     flushFrame();
 
     expect(scrollTop).toBe(0);
+  });
+});
+
+describe("useMessageScroll — search jump settles (planning#491)", () => {
+  function setup(): { calls: { block?: string; behavior?: string }[]; setHeight: (h: number) => void; view: ReturnType<typeof render> } {
+    const calls: { block?: string; behavior?: string }[] = [];
+    Element.prototype.scrollIntoView = function (arg?: boolean | ScrollIntoViewOptions) {
+      calls.push(typeof arg === "object" && arg !== null ? arg : {});
+    };
+    let height = 1000;
+    const view = render(<MatchHarness match={undefined} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", { configurable: true, get: () => 0, set: () => {} });
+    return { calls, setHeight: (h: number) => { height = h; }, view };
+  }
+
+  it("re-centres the match while the transcript's height is still changing", () => {
+    const { calls, setHeight, view } = setup();
+
+    act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].behavior).toBe("smooth");
+
+    // over the next few frames. Each change must re-centre, or the match ends up
+
+    for (const h of [4000, 7000, 7000, 7000, 7000]) {
+      setHeight(h);
+      flushFrame();
+    }
+
+    expect(calls.length).toBeGreaterThan(1);
+
+    expect(calls.slice(1).every((c) => c.behavior === undefined)).toBe(true);
+    expect(calls.every((c) => c.block === "center")).toBe(true);
+  });
+
+  it("stops once the height has held still, rather than scrolling forever", () => {
+    const { calls, setHeight, view } = setup();
+    act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
+
+    setHeight(4000);
+    for (let i = 0; i < 10; i++) flushFrame();
+    const settled = calls.length;
+
+    for (let i = 0; i < 10; i++) flushFrame();
+    expect(calls.length).toBe(settled);
+  });
+
+  it("stands down the moment the user takes hold of the scroll", () => {
+
+    const { calls, setHeight, view } = setup();
+    act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
+    const afterJump = calls.length;
+
+    act(() => {
+      view.getByTestId("scroller").dispatchEvent(new Event("wheel", { bubbles: true }));
+    });
+    setHeight(9000);
+    for (let i = 0; i < 5; i++) flushFrame();
+
+    expect(calls.length).toBe(afterJump);
+  });
+});
+
+// docs/303-session-status-card req 30 — the card returning to the end changes no
+// height, so nothing re-pins the view; whether the reader's row has to be kept
+// still is decided here.
+describe("useMessageScroll — the status card's move", () => {
+  interface Guards { preserve: () => boolean; restore: () => boolean }
+
+  function CardHarness({ messages, report }: { messages: ChatMessage[]; report: (g: Guards) => void }) {
+    const { containerRef, contentRef, canPreserveAcrossCardMove, canRestoreReadingAnchor } =
+      useMessageScroll(messages, false, undefined, "s1");
+    report({ preserve: canPreserveAcrossCardMove, restore: canRestoreReadingAnchor });
+    return (
+      <div ref={containerRef} data-testid="scroller">
+        <div ref={contentRef} data-testid="content" />
+      </div>
+    );
+  }
+
+  function setup(scrollTop: number): Guards {
+    let guards: Guards = { preserve: () => false, restore: () => false };
+    const report = (g: Guards) => { guards = g; };
+    const view = render(<CardHarness messages={[]} report={report} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => 10000 });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", { configurable: true, get: () => scrollTop, set: () => {} });
+    // A dispatched turn — a status-card nudge — appends a user row the reader
+    // never sent, and the layout effect arms auto-follow off the back of it.
+    act(() => { view.rerender(<CardHarness messages={[user("[ShipIt] \u2026")]} report={report} />); });
+    return guards;
+  }
+
+  it("asks the container, not the auto-follow flag a dispatched turn's user row sets", () => {
+    const { preserve, restore } = setup(2000);
+    expect(preserve()).toBe(true);
+    expect(restore()).toBe(false);
+  });
+
+  it("leaves a reader at the bottom alone, since the move changes no height", () => {
+    expect(setup(9500).preserve()).toBe(false);
+  });
+
+  it("still keeps the row still while the reader has text selected under the card", () => {
+    const { preserve } = setup(2000);
+    const container = document.querySelector('[data-testid="scroller"]')!;
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      anchorNode: container.firstChild,
+    } as unknown as Selection);
+    expect(preserve()).toBe(true);
+  });
+
+  it("stands down while the reader has hold of the scroll", () => {
+    const { preserve } = setup(2000);
+    act(() => {
+      document.querySelector('[data-testid="scroller"]')!
+        .dispatchEvent(new Event("touchmove", { bubbles: true }));
+    });
+    expect(preserve()).toBe(false);
   });
 });

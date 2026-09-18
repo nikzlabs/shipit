@@ -116,25 +116,11 @@ export interface GraduateSessionDeps {
 
 export interface GraduateSessionOpts {
   sessionId: string;
-  /**
-   * First-message text. Drives the placeholder title and the AI-naming
-   * prompt. Pass `""` for surfaces that have no first message (fork) — AI
-   * naming will still skip if `explicitTitle`/`explicitBranch` are set.
-   */
   userText: string;
-  /** Effective agent id for the AI-naming CLI call. */
   agentId: AgentId;
-  /**
-   * When set, the caller has chosen this title/branch and AI naming must
-   * NOT touch them. The placeholder title becomes the explicit title, and
-   * `setBranchRenamed(true)` is set synchronously. Either field alone is
-   * enough to opt out of AI naming, matching the pre-fix headless behavior.
-   */
   explicitTitle?: string;
   explicitBranch?: string;
-  /** Optional model override (child + quick). */
   model?: string;
-  /** Optional parent linkage (child only). */
   parentSessionId?: string;
   spawnedByTurn?: string;
 }
@@ -241,37 +227,13 @@ entry above.)
 Top of `graduate-session.ts`:
 
 ```ts
-/**
- * graduateSession — SINGLE SOURCE OF TRUTH for warm → active session
- * transition. Every session-creation surface in the orchestrator MUST end
- * with a call to this function. The current call sites are:
- *
- *   - ws-handlers/send-message.ts   (warm-graduation on first message)
- *   - services/headless-sessions.ts (POST /api/sessions/headless)
- *   - services/child-sessions.ts    (POST /api/sessions/:parentId/spawn)
- *   - services/session-fork-merge.ts (POST /api/sessions/:id/fork)
- *
- * If you are adding a fifth, it MUST end here too. If you find yourself
- * calling any of these directly outside this module:
- *
- *   sessionManager.setWarm(id, false)
- *   sessionManager.track(id)
- *   sessionManager.setBranchRenamed(...)
- *   scheduleSessionNaming(...)
- *   repoStore.touch(remoteUrl)
- *   sseBroadcast("session_list", ...)  // as part of session creation
- *
- * STOP and call graduateSession() instead. Hand-rolling subsets of these
- * is the bug class docs/156 was opened to make impossible.
- */
+/** Every session-creation path must use this warm-to-active transition. */
 ```
 
 Plus a one-line comment at each call site:
 
 ```ts
-// graduate-session.ts owns the warm → active transition (docs/156).
-// Do not inline setWarm/setBranchRenamed/scheduleSessionNaming/repoStore.touch
-// here — call graduateSession() instead.
+// graduateSession owns the warm-to-active transition.
 ```
 
 This is the closest a comment can get to a compile-time check. We could also
@@ -300,10 +262,6 @@ if (session?.warm) {
     },
     { sessionId: effectiveSessionId, userText, agentId: session.agentId ?? ctx.getActiveAgentId() },
   );
-  // Warm-graduation is the only surface that doesn't reach graduation via
-  // claim, so the warm pool's single warm clone was consumed but never
-  // re-warmed. Refill it inline. The other three surfaces inherit re-warming
-  // from claim-session.ts:rewarmPool — see graduate-session.ts step-list.
   if (session.remoteUrl) void ctx.warmSessionForRepo(session.remoteUrl);
 }
 ```

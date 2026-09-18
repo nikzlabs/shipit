@@ -20,7 +20,6 @@ OUT = HERE.with_name("mockup.html")
 
 CANDIDATE_NAMES = ["Chats", "Tray", "HandWaving", "Funnel", "Target"]
 
-
 def load_icon(name: str) -> dict:
     """Pull the `regular` and `fill` path data out of a Phosphor def module."""
     src = (DEFS / f"{name}.es.js").read_text()
@@ -31,22 +30,18 @@ def load_icon(name: str) -> dict:
             icon[weight] = re.search(r'd:\s*"([^"]+)"', part).group(1)
     return icon
 
-
 ICONS = {n: load_icon(n) for n in CANDIDATE_NAMES}
-
 
 def glyph(name: str, weight: str, size: int = 15) -> str:
     d = ICONS[name][weight]
     return (f'<svg width="{size}" height="{size}" viewBox="0 0 256 256" '
             f'fill="currentColor"><path d="{d}"/></svg>')
 
-
 SW_OFF = f'<span class="sw">{glyph("Chats", "regular")}<span class="n">{{n}}</span></span>'
 SW_ON = f'<span class="sw on">{glyph("Chats", "fill")}<span class="n">{{n}}</span></span>'
 SW_ON_ZERO = f'<span class="sw on">{glyph("Chats", "fill")}</span>'
 SW_OFF_ZERO = f'<span class="sw">{glyph("Chats", "regular")}</span>'
 
-# --- small decorative header icons (approximations; not the subject of the mock)
 I_SIDEBAR = ('<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" '
              'stroke-width="1.3"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2"/>'
              '<line x1="6" y1="2.6" x2="6" y2="13.4"/></svg>')
@@ -63,7 +58,7 @@ I_GH = '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><cir
 I_PR = ('<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" '
         'stroke-width="1.6"><circle cx="4.5" cy="12" r="2"/><circle cx="4.5" cy="4" r="2"/>'
         '<path d="M4.5 6v4M11.5 4.5v5"/><circle cx="11.5" cy="11.5" r="2"/></svg>')
-# SessionStatusDot vocabulary, unchanged from the All view
+
 D_CI_FAIL = ('<span class="sd" style="color:var(--error)"><svg width="11" height="11" viewBox="0 0 16 16" '
              'fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/>'
              '<path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/></svg></span>')
@@ -71,7 +66,6 @@ D_CI_PASS = ('<span class="sd" style="color:var(--success)"><svg width="11" heig
              'fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.4"/>'
              '<path d="M5.2 8.2 7.2 10.2l3.6-4"/></svg></span>')
 D_RUN = '<span class="sd run"></span>'
-
 
 def hdr(active: bool, count, extra_left: str = "") -> str:
     """The sidebar top bar. The switch sits on the LEFT, beside the collapse
@@ -86,7 +80,6 @@ def hdr(active: bool, count, extra_left: str = "") -> str:
             f'<span class="ico">{I_PLUS}</span><span class="ico">{I_BOLT}</span>'
             f'<span class="ico">{I_BOLT_MIC}</span><span class="ico">{I_GH}</span></div>')
 
-
 def hdr_mobile(active: bool, count) -> str:
     """The mobile sessions panel's own bar. It has no collapse control (Sessions
     is a mode of the bottom tab bar, so you switch away rather than close), and
@@ -96,23 +89,18 @@ def hdr_mobile(active: bool, count) -> str:
     return (f'<div class="hdr">{sw}<span class="sp"></span>'
             f'<span class="ico">{I_PLUS}</span><span class="ico">{I_GH}</span></div>')
 
-
-# ---------------------------------------------------------------- contrast
 def _lin(c: float) -> float:
     return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
-
 
 def luminance(hex_color: str) -> float:
     h = hex_color.lstrip("#")
     r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
     return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
 
-
 def contrast(fg: str, bg: str) -> float:
     a, b = luminance(fg), luminance(bg)
     hi, lo = max(a, b), min(a, b)
     return (hi + 0.05) / (lo + 0.05)
-
 
 def ratio(fg: str, bg: str, *, small_text: bool) -> str:
     """Formatted ratio + pass/fail. WCAG AA wants 4.5:1 for small text and
@@ -123,7 +111,6 @@ def ratio(fg: str, bg: str, *, small_text: bool) -> str:
     cls = "ok" if ok else "fail"
     mark = "✓" if ok else "✕"
     return f'<span class="ratio {cls}">{r:.2f}:1 {mark}</span>'
-
 
 def row(title, *, pr=False, dot="", repo=None, when="", attn=False, sel=False,
         settled=False, indent=False, cls="") -> str:
@@ -146,12 +133,9 @@ def row(title, *, pr=False, dot="", repo=None, when="", attn=False, sel=False,
     return (f'<div class="{c}">{badge}<span class="body"><span class="ttl">{title}</span>'
             f'<span class="meta">{meta}</span></span></div>')
 
-
 def grp(label, count, color):
     return f'<div class="grp" style="--gc:var(--repo-{color})">{label} <span class="c">{count}</span></div>'
 
-
-# ---------------------------------------------------------------- candidates
 CANDIDATES = [
     ("Chats", True,
      "A session <em>is</em> a chat. The glyph names the objects being listed, not a fault in them — and "
@@ -184,9 +168,6 @@ for name, pick, why in CANDIDATES:
     <p>{why}</p>
   </div>'''
 
-# ---------------------------------------------------------------- light themes
-# Every light theme defines --color-attention as #d97706 (amber-600); only the
-# surfaces differ. The proposed small-text value is amber-700.
 AMBER_LIGHT = "#d97706"
 AMBER_LIGHT_TEXT = "#b45309"
 LIGHT_THEMES = [
@@ -194,7 +175,6 @@ LIGHT_THEMES = [
     ("warm-light", "#fdf8f0", "#ede4d4", "#2c2416", "#a89878", "#e4d8c4"),
     ("solarized-light", "#fdf6e3", "#e4ddc8", "#073642", "#93a1a1", "#e0d8c0"),
 ]
-
 
 def light_cell(theme, bg, chip, text1, text3, border, count_color) -> str:
     sw_off = (f'<span class="sw" style="color:{text3}">{glyph("Chats", "regular")}'
@@ -220,21 +200,14 @@ def light_cell(theme, bg, chip, text1, text3, border, count_color) -> str:
        marker edge {ratio(AMBER_LIGHT, bg, small_text=False)}</p>
   </div>'''
 
-
-# Pick, per theme, the LIGHTEST amber on the Tailwind ramp that clears AA (4.5:1)
-# against that theme's pressed chip — the harder of the two surfaces. One shared
-# shade does not work: the cream chips in warm-/solarized-light are darker than
-# the neutral one, so they need a deeper amber.
 AMBER_RAMP = [("amber-600", "#d97706"), ("amber-700", "#b45309"),
               ("amber-800", "#92400e"), ("amber-900", "#78350f")]
-
 
 def pick_amber(chip: str) -> tuple[str, str]:
     for name, value in AMBER_RAMP:
         if contrast(value, chip) >= 4.5:
             return name, value
     return AMBER_RAMP[-1]
-
 
 PICKED = {t[0]: pick_amber(t[2]) for t in LIGHT_THEMES}
 
@@ -256,7 +229,6 @@ dark_ref = (f'<div class="lt"><div class="ltframe" style="background:#030712;bor
             f'count on chip {ratio("#f59e0b", "#1f2937", small_text=True)}<br>'
             f'marker edge {ratio("#f59e0b", "#030712", small_text=False)}</p></div>')
 
-# ---------------------------------------------------------------- the two views
 ALL_ROWS = (
     grp("shipit", 5, 6)
     + row("Repo group separation", pr=True, dot=D_CI_FAIL, when="14m", attn=True)

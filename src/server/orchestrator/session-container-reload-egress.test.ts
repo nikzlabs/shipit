@@ -1,24 +1,17 @@
-/**
- * planning#380 — `reloadEgress` answers for the AGENT, not for whatever it
- * happened to touch.
- *
- * The method has two halves: it relaunches the agent's Tier B resolver + Tier C
- * proxy (only possible while the agent container is running), and it refreshes
- * every running Compose service's sidecar. It used to return `true` whenever it
- * reached the second half, so a session whose agent container was stopped got
- * "reloaded" for a reload that never touched an agent. Its one reporting caller
- * (`computeEgressGrantOutcome`'s `reloaded`) was insulated by a check that runs
- * first — but the value was still a claim nothing backed, and the docstring
- * promised it.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { reloadEgressSidecars, containComposeServices } = vi.hoisted(() => ({
-  reloadEgressSidecars: vi.fn(async () => {}),
-  containComposeServices: vi.fn(async () => {}),
-}));
+const { reloadEgressSidecars, containComposeServices, allowEgressToSubnets, installEgressFirewall } =
+  vi.hoisted(() => ({
+    reloadEgressSidecars: vi.fn(async () => {}),
+    containComposeServices: vi.fn(async () => {}),
+    allowEgressToSubnets: vi.fn(async (_d: unknown, o: { subnets: string[] }) => o.subnets),
+    installEgressFirewall: vi.fn(async (_d: unknown, _o: { inputs: { cidrs: string[] } }) => {}),
+  }));
 vi.mock("./egress-reload.js", () => ({ reloadEgressSidecars }));
+vi.mock("./egress-firewall-install.js", async (importActual) => {
+  const actual = (await importActual()) as Record<string, unknown>;
+  return { ...actual, allowEgressToSubnets, installEgressFirewall };
+});
 vi.mock("./compose-service-egress.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
   return { ...actual, containComposeServices };
@@ -44,7 +37,7 @@ function createMockDocker() {
   };
 }
 
-async function buildManager(config: ResolvedEgressConfig) {
+async function buildManager(config: ResolvedEgressConfig | (() => ResolvedEgressConfig)) {
   const docker = createMockDocker();
   const manager = new SessionContainerManager({
     docker: docker as never,
@@ -52,7 +45,7 @@ async function buildManager(config: ResolvedEgressConfig) {
     networkName: NETWORK,
     skipHealthCheck: true,
     stackName: "shipit-test",
-    resolveEgressConfig: () => config,
+    resolveEgressConfig: () => (typeof config === "function" ? config() : config),
   });
   await manager.rediscover(new Set([SESSION_ID]), () => ({
     workspaceDir: `/workspace/sessions/${SESSION_ID}/workspace`,
@@ -69,6 +62,8 @@ describe("reloadEgress — the return value is the agent's reload (planning#380)
     process.env.SESSION_EGRESS_SIDECAR_IMAGE = "shipit-egress-sidecar:test";
     reloadEgressSidecars.mockClear();
     containComposeServices.mockClear();
+    allowEgressToSubnets.mockClear();
+    installEgressFirewall.mockClear();
   });
   afterEach(() => {
     process.env = savedEnv;
@@ -85,10 +80,7 @@ describe("reloadEgress — the return value is the agent's reload (planning#380)
     manager.get(SESSION_ID)!.status = "stopped";
 
     await expect(manager.reloadEgress(SESSION_ID)).resolves.toBe(false);
-    // Nothing was relaunched for the agent — the honest half of the old `true`.
     expect(reloadEgressSidecars).not.toHaveBeenCalled();
-    // The services still get the new allowlist; that half is unchanged, and it
-    // reports its own failures by throwing rather than through this value.
     expect(containComposeServices).toHaveBeenCalledTimes(1);
   });
 
@@ -104,5 +96,164 @@ describe("reloadEgress — the return value is the agent's reload (planning#380)
     const manager = await buildManager({ contained: true, extraHosts: [] });
     await expect(manager.reloadEgress(SESSION_ID)).resolves.toBe(false);
     expect(reloadEgressSidecars).not.toHaveBeenCalled();
+  });
+
+  /*
+    A reload replaces the resolver and proxy with the CURRENTLY resolved policy,
+    so what the container shuts out changes without a restart. The record has to
+    move with it: `services/settings-read.ts` tells the user whether the egress
+    allowlist is doing anything to this session, and a record frozen at creation
+    would have it describing a policy that was replaced (docs/299 req 3).
+  */
+  it("records the exclusion the reload actually applied", async () => {
+    const manager = await buildManager({
+      contained: true, extraHosts: [], base: ["lifeline.example"], userHostsExcluded: true,
+    });
+    // A container known to have a firewall; rediscovery records neither field.
+    manager.get(SESSION_ID)!.egressContainedAtStart = true;
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBe(true);
+  });
+
+  it("records the ordinary allowlist coming back, not only the sealing", async () => {
+    const manager = await buildManager({ contained: true, extraHosts: ["fal.run"] });
+    manager.get(SESSION_ID)!.egressContainedAtStart = true;
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBe(false);
+  });
+
+  it("records nothing for a container whose own containment ShipIt cannot tell", async () => {
+    // Rediscovered after a ShipIt restart: a reload establishes what the
+    // sidecars hold, never whether this container's traffic reaches them.
+    const manager = await buildManager({
+      contained: true, extraHosts: [], base: ["lifeline.example"], userHostsExcluded: true,
+    });
+    expect(manager.get(SESSION_ID)?.egressContainedAtStart).toBeUndefined();
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+  });
+
+  it("records no sealing on a container that has no firewall to seal it", async () => {
+    // A reload launches the resolver and proxy; the redirect that routes the
+    // container's traffic through them is installed at creation. So sidecars on
+    // a container that started OPEN change nothing, and recording a sealing
+    // here would have the settings read call a container that reaches
+    // everything sealed.
+    const manager = await buildManager({
+      contained: true, extraHosts: [], base: ["lifeline.example"], userHostsExcluded: true,
+    });
+    manager.get(SESSION_ID)!.egressContainedAtStart = false;
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(reloadEgressSidecars).toHaveBeenCalledTimes(1);
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+  });
+
+  it("leaves the record unknown when the replacement failed part-way", async () => {
+    // `reloadEgressSidecars` replaces the resolver and then the proxy, so a
+    // throw leaves the container enforcing neither policy whole. Keeping the
+    // previous value would be a confident wrong answer about a container whose
+    // DNS has already changed.
+    const manager = await buildManager({ contained: true, extraHosts: ["fal.run"] });
+    manager.get(SESSION_ID)!.egressContainedAtStart = true;
+    await manager.reloadEgress(SESSION_ID);
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBe(false);
+
+    reloadEgressSidecars.mockRejectedValueOnce(new Error("proxy launch failed"));
+    await expect(manager.reloadEgress(SESSION_ID)).rejects.toThrow("proxy launch failed");
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+  });
+
+  it("records nothing when no reload reached the container", async () => {
+    const manager = await buildManager({
+      contained: true, extraHosts: [], userHostsExcluded: true,
+    });
+    manager.get(SESSION_ID)!.egressContainedAtStart = true;
+    manager.get(SESSION_ID)!.status = "stopped";
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+  });
+});
+
+/**
+ * docs/305 — an IP-literal SSH destination is admitted by the Tier A ipset, and
+ * `allowEgressToSubnets` can only ADD to it. So a revoke has to rebuild the
+ * firewall; otherwise the address stays reachable — with any credential, not
+ * just ShipIt's — until the namespace is recreated.
+ */
+describe("reloadEgress — SSH CIDR grants", () => {
+  let savedEnv: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    savedEnv = { ...process.env };
+    process.env.SESSION_EGRESS_ENFORCE = "1";
+    process.env.SESSION_EGRESS_SIDECAR_IMAGE = "shipit-egress-sidecar:test";
+    allowEgressToSubnets.mockClear();
+    installEgressFirewall.mockClear();
+  });
+  afterEach(() => {
+    process.env = savedEnv;
+  });
+
+  it("adds a newly granted address without rebuilding the firewall", async () => {
+    const manager = await buildManager({
+      contained: true, extraHosts: [], extraCidrs: ["100.83.12.47/32"],
+    });
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+    expect(allowEgressToSubnets.mock.calls[0][1]).toMatchObject({ subnets: ["100.83.12.47/32"] });
+    expect(installEgressFirewall).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds the firewall when an address is revoked, so the rule goes away", async () => {
+    let cidrs = ["100.83.12.47/32"];
+    const manager = await buildManager(() => ({
+      contained: true, extraHosts: [], extraCidrs: [...cidrs],
+    }));
+    await manager.reloadEgress(SESSION_ID);
+    installEgressFirewall.mockClear();
+
+    cidrs = [];
+    await manager.reloadEgress(SESSION_ID);
+    expect(installEgressFirewall).toHaveBeenCalledTimes(1);
+  });
+
+  it("rebuilds when one of several is revoked, and keeps the rest", async () => {
+    let cidrs = ["10.0.0.1/32", "10.0.0.2/32"];
+    const manager = await buildManager(() => ({
+      contained: true, extraHosts: [], extraCidrs: [...cidrs],
+    }));
+    await manager.reloadEgress(SESSION_ID);
+    installEgressFirewall.mockClear();
+
+    cidrs = ["10.0.0.2/32"];
+    await manager.reloadEgress(SESSION_ID);
+    const { inputs } = installEgressFirewall.mock.calls[0][1];
+    expect(inputs.cidrs).toContain("10.0.0.2/32");
+    expect(inputs.cidrs).not.toContain("10.0.0.1/32");
+  });
+
+  it("does nothing when the grant has not moved", async () => {
+    const manager = await buildManager({
+      contained: true, extraHosts: [], extraCidrs: ["10.0.0.1/32"],
+    });
+    await manager.reloadEgress(SESSION_ID);
+    allowEgressToSubnets.mockClear();
+    installEgressFirewall.mockClear();
+
+    await manager.reloadEgress(SESSION_ID);
+    expect(allowEgressToSubnets).not.toHaveBeenCalled();
+    expect(installEgressFirewall).not.toHaveBeenCalled();
   });
 });

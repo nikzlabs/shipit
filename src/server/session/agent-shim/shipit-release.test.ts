@@ -1,9 +1,3 @@
-/**
- * Unit tests for `shipit release` (docs/214) — the deterministic release shim.
- * Verifies argument → payload mapping, the rejected `tag`/`publish`/`push`
- * subcommands, and result rendering. The shim talks to the worker over HTTP; we
- * inject a fake `call` so no socket is opened.
- */
 
 import { describe, it, expect } from "vitest";
 import { runShim, type ShimIO } from "./shipit.js";

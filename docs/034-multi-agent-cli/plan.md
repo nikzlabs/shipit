@@ -47,20 +47,18 @@ The key idea: introduce a **normalized event protocol** between the server and c
 Extract from the current `ClaudeProcess` a provider-agnostic interface. Every adapter implements this.
 
 ```typescript
-// src/server/agent-process.ts
-
 import type { EventEmitter } from "node:events";
 
 export type AgentId = "claude" | "codex" | "gemini";
 
 export interface AgentCapabilities {
-  supportsResume: boolean;       // can resume a previous conversation
-  supportsImages: boolean;       // accepts image attachments
-  supportsSystemPrompt: boolean; // accepts an explicit system prompt
+  supportsResume: boolean;
+  supportsImages: boolean;
+  supportsSystemPrompt: boolean;
   supportsPermissionModes: boolean;
   supportedPermissionModes: PermissionMode[];
-  toolNames: string[];           // tools the CLI exposes (for UI mapping)
-  models: string[];              // known model identifiers
+  toolNames: string[];
+  models: string[];
 }
 
 export interface AgentProcessEvents {
@@ -95,9 +93,6 @@ export interface AgentRunParams {
 The server and client speak only in terms of `AgentEvent`, never raw CLI output. This replaces `ClaudeEvent` at the WebSocket boundary.
 
 ```typescript
-// src/server/types.ts  (additions)
-
-/** Emitted once when the agent starts */
 export interface AgentInitEvent {
   type: "agent_init";
   agentId: AgentId;
@@ -106,19 +101,16 @@ export interface AgentInitEvent {
   tools?: string[];
 }
 
-/** An assistant turn — text and/or tool invocations */
 export interface AgentAssistantEvent {
   type: "agent_assistant";
   content: AgentContentBlock[];
 }
 
-/** Tool results flowing back to the agent */
 export interface AgentToolResultEvent {
   type: "agent_tool_result";
   content: unknown[];
 }
 
-/** Final result of a turn */
 export interface AgentResultEvent {
   type: "agent_result";
   status: "success" | "error";
@@ -135,7 +127,6 @@ export type AgentEvent =
   | AgentToolResultEvent
   | AgentResultEvent;
 
-/** Unified content blocks */
 export type AgentContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
@@ -239,7 +230,6 @@ const CODEX_TOOL_MAP: Record<string, CanonicalTool> = {
   shell: "shell",
   file_write: "file_write",
   file_read: "file_read",
-  // ... etc.
 };
 
 export function canonicalizeTool(agentId: AgentId, toolName: string): CanonicalTool | null;
@@ -250,17 +240,13 @@ The adapters call `canonicalizeTool()` inside `mapEvent()` so that by the time e
 ### 5. `AppDeps` changes
 
 ```typescript
-// Before
 export interface AppDeps {
   claudeFactory?: () => ClaudeProcess;
-  // ...
 }
 
-// After
 export interface AppDeps {
   agentFactory?: (agentId: AgentId) => AgentProcess;
   defaultAgentId?: AgentId;
-  // ...
 }
 ```
 
@@ -346,8 +332,8 @@ The interface:
 ```typescript
 export interface AuthManager {
   checkAuth(): Promise<AuthStatus>;
-  initiateAuth(): Promise<void>;  // start login flow
-  onAuthOutput?(line: string): boolean;  // detect auth prompts in CLI output
+  initiateAuth(): Promise<void>;
+  onAuthOutput?(line: string): boolean;
 }
 
 export type AuthStatus =
@@ -364,9 +350,8 @@ interface SessionMetadata {
   id: string;
   name: string;
   createdAt: string;
-  agentId: AgentId;        // new
-  agentSessionId?: string; // CLI's own session ID (if applicable)
-  // ...
+  agentId: AgentId;
+  agentSessionId?: string;
 }
 ```
 

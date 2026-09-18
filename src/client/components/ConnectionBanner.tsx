@@ -1,44 +1,23 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: setTimeout for disconnect delay with cleanup (timer-based side effect)
 import { useEffect, useRef, useState } from "react";
-import { CheckCircleIcon, CircleNotchIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
+import { CheckCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { WsStatus } from "../hooks/useWebSocket.js";
 
-/** Grace period before showing the disconnect banner (ms). */
 const DISCONNECT_DELAY_MS = 1500;
 
+export type ConnectionBannerState = "reconnected" | "connecting" | "lost";
+
 /**
- * ConnectionBanner — compact inline status pill rendered inside the top bar
- * when the WebSocket connection is lost, reconnecting, or just restored.
- *
- * Designed to sit absolutely-positioned in the center of the header so its
- * appearance/disappearance does NOT shift surrounding layout. Brief reconnect
- * blips no longer push panels around.
- *
- * States:
- *   - "open" with no recent reconnection → hidden
- *   - "open" immediately after reconnection → green "Reconnected" pill (auto-hides)
- *   - "connecting" / "closed" after grace period → yellow/red pill
- *   - First page load (never connected) → hidden
+ * Whether the connection pill should be showing, and as what. Owns the 1.5 s
+ * delay before a disconnect is announced and the 3 s "Reconnected" flash, so a
+ * caller that shares the slot (`TopPanelBanner`) can ask once rather than
+ * mounting a second copy whose timers would start from scratch.
  */
-export function ConnectionBanner({
-  status,
-  reconnectAttempt = 0,
-  onReconnect,
-  compact = false,
-}: {
-  status: WsStatus;
-  reconnectAttempt?: number;
-  onReconnect?: () => void;
-  /**
-   * Compact layout for narrow (mobile) screens: shorter copy and a smaller
-   * "Reconnect" label so the whole pill fits on one line without overflowing.
-   */
-  compact?: boolean;
-}) {
+export function useConnectionBannerState(status: WsStatus): ConnectionBannerState | null {
   const prevStatusRef = useRef(status);
   const [showReconnected, setShowReconnected] = useState(false);
-  // Whether the disconnect banner should be visible (after grace period).
   const [showDisconnect, setShowDisconnect] = useState(false);
   const hasConnectedRef = useRef(false);
 
@@ -51,7 +30,6 @@ export function ConnectionBanner({
       hasConnectedRef.current = true;
       setShowDisconnect(false);
 
-      // Show "Reconnected" flash only after a real disconnect
       if (prevStatus === "closed") {
         setShowReconnected(true);
         const timer = setTimeout(() => setShowReconnected(false), 3000);
@@ -60,15 +38,29 @@ export function ConnectionBanner({
       return;
     }
 
-    // Connection dropped after having been open — start grace period
     if (hasConnectedRef.current) {
       const timer = setTimeout(() => setShowDisconnect(true), DISCONNECT_DELAY_MS);
       return () => clearTimeout(timer);
     }
   }, [status]);
 
-  // Success flash — briefly shown after reconnection
-  if (status === "open" && showReconnected) {
+  if (status === "open") return showReconnected ? "reconnected" : null;
+  if (!showDisconnect) return null;
+  return status === "connecting" ? "connecting" : "lost";
+}
+
+export function ConnectionBannerPill({
+  state,
+  reconnectAttempt = 0,
+  onReconnect,
+  compact = false,
+}: {
+  state: ConnectionBannerState;
+  reconnectAttempt?: number;
+  onReconnect?: () => void;
+  compact?: boolean;
+}) {
+  if (state === "reconnected") {
     return (
       <div
         role="status"
@@ -80,9 +72,7 @@ export function ConnectionBanner({
     );
   }
 
-  if (status === "open" || !showDisconnect) return null;
-
-  const isConnecting = status === "connecting";
+  const isConnecting = state === "connecting";
 
   return (
     <div
@@ -94,7 +84,7 @@ export function ConnectionBanner({
       }`}
     >
       {isConnecting ? (
-        <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+        <Spinner size={ICON_SIZE.XS} />
       ) : (
         <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
       )}
@@ -118,3 +108,4 @@ export function ConnectionBanner({
     </div>
   );
 }
+

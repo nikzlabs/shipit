@@ -1,21 +1,3 @@
-/**
- * GitHub PR review-thread mutations — extracted for docs/102
- * (GitHub PR Review Comment Sync).
- *
- * Three operations, all GraphQL:
- *
- * - `addPullRequestReviewThreadReply` — append a new comment to an existing
- *   thread. Used to reply to a teammate's line comment from inside ShipIt.
- * - `resolveReviewThread` — mark a thread as resolved.
- * - `unresolveReviewThread` — reverse of the above.
- *
- * Each function takes a raw token (matching the pattern of `github-auth-prs.ts`
- * etc.) so it can be wrapped by the `GitHubAuthManager` while still being
- * unit-testable in isolation. They share the `parseMutationResult` helper to
- * turn GitHub's `{ data, errors }` envelope into the `{ success, message }`
- * shape used by callers.
- */
-
 import { fetchGitHubGraphQL } from "./github-api.js";
 import { getErrorMessage } from "../shared/utils.js";
 
@@ -43,14 +25,6 @@ async function parseMutationResult(
   return { success: true, message: `${label} succeeded` };
 }
 
-/**
- * Append a reply comment to an existing review thread.
- *
- * `threadId` is the GraphQL node id of the thread (the `id` field on
- * `PullRequestReviewThread` — same value the poller surfaces through
- * `PrReviewThread.id`). Comments posted this way are attributed to the token's
- * owner; there is no per-call author override.
- */
 export async function addReviewThreadReply(
   token: string,
   threadId: string,
@@ -71,7 +45,6 @@ export async function addReviewThreadReply(
   return parseMutationResult(res, "reply to review thread");
 }
 
-/** Mark a review thread as resolved. */
 export async function resolveReviewThread(
   token: string,
   threadId: string,
@@ -88,7 +61,6 @@ export async function resolveReviewThread(
   return parseMutationResult(res, "resolve review thread");
 }
 
-/** Reopen (unresolve) a previously-resolved review thread. */
 export async function unresolveReviewThread(
   token: string,
   threadId: string,
@@ -112,12 +84,6 @@ export interface PullRequestReviewThreadDraft {
   side?: "LEFT" | "RIGHT";
 }
 
-/**
- * Submit a batch of line comments as one GitHub pull request review.
- *
- * Uses the modern `threads` input so callers can anchor comments by file path,
- * blob line, and diff side instead of deprecated diff-relative positions.
- */
 export async function submitPullRequestReview(
   token: string,
   pullRequestId: string,

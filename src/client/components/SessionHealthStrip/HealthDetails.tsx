@@ -1,8 +1,4 @@
-/**
- * HealthDetails — the expandable diagnostic detail rows shown when the user
- * toggles "details" in the SessionHealthStrip. Renders the raw health probe
- * fields (container id, worker url, runner flag, viewers, last SSE event).
- */
+
 
 import {
   type ContainerHealth,
@@ -18,7 +14,14 @@ export interface HealthDetailsProps {
 
 export function HealthDetails({ sessionId, health, error }: HealthDetailsProps) {
   return (
-    <div className="px-3 py-2 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) font-mono text-[11px] leading-relaxed">
+
+    <div
+      className="max-h-48 overflow-y-auto px-3 py-2 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) font-mono text-[11px] leading-relaxed"
+      tabIndex={0}
+      role="group"
+      aria-label="Session health details"
+      data-testid="health-details"
+    >
       <DetailRow label="session" value={sessionId} />
       <DetailRow label="container" value={health?.containerState ?? "—"} />
       <DetailRow label="container id" value={health?.containerId ?? "—"} />

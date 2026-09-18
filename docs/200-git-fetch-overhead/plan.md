@@ -116,8 +116,8 @@ gap for free.
 ## Reproduce
 
 ```bash
-bash docs/200-git-fetch-overhead/run_bench.sh   # scenarios A–C
-bash docs/200-git-fetch-overhead/run_d.sh        # scenario D (with-updates)
+bash docs/200-git-fetch-overhead/run_bench.sh
+bash docs/200-git-fetch-overhead/run_d.sh
 ```
 
 Numbers are network-dependent; rerun from the target environment (the prod VPS) to get its

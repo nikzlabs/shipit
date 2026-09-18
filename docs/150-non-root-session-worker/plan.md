@@ -123,19 +123,6 @@ set -eu
 
 mkdir -p /workspace /uploads /dep-cache /credentials /home/shipit
 
-# Skip the recursive chown on already-initialized mounts. `/workspace` and
-# `/dep-cache` can hold large `node_modules` trees on warm reuse; chowning
-# them on every boot is wasteful and, for `/dep-cache`, racy across
-# concurrent sessions sharing the same dep cache. Atomic-claim via `mkdir`
-# of the sentinel directory: only the winner of the race performs the walk,
-# losers `mkdir` returns non-zero and they skip the chown.
-#
-# The `SHIPIT_SKIP_WORKSPACE_CHOWN` env var lets dev/local-mode launchers
-# opt out of the `/workspace` chown when the host has bind-mounted the
-# developer's source tree — chowning a bind mount rewrites *host*
-# filesystem ownership, which is destructive in dev. The orchestrator sets
-# this env var when `buildMounts()` falls through to the bind-mount branch
-# (no `workspaceVolume`).
 for d in /workspace /uploads /dep-cache /credentials /home/shipit; do
   case "$d" in
     /workspace) [ "${SHIPIT_SKIP_WORKSPACE_CHOWN:-0}" = "1" ] && continue ;;

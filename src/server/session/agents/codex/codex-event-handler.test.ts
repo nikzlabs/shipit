@@ -1,0 +1,388 @@
+import { describe, it, expect, vi } from "vitest";
+import { CodexEventHandler, formatCodexConfigWarning } from "./codex-event-handler.js";
+import { CodexRateLimits } from "./codex-rate-limits.js";
+import type { CodexTransport } from "./codex-event-handler.js";
+import type { AgentEvent } from "../agent-process.js";
+
+// Notification fixtures come from codex-cli 0.153.2.
+function makeHandler(): {
+  handler: CodexEventHandler;
+  logs: { source: string; text: string }[];
+  events: AgentEvent[];
+} {
+  const logs: { source: string; text: string }[] = [];
+  const events: AgentEvent[] = [];
+  const ctx: CodexTransport = {
+    emitEvent: (event) => events.push(event),
+    emitLog: (source, text) => logs.push({ source, text }),
+    sendRequest: vi.fn(async () => ({})),
+    sendResponse: vi.fn(),
+    sendErrorResponse: vi.fn(),
+    sendNotification: vi.fn(),
+    kill: vi.fn(),
+    goalRequest: vi.fn(async () => ({})),
+    restoreGoalOutOfProcess: vi.fn(async () => ({ goal: null })),
+  };
+  return { handler: new CodexEventHandler(ctx, new CodexRateLimits(), []), logs, events };
+}
+
+/** Assistant text blocks, which is where a sandbox notice lands. */
+function assistantText(events: AgentEvent[]): string {
+  return events
+    .filter((e): e is Extract<AgentEvent, { type: "agent_assistant" }> => e.type === "agent_assistant")
+    .flatMap((e) => e.content)
+    .filter((block): block is { type: "text"; text: string } => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+}
+
+/** A completed shell item whose output is `output`, failing unless told otherwise. */
+function shellResult(id: string, output: string, exitCode = 1): { method: string; params: Record<string, unknown> } {
+  return {
+    method: "item/completed",
+    params: { item: { id, type: "commandExecution", command: "ls", exitCode, aggregatedOutput: output } },
+  };
+}
+
+// Recorded from codex-cli 0.154.0 (docs/154 plan.md, "Measured").
+const GOAL = {
+  threadId: "t1", objective: "Ship it", status: "active", tokenBudget: null,
+  tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1789140440, updatedAt: 1789140441,
+};
+const SHOWN_GOAL = {
+  objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1789140441,
+};
+
+describe("goal notifications (docs/154 req 1)", () => {
+  it("reports a goal the model created with create_goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "t1", turnId: "turn-1", goal: GOAL } });
+    expect(events).toEqual([{ type: "agent_goal_updated", goal: SHOWN_GOAL }]);
+  });
+
+  it("reports a cleared goal as no goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/goal/cleared", params: { threadId: "t1" } });
+    expect(events).toEqual([{ type: "agent_goal_updated", goal: null }]);
+  });
+
+  it("ignores a subagent thread's goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/started", params: { thread: { id: "parent" } } });
+    handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "child", goal: { ...GOAL, threadId: "child" } } });
+    handler.handleNotification({ method: "thread/goal/cleared", params: { threadId: "child" } });
+    expect(events).toEqual([]);
+  });
+});
+
+describe("goal across a resume (docs/154)", () => {
+  // Codex, as measured on 0.154.0: a resume re-announces the goal it holds.
+  function makeRunHandler(opts: { goal: typeof GOAL | null; turnStartFails?: boolean; liveRestoreFails?: boolean }) {
+    const events: AgentEvent[] = [];
+    const calls: string[] = [];
+    let current = opts.goal ? { ...opts.goal } : null;
+    const ctx: CodexTransport = {
+      emitEvent: (event) => events.push(event),
+      emitLog: () => {},
+      sendRequest: vi.fn(async (method: string) => {
+        if (method !== "initialize") calls.push(method);
+        if (method === "thread/resume") {
+          if (current) handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "t1", goal: current } });
+          return { thread: { id: "t1" } };
+        }
+        if (method === "thread/start") return { thread: { id: "t1" } };
+        if (method === "turn/start") {
+          if (opts.turnStartFails) throw new Error("turn/start refused");
+          return { turn: { id: "turn-1" } };
+        }
+        return {};
+      }),
+      sendResponse: vi.fn(),
+      sendErrorResponse: vi.fn(),
+      sendNotification: vi.fn(),
+      kill: vi.fn(),
+      goalRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+        const status = typeof params.status === "string" ? params.status : undefined;
+        calls.push(status ? `${method}:${status}` : method);
+        if (method === "thread/goal/get") return { goal: current };
+        if (opts.liveRestoreFails && status === "active") throw new Error("Codex process ended");
+        if (current && status) current = { ...current, status };
+        return { goal: current };
+      }),
+      restoreGoalOutOfProcess: vi.fn(async () => {
+        if (current) current = { ...current, status: "active" };
+        return { goal: current && { ...SHOWN_GOAL, status: "active" } };
+      }),
+    };
+    // The ctx closures read `handler` only when called, which is after this line.
+    const handler = new CodexEventHandler(ctx, new CodexRateLimits(), []);
+    const goalEvents = () => events.filter((e) => e.type === "agent_goal_updated");
+    return { handler, ctx, calls, goalEvents, finalStatus: () => current?.status };
+  }
+
+  it("pauses an active goal across the resume and restores it after turn/start", async () => {
+    const run = makeRunHandler({ goal: GOAL });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    // No active goal at resume, so Codex starts no continuation turn of its own.
+    expect(run.calls).toEqual([
+      "thread/goal/get", "thread/goal/set:paused", "thread/resume", "turn/start", "thread/goal/set:active",
+    ]);
+    // The hold is not news: the chip only ever sees the goal as active.
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: SHOWN_GOAL }]);
+    expect(run.finalStatus()).toBe("active");
+  });
+
+  it.each(["paused", "complete", "budgetLimited"])("never re-activates a %s goal", async (status) => {
+    const run = makeRunHandler({ goal: { ...GOAL, status } });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.calls).toEqual(["thread/goal/get", "thread/resume", "turn/start"]);
+    expect(run.finalStatus()).toBe(status);
+    expect(run.goalEvents()[0]).toEqual({ type: "agent_goal_updated", goal: { ...SHOWN_GOAL, status } });
+  });
+
+  it("restores the goal when turn/start fails", async () => {
+    const run = makeRunHandler({ goal: GOAL, turnStartFails: true });
+    await expect(run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" })).rejects.toThrow("turn/start refused");
+    expect(run.calls.at(-1)).toBe("thread/goal/set:active");
+    expect(run.finalStatus()).toBe("active");
+  });
+
+  it("restores the goal through a control process when the process died", async () => {
+    const run = makeRunHandler({ goal: GOAL, liveRestoreFails: true });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.ctx.restoreGoalOutOfProcess).toHaveBeenCalledWith("t1");
+    expect(run.finalStatus()).toBe("active");
+    expect(run.goalEvents().at(-1)).toEqual({ type: "agent_goal_updated", goal: SHOWN_GOAL });
+  });
+
+  it("clears a stale goal when the resumed thread has none", async () => {
+    const run = makeRunHandler({ goal: null });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: null }]);
+  });
+
+  it("reports no goal for a new thread without asking", async () => {
+    const run = makeRunHandler({ goal: GOAL });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w" });
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: null }]);
+    expect(run.calls).not.toContain("thread/goal/get");
+  });
+});
+
+describe("configWarning", () => {
+  it("logs an invalid config as a server-level problem, naming the file and position", () => {
+    const { handler, logs } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: {
+        summary: "Invalid configuration; using defaults.",
+        details: "/credentials/.codex/config.toml:4:11: duplicate key",
+        path: "/credentials/.codex/config.toml",
+        range: { start: { line: 4, column: 11 }, end: { line: 4, column: 22 } },
+      },
+    });
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0].source).toBe("server");
+    expect(logs[0].text).toContain("Invalid configuration; using defaults.");
+    expect(logs[0].text).toContain("/credentials/.codex/config.toml:4:11: duplicate key");
+  });
+
+  it("flattens the multi-line untrusted-project warning into one line", () => {
+    const { handler, logs } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: {
+        summary:
+          "Project-local config, hooks, and exec policies are disabled in the following folders "
+          + "until the project is trusted, but skills still load.\n    1. /workspace/.codex\n"
+          + "       To load project-local config, hooks, and exec policies, add /workspace as a "
+          + "trusted project in /credentials/.codex/config.toml.",
+      },
+    });
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0].source).toBe("server");
+    expect(logs[0].text.startsWith("Codex configuration: ")).toBe(true);
+    expect(logs[0].text).not.toContain("\n");
+    expect(logs[0].text).not.toContain("\\n");
+    expect(logs[0].text).toContain("1. /workspace/.codex");
+  });
+
+  it("says nothing when the notification carries no text", () => {
+    const { handler, logs } = makeHandler();
+    handler.handleNotification({ method: "configWarning", params: {} });
+    expect(logs).toHaveLength(0);
+  });
+
+  describe("formatCodexConfigWarning", () => {
+    it("joins summary and details, and returns null for neither", () => {
+      expect(formatCodexConfigWarning({ summary: "Broken.", details: "line 4" }))
+        .toBe("Codex configuration: Broken. — line 4");
+      expect(formatCodexConfigWarning({ summary: "Broken." }))
+        .toBe("Codex configuration: Broken.");
+      expect(formatCodexConfigWarning({ details: "line 4" }))
+        .toBe("Codex configuration: line 4");
+      expect(formatCodexConfigWarning({})).toBeNull();
+      expect(formatCodexConfigWarning({ summary: "   " })).toBeNull();
+      expect(formatCodexConfigWarning({ summary: 42 })).toBeNull();
+    });
+
+    it("truncates a very long warning rather than flooding the log", () => {
+      const text = formatCodexConfigWarning({ summary: "x".repeat(2000) });
+      expect(text).not.toBeNull();
+      expect(text!.length).toBeLessThan(500);
+      expect(text!.endsWith("…")).toBe(true);
+    });
+
+    it("keeps the details when the summary is the long part", () => {
+      const text = formatCodexConfigWarning({
+        summary: "y".repeat(2000),
+        details: "/credentials/.codex/config.toml:4:11: duplicate key",
+      });
+      expect(text).toContain("/credentials/.codex/config.toml:4:11: duplicate key");
+    });
+  });
+});
+
+/**
+ * The incident: every tool call in a session failed with `bwrap: No permissions
+ * to create new namespace…`, the turn settled as errored, and nothing said why.
+ * Bubblewrap can never start in a ShipIt container (`CapDrop: ALL`), so the
+ * user's only remaining question is WHICH policy layer switched the sandbox
+ * back on — and that answer belongs next to the failures, not in a log.
+ *
+ * The strings are real: the bubblewrap line reproduced in a session container,
+ * the veto phrasings read out of codex-cli 0.153.2's string table.
+ */
+describe("sandbox diagnostics", () => {
+  const BWRAP =
+    "bwrap: No permissions to create new namespace, likely because the kernel does not "
+    + "allow non-privileged user namespaces.";
+
+  it("explains a bubblewrap failure in the transcript, not only the log", () => {
+    const { handler, logs, events } = makeHandler();
+    handler.handleNotification(shellResult("c1", BWRAP));
+
+    const text = assistantText(events);
+    expect(text).toContain("Codex's sandbox could not start in this container");
+    expect(text).toContain("CAP_SYS_ADMIN");
+    // Names the knobs, so the reader can tell an overridden setting from an
+    // unset one without going to read ShipIt's source.
+    expect(text).toContain("use_legacy_landlock");
+    expect(text).toContain("requirements.toml");
+    expect(logs.some((l) => l.source === "server" && l.text.includes("CAP_SYS_ADMIN"))).toBe(true);
+  });
+
+  it("still emits the tool result it diagnosed, and puts the notice after it", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification(shellResult("c1", BWRAP));
+
+    const kinds = events.map((e) => e.type);
+    const result = kinds.indexOf("agent_tool_result");
+    expect(result).toBeGreaterThanOrEqual(0);
+    expect(kinds.lastIndexOf("agent_assistant")).toBeGreaterThan(result);
+  });
+
+  it("says it once, however many commands fail", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification(shellResult("c1", BWRAP));
+    handler.handleNotification(shellResult("c2", BWRAP));
+    handler.handleNotification(shellResult("c3", BWRAP));
+
+    const occurrences = assistantText(events).split("Codex's sandbox could not start").length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it("leaves ordinary tool failures alone", () => {
+    const { handler, logs, events } = makeHandler();
+    handler.handleNotification(shellResult("c1", "ls: cannot access 'nope': No such file or directory"));
+
+    expect(assistantText(events)).toBe("");
+    expect(logs).toHaveLength(0);
+  });
+
+  /**
+   * The agent reads and greps files for a living, and this repo's own source
+   * quotes the bubblewrap failure. Scanning results regardless of outcome
+   * diagnosed a broken sandbox off a successful `cat` — and consumed the
+   * once-only notice, so the real failure afterwards would have said nothing.
+   */
+  it("says nothing when the command that printed it SUCCEEDED", () => {
+    const { handler, logs, events } = makeHandler();
+    handler.handleNotification(shellResult("c1", `$ cat notes.txt\n${BWRAP}`, 0));
+
+    expect(assistantText(events)).toBe("");
+    expect(logs).toHaveLength(0);
+  });
+
+  it("promotes a requirements veto out of the log and into the transcript", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: {
+        summary: "`sandbox_mode` is disallowed by requirements; falling back to required value "
+          + "`workspace-write`.",
+      },
+    });
+
+    const text = assistantText(events);
+    expect(text).toContain("Codex refused a ShipIt sandbox setting");
+    // The warning's own wording carries through — it names the vetoed key,
+    // which is the part that says which policy line to go and change.
+    expect(text).toContain("`sandbox_mode` is disallowed by requirements");
+    expect(text).toContain("requirements.toml");
+  });
+
+  it("keeps a second, differently-worded veto in the log", () => {
+    const { handler, logs } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: { summary: "`web_search_mode` is disallowed by requirements." },
+    });
+    handler.handleNotification({
+      method: "configWarning",
+      params: { summary: "`permission_profile` is disallowed by requirements." },
+    });
+
+    // Two distinct facts. Deduplicating the transcript notice must not
+    // deduplicate these out of existence — the second one names the sandbox.
+    expect(logs.filter((l) => l.text.includes("web_search_mode"))).toHaveLength(1);
+    expect(logs.filter((l) => l.text.includes("permission_profile"))).toHaveLength(1);
+  });
+
+  it("does not raise a sandbox alarm for a veto of an unrelated setting", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: { summary: "`web_search_mode` is disallowed by requirements; falling back." },
+    });
+
+    expect(assistantText(events)).toBe("");
+  });
+
+  it("recognizes the veto phrased with the verb after `requirements`", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: {
+        summary: "`approval_policy = \"never\"` cannot be used because requirements do not allow "
+          + "`sandbox_mode = \"danger-full-access\"`.",
+      },
+    });
+
+    expect(assistantText(events)).toContain("Codex refused a ShipIt sandbox setting");
+  });
+
+  it("keeps a non-veto warning as a log line only", () => {
+    const { handler, logs, events } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: { summary: "Invalid configuration; using defaults.", details: "config.toml:4:11: duplicate key" },
+    });
+
+    expect(assistantText(events)).toBe("");
+    expect(logs).toHaveLength(1);
+    expect(logs[0].text).toContain("Invalid configuration");
+  });
+});

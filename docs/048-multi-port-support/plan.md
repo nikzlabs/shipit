@@ -57,10 +57,6 @@ The proxy must not become an open relay to any port on the machine. Only proxy t
 
 ```typescript
 function isAllowedPort(port: number, runner: SessionRunner | null, globalPorts: number[]): boolean {
-  // Managed preview ports (from PreviewManager)
-  // Detected ports (from port scanner)
-  // Explicitly configured ports (from shipit.yaml)
-  // Reject everything else
 }
 ```
 
@@ -111,8 +107,6 @@ Rather than adding `@fastify/http-proxy` (which brings `fast-proxy` + `undici` t
 #### HTTP proxy
 
 ```typescript
-// src/server/preview-proxy.ts
-
 import http from "node:http";
 import type { FastifyInstance } from "fastify";
 
@@ -120,17 +114,14 @@ export function registerPreviewProxy(
   app: FastifyInstance,
   opts: { isPortAllowed: (port: number) => boolean },
 ): void {
-  // Wildcard route catches all /preview/:port/* requests
   app.all("/preview/:port/*", async (request, reply) => {
     const port = Number((request.params as { port: string }).port);
     if (!Number.isInteger(port) || !opts.isPortAllowed(port)) {
       return reply.code(403).send({ error: "Port not allowed" });
     }
 
-    // Strip the /preview/{port} prefix from the URL
     const target = request.url.replace(`/preview/${port}`, "") || "/";
 
-    // Forward via http.request
     const proxyReq = http.request(
       {
         hostname: "127.0.0.1",
@@ -165,7 +156,7 @@ export function registerPreviewWsProxy(
 ): void {
   server.on("upgrade", (req, socket, head) => {
     const match = req.url?.match(/^\/preview\/(\d+)(\/.*)?$/);
-    if (!match) return; // Not a preview proxy request — let Fastify handle it
+    if (!match) return;
 
     const port = Number(match[1]);
     if (!opts.isPortAllowed(port)) {
@@ -175,7 +166,6 @@ export function registerPreviewWsProxy(
 
     const targetPath = match[2] || "/";
 
-    // Open upstream WebSocket connection
     const proxyReq = http.request({
       hostname: "127.0.0.1",
       port,
@@ -185,19 +175,16 @@ export function registerPreviewWsProxy(
     });
 
     proxyReq.on("upgrade", (_proxyRes, proxySocket, proxyHead) => {
-      // Send the 101 Switching Protocols response to the client
       socket.write(
         "HTTP/1.1 101 Switching Protocols\r\n" +
         "Upgrade: websocket\r\n" +
         "Connection: Upgrade\r\n" +
-        // Forward Sec-WebSocket-Accept and other headers from upstream
         "\r\n",
       );
 
       if (proxyHead.length) proxySocket.unshift(proxyHead);
       if (head.length) socket.unshift(head);
 
-      // Bidirectional pipe
       socket.pipe(proxySocket).pipe(socket);
 
       socket.on("error", () => proxySocket.destroy());
@@ -217,10 +204,8 @@ export function registerPreviewWsProxy(
 #### PreviewFrame URL construction
 
 ```typescript
-// Before:
 const activeUrl = `http://localhost:${activePort}`;
 
-// After:
 const activeUrl = `/preview/${activePort}/`;
 ```
 
@@ -232,10 +217,8 @@ This makes the iframe same-origin with the ShipIt app, which:
 #### Port polling
 
 ```typescript
-// Before:
 await fetch(`http://localhost:${activePort}`, { mode: "no-cors" });
 
-// After:
 await fetch(`/preview/${activePort}/`, { mode: "no-cors" });
 ```
 
@@ -265,12 +248,10 @@ Currently, the error-capture script injected by `vite-error-plugin.ts` uses `win
 ShipIt already writes a wrapper Vite config to `.shipit/vite.config.mjs` for HTML-mode previews. We add HMR settings:
 
 ```javascript
-// In preview-manager.ts, the generated wrapper config
 export default defineConfig({
   plugins: [shipitErrorCapture(), ...(userConfig?.plugins || [])],
   server: {
     hmr: {
-      // Tell Vite's client to connect via the proxy path
       path: "/preview/5173/",
       clientPort: 3000,
     },

@@ -1,12 +1,3 @@
-/**
- * docs/279 — the capability edit service: the durable write, its gating, and the
- * transcript card that records it.
- *
- * Uses a real `SessionManager` over a temp DB so the `capabilities` column and
- * its `fromRow` normalization are exercised end to end — the sub-grant rule in
- * particular has to survive the round-trip, not just the in-memory coercion.
- */
-
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -52,8 +43,6 @@ describe("sandbox capability editing", () => {
     const broadcasts: string[] = [];
     const deps = {
       sessionManager,
-      // No runner attached — the common shape for a settings change made while
-      // nothing is running. `emitSessionSettingsChangeCard` must still persist.
       runnerRegistry: { get: () => undefined },
       chatHistoryManager: {
         append: (_id: string, m: PersistedMessage) => { appended.push(m); },
@@ -77,13 +66,10 @@ describe("sandbox capability editing", () => {
     const view = updateSandboxCapabilities(deps, "s1", full({ git: true, docker: true }));
 
     expect(view.capabilities).toEqual(full({ git: true, docker: true }));
-    // Durable, not just returned: re-read through `fromRow`.
     expect(sessionManager.get("s1")?.capabilities).toEqual(full({ git: true, docker: true }));
   });
 
   it("clears the merge sub-grant when GitHub access is off, whatever the caller sent", () => {
-    // The payload is untrusted, and the client's own clearing is not the
-    // enforcement — `normalizeCapabilities` is.
     const { deps, sessionManager } = setup();
 
     const view = updateSandboxCapabilities(deps, "s1", { ...full(), dangerousGitHubOps: true });
@@ -93,9 +79,6 @@ describe("sandbox capability editing", () => {
   });
 
   it("merges a partial payload over the current set instead of resetting omitted grants", () => {
-    // A body that never mentions `git` must not revoke it. `normalizeCapabilities`
-    // alone would substitute the CREATION DEFAULTS for everything missing, so
-    // `{ docker: true }` used to turn Network on and silently drop GitHub access.
     const { deps, sessionManager } = setup();
     sessionManager.setCapabilities("s1", full({ git: true, network: false }));
 
@@ -111,8 +94,6 @@ describe("sandbox capability editing", () => {
   });
 
   it("clears the merge sub-grant when a partial payload revokes GitHub access alone", () => {
-    // The sub-grant rule runs on the MERGED result, so revoking its parent takes
-    // it with it even though the body never named it.
     const { deps, sessionManager } = setup();
     sessionManager.setCapabilities("s1", full({ git: true, dangerousGitHubOps: true }));
 
@@ -163,7 +144,6 @@ describe("sandbox capability editing", () => {
 
     expect(view.capabilitiesAtStart).toEqual(full());
     expect(view.pendingRestart).toBe(true);
-    // The card records the pending state as it was at the moment of the change.
     expect(appended[0].sessionSettingsChange?.pendingRestart).toBe(true);
   });
 
@@ -186,8 +166,6 @@ describe("sandbox capability editing", () => {
   });
 
   it("persists a card even with no runner attached", () => {
-    // The durable record is the point of requirement 7, and "nobody is watching
-    // right now" is the case it most needs to survive.
     const { deps, appended } = setup();
 
     emitSessionSettingsChangeCard(

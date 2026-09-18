@@ -48,7 +48,7 @@ describe("handleVoiceNote (docs/163)", () => {
     useSettingsStore.setState({ voiceHandsFree: true });
     armAutoplay();
     handleVoiceNote(ctx, note());
-    handleVoiceNote(ctx, note()); // same id, e.g. history load + buffer replay
+    handleVoiceNote(ctx, note());                                              
     expect(useSessionStore.getState().messages).toHaveLength(1);
     // And the duplicate must not re-trigger autoplay.
     expect(playSpy).toHaveBeenCalledTimes(1);
@@ -72,8 +72,6 @@ describe("handleVoiceNote (docs/163)", () => {
     expect(playSpy).toHaveBeenCalledWith("voice-1", note().headline);
   });
 
-  // The silent-note variant was removed (docs/163): every note means the agent
-  // needs the user, so hands-free is the only gate on autoplay.
   it("autoplays every note when hands-free is on — there is no silent variant", () => {
     useSettingsStore.setState({ voiceHandsFree: true });
     armAutoplay();

@@ -1,0 +1,54 @@
+# Checklist — SSH hosts
+
+All twelve requirements are resolved and the design is reviewed. Implementation is in `src/server/orchestrator/ssh-hosts.ts`, `ssh-provision.ts`, `services/ssh.ts`, `api-routes-ssh.ts` and `src/server/session/ssh-agent-socket.ts`.
+
+## Image and container
+- [x] `openssh-client` and a `~/.ssh` → `/credentials/.ssh` symlink in both session-worker Dockerfiles
+- [x] `entrypoint.sh`: recreate the `.ssh` symlink under the read-only home tmpfs; create `/run/shipit` owned by the worker uid
+- [x] `SSH_AUTH_SOCK` in the worker env; confirm each of the five harnesses' shell tool and the terminal inherit it (no harness-specific SSH hook)
+
+## Registry and grant
+- [x] `CredentialStore.sshHosts` + ed25519 key generation + `authorized_keys` line derivation; public projection for every read
+- [x] Browser-only destination CRUD routes; Settings → Integrations section, beside GitHub and Linear
+- [x] Edit a destination in place from its row (req 14) — the add form's fields and validation, reused; the PATCH keeps the id, so every grant survives; inline copy says the recorded server key is forgotten when the address or port changes
+- [x] `session.sshHosts` grant column, `setSshHosts`, Session settings dialog multi-select; edit route not behind `requireSandbox`
+- [x] Persisted change card on grant edit — the existing `SessionSettingsChangeCard` with an `ssh-hosts` scope, which plan.md names
+
+## Signing path
+- [x] Worker SSH agent socket: identities, `session-bind@openssh.com` held per connection, sign relayed with the bind; everything else refused
+- [x] Orchestrator sign endpoint: grant gate, bind verification, `is_forwarding` refusal, host-key pin (record on first bind, refuse mismatch + warning card), userauth-only data with matching session id and user, per-session rate bound, one audit line per attempt with outcome and refusal reason
+- [x] Fingerprint card on first bind and warning card on mismatch, both persisted (docs/188 recipe)
+
+## Reachability
+- [x] Provision `~/.ssh/{config,known_hosts,<alias>.pub}` on grant; rewrite on grant change; `known_hosts` from the recorded key
+- [x] Per-session egress allowlist entry for a hostname on grant / removal on revoke — derived from the durable grant in `resolveEgressConfig`, so a revoke cannot leave an orphaned row
+- [x] IP destinations derived from durable grants into the firewall's CIDR input at every container creation, reconciled live on grant edit
+- [x] Network-off sandbox: SSH grants composed explicitly into the effective policy (names and IPs)
+
+## Docs and prompt
+- [x] Static prompt fragment (points at `~/.ssh/config`) + `shipit-docs/ssh.md` (aliases, revocation limits, local-mode caveat) + the wiki page
+- [x] Tests listed in `plan.md`, each signer rule proven red alone
+
+## The design's own guarantees, after review
+
+An independent review (run `21b663a1-c44f-4371-8058-6d35e38e1ef0`) found two claims in `plan.md` that the mechanism cannot support. `plan.md` now states what the bind proves and what each check leaves open.
+
+One limit is stated rather than fixed: `ssh-keyscan -t` selects a key *family*, and measurement against a recording listener confirms it proposes all three ECDSA curves whatever name it is given. A server holding several ECDSA host keys answers with its preferred curve, so a session that forced another one cannot pin. That is a denial, never a bypass, and the card names the scanned key's type so the cause is readable.
+
+- [x] **First-use trust (req 13).** Nothing ties the caller-supplied host key to the configured address. Decided: the orchestrator verifies the key itself. Built: `openssh-client` in `docker/Dockerfile.prod`, `.dev`, `.dogfood`; `ssh-keyscan.ts` spawns `ssh-keyscan -p <port> -T 5 -t <family> <address>` from the registry's own address; `services/ssh.ts` records only an exact blob match and otherwise refuses `host-key-unverified` with a persisted `unverified` card naming the scanned fingerprint or why nothing answered; the tests fake the spawn and prove the different-key, no-answer, timeout, scan-failed and already-pinned paths red alone. Two independent reviews (runs `6d73b743-cdf7-4711-8b61-2e2cf5968e35`, `77abcf56-c799-43b5-bcbd-10c4cac97f9f`) found three defects, each now closed with a guard proven red alone: an endpoint edited mid-scan pinned a key observed at the old address; a grant revoked or a user narrowed mid-scan was still signed for; and a pin recorded before req 13 — which a granted session could have chosen — was inherited as trusted across the upgrade.
+- [x] **`is_forwarding`.** The flag is an unsigned byte the caller controls. The check stays for honest and accidental forwarding; `plan.md` no longer claims it holds against a hostile in-container agent, and states that the residual reaches nothing new.
+
+## Fixed after review, each with a guard proven red alone
+
+- [x] `~/.ssh` provisioning followed an agent-planted symlink, deleting another session's credentials and writing into the global credentials root
+- [x] The `.pub` file carried `authorized_keys` options, which OpenSSH's identity loader rejects — the feature could not authenticate at all
+- [x] `publickey-hostbound-v00@openssh.com`, which every OpenSSH 8.9+ client prefers, was refused by the parser; now accepted, with the appended host key checked against the bound one
+- [x] The `algorithm` field was unchecked, making the signer a constrained oracle
+- [x] A revoked IP destination's firewall rule was never withdrawn
+- [x] An open agent connection could block worker shutdown indefinitely
+- [x] Attacker-influenceable values reached the whitespace-delimited audit line unescaped
+
+## Not in this feature
+- The SFTP-backed remote file tree from docs/228 phase 3 stays a separate future item.
+- Importing an existing private key (requirements.md req 5 puts generation in scope, not import).
+- An end-to-end test against a real `sshd`. The container has no `openssh-server` and no root to install one, so protocol conformance is argued from OpenSSH's sources and checked against the real `ssh-keygen` loader and the pinned client binary. That is weaker than a handshake and is why two of the defects above survived the first round of tests.

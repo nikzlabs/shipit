@@ -1,22 +1,3 @@
-/**
- * Unit coverage for the orchestrator half of the service-control bridge
- * (docs/238) — `ContainerSessionRunner.handleServiceRequest`.
- *
- * The regressions guarded here:
- *
- *  - start/restart used to return a HARDCODED `{ ok: true, status: "running" }`,
- *    discarding the fresh `pollOnce` they had just performed. A container that
- *    started and immediately exited 127 still reported `running`, so the agent
- *    proceeded against a dead service. The result must reflect what the manager
- *    actually holds after the mutation.
- *  - `logs` did not exist on this bridge at all, so the CLI's timeout message
- *    ("read progress with `shipit service logs`") had nothing to point at.
- *
- * `workerPost` is mocked so the callback leg is observable without a socket —
- * it is also the only place the result is visible, since `handleServiceRequest`
- * returns void and reports by POSTing to the worker.
- */
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ManagedService, ServiceManager } from "./service-manager.js";
 
@@ -27,8 +8,6 @@ vi.mock("./worker-http.js", () => ({
   workerInstall: vi.fn().mockResolvedValue({}),
   workerPushAgentSecrets: vi.fn().mockResolvedValue({}),
   workerPostMessage: vi.fn().mockResolvedValue({}),
-  // The runner compares its constructor URL against this sentinel and throws
-  // this error when it has no reachable worker — both must exist on the mock.
   PLACEHOLDER_WORKER_URL: "http://0.0.0.0:0",
   WorkerUnavailableError: class WorkerUnavailableError extends Error {},
 }));
@@ -39,23 +18,12 @@ type Runner = InstanceType<typeof ContainerSessionRunner>;
 
 interface FakeManagerOptions {
   services: ManagedService[];
-  /**
-   * Fields to merge into the service row when it starts, on top of the default
-   * `status: "running"` — e.g. the container IP a real poll would have
-   * discovered, or an `error` for a container that exited immediately.
-   */
   onStart?: (name: string) => Partial<ManagedService>;
   startError?: Error;
   logs?: string;
-  /** planning#382 — why the project's compose file yielded no services. */
   projectComposeFailure?: { kind: "refused" | "malformed"; message: string };
 }
 
-/**
- * Minimal ServiceManager stand-in. `startService` mutates the backing rows the
- * same way the real one does (mutate, then poll), which is exactly the sequence
- * the "report the real status" fix depends on.
- */
 function makeManager(opts: FakeManagerOptions) {
   const rows = new Map(opts.services.map((s) => [s.name, { ...s }]));
   const calls: string[] = [];
@@ -97,10 +65,6 @@ function svc(name: string, over: Partial<ManagedService> = {}): ManagedService {
   return { name, preview: "manual", status: "stopped", dependsOnInstall: false, ...over };
 }
 
-/**
- * Drive one service request and return the payload the runner POSTed back to
- * the worker's `/services/_callback`.
- */
 async function request(
   manager: ReturnType<typeof makeManager>,
   action: string,
@@ -114,8 +78,6 @@ async function request(
     workerUrl: "http://127.0.0.1:1",
   }) as Runner;
 
-  // Assign directly rather than via setServiceManager(): that wires event
-  // listeners the fake doesn't implement, and they're irrelevant here.
   (runner as unknown as { _serviceManager: unknown })._serviceManager =
     manager as unknown as ServiceManager;
 
@@ -161,13 +123,6 @@ describe("handleServiceRequest — list", () => {
     expect((result!.services as Record<string, unknown>[])[0].error).toBe("exit 127");
   });
 
-  /**
-   * planning#382 — an empty list must be able to say why it is empty. Without
-   * this the bridge answered a refused compose file with a bare `[]`, and
-   * `shipit service list` rendered that as "No services defined. Add them to
-   * docker-compose.yml" — advice for a project that has no stack, given to one
-   * whose stack ShipIt declined.
-   */
   it("carries the project's compose failure beside an empty list", async () => {
     const mgr = makeManager({
       services: [],
@@ -206,8 +161,6 @@ describe("handleServiceRequest — start", () => {
   });
 
   it("reports ok:false with the reason when the service comes up in error", async () => {
-    // The pre-238 bug: the container exits immediately, the poll marks it
-    // `error`, and the bridge nonetheless answered "running".
     const mgr = makeManager({
       services: [svc("web", { preview: "auto", port: 5173 })],
       onStart: () => ({ status: "error", error: "exit 127" }),

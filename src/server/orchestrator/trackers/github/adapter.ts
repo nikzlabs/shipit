@@ -1,27 +1,3 @@
-/**
- * GitHub Issues tracker adapter (docs/170, planning#82).
- *
- * The second tracker behind the inline Issues tab, alongside Linear. Two things
- * make it different from `LinearTracker`, and both trace back to GitHub issues
- * being **per-repo** rather than workspace-wide:
- *
- *  - **Auth is reused, not separately connected.** We authenticate with the
- *    GitHub token ShipIt already holds for clone/push/PRs (`GitHubAuthManager`),
- *    so there is no "connect GitHub for issues" step — unlike Linear's explicit
- *    API-token + team binding. The token is passed in at construction.
- *  - **The binding is derived, not picked.** Which repo's issues to list comes
- *    from the active session's git remote (resolved by the route), not a
- *    user-selected setting. So `isConfigured()` is true whenever a GitHub token
- *    AND a resolved `{owner, repo}` are both present.
- *
- * Read-only: `listIssues()` / `getIssue()` only. Editing/triage and the
- * `/shipit` push trigger are explicitly out of scope (planning#45 / docs/156).
- *
- * GitHub has no native numeric priority enum like Linear, so priority is
- * **label-derived** (`priority:high`, `P1`, `critical`, …) with a "No priority"
- * fallback — see `mapGitHubPriority`.
- */
-
 import type {
   TrackerId,
   TrackerInfo,
@@ -42,11 +18,6 @@ import {
   type Tracker,
 } from "../tracker.js";
 
-/**
- * GitHub has no workflow states — only open/closed (+ a `state_reason`). The
- * fixed pair we expose as `availableStatuses`, and the normalized types we
- * accept, both map onto it (see {@link resolveGitHubState}).
- */
 const GITHUB_AVAILABLE_STATUSES: { name: string; type?: string; color?: string }[] = [
   { name: "Open", type: "started", color: "#3fb950" },
   { name: "Closed", type: "completed", color: "#8957e5" },
@@ -61,21 +32,10 @@ export interface GitHubRepoRef {
 
 export interface GitHubTrackerConfig {
   token: string | null;
-  /** Repo derived from the active session's remote, or null when unresolved. */
   repo: GitHubRepoRef | null;
-  /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: FetchImpl;
-  /**
-   * docs/248 — tracker id, defaulting to the bare `"github"` (the session's own
-   * code repository, req 12's one unnamed destination). A tracker bound to a
-   * *declared* repository takes the qualified `github:owner/repo` id instead, so
-   * the repository stays attached to every surface the id reaches (route query,
-   * persisted Undo card, sub-tab).
-   */
   id?: TrackerId;
-  /** docs/248-declared-issue-trackers req 2 — the declared `name` this tracker is addressed by. */
   name?: string;
-  /** docs/248 — sub-tab label. Defaults to the name, then to `"GitHub"`. */
   label?: string;
 }
 
@@ -91,13 +51,6 @@ const PRIORITY_BY_LEVEL: Record<
 
 const NO_PRIORITY: IssuePriority = { level: "none", sortOrder: 4, label: "No priority" };
 
-/**
- * Derive a normalized priority from an issue's labels. GitHub has no priority
- * field, so we recognize the common label conventions: an explicit
- * `priority: high` / `priority/high` form, the `P0`–`P3` shorthand, and bare
- * severity words (`critical`, `urgent`, `high`, …). The highest-priority label
- * wins; anything unrecognized falls back to "No priority".
- */
 export function mapGitHubPriority(labelNames: string[]): IssuePriority {
   let best: IssuePriorityLevel = "none";
   let bestSort = NO_PRIORITY.sortOrder;
@@ -115,7 +68,6 @@ export function mapGitHubPriority(labelNames: string[]): IssuePriority {
 }
 
 function labelToPriorityLevel(label: string): Exclude<IssuePriorityLevel, "none"> | null {
-  // Strip an optional `priority:` / `priority/` / `priority-` prefix and trim.
   const v = label
     .toLowerCase()
     .replace(/^priority\s*[:/-]\s*/, "")
@@ -127,7 +79,6 @@ function labelToPriorityLevel(label: string): Exclude<IssuePriorityLevel, "none"
   return null;
 }
 
-/** GitHub REST issue node (subset we consume). */
 interface GitHubIssueNode {
   id: number;
   number: number;
@@ -137,29 +88,19 @@ interface GitHubIssueNode {
   state: string;
   labels?: (string | { name?: string | null; color?: string | null })[];
   assignee?: { login?: string | null; avatar_url?: string | null } | null;
-  /** ISO-8601 creation time — the tracker-neutral `TrackerIssue.createdAt`. */
   created_at?: string | null;
-  /** Present iff this "issue" is actually a pull request — we skip those. */
   pull_request?: unknown;
 }
 
-/** GitHub REST issue-comment node (subset we consume). */
 interface GitHubCommentNode {
   id: number;
   body?: string | null;
   html_url?: string | null;
   created_at?: string | null;
   user?: { login?: string | null; avatar_url?: string | null } | null;
-  /**
-   * `…/repos/{owner}/{repo}/issues/{number}` — the issue this comment hangs
-   * off. Present on the by-id comment endpoint, which is how `updateComment`
-   * checks a backend-global comment id against the issue the caller named
-   * (planning#88). Absent from the per-issue list response, where it is redundant.
-   */
   issue_url?: string | null;
 }
 
-/** The issue number a comment's `issue_url` points at, or null if unparseable. */
 function issueNumberFromUrl(issueUrl?: string | null): string | null {
   const match = /\/issues\/(\d+)$/.exec(issueUrl ?? "");
   return match ? match[1] : null;
@@ -178,18 +119,12 @@ function toTrackerComment(node: GitHubCommentNode): TrackerComment {
   };
 }
 
-/**
- * Normalize GitHub's label `color` (a bare 6-digit hex, no `#`) to a CSS-ready
- * `#rrggbb`, so the client can use it directly. Tolerant of an already-prefixed
- * value. Empty/absent → undefined (the client then hash-derives a dot color).
- */
 function normalizeGitHubColor(color?: string | null): string | undefined {
   const v = (color ?? "").trim();
   if (!v) return undefined;
   return v.startsWith("#") ? v : `#${v}`;
 }
 
-/** The issue's labels as `{ name, color }`, dropping nameless entries. */
 function issueLabels(node: GitHubIssueNode): IssueLabel[] {
   return (node.labels ?? [])
     .map((l): IssueLabel | null => {
@@ -202,14 +137,6 @@ function issueLabels(node: GitHubIssueNode): IssueLabel[] {
     .filter((l): l is IssueLabel => l !== null);
 }
 
-/**
- * `formatRef` renders an issue number in the destination's reference form
- * (docs/248-declared-issue-trackers req 15): `planning#42` when the repository declared this tracker
- * under a name, `owner/repo#42` otherwise. This adapter is one of only two
- * places in the codebase that produce a reference string (the other is
- * `parseIssueRef`), which is why routing both through one formatter is enough to
- * satisfy req 15 without auditing every display site.
- */
 function toTrackerIssue(
   node: GitHubIssueNode,
   ref: GitHubRepoRef,
@@ -225,11 +152,8 @@ function toTrackerIssue(
     url: node.html_url,
     ...(node.body ? { description: node.body } : {}),
     ...(node.created_at ? { createdAt: node.created_at } : {}),
-    // Priority is label-derived, so map over the names of the resolved labels.
     priority: mapGitHubPriority(labels.map((l) => l.name)),
     ...(labels.length > 0 ? { labels } : {}),
-    // GitHub's own issue-state colors: open = green, closed = purple (its
-    // "merged/closed" hue), so the UI dot matches what GitHub shows.
     status: {
       name: isClosed ? "Closed" : "Open",
       type: isClosed ? "completed" : "started",
@@ -238,19 +162,10 @@ function toTrackerIssue(
     ...(assigneeName
       ? { assignee: { name: assigneeName, ...(node.assignee?.avatar_url ? { avatarUrl: node.assignee.avatar_url } : {}) } }
       : {}),
-    // For GitHub the assignee's tracker-internal id IS the login — assigning is
-    // `{ assignees: [login] }` — so the display name and the undo id coincide.
     ...(assigneeName ? { assigneeId: assigneeName } : {}),
   };
 }
 
-/**
- * Resolve a `setStatus` argument to GitHub's binary state (+ `state_reason`).
- * Accepts the native names Open/Closed or the normalized types. `completed`
- * closes as done, `canceled` closes as not-planned; the open-ish types reopen.
- * Lossy but deterministic (GitHub has no workflow). An unmatched value throws
- * {@link TrackerResolutionError} listing the valid targets.
- */
 export function resolveGitHubState(status: string): { state: "open" | "closed"; state_reason?: "completed" | "not_planned" } {
   const wanted = status.trim().toLowerCase();
   switch (wanted) {
@@ -276,19 +191,11 @@ export function resolveGitHubState(status: string): { state: "open" | "closed"; 
   }
 }
 
-/** A 403/429 that is really a rate limit — see {@link classifyGitHubThrottle}. */
 export interface GitHubThrottle {
-  /**
-   * `secondary` — one of GitHub's per-minute/per-hour content-creation or
-   * concurrency limits, the kind a burst of writes trips. `primary` — the
-   * credential's hourly request quota is spent.
-   */
   kind: "secondary" | "primary";
-  /** Seconds to wait, when GitHub said; absent when it didn't. */
   retryAfterSeconds?: number;
 }
 
-/** The `message` / `documentation_url` of GitHub's standard JSON error body. */
 function parseErrorBody(body: string): { message: string; documentationUrl: string } {
   try {
     const parsed = JSON.parse(body) as { message?: unknown; documentation_url?: unknown };
@@ -297,7 +204,6 @@ function parseErrorBody(body: string): { message: string; documentationUrl: stri
       documentationUrl: typeof parsed.documentation_url === "string" ? parsed.documentation_url : "",
     };
   } catch {
-    // Not JSON — match against the raw text rather than giving up on it.
     return { message: body, documentationUrl: "" };
   }
 }
@@ -307,37 +213,7 @@ function parsePositiveInt(raw: string | null): number | null {
   return /^\d+$/.test(v) ? Number(v) : null;
 }
 
-/**
- * Decide whether a failed response is a **throttle** rather than an access
- * failure, and which kind (docs/247).
- *
- * This is the discrimination `accessError` cannot make. GitHub answers both
- * "this credential may not touch that repository" and "you are going too fast"
- * with a `403`, so the status alone is not enough; what separates them is that a
- * throttle carries signals an authorization failure never does. Per GitHub's
- * rate-limit docs (verified 2026-08), in rough order of confidence:
- *
- *  - the body says so — "You have exceeded a secondary rate limit …";
- *  - `x-ratelimit-remaining: 0` (with `x-ratelimit-reset`), which is the primary
- *    quota being spent. An ordinary 403 carries these headers too, but with a
- *    NON-zero remaining, so only the zero is a signal;
- *  - a `Retry-After` header, which GitHub sends on a secondary limit and has no
- *    reason to send on an authorization failure;
- *  - a `documentation_url` pointing at the rate-limit docs.
- *
- * A bare `429` is a throttle by definition, so it needs no corroboration. When
- * none of this is present we return null and the caller keeps today's
- * repository-missing-or-inaccessible message — that fallback is deliberate:
- * mislabelling a real access failure as a throttle would tell the user to wait
- * for something that will never clear.
- *
- * Note what a spent quota does and does NOT prove. `x-ratelimit-remaining: 0`
- * is solid evidence the credential's quota is gone, and no evidence at all that
- * its *access* is healthy — a permission failure can coincide with an exhausted
- * quota, and the headers ride on responses generally. So the quota is reported
- * as the near cause without asserting that everything else is fine; see
- * {@link GitHubTracker.throttleError}.
- */
+// GitHub uses 403 for both throttling and denied access; status alone cannot distinguish them.
 export function classifyGitHubThrottle(res: Response, body: string): GitHubThrottle | null {
   if (res.status !== 403 && res.status !== 429) return null;
   const { message, documentationUrl } = parseErrorBody(body);
@@ -346,12 +222,7 @@ export function classifyGitHubThrottle(res: Response, body: string): GitHubThrot
   const primaryText = !secondaryText && /rate limit exceeded/i.test(message);
   const quotaSpent = res.headers.get("x-ratelimit-remaining")?.trim() === "0";
 
-  // `x-ratelimit-reset` is the end of the CURRENT window and rides on every
-  // response, so it only means "wait this long" once the quota is actually
-  // spent — reading it otherwise would inflate a 60-second secondary limit into
-  // the 40 minutes left in the hour. The two waits can both be present and
-  // disagree (a secondary limit hit with the quota also spent), and only the
-  // LONGER one satisfies both limits, so that is what we report.
+  // Reset applies only to exhausted quotas; use the longer wait when both limits apply.
   const reset =
     quotaSpent || primaryText
       ? secondsUntilEpoch(parsePositiveInt(res.headers.get("x-ratelimit-reset")))
@@ -366,7 +237,6 @@ export function classifyGitHubThrottle(res: Response, body: string): GitHubThrot
   return null;
 }
 
-/** The longer of two possible waits, as a spreadable partial. */
 function longestWait(a: number | null, b: number | null): { retryAfterSeconds?: number } {
   const known = [a, b].filter((v): v is number => v !== null);
   return known.length > 0 ? { retryAfterSeconds: Math.max(...known) } : {};
@@ -406,7 +276,6 @@ export class GitHubTracker implements Tracker {
     };
   }
 
-  /** Render an issue number in this destination's reference form (req 15). */
   private formatRef = (issueNumber: string): string =>
     formatIssueReference({
       trackerName: this.refName,
@@ -420,15 +289,11 @@ export class GitHubTracker implements Tracker {
       throw new Error("GitHub is not configured (missing token or repo binding)");
     }
     const ref = this.repo;
-    // Default to the open working set so the inline Issues tab — which calls
-    // `listIssues()` with no options — is byte-for-byte unchanged. Only widen to
-    // GitHub's `state=all` when the caller opts in via `includeDone`; the route's
-    // `--state closed` then post-filters that combined set down to the done ones.
     const state = options?.includeDone ? "all" : "open";
     const url = `https://api.github.com/repos/${ref.owner}/${ref.repo}/issues?state=${state}&per_page=100&sort=created&direction=desc`;
     const nodes = await this.fetchIssues(url);
     return nodes
-      .filter((n) => !n.pull_request) // the issues endpoint also returns PRs — drop them
+      .filter((n) => !n.pull_request)
       .map((n) => toTrackerIssue(n, ref, this.formatRef))
       .sort((a, b) => a.priority.sortOrder - b.priority.sortOrder || a.identifier.localeCompare(b.identifier));
   }
@@ -450,16 +315,11 @@ export class GitHubTracker implements Tracker {
     if (res.status === 404) return null;
     await this.assertOk(res);
     const node = (await res.json()) as GitHubIssueNode;
-    if (node.pull_request) return null; // a PR number, not an issue
-    // Surface the fixed Open/Closed targets so the agent can pick a valid
-    // `setStatus` value up front (docs/177) — read path only.
+    if (node.pull_request) return null;
     return { ...toTrackerIssue(node, ref, this.formatRef), availableStatuses: GITHUB_AVAILABLE_STATUSES };
   }
 
   async listStatuses(): Promise<{ name: string; type?: string; color?: string }[]> {
-    // GitHub has no workflow states — the fixed Open/Closed pair, identical to
-    // what `getIssue` exposes as `availableStatuses`. No network call needed; the
-    // configured guard keeps it consistent with the rest of the interface.
     this.requireRepo();
     return GITHUB_AVAILABLE_STATUSES.map((s) => ({ ...s }));
   }
@@ -480,8 +340,6 @@ export class GitHubTracker implements Tracker {
     return nodes.map(toTrackerComment);
   }
 
-  // ---- Writes (docs/177) ----------------------------------------------------
-
   async createIssue(input: {
     title: string;
     body: string;
@@ -501,8 +359,6 @@ export class GitHubTracker implements Tracker {
   }
 
   async createLabel(input: { name: string; color?: string; description?: string }): Promise<IssueLabel & { id: string }> {
-    // GitHub's create API wants the hex WITHOUT '#' and defaults a color when
-    // omitted; deletion is by name, so the name doubles as the undo id.
     const body: Record<string, unknown> = { name: input.name };
     if (input.color) body.color = input.color.replace(/^#/, "");
     if (input.description) body.description = input.description;
@@ -512,11 +368,6 @@ export class GitHubTracker implements Tracker {
   }
 
   async findLabel(name: string): Promise<(IssueLabel & { id: string; description?: string }) | null> {
-    // Matched against the repo's label list rather than `GET /labels/{name}`,
-    // because that endpoint wants the exact casing and the whole point of this
-    // lookup is to reach a label whose casing is wrong (planning#88). The list is the
-    // same set `resolveLabels` matches, so both agree on what "already exists"
-    // means. GitHub deletes and patches labels BY NAME, so the name is the id.
     const needle = name.trim().toLowerCase();
     const found = (await this.fetchRepoLabelNodes()).find((l) => l.name.toLowerCase() === needle);
     return found ? { id: found.name, ...found } : null;
@@ -526,8 +377,6 @@ export class GitHubTracker implements Tracker {
     id: string,
     patch: { name?: string; color?: string; description?: string },
   ): Promise<IssueLabel & { id: string; description?: string }> {
-    // `PATCH /labels/{current_name}` renames IN PLACE via `new_name` — every
-    // issue carrying the label keeps carrying it — and wants the hex without '#'.
     const body: Record<string, unknown> = {};
     if (patch.name !== undefined) body.new_name = patch.name;
     if (patch.color !== undefined) body.color = patch.color.replace(/^#/, "");
@@ -548,8 +397,7 @@ export class GitHubTracker implements Tracker {
 
   async deleteUnusedLabel(id: string, name: string): Promise<void> {
     const ref = this.requireRepo();
-    // Usage check first: one carrying issue (or PR — labels apply to both) is
-    // enough to refuse, so fetch a single row from the label-filtered list.
+    // PRs also carry labels and must prevent deletion.
     let res: Response;
     try {
       res = await this.fetchImpl(
@@ -587,10 +435,6 @@ export class GitHubTracker implements Tracker {
     commentId: string,
     body: string,
   ): Promise<{ comment: TrackerComment; previousBody: string }> {
-    // Read the comment by id BEFORE writing: it is what carries the author and
-    // the owning issue, so both guards and the undo snapshot come off this one
-    // response. The endpoint is repo-scoped, so a comment id belonging to a
-    // different repository 404s here rather than being edited.
     const existing = await this.fetchComment(commentId);
     const onIssue = issueNumberFromUrl(existing.issue_url);
     if (onIssue !== issueId) {
@@ -617,7 +461,6 @@ export class GitHubTracker implements Tracker {
     return { comment: toTrackerComment(updated), previousBody: existing.body ?? "" };
   }
 
-  /** Fetch one comment by its repo-global id (author + owning issue + body). */
   private async fetchComment(commentId: string): Promise<GitHubCommentNode> {
     const ref = this.requireRepo();
     let res: Response;
@@ -629,9 +472,6 @@ export class GitHubTracker implements Tracker {
     } catch (err) {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
-    // A 404 here is overwhelmingly "no such comment in this repo" — the repo
-    // itself was already reachable to get this far — so say that rather than
-    // `assertOk`'s repository-missing-or-inaccessible message.
     if (res.status === 404) {
       throw new Error(`Comment ${commentId} not found in ${ref.owner}/${ref.repo}.`);
     }
@@ -648,9 +488,6 @@ export class GitHubTracker implements Tracker {
     const body: Record<string, unknown> = {};
     if (patch.title !== undefined) body.title = patch.title;
     if (patch.description !== undefined) body.body = patch.description;
-    // GitHub's PATCH `labels` replaces the full set — the service hands us the
-    // already-merged set (planning#94). Validate names against the repo's labels
-    // first so a typo can't silently spawn a new label.
     if (patch.labels !== undefined) body.labels = await this.resolveLabels(patch.labels);
     return this.patchIssue(id, body);
   }
@@ -660,8 +497,6 @@ export class GitHubTracker implements Tracker {
   }
 
   async setAssignee(id: string, assignee: string | null, opts?: SetAssigneeOptions): Promise<TrackerIssue> {
-    // GitHub assigns by login; `me`, a raw snapshot, and a passed-in handle are
-    // all logins (no ambiguous resolution like Linear). `null` clears.
     let assignees: string[];
     if (assignee === null) {
       assignees = [];
@@ -679,14 +514,7 @@ export class GitHubTracker implements Tracker {
     return toTrackerIssue(node, ref, this.formatRef);
   }
 
-  /**
-   * Resolve label display names against the repo's existing labels (planning#94).
-   * GitHub's write API would silently CREATE any label name it doesn't know, so
-   * we validate up front and reject an unknown name with the candidate list
-   * (`kind: "label"`) — mirroring assignee resolution and avoiding label sprawl
-   * from typos. Matching is case-insensitive but the repo's canonical casing is
-   * what gets applied.
-   */
+  // Reject unknown labels so typos cannot create labels through the write API.
   private async resolveLabels(names: string[]): Promise<string[]> {
     const existing = await this.fetchRepoLabels();
     const existingNames = existing.map((l) => l.name);
@@ -707,24 +535,13 @@ export class GitHubTracker implements Tracker {
   }
 
   async listLabels(): Promise<IssueLabel[]> {
-    // The repo's labels (name + color) — the same fetch that backs
-    // {@link resolveLabels}, surfaced for the available-labels endpoint.
     return this.fetchRepoLabels();
   }
 
-  /** Fetch the repo's labels (first 100, name + normalized color). */
   private async fetchRepoLabels(): Promise<IssueLabel[]> {
-    // Drop `description` here: this backs `listLabels`, whose payload the Issues
-    // tab renders as chips. `findLabel` reads the fuller shape instead.
     return (await this.fetchRepoLabelNodes()).map(({ name, color }) => ({ name, ...(color ? { color } : {}) }));
   }
 
-  /**
-   * Fetch the repo's labels with everything a label EDIT needs (planning#88): the
-   * description, plus the name that doubles as the label's id. Case-insensitive
-   * matching against this set is what `findLabel` and `resolveLabels` share, so
-   * a casing difference never forks a second label.
-   */
   private async fetchRepoLabelNodes(): Promise<{ name: string; color?: string; description?: string }[]> {
     const ref = this.requireRepo();
     let res: Response;
@@ -754,12 +571,6 @@ export class GitHubTracker implements Tracker {
       });
   }
 
-  /**
-   * GitHub Issues has no native priority field (planning#94). Rather than silently
-   * dropping `--priority`, we reject it with a clear message pointing at the
-   * label convention. The shim also rejects it before the round-trip; this is
-   * the server-side backstop so a direct API call can't no-op.
-   */
   private rejectPriority(priority: string | undefined): void {
     if (priority !== undefined) {
       throw new TrackerResolutionError(
@@ -770,12 +581,6 @@ export class GitHubTracker implements Tracker {
     }
   }
 
-  /**
-   * GitHub Issues are flat — there is no native parent/sub-issue relation
-   * (planning#208). Rather than silently dropping `--parent`, we reject any attempt to
-   * set OR detach a parent with a clear message. The shim rejects it before the
-   * round-trip; this is the server-side backstop so a direct API call can't no-op.
-   */
   private rejectParent(parent: string | null | undefined): void {
     if (parent !== undefined) {
       throw new TrackerResolutionError(
@@ -806,7 +611,6 @@ export class GitHubTracker implements Tracker {
     return this.repo;
   }
 
-  /** Issue-scoped REST helper: `{method} /repos/{owner}/{repo}/{path}`. */
   private async api<T>(method: "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
     const ref = this.requireRepo();
     const init: RequestInit = {
@@ -826,8 +630,6 @@ export class GitHubTracker implements Tracker {
       throw new Error(this.accessError(res.status));
     }
     if (!res.ok) {
-      // Surface GitHub's own message (e.g. "could not add assignees: not a
-      // collaborator") so the agent can act on it rather than a bare status.
       throw new Error(await parseGitHubError(res));
     }
     if (res.status === 204) return undefined as T;
@@ -859,31 +661,13 @@ export class GitHubTracker implements Tracker {
     }
   }
 
-  /**
-   * The message for a response that turns out to be a rate limit, or null when
-   * it isn't one and the caller should fall through to its usual handling
-   * (docs/247). Checked BEFORE {@link accessError} because a throttle and an
-   * access failure share the `403`, and only this direction is safe: a throttle
-   * mislabelled as an access failure sends the user to fix something that isn't
-   * broken, which is the bug being fixed here.
-   *
-   * Neither message claims access was independently verified, because it wasn't:
-   * a secondary limit means GitHub throttled this request, and a spent quota
-   * means the credential is out of requests. Neither rules out a permission
-   * problem sitting behind it, so both point at retrying first and checking
-   * access only if the wait doesn't clear it.
-   *
-   * The body is read off a `clone()`. No 403/429 currently falls through to a
-   * caller that reads the body (`parseGitHubError`), so the clone is not
-   * load-bearing today — it is what keeps that true if a fallthrough is added.
-   */
   private async throttleError(res: Response): Promise<string | null> {
     if (res.status !== 403 && res.status !== 429) return null;
     let body = "";
     try {
       body = await res.clone().text();
     } catch {
-      // Unreadable body — the header signals stand on their own.
+      // Headers can still identify the throttle.
     }
     const throttle = classifyGitHubThrottle(res, body);
     if (!throttle) return null;
@@ -905,22 +689,6 @@ export class GitHubTracker implements Tracker {
     );
   }
 
-  /**
-   * docs/248-declared-issue-trackers req 18 — fail closed with an error that names **both**
-   * possibilities. GitHub deliberately returns `404` rather than `403` for a
-   * private repository the credential cannot see, so "missing" and
-   * "inaccessible" are genuinely indistinguishable from the response; claiming
-   * either one alone would send the user to the wrong fix. A `403` is scoped
-   * differently (the repo exists, the grant doesn't reach it) but lands the user
-   * in the same place, so it gets the same message rather than the old
-   * "re-connect GitHub" advice — for a *named* repository the token is usually
-   * fine and the grant is what's missing.
-   *
-   * docs/247 added the third cause req 18 did not anticipate: a **rate limit**
-   * also arrives as a `403`, and for that one the repository and the credential
-   * are both fine. It is classified out by {@link throttleError} before reaching
-   * here, so everything this method sees is genuinely an access question.
-   */
   private accessError(status: number): string {
     if (!this.repo) {
       return "GitHub rejected the token (401/403). Re-connect GitHub with a valid token.";

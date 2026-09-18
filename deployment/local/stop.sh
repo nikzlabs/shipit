@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Fully stop a local ShipIt install and clean up its session containers and
-# networks. By default the workspace/credentials volumes are PRESERVED so your
-# data and provider sign-ins survive a stop; pass --purge to also delete them
-# (destructive). Cross-platform (macOS + Linux).
+# Stop ShipIt; --purge also deletes workspace and credential volumes.
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"

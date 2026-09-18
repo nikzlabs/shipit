@@ -1,0 +1,194 @@
+{
+  "measuredOn": "2026-09-13",
+  "cliVersion": "1.1.27",
+  "method": "GOOGLE_GEMINI_BASE_URL redirected to a local recorder; tool definitions counted in the request body the CLI sent to /v1beta/models/<id>:streamGenerateContent. AGY_CLI_DISABLE_AUTO_UPDATE=true and a chmod -R a-w install directory on every run, including the control.",
+  "finding": "No configuration empties the tool set. Every run carried the same 11 definitions as the no-flags control.",
+  "runs": [
+    {
+      "label": "control-no-flags",
+      "applied": "(none) — negative control",
+      "requests": [
+        {
+          "file": "boot-2.json",
+          "hasToolsKey": false,
+          "toolDefinitions": 0,
+          "names": []
+        },
+        {
+          "file": "boot-3.json",
+          "hasToolsKey": true,
+          "toolDefinitions": 11,
+          "names": [
+            "view_file",
+            "run_command",
+            "manage_task",
+            "write_to_file",
+            "replace_file_content",
+            "generate_image",
+            "read_url_content",
+            "search_web",
+            "find_by_name",
+            "grep_search",
+            "list_dir"
+          ]
+        }
+      ],
+      "maxToolDefinitions": 11
+    },
+    {
+      "label": "mode-plan",
+      "applied": "--mode plan",
+      "requests": [
+        {
+          "file": "run-2.json",
+          "hasToolsKey": false,
+          "toolDefinitions": 0,
+          "names": []
+        },
+        {
+          "file": "run-3.json",
+          "hasToolsKey": true,
+          "toolDefinitions": 11,
+          "names": [
+            "view_file",
+            "run_command",
+            "manage_task",
+            "write_to_file",
+            "replace_file_content",
+            "generate_image",
+            "read_url_content",
+            "search_web",
+            "find_by_name",
+            "grep_search",
+            "list_dir"
+          ]
+        }
+      ],
+      "maxToolDefinitions": 11
+    },
+    {
+      "label": "sandbox",
+      "applied": "--sandbox",
+      "requests": [
+        {
+          "file": "run-4.json",
+          "hasToolsKey": false,
+          "toolDefinitions": 0,
+          "names": []
+        },
+        {
+          "file": "run-5.json",
+          "hasToolsKey": true,
+          "toolDefinitions": 11,
+          "names": [
+            "view_file",
+            "run_command",
+            "manage_task",
+            "write_to_file",
+            "replace_file_content",
+            "generate_image",
+            "read_url_content",
+            "search_web",
+            "find_by_name",
+            "grep_search",
+            "list_dir"
+          ]
+        }
+      ],
+      "maxToolDefinitions": 11
+    },
+    {
+      "label": "agent-notools",
+      "applied": "--agent notools (agent not resolved; CLI fell back to the default)",
+      "requests": [
+        {
+          "file": "run-6.json",
+          "hasToolsKey": false,
+          "toolDefinitions": 0,
+          "names": []
+        },
+        {
+          "file": "run-7.json",
+          "hasToolsKey": true,
+          "toolDefinitions": 11,
+          "names": [
+            "view_file",
+            "run_command",
+            "manage_task",
+            "write_to_file",
+            "replace_file_content",
+            "generate_image",
+            "read_url_content",
+            "search_web",
+            "find_by_name",
+            "grep_search",
+            "list_dir"
+          ]
+        }
+      ],
+      "maxToolDefinitions": 11
+    },
+    {
+      "label": "agent-geminidir",
+      "applied": "--agent notools with an absolute settings.json geminiDir; definition planted in 12 candidate roots",
+      "requests": [
+        {
+          "file": "run-16.json",
+          "hasToolsKey": false,
+          "toolDefinitions": 0,
+          "names": []
+        },
+        {
+          "file": "run-17.json",
+          "hasToolsKey": true,
+          "toolDefinitions": 11,
+          "names": [
+            "view_file",
+            "run_command",
+            "manage_task",
+            "write_to_file",
+            "replace_file_content",
+            "generate_image",
+            "read_url_content",
+            "search_web",
+            "find_by_name",
+            "grep_search",
+            "list_dir"
+          ]
+        }
+      ],
+      "maxToolDefinitions": 11
+    },
+    {
+      "label": "deny-clean",
+      "applied": "settings.json permissions.deny=[\"*\"], and --dangerously-skip-permissions REMOVED",
+      "requests": [
+        {
+          "file": "run-14.json",
+          "hasToolsKey": false,
+          "toolDefinitions": 0,
+          "names": []
+        },
+        {
+          "file": "run-15.json",
+          "hasToolsKey": true,
+          "toolDefinitions": 11,
+          "names": [
+            "view_file",
+            "run_command",
+            "manage_task",
+            "write_to_file",
+            "replace_file_content",
+            "generate_image",
+            "read_url_content",
+            "search_web",
+            "find_by_name",
+            "grep_search",
+            "list_dir"
+          ]
+        }
+      ],
+      "maxToolDefinitions": 11
+    }
+  ]
+}

@@ -25,12 +25,12 @@ export function SandboxCapabilityToggles({
 }: {
   capabilities: SessionCapabilities;
   onChange: (next: SessionCapabilities) => void;
-  /** True while a write is in flight, or before the set has loaded. */
+
   disabled?: boolean;
 }) {
   const toggle = (key: keyof SessionCapabilities) => {
     const next = { ...capabilities, [key]: !capabilities[key] };
-    // "Allow merging PRs" is a sub-grant of GitHub access — turning git off
+
     // clears it so a re-enabled toggle never silently carries a stale grant.
     if (key === "git" && !next.git) next.dangerousGitHubOps = false;
     onChange(next);
@@ -90,11 +90,6 @@ export function SandboxCapabilityToggles({
   );
 }
 
-/**
- * docs/224 — an indented sub-grant under a parent capability (here, "Allow
- * merging PRs" under GitHub access). Visually nested and dimmed/disabled until
- * its parent is on, so the dependency reads at a glance.
- */
 function SubToggleRow({
   title,
   chip,

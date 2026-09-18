@@ -7,16 +7,6 @@ import { GitManager } from "../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "./git-config.js";
 import { workflowAutoPublishesOnMerge, assessMergeAutoPublish } from "./release-autopublish-check.js";
 
-/**
- * docs/214 — cold-start guard. The pure detector decides whether a workflow's
- * `on:` fires a `push` for a branch; `assessMergeAutoPublish` reads the
- * maintenance branch's workflow over git and turns that into an actionable
- * warning. The git-backed cases prove the real bug (legacy / absent workflow on
- * the branch → merge silently no-ops) and that the `--bootstrap` cold-start
- * (branch seeded off `main`'s merge-triggered workflow) auto-publishes.
- */
-
-// The merge-triggered workflow (main's `release.yml`): fires on a push to `stable`.
 const MERGE_TRIGGERED = `name: Release
 on:
   push:
@@ -28,7 +18,6 @@ jobs:
   publish: {}
 `;
 
-// The legacy tag-triggered workflow (stable's current `release.yml`): tags only.
 const TAG_ONLY = `name: Release
 on:
   push:
@@ -62,7 +51,6 @@ describe("workflowAutoPublishesOnMerge (pure)", () => {
   it("matches a wildcard branch pattern (release/*)", () => {
     const wf = "on:\n  push:\n    branches: ['release/*']\njobs: {}\n";
     expect(workflowAutoPublishesOnMerge(wf, "release/1.0.0")).toBe(true);
-    // `*` does not cross a slash.
     expect(workflowAutoPublishesOnMerge(wf, "release/1.0.0/extra")).toBe(false);
   });
 
@@ -114,11 +102,6 @@ describe("assessMergeAutoPublish (git-backed)", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /**
-   * Seed `main` with the given workflow content (or none), push it, and create
-   * `stable`. `bootstrapStableFromMain` mirrors what `prepare --bootstrap` does:
-   * branch `stable` off the just-pushed `main` so it inherits main's workflow.
-   */
   async function setup(opts: {
     mainWorkflow?: string;
     stableWorkflow?: string;
@@ -135,7 +118,6 @@ describe("assessMergeAutoPublish (git-backed)", () => {
     await git.push("origin", "main");
 
     if (opts.bootstrapStableFromMain) {
-      // The cold-start bootstrap: stable inherits main's (merge-triggered) workflow.
       await git.createBranchFrom("stable", "origin/main");
     } else {
       await git.createBranchFrom("stable", "origin/main");
@@ -143,7 +125,6 @@ describe("assessMergeAutoPublish (git-backed)", () => {
         fs.writeFileSync(path.join(wfDir, "release.yml"), opts.stableWorkflow);
         await git.autoCommit("stable workflow");
       } else if (opts.mainWorkflow) {
-        // Remove the workflow on stable to model the "no workflow on the branch" case.
         fs.rmSync(path.join(wfDir, "release.yml"));
         await git.autoCommit("drop workflow on stable");
       }

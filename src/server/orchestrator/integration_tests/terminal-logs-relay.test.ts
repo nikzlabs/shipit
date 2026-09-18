@@ -20,14 +20,11 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
-/** docs/192 — the agent Logs tab is one channel-keyed stream. Live lines arrive
- *  as `log_append`; the connect-time / subscribe backlog as `log_snapshot`. */
 async function nextAppend(client: TestClient): Promise<WsLogRecord> {
   const m = await client.receiveType("log_append");
   return (m as { records: WsLogRecord[] }).records[0];
 }
 
-/** Flatten every agent log record a client has seen (snapshots + appends). */
 function agentRecords(msgs: WsServerMessage[]): WsLogRecord[] {
   const out: WsLogRecord[] = [];
   for (const m of msgs) {
@@ -74,28 +71,25 @@ describe("Integration: Terminal/logs relay", () => {
   afterEach(async () => {
     await app.close();
     dbManager.close();
-    // Small delay to let lingering git processes release file handles
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Ignore cleanup errors.
     }
   });
 
   it("relays Claude stderr as a log_append record to client", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
     lastClaude.initSession();
 
-    // Consume the server "Agent process started" log record
     const startLog = await nextAppend(client);
     expect(startLog.source).toBe("server");
 
-    // Simulate stderr from Claude CLI
     lastClaude.emit("log", "stderr", "Debug: loading model");
 
     const rec = await nextAppend(client);
@@ -108,16 +102,14 @@ describe("Integration: Terminal/logs relay", () => {
 
   it("relays non-JSON stdout as a log_append record to client", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
     lastClaude.initSession();
 
-    // Consume "Agent process started"
     await nextAppend(client);
 
-    // Simulate non-JSON stdout from Claude CLI
     lastClaude.emit("log", "stdout", "Warning: experimental feature");
 
     const rec = await nextAppend(client);
@@ -129,21 +121,18 @@ describe("Integration: Terminal/logs relay", () => {
 
   it("sends server lifecycle log records (process start/exit)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
     lastClaude.initSession();
 
-    // Should receive "Agent process started"
     const startLog = await nextAppend(client);
     expect(startLog.source).toBe("server");
     expect(startLog.text).toBe("Agent process started");
 
-    // Simulate Claude finishing
     lastClaude.finish();
 
-    // Should receive "Agent process exited" (may interleave with git_committed etc.)
     let exitRec: WsLogRecord | null = null;
     for (let i = 0; i < 15; i++) {
       const msg = await client.receive();
@@ -157,8 +146,7 @@ describe("Integration: Terminal/logs relay", () => {
     expect(exitRec!.source).toBe("server");
     expect(exitRec!.text).toBe("Agent process exited with code 0");
 
-    // Drain remaining messages (e.g. git_committed) so the async done handler
-    // (autoCommit, portScan) finishes before afterEach tears down the temp dir.
+    // Allow post-turn work to finish before removing the workspace.
     try {
       for (let i = 0; i < 5; i++) {
         await client.receive(300);
@@ -171,23 +159,18 @@ describe("Integration: Terminal/logs relay", () => {
   });
 
   it("re-seeds buffered logs as a log_snapshot to newly connected clients on the SAME session", async () => {
-    // First client triggers some log entries
     const client1 = await TestClient.connect(port);
-    await client1.receive(); // preview_status
+    await client1.receive();
 
     client1.send({ type: "send_message", text: "generate logs" });
     await waitForClaude(() => lastClaude);
     lastClaude.initSession();
 
-    // Consume the "Agent process started" log
     await nextAppend(client1);
 
-    // Add more logs via CLI output
     lastClaude.emit("log", "stderr", "Loading model...");
-    await nextAppend(client1); // consume the stderr log
+    await nextAppend(client1);
 
-    // Second client connects to the same session — its connect snapshot carries
-    // the full durable backlog (non-empty, so it's NOT auto-skipped).
     const client2 = await TestClient.connect(port, client1.sessionId);
 
     const allMsgs: WsServerMessage[] = [];
@@ -206,20 +189,17 @@ describe("Integration: Terminal/logs relay", () => {
   });
 
   it("does NOT leak buffered logs across sessions", async () => {
-    // Session A generates logs
     const clientA = await TestClient.connect(port);
-    await clientA.receive(); // preview_status
+    await clientA.receive();
 
     clientA.send({ type: "send_message", text: "session A work" });
     await waitForClaude(() => lastClaude);
     lastClaude.initSession();
 
-    await nextAppend(clientA); // "Agent process started"
+    await nextAppend(clientA);
     lastClaude.emit("log", "stderr", "Session A debug output");
-    await nextAppend(clientA); // consume
+    await nextAppend(clientA);
 
-    // Brand-new client connects to a DIFFERENT (newly-created) session.
-    // Its connect snapshot is empty and must not carry Session A's records.
     const clientB = await TestClient.connect(port);
     expect(clientB.sessionId).not.toBe(clientA.sessionId);
 
@@ -240,21 +220,17 @@ describe("Integration: Terminal/logs relay", () => {
   });
 
   it("log_clear empties the durable backlog for the current session", async () => {
-    // Generate some logs
     const client1 = await TestClient.connect(port);
-    await client1.receive(); // preview_status
+    await client1.receive();
 
     client1.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
     lastClaude.initSession();
-    await nextAppend(client1); // "Agent process started"
+    await nextAppend(client1);
 
-    // Clear the agent log channel
     client1.send({ type: "log_clear", channel: "agent" });
     await new Promise((r) => setTimeout(r, 50));
 
-    // New client connecting to the SAME session gets an EMPTY snapshot (which
-    // the TestClient auto-skips), so it sees no agent log records at all.
     const client2 = await TestClient.connect(port, client1.sessionId);
 
     const msgs: WsServerMessage[] = [];
@@ -271,13 +247,10 @@ describe("Integration: Terminal/logs relay", () => {
     client2.close();
   });
 
-  // ---- Preview error relay ----
-
   it("relays preview_error to the agent log channel", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Send preview error via HTTP using the client's actual session ID
     await app.inject({
       method: "POST",
       url: `/api/sessions/${client.sessionId}/preview-errors`,
@@ -290,7 +263,6 @@ describe("Integration: Terminal/logs relay", () => {
     const rec = await nextAppend(client);
     expect(rec.source).toBe("preview");
     expect(rec.text).toContain("TypeError: Cannot read properties of undefined");
-    // Stack should also be included in the text
     expect(rec.text).toContain("App.tsx:42");
 
     client.close();
@@ -320,18 +292,15 @@ describe("Integration: Terminal/logs relay", () => {
 
   it("preview log entries are included in the snapshot for new clients", async () => {
     const client1 = await TestClient.connect(port);
-    await client1.receive(); // preview_status
+    await client1.receive();
 
-    // Send a preview error via HTTP using the client's actual session ID
     await app.inject({
       method: "POST",
       url: `/api/sessions/${client1.sessionId}/preview-errors`,
       payload: { message: "Runtime error in preview" },
     });
-    await nextAppend(client1); // live log_append
+    await nextAppend(client1);
 
-    // Second client connects to the same session — its snapshot carries the
-    // persisted preview log record.
     const client2 = await TestClient.connect(port, client1.sessionId);
 
     const messages: WsServerMessage[] = [];

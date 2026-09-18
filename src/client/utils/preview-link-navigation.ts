@@ -7,31 +7,13 @@
  */
 
 export type PointerNavigation =
-  /**
-   * Send the frame to this URL. Whether that is a same-document hash change or
-   * a new document is decided inside the frame, where the live `location` is
-   * readable — this side only knows the page's last *reported* path.
-   */
+
   | { kind: "navigate"; url: string }
-  /** The page is already there; navigating would reload it for nothing. */
+
   | { kind: "already-there" }
-  /** The destination resolves off the preview's origin — refuse and report. */
+
   | { kind: "outside-preview" };
 
-/**
- * @param targetPath  the pointer's validated path, query and fragment
- * @param slotUrl     the iframe-pool slot's entry URL — where the page *started*
- * @param reportedPath  where the page says it IS now (`previewPaths`, written by
- *   the injected script on load and on every history change, so it tracks
- *   client-side routing). Absent when the page has not reported yet.
- *
- * The comparison is against `reportedPath`, not `slotUrl`, and that distinction
- * is the whole point. Comparing against the entry URL breaks both directions: a
- * slot created at `/x` whose app has since navigated to `/y` would refuse to go
- * back, and a slot created at `/` would reload the user's app on every repeat
- * click — discarding its state to perform a navigation the requirements say a
- * repeat click need not perform at all.
- */
 export function resolvePointerNavigation(
   targetPath: string,
   slotUrl: string,
@@ -40,8 +22,7 @@ export function resolvePointerNavigation(
   try {
     const origin = new URL(slotUrl).origin;
     const destination = new URL(targetPath, slotUrl);
-    // The parser already rejected everything that could escape the origin; this
-    // re-checks the resolved value rather than inheriting that guarantee,
+
     // because what follows is an iframe navigation.
     if (destination.origin !== origin) return { kind: "outside-preview" };
 

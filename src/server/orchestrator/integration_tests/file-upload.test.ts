@@ -17,9 +17,6 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
-/**
- * Build a multipart/form-data body manually for app.inject().
- */
 function buildMultipartBody(
   files: { name: string; filename: string; content: Buffer }[],
 ): { payload: Buffer; boundary: string } {
@@ -105,7 +102,6 @@ describe("Integration: File upload", () => {
     expect(body.files[0].size).toBe(11);
     expect(body.files[0].type).toBe("upload");
 
-    // Verify file was written to disk
     const filePath = path.join(sessionDir, "uploads", "data.csv");
     expect(fs.existsSync(filePath)).toBe(true);
     expect(fs.readFileSync(filePath, "utf-8")).toBe("a,b,c\n1,2,3");
@@ -129,8 +125,32 @@ describe("Integration: File upload", () => {
     expect(body.files).toHaveLength(2);
   });
 
+  it("rolls the whole batch back when one file is rejected (docs/293)", async () => {
+    const { payload, boundary } = buildMultipartBody([
+      { name: "file", filename: "kept.txt", content: Buffer.from("saved before the failure") },
+      // Exceed the 50 MB limit after a valid part.
+      { name: "file", filename: "huge.bin", content: Buffer.alloc(51 * 1024 * 1024) },
+    ]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/files/uploads`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/files/uploads`,
+    });
+    const listed = (list.json() as { files: UploadedFile[] }).files.map((f) => f.name);
+    expect(listed).not.toContain("kept.txt");
+    expect(listed).not.toContain("huge.bin");
+  });
+
   it("handles filename collision with numeric suffix", async () => {
-    // Upload same filename twice
     const { payload: p1, boundary: b1 } = buildMultipartBody([
       { name: "file", filename: "file.txt", content: Buffer.from("first") },
     ]);
@@ -171,7 +191,6 @@ describe("Integration: File upload", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as { files: UploadedFile[] };
     expect(body.files[0].name).toBe("passwd");
-    // File should be in the uploads dir, not in /etc
     expect(fs.existsSync(path.join(sessionDir, "uploads", "passwd"))).toBe(true);
   });
 
@@ -236,7 +255,6 @@ describe("Integration: File upload", () => {
 
   describe("GET /files/uploads — list uploads", () => {
     it("lists uploaded files", async () => {
-      // Upload a file first
       const uploadsDir = path.join(sessionDir, "uploads");
       fs.mkdirSync(uploadsDir, { recursive: true });
       fs.writeFileSync(path.join(uploadsDir, "data.csv"), "a,b,c");

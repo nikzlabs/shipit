@@ -1,13 +1,3 @@
-/**
- * Sort & group editor for the Issues panel (docs/206).
- *
- * The toolbar row already holds search + filter facets, so this two-level sort
- * (primary → secondary, each with a direction) plus an independent group-by
- * field lives in a modal behind a sliders icon rather than inline. Changes apply
- * live; "Reset to default" restores the priority→identifier order with no
- * grouping; "Done" closes.
- */
-
 import {
   Dialog,
   DialogContent,
@@ -36,7 +26,6 @@ const SELECT_CLASS =
   "focus:outline-none focus-visible:ring-1 focus-visible:ring-(--color-border-focus) " +
   "bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23a1a1aa%22 stroke-width=%222.5%22><path d=%22M6 9l6 6 6-6%22/></svg>')] bg-no-repeat bg-[right_0.5rem_center]";
 
-/** Segmented Asc/Desc direction toggle. */
 function DirToggle({
   value,
   onChange,
@@ -96,7 +85,6 @@ export function IssuesSortModal({
         </DialogHeader>
 
         <div className="flex flex-col gap-4 px-5 py-4">
-          {/* Sort by (primary) */}
           <div className="flex flex-col gap-2">
             <FieldLabel>Sort by</FieldLabel>
             <div className="flex items-center gap-2">
@@ -106,7 +94,6 @@ export function IssuesSortModal({
                 aria-label="Primary sort key"
                 onChange={(e) => {
                   const primary = e.target.value as SortKey;
-                  // Don't let the secondary duplicate the primary — drop it to none.
                   patch({ primary, ...(prefs.secondary === primary ? { secondary: "none" } : {}) });
                 }}
               >
@@ -117,7 +104,6 @@ export function IssuesSortModal({
               <DirToggle value={prefs.primaryDir} ariaLabel="Primary direction" onChange={(d) => patch({ primaryDir: d })} />
             </div>
 
-            {/* then by (secondary) */}
             <span className="text-[11px] text-(--color-text-tertiary) ml-0.5">then by</span>
             <div className="flex items-center gap-2">
               <select
@@ -139,7 +125,6 @@ export function IssuesSortModal({
             </div>
           </div>
 
-          {/* Group by */}
           <div className="flex flex-col gap-2">
             <FieldLabel>Group by</FieldLabel>
             <select

@@ -4,9 +4,8 @@ import { useVoicePlayback } from "./use-voice-playback.js";
 import { usePlaybackStore } from "./playback-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 
-// jsdom does not implement HTMLMediaElement.play()/pause(); without these
 // stubs `new Audio().play()` rejects and the store would never reach
-// "playing". We make play() resolve and pause() a no-op.
+
 let playSpy: ReturnType<typeof vi.fn<() => Promise<void>>>;
 let pauseSpy: ReturnType<typeof vi.fn<() => void>>;
 
@@ -28,7 +27,6 @@ function emptyResponse(status: number): Response {
   } as unknown as Response;
 }
 
-/** Resolve all pending Promise continuations inside act(). */
 async function flushMicrotasks(): Promise<void> {
   await act(async () => {
     for (let i = 0; i < 8; i++) await Promise.resolve();
@@ -39,7 +37,7 @@ describe("useVoicePlayback", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    // Reset the module-level singletons in the store back to idle.
+
     usePlaybackStore.setState({
       playingTurnId: null,
       state: "idle",
@@ -54,7 +52,6 @@ describe("useVoicePlayback", () => {
     vi.spyOn(window.HTMLMediaElement.prototype, "play").mockImplementation(playSpy);
     vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(pauseSpy);
 
-    // jsdom may not implement object-URL helpers.
     let counter = 0;
     vi.stubGlobal("URL", {
       ...URL,
@@ -68,7 +65,7 @@ describe("useVoicePlayback", () => {
   });
 
   afterEach(() => {
-    // Ensure no audio element lingers across tests.
+
     act(() => { usePlaybackStore.getState().stop(); });
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -79,7 +76,7 @@ describe("useVoicePlayback", () => {
 
     let pending: Promise<void>;
     act(() => { pending = result.current.play("t-play", "hello world"); });
-    // Synchronously marked as loading the picked turn.
+
     expect(result.current.state).toBe("loading");
     expect(result.current.playingTurnId).toBe("t-play");
 
@@ -125,7 +122,7 @@ describe("useVoicePlayback", () => {
   });
 
   it("supersedes an in-flight play of turn A when turn B is requested", async () => {
-    // First fetch (turn A) hangs until we release it; second (turn B) resolves.
+
     let releaseA: (r: Response) => void = () => {};
     const aPending = new Promise<Response>((resolve) => { releaseA = resolve; });
     fetchMock
@@ -138,7 +135,6 @@ describe("useVoicePlayback", () => {
     act(() => { playA = result.current.play("A", "alpha"); });
     expect(result.current.playingTurnId).toBe("A");
 
-    // B supersedes while A is still loading.
     await act(async () => { await result.current.play("B", "beta"); });
     await flushMicrotasks();
     expect(result.current.playingTurnId).toBe("B");
@@ -153,14 +149,13 @@ describe("useVoicePlayback", () => {
 
     expect(result.current.playingTurnId).toBe("B");
     expect(result.current.state).toBe("playing");
-    // play() invoked exactly once (for B); A bailed out at the guard.
+
     expect(playSpy).toHaveBeenCalledTimes(1);
   });
 
   it("bounds the blob cache and revokes evicted object URLs", async () => {
     const { result } = renderHook(() => useVoicePlayback());
 
-    // Play more distinct turns than the cache can hold; each distinct key
     // creates an object URL, so the oldest must be revoked as we overflow.
     const N = 40;
     for (let i = 0; i < N; i++) {
@@ -169,7 +164,6 @@ describe("useVoicePlayback", () => {
       act(() => { usePlaybackStore.getState().stop(); });
     }
 
-    // All N were distinct → N fetches, no cache hits.
     expect(fetchMock).toHaveBeenCalledTimes(N);
     // Cache cap is 32, so at least N-32 evictions must have revoked their URL.
     const revoke = vi.mocked(URL.revokeObjectURL);
@@ -188,7 +182,6 @@ describe("useVoicePlayback", () => {
     await act(async () => { await result.current.play("t-cache", "hello"); });
     await flushMicrotasks();
 
-    // Same (turnId, voice, speed) key → served from cache, no second fetch.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.current.state).toBe("playing");
   });

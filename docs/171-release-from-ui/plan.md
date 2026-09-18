@@ -343,14 +343,20 @@ detection.
 
 ```yaml
 release:
-  version-source: package.json   # package.json | Cargo.toml | pyproject.toml | VERSION | tag
-  tag-pattern: "v{version}"      # how the tag name is derived; {version} is required
-  prerelease-pattern: "v{version}-rc.{n}"   # rc lane; {n} auto-increments
-  notes: github-generated        # github-generated | changelog:CHANGELOG.md | commits
-  gate: "npm test"               # optional local gate the agent runs before tagging
-  mechanism: tag-triggered       # tag-triggered (a) | brokered (b, later phase)
-  workflow: .github/workflows/release.yml   # path checked for existence / scaffolding
+  version-source: package.json
+  version-source-path: packages/api/package.json
+  branch: stable
+  mechanism: tag-triggered
 ```
+
+This block originally also specified `tag-pattern`, `prerelease-pattern`,
+`gate`, `notes` and `workflow`. Those five shipped as validation only — no code
+ever read them — and were **removed** rather than implemented, because each
+advertised a choice ShipIt does not offer. The tag is always `v<version>`, a
+prerelease is always `v<version>-rc.<n>`, the workflow path is always
+`.github/workflows/release.yml`, and the gate belongs to the scaffolded
+workflow. An unrecognised `release.*` key warns rather than failing, so a config
+still carrying one keeps parsing.
 
 ### Monorepo / ambiguity → agent-guided setup
 
@@ -390,10 +396,10 @@ A published tag and Release are outward-facing and effectively irreversible
   shows "already released" with a link to the existing Release rather than
   creating a duplicate. Re-running "cut a 0.3.0 release" is a no-op, not a second
   tag. For option (b), `createRelease` first checks `GET …/releases/tags/{tag}`.
-- **Prereleases (`-rc.N`).** The same flow with `prerelease: true` and the
-  `prerelease-pattern`. `{n}` auto-increments from the highest existing
-  `vX.Y.Z-rc.*` tag, so "cut another rc" produces `-rc.2` without manual
-  bookkeeping. Prereleases are flagged on the card and (matching `docs/162`) are
+- **Prereleases (`-rc.N`).** The same flow with `prerelease: true`. The form is
+  fixed at `vX.Y.Z-rc.N`, and `N` auto-increments from the highest existing
+  `vX.Y.Z-rc.*` tag (`release-prepare.ts:128`), so "cut another rc" produces
+  `-rc.2` without manual bookkeeping. Prereleases are flagged on the card and (matching `docs/162`) are
   excluded from the stable channel by downstream consumers, not by the release
   flow itself.
 - **Confirmation is required even with auto-PR/auto-push on.** Auto-push debounces

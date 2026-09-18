@@ -2,11 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useEgressStore } from "./egress-store.js";
 import type { EgressAllowlistEntry, EgressAllowlistView } from "../../server/shared/types.js";
 
-/**
- * Stateful fetch stub backing the effective-allowlist view. GET returns the
- * current view; POST/DELETE/PUT mutate the in-memory user entries + toggle so
- * the store's post-mutation `refresh()` reconciles against real movement.
- */
 function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: boolean; override?: boolean | null }) {
   let entries = [...initial.entries];
   let globalEnabled = initial.globalEnabled ?? true;
@@ -17,6 +12,7 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
     entries,
     globalEnabled,
     enforcementActive: true,
+    enforcementStatus: "active",
     session: {
       sessionId: "s1",
       override,
@@ -24,6 +20,7 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
       effectiveContained: override ?? globalEnabled,
       globalEnabled,
       enforcementActive: true,
+      enforcementStatus: "active",
       startedContained: null,
       pendingRestart: false,
     },
@@ -99,7 +96,7 @@ describe("egress-store", () => {
   });
 
   it("setGlobalEnabled() rolls back when the PUT fails", async () => {
-    // Stub that fails the PUT.
+
     const impl = vi.fn(async (url: string) => {
       if (url.startsWith("/api/egress/allowlist")) {
         return { ok: true, status: 200, json: async () => ({ entries: [], globalEnabled: true, session: null, defaultsCustomized: false }) } as Response;

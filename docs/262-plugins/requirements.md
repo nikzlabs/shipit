@@ -104,7 +104,11 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     CLIs update, within seconds, without recreating the session and with no
     publish, deploy, or authentication step. This is the
     edit-a-plugin-and-test-it loop: push from a plugin-repo session, refresh
-    in the project session, test.
+    in the project session, test. The **user's** way to ask is the session's
+    Plugins tab, per declared repository. A **pinned** repository offers no
+    refresh there: its version moves only when the declaration changes
+    (req 8), so the tab says that instead of carrying an action that could
+    never move it.
 13. When a plugin repository, its selected ref, or a plugin's service
     definition cannot be loaded, the project session still opens and stays
     usable for project work. It clearly reports that plugins are unavailable
@@ -206,7 +210,10 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     visible, named gap, never an opaque failure. Whatever store feeds a
     plugin holds only values the user placed there for plugins; it can never
     resolve ShipIt's own platform credentials — the user's GitHub identity,
-    tracker tokens, or agent tokens.
+    tracker tokens, or agent tokens. A plugin can declare a credential as
+    **optional** — one it uses when given and works without. An unset optional
+    credential is shown as something the plugin *can* use, never as an unmet
+    need; setting it is still offered.
 24. Plugin code gets no network access of its own. A plugin **declares** the
     external hosts its services and CLIs need — so the user never has to
     reverse-engineer them from failing calls — but the declaration grants
@@ -219,7 +226,15 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     allowlist — for the session or for the whole ShipIt instance — as a
     deliberate user act. Wiring a plugin that calls external APIs stays a
     known, guided onboarding step rather than a surprise or a guessing
-    game.
+    game. A plugin can declare a host as **optional**, the same way and in the
+    same words as an optional credential (req 23): one it uses when the session
+    can reach it and works without. An unallowed optional host is shown as
+    something the plugin *can* use, never as an unmet need and never as the
+    reason for a failure, and it keeps whatever affordance a required host in
+    the same state would have — the grant where a grant can take effect, and
+    the reason where none can. Optionality changes
+    only how the gap is reported — it grants nothing, and an optional host that
+    IS allowed behaves exactly like a required one.
 25. The agent (or the user) in a project session can report feedback on a
     plugin — a bug, a limitation, a feature request — as an **issue on the
     plugin's own repository**, from within the session. Declaring the plugin
@@ -371,6 +386,32 @@ ever saying the second.
 answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-09-03 — May a plugin declare a host or a credential it does not
+  need?** Stated directly by the user, from a live session running a plugin
+  (`assetgen`) whose declared pixellab hosts are deliberately absent from that
+  session's egress allowlist: *"they are optional, I guess we need a way to
+  express that in the plugin declaration"*, and on the credential half, *"env
+  vars need to be optionable"*. Both declarations were bare name lists, so
+  every unsatisfied name was reported as an unmet need — a permanent
+  attention state on the Plugins card, and a sentence appended to unrelated
+  install failures, for a gap the user had already decided not to close. →
+  reqs 23 and 24 amended, in one change over both because req 24 already
+  defines its visibility as req 23's. The manifest grammar is a widening
+  (a bare string stays required; `{ name: X, optional: true }` marks the
+  other), which is the agent's choice and recorded in `plan.md` §1b.
+
+- **2026-09-02 — Where does the USER refresh a plugin, and may a pinned one be
+  refreshed?** Stated directly by the user: *"I should be able to update
+  (refresh) a plugin from the UI, from the plugin tab, if the plugin is not
+  pinned."* Req 12 had said "the user or the agent can request a plugin
+  refresh" since 2026-08-11 and only the agent's half was ever built — a shim
+  verb (`shipit plugin refresh`) over `POST /api/sessions/:id/plugin/refresh`.
+  The user's half had no surface at all: the tab could report a version and
+  never move it. The pinned exclusion follows req 8 and is now written where a
+  reader will find it rather than left to be re-derived from two requirements.
+  → req 12 amended; the tab's card carries the action, and a pinned card says
+  what does move it.
 
 - **2026-08-19 — Are plugin skills user-callable?** Stated directly by the
   user, with a screenshot of the composer's `/` menu: *"plugin skills are not

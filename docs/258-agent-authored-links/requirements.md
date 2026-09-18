@@ -53,6 +53,9 @@ one requirement — with no way to make that pointer clickable.
     navigates within that page** — it does not reload it. The user must not see
     the app blink and rebuild itself to be taken to an item on the page in front
     of them.
+14. A `shipit-preview://` pointer written **inside a presented artifact** works
+    when clicked, exactly as the same pointer in chat does. Reqs 1, 2, 10 and 12
+    apply to it unchanged — including that a stopped service is started first.
 
 ## The page-facing contract
 
@@ -75,6 +78,12 @@ respond to every click is a page that should be a preview service.
 _None._
 
 ## Resolved questions
+
+- **2026-09-14 — Must a pointer inside a presented artifact work?** Reported by
+  the requester against the shipped feature: *"shipit-preview:// urls need to
+  work from presented files"*. A pointer was only ever live in chat, so a link
+  the agent wrote into an artifact it presented was dead on click. Recorded as
+  req 14.
 
 - **2026-08-10 — Must a click navigate within the page rather than reload it?**
   Reported by the requester against the shipped feature: *"pressing a link in

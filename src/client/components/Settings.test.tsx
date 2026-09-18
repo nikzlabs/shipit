@@ -2,9 +2,11 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings, type SettingsProps } from "./Settings.js";
+import type { AgentOption } from "../agent-types.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { initialSettingValues } from "../stores/setting-values.js";
 
 afterEach(() => {
   cleanup();
@@ -18,11 +20,17 @@ afterEach(() => {
   });
   useSettingsStore.getState().setProviderAccounts([]);
   useSettingsStore.getState().setCredentialRoutes([]);
+  useSettingsStore.getState().setGithubStatus({ authenticated: false });
+  useUiStore.setState({ agentList: [] });
   useSettingsStore.setState({
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
-    claudeAuthDiagnostics: {},
+    authDiagnostics: {},
     providerAccountNotices: {},
+    // The generated rows' values outlive a render, so a test that changes one
+    // would otherwise seed the next.
+    settingValues: initialSettingValues(),
+    settingDrafts: {},
   });
 });
 
@@ -49,22 +57,19 @@ const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, hasRu
 const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
 
 const defaultProps: SettingsProps = {
-  initialContent: "",
-  onSaveInstructions: vi.fn(),
-  githubStatus: { authenticated: false },
-  onGitHubTokenSubmit: vi.fn(),
-  onGitHubLogout: vi.fn(),
-  agentList: [claudeAuthed],
-  gitIdentity: { name: "", email: "" },
-  onGitIdentitySave: vi.fn(),
-  maxIdleContainers: 5,
-  onMaxIdleContainersSave: vi.fn(),
-  agentSystemInstructionsEnabled: true,
-  agentSystemInstructions: "You are working inside ShipIt.",
-  onToggleAgentSystemInstructions: vi.fn(),
-  hasActiveSession: false,
   onClose: vi.fn(),
 };
+
+
+/**
+ * The harnesses come from the UI store now, not from a prop: the Services and
+ * Roles panes are components their declarations name, and a registered component
+ * takes the setting's key and nothing else (docs/308 slice 6b).
+ */
+function renderSettings(agents: AgentOption[]) {
+  useUiStore.setState({ agentList: agents });
+  return render(<Settings {...defaultProps} />);
+}
 
 describe("Settings", () => {
   it("renders dialog with correct role and accessible name", () => {
@@ -80,8 +85,7 @@ describe("Settings", () => {
   it("calls onClose on backdrop click", async () => {
     const onClose = vi.fn();
     render(<Settings {...defaultProps} onClose={onClose} />);
-    // Radix Dialog overlay click is unreliable in jsdom; test via Escape which
-    // exercises the same onOpenChange(false) path.
+
     await userEvent.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalled();
   });
@@ -108,20 +112,14 @@ describe("Settings", () => {
   });
 });
 
-describe("Settings - Services → Anthropic subscription", () => {
-  it("opens on Services, with no per-vendor tab to open on instead", () => {
+describe("Settings - Model providers → Anthropic subscription", () => {
+  it("opens on Model providers, with no per-vendor tab to open on instead", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByRole("tab", { name: "Services" })).toHaveAttribute("data-state", "active");
+    expect(screen.getByRole("tab", { name: "Model providers" })).toHaveAttribute("data-state", "active");
     expect(screen.queryByRole("tab", { name: "Claude" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Codex" })).not.toBeInTheDocument();
   });
 
-  /**
-   * The whole point of the unification: the account rows sit INSIDE the same
-   * `ServiceCard` a string-delivered credential gets, rather than in a
-   * borderless block above the list. A card-shaped assertion is what catches a
-   * regression back to two components; asserting the rows exist would not.
-   */
   it("renders the account rows inside the service's own card, titled by service", () => {
     connectAnthropicSubscription();
     render(<Settings {...defaultProps} />);
@@ -130,33 +128,30 @@ describe("Settings - Services → Anthropic subscription", () => {
     expect(within(card).getByRole("heading", { name: "Anthropic" })).toBeInTheDocument();
     // The harness vendor never titles a credential card (docs/252 D2).
     expect(screen.queryByText(/Claude subscriptions/i)).not.toBeInTheDocument();
-    // The provider-wide singleton card is gone — connecting the first account
+
     // must not be a different flow from connecting the second.
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
   it("lists no card at all for a subscription with no credential (req 17)", () => {
-    // The state the reveal used to create, and could not undo: a service listed
-    // with nothing in it and no way to remove it. It is now unreachable — a
+
     // card exists because a credential does.
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
   });
 
   it("gives a connected card no way of its own to add another (req 17)", () => {
     connectAnthropicSubscription();
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     const card = screen.getByTestId("service-card-anthropic:sub");
     expect(within(card).queryByTestId("provider-account-add-claude")).not.toBeInTheDocument();
     expect(within(card).queryByRole("button", { name: /add/i })).not.toBeInTheDocument();
-    // The one door, on the panel rather than the card.
+
     expect(screen.getByTestId("services-add")).toBeInTheDocument();
   });
 
   it("creates the account and starts its sign-in from inside the add-service dialog (req 17)", async () => {
-    // req 17 — the sign-in is the last step of the one flow, not a hand-off to
-    // a button on a card. The card does not exist yet at this point, and that
-    // is the change: the account is what brings it into being.
+
     const now = Date.now();
     const created = {
       id: "acct-1",
@@ -170,7 +165,7 @@ describe("Settings - Services → Anthropic subscription", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ accounts: [created] }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
@@ -180,8 +175,7 @@ describe("Settings - Services → Anthropic subscription", () => {
       "/api/provider-accounts",
       expect.objectContaining({ method: "POST" }),
     ));
-    // req 16: creating a row and starting its login is one action, so the very
-    // first account goes through the account-scoped login endpoint too.
+
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/provider-accounts/claude/acct-1/login",
       expect.objectContaining({ method: "POST" }),
@@ -189,31 +183,24 @@ describe("Settings - Services → Anthropic subscription", () => {
     vi.unstubAllGlobals();
   });
 
-  // docs/150 — one login process per provider, so the server rejects a second
-  // concurrent sign-in with a 409. Surface that as a disabled affordance rather
-  // than letting the user click into the refusal.
   it("blocks a second concurrent sign-in while one account is authenticating", async () => {
     const now = Date.now();
-    // `externalId` is what says a row has connected before — without it these
-    // read as sign-in attempts, which the panel does not list (req 17).
+
     const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
       { ...base, id: "acct-a", label: "Account A", isPrimary: true, status: "authenticating" as const, externalId: "ext-a" },
       { ...base, id: "acct-b", label: "Account B", status: "unavailable" as const, externalId: "ext-b" },
     ]);
 
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
 
-    // docs/252 req 19 — both verbs live in the row's `\u22ef` now, so the guard is
-    // asserted where the user meets it. Radix renders one menu at a time, so
-    // each row is opened in turn.
     await userEvent.click(screen.getByLabelText("Manage Account B"));
-    // The row that is NOT signing in can't start a competing flow...
+
     expect(screen.getByTestId("provider-account-connect-acct-b")).toHaveAttribute("data-disabled");
     await userEvent.keyboard("{Escape}");
 
     await userEvent.click(screen.getByLabelText("Manage Account A"));
-    // ...and the one that is keeps its own way out.
+
     expect(screen.getByTestId("provider-account-cancel-login-acct-a")).not.toHaveAttribute("data-disabled");
   });
 
@@ -243,16 +230,16 @@ describe("Settings - Services → Anthropic subscription", () => {
       accountId: "acct-a",
       verificationUri: "https://claude.ai/oauth/authorize?acct-a",
     });
-    useSettingsStore.getState().appendClaudeAuthLog("acct-a", {
+    useSettingsStore.getState().appendAuthLog("acct-a", {
       attemptId: "attempt-a",
       timestamp: "2026-08-03T00:00:00.000Z",
       level: "info",
-      source: "claude_stdout",
+      source: "cli_stdout",
       message: "A's CLI output.",
     });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
 
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     await userEvent.click(screen.getByLabelText("Manage Account A"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-a"));
 
@@ -262,11 +249,8 @@ describe("Settings - Services → Anthropic subscription", () => {
     vi.unstubAllGlobals();
   });
 
-  // docs/260-turn-level-account-routing req 3 — disconnecting is one click, even for the last account.
   // Sessions are never pinned to an account, so there is no replacement to
-  // pick and no moved/stranded bookkeeping to report: the row disappears, the
-  // response carries `{accounts}` only, and each session simply routes among
-  // whatever accounts remain at its next turn.
+
   it("disconnects the last account in one click with nothing to report (docs/260-turn-level-account-routing req 3)", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
@@ -287,29 +271,19 @@ describe("Settings - Services → Anthropic subscription", () => {
       "/api/provider-accounts/claude/acct-a",
       expect.objectContaining({ method: "DELETE" }),
     ));
-    // The row is gone, and with the last credential gone so is the card —
-    // req 17's "a service the user has not connected does not appear", arrived
-    // at from the other direction. There is nothing left to keep it on screen:
-    // a *reported* disconnect keeps its card through the notice clause, and
-    // this one has nothing to report.
+
     await waitFor(() => expect(screen.queryByTestId("provider-account-row-acct-a")).not.toBeInTheDocument());
     expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
-    // No replacement picker, no moved/stranded notice, no toast (req 3).
+
     expect(screen.queryByTestId("provider-account-replacement-acct-a")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-accounts-notice-claude")).not.toBeInTheDocument();
     expect(useUiStore.getState().toast).toBeNull();
     vi.unstubAllGlobals();
   });
 
-  /**
-   * The collapsed "Use an API key instead" disclosure is gone with the vendor
-   * tabs. It wrote through to the very credential the Services add-flow writes
-   * (`anthropic:key`), so it was a second editor for one fact — and the card it
-   * produced is one row down in the same list.
-   */
   it("offers no second API-key editor on the subscription card", () => {
     connectAnthropicSubscription();
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    renderSettings([claudeUnauthed]);
     expect(screen.queryByTestId("provider-toggle-api-key-claude")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-api-key-input-claude")).not.toBeInTheDocument();
   });
@@ -370,15 +344,9 @@ describe("Settings - Services → Anthropic subscription", () => {
       serviceId: "anthropic", billingMode: "sub", via: "account",
       label: "Claude account 2",
       isPrimary: false,
-      // `unavailable` rather than `authenticating`: the row is one the user is
-      // about to reconnect, and a row already mid-login offers *Cancel
-      // sign-in* instead. The live challenge below is what the reconnect then
-      // renders in the dialog.
+
       status: "unavailable",
-      // Authenticated before — the row is re-connecting, not being created. A
-      // row with no identity and no successful login is an attempt, and the
-      // panel does not list attempts (req 17); the add-service dialog owns
-      // those, and `ServicesPanel.test.tsx` covers them there.
+
       externalId: "ext-secondary",
       createdAt: now,
       updatedAt: now,
@@ -386,14 +354,10 @@ describe("Settings - Services → Anthropic subscription", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
+    renderSettings([claudeAuthed]);
     await userEvent.click(screen.getByLabelText("Manage Claude account 2"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-secondary"));
 
-    // The challenge is seeded AFTER the reconnect starts, which is when it
-    // really arrives — and it has to be: adopting an attempt cancels whatever
-    // login was running against it and clears the challenge that login left, so
-    // a code seeded beforehand is a dead one the dialog is right to drop.
     act(() => {
       useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-secondary", {
         loginId: "anthropic-oauth",
@@ -418,52 +382,93 @@ describe("Settings - Services → Anthropic subscription", () => {
 });
 
 describe("Settings - Integrations tab (GitHub)", () => {
-  async function renderOnGitHubTab(props: Partial<SettingsProps> = {}) {
-    const result = render(<Settings {...defaultProps} {...props} />);
+  /*
+    The connection is read from the store rather than passed in, because the
+    account is one fact with readers all over the app and a generated component
+    receives only its setting's key (docs/308-data-driven-settings slice 5).
+  */
+  /*
+    Only the GitHub routes: the other panels on this tab fetch on mount, and a
+    stub that answered them all with the token response left the MCP store
+    holding `undefined` where a list belongs. An unstubbed `fetch` rejects,
+    which is what those panels already cope with.
+  */
+  function githubOnlyFetch(body: unknown) {
+    const mock = vi.fn((url: string, _init?: RequestInit) =>
+      url.startsWith("/api/github/")
+        ? Promise.resolve({ ok: true, json: () => Promise.resolve(body) })
+        : Promise.reject(new Error(`no stub for ${url}`)));
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  }
+
+  async function renderOnGitHubTab(status: { authenticated: boolean; username?: string } = { authenticated: false }) {
+    useSettingsStore.getState().setGithubStatus(status);
+    const result = render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
     return result;
   }
 
-  it("shows GitHubTokenForm when not authenticated", async () => {
+  it("offers the token box whether or not a credential is stored", async () => {
     await renderOnGitHubTab();
+    expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
+
+    cleanup();
+    await renderOnGitHubTab({ authenticated: true, username: "octocat" });
     expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
   });
 
-  it("calls onGitHubTokenSubmit with trimmed token", async () => {
-    const onGitHubTokenSubmit = vi.fn();
-    await renderOnGitHubTab({ onGitHubTokenSubmit });
-    fireEvent.change(screen.getByTestId("github-token-input"), { target: { value: "  ghp_test123  " } });
-    await userEvent.click(screen.getByTestId("github-token-submit"));
-    await waitFor(() => expect(onGitHubTokenSubmit).toHaveBeenCalledWith("ghp_test123"));
+  it("posts a trimmed token to the address its declaration names", async () => {
+    const fetchMock = githubOnlyFetch({
+      status: { authenticated: true, username: "octocat" },
+      repos: [],
+    });
+    try {
+      await renderOnGitHubTab();
+      fireEvent.change(screen.getByTestId("github-token-input"), { target: { value: "  ghp_test123  " } });
+      await userEvent.click(screen.getByTestId("github-token-submit"));
+      await waitFor(() => {
+        const call = fetchMock.mock.calls.find(([url]) => url === "/api/github/token");
+        expect(call).toBeDefined();
+        expect(JSON.parse((call![1] as { body: string }).body)).toEqual({ token: "ghp_test123" });
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows connected state with username when authenticated", async () => {
-    await renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
-    expect(screen.getByText("octocat")).toBeInTheDocument();
-    expect(screen.getByText("Connected")).toBeInTheDocument();
+    await renderOnGitHubTab({ authenticated: true, username: "octocat" });
+    expect(screen.getByTestId("settings-github-status")).toHaveTextContent("Connected as octocat");
   });
 
-  it("shows Disconnect button when authenticated", async () => {
-    await renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
+  it("offers Disconnect only once a credential is stored", async () => {
+    await renderOnGitHubTab();
+    expect(screen.queryByTestId("settings-disconnect")).toBeNull();
+
+    cleanup();
+    await renderOnGitHubTab({ authenticated: true, username: "octocat" });
     expect(screen.getByTestId("settings-disconnect")).toHaveTextContent("Disconnect");
   });
 
   it("Disconnect button requires double-click confirmation", async () => {
-    const onGitHubLogout = vi.fn();
-    await renderOnGitHubTab({
-      githubStatus: { authenticated: true, username: "octocat" },
-      onGitHubLogout,
-    });
-    const btn = screen.getByTestId("settings-disconnect");
-    await userEvent.click(btn);
-    expect(onGitHubLogout).not.toHaveBeenCalled();
-    expect(btn).toHaveTextContent("Click again to disconnect");
-    await userEvent.click(btn);
-    expect(onGitHubLogout).toHaveBeenCalledOnce();
+    const fetchMock = githubOnlyFetch({ status: { authenticated: false } });
+    try {
+      await renderOnGitHubTab({ authenticated: true, username: "octocat" });
+      const btn = screen.getByTestId("settings-disconnect");
+      await userEvent.click(btn);
+      expect(fetchMock.mock.calls.some(([url]) => url === "/api/github/logout")).toBe(false);
+      expect(btn).toHaveTextContent("Click again to disconnect");
+      await userEvent.click(btn);
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.some(([url]) => url === "/api/github/logout")).toBe(true));
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("Disconnect confirmation resets on blur", async () => {
-    await renderOnGitHubTab({ githubStatus: { authenticated: true, username: "octocat" } });
+    await renderOnGitHubTab({ authenticated: true, username: "octocat" });
     const btn = screen.getByTestId("settings-disconnect");
     await userEvent.click(btn);
     expect(btn).toHaveTextContent("Click again to disconnect");
@@ -473,123 +478,36 @@ describe("Settings - Integrations tab (GitHub)", () => {
 });
 
 describe("Settings - Git tab", () => {
-  async function renderOnGitTab(props: Partial<SettingsProps> = {}) {
-    const result = render(<Settings {...defaultProps} {...props} />);
+  async function renderOnGitTab() {
+    const result = render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Git" }));
     return result;
   }
 
-  it("shows description text", async () => {
+  it("shows the declared row: its description, and a box for each half", async () => {
+    useSettingsStore.getState().setSettingValue("git.identity", { name: "Alice", email: "alice@example.com" });
     await renderOnGitTab();
+
     expect(screen.getByText(/git identity used for automatic commits/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Alice");
+    expect(screen.getByLabelText("Email")).toHaveValue("alice@example.com");
   });
-
-  it("shows name and email inputs", async () => {
-    await renderOnGitTab();
-    expect(screen.getByTestId("settings-git-name")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-git-email")).toBeInTheDocument();
-  });
-
-  it("pre-fills inputs from gitIdentity prop", async () => {
-    await renderOnGitTab({ gitIdentity: { name: "Alice", email: "alice@example.com" } });
-    expect(screen.getByTestId("settings-git-name")).toHaveValue("Alice");
-    expect(screen.getByTestId("settings-git-email")).toHaveValue("alice@example.com");
-  });
-
-  it("Save button is disabled when name is empty", async () => {
-    await renderOnGitTab({ gitIdentity: { name: "", email: "a@b.com" } });
-    expect(screen.getByTestId("settings-git-save")).toBeDisabled();
-  });
-
-  it("Save button is disabled when email is empty", async () => {
-    await renderOnGitTab({ gitIdentity: { name: "Alice", email: "" } });
-    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "" } });
-    expect(screen.getByTestId("settings-git-save")).toBeDisabled();
-  });
-
-  it("calls onGitIdentitySave with trimmed values on Save click", async () => {
-    const onGitIdentitySave = vi.fn();
-    await renderOnGitTab({ onGitIdentitySave });
-    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "  Bob  " } });
-    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "  bob@test.com  " } });
-    await userEvent.click(screen.getByTestId("settings-git-save"));
-    expect(onGitIdentitySave).toHaveBeenCalledWith("Bob", "bob@test.com");
-  });
-
-  it("shows Saved label after saving", async () => {
-    const onGitIdentitySave = vi.fn();
-    await renderOnGitTab({ onGitIdentitySave });
-    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Bob" } });
-    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "bob@test.com" } });
-    await userEvent.click(screen.getByTestId("settings-git-save"));
-    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Saved");
-  });
-
-  it("resets Saved label when input changes", async () => {
-    const onGitIdentitySave = vi.fn();
-    await renderOnGitTab({ onGitIdentitySave });
-    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Bob" } });
-    fireEvent.change(screen.getByTestId("settings-git-email"), { target: { value: "bob@test.com" } });
-    await userEvent.click(screen.getByTestId("settings-git-save"));
-    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Saved");
-    fireEvent.change(screen.getByTestId("settings-git-name"), { target: { value: "Charlie" } });
-    expect(screen.getByTestId("settings-git-save")).toHaveTextContent("Save");
-  });
-
 });
 
 describe("Settings - Instructions tab", () => {
-  async function renderOnInstructionsTab(props: Partial<SettingsProps> = {}) {
-    const result = render(<Settings {...defaultProps} {...props} />);
+  async function renderOnInstructionsTab() {
+    const result = render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
     return result;
   }
 
-  it("renders textarea with placeholder", async () => {
+  it("shows both declared boxes with their stored values", async () => {
+    useSettingsStore.getState().setSettingValue("instructions.userInstructions", "Always use TypeScript.");
+    useSettingsStore.getState().setSettingValue("instructions.opsInstructions", "Report a timeline.");
     await renderOnInstructionsTab();
-    const textarea = screen.getByTestId("settings-textarea");
-    expect(textarea).toHaveValue("");
-    expect(textarea).toHaveAttribute("placeholder");
-  });
 
-  it("renders with existing content from initialContent", async () => {
-    await renderOnInstructionsTab({ initialContent: "Always use TypeScript." });
-    expect(screen.getByTestId("settings-textarea")).toHaveValue("Always use TypeScript.");
-  });
-
-  it("displays character count", async () => {
-    await renderOnInstructionsTab({ initialContent: "Hello" });
-    expect(screen.getByText("5 / 50,000")).toBeInTheDocument();
-  });
-
-  it("updates character count as user types", async () => {
-    await renderOnInstructionsTab();
-    fireEvent.change(screen.getByTestId("settings-textarea"), {
-      target: { value: "Use strict mode." },
-    });
-    expect(screen.getByText("16 / 50,000")).toBeInTheDocument();
-  });
-
-  it("calls onSaveInstructions when Save is clicked", async () => {
-    const onSaveInstructions = vi.fn();
-    await renderOnInstructionsTab({ initialContent: "Original", onSaveInstructions });
-    fireEvent.change(screen.getByTestId("settings-textarea"), {
-      target: { value: "Updated content" },
-    });
-    await userEvent.click(screen.getByTestId("settings-save"));
-    expect(onSaveInstructions).toHaveBeenCalledWith("Updated content");
-  });
-
-  it("calls onClose when Cancel is clicked", async () => {
-    const onClose = vi.fn();
-    await renderOnInstructionsTab({ onClose });
-    await userEvent.click(screen.getByText("Cancel"));
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
-  it("disables Save when content exceeds 50,000 characters", async () => {
-    await renderOnInstructionsTab({ initialContent: "x".repeat(50_001) });
-    expect(screen.getByTestId("settings-save")).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Your Instructions" })).toHaveValue("Always use TypeScript.");
+    expect(screen.getByRole("textbox", { name: "Ops Session Instructions" })).toHaveValue("Report a timeline.");
   });
 
   it("shows CLAUDE.md note", async () => {
@@ -597,25 +515,35 @@ describe("Settings - Instructions tab", () => {
     expect(screen.getByText(/CLAUDE\.md/)).toBeInTheDocument();
   });
 
-  it("calls onSaveInstructions on Ctrl+Enter", async () => {
-    const onSaveInstructions = vi.fn();
-    await renderOnInstructionsTab({ initialContent: "Test content", onSaveInstructions });
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter", ctrlKey: true });
-    expect(onSaveInstructions).toHaveBeenCalledWith("Test content");
+  // The built-in instructions are not a setting: the toggle beside them is, and
+  // this only shows and hides the text ShipIt ships.
+  it("discloses the built-in agent instructions under their toggle", async () => {
+    useSettingsStore.getState().setAgentSystemInstructions("You are working inside ShipIt.");
+    await renderOnInstructionsTab();
+
+    await userEvent.click(screen.getByTestId("agent-instructions-expand"));
+
+    expect(screen.getByTestId("agent-instructions-content"))
+      .toHaveTextContent("You are working inside ShipIt.");
   });
 
-  it("saves with empty string when content is cleared", async () => {
-    const onSaveInstructions = vi.fn();
-    await renderOnInstructionsTab({ initialContent: "Existing", onSaveInstructions });
-    fireEvent.change(screen.getByTestId("settings-textarea"), {
-      target: { value: "" },
+  // Closing is what discards an unsaved edit, now that the drafts outlive the
+  // control that holds them (docs/308-data-driven-settings).
+  it("drops an uncommitted draft when the dialog closes", async () => {
+    useSettingsStore.getState().setSettingValue("instructions.userInstructions", "Be brief.");
+    const { unmount } = await renderOnInstructionsTab();
+    fireEvent.change(screen.getByRole("textbox", { name: "Your Instructions" }), {
+      target: { value: "Be brief. Always." },
     });
-    await userEvent.click(screen.getByTestId("settings-save"));
-    expect(onSaveInstructions).toHaveBeenCalledWith("");
+    expect(useSettingsStore.getState().settingDrafts["instructions.userInstructions"]).toBeDefined();
+
+    unmount();
+
+    expect(useSettingsStore.getState().settingDrafts).toEqual({});
   });
 });
 
-describe("Settings - Services → OpenAI subscription", () => {
+describe("Settings - Model providers → OpenAI subscription", () => {
   const codexInstalled = {
     id: "codex",
     name: "Codex",
@@ -625,7 +553,6 @@ describe("Settings - Services → OpenAI subscription", () => {
     supportsReview: false,
   };
 
-  /** As above: the card is summoned by connecting an account, not by a reveal. */
   function connectOpenAiSubscription() {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
@@ -641,7 +568,7 @@ describe("Settings - Services → OpenAI subscription", () => {
 
   it("renders OpenAI's account rows in the same card component, not a Codex tab", () => {
     connectOpenAiSubscription();
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    renderSettings([claudeAuthed, codexInstalled]);
     const card = screen.getByTestId("service-card-openai:sub");
     expect(within(card).getByTestId("provider-account-rows-codex")).toBeInTheDocument();
     expect(within(card).getByRole("heading", { name: "OpenAI" })).toBeInTheDocument();
@@ -651,16 +578,10 @@ describe("Settings - Services → OpenAI subscription", () => {
 
   it("offers no second API-key editor for OpenAI either", () => {
     connectOpenAiSubscription();
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    renderSettings([claudeAuthed, codexInstalled]);
     expect(screen.queryByTestId("provider-toggle-api-key-codex")).not.toBeInTheDocument();
   });
 
-  /**
-   * docs/252 req 19 — the device code renders in the add-service dialog, which
-   * *Reconnect* opens on step 3 for this account. Still one implementation for
-   * both providers (docs/150-multiple-provider-subscriptions req 16): `AccountChallenge` shows OpenAI's
-   * device-code variant here and Anthropic's paste variant above.
-   */
   it("renders a Codex device code in the sign-in it belongs to (req 16)", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
@@ -674,7 +595,7 @@ describe("Settings - Services → OpenAI subscription", () => {
       updatedAt: now,
     }]);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    renderSettings([claudeAuthed, codexInstalled]);
     await userEvent.click(screen.getByLabelText("Manage Codex account 2"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-codex-2"));
     act(() => {
@@ -686,7 +607,6 @@ describe("Settings - Services → OpenAI subscription", () => {
       });
     });
 
-    // The device code belongs to the ACCOUNT, not to a provider-wide card.
     expect(await screen.findByTestId("provider-account-user-code-acct-codex-2")).toHaveTextContent("WXYZ-1234");
     expect(screen.getByRole("link", { name: "Open OpenAI authentication page" })).toHaveAttribute(
       "href",
@@ -695,15 +615,6 @@ describe("Settings - Services → OpenAI subscription", () => {
     vi.unstubAllGlobals();
   });
 
-  /**
-   * Two sign-ins can no longer be on screen at once — the challenge lives in
-   * one modal dialog (docs/252 req 19) and the server runs one login per
-   * provider anyway. What replaces "keep them independent" is the constraint
-   * that makes the question moot: **no challenge renders on a row at all.**
-   * Rebuilding one there is the regression this catches, and it would return
-   * the poorer copy the change removed — `AccountChallenge` renders `null`
-   * until the auth URL lands, so the row would again show nothing in between.
-   */
   it("renders no challenge on the rows themselves, whatever their state", () => {
     const now = Date.now();
     const base = { serviceId: "openai" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
@@ -718,12 +629,11 @@ describe("Settings - Services → OpenAI subscription", () => {
       loginId: "openai-chatgpt", accountId: "acct-b", verificationUri: "https://auth.openai.com/device", userCode: "BBBB-2222",
     });
 
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    renderSettings([claudeAuthed, codexInstalled]);
 
     expect(screen.queryByTestId("provider-account-user-code-acct-a")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-account-user-code-acct-b")).not.toBeInTheDocument();
-    // The rows still say what is going on — in a word, which is req 19's rule
-    // for a state that needs attention.
+
     expect(screen.getByTestId("provider-account-row-acct-a-status")).toHaveTextContent("signing in");
   });
 });
@@ -739,6 +649,20 @@ describe("Settings - Advanced tab", () => {
     await renderOnAdvancedTab();
     expect(screen.getByText("Reset Container")).toBeInTheDocument();
     expect(screen.getByText(/Delete all sessions/)).toBeInTheDocument();
+  });
+
+  // The generated block places these by section name, so a renamed section
+  // would drop the prose silently rather than fail to compile (docs/308 P12).
+  it("keeps each section's own prose beside its generated rows", async () => {
+    await renderOnAdvancedTab();
+    expect(
+      within(screen.getByRole("region", { name: "Conversation" }))
+        .getByText(/Saved for this browser/),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Notifications" }))
+        .getByText(/Get notified when a session needs your attention/),
+    ).toBeInTheDocument();
   });
 
   it("renders Reset Everything button", async () => {
@@ -780,28 +704,27 @@ describe("Settings - Advanced tab", () => {
     expect(btn).toBeDisabled();
   });
 
-  it("renders Max Idle Containers section", async () => {
+  // The declaration names a component; the block renders it in the declaration's
+  // place, with no branch in the tab file naming this setting (docs/308 req 3).
+  it("renders the memory budget from its declared component", async () => {
     await renderOnAdvancedTab();
-    expect(screen.getByText("Max Idle Containers")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-max-idle-containers")).toHaveValue(5);
+    expect(screen.getByText("Memory budget")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-memory-budget")).toHaveValue(null);
   });
 
-  it("calls onMaxIdleContainersSave when save is clicked", async () => {
-    const onMaxIdleContainersSave = vi.fn();
-    await renderOnAdvancedTab({ maxIdleContainers: 3, onMaxIdleContainersSave });
-    const input = screen.getByTestId("settings-max-idle-containers");
-    expect(input).toHaveValue(3);
-    fireEvent.change(input, { target: { value: "7" } });
-    await userEvent.click(screen.getByTestId("settings-max-idle-containers-save"));
-    expect(onMaxIdleContainersSave).toHaveBeenCalledWith(7);
+  it("renders the release-channel selector, generated from its declaration", async () => {
+    await renderOnAdvancedTab();
+    expect(screen.getByRole("button", { name: "Stable" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edge" })).toBeInTheDocument();
   });
 
-  // ---- Release channels (feature 162) ----
-
-  it("renders the release-channel selector", async () => {
+  // The update panel is the Software Updates section's own chrome, so the
+  // channel it acts on renders beneath it rather than three sections away.
+  it("keeps the release channel inside the Software Updates section", async () => {
     await renderOnAdvancedTab();
-    expect(screen.getByTestId("settings-channel-stable")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-channel-edge")).toBeInTheDocument();
+    const section = screen.getByRole("region", { name: "Software Updates" });
+    expect(within(section).getByTestId("settings-check-updates")).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Stable" })).toBeInTheDocument();
   });
 
   it("shows the channel-aware version label from the store", async () => {
@@ -853,43 +776,122 @@ describe("Settings - Advanced tab", () => {
     }
   });
 
-  it("marks the active channel via aria-pressed", async () => {
-    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+  // The channel comes from the value record, which `refreshOwnRouteSettings`
+  // fills from the declaration's own route — not from the running build's
+  // version, which describes the image rather than the setting.
+  it("marks the stored channel via aria-pressed", async () => {
+    act(() => {
+      useSettingsStore.getState().setSettingValue("advanced.releaseChannel", "edge");
+    });
     await renderOnAdvancedTab();
-    expect(screen.getByTestId("settings-channel-edge")).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("settings-channel-stable")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Edge" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Stable" })).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("POSTs the chosen channel and reflects the response", async () => {
-    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+  // The declaration carries the method, the path and the body field, so the
+  // generated row posts the same request the hand-written one did (P2).
+  it("POSTs the chosen channel to the route its declaration names", async () => {
+    act(() => {
+      useSettingsStore.getState().setSettingValue("advanced.releaseChannel", "edge");
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByRole("button", { name: "Stable" }));
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledWith(
+          "/api/updates/channel",
+          expect.objectContaining({ method: "POST", body: JSON.stringify({ channel: "stable" }) }),
+        );
+      });
+      expect(screen.getByRole("button", { name: "Stable" })).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  // A check describes one channel. The route drops its own answer when the
+  // channel moves, and the panel has to do the same or it shows the other
+  // channel's update as this one's.
+  it("replaces a stale update status by checking the channel just chosen", async () => {
+    act(() => {
+      useSettingsStore.getState().setSettingValue("advanced.releaseChannel", "edge");
+    });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
           available: true,
-          behindBy: 0,
-          commitMessages: ["feat: something"],
+          behindBy: 2,
+          commitMessages: ["feat: a"],
           currentCommit: "abc1234",
-          channel: "stable",
+          channel: "edge",
           currentVersion: "main @ abc1234",
-          latestVersion: "v1.3.0",
-          isDowngrade: true,
+          latestVersion: "main @ def5678",
+          isDowngrade: false,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
     try {
       await renderOnAdvancedTab();
-      await userEvent.click(screen.getByTestId("settings-channel-stable"));
-      await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith(
-          "/api/updates/channel",
-          expect.objectContaining({ method: "POST" }),
-        );
+      await userEvent.click(screen.getByTestId("settings-check-updates"));
+      await waitFor(() => expect(screen.getByText(/commits behind/)).toBeInTheDocument());
+
+      // The switch stores the channel, and what was on screen described the one
+      // just left — so the panel asks again and shows the new channel's answer,
+      // which is what the write's own response used to carry.
+      fetchSpy.mockImplementation((url: unknown) => Promise.resolve(
+        String(url) === "/api/updates/check"
+          ? new Response(JSON.stringify({
+              available: true, behindBy: 0, commitMessages: [], currentCommit: "abc1234",
+              channel: "stable", currentVersion: "main @ abc1234", latestVersion: "v1.3.0",
+              isDowngrade: true,
+            }), { status: 200, headers: { "Content-Type": "application/json" } })
+          : new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+      ));
+
+      await userEvent.click(screen.getByRole("button", { name: "Stable" }));
+      await waitFor(() => expect(screen.queryByText(/commits behind/)).not.toBeInTheDocument());
+      await waitFor(() =>
+        expect(screen.getByTestId("settings-downgrade-warning")).toBeInTheDocument());
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  /*
+    The other ordering: a check that was already running when the channel moved.
+    Its answer names the channel it describes, and that is no longer the one on
+    screen — showing it would put Edge's changelog and an enabled "Update Now"
+    under a Stable selection.
+  */
+  it("drops a check that finishes after the channel it describes was left", async () => {
+    act(() => {
+      useSettingsStore.getState().setSettingValue("advanced.releaseChannel", "edge");
+    });
+    let finishCheck!: () => void;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((url: unknown) => {
+      if (String(url) !== "/api/updates/check") {
+        return Promise.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return new Promise((resolve) => {
+        finishCheck = () => { resolve(new Response(JSON.stringify({
+          available: true, behindBy: 4, commitMessages: ["feat: a"], currentCommit: "abc1234",
+          channel: "edge", currentVersion: "main @ abc1234", latestVersion: "main @ def5678",
+          isDowngrade: false,
+        }), { status: 200, headers: { "Content-Type": "application/json" } })); };
       });
-      // Downgrade warning surfaces from the response.
-      await waitFor(() => {
-        expect(screen.getByTestId("settings-downgrade-warning")).toBeInTheDocument();
-      });
+    });
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByTestId("settings-check-updates"));
+      await userEvent.click(screen.getByRole("button", { name: "Stable" }));
+      await act(async () => { finishCheck(); await Promise.resolve(); });
+
+      expect(screen.queryByText(/commits behind/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Stable" })).toHaveAttribute("aria-pressed", "true");
     } finally {
       fetchSpy.mockRestore();
     }
@@ -996,15 +998,11 @@ describe("Settings - Advanced tab", () => {
 });
 
 describe("Settings - Sidebar", () => {
-  /**
-   * docs/252 — one flat list, led by Services. The "Agent" group and its two
-   * per-vendor tabs are gone: a credential belongs to a service, not to the
-   * harness that drives it, so there is no vendor axis left to group on.
-   */
-  it("lists one flat group with Services first and no vendor tabs", () => {
+
+  it("lists one flat group with Model providers first and no vendor tabs", () => {
     render(<Settings {...defaultProps} />);
     const tabs = screen.getAllByRole("tab");
-    expect(tabs[0]).toHaveTextContent("Services");
+    expect(tabs[0]).toHaveTextContent("Model providers");
     expect(screen.queryByText("Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("General")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-tab-agent-claude")).not.toBeInTheDocument();
@@ -1029,14 +1027,14 @@ describe("Settings - Tab switching", () => {
   it("clicking Git tab switches to git section", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Git" }));
-    expect(screen.getByTestId("settings-git-name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toBeInTheDocument();
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
   it("clicking Instructions tab switches to instructions section", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
-    expect(screen.getByTestId("settings-textarea")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Your Instructions" })).toBeInTheDocument();
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
@@ -1047,10 +1045,10 @@ describe("Settings - Tab switching", () => {
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
-  it("clicking Services switches back", async () => {
+  it("clicking Model providers switches back", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
-    await userEvent.click(screen.getByRole("tab", { name: "Services" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Model providers" }));
     expect(screen.getByTestId("services-panel")).toBeInTheDocument();
     expect(screen.queryByTestId("github-token-form")).not.toBeInTheDocument();
   });

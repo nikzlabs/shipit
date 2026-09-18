@@ -62,8 +62,7 @@ describe("handleSessionSettingsChangeCard (docs/279)", () => {
   });
 
   it("is transcript-scoped: a card for another session never lands in this transcript", () => {
-    // The browser holds exactly one transcript in memory, so an unscoped card
-    // would render in whichever session happened to be active (CLAUDE.md).
+
     useSessionStore.setState({ sessionId: "active", messages: [] });
 
     dispatchMessage(ctx, { ...event({ cardId: "foreign" }), sessionId: "other" });

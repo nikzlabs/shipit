@@ -1,7 +1,3 @@
-/**
- * Unit tests for CodexOAuthRefresher (docs/154).
- */
-
 import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -177,6 +173,16 @@ describe("CodexOAuthRefresher", () => {
     rigs = [];
   });
 
+  it("does not treat an unchanged rejected token as a successful forced refresh", async () => {
+    const now = 1_700_000_000_000;
+    const rig = buildRig({ accounts: [makeAccount("codex-default")], initialFreshness: { "codex-default": now + 3600000 }, initialNow: now });
+    rigs.push(rig);
+    expect(await rig.refresher.ensureFresh("codex-default")).toBe(true);
+    expect(rig.spawnHandle.invocations).toHaveLength(0);
+    expect(await rig.refresher.ensureFresh("codex-default", { force: true })).toBe(false);
+    expect(rig.spawnHandle.invocations).toHaveLength(2);
+  });
+
   it("noop when token is healthy and tier1 does not rotate", async () => {
     const now = 1_700_000_000_000;
     const future = now + 14 * 24 * 60 * 60 * 1000;
@@ -275,9 +281,6 @@ describe("CodexOAuthRefresher", () => {
     await rig.refresher.refreshNow("codex-default");
     expect(result!.outcome).toBe("revoked");
     expect(rig.sseCalls.filter((c) => c.event === "codex_account_unauthenticated")).toHaveLength(1);
-    // docs/150-multiple-provider-subscriptions req 19 — must name the revoked account. The client drops an
-    // `agent_auth_failed` with no `accountId` (there is no provider-wide slot
-    // left), so without this the revoked row would keep reading "ready".
     expect(rig.sseCalls).toContainEqual({
       event: "agent_auth_failed",
       data: { loginId: "openai-chatgpt", accountId: "codex-default", reason: "revoked" },

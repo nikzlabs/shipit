@@ -210,6 +210,58 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   branch's. `--bootstrap` is exempt (the first release legitimately ships the whole
   new branch); the prerelease path never reaches the guard.
 
+  **Dead-PR guard:** `agentCreatePr` reports an existing pull request under one
+  `alreadyExisted` flag whether it is OPEN (pushed to) or MERGED/CLOSED (returned
+  unchanged by the not-progressed short-circuit, docs/202). The shim renders that
+  flag as "updated release PR #N" and the route marks the release `pr_open` from
+  the same result, so forwarding a dead PR announced a release nothing would
+  publish. `prepareFinalRelease` therefore refuses any non-`open`
+  `alreadyExistedReason` with a 409, which is what makes `alreadyExisted` on
+  `PrepareReleaseResult` mean "an OPEN PR was updated". The message is built from
+  `notProgressedBecause`, because the three refusals have three different
+  remedies and the obvious advice ("re-run against the old base") is wrong for
+  two of them. Usually unreachable — the head branch is rebuilt off
+  `origin/<branch>` and carries the bump commit, so the gate reads `progressed` —
+  but not provably so: an explicit version whose bump leaves the tree identical
+  to the base yields `no-new-work` on that same base, since the content-free
+  guard above runs BEFORE the bump.
+
+  **Wrong-base guard:** the same short-circuit has a second, quieter failure.
+  `findPullRequest` resolves by HEAD BRANCH alone — it takes no base — and the
+  open-PR branch accepts whatever it finds, so an open `release/<version>` →
+  `stable` PR is handed back verbatim to a run passing `--release-branch
+  stable-2`. The result would then pair that PR's number with the *requested*
+  branch, and both the shim and the lifecycle poller would name a maintenance
+  branch the PR does not target; merging it publishes through the wrong one.
+  Worse than the dead-PR case, because it succeeds. The create path cannot trip
+  it: `agentCreatePr` opens against `base: releaseBranch` and echoes that value
+  back.
+
+  It is checked **twice, on purpose**. A PREFLIGHT (`findBranchPullRequest`,
+  exported from `github.ts` for exactly this) runs before `createBranchFrom`,
+  because `agentCreatePr` force-pushes the head branch *before* it decides
+  anything — so a caller that only inspects its RESULT has already replaced the
+  open PR's payload and voided its diff, checks and reviews, for a run it is
+  about to refuse. A typo'd `--release-branch` must not cost that. The check on
+  the returned value then stays as the authoritative one: the PR can be
+  retargeted between the two moments, and only it can guarantee `releaseBranch`
+  and `prNumber` describe the same pull request. The message says which of the
+  two fired, since "nothing happened yet" and "your PR's checks are now stale"
+  are different situations for the user.
+
+  Both guards, and most other failures, throw AFTER the worktree was rewritten —
+  which is why the route fires `onWorkspaceRewritten` from a `finally` rather
+  than after a successful return. But it fires it **only when the tree was
+  actually rewritten**, which `prepareRelease` reports through an `onTreeRewrite`
+  callback invoked at each `checkout -B`. Notifying unconditionally is NOT a free
+  simplification, and an earlier revision of this doc wrongly said it was: a
+  spurious call can rerun service setup or queue a Compose `reconcile()` (which
+  clears the service map, the poller and the log followers), and
+  `notifyWorkspaceRewritten` opens the install gate, tearing down install-gated
+  preview services before the content-key marker is checked. An auth failure, a
+  dirty tree or a prerelease tag touches no worktree and must disturb none of
+  that.
+
   **`--from` takes the incoming tree WHOLESALE (conflict-proof), it does NOT
   three-way merge.** A `--from main` release should ship exactly main's tree at the
   new version. A plain `git merge main` into `release/<version>` (built off
@@ -342,6 +394,12 @@ and the poller rehydrates phase from the live PR + tag/Release polls on restart.
 This is a required part of Phase 2, not an afterthought.
 
 ## Any repo — scaffold the workflow
+
+> **2026-09-02 — render module removed.** `src/server/orchestrator/templates-release.ts`,
+> its test, and `templates-release-files/` were deleted: the scaffold is written
+> by the agent from `src/server/shipit-docs/release.md`, and nothing ever called
+> `renderReleaseWorkflow` / `renderReleaseNotesConfig`. The bullets below
+> describe the original design for reference.
 
 When a repo has no release workflow, the agent scaffolds one and opens a PR (CI
 still does the publish). This is a chat-driven file write + the existing auto-PR

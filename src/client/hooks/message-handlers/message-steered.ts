@@ -1,17 +1,15 @@
 import type { WsMessageSteered } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { restorePredictedQueueEntries } from "../../utils/predicted-queue.js";
 import type { Handler } from "./types.js";
 
-/**
- * Live steering acknowledgement — the server echoes back a steered user message
- * so reconnecting viewers and other tabs see it in the turn event stream.
- *
- * The primary sender already inserted the message optimistically in handleSend,
- * so we skip adding it a second time if the last user message already matches.
- */
 export const handleMessageSteered: Handler<WsMessageSteered> = (_ctx, data) => {
+  // A steer feeds the message into the running process, so a row predicting it
+  // would WAIT in a queue was wrong. Restoring it first makes it the last user
+  // message, which the dedupe below then recognises as this steer's own.
+  restorePredictedQueueEntries(data.text);
   const session = useSessionStore.getState();
-  // Skip if the message is already shown (optimistic insert from the sender tab).
+
   const messages = session.messages;
   const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
   if (lastUserMsg?.text === data.text) {

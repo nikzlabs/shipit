@@ -17,8 +17,6 @@ export function CommentCard({
   showQuote: boolean;
   onEdit: (commentId: string, text: string) => void;
   onDelete: (commentId: string) => void;
-  /** Reports the in-place edit form opening/closing so the surface can block
-   *  "Send comments" on an unsaved edit. Also fires `false` on unmount. */
   onEditingChange?: (commentId: string, editing: boolean) => void;
   readOnly?: boolean;
 }) {

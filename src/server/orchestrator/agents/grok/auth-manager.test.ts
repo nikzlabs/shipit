@@ -1,14 +1,3 @@
-/**
- * XaiAuthManager unit tests (planning#435).
- *
- * Drives the manager with a fake `spawn` so the real `grok login --device-auth`
- * output can be replayed deterministically, byte-shaped from a live capture.
- * Two facts about that output are what this suite exists to lock, because both
- * differ from the Codex flow the manager is otherwise modelled on: the challenge
- * arrives on **stderr**, and the user code is **four-and-four** rather than
- * four-and-five.
- */
-
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -29,12 +18,9 @@ import {
   type SpawnFn,
   type XaiAuthPendingEvent,
 } from "./auth-manager.js";
+import type { AgentAuthLogPayload, AgentAuthProgressPayload } from "../auth-diagnostics.js";
 
-/**
- * The exact bytes `grok login --device-auth` wrote to stderr in a live container
- * on 2026-08-19 (CLI 1.0.1), ANSI escape included. Replayed verbatim rather than
- * paraphrased: a paraphrase is a test of the paraphrase.
- */
+// Captured from Grok 1.0.1 on 2026-08-19, including ANSI escapes.
 const REAL_STDERR = `
 To sign in, open this URL in your browser:
 
@@ -90,10 +76,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// ---------------------------------------------------------------------------
-// The challenge, as the CLI really prints it
-// ---------------------------------------------------------------------------
-
 describe("parsing the device-code challenge", () => {
   it("matches the URL and the four-and-four code in the real stderr", () => {
     expect(VERIFICATION_URL_PATTERN.exec(REAL_STDERR)?.[0]).toBe(
@@ -102,13 +84,6 @@ describe("parsing the device-code challenge", () => {
     expect(USER_CODE_PATTERN.exec(REAL_STDERR)?.[1]).toBe("NSJF-75ZB");
   });
 
-  /**
-   * The Codex pattern is `[A-Z0-9]{4}-[A-Z0-9]{5}`. Borrowing it here matches
-   * nothing at all, so the manager would emit no challenge and time out fifteen
-   * minutes later with the user staring at a dead button — a failure with no
-   * error anywhere. This is the assertion that says the two are not
-   * interchangeable.
-   */
   it("does not match a Codex-shaped four-and-five code", () => {
     expect(USER_CODE_PATTERN.exec("ABCD-EFGHI")?.[1]).toBeUndefined();
   });
@@ -128,8 +103,6 @@ describe("parsing the device-code challenge", () => {
     expect(pending).toHaveLength(1);
     expect(pending[0].verificationUri).toBe("https://accounts.x.ai/oauth2/device?user_code=NSJF-75ZB");
     expect(pending[0].userCode).toBe("NSJF-75ZB");
-    // The normalized event is what the SSE wiring rebroadcasts; the client's
-    // device-code card reads `kind` to decide which shape to render.
     expect(normalized).toEqual([
       { kind: "device-code", verificationUri: pending[0].verificationUri, userCode: "NSJF-75ZB", expiresInSec: 900 },
     ]);
@@ -144,25 +117,18 @@ describe("parsing the device-code challenge", () => {
     mgr.on("xai_auth_pending", (ev: XaiAuthPendingEvent) => pending.push(ev));
 
     mgr.start({ accountId: "acct_1", credentialDir: tempRoot() });
-    // Split mid-URL, so a naive per-chunk match would find neither half.
     emit(proc.stderr, REAL_STDERR.slice(0, 60));
     await new Promise((r) => setImmediate(r));
     expect(pending).toHaveLength(0);
     emit(proc.stderr, REAL_STDERR.slice(60));
     await new Promise((r) => setImmediate(r));
     expect(pending).toHaveLength(1);
-    // More output afterwards ("Waiting for authorization…" repeats) must not
-    // re-announce a challenge the user is already looking at.
     emit(proc.stderr, "Waiting for authorization...\n");
     await new Promise((r) => setImmediate(r));
     expect(pending).toHaveLength(1);
     mgr.cancel();
   });
 });
-
-// ---------------------------------------------------------------------------
-// Where the CLI is pointed
-// ---------------------------------------------------------------------------
 
 describe("scoping the flow to one account", () => {
   it("points GROK_HOME at the account's .grok directory, not the home above it", () => {
@@ -176,23 +142,13 @@ describe("scoping the flow to one account", () => {
     expect(calls[0].cmd).toBe("grok");
     expect(calls[0].args).toEqual(["login", "--device-auth"]);
     expect(calls[0].env.HOME).toBe(root);
-    // `GROK_HOME` IS the `.grok` dir (see `shared/agent-home.ts`). One level off
-    // points the CLI at a config root beside its credentials, which surfaces as
-    // "not authenticated" rather than as an error naming a path.
     expect(calls[0].env.GROK_HOME).toBe(path.join(root, ".grok"));
     expect(grokConfigDirFor(root)).toBe(path.join(root, ".grok"));
     expect(grokAuthFileFor(root)).toBe(path.join(root, ".grok", "auth.json"));
-    // Created ahead of the spawn: the CLI writes the file but expects a parent.
     expect(fs.existsSync(path.join(root, ".grok"))).toBe(true);
     mgr.cancel();
   });
 
-  /**
-   * The scoped home is only as good as the environment around it. `XAI_API_KEY`
-   * out-prefers the on-disk login and `GROK_AUTH` / `GROK_AUTH_PATH` redirect the
-   * CLI at a different token store entirely — so a login run with any of them
-   * inherited could write, or authenticate, somewhere no session ever reads.
-   */
   it("scrubs the environment credentials that would redirect the CLI", () => {
     const { spawnFn, calls } = makeSpawn();
     const prior = {
@@ -221,10 +177,6 @@ describe("scoping the flow to one account", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
-
 describe("the flow's terminal states", () => {
   it("completes only when the CLI exits 0 AND the credentials landed", async () => {
     const root = tempRoot();
@@ -235,8 +187,6 @@ describe("the flow's terminal states", () => {
     mgr.on("failed", () => events.push("failed"));
 
     mgr.start({ accountId: "acct_1", credentialDir: root });
-    // Exit 0 with nothing written is a FAILURE, not a success: the CLI can exit
-    // cleanly on a cancelled browser tab.
     proc.emit("close", 0);
     await new Promise((r) => setImmediate(r));
     expect(events).toEqual(["failed"]);
@@ -247,8 +197,6 @@ describe("the flow's terminal states", () => {
     let accountAtComplete: string | null = null;
     mgr2.on("complete", () => {
       events2.push("complete");
-      // Read SYNCHRONOUSLY by the SSE wiring, so the scope must still be set
-      // when the handler runs and cleared only after it returns.
       accountAtComplete = mgr2.getActiveAccountId();
     });
     mgr2.on("failed", () => events2.push("failed"));
@@ -265,8 +213,8 @@ describe("the flow's terminal states", () => {
     vi.useFakeTimers();
     const { proc, spawnFn } = makeSpawn();
     const mgr = new XaiAuthManager({ spawn: spawnFn, checkAuthFile: () => false, timeoutMs: 1_000 });
-    const failures: { reason?: string }[] = [];
-    mgr.on("failed", (payload: { reason?: string }) => failures.push(payload));
+    const failures: ({ reason?: string } | undefined)[] = [];
+    mgr.on("failed", (payload) => { failures.push(payload); });
 
     mgr.start({ accountId: "acct_1", credentialDir: tempRoot() });
     vi.advanceTimersByTime(1_000);
@@ -284,8 +232,6 @@ describe("the flow's terminal states", () => {
     emit(proc.stderr, REAL_STDERR);
     await new Promise((r) => setImmediate(r));
 
-    // A page reload mid-flow: the UI has lost the code and the CLI is still
-    // polling, so a second `start` must replay rather than spawn.
     mgr.on("xai_auth_pending", (ev: XaiAuthPendingEvent) => pending.push(ev));
     mgr.start({ accountId: "acct_1", credentialDir: tempRoot() });
     expect(calls).toHaveLength(1);
@@ -307,27 +253,12 @@ describe("the flow's terminal states", () => {
 
     expect(fs.existsSync(grokAuthFileFor(rootA))).toBe(false);
     expect(fs.existsSync(grokAuthFileFor(rootB))).toBe(true);
-    // Idempotent — sign-out runs from several paths.
     expect(() => mgr.signOut({ credentialDir: rootA })).not.toThrow();
   });
 });
 
-// ---------------------------------------------------------------------------
-// Reading the credential file
-// ---------------------------------------------------------------------------
-
 describe("reading a scope-keyed auth.json", () => {
-  /**
-   * The REAL shape, from a live `grok login --device-auth` on 2026-08-19,
-   * secrets replaced and everything else verbatim. Three details were each
-   * guessed wrong before this file existed, and every one of them is a silent
-   * failure rather than a loud one:
-   *
-   *   - the scope key is `https://auth.x.ai::<client-uuid>`, which no fixed-key
-   *     reader could ever have matched;
-   *   - the access token is `key`, not `access_token`;
-   *   - `expires_at` is an ISO-8601 **string**, not a number.
-   */
+  // Captured on 2026-08-19 with secrets replaced.
   const real = {
     "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
       key: `${Buffer.from(JSON.stringify({ typ: "at+jwt" })).toString("base64url")}.`
@@ -354,20 +285,8 @@ describe("reading a scope-keyed auth.json", () => {
     });
   });
 
-  /**
-   * The ISO expiry, and this is the assertion that matters most in the file.
-   *
-   * A freshness reader that returns null does NOT fail safe: `syncAgentTokenIn`
-   * skips its copy only when it can prove the session's token is at least as
-   * fresh, so an unreadable expiry makes every sync copy unconditionally — and a
-   * session that had just refreshed loses its live token to a stale source. The
-   * first cut of the reader accepted only numeric expiries and so did exactly
-   * that on every real file.
-   */
   it("parses the ISO-8601 expires_at the CLI really writes", () => {
     expect(readXaiTokenFreshness(real)).toBe(Date.parse("2026-08-19T19:37:53.982Z"));
-    // Six hours after `create_time` — the measurement behind req 13's "~6h", so
-    // a future CLI that shortens it makes this fail rather than pass quietly.
     const lifetimeMs = Date.parse(real["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"].expires_at)
       - Date.parse(real["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"].create_time);
     expect(lifetimeMs).toBe(6 * 60 * 60 * 1000);
@@ -376,8 +295,6 @@ describe("reading a scope-keyed auth.json", () => {
   it("falls back to the access token's JWT exp when no expiry field parses", () => {
     const scope = { ...real["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"] };
     delete (scope as Partial<typeof scope>).expires_at;
-    // `exp` advances on every refresh, so it is a true freshness signal and not
-    // merely a fallback that happens to return a number.
     expect(readXaiTokenFreshness({ s: scope })).toBe(1_787_168_273_000);
   });
 
@@ -386,11 +303,6 @@ describe("reading a scope-keyed auth.json", () => {
     expect(extractXaiIdentity({ access_token: "t", user_id: "u-1" })).toEqual({ externalId: "u-1" });
   });
 
-  /**
-   * `user_id` and not the email, because an email can change under one account —
-   * so two rows holding the same subscription must still collide on the id.
-   * Identity with no email is legal; the email is a label default only.
-   */
   it("keys identity on user_id, and reports none when there is no id", () => {
     expect(extractXaiIdentity({ s: { key: "t", email: "a@b.c" } })).toBeNull();
     expect(extractXaiIdentity({ s: { user_id: "u-2" } })).toEqual({ externalId: "u-2" });
@@ -398,16 +310,249 @@ describe("reading a scope-keyed auth.json", () => {
 
   it("reports no freshness for an unparseable file rather than a fake one", () => {
     const file = path.join(tempRoot(), "auth.json");
-    // Missing: "cannot prove this is newer". The sync guards read that as "copy
-    // the source in", which is the safe direction for a session with no token.
     expect(readXaiTokenFreshnessFile(file)).toBeNull();
     fs.writeFileSync(file, "not json at all");
     expect(readXaiTokenFreshnessFile(file)).toBeNull();
     fs.writeFileSync(file, JSON.stringify({ s: { key: "not-a-jwt" } }));
     expect(readXaiTokenFreshnessFile(file)).toBeNull();
     fs.writeFileSync(file, JSON.stringify({ s: { expires_at: 1_800_000_000 } }));
-    // A numeric seconds expiry still scales to ms, so a future CLI that swapped
-    // the ISO string for a number does not read as 1970 and lose every compare.
     expect(readXaiTokenFreshnessFile(file)).toBe(1_800_000_000_000);
+  });
+});
+
+/**
+ * The sign-in diagnostics panel in Settings renders whatever a manager reports,
+ * for any harness. This one reported nothing: a `grok login` that failed left
+ * the user `grok login exited with code 1`, while the CLI's own explanation
+ * went to the orchestrator log, truncated at 500 characters, where no user can
+ * read it.
+ */
+describe("what the Grok sign-in reports to the panel", () => {
+  const URL = "https://accounts.x.ai/oauth2/device";
+  const settle = () => new Promise((r) => setImmediate(r));
+  /** Empty, so `credentials=absent` is the real answer rather than a stub's. */
+  const diagDir = tempRoot;
+
+  /** `makeSpawn` reuses one process; a stale-run test needs a fresh one each time. */
+  function makeSpawnPerCall(): { procs: FakeChildProcess[]; spawnFn: SpawnFn } {
+    const procs: FakeChildProcess[] = [];
+    const spawnFn: SpawnFn = () => {
+      const proc = new FakeChildProcess();
+      procs.push(proc);
+      return proc as unknown as ChildProcess;
+    };
+    return { procs, spawnFn };
+  }
+
+  function startWithDiagnostics() {
+    const { proc, spawnFn } = makeSpawn();
+    const mgr = new XaiAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    const logs: AgentAuthLogPayload[] = [];
+    const progress: AgentAuthProgressPayload[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("progress", (p) => progress.push(p));
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+    return { proc, mgr, logs, progress, panel: () => logs.map((l) => l.message).join("\n") };
+  }
+
+  /**
+   * The terminal used to get each CHUNK, redacted on its own — which is half a
+   * secret when the split fell inside one, and `console.log` has no relay behind
+   * it to put the halves back together. The panel was clean the whole time.
+   */
+  it("logs the relayed line, never the chunk it arrived in", async () => {
+    const written: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      written.push(args.map((a) => String(a)).join(" "));
+    });
+    try {
+      const { proc } = startWithDiagnostics();
+      emit(proc.stderr, "  Waiting for con");
+      await settle();
+      emit(proc.stderr, "firmation of the device code\n");
+      await settle();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const output = written.filter((line) => line.includes("xai-auth output"));
+    expect(output.some((line) => line.trimEnd().endsWith("con")), "logged a chunk on its own").toBe(false);
+    expect(output.some((line) => line.includes("Waiting for confirmation"))).toBe(true);
+  });
+
+  /**
+   * `cancel()` detaches `close`, so the flush that path does never runs — and a
+   * CLI that stopped part-way through its last sentence is exactly the failure
+   * the user is cancelling to read about.
+   */
+  it("flushes the unterminated final line when the sign-in is cancelled", async () => {
+    const { mgr, proc, panel } = startWithDiagnostics();
+    emit(proc.stderr, "Error: your account is not eligible.");
+    await settle();
+
+    mgr.cancel();
+
+    expect(panel()).toContain("Error: your account is not eligible.");
+  });
+
+  /**
+   * Grok 1.0.1 prints everything — the challenge included — on stderr, so a
+   * stderr line here is ordinary progress. The source says which stream it came
+   * from; levelling it `error` would paint a healthy sign-in red.
+   */
+  it("relays stderr as ordinary output, scoped to this login and account", async () => {
+    const { proc, logs } = startWithDiagnostics();
+    emit(proc.stderr, "Waiting for authorization...\n");
+    await settle();
+
+    const line = logs.find((l) => l.message === "Waiting for authorization...");
+    expect(line?.source).toBe("cli_stderr");
+    expect(line?.level).toBe("info");
+    expect(line).toMatchObject({ loginId: "xai-oauth", accountId: "acct-1" });
+    expect(line?.attemptId).toBeTruthy();
+  });
+
+  /** The real thing, ANSI escapes and all: neither secret may reach the panel. */
+  it("keeps the code and the link's query string out of the real captured stderr", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emit(proc.stderr, REAL_STDERR);
+    await settle();
+
+    expect(panel(), "leaked the device code").not.toContain("NSJF-75ZB");
+    expect(panel()).toContain("[code-redacted]");
+    // The link is all query string; the usable one is the challenge's button.
+    expect(panel()).toContain("Only continue with a code you requested");
+  });
+
+  /**
+   * The heart of it: every redaction protecting this panel is a whole-STRING
+   * rule, so relaying a chunk at a time defeats them. A device code split
+   * anywhere stops matching the pattern that removes it.
+   */
+  it("redacts a device code the CLI's output split across two chunks", async () => {
+    const { proc, logs, panel } = startWithDiagnostics();
+    emit(proc.stderr, "  NSJF");
+    emit(proc.stderr, "-75ZB\n");
+    await settle();
+
+    expect(panel()).toContain("[code-redacted]");
+    // Not just "the whole code is absent": a chunk relay would emit the two
+    // halves as separate entries, and joining them would hide that.
+    expect(logs.some((l) => /NSJF|75ZB/.test(l.message)), "leaked half the code").toBe(false);
+  });
+
+  it("redacts a verification URL's query string when the split lands inside it", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    // `device_code`, not `state`: no assignment rule names it and it is under the
+    // long-secret threshold, so ONLY the URL rule can remove it.
+    const url = `${URL}?user_code=AAAA-BBBB&device_code=private-grant`;
+    const at = url.indexOf("&dev") + 4;
+    emit(proc.stderr, `open this URL: ${url.slice(0, at)}`);
+    emit(proc.stderr, `${url.slice(at)}\n`);
+    await settle();
+
+    expect(panel(), "leaked the link's query string").not.toContain("private-grant");
+  });
+
+  /**
+   * The marker is substituted into the line the URL rule then has to match, so
+   * it must contain no whitespace: a URL ends at the first space, and a spaced
+   * marker inside a link truncates what the sanitizer sees, publishing every
+   * query parameter after the code in the clear.
+   */
+  it("does not let the code's removal expose the query parameters after it", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emit(proc.stderr, `  ${URL}?user_code=NSJF-75ZB&device_code=private-grant\n`);
+    await settle();
+
+    expect(panel(), "leaked a parameter after the redacted code").not.toContain("private-grant");
+    expect(panel()).not.toContain("NSJF-75ZB");
+  });
+
+  /**
+   * A CLI that hangs part-way through its last sentence is exactly the failure
+   * whose explanation has no newline after it — and the timeout path kills the
+   * process with `killProc`, which detaches the `close` handler that flushes.
+   */
+  it("flushes the unterminated final line when the flow times out", async () => {
+    const { proc, spawnFn } = makeSpawn();
+    const mgr = new XaiAuthManager({ spawn: spawnFn, checkAuthFile: () => false, timeoutMs: 20 });
+    const logs: AgentAuthLogPayload[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("failed", () => { /* the timeout's own failure */ });
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+    emit(proc.stderr, "Error: this account cannot use Grok Build.");
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(logs.map((l) => l.message).join("\n"))
+      .toContain("Error: this account cannot use Grok Build.");
+  });
+
+  /** A CLI's last word — the sentence explaining a failure — carries no newline. */
+  it("flushes the unterminated final line when the process exits", async () => {
+    const { proc, panel } = startWithDiagnostics();
+    emit(proc.stderr, "Error: this account cannot use Grok Build.");
+    await settle();
+    proc.emit("close", 1);
+    await settle();
+
+    expect(panel()).toContain("Error: this account cannot use Grok Build.");
+  });
+
+  /**
+   * The one line that says which branch the exit took. It was on the terminal
+   * only, which the user cannot read — and a failure is exactly when they need it.
+   */
+  it("puts the line that explains the ending in the panel, not only the terminal", async () => {
+    const { proc, logs } = startWithDiagnostics();
+    proc.emit("close", 1);
+    await settle();
+
+    const ending = logs.find((l) => l.message.startsWith("sign-in ended"));
+    expect(ending?.message).toContain("exit=1");
+    expect(ending?.message).toContain("credentials=absent");
+  });
+
+  /**
+   * A cancelled run keeps draining — `cancel()` detaches `close` and `error`,
+   * never `data` — and by then the manager may be running the NEXT account's
+   * flow, so unguarded output lands on that account's panel and its expired
+   * challenge is replayed as that account's code.
+   */
+  it("ignores a cancelled run's output instead of charging it to the next account", async () => {
+    const { procs, spawnFn } = makeSpawnPerCall();
+    const mgr = new XaiAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    mgr.startDeviceFlow({ accountId: "acct-1", credentialDir: diagDir() });
+    const stale = procs[0];
+    const logs: AgentAuthLogPayload[] = [];
+    const pending: XaiAuthPendingEvent[] = [];
+    mgr.on("log", (p) => logs.push(p));
+    mgr.on("xai_auth_pending", (ev: XaiAuthPendingEvent) => pending.push(ev));
+
+    // Both halves of the guard: every kill path clears `this.proc` BEFORE the
+    // signal, so a dead run is already foreign whether or not a successor
+    // exists — the identity compared is the process object, which a cancel
+    // cannot leave stale the way an un-advanced generation counter can.
+    mgr.cancel();
+    emit(stale.stderr, REAL_STDERR);
+    await settle();
+    expect(logs, "a cancelled run kept reporting").toEqual([]);
+
+    mgr.startDeviceFlow({ accountId: "acct-2", credentialDir: diagDir() });
+    emit(stale.stderr, REAL_STDERR);
+    await settle();
+
+    expect(logs, "charged a dead run's output to the next account").toEqual([]);
+    expect(pending, "replayed the cancelled run's challenge").toEqual([]);
+  });
+
+  it("says where the sign-in has got to, before and after the challenge arrives", async () => {
+    const { proc, progress } = startWithDiagnostics();
+    expect(progress.map((p) => p.phase)).toEqual(["starting", "waiting_for_url"]);
+    expect(progress[0]).toMatchObject({ loginId: "xai-oauth", accountId: "acct-1" });
+
+    emit(proc.stderr, REAL_STDERR);
+    await settle();
+    expect(progress.at(-1)).toMatchObject({ phase: "waiting_for_code" });
   });
 });

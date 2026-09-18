@@ -10,25 +10,8 @@ interface MobileStatusPanelProps {
   processStartedAt: number | null;
 }
 
-/**
- * Mobile-only rendering of the header status pills. On desktop the
- * pills sit inline with hover tooltips carrying the long form
- * (start date, memory percentage, plan name). Mobile has no hover,
- * so this panel surrounds each pill with a label header and an
- * explanatory caption so the popover is self-describing.
- *
- * Radix unmounts `PopoverContent` on close, so this component mounts exactly
- * when the dropdown opens — which is what `autoRefresh` on the subscription
- * badge hangs off. Opening the dropdown is the user asking for the number, so
- * it spends one `/api/oauth/usage` call (throttled, lockout-aware) instead of
- * making them tap the refresh glyph as a second step.
- */
 export function MobileStatusPanel({ subscriptionLimits, dockerMemory, processStartedAt }: MobileStatusPanelProps) {
-  // Ask the badge what it would render rather than re-deriving it. This read
-  // "any connected account, or any snapshot", which was the same answer until
-  // docs/274 req 16: an xAI subscription reports no quota ShipIt can read, so
-  // it has an account and no pill — and the two conditions disagreeing puts a
-  // "Subscription" heading above an empty box.
+
   const hasSubscription = useSubscriptionPillCount(subscriptionLimits) > 0;
   const hasMemoryLimit = dockerMemory && dockerMemory.totalBytes > 0;
 

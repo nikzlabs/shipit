@@ -61,43 +61,12 @@ function groupBandStyle(color: string | undefined): React.CSSProperties | undefi
  */
 const HEADER_BASE_CLASS = "bg-(--color-bg-primary)";
 
-/**
- * Gap below a separated group. Without it two adjacent edges meet and read as
- * ONE continuous rail that changes color partway down, which is the opposite of
- * the "each repo owns a bounded run" the edge exists to convey. Zero when
- * unseparated, so the unseparated sidebar keeps exactly its previous spacing.
- */
 export const GROUP_GAP_CLASS = "mb-1.5";
 
-/**
- * Inset above and below a separated group's rows — 4px, deliberately the SAME as
- * the list's own `gap-1` row-to-row spacing. One rhythm inside the group: the
- * first row sits the same distance below the header band as the rows sit from
- * each other, and the colored edge stops the same distance below the last row.
- * Anything larger reads as the edge overshooting its content.
- *
- * Only applied when separated. Without a band there is nothing to clear, and the
- * unseparated group keeps its original `pb-2`.
- */
 export const BAND_CLEARANCE_CLASS = "pt-1 pb-1";
 
-/**
- * The vertical rhythm between session rows, 4px. It lives on the LIST as a flex
- * `gap`, so a row itself carries no vertical margin — which means any wrapper
- * interposed between the list and the rows swallows the gap for everything
- * inside it, silently and only for that subtree. That is exactly what the
- * pinned sub-section's drag shell did (docs/110 Phase 2): a pinned session and
- * its spawned children sat flush against each other while every other row in
- * the sidebar kept its 4px. So a wrapper that holds rows re-declares
- * `flex flex-col` + this class rather than leaving the rhythm to its parent.
- */
 export const ROW_GAP_CLASS = "gap-1";
 
-/**
- * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
- * the server-authoritative `kind: "ops"` field, separate from repo and orphan
- * groups, with a Wrench icon so it reads as "the host tools" rather than a repo.
- */
 export function OpsSessionGroup({
   sessions,
   currentSessionId,
@@ -117,13 +86,11 @@ export function OpsSessionGroup({
   onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
   isTouch: boolean;
-  /** docs/254 — whether the sidebar is drawing per-group identity edges. */
+
   separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
-  // docs/254-repo-group-separation req 10 — a non-repo group gets its OWN semantic color, not a
-  // palette entry, so the palette keeps meaning "a repository". Ops is amber,
-  // matching the warning tone this group's docstring has always described.
+
   const color = separated ? "var(--color-warning)" : undefined;
   const edge = groupEdgeStyle(color);
   return (
@@ -168,12 +135,6 @@ export function OpsSessionGroup({
   );
 }
 
-/**
- * docs/211 — pinned group for repo-less, capability-scoped sandbox sessions.
- * Keyed off the server-authoritative `kind: "sandbox"` field (NOT the orphan
- * `remoteUrl ?? ""` bucket), with a teal Cube icon distinguishing it from the
- * amber ops group and repo groups.
- */
 export function SandboxSessionGroup({
   sessions,
   currentSessionId,
@@ -193,12 +154,11 @@ export function SandboxSessionGroup({
   onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
   isTouch: boolean;
-  /** docs/254 — whether the sidebar is drawing per-group identity edges. */
+
   separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
-  // docs/254-repo-group-separation req 10 — semantic color, not a palette entry. Sandbox already owns
-  // teal (`--color-sandbox`) on its Cube icon; the edge reuses it.
+
   const color = separated ? "var(--color-sandbox)" : undefined;
   const edge = groupEdgeStyle(color);
   return (
@@ -243,7 +203,6 @@ export function SandboxSessionGroup({
   );
 }
 
-/** Drop indicator: "before" puts the dragged repo above this one, "after" below. */
 export type DropPosition = "before" | "after";
 
 export function OrphanSessionGroup({
@@ -289,7 +248,6 @@ export function OrphanSessionGroup({
   );
 }
 
-/** A collapsible group of sessions for a single repo. */
 export function RepoGroup({
   repo,
   sessions,
@@ -312,7 +270,7 @@ export function RepoGroup({
   onHideRepo,
   onRemoveRepo,
   isTouch,
-  // Drag-and-drop reordering
+
   draggable,
   isBeingDragged,
   dropIndicator,
@@ -329,15 +287,12 @@ export function RepoGroup({
   isNewSessionSelected: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
-  /** docs/161 — whether this repo's "Recently resolved" sub-section is collapsed. */
+
   isResolvedCollapsed: boolean;
   onToggleResolvedCollapsed: () => void;
   collapsedParents: Set<string>;
   onToggleParentCollapsed: (parentId: string) => void;
-  /**
-   * Root session IDs whose resolved (merged/closed) spawned children are shown.
-   * Absence = hidden, the default — see the store field of the same name.
-   */
+
   expandedResolvedChildren: Set<string>;
   onToggleResolvedChildren: (rootId: string) => void;
   onResume: (id: string) => void;
@@ -349,39 +304,27 @@ export function RepoGroup({
   onHideRepo: () => void;
   onRemoveRepo: () => void;
   isTouch: boolean;
-  // Drag-and-drop reordering — only enabled when there's more than one repo.
+
   draggable: boolean;
-  /** True when this group is the source of the active drag. */
+
   isBeingDragged: boolean;
-  /** Where to render the drop indicator line; null when this group is not a target. */
+
   dropIndicator: DropPosition | null;
   onDragStart: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDragLeave: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
   onDragEnd: (e: React.DragEvent) => void;
-  /**
-   * docs/254 — draw the per-repo identity edge + header band. False when the
-   * sidebar shows a single repo (req 11): there is nothing to separate it from,
-   * so the treatment would be pure chrome.
-   */
+
   separated: boolean;
 }) {
   const repoName = parseRepoName(repo.url);
-  // docs/254 — `colorIndex` is undefined only for a row written by a build
-  // older than the backfill migration; such a repo simply gets no edge rather
-  // than an arbitrary one, so the color a user sees is always one that's stored.
+
   const color = separated && repo.colorIndex !== undefined ? repoColorVar(repo.colorIndex) : undefined;
   const edge = groupEdgeStyle(color);
 
-  // FLIP animation for session rows reordering (PR merged sinks to bottom) or
-  // exiting (archive). Library defaults — single duration/easing per parent,
-  // respects prefers-reduced-motion automatically. See docs/148.
   const [listRef] = useAutoAnimate<HTMLDivElement>();
 
-  // docs/110 Phase 2 — drag-to-reorder within the pinned set. Ordered pinned
-  // top-level sessions for THIS repo group (a child whose parent is in the group
-  // renders under the parent, so it's excluded here). Reorder rewrites pinnedAt.
   const pinnedSessions = useMemo(() => {
     const inGroup = new Set(sessions.map((s) => s.id));
     return sessions
@@ -395,15 +338,13 @@ export function RepoGroup({
   const [pinDragId, setPinDragId] = useState<string | null>(null);
   const [pinDropTarget, setPinDropTarget] = useState<{ id: string; position: "before" | "after" } | null>(null);
 
-  // Native HTML5 DnD, gated by a session-scoped MIME type so a stray text drag
-  // can't look like a pin reorder (mirrors the repo-group reordering above).
   const onPinDragStart = useCallback((id: string) => (e: React.DragEvent) => {
     e.dataTransfer.setData("application/x-shipit-pinned-session", id);
     e.dataTransfer.effectAllowed = "move";
     setPinDragId(id);
   }, []);
   const onPinDragOver = useCallback((id: string) => (e: React.DragEvent) => {
-    if (!pinDragId) return; // not a pin-reorder drag — let other drops bubble
+    if (!pinDragId) return;                                                   
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     if (id === pinDragId) { setPinDropTarget(null); return; }
@@ -431,7 +372,7 @@ export function RepoGroup({
     if (targetIdx === -1) return;
     if (position === "after") targetIdx += 1;
     next.splice(targetIdx, 0, sourceId);
-    if (next.join("\n") === pinnedIds.join("\n")) return; // dropped back in place
+    if (next.join("\n") === pinnedIds.join("\n")) return;                         
     void useSessionStore.getState().reorderPins(repo.url, next);
   }, [pinDragId, pinDropTarget, pinnedIds, repo.url]);
   const onPinDragEnd = useCallback(() => {
@@ -442,10 +383,7 @@ export function RepoGroup({
   return (
     <div
       className={`flex flex-col relative ${separated ? GROUP_GAP_CLASS : ""} ${isBeingDragged ? "opacity-40" : ""}`}
-      // docs/254 — the edge is a border on THIS element (see groupEdgeStyle):
-      // it spans the header, the pinned sub-section, `New session`, every
-      // session row and `Recently resolved`, and keeps painting behind the
-      // sticky header while it's pinned.
+
       style={edge}
       data-repo-color-index={separated ? repo.colorIndex : undefined}
       onDragOver={draggable ? onDragOver : undefined}
@@ -520,11 +458,9 @@ export function RepoGroup({
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              // docs/222 — pure visibility toggle: drops the repo (and its
-              // sessions) from the sidebar without archiving anything. Reversible
-              // via the "Hidden" section or by re-adding. Acts inline (no confirm)
+
               // because nothing is destroyed; normal styling, NOT the destructive
-              // red reserved for Remove below.
+
               onSelect={onHideRepo}
             >
               <EyeSlashIcon size={ICON_SIZE.XS} className="shrink-0" />
@@ -532,9 +468,7 @@ export function RepoGroup({
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              // Opens a confirmation dialog (RemoveRepoDialog) rather than acting
-              // inline: removal archives every session and reclaims their disk, so
-              // the user gets an explicit deleted-vs-kept breakdown first.
+
               onSelect={onRemoveRepo}
               className="text-(--color-error) hover:text-(--color-error) focus:text-(--color-error)"
             >
@@ -548,10 +482,7 @@ export function RepoGroup({
       {!isCollapsed && (
         <div ref={listRef} data-testid="group-session-list" className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : "pb-2"}`}>
           {(() => {
-            // New session row — matches SessionItem shape so it can render as
-            // selected. docs/110 — rendered below the pinned sub-section (see the
-            // return) so pinned sessions stay anchored to the very top; when there
-            // are no sessions at all it's the only row.
+
             const newSessionButton = (
               <button
                 type="button"
@@ -571,27 +502,18 @@ export function RepoGroup({
               </button>
             );
             if (sessions.length === 0) return newSessionButton;
-            // docs/117 Phase 2 — render agent-spawned children indented under
-            // their parent. We bucket children by `parentSessionId`, iterate
-            // top-level sessions in the existing stable order, then immediately
-            // follow each parent with its children (also in stable order). A
-            // child whose parent isn't visible in this repo group (archived
-            // out of the list, cross-repo, etc.) is rendered at top level as
+
             // a fallback so it never silently disappears from the sidebar.
             return (() => {
-              // docs/201 — bucket the whole spawn brood (children + grandchildren
-              // + deeper) by its ROOT ancestor, so descendants at any depth render
-              // under one top-level session at a single indent level. Keying off
-              // `rootSessionId` (not the immediate `parentSessionId`) is what makes
-              // a grandchild visible: the old one-level map only nested direct
+
               // children, so a child-of-a-child was never rendered. A session whose
-              // root isn't present in this repo group (cross-repo, archived/merged
+
               // out) falls back to top level so it never silently disappears.
               const idsInGroup = new Set(sessions.map((s) => s.id));
               const broodByRoot = new Map<string, SessionInfo[]>();
               const orphanedChildren = new Set<string>();
               for (const s of sessions) {
-                if (!s.rootSessionId) continue; // top-level session, not part of a brood
+                if (!s.rootSessionId) continue;                                          
                 if (!idsInGroup.has(s.rootSessionId)) {
                   orphanedChildren.add(s.id);
                   continue;
@@ -602,12 +524,9 @@ export function RepoGroup({
               }
               const isRecentlyResolvedForGroup = (s: SessionInfo): boolean =>
                 isResolvedForGrouping(s, { hasVisibleBrood: broodByRoot.has(s.id) });
-              // Render a top-level (root) session followed by its (non-collapsed)
-              // brood into `target`. The brood stays together; a root with a
-              // visible brood stays Active even after its PR resolves so spawned
+
               // work is never automatically moved under "Recently resolved". The
-              // brood's OWN resolved members are tucked behind a per-root
-              // toggle (see below) rather than leaving the sidebar.
+
               const pushTree = (s: SessionInfo, target: React.ReactElement[]) => {
                 const brood = broodByRoot.get(s.id);
                 const childCount = brood?.length ?? 0;
@@ -627,20 +546,15 @@ export function RepoGroup({
                   />,
                 );
                 if (!brood || childrenCollapsed) return;
-                // A brood member that is ITSELF a parent inside the brood is
+
                 // never tucked away: hiding it would leave its own descendants
-                // rendered (they sit at the same indent level) with no visible
-                // ancestor. Mirrors `parentsWithChildren` in the group sort, so
-                // this split agrees with the order the list already arrives in.
+
                 const parentsInBrood = new Set<string>();
                 for (const m of brood) {
                   if (m.parentSessionId) parentsInBrood.add(m.parentSessionId);
                 }
                 // A PINNED member is never tucked away either: docs/110 —
-                // an explicit pin outranks the automatic resolved-demotion. A
-                // pinned child stays under its parent rather than joining the
-                // pinned sub-section (see the `pinnedSessions` memo), so this
-                // split is its ONLY render path.
+
                 const isResolvedMember = (m: SessionInfo): boolean =>
                   isResolvedForGrouping(m, { hasVisibleBrood: parentsInBrood.has(m.id) });
                 const renderMember = (member: SessionInfo) => (
@@ -660,12 +574,7 @@ export function RepoGroup({
                   if (isResolvedMember(member)) resolvedMembers.push(member);
                   else target.push(renderMember(member));
                 }
-                // A big feature spawns 10-15 children and most of them end
-                // merged, so the resolved tail of a brood is hidden behind its
-                // own control — the same affordance as the repo-level "Recently
-                // resolved" section, but collapsed by default and only rendered
-                // when the brood actually has a resolved member. The one extra
-                // row it costs is paid back by every merged child it hides.
+
                 if (resolvedMembers.length === 0) return;
                 const resolvedShown = expandedResolvedChildren.has(s.id);
                 const countLabel = `${resolvedMembers.length} resolved spawned session${resolvedMembers.length === 1 ? "" : "s"}`;
@@ -694,15 +603,7 @@ export function RepoGroup({
                 if (!resolvedShown) return;
                 for (const member of resolvedMembers) target.push(renderMember(member));
               };
-              // docs/161 — split into Active and a demoted "Recently resolved"
-              // group (merged OR closed-without-merge). The session list is
-              // already sorted (active first, then resolved by resolve time
-              // desc), so iterating in order keeps each group sorted.
-              // docs/110 — pinned (persistent) sessions form a sub-section pinned
-              // to the top of the repo group (ordered by pinnedAt desc; see the
-              // component-level pinnedSessions memo). Each pin's tree is wrapped in
-              // a draggable shell for Phase 2 reordering, and skipped in the
-              // Active/Resolved split below so a pin outranks recency + demotion.
+
               const pinned: React.ReactElement[] = pinnedSessions.map((s) => {
                 const tree: React.ReactElement[] = [];
                 pushTree(s, tree);
@@ -716,9 +617,7 @@ export function RepoGroup({
                     onDragLeave={pinReorderEnabled ? onPinDragLeave(s.id) : undefined}
                     onDrop={pinReorderEnabled ? onPinDrop(s.id) : undefined}
                     onDragEnd={pinReorderEnabled ? onPinDragEnd : undefined}
-                    // A flex column with the list's own row gap: the shell sits
-                    // BETWEEN the list and the rows, so without it the pin's
-                    // session and its children render flush (see ROW_GAP_CLASS).
+
                     className={`relative flex flex-col ${ROW_GAP_CLASS} ${pinDragId === s.id ? "opacity-40" : ""}`}
                   >
                     {pinDropTarget?.id === s.id && pinDropTarget.position === "before" && (
@@ -734,11 +633,9 @@ export function RepoGroup({
               const active: React.ReactElement[] = [];
               const resolved: React.ReactElement[] = [];
               for (const s of sessions) {
-                // docs/201 — skip brood members; they render beneath their root
-                // (keyed by rootSessionId). Orphans (root not in this group) fall
-                // through to render at top level.
+
                 if (s.rootSessionId && !orphanedChildren.has(s.id)) continue;
-                if (pinnedIdSet.has(s.id)) continue; // rendered in the pinned sub-section
+                if (pinnedIdSet.has(s.id)) continue;                                      
                 pushTree(s, isRecentlyResolvedForGroup(s) ? resolved : active);
               }
               return (

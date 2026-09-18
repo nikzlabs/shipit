@@ -42,12 +42,12 @@ import { useSessionStore } from "../stores/session-store.js";
 import { loadPresentContent } from "../utils/present-content-fetch.js";
 import { kindFromMimeType } from "../utils/file-content-kind.js";
 import { RenderedFrame } from "./FileContentView/RenderedFrame.js";
-import { MarkdownContent } from "./message-markdown.js";
+import { MarkdownContent, useShipitPointerSession } from "./message-markdown.js";
+import { openShipitLinkHref } from "../utils/open-shipit-link.js";
 import { handleAgentInterfaceRequest } from "../agent-interface-sdk/handle-request.js";
 import { useEventListener } from "../hooks/useEventListener.js";
 import { revealWorkspaceTab } from "../utils/reveal-workspace-tab.js";
 
-/** Frame height bounds. Small artifacts shrink to fit; large ones scroll inside the cap. */
 const MIN_FRAME_H = 64;
 const MAX_FRAME_H = 420;
 /** Height used until the document reports its own (and for a frame that never does). */
@@ -55,14 +55,16 @@ const DEFAULT_FRAME_H = 220;
 
 export interface PresentInlineCardProps {
   card: PresentInlineCardData;
-  /** Dispatch a message the artifact composed through the Agent Interface SDK. */
+
   onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
 }
 
 export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInlineCardProps) {
   const sessionId = useSessionStore((s) => s.sessionId);
-  // Subscribe to THIS artifact's entry only, so an unrelated present elsewhere in
-  // the carousel doesn't re-render every inline card in the transcript.
+  // The card sits in a deferred transcript, so a pointer it carries is scoped to
+  // the session those messages belong to — see `ShipitPointerSessionProvider`.
+  const owningSession = useShipitPointerSession();
+
   const entry = usePresentStore((s) => s.presentations.find((p) => p.presentId === card.presentId));
   const content = entry?.content;
 
@@ -72,13 +74,14 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
   const [frameHeight, setFrameHeight] = useState(DEFAULT_FRAME_H);
 
   const kind = kindFromMimeType(card.mimeType, card.filePath);
-  // An artifact that has left the store (session cleared) can no longer be
-  // fetched — the card says so rather than showing an empty frame.
-  const missing = !entry;
-  const sdkActive = onScreen && kind === "html" && !!onAgentInterfaceMessage;
 
-  // Pull the bytes once the card is on screen. Deferring to visibility keeps a
-  // long transcript full of inline artifacts from firing every fetch on load.
+  const missing = !entry;
+  // Both channels out of the frame are gated on the card being on screen: an
+  // artifact scrolled far up the transcript is not a surface the user is
+  // looking at, so it may neither message the agent nor move their workspace.
+  const linksActive = onScreen && kind === "html";
+  const sdkActive = linksActive && !!onAgentInterfaceMessage;
+
   // eslint-disable-next-line no-restricted-syntax -- lazy content fetch keyed on visibility
   useEffect(() => {
     if (onScreen && sessionId && entry && content === undefined) {
@@ -86,9 +89,6 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
     }
   }, [onScreen, sessionId, entry, content, card.presentId]);
 
-  // On-screen gate. Without IntersectionObserver (jsdom, older browsers) treat
-  // the card as visible: the fetch and the SDK are both things the user asked
-  // for, so failing open matches the artifact simply being rendered.
   // eslint-disable-next-line no-restricted-syntax -- IntersectionObserver subscription with cleanup
   useEffect(() => {
     const el = rootRef.current;
@@ -105,13 +105,17 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
     return () => io.disconnect();
   }, []);
 
-  // Messages from this card's own frame: the height it measured, the SDK
-  // handshake, and any message the artifact composed for the agent.
   useEventListener(window, "message", (event) => {
     const iframe = frameRef.current;
     if (!iframe?.contentWindow || event.source !== iframe.contentWindow || event.origin !== "null") return;
-    const data = event.data as { source?: string; type?: string; height?: number } | undefined;
+    const data = event.data as
+      | { source?: string; type?: string; height?: number; href?: unknown }
+      | undefined;
     if (data?.source !== "shipit-preview") return;
+    if (data.type === "link_click") {
+      if (linksActive) openShipitLinkHref(data.href, owningSession);
+      return;
+    }
     if (data.type === "content_height" && typeof data.height === "number") {
       setFrameHeight(Math.min(MAX_FRAME_H, Math.max(MIN_FRAME_H, Math.ceil(data.height))));
       return;
@@ -134,7 +138,6 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
     }
   });
 
-  // Keep the artifact's `visibility` subscribers in step as the card scrolls.
   // eslint-disable-next-line no-restricted-syntax -- synchronize visibility into the sandboxed artifact
   useEffect(() => {
     frameRef.current?.contentWindow?.postMessage(
@@ -222,10 +225,9 @@ function PresentInlineBody({
         <RenderedFrame
           kind={kind}
           content={content}
-          // req 7 — inline HTML gets the SDK, so an artifact can collect input
-          // and message the agent. Only ever enabled while the card is on screen,
-          // and `handleAgentInterfaceRequest` is gated on the same flag.
+
           enableAgentInterface={kind === "html" && sdkActive}
+          shipitLinks={kind === "html"}
           reportHeight
           frameRef={frameRef}
         />
@@ -252,7 +254,7 @@ function PresentInlineBody({
         style={{ maxHeight: MAX_FRAME_H }}
         className="overflow-auto px-3 py-2 text-sm text-(--color-text-primary)"
       >
-        <MarkdownContent text={content} />
+        <MarkdownContent text={content} shipitLinks />
       </div>
     );
   }

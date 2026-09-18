@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   channelRef,
   pickLatestFinalTag,
   readChannel,
+  readChannelOutcome,
   writeChannel,
 } from "./release-channel.js";
 
@@ -55,6 +56,35 @@ describe("release-channel", () => {
     await writeFile(file, "  stable  \n", "utf-8");
     expect(await readChannel(file)).toBe("stable");
   });
+
+  describe("absent versus unreadable (docs/299-agent-settings-access req 1)", () => {
+    it("answers the default channel for an absent file", async () => {
+      expect(await readChannelOutcome(file)).toEqual({ ok: true, channel: "edge" });
+    });
+
+    it("says it could not tell for an unreadable file, never the default channel", async () => {
+      // The default is a real channel, so an install tracking `stable` whose
+      // channel file became unreadable READ as `edge` — a made-up value the
+      // agent states to the user as fact.
+      await writeChannel("stable", file);
+      await chmod(file, 0o000);
+      try {
+        expect((await readChannelOutcome(file)).ok).toBe(false);
+      } finally {
+        await chmod(file, 0o644);
+      }
+    });
+
+    it("still picks the default for callers that have to act either way", async () => {
+      await writeChannel("stable", file);
+      await chmod(file, 0o000);
+      try {
+        expect(await readChannel(file)).toBe(DEFAULT_CHANNEL);
+      } finally {
+        await chmod(file, 0o644);
+      }
+    });
+  });
 });
 
 describe("pickLatestFinalTag (docs/214 Option A)", () => {
@@ -67,7 +97,6 @@ describe("pickLatestFinalTag (docs/214 Option A)", () => {
   });
 
   it("compares by semver precedence, not lexically", () => {
-    // Lexically "v0.9.0" > "v0.10.0"; by semver 0.10.0 is higher.
     expect(pickLatestFinalTag(["v0.9.0", "v0.10.0"])).toBe("v0.10.0");
     expect(pickLatestFinalTag(["v1.2.3", "v2.0.0", "v1.10.0"])).toBe("v2.0.0");
   });

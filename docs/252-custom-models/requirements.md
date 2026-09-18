@@ -352,11 +352,86 @@ No open questions remain.
     selected too: "what would this harness give me" is a question worth answering before
     installing one.
 
+25. **On screen these are called model providers, never services.** The Settings surface, the
+    flow that adds a credential, the usage breakdown, onboarding, and every message that
+    points a user at any of them use *model provider* (or *provider*, where the surface has
+    already said which kind). The word *service* is reserved for a Docker Compose service —
+    the preview drawer, `shipit service`, and the agent's compose documentation — so that no
+    sentence a user reads can mean either one. This requirement governs displayed text only:
+    identifiers, API paths, stored columns and CLI flags are free to keep saying `service`,
+    and a user never sees them.
+
+26. **The window that connects a model provider never changes height under the user.** The step
+    on screen keeps one height for as long as it is on screen — through every state the sign-in
+    passes through: waiting for the provider's code, showing it, reporting a failure, offering a
+    retry, saying the account is connected, and printing whatever the harness's CLI failed with.
+    Those states arrive on the provider's clock rather than the user's, so a window that resizes
+    with them moves under someone reading a code off it or reaching for the button beside it.
+    Anything too tall for the window is shown inside it, never by growing it — and when the next
+    state arrives, what the user has to act on is what they are looking at, not something a
+    scroll made a moment ago has carried off the top.
+
+    **Each step is as tall as its own content needs.** Moving between steps happens on the
+    user's own click, and the window already changes width at that click, so a shorter step is
+    not a jump — it is a screen that fits. A step must not be padded out to match another: the
+    billing-mode choice is two rows and a sentence, and holding it to the provider list's height
+    left it floating in white space. A step reserves room for the states it can reach and no
+    more. The provider list is the one step with more to show as the catalogue grows — and whose
+    content does not all arrive at once; past the height it has it scrolls inside the window
+    rather than growing it.
+
+    Where the window is not a window — the fullscreen sheet a phone gets — its height is the
+    screen's and cannot change; what this requires there is that the sign-in's states do not
+    move the content and the buttons inside the sheet.
+
+    The window's **width** is not covered: it widens for the provider list, which carries a
+    table, and narrows again once a provider is chosen. That was decided separately and stands.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-09-17 — **One height for all three steps, or each step its own?** Asked and answered
+  twice in one day, in that order, and the second answer is the one req 26 now states. Given
+  one height, the human looked at it: *"steps 2 and 3 should be lower height. Step 1 is special
+  anyway because the width is much higher. And how it is a lot of empty space, especially on
+  step 2"*. **Chosen: each step is as tall as its own content, and what must not move is the
+  step you are looking at.** The constraint that survives is the one the original request was
+  about — the sign-in advances on the provider's clock and must not move — and a step boundary
+  is a click, which the dialog already answers by changing width. Req 26 rewritten around the
+  step rather than the dialog; the height every step shared is now the provider list's alone.
+  Asked again the same day of the step that was left — *"step 3 is quite high, what is this
+  height needed for?"* — the answer was that it reserved the tallest state of any provider at
+  any width, which under the common sign-in is 71px of nothing. **The reserve is now measured
+  per provider and per width**, so a step reserves what the states it can actually reach need
+  (7px of slack, not 71). The requirement gains a sentence for what that reserve must also do:
+  a state arriving must not leave the thing the user has to act on scrolled off the top.
+
+- 2026-09-17 — **Does "the height never changes" cover the whole dialog, or only the states of
+  the sign-in?** The first cut read *"the state the login screen is in"* as the sign-in step's
+  states and left the provider list (496px) and the billing-mode choice (246px) at their own
+  heights, saying so in the requirement and flagging it as the agent's reading rather than the
+  human's. **Chosen: the whole dialog, all three steps, one height.** The human took the
+  offered follow-up — *"Give steps 1 and 2 the same height too … so the window never changes
+  height at any point in the add flow"* — and left the choice of height to the agent: the
+  dialog is now step 1's own height throughout, that being the tallest and the one screen with
+  something to lose. Req 26 rewritten; the sentence excluding the earlier screens is gone.
+  **Superseded the same day** by the receipt above, after the human saw the white space this
+  bought: the height a step does not need is the cost that answer did not price in.
+
+- 2026-09-13 — **What is this surface called on screen?** *"people get confused by 'services'
+  term, maybe rename to 'model providers'?"* The word already means a Docker Compose service
+  everywhere else in the product — the preview drawer, `shipit service`, `compose.md` — and
+  that meaning is Docker's, so it cannot move. **Chosen: the UI says "Model providers"; the
+  code keeps `service`.** Added as req 25. `ServiceDef`, `serviceId`, the catalogue module,
+  `/api/credential-routes` and the `service_id` columns are unchanged, because renaming ~1300
+  references and migrating a column buys the user nothing. Reqs 1–24 keep saying *service* for
+  the same reason: they describe the model, not the label. Two messages carry an exception req
+  25 allows because the noun is the flag that produced them — `roles.ts`'s `No service named
+  "…"` and `No model … is offered by any service` answer a CLI call that spelled `--service`,
+  and renaming only the prose would leave the error disagreeing with the flag the caller typed.
 
 - 2026-08-20 — Which figure does the running surface show for a **mixed** session? Req 16 named
   the subscription case and the metered case; the implementation resolved the overlap
@@ -1055,6 +1130,16 @@ human, but most of the mechanism did not. What the human actually said, in order
   harness" as it was asked for, and cross-backend review was right to name them — they are here
   because a column the install cannot act on, and a table of dashes meaning "not known yet", both
   say something false.
+- "when logging in with the subscription, with Claude, Antigravity and so on, we show a UI window
+  for that. This window currently sometimes changes height depending on the state the login
+  screen is in. Please make it so the height never changes, and we need some kind of test for
+  that because this is very important for the UX" → req 26, with *"Give steps 1 and 2 the same
+  height too … so the window never changes height at any point in the add flow"* extending it
+  to the whole dialog the same day (see the receipt above — the first cut had excluded the two
+  earlier steps on the agent's own reading, and the independent review was right that nobody
+  had approved that). The requirement is the UX statement; which element holds the height, what
+  that height is, and the reserved line a key-only step gets in the fullscreen sheet are the
+  agent's design and live in `plan.md`.
 - "I meant leaving the panels with the services as is, with the separate table on the right. You
   extended the panels and included the support inside these panels, which is not what I wanted"
   → req 22's second sentence. The first cut read "table" as a set of columns *within* each row,

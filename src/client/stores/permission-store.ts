@@ -1,12 +1,4 @@
-/**
- * permission-store — inline permission-request card state (docs/193 / planning#114).
- *
- * Keyed by the stable `requestId` (the worker broker's id) so a
- * `permission_resolved` update can swap a card to its terminal state in place.
- * The card's display payload + phase live here rather than on the chat message
- * so the optimistic phase flip on click, and the authoritative terminal state,
- * don't have to re-thread through the message list.
- */
+
 
 import { create } from "zustand";
 
@@ -18,32 +10,23 @@ export interface PermissionCardState {
   toolName: string;
   path?: string;
   summary?: string;
-  /**
-   * The gated call in full (raw command / pretty-printed input), rendered behind
-   * the card's collapsed disclosure. `summary` is a clipped one-liner; this is
-   * what the user expands to see what they are actually approving.
-   */
+
   details?: string;
   agentId?: string;
   createdAt?: string;
-  /** True when approved with "remember this file for the session". */
+
   remembered?: boolean;
 }
 
 interface PermissionStore {
   cards: Record<string, PermissionCardState>;
-  /**
-   * Seed a card from a live `permission_request_card` event. Idempotent and
-   * non-clobbering: a card already present (seeded from persisted history or
-   * re-delivered by a turn-event-buffer replay on reconnect) is left untouched,
-   * so a re-delivered pending card can't reset one that has since resolved.
-   */
+
   upsertCard: (card: Omit<PermissionCardState, "phase">) => void;
-  /** Authoritative hydration from persisted chat history (overwrites). */
+
   seedCards: (cards: PermissionCardState[]) => void;
-  /** Optimistic phase flip on click (before the server confirms). */
+
   setPending: (requestId: string) => void;
-  /** Terminal state from a `permission_resolved` event. */
+
   setResolved: (requestId: string, phase: Exclude<PermissionPhase, "pending">, remembered?: boolean) => void;
   reset: () => void;
 }

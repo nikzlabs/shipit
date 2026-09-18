@@ -1,9 +1,7 @@
 import type { ProjectTemplate } from "../shared/types.js";
 import { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 
-// ---------------------------------------------------------------------------
-// Full-stack template definitions
-// ---------------------------------------------------------------------------
+// Install through agent.install: service-side lockfile writes can trigger a restart loop.
 
 export const FULLSTACK_TEMPLATES: ProjectTemplate[] = [
   {
@@ -99,7 +97,7 @@ compose: docker-compose.yml
   app:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     # The agent edits files from a different container; native inotify events
     # don't cross the mount-namespace boundary, so webpack's watcher misses
     # them and Fast Refresh no-ops. Polling is the namespace-independent fix.
@@ -203,7 +201,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:

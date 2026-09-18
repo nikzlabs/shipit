@@ -1,53 +1,5 @@
-// Egress Tier C — transparent SNI-peek proxy (docs/172 Gap 1, planning#92).
-//
-// Runs as a long-lived sidecar in the agent's network namespace
-// (`--network container:<agent> --cap-add NET_ADMIN`, like the Tier A/B
-// sidecars). The installer REDIRECTs the agent's outbound :443 to this proxy's
-// loopback listener (EXCEPT traffic owned by the proxy's own uid, so the proxy's
-// upstream dials aren't re-redirected — the istio/cilium owner-match pattern).
-//
-// What it adds over Tier A/B (which match by destination IP): hostname-level
-// HTTPS policy. It reads the SNI from the TLS ClientHello — in the CLEARTEXT
-// handshake, with NO decryption and NO CA injection, so end-to-end TLS is
-// preserved — checks it against the allowlist, and either splices the raw TLS
-// stream to the original destination or rejects it. This closes the CDN
-// co-tenancy gap: an allowlisted host and a non-allowlisted host sharing one CDN
-// IP are indistinguishable to an ipset, but their SNI differs.
-//
-// SNI parsing reuses crypto/tls's own ClientHello parser (via a GetConfigForClient
-// callback that captures ServerName and aborts the handshake) rather than a
-// hand-rolled TLS parser — the bytes read during the peek are recorded and
-// replayed to the upstream so the spliced stream is byte-for-byte intact.
-//
-// Phase 2 (planning#92) — SNI-scoped identity validation for multi-tenant hosts.
-//
-// An allowlisted MULTI-TENANT host (S3, GCS, Azure Blob, a shared registry…)
-// can still be abused for exfiltration: the host is approved, but the request
-// targets the ATTACKER's bucket/account/org on it. The defining constraint here
-// is that we do NOT decrypt TLS — SNI-peek only, no CA injection, E2E TLS stays
-// intact (the whole premise of this proxy). So identity validation can use only
-// signals available WITHOUT decryption: the SNI hostname, SO_ORIGINAL_DST, and a
-// per-host rule. The HTTP path, query, and Authorization header — where path-style
-// S3 (`s3.amazonaws.com/<bucket>/…`) and per-account API keys (e.g. an Anthropic
-// workspace on `api.anthropic.com`) carry their identity — are encrypted and
-// therefore OUT OF REACH. We do not, and must not, try to read them.
-//
-// What IS enforceable under SNI-only: tenant identity that surfaces as a DNS
-// label in the SNI — i.e. VIRTUAL-HOSTED-style addressing, which most object
-// stores use:
-//
-//	my-bucket.s3.amazonaws.com   my-bucket.s3.us-east-1.amazonaws.com
-//	my-bucket.storage.googleapis.com   myaccount.blob.core.windows.net
-//
-// For a configured multi-tenant base host, validateIdentity extracts the tenant
-// PREFIX (the labels of the SNI before the base) and permits the connection only
-// if that prefix is one of this session's approved identities. The un-scoped APEX
-// SNI (e.g. bare `s3.amazonaws.com`, used by path-style addressing where the
-// bucket is in the encrypted path) is DENIED by default — allowing it would be a
-// trivial bypass (just switch to path-style) — unless the operator explicitly
-// opts in by listing an empty identity "". This is the honest boundary: we force
-// tenant-in-SNI access and block the addressing modes whose identity we cannot
-// see. See docs/172-agent-containment/egress-control.md "Phase 2".
+// Transparent SNI proxy for hostname and tenant-scoped HTTPS policy.
+// It preserves end-to-end TLS and can inspect only ClientHello SNI.
 //
 // Config (env):
 //
@@ -59,15 +11,9 @@
 //	EGRESS_PROXY_DECISION_TOKEN  credential for the decision query (planning#371), sent as the
 //	                             X-Shipit-Egress-Token header. Unset → the header is omitted,
 //	                             which the orchestrator accepts only from the agent container.
-//	EGRESS_PROXY_IDENTITY_RULES  optional JSON array of per-host identity rules (Phase 2). Each:
+//	EGRESS_PROXY_IDENTITY_RULES  optional JSON identity rules, for example:
 //	                               {"host":".s3.amazonaws.com","identities":["my-bucket"]}
-//	                             `host` is the multi-tenant base (leading-dot or exact, normalized
-//	                             the same way as the allowlist); `identities` are the permitted
-//	                             tenant prefixes (the SNI labels before the base). An empty
-//	                             identity "" permits the un-scoped apex SNI (path-style; identity
-//	                             NOT enforceable — opt-in). Unset/empty → no identity scoping (the
-//	                             Tier C SNI allowlist decision stands unchanged). Malformed JSON is
-//	                             logged and treated as no rules.
+//	                             identities are SNI prefixes; "" permits the unscoped apex.
 package main
 
 import (
@@ -91,7 +37,6 @@ import (
 
 const soOriginalDst = 80 // SO_ORIGINAL_DST (linux/netfilter_ipv4.h)
 
-// decisionTokenHeader carries EGRESS_PROXY_DECISION_TOKEN on the decision query.
 // Keep in sync with EGRESS_DECISION_HEADER in egress-decision-auth.ts.
 const decisionTokenHeader = "X-Shipit-Egress-Token"
 
@@ -101,21 +46,15 @@ var (
 	decisionURL = os.Getenv("EGRESS_PROXY_DECISION_URL")
 	sessionID   = os.Getenv("EGRESS_PROXY_SESSION_ID")
 
-	// planning#371 — the decision query's credential. The orchestrator no longer
-	// trusts the source IP for this route: this proxy shares a network namespace
-	// with the workload it fronts, so the address is the workload's too. It does
-	// NOT share a filesystem or a PID namespace, so this variable is ours alone.
+	// Source IP cannot authenticate a proxy in the workload's network namespace.
 	decisionToken = os.Getenv("EGRESS_PROXY_DECISION_TOKEN")
 
-	// Phase-2 SNI-scoped identity rules. Parsed once in main() (after logging is
-	// configured), then read-only — handle() goroutines only read it, so no lock.
+	// Parsed once, then read-only across handlers.
 	identityRules []identityRule
 
 	errPeeked = errors.New("clienthello peeked")
 
-	// Short positive/negative caches for orchestrator decisions so a retried
-	// connection after an allow-once approval is picked up quickly without
-	// re-querying on every packet, and a deny doesn't spam the card.
+	// Short caches prevent repeated decision queries and allow quick approval retries.
 	decCache   = map[string]decision{}
 	decCacheMu sync.Mutex
 )
@@ -162,8 +101,7 @@ func handle(c net.Conn) {
 	_ = c.SetReadDeadline(time.Time{})
 
 	if sni == "" {
-		// No SNI (not TLS, or SNI-less ClientHello). Deny — we can't apply a
-		// hostname policy, and IP-only is already Tier A/B's job.
+		// Without SNI, no hostname policy can be applied.
 		log.Printf("deny: no SNI (dst %s)", dst)
 		return
 	}
@@ -172,10 +110,7 @@ func handle(c net.Conn) {
 		return
 	}
 
-	// Phase-2 identity validation (docs/172, planning#92). On a configured multi-tenant
-	// host, permit only this session's approved tenant identity — extracted from
-	// the SNI itself (no decryption). Deny-fast before dialing, like any other
-	// deny: the attacker's bucket/account on an allowlisted host has nowhere to go.
+	// Validate tenant identity before dialing.
 	if !validateIdentity(sni) {
 		log.Printf("deny: identity not permitted for %s (dst %s)", sni, dst)
 		return
@@ -188,13 +123,12 @@ func handle(c net.Conn) {
 	}
 	defer up.Close()
 
-	if _, err := up.Write(hello); err != nil { // replay the peeked ClientHello
+	if _, err := up.Write(hello); err != nil {
 		return
 	}
 	pipe(c, up)
 }
 
-// pipe splices two connections bidirectionally until either side closes.
 func pipe(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -210,25 +144,17 @@ func pipe(a, b net.Conn) {
 	wg.Wait()
 }
 
-// identityRule binds a multi-tenant base host to the set of tenant identities
-// this session is allowed to reach on it. The tenant is the SNI label prefix
-// before the base (e.g. "my-bucket" in "my-bucket.s3.amazonaws.com"); the empty
-// prefix "" is the un-scoped apex (path-style), permitted only if listed.
 type identityRule struct {
-	base       string              // normalized multi-tenant base, e.g. "s3.amazonaws.com"
-	identities map[string]struct{} // normalized permitted tenant prefixes
+	base       string
+	identities map[string]struct{}
 }
 
-// rawIdentityRule is the on-the-wire JSON shape of EGRESS_PROXY_IDENTITY_RULES.
 type rawIdentityRule struct {
 	Host       string   `json:"host"`
 	Identities []string `json:"identities"`
 }
 
-// parseIdentityRules parses EGRESS_PROXY_IDENTITY_RULES. Empty/unset → no rules.
-// Malformed JSON is logged and treated as no rules (the orchestrator builds this
-// value, so a parse error is a bug, not an attack — fail to "no identity scoping"
-// rather than blackholing the whole session; the SNI allowlist still applies).
+// Invalid rules disable identity scoping but leave the SNI allowlist active.
 func parseIdentityRules(raw string) []identityRule {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -255,27 +181,16 @@ func parseIdentityRules(raw string) []identityRule {
 	return rules
 }
 
-// normHost normalizes a hostname (or tenant prefix) for comparison: trim space,
-// drop a single trailing dot, lowercase. Mirrors matchEntry / egress-allowlist.ts.
 func normHost(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimSuffix(s, ".")
 	return strings.ToLower(strings.TrimSpace(s))
 }
 
-// identityBase normalizes a rule's `host` to its base form: a leading-dot entry
-// (".s3.amazonaws.com") and an exact entry ("s3.amazonaws.com") both reduce to
-// the same base — the leading dot only governs allowlist matching (handled by
-// decide), not tenant extraction.
 func identityBase(host string) string {
 	return normHost(strings.TrimPrefix(strings.TrimSpace(host), "."))
 }
 
-// tenantPrefix returns the tenant portion of `sni` for a rule whose base is
-// `base`, and whether the SNI belongs to that base at all:
-//   - sni == base        → ("", true)            the un-scoped apex (path-style)
-//   - sni == "<x>.base"  → ("<x>", true)         virtual-hosted tenant (x may hold dots)
-//   - otherwise          → ("", false)           not governed by this base
 func tenantPrefix(sni, base string) (string, bool) {
 	h := normHost(sni)
 	if h == base {
@@ -287,8 +202,7 @@ func tenantPrefix(sni, base string) (string, bool) {
 	return "", false
 }
 
-// matchIdentityRule returns the most-specific (longest-base) identity rule that
-// governs `sni`, or nil if no rule does.
+// Prefer the most specific matching base.
 func matchIdentityRule(sni string) *identityRule {
 	var best *identityRule
 	for i := range identityRules {
@@ -302,12 +216,6 @@ func matchIdentityRule(sni string) *identityRule {
 	return best
 }
 
-// validateIdentity enforces SNI-scoped tenant identity on configured multi-tenant
-// hosts (Phase 2, docs/172). It uses ONLY the SNI — no decryption. A host with no
-// identity rule is unaffected (returns true; the Tier C SNI allowlist decision
-// stands). For a governed host, the connection is permitted only if the SNI's
-// tenant prefix is one of the session's approved identities; the un-scoped apex
-// (path-style, identity not visible) is denied unless "" was explicitly listed.
 func validateIdentity(sni string) bool {
 	rule := matchIdentityRule(sni)
 	if rule == nil {
@@ -315,16 +223,12 @@ func validateIdentity(sni string) bool {
 	}
 	tenant, ok := tenantPrefix(sni, rule.base)
 	if !ok {
-		return true // defensive: matchIdentityRule already confirmed it belongs
+		return true
 	}
 	_, permitted := rule.identities[tenant]
 	return permitted
 }
 
-// decide returns whether traffic to the given SNI is permitted: static allowlist
-// first (fast path), then — only if a decision URL is configured (Tier C
-// allow-once) — the orchestrator, which is the policy decision point and emits
-// the allow-once card on a deny. With no decision URL, an unknown host is denied.
 func decide(sni string) bool {
 	if matchStatic(sni) {
 		return true
@@ -344,9 +248,7 @@ func matchStatic(host string) bool {
 	return false
 }
 
-// matchEntry mirrors hostMatchesEntry in egress-allowlist.ts: a leading-dot entry
-// (".x.com") matches the base AND any subdomain; an exact entry matches only
-// itself. Look-alikes ("evilgithub.com" vs ".github.com") are rejected.
+// A leading dot matches a base and its subdomains; other entries are exact.
 func matchEntry(host, entry string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	entry = strings.ToLower(strings.TrimSpace(entry))
@@ -370,7 +272,7 @@ func queryDecision(sni string) bool {
 	decCacheMu.Unlock()
 
 	allow := fetchDecision(sni)
-	ttl := 2 * time.Second // deny: short, so a retry after approval re-queries
+	ttl := 2 * time.Second
 	if allow {
 		ttl = 60 * time.Second
 	}
@@ -408,23 +310,19 @@ func fetchDecision(sni string) bool {
 	return body.Allow
 }
 
-// peekSNI reads the TLS ClientHello from c, extracts the SNI using crypto/tls's
-// own parser, and returns the SNI plus the raw bytes read (to replay upstream).
 func peekSNI(c net.Conn) (sni string, recorded []byte) {
 	r := &recorder{conn: c, rec: true}
 	cfg := &tls.Config{
 		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
 			sni = chi.ServerName
-			return nil, errPeeked // abort before any TLS termination
+			return nil, errPeeked
 		},
 	}
-	_ = tls.Server(r, cfg).Handshake() // expected to fail with errPeeked
+	_ = tls.Server(r, cfg).Handshake()
 	r.rec = false
 	return sni, r.buf
 }
 
-// recorder tees reads into buf during the peek (rec=true) and swallows writes
-// (the aborted handshake's alert) so the client connection is left untouched.
 type recorder struct {
 	conn net.Conn
 	buf  []byte
@@ -440,7 +338,7 @@ func (r *recorder) Read(p []byte) (int, error) {
 }
 func (r *recorder) Write(p []byte) (int, error) {
 	if r.rec {
-		return len(p), nil // swallow the abort alert during peek
+		return len(p), nil
 	}
 	return r.conn.Write(p)
 }
@@ -451,7 +349,6 @@ func (r *recorder) SetDeadline(t time.Time) error      { return r.conn.SetDeadli
 func (r *recorder) SetReadDeadline(t time.Time) error  { return r.conn.SetReadDeadline(t) }
 func (r *recorder) SetWriteDeadline(t time.Time) error { return r.conn.SetWriteDeadline(t) }
 
-// originalDst recovers the pre-REDIRECT destination (ip:port) via SO_ORIGINAL_DST.
 func originalDst(c *net.TCPConn) (string, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
@@ -477,7 +374,7 @@ func originalDst(c *net.TCPConn) (string, error) {
 		return "", getErr
 	}
 	ip := net.IPv4(addr.Addr[0], addr.Addr[1], addr.Addr[2], addr.Addr[3])
-	port := int(addr.Port<<8) | int(addr.Port>>8) // ntohs
+	port := int(addr.Port<<8) | int(addr.Port>>8)
 	return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
 }
 

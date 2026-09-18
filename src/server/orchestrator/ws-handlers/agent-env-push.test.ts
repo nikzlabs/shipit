@@ -1,20 +1,3 @@
-/**
- * Unit tests for `selectAgentEnvForPush` (docs/088 mid-turn agent-env push).
- *
- * Verifies the two regimes documented in `agent-execution.ts`:
- *
- *   * Compose-less session — push the full account-level set assembled from
- *     `CredentialStore.getAllAgentEnv()` plus `collectMcpAgentEnv()` (which
- *     adds `MCP_PLATFORM_*` keys derived from `mcpOAuth` tokens).
- *   * Compose session — push `ServiceManager.getSecretsSnapshot().agentValues`
- *     verbatim. That snapshot is the merged compose-declared + MCP set, and
- *     the worker REPLACES its tracked set on every push — handing over a
- *     partial subset would clobber `agent: true` compose secrets.
- *
- * Both cases use fake stores so the test stays a pure unit; the heavyweight
- * `ContainerSessionRunner` / `ServiceManager` paths are covered separately in
- * `container-agent-wiring.test.ts` and `service-manager.test.ts`.
- */
 import { describe, it, expect } from "vitest";
 import type { ServiceManager } from "../service-manager.js";
 import type { OAuthTokens } from "../../shared/types/mcp-types.js";
@@ -29,7 +12,6 @@ interface FakeCredentialStoreOptions {
   credentialSecrets?: Record<string, string>;
 }
 
-/** Minimal fake — `selectAgentEnvForPush` only touches these readers. */
 function makeFakeCredentialStore(
   opts: FakeCredentialStoreOptions = {},
 ): AccountAgentEnvSource {
@@ -104,10 +86,6 @@ describe("selectAgentEnvForPush — compose-less regime", () => {
   it("excludes OAuth tokens with no accessToken", () => {
     const credentialStore = makeFakeCredentialStore({
       oauthTokens: {
-        // Refresh-token-only entry — a real refresh failure can leave this
-        // shape behind. The worker resolver has nothing to substitute, so
-        // we must not push an empty MCP_PLATFORM_* key (which would shadow
-        // a future successful refresh's value).
         notion_oauth: { accessToken: "" },
       },
     });
@@ -127,10 +105,6 @@ describe("selectAgentEnvForPush — compose regime", () => {
       MCP_PLATFORM_NOTION_OAUTH: "notion-bearer-xyz",
     });
     const credentialStore = makeFakeCredentialStore({
-      // CredentialStore values must be IGNORED in compose mode — the snapshot
-      // is already the merged authority. If we accidentally re-merged
-      // CredentialStore on top, compose-declared `agent: true` secrets that
-      // override an account-level key would be clobbered.
       agentEnv: { mcp__linear__LINEAR_API_KEY: "STALE-account-value" },
     });
     const result = selectAgentEnvForPush({
@@ -145,10 +119,6 @@ describe("selectAgentEnvForPush — compose regime", () => {
   });
 
   it("preserves compose-declared keys that collide with account-level MCP names", () => {
-    // Pathological but legal: a user declares `mcp__custom__X` in compose
-    // with one value AND in account-level CredentialStore with a different
-    // value. `syncSecrets()` lets compose win — we MUST preserve that here
-    // by NOT consulting CredentialStore at all in compose mode.
     const serviceManager = makeFakeServiceManager({
       mcp__custom__KEY: "from-compose",
     });
@@ -171,20 +141,10 @@ describe("selectAgentEnvForPush — compose regime", () => {
       serviceManager,
       credentialStore,
     });
-    // A compose session without `agent: true` secrets gets an empty push —
-    // and the account-level OPENAI_API_KEY is intentionally NOT carried
-    // through. That's correct behavior because compose sessions are
-    // expected to opt into agent secrets via `x-shipit-secrets` with
-    // `agent: true`.
     expect(result).toEqual({});
   });
 });
 
-/**
- * docs/252 phase 2 — a compose snapshot is only as fresh as the last SUCCESSFUL
- * secrets sync, and that pass returns early on an unparsable compose file. So
- * revocation cannot be left to depend on the snapshot being current.
- */
 describe("revoked service credentials never ride a stale compose snapshot", () => {
   it("drops a catalogue credential the store no longer holds", () => {
     const serviceManager = makeFakeServiceManager({
@@ -211,10 +171,6 @@ describe("revoked service credentials never ride a stale compose snapshot", () =
     });
     expect(selectAgentEnvForPush({ serviceManager, credentialStore })).toEqual({
       DEEPSEEK_API_KEY: "sk-live",
-      // docs/252 phase 5 — the per-credential name is merged back in when the
-      // snapshot lacks it, because spawn shaping SOURCES from it: a snapshot
-      // taken before those names existed would make a shaped turn find no
-      // credential at all.
       SHIPIT_CREDENTIAL_CRED_1: "sk-live",
     });
   });

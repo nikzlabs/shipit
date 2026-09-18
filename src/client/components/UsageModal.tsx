@@ -18,33 +18,20 @@ interface UsageModalProps {
   onClose: () => void;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
-  /**
-   * Per-turn breakdown sourced from `UsageManager.getPerTurnUsage()` —
-   * authoritative across reloads, no longer derived from cumulative deltas.
-   */
+
   turnUsage?: TurnUsage[];
-  /**
-   * docs/252 req 10 — the live quota snapshot, keyed by `${serviceId}:${mode}`.
-   * A `sub` group joins its own entry to show a quota bar; a `key` group has no
-   * quota to report and renders no indicator at all, rather than an empty one.
-   */
+
   subscriptionLimits?: SubscriptionLimitsMap;
 }
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/**
- * `2026-06-01` → `Jun 1`, for compact x-axis labels. Parsed from the string
- * parts rather than `new Date(...)` so a westward local timezone can't shift the
- * label back a day.
- */
 function formatWeek(week: string): string {
   const [, mon, day] = week.split("-");
   const name = MONTH_NAMES[Number(mon) - 1] ?? mon;
   return `${name} ${Number(day)}`;
 }
 
-/** `2026-06-01` → `Jun 1 – Jun 7`, the full Mon–Sun span, for hover tooltips. */
 function formatWeekRange(week: string): string {
   const end = new Date(`${week}T00:00:00Z`);
   end.setUTCDate(end.getUTCDate() + 6);
@@ -65,11 +52,9 @@ function formatWeekRange(week: string): string {
 type WeeklyMetric = "paid" | "atApiRates" | "tokens";
 
 const WEEKLY_METRICS: { key: WeeklyMetric; label: string }[] = [
-  // "Metered", not "Paid". A `key` row's figure is the harness's own only when
-  // the turn ran on that harness's native service AND it reported one; every
+
   // other metered turn is priced from four unit rates, which cannot express
-  // per-request, image or tiered-cache charges (`catalogue.md`, *Pricing*).
-  // Labelling that "Paid" asserts a fact about a bank statement.
+
   { key: "paid", label: "Metered" },
   { key: "atApiRates", label: "At API rates" },
   { key: "tokens", label: "Tokens" },
@@ -81,26 +66,17 @@ function weeklyValue(metric: WeeklyMetric, w: WeeklyUsage): number {
   return w.tokens;
 }
 
-/** Compact metric label for the bar labels, hover tooltip and average line. */
 function formatWeeklyValue(metric: WeeklyMetric, value: number): string {
   if (metric === "paid") return formatCost(value);
   if (metric === "atApiRates") return formatEstimate(value);
   return formatTokenCount(value);
 }
 
-/** Minimum column width that keeps both a `$12.34` value and a `Apr 13` x-axis
- *  label legible (below this the axis labels start truncating). */
 const MIN_BAR_PX = 44;
 const DEFAULT_WEEKS = 12;
 const MIN_WEEKS = 6;
 const MAX_WEEKS = 20;
 
-/**
- * How many weekly bars fit in the chart's measured width. Returns
- * `DEFAULT_WEEKS` until measured (and wherever `ResizeObserver` is unavailable,
- * e.g. jsdom), so the chart renders ~12 weeks by default and widens only when
- * the dialog actually has the room.
- */
 function useVisibleWeeks(ref: React.RefObject<HTMLElement | null>): number {
   const [weeks, setWeeks] = useState(DEFAULT_WEEKS);
 
@@ -109,8 +85,7 @@ function useVisibleWeeks(ref: React.RefObject<HTMLElement | null>): number {
     if (!el || typeof ResizeObserver === "undefined") return;
     const measure = () => {
       const w = el.clientWidth;
-      // Ignore a zero width (detached / display:none) so we don't collapse to
-      // the minimum before the dialog has real dimensions.
+
       if (w <= 0) return;
       setWeeks(Math.max(MIN_WEEKS, Math.min(MAX_WEEKS, Math.floor(w / MIN_BAR_PX))));
     };
@@ -123,26 +98,17 @@ function useVisibleWeeks(ref: React.RefObject<HTMLElement | null>): number {
   return weeks;
 }
 
-/**
- * Per-week bar chart for the all-sessions trend. Pure CSS/Tailwind (no charting
- * lib, matching the ContextDial sparkline), toggles between cost and turns,
- * scaled to the largest bar in the series. Windowed to as many recent weeks as
- * fit the chart's width (~12 at the dialog's default size) so the x-axis stays
- * readable; draws an average baseline and emphasizes the most recent week.
- */
 function WeeklyUsageChart({ weekly }: { weekly: WeeklyUsage[] }) {
   const [metric, setMetric] = useState<WeeklyMetric>("paid");
   const chartRef = useRef<HTMLDivElement>(null);
   const visibleWeeks = useVisibleWeeks(chartRef);
 
-  // Keep the x-axis bounded — only the latest weeks that fit are charted.
   const recent = weekly.slice(-visibleWeeks);
   const value = (w: WeeklyUsage) => weeklyValue(metric, w);
   const max = recent.reduce((hi, w) => Math.max(hi, value(w)), 0);
   const total = recent.reduce((sum, w) => sum + value(w), 0);
   const avg = recent.length > 0 ? total / recent.length : 0;
-  // Cap bar height below 100% so the persistent value label above the tallest
-  // bar still fits inside the chart area. The avg baseline uses the same scale.
+
   const BAR_SCALE = 82;
   const avgPct = max > 0 ? (avg / max) * BAR_SCALE : 0;
   const fmt = (w: WeeklyUsage) => formatWeeklyValue(metric, value(w));
@@ -262,10 +228,8 @@ const levelBarColors: Record<string, string> = {
   red: "bg-(--color-error)",
 };
 
-/** Shared column template for the per-turn breakdown's header and rows. */
 const TURN_ROW_COLS = "grid grid-cols-[2.5rem_1fr_1fr_1fr_1fr] gap-2";
 
-/** Label/value row — the modal's standard stat line. */
 function Stat({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
     <div className="flex justify-between gap-3">
@@ -348,15 +312,6 @@ function UsageHeadline({ totals, testId }: { totals: UsageTotals; testId: string
   );
 }
 
-/**
- * Worst quota window this `(service, mode)` is reporting, or null when it
- * reports none.
- *
- * A window whose reset has passed is skipped: readings are event-fed, so one
- * can outlive its window by hours, and showing "97%" for a window that rolled
- * over reports a limit the user is not actually near. The header pill draws the
- * same line in `meterDisplay` (docs/161).
- */
 function worstQuota(
   group: UsageGroup,
   limits: SubscriptionLimitsMap | undefined,
@@ -364,7 +319,9 @@ function worstQuota(
 ): { pct: number; label: string } | null {
   if (group.kind !== "sub" || !limits) return null;
   let worst: { pct: number; label: string } | null = null;
-  for (const snapshot of Object.values(limits[group.key] ?? {})) {
+  // Keyed on the subscription, not on the row: an install-level row is the same
+  // plan being consumed, and may be the only row a user has to read it from.
+  for (const snapshot of Object.values(limits[`${group.serviceId}:${group.billingMode}`] ?? {})) {
     for (const [label, window] of [["5h window", snapshot.session], ["7d window", snapshot.weekly]] as const) {
       if (window?.usedPct === undefined || window.usedPct === null) continue;
       if (!subscriptionWindowIsCurrent(window, now)) continue;
@@ -393,6 +350,12 @@ function worstQuota(
  * such dollar is pre-feature: a sub-agent consult whose stored default predates
  * the triple also writes an unattributed row and keeps the harness's own figure
  * (`services/sub-agent.ts`). That is phase 3's shape, unchanged here.
+ *
+ * An install-level row (docs/299 req 7) is background work that belonged to no
+ * session — a transcript cleaned while nothing was open. It is deliberately not
+ * the legacy row: its provider and billing mode are known, so it keeps its
+ * price, its quota bar and its provider name, and only adds what is different
+ * about it. It reaches install-wide reporting alone, never a session's own view.
  */
 function UsageGroupRow({
   group,
@@ -403,9 +366,7 @@ function UsageGroupRow({
 }) {
   const quota = worstQuota(group, limits);
   const legacy = group.kind === "legacy";
-  // `$0.00` here would assert the work was free — the one thing req 16 exists to
-  // stop the totals saying. A legacy bucket holding only unpriced rows has no
-  // dollar figure to show, so it says so instead of printing a zero.
+
   const unpriced = legacy && group.costUsd === 0;
   return (
     <div
@@ -418,11 +379,20 @@ function UsageGroupRow({
       <span className="flex-1 min-w-0">
         <span className="flex items-center gap-2 flex-wrap">
           <span className="text-(--color-text-primary)">
-            {legacy ? "No service recorded" : serviceLabel(group.serviceId!)}
+            {legacy ? "No provider recorded" : serviceLabel(group.serviceId!)}
           </span>
           <span className="text-[10px] px-1.5 py-px rounded-full border border-(--color-border-primary) text-(--color-text-secondary)">
             {legacy ? "Unattributed" : billingModeLabel(group.billingMode!)}
           </span>
+          {group.installLevel && (
+            <span
+              className="text-[10px] px-1.5 py-px rounded-full border border-(--color-border-primary) text-(--color-text-secondary)"
+              title="Background work that belonged to no session, such as a dictation cleaned with nothing open"
+              data-testid="usage-group-install-level"
+            >
+              Background work
+            </span>
+          )}
         </span>
         {group.models.length > 0 && (
           <span className="block text-xs text-(--color-text-secondary) truncate">
@@ -473,14 +443,6 @@ function UsageGroupRow({
   );
 }
 
-/**
- * docs/252 req 16 — "Avg / turn", divided by the RIGHT turn count.
- *
- * The pre-split version divided one dollar total by every turn in the scope, so
- * a mixed session averaged its metered spend over subscription turns that
- * contributed nothing to it. Each figure now divides by the turns that
- * produced it, and a scope with only one kind of turn shows only that figure.
- */
 function averagePerTurn(totals: UsageTotals): { metered?: number; atApiRates?: number } | null {
   const out: { metered?: number; atApiRates?: number } = {};
   if (totals.meteredTurns > 0 && totals.meteredCostUsd > 0) {
@@ -541,7 +503,7 @@ function UsageSplitSection({
 }
 
 export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, modelInfo, contextTokens, turnUsage, subscriptionLimits }: UsageModalProps) {
-  // Look up session titles by ID
+
   const getSessionTitle = (sessionId: string): string => {
     const session = sessions.find((s) => s.id === sessionId);
     return session?.title ?? `${sessionId.slice(0, 12)  }...`;
@@ -552,7 +514,6 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
     : 0;
   const contextLevel = getContextLevel(contextPercentage);
 
-  // Compute cumulative token totals from turn data
   const totalInputTokens = turnUsage?.reduce((sum, t) => sum + t.inputTokens, 0) ?? 0;
   const totalOutputTokens = turnUsage?.reduce((sum, t) => sum + t.outputTokens, 0) ?? 0;
   const totalCacheRead = turnUsage?.reduce((sum, t) => sum + (t.cacheRead ?? 0), 0) ?? 0;
@@ -562,9 +523,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
   const sessionAvg = currentSessionUsage ? averagePerTurn(currentSessionUsage.totals) : null;
   const allAvg = allUsage ? averagePerTurn(allUsage.totals) : null;
   // Costliest first — with room for a full list, ordering by spend is what makes
-  // the breakdown answer "where did the money go?". The tiebreak is explicit
-  // (docs/252 req 16): under the split most sessions are legitimately $0, so
-  // spend alone would leave the tail in arbitrary order.
+
   const rankedSessions = allUsage ? [...allUsage.sessions].sort(compareSessionsBySpend) : [];
 
   return (
@@ -635,7 +594,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
           {/* The split — one row per (service, billing mode), legacy last */}
           {currentSessionUsage?.groups && currentSessionUsage.groups.length > 0 && (
             <UsageSplitSection
-              heading="This session — by service"
+              heading="This session — by provider"
               groups={currentSessionUsage.groups}
               limits={subscriptionLimits}
               testId="usage-session-split"
@@ -643,7 +602,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
           )}
           {allUsage && allUsage.groups.length > 0 && (
             <UsageSplitSection
-              heading="All sessions — by service"
+              heading="All sessions — by provider"
               groups={allUsage.groups}
               limits={subscriptionLimits}
               testId="usage-all-split"
@@ -724,9 +683,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
               <div className="max-h-64 overflow-y-auto">
                 {[...turnUsage].reverse().map((turn, i) => {
                   const turnNum = turnUsage.length - i;
-                  // docs/252 req 16 — a subscription turn's `costUsd` is zero
-                  // by rule, so the column shows its at-API-rates value rather
-                  // than reporting the turn as free.
+
                   const cost = turnCostDisplay(turn);
                   return (
                     <div
@@ -757,8 +714,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
               <SectionHeading>Recent sessions</SectionHeading>
               <div className="space-y-1 max-h-64 overflow-y-auto">
                 {rankedSessions.map((s) => {
-                  // req 16 — the same running figure the dial shows, so a
-                  // session reads the same in both places.
+
                   const figure = sessionRunningFigure(s.totals);
                   return (
                     <div

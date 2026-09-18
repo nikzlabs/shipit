@@ -90,21 +90,20 @@ Extend the read-only `Tracker` interface with write methods, implement them per
 adapter, and expose them through the `shipit issue` shim docs/175 introduces:
 
 ```
-shipit issue comment <pointer> -b <body>            # add a comment
-shipit issue edit    <pointer> [--title T] [--body B]   # edit title/description
-shipit issue status  <pointer> <state>              # set status (see mapping)
-shipit issue assign  <pointer> <user|me|--none>     # set/clear assignee
+shipit issue comment <pointer> -b <body>
+shipit issue edit    <pointer> [--title T] [--body B]
+shipit issue status  <pointer> <state>
+shipit issue assign  <pointer> <user|me|--none>
 ```
 
 ### Interface additions
 
 ```ts
 interface Tracker {
-  // …existing read methods (listIssues, getIssue, info, isConfigured)…
   addComment(id: string, body: string): Promise<TrackerComment>;
   updateIssue(id: string, patch: { title?: string; description?: string }): Promise<TrackerIssue>;
-  setStatus(id: string, status: string): Promise<TrackerIssue>;       // normalized type OR native name
-  setAssignee(id: string, assignee: string | null): Promise<TrackerIssue>; // login/email/name/"me"/null
+  setStatus(id: string, status: string): Promise<TrackerIssue>;
+  setAssignee(id: string, assignee: string | null): Promise<TrackerIssue>;
 }
 ```
 

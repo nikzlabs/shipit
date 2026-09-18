@@ -336,8 +336,8 @@ then the main agent acting on results they never saw.
 **`Task`**:
 
 ```jsx
-if (tool.name === "Task") { return <SubagentCall … subagentEvents={…} /> }   // the real view
-if (tool.name === "Agent") { … return <div>{label}{description}{prompt}</div> }  // never reads subagentEvents
+if (tool.name === "Task") { return <SubagentCall … subagentEvents={…} /> }
+if (tool.name === "Agent") { … return <div>{label}{description}{prompt}</div> }
 ```
 
 **The Claude Code CLI emits the tool as `Agent`, not `Task`.** Verified directly

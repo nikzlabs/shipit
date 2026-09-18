@@ -32,7 +32,7 @@ describe("bug-report-store (docs/164 persistence)", () => {
   });
 
   it("(c) a re-delivered draft does not clobber an already-filed card", () => {
-    // History seed makes the card filed (authoritative).
+
     useBugReportStore.getState().seedCards([
       {
         ...draft("c1"),
@@ -41,9 +41,9 @@ describe("bug-report-store (docs/164 persistence)", () => {
         issueUrl: "https://github.com/nikzlabs/shipit/issues/1234",
       },
     ]);
-    // A turn-event-buffer replay re-delivers the original draft on reconnect.
+
     useBugReportStore.getState().upsertCard(draft("c1"));
-    // The filed state survives — upsert is non-clobbering.
+
     expect(useBugReportStore.getState().cards.c1?.phase).toBe("filed");
   });
 

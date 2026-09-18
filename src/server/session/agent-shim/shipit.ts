@@ -1,38 +1,3 @@
-/**
- * `shipit` shim — a curated, sandboxed subset of session-management
- * operations for the inner agent (Claude or Codex).
- *
- * Installed at /usr/local/bin/shipit inside the session worker container so
- * the agent's bash tool can run `shipit session create --prompt-file -` to
- * spawn sibling sessions. The shim does not touch the orchestrator directly;
- * it POSTs to the worker's `/agent-ops/session/*` router on localhost, which
- * brokers through the orchestrator's session-scoped routes.
- *
- * Mirrors the `gh.ts` shim from doc 116 — same shape, same conventions,
- * same security model (the shared CLI plumbing lives in `shim-common.ts`).
- * The worker injects this container's session id as the parent on every
- * request, so the agent cannot spawn sessions under a different parent (or
- * read/mutate sessions it didn't spawn).
- *
- * This file is the entry point: it owns the help text, the shared shim-side
- * types/helpers the domain handlers need (`RunDeps`, `formatError`,
- * `REJECTED_HELP`, `INLINE_PROMPT_FLAGS`), and the top-level argument routing
- * that dispatches to the per-domain handler modules:
- *   - `shipit-session.ts` — session create/list/view/message/wait/archive/notify
- *   - `shipit-issue.ts`   — tracker-neutral issue view/list/create/comment/edit/status/assign
- *   - `shipit-agent.ts`   — one-shot sub-agent spawn + result re-read
- *                           (`shipit agent run` / `shipit agent result`)
- *   - `shipit-service.ts` — Compose service control (list/start/stop/restart/logs)
- *   - `shipit-source.ts`  — read-only ShipIt source browsing (Ops sessions)
- *
- * Output:
- *   `shipit session create` prints a stable text block on stdout (id, branch,
- *   status) and exits 0. With `--json`, it prints a JSON object instead.
- *   `shipit session list/view` print plain-text tables or JSON when `--json`
- *   is requested. Errors go to stderr; exit code is non-zero.
- *
- * For documentation: see /shipit-docs/sessions.md inside the container.
- */
 
 import {
   callBroker,
@@ -51,6 +16,7 @@ import {
   handleSessionList,
   handleSessionLogs,
   handleSessionMessage,
+  handleSessionContinueAfterRebase,
   handleSessionNotifyOnMerge,
   handleSessionRename,
   handleSessionReport,
@@ -85,6 +51,13 @@ import {
 } from "./shipit-service.js";
 import { handleReleasePlan, handleReleasePrepare } from "./shipit-release.js";
 import {
+  handleSettingsGet,
+  handleSettingsList,
+  handleSettingsPropose,
+} from "./shipit-settings.js";
+import { settingsDeps, type SettingsDeps } from "./settings-out.js";
+import { renderLine } from "../../shared/settings-catalogue/rendered.js";
+import {
   handleSourceBlame,
   handleSourceCat,
   handleSourceLog,
@@ -94,8 +67,6 @@ import {
   handleSourceTree,
 } from "./shipit-source.js";
 
-// Re-exported so existing importers (and tests) keep resolving these from
-// `./shipit.js` after the shared plumbing moved into shim-common.
 export { parseFlags, type ShimIO };
 
 import { handleBranchResetToBase, RESET_USAGE } from "./shipit-branch.js";
@@ -103,11 +74,6 @@ import { runPlugin } from "./shipit-plugin.js";
 
 const SHIM_NAME = "shipit (ShipIt)";
 
-/**
- * Shown when the agent reaches for an operation outside the curated subset.
- * Shared with the per-domain handler modules (which import it) so every
- * "unsupported flag/subcommand" error points at the same docs.
- */
 export const REJECTED_HELP = `${SHIM_NAME} only supports a curated subset of session-management operations.
 See /shipit-docs/sessions.md for the full list.`;
 
@@ -116,7 +82,7 @@ const HELP = `${SHIM_NAME} — agent-driven session management.
 Supported subcommands:
   shipit session create  --prompt-file FILE --title T
                           [--role NAME | --no-role]
-                          [--agent claude|codex|opencode|grok] [--model M]
+                          [--agent claude|codex|opencode|grok|antigravity] [--model M]
                           [--service S] [--billing-mode sub|key] [--effort E]
                           [--turn ID] [--detached] [--shipit-source] [--approximate] [--json]
                           Name no role and the child inherits what YOU run on —
@@ -130,6 +96,11 @@ Supported subcommands:
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
   shipit session notify-on-merge <id> [--json]
   shipit session notify-on-merge --self [--json]
+  shipit session continue-after-rebase --note "TEXT" [--json]
+                          Arm follow-up work while you are resolving a rebase's
+                          conflicts. That turn ends BEFORE the rebase does;
+                          ShipIt gives your note back as a turn once the rebase
+                          concludes. A rebase that is aborted delivers nothing.
   shipit session archive <id> [--json]
   shipit session whoami  [--json]
   shipit session rename  --title T [--json]
@@ -140,7 +111,7 @@ Supported subcommands:
                           hand wins — that refusal is final, don't work around it.
   shipit session report  -b TEXT | --body-file FILE
                           [--severity fyi|warn|blocker] [--subject T]
-                          [--to parent|cohort] [--json]
+                          [--to parent] [--json]
   shipit session help
 
 Branch (docs/239):
@@ -261,11 +232,14 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
   \`url\` (the container IP — the address for your own curl / browser_navigate,
   not the user's preview origin).
 
-  A manual service is manual because it's HEAVY: the first start may pull a
-  large image or run a \`build:\`, taking minutes. \`start\`/\`restart\` wait up to
-  10 minutes, so run them in the BACKGROUND if your shell caps foreground
-  commands below that. If a start does time out it is still running — re-check
-  with \`list\` and follow progress with \`logs\`.
+  A service is manual because it isn't needed on every boot, not because
+  starting it is a big decision. If a change can be VERIFIED against a running
+  service, start it and verify — minutes of start time never justify shipping
+  unverified work. The first start may pull a large image or run a \`build:\`,
+  taking minutes. \`start\`/\`restart\` wait up to 10 minutes, so run them in the
+  BACKGROUND if your shell caps foreground commands below that. If a start does
+  time out it is still running — re-check with \`list\` and follow progress with
+  \`logs\`.
 
   The stack's SHAPE is declared in docker-compose.yml, not issued imperatively:
   there is no \`service create\`/\`delete\`/\`build\`/\`exec\`/\`up\`/\`down\`. Edit the
@@ -273,7 +247,7 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   shipit agent run --role NAME [OVERRIDES] --prompt-file FILE [--json]
-  shipit agent run --agent claude|codex|opencode|grok --service S --billing-mode sub|key
+  shipit agent run --agent claude|codex|opencode|grok|antigravity --service S --billing-mode sub|key
                    --model M --effort E --prompt-file FILE [--json]
   shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
   shipit agent roles  [--json]     the roles configured on this install
@@ -305,8 +279,9 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   second-opinion review or a bounded delegation: put ALL context the sub-agent
   needs into the prompt (the task, any \`git diff\`, file references, focus
   hints). The spawned agent runs full-capability in this same workspace and its
-  work is committed under your session's agent. Requires the "Multi-agent
-  sessions" setting to be enabled. Blocks until the sub-agent finishes: a real
+  work is committed under your session's agent. Requires the
+  'advanced.enableSubAgents' setting to be on — read it with 'shipit settings
+  get advanced.enableSubAgents'. Blocks until the sub-agent finishes: a real
   consult routinely runs for many minutes, up to a 30-minute cap, so run it in
   the BACKGROUND — most shell tools cap foreground commands well below that. A
   killed 'run' does not stop the spawn; recover it with 'result'. Never pipe it
@@ -329,6 +304,40 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   lost. Exit codes: 0 finished ok · 4 still running · 3 the run failed ·
   1 the lookup failed (bad run id, unreachable) · 2 bad flags. Branch on those,
   never on grepping the output for "pending" — a finished review can say it.
+
+ShipIt's own settings (docs/299 — read what the user configured, propose a change):
+  shipit settings list    [--tab NAME] [--json]
+  shipit settings get     <key> [--json]
+  shipit settings propose <key>=<value> [--item ADDRESS] --reason "..."
+  shipit settings propose <key> --add|--remove <entry> --reason "..."
+  shipit settings propose <key> --value-file - --reason "..."   (prose, on stdin)
+
+  Answer "what is this setting set to?" yourself instead of asking the user to
+  read a value out of the Settings dialog. 'list' is the index — every setting
+  ShipIt lets you see, with its key, what it is for, and what it is set to now.
+  'get' details ONE: its whole description in the user's own words, the values
+  it accepts, and what it resolves to on this install right now.
+
+  Read before you claim a setting is the blocker. When one genuinely is, say
+  WHICH setting, what it is set to, and what it has to become — never a bare
+  "change it in Settings". Some values ShipIt will not show you (a secret is
+  reported as configured / not configured, never as its value) and some it
+  cannot (a browser preference is not on ShipIt's server); each says so, with
+  the reason, instead of going missing.
+
+  A value can be saved and still not in effect — a container that started under
+  a different network mode keeps it until restart. Both commands say so where
+  it applies, so don't promise the user a restart will fix something it cannot.
+
+  'propose' posts a card naming ONE change: the setting, what it is now, what it
+  would become, and your --reason. Nothing moves until the user clicks Apply, and
+  the click is the whole gate — there is no way to change a setting yourself.
+  It returns immediately: never wait for the card, never poll, and never post the
+  same one twice. 'get' carries what became of the last proposal for a setting —
+  applied, dismissed, or still in front of the user — so read before you propose.
+
+  Post the card INSTEAD of telling the user which control to go and find. Keep
+  the prose to what the card does not say.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -399,25 +408,25 @@ bug). The test: if you'd ever want to wait on it, follow up, or be told it
 merged, it should be a child — omit \`--detached\`. \`--detached\` cannot be
 combined with \`--shipit-source\`.
 
-Coordination runs BOTH ways. Parent → child is \`list\`/\`view\`/\`wait\`/
-\`message\`/\`notify-on-merge\`. Child → parent (and siblings) is
-\`shipit session report\`: it posts a card into each recipient's chat AND wakes
-its agent with a queued turn, so a finding is pushed instead of sitting in a PR
-nobody has opened yet. Use it when what you found reaches beyond your own
+Coordination runs through the parent. Parent → child is \`list\`/\`view\`/
+\`wait\`/\`message\`/\`notify-on-merge\`. Child → parent is
+\`shipit session report\`: it posts a card into the parent's chat AND wakes the
+parent agent with a queued turn, so a finding is pushed instead of sitting in a
+PR nobody has opened yet. Use it when what you found reaches beyond your own
 session — shared machinery you're scoped not to touch, a blocker, or something
-that invalidates a sibling's work:
+the parent must coordinate:
 
-  shipit session report --severity blocker --to cohort \\
+  shipit session report --severity blocker \\
     --subject "regen command deletes all catalogs" --body-file - <<'EOF'
   \`npm run regen\` wipes data/catalogs/ before writing, so it destroys the other
   catalogs too. Don't run it until #123 lands.
   EOF
 
-\`--to parent\` (the default) reaches the session that spawned you; \`--to cohort\`
-(or \`--cohort\`) also reaches every live sibling. Severity is \`fyi\` (default),
-\`warn\`, or \`blocker\`. You cannot target an arbitrary session id — recipients are
-derived from your own parent linkage. A report costs each recipient a turn, so
-batch findings into one report rather than sending a stream of them.
+The report reaches only the session that spawned you. Child sessions cannot
+message siblings; the parent decides whether and how to coordinate other
+children. Severity is \`fyi\` (default), \`warn\`, or \`blocker\`. You cannot
+target an arbitrary session id. A report costs the parent a turn, so batch
+findings into one report rather than sending a stream of them.
 
 \`shipit session whoami\` resolves THIS session: its id, branch, parent, cohort
 siblings, and any children it spawned. (\`view <id>\` is descendant-scoped, so
@@ -442,66 +451,73 @@ flags and the list of intentionally-rejected operations
 (\`shipit session delete\`, \`shipit source edit\`, cross-repo spawns, etc.).`;
 
 /**
- * Per-invocation dependencies passed to every handler. `sleep`/`now` are
- * injectable so the `wait` segment loop's backoff is deterministic in tests.
+ * A subcommand names a handler, or it names nothing.
+ *
+ * A plain index also finds what a subcommand INHERITS: `shipit settings
+ * __proto__` resolved `Object.prototype`, which is truthy, so the dispatcher
+ * called it and the TypeError went to the process's last-resort sink rather
+ * than to the command's own "unsupported subcommand" answer (planning#537).
  */
+function handlerFor<T>(table: Record<string, T>, sub: string): T | undefined {
+  return Object.hasOwn(table, sub) ? table[sub] : undefined;
+}
+
 export interface RunDeps {
   env: ShimEnv;
   io: ShimIO;
   call: typeof callBroker;
-  /** Sleep helper (injectable for deterministic backoff tests). */
   sleep: (ms: number) => Promise<void>;
-  /** Monotonic clock (injectable so deadline-driven loops are testable). */
   now: () => number;
 }
 
-/**
- * Inline prompt flags the agent might reach for out of muscle memory, shared by
- * `shipit session create` and `shipit agent run`. Both intentionally reject an
- * inline prompt: a prompt on the command line gets mangled the moment it
- * contains backticks or `$(...)`, which the shell evaluates before the shim
- * sees it. The prompt must come from a file (or stdin via `--prompt-file -`).
- */
+// Require a file or stdin to avoid shell expansion of prompt content.
 export const INLINE_PROMPT_FLAGS = ["-p", "--prompt", "-m", "--message"];
 
-/** Format a broker/orchestrator error response as a single-line message. */
+/**
+ * What the ORCHESTRATOR said, and nothing else.
+ *
+ * Kept apart from the note below it because the two have opposite provenance: a
+ * caller that puts the error on one line has to flatten this half and must NOT
+ * split it — splitting a server message on its newlines is what turns a forged
+ * `\n` inside it into a line of its own (planning#537) — while the note is this
+ * file's own text and its paragraph break is authored.
+ */
+export function serverErrorMessage(
+  res: { status: number; body: Record<string, unknown> },
+  fallback: string,
+): string {
+  return typeof res.body.error === "string" ? res.body.error : fallback;
+}
+
+/** ShipIt's own footnote for the statuses that have one. */
+export function serverErrorNote(status: number): string | undefined {
+  if (status === 429) {
+    return "This session has reached its per-turn or per-parent spawn cap. See /shipit-docs/sessions.md.";
+  }
+  if (status === 401) {
+    return "ShipIt was unable to authenticate the request against the orchestrator.";
+  }
+  return undefined;
+}
+
 export function formatError(
   res: { status: number; body: Record<string, unknown> },
   fallback: string,
 ): string {
-  const message = typeof res.body.error === "string" ? res.body.error : fallback;
-  if (res.status === 0) return message;
-  if (res.status === 429) {
-    return `${message}\n\nThis session has reached its per-turn or per-parent spawn cap. See /shipit-docs/sessions.md.`;
-  }
-  if (res.status === 401) {
-    return `${message}\n\nShipIt was unable to authenticate the request against the orchestrator.`;
-  }
-  return message;
+  const message = serverErrorMessage(res, fallback);
+  const note = serverErrorNote(res.status);
+  return note ? `${message}\n\n${note}` : message;
 }
 
-// ---------------------------------------------------------------------------
-// Top-level dispatch
-// ---------------------------------------------------------------------------
 
-/**
- * Subcommands that exist in the agent's mental model of ShipIt but the
- * shim refuses to expose. Listed explicitly so the agent gets a helpful
- * error pointing at the docs, instead of a generic "unknown command".
- */
 const REJECTED_SESSION_SUBCOMMANDS = new Set([
-  "delete",   // destructive; user-only.
-  "adopt",    // not supported by design (cross-parent reparenting).
-  "merge",    // future extension; user merges via the PR/merge UI today.
-  "fork",     // separate primitive owned by the UI.
-  "switch",   // user navigation; not the agent's affordance.
+  "delete",
+  "adopt",
+  "merge",
+  "fork",
+  "switch",
 ]);
 
-/**
- * Source subcommands the agent might reach for that the shim refuses to expose.
- * Source access is strictly read-only — mutation happens through a spawned
- * `--shipit-source` fix session, never against the source snapshot directly.
- */
 const REJECTED_SOURCE_SUBCOMMANDS = new Set([
   "edit",
   "write",
@@ -514,16 +530,10 @@ const REJECTED_SOURCE_SUBCOMMANDS = new Set([
 ]);
 
 const REJECTED_ISSUE_SUBCOMMANDS = new Set([
-  "delete", // destructive; not part of the agent's surface.
-  "close",  // use `shipit issue status <pointer> completed` (or `canceled`) instead.
+  "delete",
+  "close",
 ]);
 
-/**
- * Release verbs the agent might reach for that the shim refuses (docs/214). For
- * a FINAL release publishing is CI's job — the agent never hand-pushes a tag;
- * `prepare` opens the bump PR and merging it triggers the publish. (rc tags are
- * cut via `prepare --prerelease --confirm`, still never a raw `git tag`.)
- */
 const REJECTED_RELEASE_SUBCOMMANDS = new Set(["tag", "publish", "push"]);
 
 const SESSION_HANDLERS: Record<
@@ -532,22 +542,16 @@ const SESSION_HANDLERS: Record<
 > = {
   create: handleSessionCreate,
   list: handleSessionList,
-  // docs/255 — Ops-only host inventory: resolve a branch / PR / container name
-  // back to the session that produced it. Read-only, metadata only.
   find: handleSessionFind,
-  // docs/264 — Ops-only: another session's SERVER-SOURCE log entries. Read-only,
-  // orchestrator lifecycle lines only; never that session's agent output.
   logs: handleSessionLogs,
   view: handleSessionView,
   message: handleSessionMessage,
   wait: handleSessionWait,
   archive: handleSessionArchive,
   "notify-on-merge": handleSessionNotifyOnMerge,
-  // docs/233 (planning#243) — the upward channel. Every subcommand above operates
-  // parent→child; these are the only ones a session can point at itself.
+  "continue-after-rebase": handleSessionContinueAfterRebase,
   report: handleSessionReport,
   whoami: handleSessionWhoami,
-  // docs/250 — self-scoped: renames THIS session, never another.
   rename: handleSessionRename,
 };
 
@@ -568,6 +572,7 @@ const ISSUE_HANDLERS: Record<
 };
 
 const COMMAND_DOCS: Record<string, string> = {
+  settings: "/shipit-docs/settings.md",
   session: "/shipit-docs/sessions.md",
   source: "/shipit-docs/ops-session.md",
   issue: "/shipit-docs/issues.md",
@@ -577,7 +582,6 @@ const COMMAND_DOCS: Record<string, string> = {
   branch: "/shipit-docs/sessions.md",
 };
 
-/** Keep command help useful without maintaining a second copy of canonical docs. */
 function commandHelp(domain: keyof typeof COMMAND_DOCS, sub: string): string {
   return `See ${COMMAND_DOCS[domain]} for \`shipit ${domain} ${sub}\` usage and examples.`;
 }
@@ -592,26 +596,17 @@ const AGENT_HANDLERS: Record<
 > = {
   run: handleAgentRun,
   result: handleAgentResult,
-  // docs/264-agent-roles req 12 — the two reads that make `--role NAME` and an override
-  // nameable: what roles exist here, and what parameters exist here. They ship
-  // together deliberately; see `shipit-agent.ts`.
   roles: handleAgentRoles,
   params: handleAgentParams,
 };
 
-/**
- * Compose verbs the agent might reach for that the shim refuses (docs/238). The
- * stack's shape is DECLARED in `docker-compose.yml` and reconciled by ShipIt;
- * the agent edits that file rather than issuing imperative stack commands. Same
- * shape as `shipit release`'s refusal to hand-push a tag.
- */
 const REJECTED_SERVICE_SUBCOMMANDS = new Set([
-  "create", // declare it in docker-compose.yml instead.
-  "delete", // remove it from docker-compose.yml instead.
+  "create",
+  "delete",
   "remove",
-  "build",  // `start`/`restart` already run `up -d --build`.
-  "exec",   // use the terminal / bash tool.
-  "up",     // ShipIt owns stack lifecycle; per-service `start` is the surface.
+  "build",
+  "exec",
+  "up",
   "down",
 ]);
 
@@ -634,6 +629,21 @@ const RELEASE_HANDLERS: Record<
   prepare: handleReleasePrepare,
 };
 
+/**
+ * The settings handlers take {@link SettingsDeps}, not {@link RunDeps}: they are
+ * handed a printer that accepts only rendered text and no raw {@link ShimIO} at
+ * all, so no code path in that module can put an unrendered string on one of its
+ * lines (planning#537, `settings-out.ts`).
+ */
+const SETTINGS_HANDLERS: Record<
+  string,
+  (args: string[], deps: SettingsDeps) => Promise<void>
+> = {
+  list: handleSettingsList,
+  get: handleSettingsGet,
+  propose: handleSettingsPropose,
+};
+
 const SOURCE_HANDLERS: Record<
   string,
   (args: string[], deps: RunDeps) => Promise<void>
@@ -647,10 +657,6 @@ const SOURCE_HANDLERS: Record<
   show: handleSourceShow,
 };
 
-/**
- * Top-level shim entry point. Tests call this directly with stubs so we can
- * verify behavior without spawning a subprocess.
- */
 export async function runShim(
   argv: string[],
   io: ShimIO = defaultIO,
@@ -699,6 +705,11 @@ export async function runShim(
     return;
   }
 
+  if (command === "settings" || command === "setting") {
+    await dispatchSettings(args.slice(1), deps, io);
+    return;
+  }
+
   if (command === "service" || command === "services") {
     await dispatchService(args.slice(1), deps, io);
     return;
@@ -709,9 +720,6 @@ export async function runShim(
     return;
   }
 
-  // docs/262 req 12 — the plugin verb. Its own handler rather than a branch of
-  // the service dispatch: a plugin repository is not a Compose service, and the
-  // two surfaces share nothing but the transport.
   if (command === "plugin" || command === "plugins") {
     await runPlugin(args.slice(1), { ...deps, io });
     return;
@@ -734,7 +742,7 @@ export async function runShim(
     );
   }
 
-  const handler = SESSION_HANDLERS[sub];
+  const handler = handlerFor(SESSION_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit session subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -747,11 +755,6 @@ export async function runShim(
   await handler(args.slice(2), deps);
 }
 
-/**
- * Dispatch a `shipit branch <sub>` invocation (docs/239). One subcommand today —
- * `reset-to-base`, the explicit mode over the docs/218 reset core, which the
- * self-merge wake turn runs before it touches anything.
- */
 async function dispatchBranch(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
@@ -768,11 +771,6 @@ async function dispatchBranch(args: string[], deps: RunDeps, io: ShimIO): Promis
   await handleBranchResetToBase(args.slice(1), deps);
 }
 
-/**
- * Dispatch a `shipit source <sub>` invocation (docs/162). Read-only by
- * construction: mutating subcommands are rejected with a pointer to the
- * `--shipit-source` fix-session flow.
- */
 async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
@@ -787,7 +785,7 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
         "See /shipit-docs/sessions.md.",
     );
   }
-  const handler = SOURCE_HANDLERS[sub];
+  const handler = handlerFor(SOURCE_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit source subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -798,12 +796,6 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
   await handler(args.slice(1), deps);
 }
 
-/**
- * Dispatch a `shipit issue <sub>` invocation (docs/175 read + docs/177 +
- * docs/187 write). Reads map to view/list/labels/statuses; writes (create/
- * comment/edit/status/assign) are do-then-surface. Only destructive verbs
- * (close/delete) are gated. `<sub> --help` prints per-subcommand usage (planning#201).
- */
 async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
@@ -819,7 +811,7 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
         "See /shipit-docs/issues.md.",
     );
   }
-  const handler = ISSUE_HANDLERS[sub];
+  const handler = handlerFor(ISSUE_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit issue subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -830,18 +822,13 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
   await handler(args.slice(1), deps);
 }
 
-/**
- * Dispatch a `shipit agent <sub>` invocation (docs/144, planning#247). `run` is the
- * one-shot sub-agent spawn primitive; `result` re-reads a finished run's
- * persisted output.
- */
 async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     success(io, HELP);
     return;
   }
-  const handler = AGENT_HANDLERS[sub];
+  const handler = handlerFor(AGENT_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit agent subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -852,11 +839,6 @@ async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise
   await handler(args.slice(1), deps);
 }
 
-/**
- * Dispatch a `shipit service <sub>` invocation (docs/238). Also reached via the
- * `services` alias — the plural is the word the compose file uses, so it's the
- * likely typo, and rejecting it would be pure friction.
- */
 async function dispatchService(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
@@ -872,7 +854,7 @@ async function dispatchService(args: string[], deps: RunDeps, io: ShimIO): Promi
         "See /shipit-docs/compose.md.",
     );
   }
-  const handler = SERVICE_HANDLERS[sub];
+  const handler = handlerFor(SERVICE_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit service subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -883,11 +865,47 @@ async function dispatchService(args: string[], deps: RunDeps, io: ShimIO): Promi
   await handler(args.slice(1), deps);
 }
 
-/**
- * Dispatch a `shipit release <sub>` invocation (docs/214). `plan`/`prepare`
- * only — `tag`/`publish`/`push` are rejected with a pointer at the
- * merge-triggered flow (publishing is CI's job, not the agent's).
- */
+const REJECTED_SETTINGS_SUBCOMMANDS = new Set([
+  "set",
+  "save",
+  "write",
+  "update",
+  "change",
+  "enable",
+  "disable",
+  "reset",
+]);
+
+async function dispatchSettings(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  if (REJECTED_SETTINGS_SUBCOMMANDS.has(sub)) {
+    // `sub` needs no mint here: reaching this branch means it is one of the
+    // literal names in the set above.
+    fail(
+      io,
+      `${SHIM_NAME} does not support \`shipit settings ${sub}\` — a ShipIt setting is the user's to change.\n`
+        + "Read it with `shipit settings get <key>`, then post a card with `shipit settings propose\n"
+        + "<key>=<value> --reason \"...\"`. The user's click on that card is what changes the setting.\n"
+        + "See /shipit-docs/settings.md.",
+    );
+  }
+  const handler = handlerFor(SETTINGS_HANDLERS, sub);
+  if (!handler) {
+    // The caller's own argv, echoed from BEFORE `settingsDeps` builds the
+    // printer — the one settings line no mint would otherwise touch (planning#537).
+    fail(io, `${renderLine(`Unsupported shipit settings subcommand: ${sub}`)}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("settings", sub));
+    return;
+  }
+  await handler(args.slice(1), settingsDeps(deps));
+}
+
 async function dispatchRelease(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
@@ -903,7 +921,7 @@ async function dispatchRelease(args: string[], deps: RunDeps, io: ShimIO): Promi
         "See /shipit-docs/release.md.",
     );
   }
-  const handler = RELEASE_HANDLERS[sub];
+  const handler = handlerFor(RELEASE_HANDLERS, sub);
   if (!handler) {
     fail(io, `Unsupported shipit release subcommand: ${sub}\n${REJECTED_HELP}`);
   }
@@ -914,12 +932,6 @@ async function dispatchRelease(args: string[], deps: RunDeps, io: ShimIO): Promi
   await handler(args.slice(1), deps);
 }
 
-/**
- * Strip "node ..." or "tsx ..." prefixes from argv. Allows runShim to accept
- * either raw user args (`["session", "create", ...]`) or full process.argv.
- *
- * Same logic as `gh.ts`.
- */
 function stripNodeArgs(argv: string[]): string[] {
   if (argv.length === 0) return argv;
   const first = argv[0];
@@ -935,14 +947,15 @@ function stripNodeArgs(argv: string[]): string[] {
   return argv;
 }
 
-// ---------------------------------------------------------------------------
-// Standalone entry — only when run as a script, not when imported by tests
-// ---------------------------------------------------------------------------
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   runShim(process.argv.slice(2)).catch((err: unknown) => {
     if (err instanceof Error && err.message === "__shim_exit__") return;
-    shimWrite(process.stderr, `shipit: ${err instanceof Error ? err.message : String(err)}\n`);
+    // The process's last-resort sink, reached by a throw rather than by any
+    // command's own output path — so it renders here, since nothing downstream
+    // of a crash can (planning#537).
+    const message = err instanceof Error ? err.message : String(err);
+    shimWrite(process.stderr, `shipit: ${renderLine(message)}\n`);
     exitAfterFlush(1);
   });
 }

@@ -1,13 +1,3 @@
-/**
- * `shipit source *` handlers (docs/162) — read-only ShipIt source browsing,
- * Ops sessions only.
- *
- * Each handler brokers a GET against the worker's `/agent-ops/source/*` routes
- * and renders a stable text block (or `--json` passthrough). Source access is
- * strictly read-only; mutation happens through a spawned `--shipit-source` fix
- * session, never against the source snapshot directly. The dispatch + the
- * rejected-subcommand gate live in `shipit.ts`.
- */
 
 import {
   asString,

@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import fsPromises from "node:fs/promises";
 import {
   sanitizeFilename,
   deduplicateFilename,
@@ -85,8 +86,8 @@ describe("upload service functions", () => {
     });
 
     it("sums file sizes", async () => {
-      fs.writeFileSync(path.join(tmpDir, "a.txt"), "hello"); // 5 bytes
-      fs.writeFileSync(path.join(tmpDir, "b.txt"), "world!"); // 6 bytes
+      fs.writeFileSync(path.join(tmpDir, "a.txt"), "hello");
+      fs.writeFileSync(path.join(tmpDir, "b.txt"), "world!");
       const size = await getUploadsDirSize(tmpDir);
       expect(size).toBe(11);
     });
@@ -100,7 +101,6 @@ describe("upload service functions", () => {
       expect(result.path).toBe("/uploads/test.txt");
       expect(result.size).toBe(11);
       expect(result.type).toBe("upload");
-      // Verify file was actually written
       const written = fs.readFileSync(path.join(tmpDir, "test.txt"), "utf-8");
       expect(written).toBe("hello world");
     });
@@ -125,10 +125,9 @@ describe("upload service functions", () => {
     });
 
     it("rejects files exceeding session quota", async () => {
-      // Write a file close to the quota
       const existingSize = MAX_UPLOAD_SESSION_QUOTA - 100;
       fs.writeFileSync(path.join(tmpDir, "existing.bin"), Buffer.alloc(existingSize));
-      const data = Buffer.alloc(200); // would exceed quota
+      const data = Buffer.alloc(200);
       await expect(saveUploadedFile(tmpDir, "over.bin", data)).rejects.toThrow(/quota/);
     });
 
@@ -184,6 +183,38 @@ describe("upload service functions", () => {
       await deleteUpload(tmpDir, "big.bin");
       const sizeAfter = await getUploadsDirSize(tmpDir);
       expect(sizeAfter).toBe(0);
+    });
+  });
+
+  describe("saveUploadedFile — concurrent writers (docs/293)", () => {
+    it("gives every concurrent upload of the same name its own file", async () => {
+      const saved = await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          saveUploadedFile(tmpDir, "same.txt", Buffer.from(`writer ${i}`)),
+        ),
+      );
+
+      const paths = saved.map((s) => s.path);
+      expect(new Set(paths).size).toBe(8);
+
+      const contents = saved
+        .map((s) => fs.readFileSync(path.join(tmpDir, path.basename(s.path)), "utf8"))
+        .sort();
+      expect(contents).toEqual(
+        Array.from({ length: 8 }, (_, i) => `writer ${i}`).sort(),
+      );
+    });
+
+    it("leaves nothing behind when the write itself fails", async () => {
+      const before = fs.readdirSync(tmpDir);
+      // Create partial content before failing so the test detects missing cleanup.
+      const spy = vi.spyOn(fsPromises, "writeFile").mockImplementationOnce(async (p) => {
+        fs.writeFileSync(p as string, "partial");
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      });
+      await expect(saveUploadedFile(tmpDir, "doomed.txt", Buffer.from("x"))).rejects.toThrow(/ENOSPC/);
+      spy.mockRestore();
+      expect(fs.readdirSync(tmpDir)).toEqual(before);
     });
   });
 });

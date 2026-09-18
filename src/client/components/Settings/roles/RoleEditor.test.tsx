@@ -9,11 +9,11 @@ import type { RoleView } from "../../../../server/shared/types/agent-types.js";
  * docs/264 phase 2 (reqs 2, 6, 8, 9, 17) — the role editor itself.
  *
  * The bullet most likely to be built wrong is req 6's harness control, so it is
- * pinned against the real rows rather than convenient ones: **`deepseek-v4-flash`
+ * pinned against the real rows rather than convenient ones: **`deepseek-flash`
  * is carried by both installed harnesses** and `claude-opus-5` by one, which is
- * exactly what the shipped catalogue has (`deepseek-v4-flash` and
- * `deepseek-v4-pro` declare all three API styles, so both harnesses share one
- * with each; no other row does). A read-only harness field would leave the first
+ * exactly what the shipped catalogue has (`deepseek-flash` declares all three
+ * API styles, so both harnesses share it; no other row does). A read-only
+ * harness field would leave the first
  * of those unable to say which harness it means. The catalogue itself is pinned
  * server-side, where its rules live — `services/role-settings.test.ts` and
  * `integration_tests/role-settings-api.test.ts` both drive the real one.
@@ -30,7 +30,7 @@ const agents: AgentOption[] = [
     name: "Claude Code",
     installed: true,
     hasRunnableModels: true,
-    models: ["claude-opus-5", "deepseek-v4-flash"],
+    models: ["claude-opus-5", "deepseek-flash"],
     eligibleModels: [
       {
         serviceId: "anthropic",
@@ -44,9 +44,9 @@ const agents: AgentOption[] = [
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
     ],
     supportsReview: true,
@@ -63,27 +63,25 @@ const agents: AgentOption[] = [
     name: "Codex",
     installed: true,
     hasRunnableModels: true,
-    models: ["deepseek-v4-flash"],
+    models: ["deepseek-flash"],
     eligibleModels: [
       {
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
     ],
     supportsReview: true,
-    // Deliberately a DIFFERENT level set from Claude Code's — `max` is Claude
-    // Code's and not Codex's, mirroring the shipped harnesses. This is what
-    // makes "the level is validated against the harness the role names" a real
-    // rule rather than a formality.
+
     reasoning: {
       label: "Reasoning effort",
       options: [
         { value: "minimal", label: "Minimal" },
         { value: "high", label: "High" },
+        { value: "max", label: "Max" },
       ],
     },
   },
@@ -95,7 +93,7 @@ function roleOn(
     serviceId: string;
     billingMode: "sub" | "key";
     modelId: string;
-    /** Omitted for a role at **Default** (docs/264 req 1's resolved question). */
+
     reasoningEffort?: string;
   },
   over: Partial<RoleView> = {},
@@ -112,7 +110,7 @@ const DUAL_HARNESS = {
   harnessId: "claude",
   serviceId: "deepseek",
   billingMode: "key" as const,
-  modelId: "deepseek-v4-flash",
+  modelId: "deepseek-flash",
   reasoningEffort: "max",
 };
 
@@ -132,13 +130,10 @@ function open(role: RoleView | undefined) {
   return { onSave, onCancel };
 }
 
-/** The params of the single `onSave` call. */
 function savedParams(onSave: ReturnType<typeof vi.fn>): Record<string, unknown> {
   const [, write] = onSave.mock.calls[0] as [string, { params: Record<string, unknown> }];
   return write.params;
 }
-
-// ---- The harness control (req 6) -------------------------------------------
 
 describe("RoleEditor — the harness is a real control where the model has a choice", () => {
   it("offers a picker for a model both harnesses carry", async () => {
@@ -151,18 +146,19 @@ describe("RoleEditor — the harness is a real control where the model has a cho
   });
 
   it("drops to Default when the new harness does not declare the level", async () => {
-    const { onSave } = open(roleOn(DUAL_HARNESS));
+    const { onSave } = open(roleOn({
+      ...DUAL_HARNESS,
+      harnessId: "codex",
+      reasoningEffort: "minimal",
+    }));
     await userEvent.click(screen.getByTestId("role-editor-harness-trigger"));
-    await userEvent.click(screen.getByTestId("role-editor-harness-option-codex"));
+    await userEvent.click(screen.getByTestId("role-editor-harness-option-claude"));
     await userEvent.click(screen.getByTestId("role-editor-save"));
 
-    // `max` is Claude Code's level and not Codex's, so the draft cannot keep it
-    // — it would show a tuple the server refuses. It drops to **Default**, not
-    // to Codex's first level: the user picked `max` on a harness that is going
-    // away, and Codex not declaring `max` says nothing about which of ITS levels
-    // they would have wanted. Default is the one answer that needs no guess.
+    // `minimal` is Codex's level and not Claude Code's, so the draft cannot keep it
+
     const saved = savedParams(onSave);
-    expect(saved).toMatchObject({ harnessId: "codex", modelId: "deepseek-v4-flash" });
+    expect(saved).toMatchObject({ harnessId: "claude", modelId: "deepseek-flash" });
     expect(saved).not.toHaveProperty("reasoningEffort");
   });
 
@@ -189,11 +185,7 @@ describe("RoleEditor — the harness is a real control where the model has a cho
   });
 
   it("stays a PICKER when the stored harness is gone and one replacement is valid", async () => {
-    // A DeepSeek role pinned to Codex, on an install where Codex is no longer
-    // installed: `claude` is the only valid harness, and the stored value is not
-    // among the valid ones. Rendering a readout here — which the length-based
-    // rule alone would do — leaves the very field the row calls invalid with no
-    // way to fix it. Cross-agent review found it.
+
     const claudeOnly = [agents[0]];
     const onSave = vi.fn();
     render(
@@ -207,8 +199,7 @@ describe("RoleEditor — the harness is a real control where the model has a cho
       />,
     );
     const trigger = screen.getByTestId("role-editor-harness-trigger");
-    // Named as what it holds, not as the replacement — the stored tuple is what
-    // the role has until the user changes it.
+
     expect(trigger.textContent).toContain("codex");
     await userEvent.click(trigger);
     await userEvent.click(screen.getByTestId("role-editor-harness-option-claude"));
@@ -230,8 +221,6 @@ describe("RoleEditor — the harness is a real control where the model has a cho
     });
   });
 });
-
-// ---- The stranded role ------------------------------------------------------
 
 describe("RoleEditor — a role whose tuple no longer resolves", () => {
   const gone = roleOn({
@@ -270,11 +259,9 @@ describe("RoleEditor — a role whose tuple no longer resolves", () => {
     await userEvent.click(screen.getByTestId("role-editor-service-trigger"));
     await userEvent.click(screen.getByTestId("role-editor-service-option-deepseek:key"));
     await userEvent.click(screen.getByTestId("role-editor-save"));
-    expect(savedParams(onSave)).toMatchObject({ serviceId: "deepseek", modelId: "deepseek-v4-flash" });
+    expect(savedParams(onSave)).toMatchObject({ serviceId: "deepseek", modelId: "deepseek-flash" });
   });
 });
-
-// ---- Name, description, standing instructions (reqs 8, 9, 17, 18) ----------
 
 describe("RoleEditor — the whole role in one place", () => {
   it("carries previousName when editing, so a rename is not a create", async () => {
@@ -287,12 +274,6 @@ describe("RoleEditor — the whole role in one place", () => {
     expect(write.previousName).toBe("deep-dive");
   });
 
-  /**
-   * Req 19's last paragraph — the description field names its READER. Presented
-   * as the user's own label it attracts "The thorough one", which neither the
-   * role choice nor the prompt pitch can be made from, so the requirement would
-   * hold server-side and produce nothing.
-   */
   it("says the agent reads the description", () => {
     open(roleOn(DUAL_HARNESS));
     expect(screen.getByText(/agent reads it/i)).toBeTruthy();
@@ -308,8 +289,7 @@ describe("RoleEditor — the whole role in one place", () => {
     const { onSave } = open(undefined);
     await userEvent.type(screen.getByTestId("role-editor-name"), "new one");
     await userEvent.click(screen.getByTestId("role-editor-save"));
-    // A new role opens at **Default** (req 1's resolved question) — complete,
-    // and not an arbitrary pick from the harness's declared levels.
+
     const saved = savedParams(onSave);
     expect(saved).toMatchObject({
       kind: "pinned",
@@ -324,7 +304,7 @@ describe("RoleEditor — the whole role in one place", () => {
   it("offers Default alongside the harness's levels, as the composer does (req 1)", async () => {
     open(roleOn(DUAL_HARNESS));
     await userEvent.click(screen.getByTestId("role-editor-reasoning-trigger"));
-    // The same option set the composer shows for this harness, Default first.
+
     expect(screen.getByTestId("role-editor-reasoning-option-default")).toBeTruthy();
     expect(screen.getByTestId("role-editor-reasoning-option-max")).toBeTruthy();
   });
@@ -334,7 +314,7 @@ describe("RoleEditor — the whole role in one place", () => {
     await userEvent.click(screen.getByTestId("role-editor-reasoning-trigger"));
     await userEvent.click(screen.getByTestId("role-editor-reasoning-option-default"));
     await userEvent.click(screen.getByTestId("role-editor-save"));
-    // The ABSENCE is the value. `""` would be a level no harness declares, and
+
     // the server refuses it precisely so a client cannot mean Default that way.
     expect(savedParams(onSave)).not.toHaveProperty("reasoningEffort");
   });
@@ -369,12 +349,12 @@ describe("RoleEditor — the whole role in one place", () => {
         role={roleOn(DUAL_HARNESS)}
         agentList={agents}
         busy={false}
-        error='The role "deep-dive" cannot run: "max" is not a reasoning level Codex offers.'
+        error='The role "deep-dive" cannot run: "minimal" is not a reasoning level Claude Code offers.'
         onCancel={vi.fn()}
         onSave={vi.fn()}
       />,
     );
-    expect(screen.getByTestId("role-editor-error").textContent).toContain("Codex offers");
+    expect(screen.getByTestId("role-editor-error").textContent).toContain("Claude Code offers");
   });
 
   it("says so when the install has nothing to run a role on", () => {

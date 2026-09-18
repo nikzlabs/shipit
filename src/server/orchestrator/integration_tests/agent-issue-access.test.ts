@@ -1,18 +1,3 @@
-/**
- * Integration test for the agent's read-only issue access (docs/175).
- *
- * Exercises `shipit issue view`/`list` end-to-end against a *real* orchestrator
- * (`buildApp()`) with faked GitHub REST + Linear GraphQL HTTP. The shim's broker
- * call is wired to the orchestrator's session-scoped routes exactly as the
- * worker relay does in production (`/agent-ops/issue/* → /api/sessions/:id/issue/*`,
- * injecting the trusted session id), so this covers shim parsing → relay shape →
- * orchestrator route → service → tracker registry as one slice.
- *
- * The point of the test is the tracker-neutral contract: `shipit issue view`
- * produces the same shaped output whether the pointer resolves to GitHub
- * (`owner/repo#42`) or Linear (`TRACKER-28`).
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -52,7 +37,6 @@ describe("Integration: agent issue access (docs/175)", () => {
   let sessionId: string;
   let workspaceDir: string;
 
-  /** Rewrite the session workspace's shipit.yaml (declarations are read per request). */
   const writeConfig = (yaml: string) => {
     fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
   };
@@ -64,16 +48,12 @@ describe("Integration: agent issue access (docs/175)", () => {
     credentialStore = new CredentialStore(tmpDir);
 
     trackerFetch = vi.fn(async (url: string, init?: RequestInit) => {
-      // Linear GraphQL — routed by query content.
       if (url.includes("linear.app")) {
         const query = (JSON.parse((init?.body as string) ?? "{}") as { query?: string }).query ?? "";
-        // docs/248 — the declared team KEY is resolved to Linear's team id first.
         if (query.includes("TeamByKey")) {
           return jsonResponse({ data: { teams: { nodes: [{ id: "team-1", key: "TRACKER" }] } } });
         }
         if (query.includes("TeamIssues")) {
-          // A mixed working set: one open, one completed. With includeDone the
-          // tracker returns both; the route post-filters for `--state closed`.
           return jsonResponse({
             data: {
               team: {
@@ -87,13 +67,11 @@ describe("Integration: agent issue access (docs/175)", () => {
             },
           });
         }
-        // Must precede the single-issue `Issue` branch — `IssueComments`
-        // also contains "Issue".
+        // Match IssueComments before the broader Issue check.
         if (query.includes("IssueComments")) {
           return jsonResponse({
             data: {
               issue: {
-                // docs/248 — the team guard reads this off every id-taking read.
                 team: { key: "TRACKER" },
                 comments: {
                   nodes: [
@@ -125,12 +103,7 @@ describe("Integration: agent issue access (docs/175)", () => {
         }
         return jsonResponse({ data: {} });
       }
-      // GitHub REST. A single-issue read hits `/issues/<n>`; a list hits
-      // `/issues?state=<state>`; a comment read hits `/issues/<n>/comments`.
-      // The fake honors `state` exactly as GitHub does (open → open only,
-      // all → open + closed) so the adapter's state mapping is exercised
-      // end-to-end. The comments branch must precede the single-issue regex —
-      // `/issues/42/comments` also matches `/issues/\d+`.
+      // Match comment URLs before the broader issue regex.
       if (/\/issues\/\d+\/comments/.test(url)) {
         return jsonResponse([
           {
@@ -201,9 +174,6 @@ describe("Integration: agent issue access (docs/175)", () => {
       trackerFetchImpl: trackerFetch as unknown as typeof fetch,
     });
 
-    // docs/248 — the trackers a session can reach are the ones its repository
-    // declares, so the session gets a workspace with a `shipit.yaml`. `roadmap`
-    // is the Linear team `TRACKER`; `planning` is a second GitHub repository.
     workspaceDir = path.join(tmpDir, "workspace");
     fs.mkdirSync(workspaceDir, { recursive: true });
     writeConfig(
@@ -223,11 +193,6 @@ describe("Integration: agent issue access (docs/175)", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /**
-   * Run the shim, routing its `/agent-ops/issue/*` broker calls to the
-   * orchestrator's session-scoped routes via app.inject — exactly what the
-   * worker relay does, with the trusted session id injected here.
-   */
   async function runIssueShim(
     argv: string[],
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
@@ -244,7 +209,6 @@ describe("Integration: agent issue access (docs/175)", () => {
       reqPath: string,
       body?: unknown,
     ): Promise<{ status: number; body: Record<string, unknown> }> => {
-      // /agent-ops/issue/view?... → /api/sessions/:id/issue/view?...
       const suffix = reqPath.replace(/^\/agent-ops\/issue/, "");
       const res = await app.inject({
         method,
@@ -288,7 +252,6 @@ describe("Integration: agent issue access (docs/175)", () => {
     credentialStore.setLinearToken("lin_api_x");
         const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28"]);
     expect(exitCode).toBe(0);
-    // Same shaped output as GitHub — that is the tracker-neutral guarantee.
     expect(stdout).toContain("TRACKER-28");
     expect(stdout).toContain("Decouple priorities");
     expect(stdout).toContain("priority:  Urgent");
@@ -300,7 +263,6 @@ describe("Integration: agent issue access (docs/175)", () => {
       "issue", "view", "octocat/hello-world#42", "--comments",
     ]);
     expect(exitCode).toBe(0);
-    // Issue body still renders, then the comment thread, oldest-first.
     expect(stdout).toContain("The GitHub body.");
     expect(stdout).toContain("comments (2):");
     expect(stdout).toContain("octocat · 2026-01-01T00:00:00Z");
@@ -324,7 +286,6 @@ describe("Integration: agent issue access (docs/175)", () => {
     credentialStore.setLinearToken("lin_api_x");
         const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28", "--comments"]);
     expect(exitCode).toBe(0);
-    // Tracker-neutral: identical rendered shape to the GitHub thread above.
     expect(stdout).toContain("The Linear body.");
     expect(stdout).toContain("comments (2):");
     expect(stdout).toContain("Nik · 2026-01-01T00:00:00Z");
@@ -357,8 +318,6 @@ describe("Integration: agent issue access (docs/175)", () => {
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
-    // The fake returns TRACKER-1 (open) + TRACKER-2 (completed); `closed` keeps only the
-    // done one. `includeDone` alone would have over-returned the open issue.
     expect(issues.map((i) => i.identifier)).toEqual(["roadmap#TRACKER-2"]);
   });
 
@@ -387,8 +346,6 @@ describe("Integration: agent issue access (docs/175)", () => {
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
-    // The adapter fetches state=all (open + closed); the route post-filters to
-    // the done set — so only the closed issue survives, no open over-return.
     expect(issues.map((i) => i.identifier)).toEqual(["octocat/hello-world#2"]);
   });
 
@@ -405,21 +362,14 @@ describe("Integration: agent issue access (docs/175)", () => {
   });
 
   it("accepts `issue create` and brokers it to the create route (docs/187 — no longer human-gated)", async () => {
-    // The shim no longer gates creation; it relays POST /agent-ops/issue/create →
-    // the orchestrator create route. This harness has no active runner, so the
-    // route declines with 409 — which proves the call reached it rather than being
-    // rejected at the shim with the old "does not support" message.
+    // No runner is attached; a parsed write reaches the route's activity guard.
     const { stderr, exitCode } = await runIssueShim(["issue", "create", "--title", "x", "--tracker", "planning"]);
     expect(stderr).not.toContain("does not support");
     expect(exitCode).not.toBe(0);
-    // The 409 from the create route (no active runner) — proof it reached the broker.
     expect(stderr).toContain("Session is not active");
   });
 
   it("accepts `issue label create` and brokers it to the label route (planning#232)", async () => {
-    // Same reach-the-route proof as `issue create` above: this harness has no
-    // active runner, so the label route declines with 409 — the shim parsed the
-    // verb, defaulted nothing wrong, and relayed POST /agent-ops/issue/label/create.
     const { stderr, exitCode } = await runIssueShim([
       "issue", "label", "create", "--name", "t3code", "--tracker", "planning",
     ]);
@@ -429,8 +379,6 @@ describe("Integration: agent issue access (docs/175)", () => {
   });
 
   it("accepts `issue label edit` and brokers it to the label-edit route (planning#88)", async () => {
-    // Same reach-the-route proof: the shim parsed the verb, required nothing it
-    // shouldn't, and relayed POST /agent-ops/issue/label/edit.
     const { stderr, exitCode } = await runIssueShim([
       "issue", "label", "edit", "--name", "bug", "--new-name", "Bug", "--tracker", "planning",
     ]);
@@ -442,16 +390,11 @@ describe("Integration: agent issue access (docs/175)", () => {
   it("rejects `issue label delete` at the shim, pointing at edit (planning#88)", async () => {
     const { stderr, exitCode } = await runIssueShim(["issue", "label", "delete", "t3code"]);
     expect(exitCode).not.toBe(0);
-    // The refusal states WHY (an undo would mint a label no issue carries) and
-    // names the alternative, so it doesn't read as an oversight to route around.
     expect(stderr).toContain("no issue carries");
     expect(stderr).toContain("shipit issue label edit");
   });
 
-  // -- docs/248: naming the destination ---------------------------------------
-
   describe("declared trackers (docs/248)", () => {
-    // req 10 — all three reference forms reach the same issue, end to end.
     it.each([
       ["tracker name + backend id", "planning#7"],
       ["the backend's canonical address", "acme/planning#7"],
@@ -464,7 +407,6 @@ describe("Integration: agent issue access (docs/175)", () => {
       expect(exitCode).toBe(0);
       const issue = JSON.parse(stdout) as { identifier: string; title: string };
       expect(issue.title).toBe("A planning issue");
-      // req 15 — ShipIt echoes the name form back.
       expect(issue.identifier).toBe("planning#7");
     });
 
@@ -479,13 +421,10 @@ describe("Integration: agent issue access (docs/175)", () => {
       expect(stdout).toContain("Decouple priorities");
     });
 
-    // req 11 — a well-formed address naming no declared tracker fails closed,
-    // and must never fall through to the session's own repository.
     it("fails closed on a canonical address for an undeclared repository", async () => {
       const { stderr, exitCode } = await runIssueShim(["issue", "view", "someone/else#7"]);
       expect(exitCode).not.toBe(0);
       expect(stderr).toMatch(/does not declare/i);
-      // The declared names are in the message, so the agent can correct itself.
       expect(stderr).toContain("planning");
     });
 
@@ -495,13 +434,6 @@ describe("Integration: agent issue access (docs/175)", () => {
       expect(stderr).toMatch(/No issue tracker named/i);
     });
 
-    // req 6 — a destination declared twice used to make its canonical address
-    // ambiguous at RESOLUTION time. The duplicate is now refused at DECLARATION
-    // time instead, which is the stronger guarantee: the ambiguity cannot be
-    // configured into existence, so the address resolves through the one
-    // surviving name and the agent is told why in the same output. (The
-    // resolver's ambiguity branch is still exercised directly in
-    // `issue-ref-resolution.test.ts`, which feeds destinations without a parser.)
     it("refuses a duplicate destination at declaration time rather than resolving ambiguously", async () => {
       writeConfig(
         "issues:\n  trackers:\n" +
@@ -511,12 +443,9 @@ describe("Integration: agent issue access (docs/175)", () => {
       const { stdout, stderr } = await runIssueShim(["issue", "view", "acme/planning#7"]);
       expect(stderr).toMatch(/already declared as `planning`/i);
       expect(stderr).not.toMatch(/more than one declared tracker/i);
-      // Resolved through the surviving declaration, in its name form (req 15).
       expect(`${stdout}${stderr}`).toContain("planning#7");
     });
 
-    // req 13 — a create always names where it files. Without this, a forgotten
-    // flag files into the session's own (possibly public) repository.
     it("refuses `issue create` with no --tracker", async () => {
       const { stderr, exitCode } = await runIssueShim(["issue", "create", "--title", "x"]);
       expect(exitCode).not.toBe(0);
@@ -530,8 +459,6 @@ describe("Integration: agent issue access (docs/175)", () => {
       expect(stderr).toContain("--tracker <name> is required");
     });
 
-    // req 8 — declaration warnings reach the agent on every command, including
-    // the ones that succeed, so a silently-dropped entry is still visible.
     it("prints declaration warnings on stderr even when the command succeeds", async () => {
       writeConfig(
         "issues:\n  trackers:\n" +
@@ -543,7 +470,6 @@ describe("Integration: agent issue access (docs/175)", () => {
       expect(stderr).toContain("jira");
     });
 
-    // req 12 — the session's own repository stays reachable unnamed.
     it("still reaches the session's own repository with a bare number", async () => {
       const { stdout, exitCode } = await runIssueShim(["issue", "view", "42", "--json"]);
       expect(exitCode).toBe(0);

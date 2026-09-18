@@ -1,10 +1,3 @@
-/**
- * bug tool — `report_shipit_bug` (docs/164). Pure transport: POSTs the draft to
- * the worker's `/agent-ops/bug/report` broker, which redacts it server-side and
- * renders an inline consent card. The tool PROPOSES a report; nothing is filed
- * until the user confirms. Extracted from the former standalone
- * `mcp-bug-bridge.ts` for the consolidated bridge.
- */
 
 import type { ToolDescriptor } from "./types.js";
 
@@ -31,10 +24,12 @@ const inputSchema = {
   properties: {
     title: {
       type: "string",
+      minLength: 1,
       description: "A short, specific issue title summarizing the ShipIt bug.",
     },
     body: {
       type: "string",
+      minLength: 1,
       description:
         "The report body: what happened and how to reproduce it, in the user's words. This is redacted server-side before the user reviews it.",
     },

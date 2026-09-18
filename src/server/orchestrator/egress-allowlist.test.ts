@@ -1,7 +1,3 @@
-/**
- * Tests for the egress allowlist (docs/172 Gap 1, planning#92).
- */
-
 import { describe, it, expect } from "vitest";
 import {
   EGRESS_DEFAULT_ALLOWLIST,
@@ -19,16 +15,14 @@ import {
   EGRESS_LIFELINE_ALLOWLIST,
   sandboxLifelineBase,
   sandboxLifelineEgressConfig,
+  sshEgressTargets,
 } from "./egress-allowlist.js";
+import { ipLiteralCidr, isIpLiteral } from "./ssh-hosts.js";
 import { EGRESS_TIER_A_RESOLVE_HOSTS } from "./egress-firewall.js";
 import { SERVICES } from "../shared/catalogue/services.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
 import type { SessionInfo } from "../shared/types.js";
-
-// ---------------------------------------------------------------------------
-// normalizeHost / hostMatchesEntry
-// ---------------------------------------------------------------------------
 
 describe("normalizeHost", () => {
   it("lowercases and strips a single trailing dot", () => {
@@ -52,7 +46,6 @@ describe("hostMatchesEntry", () => {
   });
 
   it("suffix entry does NOT match a look-alike that merely ends in the string", () => {
-    // The classic allowlist bypass: "evil-github.com" should not match ".github.com".
     expect(hostMatchesEntry("evilgithub.com", ".github.com")).toBe(false);
     expect(hostMatchesEntry("github.com.attacker.com", ".github.com")).toBe(false);
   });
@@ -61,10 +54,6 @@ describe("hostMatchesEntry", () => {
     expect(hostMatchesEntry("API.GITHUB.COM.", ".github.com")).toBe(true);
   });
 });
-
-// ---------------------------------------------------------------------------
-// makeAllowlist
-// ---------------------------------------------------------------------------
 
 describe("makeAllowlist", () => {
   it("de-duplicates normalized entries", () => {
@@ -78,9 +67,49 @@ describe("makeAllowlist", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// parseAllowlistEnv / hostFromUrl
-// ---------------------------------------------------------------------------
+/**
+ * Entries are EXACT unless they start with a dot, so the bare host does not
+ * cover a prefixed one — which is how account-mode Antigravity was left
+ * unreachable: the allowlist carried `cloudcode-pa.googleapis.com`, read from
+ * the binary's compiled hosts, and a real account turn (2026-09-14, 1.1.27)
+ * sent every `loadCodeAssist` and `streamGenerateContent` to
+ * `daily-cloudcode-pa.googleapis.com` instead.
+ */
+describe("the hosts an agent CLI must reach to run at all", () => {
+  it("allows the backend Antigravity's account mode was observed calling", () => {
+    const allow = makeAllowlist(EGRESS_DEFAULT_ALLOWLIST);
+    expect(allow.isAllowed("daily-cloudcode-pa.googleapis.com")).toBe(true);
+  });
+
+  /**
+   * The CLI checks eligibility AFTER exchanging the code, so a blocked
+   * `userinfo` call fails a sign-in that already wrote a good token — and the
+   * refusal outranks the token, correctly, so the account never connects.
+   * Observed in the dogfood on 2026-09-16: `Eligibility check failed: Get
+   * "https://www.googleapis.com/oauth2/v2/userinfo": … server misbehaving`.
+   */
+  it("allows the eligibility check Antigravity's sign-in makes after the exchange", () => {
+    for (const list of [EGRESS_DEFAULT_ALLOWLIST, EGRESS_LIFELINE_ALLOWLIST]) {
+      expect(makeAllowlist(list).isAllowed("www.googleapis.com")).toBe(true);
+    }
+  });
+
+  /**
+   * That check then fetches the account's profile picture, and a signed-in
+   * account failed every TURN without it: `Eligibility check failed: failed to
+   * get profile picture: … lookup lh3.googleusercontent.com … server
+   * misbehaving` (dogfood, 2026-09-16). The shard is chosen per account, so
+   * every one of them has to resolve, not the one this account happened to get.
+   */
+  it.each(["lh3.googleusercontent.com", "lh5.googleusercontent.com"])(
+    "allows the profile picture the eligibility check fetches (%s)",
+    (host) => {
+      for (const list of [EGRESS_DEFAULT_ALLOWLIST, EGRESS_LIFELINE_ALLOWLIST]) {
+        expect(makeAllowlist(list).isAllowed(host)).toBe(true);
+      }
+    },
+  );
+});
 
 describe("parseAllowlistEnv", () => {
   it("splits on commas and whitespace, trims, drops blanks", () => {
@@ -101,10 +130,6 @@ describe("hostFromUrl", () => {
     expect(hostFromUrl("not a url")).toBeNull();
   });
 });
-
-// ---------------------------------------------------------------------------
-// mcpHostsFromCredentialStore — minimal stub of the store surface used
-// ---------------------------------------------------------------------------
 
 function stubStore(opts: {
   servers?: Record<string, McpServerConfig>;
@@ -138,10 +163,6 @@ describe("mcpHostsFromCredentialStore", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// buildEgressAllowlist — composition + acceptance-style checks
-// ---------------------------------------------------------------------------
-
 describe("buildEgressAllowlist", () => {
   it("allows the core agent / git / registry hosts by default", () => {
     const al = buildEgressAllowlist();
@@ -153,26 +174,20 @@ describe("buildEgressAllowlist", () => {
     expect(al.isAllowed("codeload.github.com")).toBe(true);
     expect(al.isAllowed("registry.npmjs.org")).toBe(true);
     expect(al.isAllowed("api.openai.com")).toBe(true);
-    // Node headers tarball for node-gyp native-module builds (node-pty, etc.)
     expect(al.isAllowed("nodejs.org")).toBe(true);
   });
 
-  // docs/213 — the baked Android toolchain needs Gradle/Maven dependency repos
-  // reachable, or every build fails at resolution. These are read-only artifact
-  // registries (the JVM analog of npm/pypi).
   it("allows JVM/Android build artifact registries by default", () => {
     const al = buildEgressAllowlist();
-    expect(al.isAllowed("services.gradle.org")).toBe(true); // wrapper distributions
-    expect(al.isAllowed("plugins.gradle.org")).toBe(true); // plugin portal
-    expect(al.isAllowed("dl.google.com")).toBe(true); // Google Maven (AGP, AndroidX) + sdkmanager
+    expect(al.isAllowed("services.gradle.org")).toBe(true);
+    expect(al.isAllowed("plugins.gradle.org")).toBe(true);
+    expect(al.isAllowed("dl.google.com")).toBe(true);
     expect(al.isAllowed("maven.google.com")).toBe(true);
-    expect(al.isAllowed("repo.maven.apache.org")).toBe(true); // Maven Central
-    expect(al.isAllowed("repo1.maven.org")).toBe(true); // Maven Central alias
+    expect(al.isAllowed("repo.maven.apache.org")).toBe(true);
+    expect(al.isAllowed("repo1.maven.org")).toBe(true);
     expect(al.isAllowed("oss.sonatype.org")).toBe(true);
   });
 
-  // The Google Maven entry MUST be exact (dl.google.com), never a ".google.com"
-  // suffix — the bare suffix would re-open Gmail/Drive/Forms as exfil channels.
   it("does NOT open the rest of google.com via the Google Maven entry", () => {
     const al = buildEgressAllowlist();
     expect(al.isAllowed("mail.google.com")).toBe(false);
@@ -185,9 +200,7 @@ describe("buildEgressAllowlist", () => {
     const al = buildEgressAllowlist();
     expect(al.isAllowed("attacker.com")).toBe(false);
     expect(al.isAllowed("evil.example.com")).toBe(false);
-    // look-alike that ends with an allowlisted suffix but isn't a subdomain
     expect(al.isAllowed("api.anthropic.com.attacker.com")).toBe(false);
-    // look-alike for the new Google Maven exact entry
     expect(al.isAllowed("dl.google.com.attacker.com")).toBe(false);
   });
 
@@ -218,7 +231,7 @@ describe("buildEgressAllowlist", () => {
   it("base default list is non-empty and all suffix/exact entries normalize", () => {
     expect(EGRESS_DEFAULT_ALLOWLIST.length).toBeGreaterThan(0);
     for (const e of EGRESS_DEFAULT_ALLOWLIST) {
-      expect(normalizeHost(e)).toBe(e); // already normalized in source
+      expect(normalizeHost(e)).toBe(e);
     }
   });
 
@@ -239,10 +252,6 @@ describe("buildEgressAllowlist", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// composeEgressExtraHosts — the shared resolver/proxy extra-host seam
-// ---------------------------------------------------------------------------
-
 describe("composeEgressExtraHosts", () => {
   it("returns [] for an empty env + no sources", () => {
     expect(composeEgressExtraHosts({ env: {} })).toEqual([]);
@@ -260,7 +269,7 @@ describe("composeEgressExtraHosts", () => {
     const hosts = composeEgressExtraHosts({
       env: { SESSION_EGRESS_ALLOWLIST: "ops.corp" },
       credentialStore: store,
-      durableHosts: ["Durable.Example.com.", "ops.corp"], // dup + needs-normalize
+      durableHosts: ["Durable.Example.com.", "ops.corp"],
     });
     expect(hosts).toEqual(["ops.corp", "mcp.acme.dev", "durable.example.com"]);
   });
@@ -269,10 +278,6 @@ describe("composeEgressExtraHosts", () => {
     expect(composeEgressExtraHosts({ env: {}, durableHosts: [".user.example.com"] })).toEqual([".user.example.com"]);
   });
 });
-
-// ---------------------------------------------------------------------------
-// buildEffectiveAllowlist — provenance view for the Settings editor
-// ---------------------------------------------------------------------------
 
 describe("buildEffectiveAllowlist", () => {
   it("tags built-in defaults AND user hosts as removable (overridable defaults)", () => {
@@ -292,7 +297,6 @@ describe("buildEffectiveAllowlist", () => {
     expect(all.some((e) => e.host === ".github.com")).toBe(true);
     const withSuppressed = buildEffectiveAllowlist({ env: {}, suppressedDefaults: [".github.com"] });
     expect(withSuppressed.some((e) => e.host === ".github.com")).toBe(false);
-    // other defaults remain
     expect(withSuppressed.some((e) => e.host === ".anthropic.com")).toBe(true);
   });
 
@@ -311,20 +315,43 @@ describe("buildEffectiveAllowlist", () => {
     expect(gh).toHaveLength(1);
     expect(gh[0]).toMatchObject({ source: "builtin", removable: true });
   });
+
+  it("is not removable when a second source pins the same host", () => {
+    // `.github.com` is a shipped default AND named by the operator. Suppressing
+    // the default is all a removal can reach, so advertising it as removable
+    // offers a button and a proposal card for a change that cannot happen
+    // (docs/299-agent-settings-access req 4).
+    const entries = buildEffectiveAllowlist({
+      env: { SESSION_EGRESS_ALLOWLIST: ".github.com" },
+      globalHosts: [],
+    });
+    const gh = entries.filter((e) => e.host === ".github.com");
+    expect(gh).toHaveLength(1);
+    expect(gh[0]).toMatchObject({ source: "operator", removable: false });
+  });
+
+  it("is not removable when a configured MCP server needs a host that is also a default", () => {
+    // `openrouter.ai` ships as a default and is where this server lives, so the
+    // built-in pass claims it first — and suppressing that default would leave
+    // the host reachable for the MCP server that still needs it.
+    const store = stubStore({
+      servers: { router: { name: "router", type: "http", url: "https://openrouter.ai/mcp", enabled: true } },
+    });
+    const entries = buildEffectiveAllowlist({ env: {}, credentialStore: store });
+    const entry = entries.filter((e) => e.host === "openrouter.ai");
+    expect(entry).toHaveLength(1);
+    expect(entry[0]).toMatchObject({ source: "mcp", removable: false });
+  });
 });
 
 describe("isBuiltinDefault", () => {
   it("recognizes a built-in default (normalized), rejects others", () => {
     expect(isBuiltinDefault(".github.com")).toBe(true);
-    expect(isBuiltinDefault(".GitHub.com.")).toBe(true); // case + trailing dot
+    expect(isBuiltinDefault(".GitHub.com.")).toBe(true);
     expect(isBuiltinDefault("attacker.com")).toBe(false);
-    expect(isBuiltinDefault("api.github.com")).toBe(false); // not the exact default entry
+    expect(isBuiltinDefault("api.github.com")).toBe(false);
   });
 });
-
-// ---------------------------------------------------------------------------
-// composeEgressIdentityRules (Phase 2 — SNI-scoped tenant identity)
-// ---------------------------------------------------------------------------
 
 describe("composeEgressIdentityRules", () => {
   const env = (v?: string): NodeJS.ProcessEnv => ({ SESSION_EGRESS_IDENTITY_RULES: v } as NodeJS.ProcessEnv);
@@ -373,17 +400,12 @@ describe("composeEgressIdentityRules", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// docs/211 — sandbox lifeline-only egress (network capability OFF)
-// ---------------------------------------------------------------------------
 describe("sandboxLifelineBase", () => {
   it("is the LLM-API lifeline only — no registries, no git host — when git is off", () => {
     const base = sandboxLifelineBase({ git: false });
     expect(base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
-    // The agent's own API is reachable…
     expect(base).toContain(".anthropic.com");
     expect(base).toContain("platform.claude.com");
-    // …but the package registries and git host of the FULL default base are not.
     expect(base).not.toContain(".npmjs.org");
     expect(base).not.toContain(".github.com");
   });
@@ -391,7 +413,6 @@ describe("sandboxLifelineBase", () => {
   it("re-opens github.com when git is granted, so push/PR still work", () => {
     const base = sandboxLifelineBase({ git: true });
     expect(base).toContain(".github.com");
-    // Still no package registries — github is the only addition.
     expect(base).not.toContain(".npmjs.org");
   });
 });
@@ -421,12 +442,7 @@ describe("sandboxLifelineEgressConfig", () => {
   });
 
   it("network OFF states that it admits no user hosts, rather than leaving it inferred", () => {
-    // planning#380 — an empty `extraHosts` cannot be told apart from "this user
-    // added no hosts", and every reader that guessed got it wrong in the same
-    // direction. The flag is what the decision route and the Plugins card ask.
     expect(sandboxLifelineEgressConfig(sandbox({ network: false }), "")!.userHostsExcluded).toBe(true);
-    // Never set on the paths that DO carry user hosts — a normal session's config
-    // comes from `index.ts`, which does not set it at all.
     expect(sandboxLifelineEgressConfig(sandbox({ network: true }), "")).toBeNull();
   });
 
@@ -439,5 +455,54 @@ describe("sandboxLifelineEgressConfig", () => {
     expect(sandboxLifelineEgressConfig(sandbox({ network: false }), "")!.identityRules).toBeUndefined();
     const rules = '[{"host":".s3.amazonaws.com","identities":["b"]}]';
     expect(sandboxLifelineEgressConfig(sandbox({ network: false }), rules)!.identityRules).toBe(rules);
+  });
+});
+
+describe("sshEgressTargets", () => {
+  const classify = { isIpLiteral, ipLiteralCidr };
+
+  it("splits names from IP literals, because only a name is ever resolved", () => {
+    expect(sshEgressTargets(
+      [{ address: "prod.example.com" }, { address: "100.83.12.47" }, { address: "PROD.example.com" }],
+      classify,
+    )).toEqual({ names: ["prod.example.com"], cidrs: ["100.83.12.47/32"] });
+  });
+
+  // req 12 says "an IP address", and the Tier A ipset carries both families.
+  it("gives an IPv6 destination its /128", () => {
+    expect(sshEgressTargets([{ address: "2001:db8::1" }], classify))
+      .toEqual({ names: [], cidrs: ["2001:db8::1/128"] });
+  });
+
+  it("is empty for a session with no grant", () => {
+    expect(sshEgressTargets([], classify)).toEqual({ names: [], cidrs: [] });
+  });
+});
+
+/**
+ * docs/305 — a network-off sandbox discards the ordinary per-session host path,
+ * so an SSH grant has to be composed into its policy explicitly or the grant
+ * silently does nothing. That is the one deliberate exception.
+ */
+describe("sandboxLifelineEgressConfig with SSH grants", () => {
+  const networkOff: Pick<SessionInfo, "kind" | "capabilities"> = {
+    kind: "sandbox",
+    capabilities: { git: false, docker: false, network: false, dangerousGitHubOps: false },
+  };
+
+  it("adds a granted hostname to the lifeline base and an IP to the CIDR input", () => {
+    const cfg = sandboxLifelineEgressConfig(networkOff, "", {
+      names: ["prod.example.com"],
+      cidrs: ["100.83.12.47/32"],
+    })!;
+    expect(cfg.userHostsExcluded).toBe(true);
+    expect(cfg.base).toEqual([...EGRESS_LIFELINE_ALLOWLIST, "prod.example.com"]);
+    expect(cfg.extraCidrs).toEqual(["100.83.12.47/32"]);
+  });
+
+  it("widens nothing when no destination is granted", () => {
+    const cfg = sandboxLifelineEgressConfig(networkOff, "")!;
+    expect(cfg.base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
+    expect(cfg.extraCidrs).toBeUndefined();
   });
 });

@@ -37,8 +37,6 @@ export function useTabLabelCollapse(signature: string): RefCallback<HTMLElement>
     el.dataset.collapsed = el.scrollWidth > el.clientWidth + 1 ? "true" : "false";
   }, []);
 
-  // Callback ref: observe the bar the instant it mounts and disconnect when it
-  // unmounts. The cleanup return is supported by React 19 ref callbacks.
   const setRef = useCallback<RefCallback<HTMLElement>>(
     (node) => {
       elRef.current = node;
@@ -51,9 +49,6 @@ export function useTabLabelCollapse(signature: string): RefCallback<HTMLElement>
     [measure],
   );
 
-  // Re-measure when the visible-tab signature changes (a width-only
-  // ResizeObserver won't fire when the panel keeps its width but a tab
-  // appears/disappears). No-op while the bar is unmounted.
   useLayoutEffect(measure, [signature, measure]);
 
   return setRef;

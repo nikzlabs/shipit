@@ -88,6 +88,75 @@ describe("useMessageHandler", () => {
     });
   });
 
+  it("queues a user-message echo until HTTP history has loaded", async () => {
+
+    // bubble is wiped by the load that follows — the same "my message never
+
+    const event: WsServerMessage = {
+      type: "system_user_message",
+      sessionId: "session-1",
+      text: "sent from my phone",
+      clientRequestId: "req-phone",
+    };
+    const queued = [messageEvent(event)];
+    const drainMessages = vi.fn(() => queued.splice(0));
+
+    renderHook(() =>
+      useMessageHandler({
+        lastMessage: messageEvent(event),
+        drainMessages,
+        send: vi.fn(),
+        terminalRef: { current: null },
+      })
+    );
+
+    expect(useSessionStore.getState().messages).toEqual([]);
+
+    act(() => {
+      useSessionStore.getState().setMessages([{ role: "user", text: "earlier turn" }]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages).toMatchObject([
+        { role: "user", text: "earlier turn" },
+        { role: "user", text: "sent from my phone", clientRequestId: "req-phone" },
+      ]);
+    });
+  });
+
+  it("drops a queued echo whose row the history load already carried", async () => {
+
+    const event: WsServerMessage = {
+      type: "system_user_message",
+      sessionId: "session-1",
+      text: "sent from my phone",
+      clientRequestId: "req-phone",
+    };
+    const queued = [messageEvent(event)];
+    const drainMessages = vi.fn(() => queued.splice(0));
+
+    renderHook(() =>
+      useMessageHandler({
+        lastMessage: messageEvent(event),
+        drainMessages,
+        send: vi.fn(),
+        terminalRef: { current: null },
+      })
+    );
+
+    act(() => {
+      useSessionStore.getState().setMessages([
+        { role: "user", text: "sent from my phone", clientRequestId: "req-phone" },
+      ]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages).toHaveLength(1);
+    });
+  });
+
   /**
    * The session-switch entry into the "switched away mid-turn, switched back,
    * and the earlier messages are gone" hole. The switch clears the transcript
@@ -101,7 +170,7 @@ describe("useMessageHandler", () => {
    * that rendered that intermediate status would pass even with the bug.
    */
   it("queues the attach snapshot across a session switch with no connection-status transition", async () => {
-    // Mid-turn on the outgoing session: its history is loaded.
+
     useSessionStore.getState().setSessionId("session-1");
     useSessionStore.getState().setHistoryLoaded(true);
     useSessionStore.getState().setMessages([
@@ -131,15 +200,12 @@ describe("useMessageHandler", () => {
       resumeSessionInternal("session-2");
     });
 
-    // The incoming socket attaches and sends the running turn's snapshot.
     act(() => {
       queued.push(messageEvent(snapshot));
       rerender({ last: queued[0] });
     });
     expect(useSessionStore.getState().messages).toEqual([]);
 
-    // The history response lands after it, carrying only the rows the DB held
-    // at the last tool-result boundary.
     act(() => {
       useSessionStore.getState().setMessages([
         { role: "assistant", text: "stale baseline", inProgress: true },

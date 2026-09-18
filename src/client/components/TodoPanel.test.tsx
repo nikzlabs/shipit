@@ -43,17 +43,17 @@ describe("TodoPanel", () => {
       { id: "3", subject: "Ship it", status: "pending", activeForm: "Shipping it" },
     ];
     render(<TodoPanel tasks={tasks} />);
-    // completed shows subject
+
     expect(screen.getByText("Write code")).toBeInTheDocument();
-    // in_progress shows activeForm
+
     expect(screen.getByText("Running tests")).toBeInTheDocument();
     expect(screen.queryByText("Run tests")).not.toBeInTheDocument();
-    // pending shows subject
+
     expect(screen.getByText("Ship it")).toBeInTheDocument();
   });
 
   it("falls back to the subject when an in_progress task has no activeForm", () => {
-    // `activeForm` is optional on TaskCreate/TaskUpdate — the CLI's own spinner
+
     // shows the subject when it is omitted, and so must the panel.
     render(<TodoPanel tasks={[{ id: "1", subject: "Run tests", status: "in_progress" }]} />);
     expect(screen.getByText("Run tests")).toBeInTheDocument();

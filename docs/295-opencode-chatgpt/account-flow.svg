@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620" role="img" aria-labelledby="title desc">
+<title id="title">One ChatGPT account, two coding tools</title>
+<desc id="desc">ShipIt keeps the existing OpenAI account and refresh process. Codex keeps its current credential path. OpenCode receives only an access token, account identity, and expiry. Both use one quota record. The OpenCode route is proposed, not implemented.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#526179"/></marker></defs>
+<rect width="980" height="620" fill="#f4f7fb" rx="18"/>
+<g font-family="Arial, sans-serif" fill="#17253b">
+<text x="40" y="48" font-size="26" font-weight="700">One ChatGPT account, two coding tools</text>
+<text x="40" y="77" font-size="15" fill="#526179">Proposed design · OpenCode support is not enabled</text>
+<rect x="290" y="104" width="400" height="76" rx="12" fill="#fff" stroke="#bdc9d8"/>
+<text x="490" y="135" text-anchor="middle" font-size="18" font-weight="700">Existing ShipIt OpenAI sign-in</text>
+<text x="490" y="159" text-anchor="middle" font-size="15">Reuse the connected ChatGPT account</text>
+<path d="M490 180 V215" stroke="#526179" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="240" y="220" width="500" height="92" rx="12" fill="#e5edf9" stroke="#8aa4c9"/>
+<text x="490" y="250" text-anchor="middle" font-size="18" font-weight="700">Existing account source and refresh process</text>
+<text x="490" y="276" text-anchor="middle" font-size="15">Account identity · access token · refresh token</text>
+<text x="490" y="297" text-anchor="middle" font-size="14" fill="#526179">One quota record for both tools</text>
+<path d="M365 312 V347 H240 V378" fill="none" stroke="#526179" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M615 312 V347 H740 V378" fill="none" stroke="#526179" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="50" y="385" width="380" height="115" rx="12" fill="#fff" stroke="#bdc9d8"/>
+<text x="240" y="417" text-anchor="middle" font-size="19" font-weight="700">Codex</text>
+<text x="240" y="444" text-anchor="middle" font-size="16">Current credential and sync path</text>
+<text x="240" y="471" text-anchor="middle" font-size="14" fill="#526179">Existing refresh behavior remains</text>
+<rect x="550" y="385" width="380" height="115" rx="12" fill="#e1f4ed" stroke="#75a992"/>
+<text x="740" y="417" text-anchor="middle" font-size="19" font-weight="700">OpenCode — new path</text>
+<text x="740" y="444" text-anchor="middle" font-size="16">Access token · account identity · expiry</text>
+<text x="740" y="471" text-anchor="middle" font-size="14" fill="#245840">No refresh token · no token write-back</text>
+<rect x="50" y="530" width="880" height="58" rx="10" fill="#fff4db" stroke="#d8b567"/>
+<text x="490" y="555" text-anchor="middle" font-size="15" font-weight="700">First implementation gate</text>
+<text x="490" y="577" text-anchor="middle" font-size="15">Verify access-only auth and live token replacement with the pinned OpenCode version.</text>
+</g></svg>

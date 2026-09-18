@@ -1,17 +1,6 @@
-/**
- * ask tool — a normalized `AskUserQuestion` for Codex (docs/147). Codex lacks a
- * Default-mode native question tool, so this exposes one shaped exactly like the
- * one Claude emits. On a well-formed call it POSTs the questions to the worker
- * (`/agent-ops/ask/submit`), which injects a normalized `AskUserQuestion`
- * tool_use into the event stream so the existing question/interrupt/resume flow
- * is reused — then the tool HOLDS OPEN until the orchestrator tears the turn
- * down (the answer arrives out of band as the next turn). A malformed call (or
- * an unreachable worker) returns an error immediately so the model self-corrects
- * rather than hanging until Codex's ~120s MCP timeout. Extracted from the former
- * standalone `mcp-ask-bridge.ts` for the consolidated bridge.
- */
 
 import type { ToolDescriptor } from "./types.js";
+import { normalizeAskQuestions } from "../ask-question.js";
 
 const TOOL_DESCRIPTION = [
   "Ask the user one or more multiple-choice questions and pause until they",
@@ -29,6 +18,7 @@ const inputSchema = {
   properties: {
     questions: {
       type: "array",
+      minItems: 1,
       description: "One or more questions to ask the user.",
       items: {
         type: "object",
@@ -47,11 +37,12 @@ const inputSchema = {
           },
           options: {
             type: "array",
-            description: "The available choices (2-4 recommended).",
+            minItems: 1,
+            description: "The available choices (2-4 recommended; at least one is required).",
             items: {
               type: "object",
               properties: {
-                label: { type: "string", description: "The option's display text." },
+                label: { type: "string", minLength: 1, description: "The option's display text (must not be empty)." },
                 description: {
                   type: "string",
                   description: "A short explanation of what the option means.",
@@ -68,21 +59,8 @@ const inputSchema = {
   required: ["questions"],
 };
 
-/**
- * True when the payload carries at least one question with a non-empty `options`
- * array. Matches the orchestrator's `isWellFormedAskUserQuestion` gate: a call
- * that doesn't satisfy this is rejected (the card can't render and the
- * orchestrator won't interrupt), so we surface the error to the model rather
- * than blocking forever.
- */
 export function hasUsableQuestions(args: { questions?: unknown }): boolean {
-  const questions = args.questions;
-  if (!Array.isArray(questions) || questions.length === 0) return false;
-  return questions.every((q) => {
-    if (typeof q !== "object" || q === null) return false;
-    const opts = (q as { options?: unknown }).options;
-    return Array.isArray(opts) && opts.length > 0;
-  });
+  return normalizeAskQuestions(args.questions).length > 0;
 }
 
 export const askTool: ToolDescriptor = {
@@ -93,7 +71,6 @@ export const askTool: ToolDescriptor = {
   async call(args, { workerUrl }) {
     const a = args as { questions?: unknown };
 
-    // Malformed → fail fast so the model retries within the same turn.
     if (!hasUsableQuestions(a)) {
       return {
         content: [
@@ -108,9 +85,6 @@ export const askTool: ToolDescriptor = {
       };
     }
 
-    // Well-formed: push to the worker so it renders the card and the
-    // orchestrator interrupts this turn. Surface a reach/reject failure rather
-    // than blocking — otherwise the call hangs until Codex's MCP timeout.
     try {
       const res = await fetch(`${workerUrl}/agent-ops/ask/submit`, {
         method: "POST",
@@ -135,14 +109,10 @@ export const askTool: ToolDescriptor = {
       };
     }
 
-    // Surfaced. Hold the call open: the orchestrator has observed the injected
-    // AskUserQuestion tool_use and will interrupt the turn (killing the Codex
-    // process, and with it this bridge), then resume with the user's answer as a
-    // fresh turn — so this result is never consumed.
+    // Hold until the orchestrator stops this turn; the answer starts a new turn.
     await new Promise<never>(() => {
-      /* held until the orchestrator tears the turn down */
+      // The orchestrator ends this process when the question appears.
     });
-    // Unreachable — present only to satisfy the return type.
     return { content: [{ type: "text", text: "" }] };
   },
 };
