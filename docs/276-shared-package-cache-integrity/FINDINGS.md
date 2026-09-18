@@ -198,6 +198,18 @@ ignored-script package and reported shims *regenerated*; that was the
 ignored-script notice forcing a relink, not a no-op, which is why the cell
 asserts rc=0 and "resolution step is skipped".
 
+**A no-lockfile session inherits the base's graph** (measured after the second
+review). With the base's `node_modules/.pnpm/lock.yaml` present but **no**
+workspace `pnpm-lock.yaml`, `pnpm install --offline` (non-frozen, empty private
+store) failed trying to fetch `is-number@6.0.0` — the exact transitive version
+the base's `.pnpm/lock.yaml` records — "snapshot not present in local store".
+So pnpm reconstructed the dependency graph from the carried `.pnpm/lock.yaml`
+without re-resolving, and (online) would fetch and install those versions. A
+no-lockfile session therefore inherits the publisher's **version selection**
+(authentic packages, attacker-chosen versions), which is why such a repo's base
+must come from the orchestrator's own resolution or not at all, not from a
+carried session graph.
+
 ## Finding: offline resolution needs metadata separate from the store
 
 pnpm keeps **resolution metadata** (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`,

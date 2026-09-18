@@ -77,55 +77,71 @@ recorded in [requirements.md](./requirements.md); none is open.
       (`.modules.yaml` `storeDir`), and pnpm 12 exits 1 on an "Ignored build
       scripts" notice even for a no-op install (pnpm's default, the project's
       `approve-builds` concern).
-- [x] Design verify-and-admit for the tree (2026-09-18, plan.md section 5,
-      "The lifecycle"): verification inserted between the snapshot pull and
-      `publishBase`; per package, registry `dist.integrity` is the authority
-      for the lockfile's integrity (req 6), the tarball's manifest must match
-      the package directory exactly, links must resolve to verified packages,
-      `.modules.yaml`'s `allowBuilds`/`pendingBuilds` are reset; all-or-nothing
-      admission, `skipped-unverified` outcome, session install never failed.
-      Store private per session at the same container path. No shared
-      metadata cache.
+- [x] Design verify-and-admit for the tree, revised through two review rounds
+      (2026-09-18, plan.md section 5, "The lifecycle, revised through two review
+      rounds"): the orchestrator rebuilds the base from the repo's committed
+      manifests + lockfile + config, verifying each package's lockfile integrity
+      against its OWN registry; every session runs its own install over the base
+      (**no pnpm pre-stamp**), so builds run and the session's graph reconciles
+      in its upper; the session snapshot pull is dropped for pnpm. All-or-nothing
+      admission; git/`file:`/`link:`/`workspace:`/`patchedDependencies`/pnpmfile
+      repos get no base.
 - [x] Spike `.bin/` shims and carried state (`tree-state-spike.sh`, PASS=9,
-      FINDINGS.md): shims are NOT regenerated on a genuine no-op; an
-      inconsistent carried lock.yaml self-heals on an install; a carried
+      FINDINGS.md): shims NOT regenerated on a genuine no-op; an inconsistent
+      carried lock.yaml self-heals on an install; a carried
       `allowBuilds`/`pendingBuilds` does NOT run a script without the session's
-      own approval (positive control passes). And a base hit never runs pnpm
-      (pre-stamped marker, install skipped) — so nothing carried can be checked
-      later. Both settled by the revision: the orchestrator generates the tree,
-      shims and state.
-- [x] Independent review of the lifecycle (2026-09-18, reviewer role, both
-      briefs): five P1s, all verified at the source, folded into the revised
-      lifecycle (plan.md section 5). Dep-path id mapping dissolved (pnpm computes
-      the ids in the rebuild).
+      own approval (positive control passes). Plus the base-hit-skips-install
+      fact. All settled by having the orchestrator generate the tree and each
+      session run its own install.
+- [x] Two independent reviews of the lifecycle (2026-09-18, reviewer role, both
+      briefs). Round 1: five P1s → rebuild instead of audit. Round 2: pre-stamp
+      over an unbuilt base skips required builds, and a no-lockfile session
+      inherits the base's `.pnpm/lock.yaml` graph — both verified at the source
+      (`preStampInstallMarker` accepts `commit||content`; measured that an
+      offline no-lockfile install reuses the carried graph). → cut pre-stamp for
+      pnpm; each session installs its own.
 - [ ] Verified namespace: salt the scope hash with the verifier identity;
-      pointer records `admission: {verifier, lockfileHash}`;
-      `prepareOverlaySpecs` mounts pnpm sessions only from it; the unverified
-      npm/yarn publisher cannot write there (until planning#599).
-- [ ] Rebuild-in-container: worker-image container, no workspace mount, no
-      network, orchestrator-private store from staged tarballs, `pnpm install
-      --offline --frozen-lockfile`, builds ignored; then `copySnapshotToBase` +
-      `publishBase`.
-- [ ] Staged hashing: tarball bytes (from `/dep-cache` or the registry) are
-      hashed while copied into orchestrator-private staging and only the staged
-      copy is used — never check-then-reopen a session-writable path.
-- [ ] Pre-stamp gate: pre-stamp only when the workspace lockfile hash equals the
-      base's `lockfileHash`; a repo with no committed lockfile never pre-stamps.
-      Add `pnpm-workspace.yaml` (pnpm 12 `allowBuilds`) to the install inputs.
-- [ ] `publishBase` takes no abort signal — give the rebuild step its own,
-      bound to the runner's disposal like the snapshot pull.
-- [ ] Janitor race: a renamed `g<N+1>` is reapable until the pointer is written
-      (`steady-state-reclaim.ts:379-393`). Write the pointer first, or claim the
-      generation for the window.
+      pointer records `admission: {verifier, lockfileHash}` (build-input
+      identity, not proof of completion); `prepareOverlaySpecs` mounts pnpm
+      sessions only from it and never falls back to an unverified base; the
+      unverified npm/yarn publisher cannot write there (until planning#599).
+      **`liveOverlayScopeHashes` must use the salted scope** or the janitor
+      reaps a verified scope.
+- [ ] Rebuild-in-container: dedicated builder container with **pnpm 12.4.2
+      baked** (not just corepack), no workspace, no network; private store built
+      **inside the sandbox** by unpacking staged integrity-checked tarballs (not
+      the session's store index); staged manifests + `pnpm-workspace.yaml` +
+      `.npmrc` + `package.json#pnpm`; `pnpm install --offline --frozen-lockfile
+      --ignore-scripts` (required — `strictDepBuilds` else exits non-zero on a
+      script dep, and it covers root `prepare`/`preinstall`); then
+      `copySnapshotToBase` + `publishBase`. Bound the tarball unpack (special
+      files, size).
+- [ ] Immutable input snapshot: stage the manifests, lockfile and config from
+      one snapshot of the default-branch commit; compute `admission.lockfileHash`
+      from that same snapshot; resolve the registry the orchestrator selects,
+      never a lockfile URL.
+- [ ] No-lockfile repos: a base only from the orchestrator's own resolution of
+      the manifests (identical for every session), or no base — never a graph a
+      session's carried `.pnpm/lock.yaml` selected. Measure the build-inclusive
+      base-hit install cost (a matching install runs approved builds into the
+      upper).
+- [ ] Concurrency: give the rebuild-and-publish an abort signal bound to the
+      runner (cancelling only the rebuild leaves materialization running).
+      Coordinate publication and reclamation — a claim taken **before** the
+      janitor sweeps sample, **pointer swap last**; do NOT publish the pointer
+      before the generation is materialized (a consumer selecting it makes
+      `prepareOverlayDirs` create the missing lower dir).
 - [ ] Dependency: section 1 (H1) lands first — `npm_config_cache=/dep-cache/npm`
       is forwarded to every session (`container-lifecycle.ts:367`), pnpm repos
       included.
 - [ ] Dependency: the Docker-proxy mount-path check is TOCTOU
       (`docker-proxy-auth.ts:66` → `docker-proxy-sanitize.ts:112`); the
       group-writable base relies on mount confinement. Filed as **planning#601**.
-- [ ] Later refinement: a partial base for repos with a git/`file:`/private-
-      registry dependency, which all-or-nothing leaves with no base (req 2 /
-      req 10 not met for them).
+- [ ] Partial-base sharing for repos with a git/`file:`/`link:`/`workspace:`/
+      patched/pnpmfile dependency — **required, not optional**: all-or-nothing
+      leaves them with no base, so req 2 / req 10 / req 13 are not met for them.
+      Measure how many real repos fall in this set before calling the feature
+      done; design an unbuilt-base / private-build path for the built ones.
 - [ ] Record the metadata-cache dependency in the wiring: an offline install
       needs resolution metadata (`XDG_CACHE_HOME/pnpm`, separate from the store)
       — a shared or privately-seeded cache, a lockfile carrying the resolution,
