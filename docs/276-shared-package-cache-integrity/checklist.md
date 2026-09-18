@@ -94,43 +94,70 @@ recorded in [requirements.md](./requirements.md); none is open.
       fact. All settled by having the orchestrator generate the tree and each
       session run its own install.
 - [x] Two independent reviews of the lifecycle (2026-09-18, reviewer role, both
-      briefs). Round 1: five P1s → rebuild instead of audit. Round 2: pre-stamp
-      over an unbuilt base skips required builds, and a no-lockfile session
-      inherits the base's `.pnpm/lock.yaml` graph — both verified at the source
-      (`preStampInstallMarker` accepts `commit||content`; measured that an
-      offline no-lockfile install reuses the carried graph). → cut pre-stamp for
-      pnpm; each session installs its own.
+      briefs). R1: five P1s → rebuild instead of audit. R2: pre-stamp over an
+      unbuilt base skips builds, no-lockfile inherits the carried graph → cut
+      pre-stamp. R3: a pnpm HOOK runs under `--ignore-scripts` (measured), so a
+      `configDependencies`/pnpmfile plugin executes in the builder; the
+      no-lockfile gate must be per CONSUMER not per repo; the worker marker skips
+      on commit alone; concurrency needs operation-lifetime claims. All folded
+      into plan.md section 5.
+- [ ] Sterile builder (R3 P1): reject every hook source (`.pnpmfile.cjs`/`.mjs`,
+      `configDependencies`) in preflight; run `pnpm install --offline
+      --frozen-lockfile --ignore-scripts --ignore-pnpmfile`; disable
+      `packageManager` version-switching (baking pnpm is not enough — a repo pin
+      can switch it); no inherited global `.npmrc`/`pnpm-workspace.yaml`, no
+      env a config value could expand. Measured: a `.pnpmfile.cjs` hook ran under
+      `--ignore-scripts` and only `--ignore-pnpmfile` stopped it (FINDINGS.md).
+- [ ] No-lockfile is a per-CONSUMER gate (R3 P1), enforced in
+      `prepareOverlaySpecs`: a session with no independently established lockfile
+      (none committed, or removed over the mount) gets **no base lowerdir**, since
+      pnpm would synthesize the graph from the base's `.pnpm/lock.yaml`. An
+      initial presence check is not enough — cover lockfile removal over a live
+      mount. The base being built from committed default-branch inputs does not
+      substitute for this.
+- [ ] Worker install marker (R3): `markerMatches` returns `commit || depsHash`
+      (`install-marker.ts:52`), so a same-commit approval change skips the
+      install and the build never runs. For pnpm the marker must require the
+      content hash, or invalidate on an input change.
+- [ ] Input contract (R3 P2), each with an explicit outcome: verify
+      `optionalDependencies` like the rest; trust `bundledDependencies` as part
+      of the authenticated outer tarball; for an `npm:` alias verify the resolved
+      target's digest not the alias; use an orchestrator-authorized
+      scope→registry map for a private registry (`.npmrc` must not override it);
+      do not reject a deprecated-but-present version; reject output-layout
+      settings (`modulesDir`, `virtualStoreDir`, non-isolated `nodeLinker`,
+      relocated global store); a missing lockfile-covered dep rejects the
+      candidate without failing the session install.
 - [ ] Verified namespace: salt the scope hash with the verifier identity;
-      pointer records `admission: {verifier, lockfileHash}` (build-input
-      identity, not proof of completion); `prepareOverlaySpecs` mounts pnpm
-      sessions only from it and never falls back to an unverified base; the
-      unverified npm/yarn publisher cannot write there (until planning#599).
-      **`liveOverlayScopeHashes` must use the salted scope** or the janitor
-      reaps a verified scope.
-- [ ] Rebuild-in-container: dedicated builder container with **pnpm 12.4.2
-      baked** (not just corepack), no workspace, no network; private store built
-      **inside the sandbox** by unpacking staged integrity-checked tarballs (not
-      the session's store index); staged manifests + `pnpm-workspace.yaml` +
-      `.npmrc` + `package.json#pnpm`; `pnpm install --offline --frozen-lockfile
-      --ignore-scripts` (required — `strictDepBuilds` else exits non-zero on a
-      script dep, and it covers root `prepare`/`preinstall`); then
-      `copySnapshotToBase` + `publishBase`. Bound the tarball unpack (special
-      files, size).
+      `prepareOverlaySpecs` mounts pnpm sessions only from it and never falls back
+      to an unverified base; the unverified npm/yarn publisher cannot write there
+      (until planning#599). No `admission` pointer fields — `lockfileHash` and a
+      separate `verifier` are cut (nothing gates on them; the salted namespace and
+      the source commit already identify verifier and inputs).
+- [ ] Rebuild-in-container: dedicated builder, no workspace, no network; private
+      store built inside the sandbox by unpacking staged integrity-checked
+      tarballs (not the session's store index); staged manifests + config; then
+      `copySnapshotToBase` + `publishBase`. **Bound the unpack** — pnpm's audited
+      extractor rejects path traversal and non-regular entries but falls back to
+      streaming past its eager limit without rejecting, so cap total expanded
+      bytes, entry count, duration and staging disk.
 - [ ] Immutable input snapshot: stage the manifests, lockfile and config from
-      one snapshot of the default-branch commit; compute `admission.lockfileHash`
-      from that same snapshot; resolve the registry the orchestrator selects,
-      never a lockfile URL.
-- [ ] No-lockfile repos: a base only from the orchestrator's own resolution of
-      the manifests (identical for every session), or no base — never a graph a
-      session's carried `.pnpm/lock.yaml` selected. Measure the build-inclusive
-      base-hit install cost (a matching install runs approved builds into the
-      upper).
-- [ ] Concurrency: give the rebuild-and-publish an abort signal bound to the
-      runner (cancelling only the rebuild leaves materialization running).
-      Coordinate publication and reclamation — a claim taken **before** the
-      janitor sweeps sample, **pointer swap last**; do NOT publish the pointer
-      before the generation is materialized (a consumer selecting it makes
-      `prepareOverlayDirs` create the missing lower dir).
+      one snapshot of the default-branch commit; resolve the registry the
+      orchestrator selects, never a lockfile URL.
+- [ ] Measure the build-inclusive base-hit install cost (approved registry dep +
+      `--ignore-scripts` base + empty private store): warm-install time and the
+      marginal build-output disk in the upper. The 8 KB result used scriptless
+      deps and does not cover this.
+- [ ] Concurrency (R2/R3): give the rebuild-and-publish an abort signal bound to
+      the runner. Pointer-last is necessary but not sufficient — the sweeps
+      sample claims and the pointer separately and `claimOverlayBaseGeneration`
+      expires at 10 min, so reclamation must consult **current** claims at the
+      irreversible-delete moment and the claim must live for the whole
+      select→claim→mount. A missing published generation must **fail closed**,
+      not be recreated by `prepareOverlayDirs`. Compute liveness with the same
+      scope function creation uses (`resolveOverlayScope` keys on runtime key +
+      `overlayPinSegment`; `liveOverlayScopeHashes` uses runtime key alone —
+      `overlay-session.ts:61` vs `:189`).
 - [ ] Dependency: section 1 (H1) lands first — `npm_config_cache=/dep-cache/npm`
       is forwarded to every session (`container-lifecycle.ts:367`), pnpm repos
       included.

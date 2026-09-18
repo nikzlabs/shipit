@@ -210,6 +210,21 @@ no-lockfile session therefore inherits the publisher's **version selection**
 must come from the orchestrator's own resolution or not at all, not from a
 carried session graph.
 
+## Finding: a pnpm hook runs under `--ignore-scripts`
+
+Measured on the services host after the third review. With a `.pnpmfile.cjs`
+whose `readPackage` hook writes a marker file, `pnpm install --ignore-scripts`
+**ran the hook** (marker written, rc=0); adding `--ignore-pnpmfile` suppressed
+it (no marker). So a pnpm **hook is not a script**, and `--ignore-scripts` does
+not stop it. Consequence for the base rebuild: a hook source — a committed
+`.pnpmfile.cjs`/`.mjs`, or a `configDependencies` plugin a registry-authentic
+package supplies — executes code in the builder that can rewrite the "canonical"
+output the orchestrator then publishes. The sandbox protects the host but does
+not make the output trustworthy after attacker code has run. The fix is to
+reject hook sources in preflight **and** build with `--ignore-pnpmfile` plus a
+sterile config (no inherited global settings, package-manager switching
+disabled).
+
 ## Finding: offline resolution needs metadata separate from the store
 
 pnpm keeps **resolution metadata** (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`,

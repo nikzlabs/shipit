@@ -334,9 +334,11 @@ resolve online — pnpm reconstructs the graph from the base's carried
 `.pnpm/lock.yaml` (measured: an offline install knew the transitive versions
 without resolving), so it inherits the publisher's version selection. The
 resolution: the base is a **verified warm tree**, and **every session still runs
-its own install over it** (no pnpm pre-stamp). That install is a near-no-op for
-a matching lockfile (8 KB, FINDINGS.md) and it is where builds run and the
-session's own graph reconciles, so nothing carried decides for the session.
+its own install over it** (no pnpm pre-stamp). That install is where builds run
+and the session's own graph reconciles, so nothing carried decides for the
+session. It is a near-no-op for a matching *scriptless* lockfile (8 KB measured);
+a build-bearing repo adds its build-output disk and time to each session's upper,
+which the spikes did not measure — an open measurement, not a settled 8 KB.
 
 *Inputs and verification (req 1, 3, 6).* The base is rebuilt from the repo's
 **committed manifests plus lockfile** at the default-branch commit — package
@@ -350,13 +352,22 @@ applicable `.npmrc`, and `package.json#pnpm` (`overrides`,
 orchestrator resolves `<name>@<version>` against **its own** configured registry
 (never a URL taken from the lockfile) and requires that packument's
 `dist.integrity` to equal the lockfile's `resolution.integrity`; a mismatch is
-the H1 shape and fails. Inputs that cannot be verified this way **reject the
-whole candidate** (no base): `git`, `file:`, `link:`, `workspace:` entries;
+the H1 shape and fails. **Detected before any fetch, these reject the whole
+candidate — no base, plain private install for that repo** (not an all-or-nothing
+failure after building): `git`, `file:`, `link:`, `workspace:` entries;
 `patchedDependencies` (registry integrity authenticates the original tarball,
-not the patched output); and a pnpmfile (`.pnpmfile.cjs`) — a hook is executable
-input, so a base is built only when there is none. This is a larger reject set
-than the first draft named, and it is the honest boundary of what a
-content-verified base can cover.
+not the patched output); **any pnpm hook source** — `.pnpmfile.cjs`/`.mjs`,
+`configDependencies` (a registry-authentic package can itself carry install
+hooks); an `npm:` alias (verify the resolved target's digest, not the alias) and
+a scoped **private registry** without an orchestrator-authorized scope→registry
+mapping; and any output-layout setting that breaks one self-contained
+`node_modules` (`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`, a
+relocated global store). `optionalDependencies` are verified like the rest;
+`bundledDependencies` are trusted as part of their authenticated outer tarball;
+a deprecated-but-present version is not an integrity failure and is not rejected;
+`overrides`/`catalog:`/peer selections are graph choices captured in the config,
+not unverifiable content. This is the honest boundary of what a content-verified
+base can cover.
 
 *Build — canonical by construction.* The orchestrator runs pnpm in a
 **dedicated builder container** with a **pinned pnpm** (12.4.2 baked, not merely
@@ -364,12 +375,20 @@ corepack-enabled — availability is not implied by the worker image), no
 workspace and no network, from an orchestrator-private store built **inside the
 sandbox** by unpacking the staged, integrity-checked tarballs (never the
 session's store index or side-effects cache), with the staged manifests +
-config, `pnpm install --offline --frozen-lockfile --ignore-scripts`.
-`--ignore-scripts` is required, not incidental: pnpm 12 defaults
-`strictDepBuilds` true, so an *unapproved* build **exits non-zero** (measured,
-FINDINGS.md), which would fail the rebuild on any script-bearing repo; ignoring
-scripts also covers the root `prepare`/`preinstall` a bare "no `allowBuilds`"
-would still run. pnpm then generates the tree, every symlink, every `.bin` shim
+config, `pnpm install --offline --frozen-lockfile --ignore-scripts
+--ignore-pnpmfile`. Both flags are required. `--ignore-scripts`: pnpm 12 defaults
+`strictDepBuilds` true, so an *unapproved* build **exits non-zero** (measured),
+which would fail the rebuild on any script-bearing repo, and it covers the root
+`prepare`/`preinstall`. `--ignore-pnpmfile`: a pnpm **hook is not a script** and
+`--ignore-scripts` does **not** stop it — measured, a `.pnpmfile.cjs` hook ran
+under `--ignore-scripts` and only `--ignore-pnpmfile` suppressed it (FINDINGS.md).
+A hook (or a `configDependencies` plugin) that runs in the builder can rewrite
+the "canonical" output the orchestrator then publishes, so the reject set above
+excludes hook sources **and** the builder runs with a sterile config: no
+inherited global `.npmrc`/`pnpm-workspace.yaml` settings, `packageManager`
+version-switching disabled (baking pnpm is not enough — a repo pin can request
+another version), and no environment a config value could expand. pnpm then
+generates the tree, every symlink, every `.bin` shim
 and the state files from verified inputs, so the graph, directory ids (pnpm's
 own encoding), links, shims and state need no second implementation and carry
 nothing from the session. Packages with build scripts land **unbuilt**; each
@@ -394,11 +413,18 @@ session's volumes; the shared per-runtime store and its sweep are retired.
 `package-import-method=copy` is set beside `npm_config_store_dir`
 (`container-lifecycle.ts`). Nothing is migrated from today's store.
 
-*Provenance — a verified namespace.* The base pointer records `admission:
-{verifier, lockfileHash}`, and verified generations live in their **own scope
-namespace** (the scope hash salted with the verifier identity) that only the
-verifying publisher writes; `prepareOverlaySpecs` mounts a pnpm session only
-from it. Package-manager detection reads the writable checkout (`isPnpmRepo`:
+*Provenance — a verified namespace.* Verified generations live in their **own
+scope namespace** (the scope hash salted with the verifier identity) that only
+the verifying publisher writes, and `prepareOverlaySpecs` mounts a pnpm session
+only from it, never falling back to an unverified base. The namespace is
+load-bearing and stays: a per-session install does not authenticate an arbitrary
+existing tree (a no-op leaves a poisoned base's missing shims unrepaired), so
+provenance is needed for correctness as well as security. The salted namespace
+already identifies the verifier, so the pointer carries **no** separate
+`admission` fields — an earlier draft's `lockfileHash`/`verifier` are cut, since
+nothing gates on them once pre-stamp is gone and the source commit already names
+the committed inputs. Package-manager detection reads the writable checkout
+(`isPnpmRepo`:
 `package.json` `packageManager`, else the install commands), so it is a
 routing hint, never the boundary: the npm/yarn publisher, unverified until
 planning#599 lands, cannot write into the verified namespace, and a checkout
@@ -408,27 +434,39 @@ verifying publisher.
 
 *Per-session install — no pnpm pre-stamp (req 9, 10, 11).* Every pnpm session
 runs its own `pnpm install` over the base; pnpm pre-stamping is **cut for pnpm**
-(it stays for npm/yarn). This is the fix for both second-review blockers: the
-session's own install runs its approved builds into its upper (so an unbuilt
-base is completed per session, not skipped), and it reconciles against the
-session's own lockfile, so no session inherits another's resolution or version
-selection. A matching-lockfile install is a near-no-op (8 KB, FINDINGS.md) plus
-the cost of any builds; a changed or absent lockfile reinstalls the delta into
-the upper. The base saves the download and store-import cost, which is its
-point; it never decides the session's graph. (A **no-lockfile** repo is the one
-case where the base could still bias resolution through its carried
-`.pnpm/lock.yaml`; such a repo gets a base only from the orchestrator's own
-resolution of its manifests, identical for every session, or no base — a
-checklist item, not a session-influenced path.)
+(it stays for npm/yarn). The session's install runs its approved builds into its
+upper (an unbuilt base is completed per session) and reconciles against the
+session's own lockfile. What req 1 asks of the base is narrow and exact:
+**mounting the base must not introduce a graph choice absent from the consuming
+session's own inputs.** Authentic `overrides`/`catalog:`/peer selections in a
+session's *own* committed lockfile are that session's choice, not a cache
+attack; the danger is only a session that adopts the *base's* graph. That is the
+**no-lockfile consumer** — enforced at the consumer, not the base: a session
+without an independently established lockfile (none committed, or removed over
+the mount) gets **no base lowerdir at all** and installs plain, because pnpm
+would otherwise synthesize the wanted graph from the base's carried
+`.pnpm/lock.yaml` (measured). This is a per-session gate in `prepareOverlaySpecs`,
+not a property of how the default-branch base was built. Two limits stated
+plainly: this is only as strong as who may commit to the default branch (the
+same trust boundary docs/183 already draws, and rebuilding from immutable
+committed blobs is stronger than its HEAD compare); and cutting the overlay
+pre-stamp does not by itself guarantee the install runs, because the **worker's
+own install marker** skips on `sourceCommit` match alone
+(`install-marker.ts:52`, `commit || depsHash`), so a same-commit approval change
+is skipped — for pnpm the marker must require the content (deps) hash, or an
+approved build never runs.
 
-*Admission is all-or-nothing per publish — a known gap, not a claim.* One
-unverifiable package or a lockfile mismatch skips the whole publish
-(`skipped-unverified`, first failing package named, surfaced through
-`formatOverlayMeasurement`); the session keeps its private tree and its own
-install is never failed (req 9). A repo with a git, `file:` or
-private-registry dependency therefore gets no base and pays a cold install per
-session, which does **not** meet req 2 / req 10 for it; a partial base is a
-follow-up.
+*Reject as a preflight; all-or-nothing only after it.* An unsupported input
+(the reject set above) is detected **before any fetch or build** and simply
+yields no base — the repo takes an ordinary private install, from day one. Only
+a candidate that passes preflight but then fails verification (a tarball whose
+hash does not match, a lockfile edge with no registry record) skips the publish
+all-or-nothing (`skipped-unverified`, first failing package named); the session
+keeps its private tree and its own install is never failed (req 9). Either way a
+repo in the reject set gets **no base and a cold install per session**, which
+does **not** meet req 2 / req 10 / req 13 for it. Partial-base sharing for those
+repos is **required work, not an optional follow-up**; measure how much of the
+real fleet falls in the reject set before calling the feature done.
 
 *Ordering and cleanup — what the reused machinery does and does not give.*
 Publish runs after a successful declared install (`service-manager-setup.ts`).
@@ -436,19 +474,24 @@ The compare-and-swap and `sourceIsDefaultBranch` order publications and
 authenticate nothing; `depsHash` lineage-advance is reuse policy; the depth-cap
 "flatten" only resets a counter (`shouldFlattenNext` has no production caller)
 and every generation is a whole tree, so nothing depends on it — dropped from
-this lifecycle. Three concurrency gaps to close in implementation, all verified:
-`publishBase` takes no abort signal, so the whole rebuild-and-publish needs one
-bound to the runner (cancelling only the rebuild leaves materialization
-running). The janitor race is **not** fixed by "write the pointer first" — a
-consumer selecting a pointer whose generation is not yet materialized hits
-`prepareOverlayDirs` creating the missing lower dir, and the publisher then
-overwrites a mounting directory; so publication and reclamation need coordinated
-exclusion (a claim taken **before** `sweepOrphanedOverlayBases` /
-`sweepStaleBaseGenerations` sample, since a claim acquired after their snapshot
-does not protect it — `overlay-base-claims.ts`) with the **pointer swap last**.
-And the salted verified namespace must reach `liveOverlayScopeHashes`
-(`overlay-session.ts`), which computes unsalted scopes today, or an unmounted
-verified scope with a current pointer is swept wholesale.
+this lifecycle. Concurrency and reclamation, all verified at the source: `publishBase` takes no
+abort signal, so the whole rebuild-and-publish needs one bound to the runner
+(cancelling only the rebuild leaves materialization running). Pointer-last is
+necessary but **not sufficient** — the sweeps sample claims and the pointer
+*separately* and await before deleting (`steady-state-reclaim.ts:sweepOrphaned…`,
+`sweepStale…`), so a claim taken after the snapshot does not protect its
+generation, and `claimOverlayBaseGeneration` (`overlay-base-claims.ts`) is a
+10-minute expiry, not an operation-lifetime lease. Reclamation must therefore
+consult **current** claims at the moment deletion becomes irreversible, and the
+claim must live for the whole select→claim→visible-mount, so a reader that
+claimed `g1` is safe even after a publish advances the pointer to `g2`. A
+**missing published generation must fail closed** (or select an explicit cold
+base), not be silently recreated by `prepareOverlayDirs`. And liveness must be
+computed by the **same scope function** creation uses:
+`resolveOverlayScope` keys on `overlayRuntimeKey + overlayPinSegment(workspaceDir)`
+(`overlay-session.ts:61`) while `liveOverlayScopeHashes` uses `overlayRuntimeKey`
+alone (`:189`) — a pre-existing mismatch the verifier salt must not inherit, or a
+stopped session's pinned scope is swept despite a current pointer.
 
 *What this still depends on.* `/dep-cache` stays shared-writable and
 `npm_config_cache=/dep-cache/npm` is forwarded to every session
