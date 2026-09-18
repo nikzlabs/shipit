@@ -107,7 +107,7 @@ describe("ReleaseStatusPoller", () => {
     const card = poller.getStatus("s1");
     expect(card?.phase).toBe("released");
     expect(card?.release?.htmlUrl).toContain("releases/tag/v0.3.0");
-    expect(card?.notes).toContain("Features");
+    expect(card?.release?.body).toContain("Features");
   });
 
   it("markPrOpened sets a pr_open card and polls the PR (docs/214)", async () => {

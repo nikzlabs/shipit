@@ -9,7 +9,7 @@ describe("parseReleaseMarkers", () => {
 
   it("parses a propose marker with all fields", () => {
     const text = `I'll cut the release.
-<!--shipit:release {"action":"propose","version":"0.3.0","bumpType":"minor","tag":"v0.3.0","prerelease":false,"notes":"- Feature: x\\n- Fix: y"}-->`;
+<!--shipit:release {"action":"propose","version":"0.3.0","bumpType":"minor","tag":"v0.3.0","prerelease":false,"versionSource":"package.json"}-->`;
     expect(parseReleaseMarkers(text)).toEqual([
       {
         action: "propose",
@@ -17,9 +17,20 @@ describe("parseReleaseMarkers", () => {
         tag: "v0.3.0",
         prerelease: false,
         bumpType: "minor",
-        notes: "- Feature: x\n- Fix: y",
+        versionSource: "package.json",
       },
     ]);
+  });
+
+  // docs/309 req 11: the card shows what would be published, which the agent
+  // cannot restate — so a notes field is dropped wherever it is written.
+  it("drops a notes field from every marker", () => {
+    const text = `<!--shipit:release {"action":"propose","version":"0.3.0","tag":"v0.3.0","prerelease":false,"notes":"- invented"}-->
+<!--shipit:release {"action":"pr-opened","version":"0.3.0","tag":"v0.3.0","prNumber":7,"prUrl":"https://x/7","releaseBranch":"stable","notes":"- invented"}-->
+<!--shipit:release {"action":"tagged","tag":"v0.3.0","notes":"- invented"}-->`;
+    const markers = parseReleaseMarkers(text);
+    expect(markers).toHaveLength(3);
+    for (const marker of markers) expect(marker).not.toHaveProperty("notes");
   });
 
   it("parses a propose marker's mechanism when valid, drops it when not (docs/214)", () => {

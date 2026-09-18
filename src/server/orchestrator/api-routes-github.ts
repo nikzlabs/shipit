@@ -12,7 +12,6 @@ import {
   quickCreatePr,
   agentCreatePr,
   planRelease,
-  buildPlanProposeInput,
   prepareRelease,
   adoptReleaseBranch,
   editPullRequest,
@@ -308,7 +307,7 @@ export async function registerGitHubRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
+        const { gitDir } = resolvePrTarget(session, dir, request.body ?? {});
         const git = createGitManager(gitDir);
         const rel = readReleaseConfig(gitDir);
         const plan = await planRelease(git, {
@@ -323,15 +322,13 @@ export async function registerGitHubRoutes(
           const branch = rel.branch ?? "stable";
           await git.fetch("origin");
           const assessment = await assessMergeAutoPublish(git, branch);
-          if (assessment.warning) plan.warning = assessment.warning;
+          // plan may already warn that the notes are missing (docs/309 req 10);
+          // both describe the same release, so neither may silence the other.
+          const warnings = [plan.warning, assessment.warning].filter(Boolean);
+          if (warnings.length > 0) plan.warning = warnings.join(" ");
         }
-        if (deps.releaseStatusPoller && remoteUrl) {
-          deps.releaseStatusPoller.propose(
-            request.params.id,
-            remoteUrl,
-            buildPlanProposeInput(plan, rel.mechanism),
-          );
-        }
+        // `plan` is read-only: proposing a release is the agent's act, not a
+        // side effect of computing a version (docs/309 req 10).
         return plan;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -418,7 +415,6 @@ export async function registerGitHubRoutes(
               releaseBranch: result.releaseBranch,
               ...(result.bumpType !== "explicit" ? { bumpType: result.bumpType } : {}),
               versionSource: result.versionSource,
-              ...(request.body?.notes ? { notes: request.body.notes } : {}),
             });
           } else if (result.kind === "prerelease-proposed") {
             poller.propose(request.params.id, remoteUrl, {

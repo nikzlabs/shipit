@@ -157,7 +157,7 @@ describe("Integration: release flow — propose → tag → publish", () => {
     expect(releasedPhase).toBe("released");
     const released = app.releaseStatusPoller!.getStatus(sessionId)!;
     expect(released.release?.htmlUrl).toContain("releases/tag/v0.3.0");
-    expect(released.notes).toContain("Features");
+    expect(released.release?.body).toContain("Features");
 
     const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     const history = historyRes.json() as { messages: { releaseCard?: { phase: string; cardId: string } }[] };
@@ -165,6 +165,32 @@ describe("Integration: release flow — propose → tag → publish", () => {
     expect(releaseCards).toHaveLength(1);
     expect(releaseCards[0].releaseCard?.phase).toBe("released");
     expect(releaseCards[0].releaseCard?.cardId).toBe(`release:${sessionId}:v0.3.0`);
+
+    client.close();
+  });
+
+  // docs/309 req 10: a read-only command must not raise the confirm button —
+  // it necessarily runs before the notes the card's one action accepts exist.
+  it("raises no card for `release plan`, which only computes the version", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    const sessionId = await createSession(client);
+    sessionManager.setRemoteUrl(sessionId, REPO_URL);
+    fs.writeFileSync(
+      path.join(tmpDir, "sessions", sessionId, "workspace", "package.json"),
+      JSON.stringify({ name: "app", version: "0.2.0" }),
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/release/plan`,
+      payload: { bump: "minor" },
+    });
+    // Assert the plan succeeded: a 400 would leave no card for the wrong reason.
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ version: "0.3.0", tag: "v0.3.0" });
+    expect(app.releaseStatusPoller?.getStatus(sessionId)).toBeUndefined();
 
     client.close();
   });

@@ -1,5 +1,10 @@
 import type { ReleaseBumpType, ReleaseMechanism } from "../shared/types/release-types.js";
 
+/*
+  No marker carries notes. The card shows what would be published, which the
+  agent cannot restate in a marker — the proposed card links to the draft file
+  and the published body comes from GitHub (docs/309 req 11).
+*/
 export interface ReleaseProposeMarker {
   action: "propose";
   version: string;
@@ -8,7 +13,6 @@ export interface ReleaseProposeMarker {
   bumpType?: ReleaseBumpType;
   versionSource?: string;
   mechanism?: ReleaseMechanism;
-  notes?: string;
 }
 
 export interface ReleaseTaggedMarker {
@@ -17,7 +21,6 @@ export interface ReleaseTaggedMarker {
   version?: string;
   sha?: string;
   prerelease?: boolean;
-  notes?: string;
 }
 
 export interface ReleasePrOpenedMarker {
@@ -30,7 +33,6 @@ export interface ReleasePrOpenedMarker {
   prerelease?: boolean;
   bumpType?: ReleaseBumpType;
   versionSource?: string;
-  notes?: string;
 }
 
 export interface ReleaseAlreadyReleasedMarker {
@@ -87,7 +89,6 @@ export function parseReleaseMarkers(text: string): ReleaseMarker[] {
         ...(bump && BUMP_TYPES.has(bump) ? { bumpType: bump as ReleaseBumpType } : {}),
         ...(asString(raw.versionSource) ? { versionSource: asString(raw.versionSource)! } : {}),
         ...(mechanism && MECHANISMS.has(mechanism) ? { mechanism: mechanism as ReleaseMechanism } : {}),
-        ...(asString(raw.notes) ? { notes: asString(raw.notes)! } : {}),
       });
     } else if (action === "pr-opened") {
       const version = asString(raw.version);
@@ -107,7 +108,6 @@ export function parseReleaseMarkers(text: string): ReleaseMarker[] {
         ...(typeof raw.prerelease === "boolean" ? { prerelease: raw.prerelease } : {}),
         ...(bump && BUMP_TYPES.has(bump) ? { bumpType: bump as ReleaseBumpType } : {}),
         ...(asString(raw.versionSource) ? { versionSource: asString(raw.versionSource)! } : {}),
-        ...(asString(raw.notes) ? { notes: asString(raw.notes)! } : {}),
       });
     } else if (action === "tagged") {
       const tag = asString(raw.tag);
@@ -118,7 +118,6 @@ export function parseReleaseMarkers(text: string): ReleaseMarker[] {
         ...(asString(raw.version) ? { version: asString(raw.version)! } : {}),
         ...(asString(raw.sha) ? { sha: asString(raw.sha)! } : {}),
         ...(typeof raw.prerelease === "boolean" ? { prerelease: raw.prerelease } : {}),
-        ...(asString(raw.notes) ? { notes: asString(raw.notes)! } : {}),
       });
     } else if (action === "already-released") {
       const tag = asString(raw.tag);

@@ -27,7 +27,7 @@ export interface ReleaseProposeInput {
   bumpType?: ReleaseStatusSummary["bumpType"];
   versionSource?: string;
   mechanism?: ReleaseStatusSummary["mechanism"];
-  notes?: string;
+  notesDraftPath?: string;
 }
 
 export interface ReleaseTaggedInput {
@@ -35,7 +35,6 @@ export interface ReleaseTaggedInput {
   version: string;
   prerelease: boolean;
   sha?: string;
-  notes?: string;
 }
 
 export interface ReleasePrOpenedInput {
@@ -47,7 +46,6 @@ export interface ReleasePrOpenedInput {
   releaseBranch: string;
   bumpType?: ReleaseStatusSummary["bumpType"];
   versionSource?: string;
-  notes?: string;
 }
 
 export class ReleaseStatusPoller {
@@ -146,7 +144,7 @@ export class ReleaseStatusPoller {
       ...(input.bumpType ? { bumpType: input.bumpType } : {}),
       ...(input.versionSource ? { versionSource: input.versionSource } : {}),
       ...(input.mechanism ? { mechanism: input.mechanism } : {}),
-      ...(input.notes ? { notes: input.notes } : {}),
+      ...(input.notesDraftPath ? { notesDraftPath: input.notesDraftPath } : {}),
     };
     this.setCard(card);
   }
@@ -175,7 +173,6 @@ export class ReleaseStatusPoller {
       releaseBranch: input.releaseBranch,
       ...(input.bumpType ?? prev?.bumpType ? { bumpType: input.bumpType ?? prev?.bumpType } : {}),
       ...(input.versionSource ?? prev?.versionSource ? { versionSource: input.versionSource ?? prev?.versionSource } : {}),
-      ...(input.notes ?? prev?.notes ? { notes: input.notes ?? prev?.notes } : {}),
     };
     this.setCard(card);
     this.ensureSupervisor();
@@ -204,7 +201,6 @@ export class ReleaseStatusPoller {
       tag: input.tag,
       prerelease: input.prerelease,
       ...(input.sha ? { commitSha: input.sha } : {}),
-      ...(input.notes ?? prev?.notes ? { notes: input.notes ?? prev?.notes } : {}),
       ...(prev?.bumpType ? { bumpType: prev.bumpType } : {}),
       ...(prev?.versionSource ? { versionSource: prev.versionSource } : {}),
     };
@@ -230,7 +226,6 @@ export class ReleaseStatusPoller {
       tag: input.tag,
       prerelease: prev?.prerelease ?? false,
       alreadyReleased: true,
-      ...(prev?.notes ? { notes: prev.notes } : {}),
     };
     this.setCard(base);
 
@@ -250,7 +245,6 @@ export class ReleaseStatusPoller {
       ...current,
       phase: "released",
       prerelease: release.prerelease,
-      notes: release.body || current.notes,
       release: {
         name: release.name,
         body: release.body,
@@ -372,7 +366,6 @@ export class ReleaseStatusPoller {
         phase: "released",
         prerelease: release.prerelease,
         ...(checks ? { checks } : {}),
-        notes: release.body || current.notes,
         release: {
           name: release.name,
           body: release.body,

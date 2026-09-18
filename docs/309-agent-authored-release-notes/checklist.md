@@ -35,6 +35,21 @@
 - [x] Req 6a restated as *prerelease*, matching what the workflow branches on
 - [x] Drafting instructions no longer prescribe `stable..main`, which over-reports under squash
 - [x] Full suite run: 20581 pass
+- [x] Req 10 — `shipit release plan` raises no card; the propose marker is the only thing that does
+- [x] Req 10 — `plan` warns instead, so a missing draft reaches the agent
+- [x] Req 10 — a proposal with a required-but-missing draft raises no card
+- [x] Req 10a — a prerelease and a non-notes repo still get the card, with no link
+- [x] Req 11 — the proposed card links to the draft instead of carrying its text
+- [x] Req 11 — `notes` removed from every marker and from `ReleaseStatusSummary`
+- [x] `release-notes-draft.ts` — one definition of "has notes" for all three callers
+- [x] Plan-route guard proven red with the propose call restored
+- [x] Docs: `prompts/releases.md`, `shipit-docs/release.md`, `wiki/pull-requests.md`
+- [x] Independent review via `shipit agent run --role reviewer` — 3 findings
+- [x] Review fix — the link opens the ACTIVE session's draft, not `card.sessionId` (a fork copies the card with the parent's id)
+- [x] Review fix — plan.md states the checkout/payload approximation honestly, both directions
+- [x] Review fix — req 10b split out, inheriting req 6b's *[agent]* provenance
+- [x] Review fix — exemption tests now keep a draft on disk, so they can fail
+- [x] Reviewed and declined — revalidating pending pre-upgrade cards (inert; `prepare` is the real gate)
 - [ ] Known gap: `checkForUpdates()`'s `releaseNotes` wiring is uncovered — it reads the
       fixed `HOST_REPO_DIR` (`/opt/shipit`), which no test can supply. `resolveReleaseNotes`
       is tested directly instead.
