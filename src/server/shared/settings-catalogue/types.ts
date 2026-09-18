@@ -224,6 +224,18 @@ interface SettingDeclarationBase<T> {
    */
   readonly section?: string;
   /**
+   * Where this row sits on its tab when declaration order alone cannot say:
+   * lower first, unset meaning 0, declaration order deciding within a rank
+   * (docs/308-data-driven-settings plan.md → Placement).
+   *
+   * **Move the declaration first; this is for where that cannot reach.** It
+   * only moves inside its own file, and every payload scalar is in
+   * `GLOBAL_SETTINGS` — the registry's first source, and the one it cannot
+   * leave without dropping out of the derived `GlobalSettings` types
+   * (`global-settings.ts:306`) — so a payload scalar leads its tab otherwise.
+   */
+  readonly order?: number;
+  /**
    * The component that renders this setting, for one whose editing needs its own
    * logic (docs/308-data-driven-settings req 3). Custom is what it LOOKS like:
    * the declaration and the store are the ones every generated row uses. One

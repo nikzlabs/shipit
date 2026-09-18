@@ -18,6 +18,16 @@ import { text } from "./value-types.js";
  */
 const WEBHOOK_PATH = "/api/voice/webhook";
 
+/**
+ * The rank that puts **Voice notes** last on the tab, so **Provider API keys**
+ * leads it — the key is what every other section on the tab needs first.
+ *
+ * All four of that section's declarations carry it, across three files: a
+ * section is placed by the first of its rows, and `voice.handsFree` is declared
+ * in `browser-settings.ts` (plan.md → Placement).
+ */
+export const VOICE_NOTES_ORDER = 1;
+
 export const VOICE_SETTINGS = {
   "voice.providerKey": defineSetting({
     key: "voice.providerKey",
@@ -44,6 +54,7 @@ export const VOICE_SETTINGS = {
     key: "voice.webhook.url",
     tab: "voice",
     section: "Voice notes",
+    order: VOICE_NOTES_ORDER,
     component: "voice-webhook",
     scope: "global",
     label: "Voice note webhook URL",
@@ -61,6 +72,7 @@ export const VOICE_SETTINGS = {
     key: "voice.webhook.token",
     tab: "voice",
     section: "Voice notes",
+    order: VOICE_NOTES_ORDER,
     component: "voice-webhook",
     scope: "global",
     label: "Voice note webhook bearer token",

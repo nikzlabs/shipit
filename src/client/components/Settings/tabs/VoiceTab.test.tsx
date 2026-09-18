@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { VoiceTab } from "./VoiceTab.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
@@ -78,6 +78,47 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useVoiceKeyStatus.setState({ configured: [] });
+});
+
+/**
+ * Where the tab's four sections sit.
+ *
+ * **Provider API keys leads, and that is stated rather than inherited.** Every
+ * other section needs a key first, but `voice.deliveryMode` is a payload scalar
+ * in `global-settings.ts` — the registry's first source — so declaration order
+ * alone put its *Voice notes* section at the top. The four Voice-notes
+ * declarations carry `VOICE_NOTES_ORDER` to say otherwise; drop it from any one
+ * of them and this test fails, because a section is placed by the first of its
+ * rows.
+ */
+describe("VoiceTab section order", () => {
+  it("leads with Provider API keys and closes with Voice notes", async () => {
+    await renderTab();
+
+    expect(screen.getAllByRole("region").map((el) => el.getAttribute("aria-label")))
+      .toEqual(["Provider API keys", "Voice input (dictation)", "Voice playback", "Voice notes"]);
+  });
+
+  // Delivery decides whether the webhook is used at all, so it leads the
+  // section the other three share a rank with. The exact row sequence is
+  // asserted over the catalogue in `registry.test.ts`; this is that the
+  // renderer follows it — against BOTH the rows below it, because comparing
+  // Delivery to hands-free alone passes with the webhook rendered first.
+  it("opens Voice notes with the delivery choice", async () => {
+    await renderTab();
+    const section = screen.getByRole("region", { name: "Voice notes" });
+    const delivery = within(section).getAllByRole("combobox")[0]!;
+    const below = [
+      within(section).getByTestId("voice-webhook-url"),
+      within(section).getByRole("switch"),
+    ];
+
+    expect(delivery).toHaveAccessibleName(settingCopy("voice.deliveryMode").label);
+    for (const row of below) {
+      expect(Boolean(delivery.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING))
+        .toBe(true);
+    }
+  });
 });
 
 describe("VoiceTab cleanup status", () => {

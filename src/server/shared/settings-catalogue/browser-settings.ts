@@ -2,6 +2,7 @@ import { sttProviders, ttsProviders } from "../voice-catalog.js";
 import { defineSetting, itemAddress, withheld } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
 import { bool, collection, enumOf, numeric, text } from "./value-types.js";
+import { VOICE_NOTES_ORDER } from "./voice-settings.js";
 
 /**
  * The part of both dialogs that lives in `localStorage`
@@ -199,6 +200,7 @@ export const BROWSER_SETTINGS = {
     key: "voice.handsFree",
     tab: "voice",
     section: "Voice notes",
+    order: VOICE_NOTES_ORDER,
     component: "voice-hands-free",
     scope: "browser",
     label: "Hands-free",

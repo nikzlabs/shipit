@@ -80,11 +80,18 @@ describe("the Advanced tab's rows come from the declarations", () => {
   });
 
   // req 3 — a setting whose editing needs its own logic is still a declared row:
-  // the block renders the component the declaration names, in its place.
+  // the block renders the component the declaration names, in its place. Its
+  // place is last: the memory budget is a payload scalar, so declaration order
+  // alone put it above the browser-stored rows below (see its `order`).
   it("renders a declaration's component in place of a generated control", () => {
-    render(<DeclaredSettings tab="advanced" />);
+    const { container } = render(<DeclaredSettings tab="advanced" />);
+    const budget = screen.getByTestId("settings-memory-budget");
+    const notifications = screen.getByRole("region", { name: "Notifications" });
 
-    expect(screen.getByTestId("settings-memory-budget")).toBeInTheDocument();
+    expect(budget).toBeInTheDocument();
+    expect(Boolean(notifications.compareDocumentPosition(budget) & Node.DOCUMENT_POSITION_FOLLOWING))
+      .toBe(true);
+    expect([...container.querySelectorAll("section")].at(-1)).toContainElement(budget);
   });
 
   it("groups rows under their declared section, in declaration order", () => {
@@ -103,6 +110,26 @@ describe("the Advanced tab's rows come from the declarations", () => {
       expect(within(group).queryAllByRole("switch").map((el) => el.getAttribute("aria-label")))
         .toEqual(expected);
     }
+  });
+
+  /*
+    It sat on Integrations, inside the GitHub card, and then led that tab. It is
+    Automation's first row now: everything in that group is ShipIt acting on a
+    pull request unasked, and the group reads in the order a PR lives — opened,
+    checks fixed, conflicts resolved, branch reset after the merge. Its req 4
+    visibility comes with the move: nothing on this tab is behind a connection.
+  */
+  it("opens Automation with auto-create-PR, which the Integrations tab used to carry", () => {
+    render(<DeclaredSettings tab="advanced" />);
+    const group = screen.getByRole("region", { name: "Automation" });
+
+    expect(within(group).queryAllByRole("switch").map((el) => el.getAttribute("aria-label")))
+      .toEqual([
+        findSetting("integrations.autoCreatePr")!.label,
+        findSetting("advanced.autoFixCi")!.label,
+        findSetting("advanced.autoResolveConflicts")!.label,
+        findSetting("advanced.autoResetMergedBranch")!.label,
+      ]);
   });
 
   it("places a section's own prose inside that section", () => {
@@ -226,10 +253,13 @@ describe("a generated row writes where its declaration says", () => {
       expect(init.method).toBe("PUT");
       expect(JSON.parse(init.body)).toEqual({ [declaration.wire!]: next });
       expect(settingValue(declaration.key)).toBe(next);
-      // The named field the rest of the app reads is a view over the record.
-      expect(
-        (useSettingsStore.getState() as unknown as Record<string, unknown>)[declaration.wire!],
-      ).toBe(next);
+      // Where the app still reads a setting by its own name, that field is a
+      // view over the record. The set is partial on purpose (plan.md P1): a
+      // named selector is a compatible read path for callers that had one, not
+      // a registration step, so a setting nothing reads by name has no field.
+      const named = useSettingsStore.getState() as unknown as Record<string, unknown>;
+      const field = declaration.wire!;
+      if (field in named) expect(named[field]).toBe(next);
     });
   }
 
@@ -350,13 +380,21 @@ describe("the instruction boxes", () => {
     expect(screen.getByText("System prompt is too long (max 50,000 characters)")).toBeInTheDocument();
   });
 
-  // The toggle beside them is an ordinary declared boolean, so it needs nothing
-  // of its own — but the tab has to actually render it.
-  it("renders the built-in instructions toggle as a plain declared switch", () => {
+  /*
+    The toggle beside them is an ordinary declared boolean, so it needs nothing
+    of its own — but the tab has to actually render it, and above both boxes.
+    Slice 3 put it last because its disclosure was a section note, which renders
+    above its rows; the disclosure is a `rowNote` now and follows the row.
+  */
+  it("leads the tab with the built-in instructions toggle, above both boxes", () => {
     render(<DeclaredSettings tab="instructions" />);
 
     const declaration = findSetting("instructions.agentInstructionsEnabled")!;
-    expect(screen.getByRole("switch", { name: declaration.label })).toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: declaration.label });
+    for (const box of screen.getAllByRole("textbox")) {
+      expect(Boolean(toggle.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING))
+        .toBe(true);
+    }
   });
 });
 
@@ -445,14 +483,8 @@ describe("a row stored behind a route of its own", () => {
 });
 
 /**
- * The Integrations tab (slices 5 and 6): one ordinary row, two credential rows
- * and two list panels, all placed and headed by the catalogue.
- *
- * **`integrations.autoCreatePr` leads the tab**, because a payload declaration
- * is in `global-settings.ts` and that is the first source in the catalogue
- * registry — the same thing that put Voice notes at the top of the Voice tab.
- * Requirement 11 takes the order that falls out rather than encoding today's
- * layout.
+ * The Integrations tab (slices 5 and 6): two credential rows and two list
+ * panels, all placed and headed by the catalogue.
  *
  * The two panels carry no `section`, so they share the tab's unheaded group —
  * the `null` below — and each renders its own declared label as its heading.
@@ -462,9 +494,7 @@ describe("the Integrations tab's rows", () => {
     const { container } = render(<DeclaredSettings tab="integrations" />);
 
     expect([...container.querySelectorAll("section")].map((s) => s.getAttribute("aria-label")))
-      .toEqual(["Pull requests", "Connected services", null]);
-    expect(screen.getByRole("switch", { name: findSetting("integrations.autoCreatePr")!.label }))
-      .toBeInTheDocument();
+      .toEqual(["Connected services", null]);
     expect(screen.getByTestId("settings-github")).toBeInTheDocument();
     expect(screen.getByTestId("settings-trackers")).toBeInTheDocument();
   });
@@ -503,23 +533,21 @@ describe("a collection panel", () => {
 });
 
 /**
- * The Services tab (slice 6b): the background-work pin, then the panel that five
- * declarations name.
+ * The Services tab (slice 6b): the panel that five declarations name, then the
+ * background-work pin.
  *
- * **Its order could not be chosen**, and that is requirement 11 rather than a
- * layout decision. `services.nonTurnModel` is a payload setting in
- * `global-settings.ts`, the first source in the catalogue registry, so it leads
- * the tab — above the providers it draws from, where it used to sit beneath them.
- * Moving the declaration would change the derived `GlobalSettings` payload types,
- * which is the same trade slices 4 and 5 took.
+ * **That order is stated, not inherited.** `services.nonTurnModel` is a payload
+ * setting in `global-settings.ts`, the registry's first source, so declaration
+ * order alone puts it above the providers it draws from — which is the defect
+ * the `order` on it corrects. Remove that one field and this test fails.
  */
 describe("the Services tab's rows", () => {
-  it("leads with the background-work pin and follows with the providers panel", () => {
+  it("leads with the providers panel and follows with the background-work pin", () => {
     const { container } = render(<DeclaredSettings tab="services" />);
 
     const rendered = container.querySelector('[data-testid="background-work-section"]')!;
     const panel = container.querySelector('[data-testid="services-panel"]')!;
-    expect(Boolean(rendered.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING))
+    expect(Boolean(panel.compareDocumentPosition(rendered) & Node.DOCUMENT_POSITION_FOLLOWING))
       .toBe(true);
   });
 
