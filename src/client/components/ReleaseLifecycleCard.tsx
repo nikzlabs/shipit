@@ -14,6 +14,7 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useFileStore } from "../stores/file-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import { Button } from "./ui/button.js";
 import { Badge } from "./ui/badge.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
@@ -92,17 +93,26 @@ function DeploymentRow({ deployments }: { deployments?: GitHubDeploymentStatus[]
   accepts the notes, so the card has to reach what will actually be published —
   and the same click is how the user edits them, which a rendered copy would go
   stale against.
+
+  Opened in the ACTIVE session, never `card.sessionId`: forking at a chat gap
+  copies the card into the child's history with the parent's id
+  (`rollback-handlers.ts` `saveMessages`), and the editor saves to the active
+  session — so trusting the card's id would read one workspace and write
+  another. Confirm already behaves this way.
 */
-function NotesDraftLink({ sessionId, draftPath }: { sessionId: string; draftPath?: string }) {
+function NotesDraftLink({ draftPath }: { draftPath?: string }) {
   if (!draftPath) return null;
   return (
     <button
       type="button"
-      onClick={() => void useFileStore.getState().openEditor(sessionId, draftPath)}
+      onClick={() => {
+        const sessionId = useSessionStore.getState().sessionId;
+        if (sessionId) void useFileStore.getState().openEditor(sessionId, draftPath);
+      }}
       className="mt-2 flex items-center gap-1.5 text-xs text-(--color-accent) hover:underline"
     >
       <FileTextIcon size={ICON_SIZE.SM} />
-      Release notes — open {draftPath} to read or edit what gets published
+      Release notes — open {draftPath} to read or edit
     </button>
   );
 }
@@ -219,7 +229,7 @@ export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifec
         {versionSource ? ` · ${versionSource}` : ""}
       </div>
 
-      <NotesDraftLink sessionId={card.sessionId} draftPath={card.notesDraftPath} />
+      <NotesDraftLink draftPath={card.notesDraftPath} />
       <DeploymentRow deployments={card.deployments} />
 
       <div className="mt-3 flex items-center gap-2">

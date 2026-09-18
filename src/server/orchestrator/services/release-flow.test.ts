@@ -121,9 +121,14 @@ describe("reactToReleaseMarkers", () => {
       expect(poller.propose).not.toHaveBeenCalled();
     });
 
+    // The draft is present on purpose: an exempt release must stay unlinked
+    // even then, since linking would promise a publication that won't happen.
     it("still cards a repo whose workflow ignores authored notes (req 9), with no link", async () => {
       const { deps, poller } = makeDeps();
-      const sessionDir = withWorkflow(makeSessionDir({ "package.json": `{"version":"0.2.0"}` }), LEGACY);
+      const sessionDir = withWorkflow(
+        makeSessionDir({ "package.json": `{"version":"0.2.0"}`, "RELEASE_NOTES.draft.md": "## Notes\n" }),
+        LEGACY,
+      );
       await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir, turnText: PROPOSE });
       expect(poller.propose).toHaveBeenCalledTimes(1);
       const arg = (poller.propose as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2];
@@ -132,7 +137,10 @@ describe("reactToReleaseMarkers", () => {
 
     it("still cards a prerelease, which cannot carry a notes file (req 6a)", async () => {
       const { deps, poller } = makeDeps();
-      const sessionDir = withWorkflow(makeSessionDir({ "package.json": `{"version":"0.2.0"}` }), NOTES_AWARE);
+      const sessionDir = withWorkflow(
+        makeSessionDir({ "package.json": `{"version":"0.2.0"}`, "RELEASE_NOTES.draft.md": "## Notes\n" }),
+        NOTES_AWARE,
+      );
       const turnText = `<!--shipit:release {"action":"propose","version":"0.3.0-rc.1","tag":"v0.3.0-rc.1","prerelease":true}-->`;
       await reactToReleaseMarkers({ deps, sessionId: "s1", sessionDir, turnText });
       expect(poller.propose).toHaveBeenCalledTimes(1);

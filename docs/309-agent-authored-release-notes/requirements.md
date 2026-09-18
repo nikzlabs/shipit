@@ -77,9 +77,13 @@ requirement is a candidate: it can be struck without argument.
     appears when the agent proposes one, not when it works out what the next
     version would be. Where notes will be published (req 6), a release whose
     notes have not been drafted raises no card.
-    - 10a. *[stated]* Where no notes will be published — a prerelease (req 6a) or
-      a repo whose workflow does not read them (req 6b, req 9) — the release is
-      ready to confirm without them, so the card appears.
+    - 10a. *[stated]* A release that will publish no notes is ready to confirm
+      without them, so it still raises a card: a prerelease (req 6a), and a repo
+      outside this feature's scope (req 9).
+    - 10b. *[agent]* The same holds for a repo whose release workflow does not
+      read `.release-notes/`. This inherits req 6b's provenance rather than
+      acquiring its own — the user has not endorsed that exemption, and striking
+      6b strikes this with it.
 11. *[stated]* The card points at the notes that would be published: it links to
     the draft, which opens in ShipIt's own viewer. It carries no copy of the
     text and never a summary written separately from the draft, and where no

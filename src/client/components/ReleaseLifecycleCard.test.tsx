@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { ReleaseLifecycleCard } from "./ReleaseLifecycleCard.js";
 import { useFileStore } from "../stores/file-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { ReleaseStatusSummary } from "../../server/shared/types.js";
 
 function card(over: Partial<ReleaseStatusSummary> = {}): ReleaseStatusSummary {
@@ -15,6 +16,21 @@ function card(over: Partial<ReleaseStatusSummary> = {}): ReleaseStatusSummary {
     bumpType: "minor",
     ...over,
   };
+}
+
+function withStubbedEditor(act: () => void): ReturnType<typeof vi.fn> {
+  const realOpenEditor = useFileStore.getState().openEditor;
+  const realSessionId = useSessionStore.getState().sessionId;
+  const openEditor = vi.fn();
+  useFileStore.setState({ openEditor } as never);
+  useSessionStore.setState({ sessionId: "active-session" } as never);
+  try {
+    act();
+  } finally {
+    useFileStore.setState({ openEditor: realOpenEditor });
+    useSessionStore.setState({ sessionId: realSessionId } as never);
+  }
+  return openEditor;
 }
 
 afterEach(() => cleanup());
@@ -46,19 +62,31 @@ describe("ReleaseLifecycleCard — proposed", () => {
     expect(onConfirm).toHaveBeenCalledWith("0.3.0", "release-branch");
   });
 
-  // docs/309 req 11 — the card points at the notes, it does not copy them.
-  it("opens the notes draft in the editor rather than rendering its text", () => {
-    const realOpenEditor = useFileStore.getState().openEditor;
-    const openEditor = vi.fn();
-    useFileStore.setState({ openEditor } as never);
-    try {
+  // docs/309 req 11 — the card points at the notes. That it carries no copy of
+  // them is enforced server-side (release-flow.test.ts); here the link works.
+  it("opens the notes draft in the editor", () => {
+    const openEditor = withStubbedEditor(() => {
       render(<ReleaseLifecycleCard card={card({ notesDraftPath: "RELEASE_NOTES.draft.md" })} />);
-      const link = screen.getByRole("button", { name: /RELEASE_NOTES\.draft\.md/ });
-      fireEvent.click(link);
-      expect(openEditor).toHaveBeenCalledWith("s1", "RELEASE_NOTES.draft.md");
-    } finally {
-      useFileStore.setState({ openEditor: realOpenEditor });
-    }
+      fireEvent.click(screen.getByRole("button", { name: /RELEASE_NOTES\.draft\.md/ }));
+    });
+    expect(openEditor).toHaveBeenCalledWith("active-session", "RELEASE_NOTES.draft.md");
+  });
+
+  /*
+    Forking at a chat gap copies the card into the child's history with the
+    PARENT's sessionId, while the editor saves to the active session — so a
+    card-sourced id would read one workspace and write another.
+  */
+  it("opens the ACTIVE session's draft, not the one the card was raised in", () => {
+    const openEditor = withStubbedEditor(() => {
+      render(
+        <ReleaseLifecycleCard
+          card={card({ sessionId: "parent-session", notesDraftPath: "RELEASE_NOTES.draft.md" })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /RELEASE_NOTES\.draft\.md/ }));
+    });
+    expect(openEditor).toHaveBeenCalledWith("active-session", "RELEASE_NOTES.draft.md");
   });
 
   it("offers no notes link when the release publishes none (req 10a)", () => {

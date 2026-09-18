@@ -95,10 +95,33 @@ That workflow test reads the **session checkout**, not `prepare`'s payload ref.
 At propose time no payload is chosen yet — `--pick`/`--from` are arguments to a
 command that has not run — so the question the card can actually ask is "does
 this repo publish authored notes", which is also the grep the agent is told to
-run. The two diverge only for a `--pick` hotfix onto a maintenance branch still
-carrying the old workflow: the card asks for a draft `prepare` would not
-require. Erring that way costs one file and leaves `prepare`'s warning (req 6b)
-intact; erring the other way is defect 1 again.
+run. **This is an approximation, and it is wrong in both directions.** Review
+established that, against an earlier claim here that only one case diverged:
+
+- *Checkout older than the payload.* A long-lived session whose branch predates
+  the notes-aware workflow proposes a release for `--from main`. Its checkout
+  looks exempt, so the card appears with no draft — defect 1 in miniature. It
+  is bounded and self-correcting rather than silent: `prepare` refuses, naming
+  `RELEASE_NOTES.draft.md`, before touching the branch, so the cost is one
+  round-trip and no release goes out wrong.
+- *Checkout newer than the payload.* A `--pick` hotfix onto a maintenance branch
+  still carrying the old workflow: the card demands a draft `prepare` would not
+  require, and then links it. The link says "read or edit" rather than "this is
+  what publishes" precisely because it cannot promise publication here;
+  `prepare`'s warning (req 6b) is what says the notes will be ignored.
+
+The alternative is probing several candidate refs post-turn — the checkout, the
+maintenance branch, the default branch — to guess a payload the user has not
+chosen yet. That buys a corner case at the cost of git work on every proposal
+and a rule nobody can predict, so the approximation stays and is stated here
+rather than claimed away.
+
+**Pending cards raised before this change are left alone.** A persisted
+`proposed` card carrying the old `notes` field keeps its Confirm button and
+gains no link; it is not revalidated. Publication is gated at `prepare` (req 6),
+which refuses a release with no notes whatever the card says, and the poller's
+in-memory state does not survive the upgrade that would create such a card — so
+a migration would add mechanism to a card that is already inert.
 
 **The card links to the draft; it carries no copy of it (req 11).** The
 `proposed` card renders `notesDraftPath` as a link that opens the file in
