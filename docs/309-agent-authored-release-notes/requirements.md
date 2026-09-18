@@ -60,13 +60,20 @@ requirement is a candidate: it can be struck without argument.
 
 ## Open questions
 
-- **Release candidates.** Req 6 says the generated list is never published, and
-  that is now enforced by refusing to publish without authored notes. An **rc**
-  cannot satisfy it as built: `preparePrerelease` tags an *existing* commit
-  (`release-prepare.ts`), so there is no commit to carry a notes file. So either
-  rc's stop working until they can carry notes, or they keep generated notes as
-  a named gap, or the rc path grows a commit to attach them to. Final releases
-  are unaffected either way and are being implemented now.
+- **Release candidates.** Req 6 says the generated list is never published. An
+  **rc** cannot satisfy it as built: `preparePrerelease` tags an *existing*
+  commit, so there is no commit to carry a notes file. Options: rc's keep
+  generated notes as a named gap; the rc path grows a commit to attach them to;
+  or rc's are blocked. Evidence gathered 2026-09-18, for whoever decides:
+  - An rc never reaches an install. The stable channel resolves the latest
+    **final** tag (`pickLatestFinalTag` skips prereleases) and edge tracks
+    `main`, not tags — `RELEASING.md:188` states it outright. Testers pin the
+    tag by hand, so an rc's body is never read in the update panel, which is
+    what req 8 is about.
+  - **No rc has ever been cut here**: `git tag --list 'v*-*'` is empty across
+    v0.1.0…v0.4.1.
+
+  Final releases are unaffected by the answer.
 
 ## Resolved questions
 
