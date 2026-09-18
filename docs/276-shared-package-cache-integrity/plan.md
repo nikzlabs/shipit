@@ -123,20 +123,28 @@ base's tree pay 4 KB.
 
 **The store-poisoning row is now backed by a committed harness**
 ([`store-overlay-spike.sh`](./store-overlay-spike.sh), Docker host 2026-09-18,
-[FINDINGS.md](./FINDINGS.md), PASS=13): attacker A poisons through its upper (H4
+[FINDINGS.md](./FINDINGS.md), PASS=14): attacker A poisons through its upper (H4
 and H2, each with its own no-overlay control that poisons the victim), and
 victim B installs clean over the shared base — clean asserted by the installed
-file's digest equalling the original, not merely "no marker". The other rows
-here (reading a base, a dependency edit staying private, the 63 MB add) are
-**not** reproduced by that harness. **The disk/time numbers do not establish req
-7 or req 10.** The store-upper copy-up is small (~48 KB base-hit, ~114 KB
-new-package), but every install also copies a fresh `node_modules` (~54 KB even
-for the unchanged set), which the store lowerdir does not share; req 10 is about
-total per-session **allocated** disk versus today's hardlink topology, not
-measured here (`du` reports apparent bytes). The timing (0.31 s overlay vs 0.35 s
-plain) is incremental overlay overhead with **both sides copying**, not the
-hardlink→copy transition. Both remain the req-10 ext4 gate below and an open
-req-7 measurement.
+file's digest equalling the original, not merely "no marker".
+
+**Req 7 and req 10 are now measured against a genuine hardlink baseline** (scale
+set, 8 deps / 2 168 files / 58 MB, on ext4; install timed inside the container,
+link counts asserted). Both regress on ext4, and both because of the copy:
+
+| | today (hardlink) | design (overlay copy) |
+|---|---|---|
+| warm install (best of 5) | 0.060 s | 0.088 s (**1.47×**) |
+| per-session marginal disk | **0 B** | **58.6 MB** (the copied `node_modules`) |
+
+So on ext4 the design trades the hardlink's zero per-session cost for a full
+`node_modules` copy, and is ~1.5× slower on a warm install — the req-10 ext4
+gate below, quantified, and a measurable (if small-absolute) req-7 cost. **A
+reflink filesystem (btrfs / XFS) removes both**, since `copy` becomes a reflink;
+`du` cannot see reflink sharing, so re-measure there with a `df` delta. The
+store-upper copy-up itself (`index.db`, ~0.7 MB at scale / ~48 KB tiny) is
+bounded and not the cost. The other rows above (reading a base, a dependency
+edit staying private, the 63 MB add) are not reproduced by the harness.
 
 Two constraints for implementation:
 
@@ -251,13 +259,16 @@ overlay** (shared bind) poisoned B. H4 and H2 each have their own control, so
 the copy-up isolation is measured, not asserted. `index.db` is **1.3% of the
 store for this workload** (659 KB on a 51 MB, 2 168-file store); a per-runtime
 index grows across repos, so measure its absolute copy-up at ShipIt's scale
-rather than treating 1.3% as a bound. What is **not** established: req 7 (the
-timing has no hardlink baseline — both sides copy) and req 10 (every install
-also copies a `node_modules` the store does not share, and disk was apparent not
-allocated bytes). The concurrency cell shows two installs into **separate**
-uppers do not error; with per-session uppers there is no shared writable index,
-so it is not a shared-lock-correctness test. It ran on the services host; it
-cannot run in a session container (no Docker socket).
+rather than treating 1.3% as a bound. **Req 7 and req 10 are measured against a
+hardlink baseline** (scale set, ext4): the design is ~1.47× on a warm install
+(0.060 → 0.088 s) and costs a full per-session `node_modules` copy (58.6 MB vs
+0 B hardlink). Both are the copy, both regress on ext4, and **both are removed
+by a reflink filesystem** — so the store-in-overlay fix depends on reflink
+storage (btrfs / XFS) to satisfy req 7 and req 10; on ext4 it regresses both.
+The concurrency cell shows two installs into **separate** uppers do not error;
+with per-session uppers there is no shared writable index, so it is not a
+shared-lock-correctness test. It ran on the services host; it cannot run in a
+session container (no Docker socket).
 
 One thing the store overlay does **not** cover: pnpm keeps resolution metadata
 (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`, separate from the store, so an offline
@@ -284,12 +295,13 @@ verify-and-admit lifecycle above is the same fix for it. Filed as
    lands**, so on ext4 ship 2 and 3 together, or accept the interim cost
    deliberately.
 3. **The pnpm store inside an overlay with a content-verified base (section
-   5)** — the load-bearing step for H2/H4. The lifecycle is designed and the
+   5)** — the load-bearing step for H2/H4. The lifecycle is designed, the
    overlay copy-up **mechanism** is measured (FINDINGS.md: H4 and H2 isolation,
-   each with a poisoning control). Still gating the build: the verify-and-admit
-   publish spike (the orchestrator side), plus the req-7 and req-10 measurements
-   the mechanism harness does not settle — a hardlink-baseline install timing,
-   and total per-session **allocated** disk including the copied `node_modules`.
+   each with a poisoning control), and req 7 / req 10 are measured against a
+   hardlink baseline: **the fix depends on reflink storage** (on ext4 it is
+   ~1.47× slower and costs a full per-session `node_modules` copy). Still gating
+   the build: the verify-and-admit publish spike (the orchestrator side), and a
+   reflink-filesystem `df`-delta re-measure to confirm req 7 / req 10 there.
 4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
    pnpm store is safe against H3 and H4 (req 8).
 

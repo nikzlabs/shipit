@@ -19,7 +19,7 @@ any failure, so a silently no-op attack, a failed control, or a failed install
 cannot read as a pass. "Clean" means the installed file's sha512 **equals** the
 original blob's digest — not merely readable and lacking a marker; "poison" means
 the marker is present **and** the digest differs; the no-overlay control **must**
-poison the victim. It reported **PASS=13 FAIL=0**.
+poison the victim. It reported **PASS=14 FAIL=0**.
 
 ## What this proves, and what it does not
 
@@ -72,25 +72,42 @@ store-in-overlay move) and is **not** shared by the store lowerdir.
 | new-package store-upper | 116,352 B |
 | new-package node_modules | 36,096 B |
 
-## Neither req 7 nor req 10 is established by these numbers
+## Req 7 and req 10, measured against today's hardlink baseline
 
-- **Req 10 is not established.** These figures show the store-upper copy-up is
-  small (`index.db` plus any poisoned blob) and that `index.db` is ~1.3% of the
-  store **for this one workload** — but a per-runtime index grows across
-  repositories, so its absolute copy-up cost can grow independently of a
-  session's own dependency set. More importantly, **every install copies a fresh
-  `node_modules`** (54 KB even for the unchanged base-hit set here); the store
-  lowerdir does not share those copies. Req 10 is about **total per-session
-  allocated disk versus today's hardlink topology** — store, installed trees,
-  uppers, retained generations — measured in allocated blocks, not apparent
-  bytes. That comparison is **not** made here. The copied-`node_modules` cost is
-  the same req-10 tension section 3's ext4 gate already flags.
-- **Req 7 is not established.** The timing compares one tiny two-package install
-  on an overlay store against the same install on a plain store — **both copy**,
-  so it measures incremental overlay overhead (0.31 s vs 0.35 s, single-shot,
-  container spawn included), **not** the change from today's hardlink installs.
-  A req-7 verdict needs repeated representative installs timed against the
-  current hardlink baseline.
+Measured on the **scale set** (8 top-level deps, 2,168 files, 58 MB store),
+which is where copy and hardlink diverge, on **ext4** (no reflink). Install time
+was measured **inside** the container (no spawn), five reps, best of five. Disk
+is `du -sB1` = allocated bytes; the hardlink marginal uses a combined `du` so a
+shared inode counts once.
+
+| | today (hardlink) | design (overlay copy) | ratio |
+|---|---|---|---|
+| warm install time (best of 5) | 0.060 s | 0.088 s | **1.47×** |
+| per-session marginal disk | **0 B** | **59.3 MB** (upper 0.7 MB + node_modules 58.6 MB) | — |
+| shared base store (amortized) | 57.9 MB | 57.9 MB | — |
+
+Both regressions are **the copy**, and both are the section-3 ext4 gate,
+now quantified:
+
+- **Req 7 — a measurable slowdown on ext4, small in absolute terms for this
+  workload.** The overlay-copy install is 1.47× the hardlink install (28 ms
+  more on a 58 MB tree). It scales with the file count, so a large repo pays
+  more. Whether 1.47× is "materially slower" (req 7) is the requester's call,
+  but the cause is the copy import, not the overlay itself.
+- **Req 10 — NOT met on ext4 by copy alone.** Today a session's `node_modules`
+  hardlinks the shared store, so the per-session marginal disk is **0**. The
+  design copies the tree into the session's own filesystem — **58.6 MB per
+  session** for this 8-dep set — which the store lowerdir does not share. This
+  is exactly the docs/198 "per-session copy" objection, quantified.
+
+**Both are removed by a reflink filesystem** (btrfs / XFS): there
+`package-import-method=copy` becomes a reflink, so the install is near-free in
+both time and space. `du` cannot see reflink sharing, so re-measure req 10 there
+with a `df` used-space delta. **The store-in-overlay fix therefore depends on
+reflink storage to satisfy req 7 and req 10** — on ext4 it trades the hardlink's
+zero marginal for a full per-session copy. The store-upper copy-up itself
+(`index.db`, ~0.7 MB here / ~48 KB for a tiny repo, 1.3% of the store for this
+workload) is bounded and not the issue; the `node_modules` copy is.
 
 ## Finding: offline resolution needs metadata separate from the store
 
@@ -108,11 +125,13 @@ authenticate which content a name should *select* (the req 6 class).
 
 ## Faithfulness and limits
 
-- **The install copies, not hardlinks**, because `node_modules` (container fs)
+- **The design copies, not hardlinks**, because `node_modules` (container fs)
   and the store (volume) are different filesystems — the same crossing the real
   design forces (store in an overlay, `node_modules` outside it), which is why
-  `package-import-method=copy` is a prerequisite (plan.md section 2). This means
-  the timing does **not** capture the hardlink→copy transition.
+  `package-import-method=copy` is a prerequisite (plan.md section 2). The req 7
+  and req 10 cells now measure that copy against a genuine hardlink baseline
+  (link counts asserted: baseline > 1, design == 1), so they do capture the
+  hardlink→copy transition, on ext4.
 - **Concurrency is not a lock-correctness test.** Two installs into two separate
   uppers over one base both succeed, but each session writes its **own**
   `index.db` in its **own** upper — there is no shared writable index to lock.
@@ -124,7 +143,7 @@ authenticate which content a name should *select* (the req 6 class).
 
 ```
 scp docs/276-shared-package-cache-integrity/store-overlay-spike.sh <docker-host>:/tmp/
-ssh <docker-host> bash /tmp/store-overlay-spike.sh   # PASS=13 FAIL=0, exit 0
+ssh <docker-host> bash /tmp/store-overlay-spike.sh   # PASS=14 FAIL=0, exit 0
 ```
 
 Needs only Docker on the host; the node + python toolchain comes from a baked

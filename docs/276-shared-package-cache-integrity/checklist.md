@@ -52,16 +52,21 @@ recorded in [requirements.md](./requirements.md); none is open.
       clean (asserted by digest); each attack's own no-overlay control poisoned
       B. The harness hard-asserts attack success and mandatory control poisoning,
       so a no-op attack cannot read as a pass.
-- [ ] Establish req 7 with a real baseline: time repeated representative installs
-      on the overlay store against **today's hardlink** installs, not against a
-      plain-store copy install. The mechanism harness times overlay-copy vs
-      plain-copy only (0.31 s vs 0.35 s, single-shot) — incremental overlay
-      overhead, not the hardlink→copy transition.
-- [ ] Establish req 10 in **allocated** blocks, not `du` apparent bytes, and
-      include the per-session copied `node_modules` (~54 KB base-hit, measured)
-      which the store lowerdir does not share, plus retained base generations.
-      The store-upper copy-up alone (~48 KB base-hit / ~114 KB new-package,
-      `index.db` 1.3% of store for one workload) is not the whole per-session cost.
+- [x] Measure req 7 against a genuine hardlink baseline (scale set, ext4,
+      install timed inside the container, link counts asserted): overlay-copy is
+      **1.47×** the hardlink install (0.060 → 0.088 s best-of-5). Measurable,
+      small-absolute for this workload, scales with file count; the cost is the
+      copy, removed by a reflink fs.
+- [x] Measure req 10 in **allocated** blocks (scale set, ext4): today's
+      per-session marginal is **0 B** (node_modules hardlinks the store); the
+      design pays **58.6 MB** (a full per-session node_modules copy). **Req 10 is
+      NOT met on ext4 by copy alone** — the docs/198 per-session-copy objection,
+      quantified.
+- [ ] **Re-measure req 7 and req 10 on a reflink filesystem (btrfs / XFS) with a
+      `df` used-space delta** (`du` is blind to reflink sharing). Both ext4
+      regressions are the copy; a reflink makes `package-import-method=copy` a
+      near-free reflink. This confirms whether the store-in-overlay fix meets
+      req 7 / req 10 on reflink storage — the storage it depends on.
 - [ ] Record the metadata-cache dependency in the wiring: an offline install
       needs resolution metadata (`XDG_CACHE_HOME/pnpm`, separate from the store)
       — a shared or privately-seeded cache, a lockfile carrying the resolution,

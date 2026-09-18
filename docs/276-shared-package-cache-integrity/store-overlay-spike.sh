@@ -55,7 +55,7 @@ command -v docker >/dev/null || { echo "docker CLI not found"; exit 2; }
 docker info >/dev/null 2>&1 || { echo "docker daemon not reachable"; exit 2; }
 
 VOL="pv-store"
-ALL_OVL="pv-a4 pv-b4 pv-a2 pv-b2 pv-n pv-t pv-p pv-q"
+ALL_OVL="pv-a4 pv-b4 pv-a2 pv-b2 pv-n pv-t pv-t2 pv-p pv-q"
 cleanup(){ docker volume rm $ALL_OVL >/dev/null 2>&1 || true; docker volume rm "$VOL" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 cleanup
@@ -197,15 +197,58 @@ if [ -n "$(mp 'find /mp/scale-store -name index.db 2>/dev/null')" ]; then
   printf "    %-46s %s files, %s B store, index.db %s B (%s%%)\n" "scale set (8 top-level deps)" "$S_N" "$S_SZ" "$S_IDX_SZ" "$spct"
 else warn "scale warm produced no store"; fi
 
-hdr "6. Time — overlay COPY install vs plain-store COPY install (NOT vs hardlink)"
-mp 'mkdir -p /mp/t-up /mp/t-wk'; make_ovl pv-t "$MP/base-store" "$MP/t-up" "$MP/t-wk"
-timed(){ { /usr/bin/time -f %e docker run --rm $CE $(CACHE_MOUNT) -v "$1":/store "$IMG" bash -c "
-  mkdir -p /tmp/t && cd /tmp/t; printf '{\"name\":\"t\",\"dependencies\":{\"$PKG_NAME\":\"$PKG_VER\"}}' > package.json
-  pnpm --store-dir /store --offline install --silent"; } 2>&1 | tail -1; }
-t_ovl=$(timed pv-t); t_plain=$(timed "$MP/base-store")
-printf "    %-46s %ss\n" "base-hit COPY install, store on overlay" "$t_ovl"
-printf "    %-46s %ss\n" "base-hit COPY install, plain store" "$t_plain"
-warn "single-shot, container spawn included, tiny package, BOTH sides copy — incremental overlay overhead only, NOT the change from today's hardlink installs. Not a req-7 verdict."
+hdr "6. Req 7 — install time: today's HARDLINK vs the design's overlay COPY (scale set, install timed inside the container, 5 reps)"
+if [ -n "$(mp 'find /mp/scale-store -name index.db 2>/dev/null')" ]; then
+  # today's baseline: store + node_modules on the SAME fs, hardlink import.
+  # No set -e: pnpm exits non-zero on the esbuild "ignored build scripts" notice
+  # while still populating the tree, so tolerate it and time the install anyway.
+  hl=$(docker run --rm $CE -e SCALE="$SCALE_PKGS" "$IMG" bash -c '
+    mkdir -p /work/proj && cd /work/proj
+    printf "{\"name\":\"h\",\"dependencies\":{%s}}" "$SCALE" > package.json
+    pnpm --store-dir /work/store --config.package-import-method=hardlink install --silent >/dev/null 2>&1 || true
+    f=$(find node_modules/.pnpm -name "*.js" | head -1); ln=$(stat -c %h "$f")
+    ts=""; for i in 1 2 3 4 5; do rm -rf node_modules; s=$(date +%s.%N); pnpm --store-dir /work/store --config.package-import-method=hardlink --offline install --silent >/dev/null 2>&1 || true; e=$(date +%s.%N); ts="$ts $(awk -v a=$s -v b=$e "BEGIN{printf \"%.3f\", b-a}")"; done
+    echo "LINKS=$ln MIN=$(echo $ts | tr " " "\n" | sort -n | head -1) TIMES=[$ts ]"' 2>&1 | tail -1)
+  # the design: store on an overlay (scale base), node_modules cross-fs, copy import
+  mp 'mkdir -p /mp/t2-up /mp/t2-wk'; make_ovl pv-t2 "$MP/scale-store" "$MP/t2-up" "$MP/t2-wk"
+  ov=$(docker run --rm $CE $(CACHE_MOUNT) -e SCALE="$SCALE_PKGS" -v pv-t2:/store "$IMG" bash -c '
+    mkdir -p /tmp/proj && cd /tmp/proj
+    printf "{\"name\":\"o\",\"dependencies\":{%s}}" "$SCALE" > package.json
+    ts=""; for i in 1 2 3 4 5; do rm -rf node_modules; s=$(date +%s.%N); pnpm --store-dir /store --config.package-import-method=copy --offline install --silent >/dev/null 2>&1 || true; e=$(date +%s.%N); ts="$ts $(awk -v a=$s -v b=$e "BEGIN{printf \"%.3f\", b-a}")"; done
+    f=$(find node_modules/.pnpm -name "*.js" | head -1); ln=$(stat -c %h "$f")
+    echo "LINKS=$ln MIN=$(echo $ts | tr " " "\n" | sort -n | head -1) TIMES=[$ts ]"' 2>&1 | tail -1)
+  hlmin=$(field "$hl" MIN); ovmin=$(field "$ov" MIN); hll=$(field "$hl" LINKS); ovl=$(field "$ov" LINKS)
+  printf "    %-44s min %ss  %s\n" "today  HARDLINK (link count $hll)" "$hlmin" "$(echo "$hl" | sed 's/.*TIMES=//')"
+  printf "    %-44s min %ss  %s\n" "design COPY on overlay (link count $ovl)" "$ovmin" "$(echo "$ov" | sed 's/.*TIMES=//')"
+  { [ "$hll" -gt 1 ] 2>/dev/null && [ "$ovl" = 1 ] 2>/dev/null; } && pass "baseline is genuinely hardlinked (>1) and the design copies (1) — a valid req-7 comparison" || warn "link counts unexpected (hl=$hll copy=$ovl) — comparison may be invalid"
+  awk -v a=$hlmin -v b=$ovmin "BEGIN{if(a>0)printf \"    overlay-copy / hardlink (min install): %.2fx\n\", b/a}"
+  warn "install timed INSIDE the container (no spawn). ext4 has no reflink, so copy is a full copy; on a reflink fs the copy is near-free. This is the honest req-7 baseline the earlier single-shot lacked."
+else warn "scale-store missing — skipping req 7 timing"; fi
+
+hdr "6b. Req 10 — per-session ALLOCATED disk: today's hardlink vs overlay copy (scale set; du -sB1 = allocated bytes)"
+if [ -n "$(mp 'find /mp/scale-store -name index.db 2>/dev/null')" ]; then
+  # today: store + nm SAME fs, hardlink. Marginal = combined(store+nm) - store, since a
+  # combined du counts a hardlinked inode ONCE, so nm's shared bytes do not re-count.
+  r10hl=$(docker run --rm $CE -e SCALE="$SCALE_PKGS" "$IMG" bash -c '
+    set -e; mkdir -p /work/proj && cd /work/proj
+    printf "{\"name\":\"h\",\"dependencies\":{%s}}" "$SCALE" > package.json
+    pnpm --store-dir /work/store --config.package-import-method=hardlink install --silent >/dev/null 2>&1
+    st=$(du -sB1 /work/store | cut -f1); tot=$(du -scB1 /work/store /work/proj/node_modules | tail -1 | cut -f1)
+    echo "STORE=$st TOTAL=$tot"' 2>&1 | tail -1)
+  st=$(field "$r10hl" STORE); tot=$(field "$r10hl" TOTAL); hl_marg=$((tot - st))
+  # design: overlay copy session over the scale base. Marginal = store-upper + copied node_modules.
+  cpr=$(docker run --rm $CE $(CACHE_MOUNT) -e SCALE="$SCALE_PKGS" -v pv-t2:/store "$IMG" bash -c '
+    mkdir -p /tmp/proj && cd /tmp/proj; printf "{\"name\":\"o\",\"dependencies\":{%s}}" "$SCALE" > package.json
+    pnpm --store-dir /store --config.package-import-method=copy --offline install --silent >/dev/null 2>&1
+    echo NM=$(du -sB1 /tmp/proj/node_modules | cut -f1)' 2>&1 | tail -1)
+  cp_nm=$(field "$cpr" NM); upper=$(mp 'du -sB1 /mp/t2-up | cut -f1'); gen=$(mp 'du -sB1 /mp/scale-store | cut -f1')
+  cp_marg=$((upper + cp_nm))
+  printf "    %-52s %s B\n" "shared base store (one generation, amortized)" "$gen"
+  printf "    %-52s %s B\n" "TODAY per-session marginal (hardlink)" "$hl_marg"
+  printf "    %-52s %s B  (upper %s + node_modules %s)\n" "DESIGN per-session marginal (overlay copy)" "$cp_marg" "$upper" "$cp_nm"
+  awk -v h=$hl_marg -v c=$cp_marg "BEGIN{ if(h>0) printf \"    design/today per-session marginal disk: %.0fx\n\", c/h; else printf \"    today marginal ~0 (hardlink shares the store); design pays %d B per session\n\", c }"
+  warn "ext4, du -sB1 = ALLOCATED bytes. Copy is a full copy here, so the design's per-session cost is ~the node_modules tree — the req-10 regression the section-3 ext4 gate names. req 10 is NOT met on ext4 by copy alone; a reflink fs (btrfs/XFS) makes the copy near-free, and du cannot see reflink sharing, so re-measure there with a df used-space delta."
+else warn "scale-store missing — skipping req 10"; fi
 
 hdr "7. Concurrency — two installs into separate uppers over one base"
 mp 'mkdir -p /mp/p-up /mp/p-wk /mp/q-up /mp/q-wk'
