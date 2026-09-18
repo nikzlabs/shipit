@@ -1,0 +1,655 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { spawn, type ChildProcess } from "node:child_process";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import * as fsSync from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { basename, dirname, join } from "node:path";
+import os from "node:os";
+import {
+  cassetteName,
+  chooseRecording,
+  describeDrift,
+  fingerprintOf,
+  frameDelayMs,
+  parseResponseFile,
+  scrubCassette,
+  serializeResponse,
+  splitSseFrames,
+} from "./proxy.mjs";
+
+/**
+ * The record/replay proxy of docs/296 plan §2, exercised as a process: replay
+ * against the committed fixture cassette, record against a local fake upstream
+ * (the framing of `/persist/harness-probe/fake-api.mjs`, which the proxy
+ * replaced). Nothing here reaches the network.
+ */
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PROXY = join(HERE, "proxy.mjs");
+const FIXTURE_CASSETTE = join(HERE, "__fixtures__", "cassette");
+
+interface RunningProxy {
+  child: ChildProcess;
+  port: number;
+  stderr: () => string;
+  url: (path: string) => string;
+}
+
+async function startProxy(args: string[], env: NodeJS.ProcessEnv = {}): Promise<RunningProxy> {
+  const child = spawn(process.execPath, [PROXY, ...args, "--port", "0", "--host", "127.0.0.1"], {
+    env: { ...process.env, DEMO_PROXY_ANTHROPIC_API_KEY: undefined, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let err = "";
+  child.stderr?.on("data", (c: Buffer) => (err += c.toString()));
+  const port = await new Promise<number>((resolve, reject) => {
+    let out = "";
+    child.stdout?.on("data", (c: Buffer) => {
+      out += c.toString();
+      const line = out.split("\n")[0];
+      if (out.includes("\n")) resolve(Number(line));
+    });
+    child.on("exit", (code) => reject(new Error(`proxy exited with ${code}: ${err}`)));
+  });
+  return { child, port, stderr: () => err, url: (path) => `http://127.0.0.1:${port}${path}` };
+}
+
+function stopProxy(p: RunningProxy | undefined): Promise<void> {
+  if (!p || p.child.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    p.child.once("exit", () => resolve());
+    p.child.kill("SIGTERM");
+  });
+}
+
+/** Runs the proxy expecting it to refuse at startup; resolves with exit code + stderr. */
+function runUntilExit(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [PROXY, ...args, "--port", "0"], {
+      env: { ...process.env, DEMO_PROXY_ANTHROPIC_API_KEY: undefined, ...env },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (c: Buffer) => (stderr += c.toString()));
+    child.on("exit", (code) => resolve({ code, stderr }));
+  });
+}
+
+const fixtureBody = (lane: string, n: string): Buffer =>
+  parseResponseFile(readFileSync(join(FIXTURE_CASSETTE, lane, `${n}.sse`))).body;
+
+const messagesRequest = (p: RunningProxy, headers: Record<string, string>, body: unknown = {}) =>
+  fetch(p.url("/v1/messages?beta=true"), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+
+/** The instance's own key, delivered into the session as ANTHROPIC_API_KEY and sent by the CLI as x-api-key. */
+const CALLER_KEY = "sk-ant-instance";
+const OVERRIDE_KEY = "sk-ant-override";
+const API_KEY = { "x-api-key": CALLER_KEY };
+const BEARER = { authorization: "Bearer oauth-token" };
+
+/** Every byte the recorder wrote under `dir`, so a leaked secret is found wherever it landed. */
+function cassetteBytes(dir: string): string {
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => readFileSync(join(e.parentPath, e.name), "utf8"))
+    .join("\n");
+}
+
+describe("pure helpers", () => {
+  it("splits SSE frames so that rejoining them reproduces the bytes", () => {
+    const body = Buffer.from("event: a\ndata: {}\n\nevent: b\r\ndata: {}\r\n\r\ntrailing");
+    const frames = splitSseFrames(body);
+    expect(frames.map((f) => f.toString())).toEqual(["event: a\ndata: {}\n\n", "event: b\r\ndata: {}\r\n\r\n", "trailing"]);
+    expect(Buffer.concat(frames).equals(body)).toBe(true);
+  });
+
+  it("paces text deltas at cps, tool-input JSON at 4x, everything else immediately", () => {
+    const frame = (data: unknown) => Buffer.from(`event: x\ndata: ${JSON.stringify(data)}\n\n`);
+    const text = frame({ type: "content_block_delta", delta: { type: "text_delta", text: "x".repeat(120) } });
+    const tool = frame({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "x".repeat(120) } });
+    const other = frame({ type: "message_start" });
+    expect(frameDelayMs(text, 120)).toBe(1000);
+    expect(frameDelayMs(tool, 120)).toBe(250);
+    expect(frameDelayMs(other, 120)).toBe(0);
+    expect(frameDelayMs(Buffer.from("data: not json\n\n"), 120)).toBe(0);
+  });
+
+  it("round-trips a response through the cassette file format, keeping only content-type", () => {
+    const body = Buffer.from("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+    const file = serializeResponse(
+      200,
+      { "Content-Type": "text/event-stream", "transfer-encoding": "chunked", "anthropic-organization-id": "org_1", "request-id": "req_1" },
+      body,
+    );
+    expect(file.subarray(0, file.indexOf("\r\n\r\n")).toString()).toBe("HTTP/1.1 200\r\ncontent-type: text/event-stream");
+    const parsed = parseResponseFile(file);
+    expect(parsed.status).toBe(200);
+    expect(parsed.headers).toEqual({ "content-type": "text/event-stream" });
+    expect(parsed.body.equals(body)).toBe(true);
+
+    // A file written before the allowlist: the reader still drops what it must not replay, and names it.
+    const legacy = Buffer.concat([Buffer.from("HTTP/1.1 200\r\ncontent-type: text/event-stream\r\nanthropic-workspace-id: w\r\ncf-ray: r\r\n\r\n"), body]);
+    const parsedLegacy = parseResponseFile(legacy);
+    expect(parsedLegacy.headers).toEqual({ "content-type": "text/event-stream" });
+    expect(parsedLegacy.headerNames).toEqual(["content-type", "anthropic-workspace-id", "cf-ray"]);
+  });
+
+  it("names a cassette by its directory, or by the scenario when the directory is called cassette", () => {
+    expect(cassetteName("/srv/shipit-demo/cassettes/website-hero")).toBe("website-hero");
+    expect(cassetteName("/repo/scripts/demo-video/scenarios/website-hero/cassette")).toBe("website-hero");
+  });
+
+  it("fingerprints the fields the probe logged and names what drifted", () => {
+    const fp = fingerprintOf(Buffer.from(JSON.stringify({ model: "m", messages: [1, 2], tools: [1], stream: true })));
+    expect(fp).toEqual({ model: "m", messages: 2, tools: 1, bodyBytes: 56, stream: true });
+    expect(describeDrift(fp, fp)).toBeNull();
+    expect(describeDrift(fp, { ...fp, messages: 3, bodyBytes: 999 })).toBe('messages: recorded=2 got=3');
+  });
+
+  it("chooses the lowest unused recording equal on model, messages, tools and stream, else falls back to the lowest unused", () => {
+    const fp = (messages: number, tools = 2) => ({ model: "m", messages, tools, bodyBytes: 0, stream: true });
+    const rec = (n: number, fingerprint: ReturnType<typeof fp> | null) => ({ n, file: `${n}.sse`, fingerprint, used: false });
+    const lane = [rec(1, fp(1)), rec(2, fp(5)), rec(3, fp(3)), rec(4, fp(1, 0)), rec(5, null), rec(6, fp(3))];
+    expect(chooseRecording(lane, fp(3))).toEqual({ recording: lane[2], fallback: false });
+    expect(chooseRecording(lane, fp(1, 0))).toEqual({ recording: lane[3], fallback: false });
+    // The message count is a key, not a ranking: off by one is no match, so the lowest unused answers as a fallback.
+    expect(chooseRecording(lane, fp(4))).toEqual({ recording: lane[0], fallback: true });
+    expect(chooseRecording(lane, fp(9, 0))).toEqual({ recording: lane[0], fallback: true });
+    // Nothing matches (unfingerprinted 005 never does): lowest unused number.
+    lane[0].used = true;
+    expect(chooseRecording(lane, fp(1, 7))).toEqual({ recording: lane[1], fallback: true });
+    // Two identical fingerprints resolve by number, in order.
+    lane[2].used = true;
+    expect(chooseRecording(lane, fp(3))).toEqual({ recording: lane[5], fallback: false });
+    for (const r of lane) r.used = true;
+    expect(chooseRecording(lane, fp(3))).toBeNull();
+  });
+
+  it("scrubs a cassette down to the allowlisted headers with every body byte unchanged", () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-scrub-"));
+    try {
+      const { cpSync } = fsSync;
+      cpSync(FIXTURE_CASSETTE, dir, { recursive: true });
+      const files = ["x-api-key/001.sse", "x-api-key/002.sse", "bearer/001.sse"];
+      const bodiesBefore = files.map((f) => parseResponseFile(readFileSync(join(dir, f))).body);
+      for (const f of files) expect(readFileSync(join(dir, f), "utf8")).toContain("request-id: req_fixture");
+
+      const result = scrubCassette(dir);
+      expect(result).toEqual({ rewritten: files, removed: ["cache-control", "request-id"] });
+      files.forEach((f, i) => {
+        const raw = readFileSync(join(dir, f));
+        expect(raw.subarray(0, raw.indexOf("\r\n\r\n")).toString()).toBe("HTTP/1.1 200\r\ncontent-type: text/event-stream; charset=utf-8");
+        expect(parseResponseFile(raw).body.equals(bodiesBefore[i])).toBe(true);
+      });
+      // Idempotent: a second pass touches nothing.
+      expect(scrubCassette(dir)).toEqual({ rewritten: [], removed: [] });
+      expect(readFileSync(join(dir, "fingerprints.jsonl"), "utf8")).toBe(readFileSync(join(FIXTURE_CASSETTE, "fingerprints.jsonl"), "utf8"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("replay mode", () => {
+  let fast: RunningProxy | undefined;
+  beforeAll(async () => {
+    fast = await startProxy(["--replay", FIXTURE_CASSETTE, "--pace-chars-per-second", "1000000"]);
+  });
+  afterAll(() => stopProxy(fast));
+
+  it("answers lane request n with <lane>/NNN.sse, counting each lane separately, then 400 when exhausted", async () => {
+    const p = fast!;
+    const first = await messagesRequest(p, API_KEY, { model: "claude-fixture", messages: [1], tools: [1, 2], stream: true });
+    expect(first.status).toBe(200);
+    expect(first.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+    // The fixture predates the header allowlist and still carries one; the replay does not send it.
+    expect(first.headers.get("request-id")).toBeNull();
+    expect(first.headers.get("cache-control")).toBeNull();
+    expect(Buffer.from(await first.arrayBuffer()).equals(fixtureBody("x-api-key", "001"))).toBe(true);
+
+    // The bearer lane has its own counter: its first request is bearer/001, not x-api-key/002.
+    const bearer = await messagesRequest(p, BEARER, { model: "claude-fixture", messages: [1], stream: true });
+    expect(bearer.status).toBe(200);
+    expect(Buffer.from(await bearer.arrayBuffer()).equals(fixtureBody("bearer", "001"))).toBe(true);
+
+    // The cassette recorded request 2 with three messages; this take sends two. Drift, but still answered.
+    const second = await messagesRequest(p, API_KEY, { model: "claude-fixture", messages: [1, 2], tools: [1, 2], stream: true });
+    expect(second.status).toBe(200);
+    expect(Buffer.from(await second.arrayBuffer()).equals(fixtureBody("x-api-key", "002"))).toBe(true);
+
+    const third = await messagesRequest(p, API_KEY);
+    expect(third.status).toBe(400);
+    expect(await third.json()).toMatchObject({ error: { message: expect.stringContaining("exhausted") as string } });
+
+    const bearerExhausted = await messagesRequest(p, BEARER);
+    expect(bearerExhausted.status).toBe(400);
+
+    // Drift was logged as a warning but every request above was still answered.
+    expect(p.stderr()).not.toContain("cassette drift lane=x-api-key n=1");
+    expect(p.stderr()).toContain("cassette drift lane=x-api-key n=2 take=002: messages: recorded=3 got=2");
+    expect(p.stderr()).toMatch(/replay lane=x-api-key n=1 take=001 POST \/v1\/messages\?beta=true 200 \d+ms/);
+    expect(p.stderr()).toMatch(/replay lane=bearer n=1 take=001 POST \/v1\/messages\?beta=true 200 \d+ms/);
+  });
+
+  it("answers /api/hello (HEAD and GET) with 200 naming its mode and cassette, and anything else with 404 JSON", async () => {
+    const p = fast!;
+    for (const method of ["HEAD", "GET"]) {
+      const hello = await fetch(p.url("/api/hello"), { method });
+      expect(hello.status).toBe(200);
+      expect(hello.headers.get("x-demo-proxy-mode")).toBe("replay");
+      // The fixture lives at __fixtures__/cassette, so it is named by its parent.
+      expect(hello.headers.get("x-demo-proxy-cassette")).toBe("__fixtures__");
+    }
+    const other = await fetch(p.url("/v1/models"));
+    expect(other.status).toBe(404);
+    expect(other.headers.get("content-type")).toBe("application/json");
+    expect(await other.json()).toMatchObject({ error: { type: "not_found" } });
+    const postElsewhere = await fetch(p.url("/v1/complete"), { method: "POST", body: "{}" });
+    expect(postElsewhere.status).toBe(404);
+  });
+
+  it("refuses a lane with no recordings at all with 401, whichever lane it is", async () => {
+    for (const [present, absent, absentHeaders] of [
+      ["x-api-key", "bearer", BEARER],
+      ["bearer", "x-api-key", API_KEY],
+    ] as const) {
+      const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-lane-"));
+      let p: RunningProxy | undefined;
+      try {
+        fsSync.cpSync(join(FIXTURE_CASSETTE, present), join(dir, present), { recursive: true });
+        // An empty lane directory is "no recordings" too, not an exhausted lane.
+        if (absent === "x-api-key") mkdirSync(join(dir, absent));
+        p = await startProxy(["--replay", dir]);
+        const res = await messagesRequest(p, absentHeaders);
+        expect(res.status).toBe(401);
+        expect(await res.json()).toMatchObject({ error: { type: "authentication_error", message: `demo-proxy: no ${absent} lane in this cassette` } });
+      } finally {
+        await stopProxy(p);
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("paces a 240-char text delta at 120 cps over at least 1.5 s", async () => {
+    const p = await startProxy(["--replay", FIXTURE_CASSETTE]);
+    try {
+      const started = Date.now();
+      const res = await messagesRequest(p, API_KEY);
+      const body = Buffer.from(await res.arrayBuffer());
+      const elapsed = Date.now() - started;
+      expect(body.equals(fixtureBody("x-api-key", "001"))).toBe(true);
+      expect(elapsed).toBeGreaterThanOrEqual(1500);
+    } finally {
+      await stopProxy(p);
+    }
+  });
+
+  it("survives a client that disconnects mid-stream and keeps serving", async () => {
+    const p = await startProxy(["--replay", FIXTURE_CASSETTE]);
+    try {
+      const controller = new AbortController();
+      const pending = fetch(p.url("/v1/messages"), {
+        method: "POST",
+        headers: { "content-type": "application/json", ...API_KEY },
+        body: "{}",
+        signal: controller.signal,
+      });
+      const res = await pending;
+      // Headers are in; the 240-char delta is still being paced. Walk away.
+      await new Promise((r) => setTimeout(r, 200));
+      controller.abort();
+      await expect(res.arrayBuffer()).rejects.toThrow();
+
+      // The proxy is still up and the lane counter advanced past the abandoned take.
+      const next = await messagesRequest(p, API_KEY);
+      expect(next.status).toBe(200);
+      expect(Buffer.from(await next.arrayBuffer()).equals(fixtureBody("x-api-key", "002"))).toBe(true);
+      expect(p.child.exitCode).toBeNull();
+
+      // The abandoned take was settled the moment the client left — its log line is
+      // already there, well before the 2 s the 240-char delta would have taken to pace.
+      expect(p.stderr()).toMatch(/replay lane=x-api-key n=1 take=001 POST \/v1\/messages 200 \d+ms client disconnected after \d+\/\d+ frames/);
+    } finally {
+      await stopProxy(p);
+    }
+  });
+});
+
+describe("replay matching", () => {
+  /**
+   * The bearer lane as measured on the demo instance (2026-09-16): one turn is
+   * two concurrent requests, a small side call (n=1, no tools) and the turn
+   * itself (n=2, 59 tools), and n=2 finished first. Arrival order alone would
+   * hand a take to the wrong request when they land the other way round.
+   */
+  const SIDE_CALL = { model: "claude-opus-5", messages: [{}], stream: true };
+  const TURN = { model: "claude-opus-5", messages: [{}, {}], tools: Array.from({ length: 59 }, () => ({})), stream: true };
+  const takeBody = (n: number) => Buffer.from(`event: message_stop\ndata: {"take":"bearer/${n}"}\n\n`);
+
+  function writeCassette(): string {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-match-"));
+    mkdirSync(join(dir, "bearer"));
+    const lines = [
+      { lane: "bearer", n: 1, ...fingerprintOf(Buffer.from(JSON.stringify(SIDE_CALL))), bodyBytes: 4154 },
+      { lane: "bearer", n: 2, ...fingerprintOf(Buffer.from(JSON.stringify(TURN))), bodyBytes: 189669 },
+    ];
+    for (const { n } of lines) {
+      writeFileSync(join(dir, "bearer", `00${n}.sse`), serializeResponse(200, { "content-type": "text/event-stream" }, takeBody(n)));
+    }
+    writeFileSync(join(dir, "fingerprints.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    return dir;
+  }
+
+  const bodyOf = async (res: Response) => Buffer.from(await res.arrayBuffer()).toString();
+  /** The request's log line is written after its response ends, so it may trail the body by a tick. */
+  async function logged(pattern: RegExp): Promise<string> {
+    const deadline = Date.now() + 2000;
+    while (!pattern.test(p!.stderr()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    return p!.stderr();
+  }
+
+  let dir: string;
+  let p: RunningProxy | undefined;
+  beforeEach(async () => {
+    dir = writeCassette();
+    p = await startProxy(["--replay", dir]);
+  });
+  afterEach(async () => {
+    await stopProxy(p);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("answers each request with the recording whose fingerprint matches it, whatever order they arrive in", async () => {
+    const turn = await messagesRequest(p!, BEARER, TURN);
+    expect(turn.status).toBe(200);
+    expect(await bodyOf(turn)).toBe(takeBody(2).toString());
+
+    const side = await messagesRequest(p!, BEARER, SIDE_CALL);
+    expect(side.status).toBe(200);
+    expect(await bodyOf(side)).toBe(takeBody(1).toString());
+
+    const log = await logged(/replay lane=bearer n=2 take=001 POST/);
+    expect(log).toMatch(/replay lane=bearer n=1 take=002 POST/);
+    expect(log).not.toContain("drift");
+  });
+
+  it("falls back to the lowest unused recording when nothing matches, and logs the drift", async () => {
+    const res = await messagesRequest(p!, BEARER, { ...TURN, model: "claude-elsewhere" });
+    expect(res.status).toBe(200);
+    expect(await bodyOf(res)).toBe(takeBody(1).toString());
+    expect(await logged(/cassette drift/)).toContain(
+      'cassette drift lane=bearer n=1 take=001: model: recorded="claude-opus-5" got="claude-elsewhere", messages: recorded=1 got=2, tools: recorded=0 got=59 (bodyBytes recorded=4154 got=',
+    );
+  });
+
+  it("uses each recording once: a third request is exhaustion even though it matches a used take", async () => {
+    expect((await messagesRequest(p!, BEARER, TURN)).status).toBe(200);
+    expect((await messagesRequest(p!, BEARER, SIDE_CALL)).status).toBe(200);
+    const again = await messagesRequest(p!, BEARER, SIDE_CALL);
+    expect(again.status).toBe(400);
+    expect(await again.json()).toMatchObject({ error: { type: "invalid_request_error", message: expect.stringContaining("exhausted") as string } });
+    expect(await logged(/n=3/)).toMatch(/replay lane=bearer n=3 take=- POST \/v1\/messages\?beta=true 400/);
+  });
+
+  it("counts served, drift, fallback and unused at GET /api/demo/stats", async () => {
+    const stats = async () => (await fetch(p!.url("/api/demo/stats"))).json() as Promise<Record<string, unknown>>;
+    expect(await stats()).toEqual({ mode: "replay", cassette: expect.stringMatching(/^demo-proxy-match-/) as string, served: 0, drift: 0, fallback: 0, unused: 2 });
+
+    expect((await messagesRequest(p!, BEARER, TURN)).status).toBe(200);
+    expect(await stats()).toMatchObject({ served: 1, drift: 0, fallback: 0, unused: 1 });
+
+    // One message too many for the side call: no match, so the last unused take answers and both counters move.
+    expect((await messagesRequest(p!, BEARER, { ...SIDE_CALL, messages: [{}, {}, {}] })).status).toBe(200);
+    expect(await stats()).toMatchObject({ served: 2, drift: 1, fallback: 1, unused: 0 });
+
+    // Exhaustion serves nothing and counts nothing.
+    expect((await messagesRequest(p!, BEARER, SIDE_CALL)).status).toBe(400);
+    expect(await stats()).toMatchObject({ served: 2, drift: 1, fallback: 1, unused: 0 });
+  });
+});
+
+describe("replay matching on message count", () => {
+  /**
+   * Two recordings alike on model, tools and stream — the shape of two
+   * consecutive turn requests — differ only in message count. Each must get
+   * its own take whichever arrives first, and neither may be served as the
+   * other's near miss.
+   */
+  const request = (messages: number) => ({ model: "claude-opus-5", messages: Array.from({ length: messages }, () => ({})), tools: [{}, {}], stream: true });
+  const takeBody = (n: number) => Buffer.from(`event: message_stop\ndata: {"take":"bearer/${n}"}\n\n`);
+  const bodyOf = async (res: Response) => Buffer.from(await res.arrayBuffer()).toString();
+
+  let dir: string;
+  let p: RunningProxy | undefined;
+  beforeEach(async () => {
+    dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-msgs-"));
+    mkdirSync(join(dir, "bearer"));
+    const lines = [1, 2].map((n) => ({ lane: "bearer", n, ...fingerprintOf(Buffer.from(JSON.stringify(request(n)))) }));
+    for (const { n } of lines) {
+      writeFileSync(join(dir, "bearer", `00${n}.sse`), serializeResponse(200, { "content-type": "text/event-stream" }, takeBody(n)));
+    }
+    writeFileSync(join(dir, "fingerprints.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    p = await startProxy(["--replay", dir]);
+  });
+  afterEach(async () => {
+    await stopProxy(p);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("serves each of two recordings differing only in message count to its own request, arriving in reverse", async () => {
+    const second = await messagesRequest(p!, BEARER, request(2));
+    expect(await bodyOf(second)).toBe(takeBody(2).toString());
+    const first = await messagesRequest(p!, BEARER, request(1));
+    expect(await bodyOf(first)).toBe(takeBody(1).toString());
+    const stats = (await (await fetch(p!.url("/api/demo/stats"))).json()) as Record<string, unknown>;
+    expect(stats).toMatchObject({ served: 2, drift: 0, fallback: 0, unused: 0 });
+    expect(p!.stderr()).not.toContain("drift");
+  });
+
+  it("treats a message count off by one as no match: a fallback, counted and logged", async () => {
+    const res = await messagesRequest(p!, BEARER, request(3));
+    expect(await bodyOf(res)).toBe(takeBody(1).toString());
+    const stats = (await (await fetch(p!.url("/api/demo/stats"))).json()) as Record<string, unknown>;
+    expect(stats).toMatchObject({ served: 1, drift: 1, fallback: 1, unused: 1 });
+    expect(p!.stderr()).toContain("cassette drift lane=bearer n=1 take=001: messages: recorded=1 got=3");
+  });
+});
+
+describe("record mode", () => {
+  interface Seen {
+    headers: http.IncomingHttpHeaders;
+    body: string;
+    url: string;
+  }
+  const seen: Seen[] = [];
+  let upstream: http.Server;
+  let upstreamUrl: string;
+  const REPLY = "hi";
+  const sseBody = (model: string) =>
+    [
+      ["message_start", { type: "message_start", message: { id: "msg_fake_0001", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }],
+      ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }],
+      ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: REPLY } }],
+      ["content_block_stop", { type: "content_block_stop", index: 0 }],
+      ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } }],
+      ["message_stop", { type: "message_stop" }],
+    ]
+      .map(([event, data]) => `event: ${event as string}\ndata: ${JSON.stringify(data)}\n\n`)
+      .join("");
+
+  beforeAll(async () => {
+    // The fake vendor API of the harness probe, reduced to what record mode needs.
+    upstream = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        seen.push({ headers: req.headers, body, url: req.url ?? "" });
+        if (!req.headers["x-api-key"] && !req.headers.authorization) {
+          res.writeHead(401, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { type: "authentication_error", message: "no credential reached upstream" } }));
+          return;
+        }
+        let parsed: { model?: string } = {};
+        try {
+          parsed = JSON.parse(body) as { model?: string };
+        } catch {
+          parsed = {};
+        }
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "request-id": "req_upstream_1", connection: "keep-alive" });
+        res.end(sseBody(parsed.model ?? "claude-fake"));
+      });
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
+
+  it("forwards the caller's x-api-key untouched when no override is set, and saves no request header", async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-rec-"));
+    let p: RunningProxy | undefined;
+    try {
+      p = await startProxy(["--record", dir, "--upstream", upstreamUrl]);
+      seen.length = 0;
+      const res = await messagesRequest(p, { ...API_KEY, "anthropic-version": "2023-06-01" }, { model: "claude-opus-5", messages: [{}], stream: true });
+      expect(res.status).toBe(200);
+      await res.arrayBuffer();
+      expect(seen).toHaveLength(1);
+      expect(seen[0].headers["x-api-key"]).toBe(CALLER_KEY);
+      expect(seen[0].headers["anthropic-version"]).toBe("2023-06-01");
+      expect(p.stderr()).toContain("x-api-key=caller's");
+
+      expect(existsSync(join(dir, "x-api-key", "001.sse"))).toBe(true);
+      expect(cassetteBytes(dir)).not.toContain(CALLER_KEY);
+    } finally {
+      await stopProxy(p);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("swaps x-api-key for the override when set, forwards everything else verbatim, and saves the take per lane", async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-rec-"));
+    let p: RunningProxy | undefined;
+    try {
+      p = await startProxy(["--record", dir, "--upstream", upstreamUrl], { DEMO_PROXY_ANTHROPIC_API_KEY: OVERRIDE_KEY });
+      seen.length = 0;
+
+      const body = { model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], tools: [{}, {}], stream: true };
+      const res = await messagesRequest(
+        p,
+        { ...API_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219", "user-agent": "claude-cli/2.1.252", "accept-encoding": "gzip, deflate, br, zstd" },
+        body,
+      );
+      expect(res.status).toBe(200);
+      const got = Buffer.from(await res.arrayBuffer());
+      expect(got.toString()).toBe(sseBody("claude-opus-5"));
+      expect(res.headers.get("request-id")).toBe("req_upstream_1");
+
+      // What the upstream saw: the override key, their headers, their body and path.
+      expect(seen).toHaveLength(1);
+      const [up] = seen;
+      expect(up.url).toBe("/v1/messages?beta=true");
+      expect(up.headers["x-api-key"]).toBe(OVERRIDE_KEY);
+      expect(up.headers["anthropic-version"]).toBe("2023-06-01");
+      expect(up.headers["anthropic-beta"]).toBe("claude-code-20250219");
+      expect(up.headers["user-agent"]).toBe("claude-cli/2.1.252");
+      expect(up.headers["accept-encoding"]).toBe("identity");
+      expect(up.headers.authorization).toBeUndefined();
+      expect(JSON.parse(up.body)).toEqual(body);
+
+      // The bearer lane is passthrough: the header reaches the upstream untouched, and no key is invented.
+      const bearer = await messagesRequest(p, BEARER, { model: "claude-opus-5", messages: [{}], stream: true });
+      expect(bearer.status).toBe(200);
+      await bearer.arrayBuffer();
+      expect(seen).toHaveLength(2);
+      expect(seen[1].headers.authorization).toBe("Bearer oauth-token");
+      expect(seen[1].headers["x-api-key"]).toBeUndefined();
+
+      // Saved layout: <lane>/NNN.sse (status, headers, body verbatim) + fingerprints.jsonl.
+      expect(readdirSync(join(dir, "x-api-key"))).toEqual(["001.sse"]);
+      expect(readdirSync(join(dir, "bearer"))).toEqual(["001.sse"]);
+      // Only content-type is written: the upstream's request id and cache-control never enter the file.
+      const savedRaw = readFileSync(join(dir, "x-api-key", "001.sse"));
+      const saved = parseResponseFile(savedRaw);
+      expect(saved.status).toBe(200);
+      expect(saved.headerNames).toEqual(["content-type"]);
+      expect(saved.headers).toEqual({ "content-type": "text/event-stream" });
+      expect(savedRaw.toString()).not.toContain("req_upstream_1");
+      expect(saved.body.equals(got)).toBe(true);
+      const fingerprints = readFileSync(join(dir, "fingerprints.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(fingerprints).toEqual([
+        { lane: "x-api-key", n: 1, model: "claude-opus-5", messages: 1, tools: 2, bodyBytes: JSON.stringify(body).length, stream: true },
+        { lane: "bearer", n: 1, model: "claude-opus-5", messages: 1, tools: 0, bodyBytes: expect.any(Number) as number, stream: true },
+      ]);
+      expect(p.stderr()).toMatch(/record lane=x-api-key n=1 POST \/v1\/messages\?beta=true 200 \d+ms/);
+      expect(p.stderr()).toContain("x-api-key=override");
+      const hello = await fetch(p.url("/api/hello"), { method: "HEAD" });
+      expect(hello.headers.get("x-demo-proxy-mode")).toBe("record");
+      expect(hello.headers.get("x-demo-proxy-cassette")).toBe(basename(dir));
+      expect(await (await fetch(p.url("/api/demo/stats"))).json()).toEqual({ mode: "record", cassette: basename(dir), served: 2, drift: 0, fallback: 0, unused: 0 });
+
+      // Neither the key the CLI sent nor the one that went upstream is in anything the cassette holds.
+      const everything = cassetteBytes(dir);
+      expect(everything).not.toContain(CALLER_KEY);
+      expect(everything).not.toContain(OVERRIDE_KEY);
+      expect(everything).not.toContain("oauth-token");
+
+      // A recorded cassette replays: the same request gets the same bytes back with no drift.
+      await stopProxy(p);
+      p = await startProxy(["--replay", dir]);
+      const replayed = await messagesRequest(p, API_KEY, body);
+      expect(replayed.status).toBe(200);
+      expect(Buffer.from(await replayed.arrayBuffer()).equals(got)).toBe(true);
+      expect(p.stderr()).not.toContain("drift");
+    } finally {
+      await stopProxy(p);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards a chunked request with a content-length and no transfer-encoding", async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-rec-"));
+    let p: RunningProxy | undefined;
+    try {
+      p = await startProxy(["--record", dir, "--upstream", upstreamUrl], { DEMO_PROXY_ANTHROPIC_API_KEY: OVERRIDE_KEY });
+      seen.length = 0;
+      const body = JSON.stringify({ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], stream: true });
+      // node:http with no content-length and a streamed body sends Transfer-Encoding: chunked.
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          { host: "127.0.0.1", port: p!.port, method: "POST", path: "/v1/messages", headers: { "content-type": "application/json", ...API_KEY } },
+          (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode ?? 0));
+          },
+        );
+        req.on("error", reject);
+        req.write(body.slice(0, 10));
+        req.write(body.slice(10));
+        req.end();
+      });
+      expect(status).toBe(200);
+      expect(seen).toHaveLength(1);
+      expect(seen[0].headers["transfer-encoding"]).toBeUndefined();
+      expect(seen[0].headers["content-length"]).toBe(String(Buffer.byteLength(body)));
+      expect(seen[0].body).toBe(body);
+    } finally {
+      await stopProxy(p);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to record over an existing take", async () => {
+    const { code, stderr } = await runUntilExit(["--record", FIXTURE_CASSETTE, "--upstream", upstreamUrl], {
+      DEMO_PROXY_ANTHROPIC_API_KEY: OVERRIDE_KEY,
+    });
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("already holds");
+    expect(existsSync(join(FIXTURE_CASSETTE, "x-api-key", "003.sse"))).toBe(false);
+  });
+});
