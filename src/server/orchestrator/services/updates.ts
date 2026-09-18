@@ -258,7 +258,8 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 
     // A downgrade is not an offered update — `update-notice.ts` computes
     // `available && !isDowngrade` — and its commit list is what you would lose,
-    // which the target's own notes do not describe (docs/309 req 8a).
+    // which the target's own notes do not describe (docs/309 req 8a). Note
+    // `isDowngrade` is currently unreachable for edge → stable: planning#598.
     const releaseNotes = isDowngrade
       ? undefined
       : await resolveReleaseNotes(latestVersion, channel, gitOpts);

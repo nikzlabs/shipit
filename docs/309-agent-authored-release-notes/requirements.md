@@ -36,25 +36,37 @@ requirement is a candidate: it can be struck without argument.
    - 5a. *[agent]* The published body ends with a link to the full commit range,
      so the per-PR detail stays one click away. Introduced by the agent while
      putting req 5 to the user; not separately asked for.
-6. *[agent]* A release cut without a draft still publishes, falling back to
-   today's auto-generated notes. Drafting notes is never a precondition for
-   cutting a release.
+6. *[stated]* **GitHub's auto-generated per-PR list is never published.** The
+   body is always the agent-authored notes. Confirming the release accepts them
+   as they stand — the user does not have to have edited them for them to count
+   as accepted. Drafting notes is therefore a **precondition** for cutting a
+   release, not an optional extra.
 7. *[stated]* The draft is a **file** the user opens and edits in ShipIt's own
    editor — chosen over an editable chat card, for simplicity.
 8. *[stated]* Settings → Update shows the notes for the version it is offering
-   as an update, in place of today's raw commit list. When a version has no
-   notes, the commit list stays.
+   as an update, in place of today's raw commit list. Releases cut *before* this
+   feature carry no notes and keep the commit list; under req 6 no new release
+   can.
    - 8a. A **downgrade** is not a version offered as an update and so is outside
      req 8: `update-notice.ts:86` already computes `available && !isDowngrade`,
      so ShipIt does not classify one as an available update anywhere else
      either. The panel keeps showing which commits the downgrade would drop,
-     which is the only question that arises there.
+     which is the only question that arises there. **This is intent, not
+     observed behaviour** — `isDowngrade` is currently unreachable for an
+     edge → stable switch (planning#598), so in practice the notes *are* shown.
+     The guard is written for the detection once that is fixed.
 9. *[stated]* ShipIt's own `release-branch` flow is the scope. Other repos and
    the `tag-triggered` mechanism keep today's generated notes.
 
 ## Open questions
 
-- (none)
+- **Release candidates.** Req 6 says the generated list is never published, and
+  that is now enforced by refusing to publish without authored notes. An **rc**
+  cannot satisfy it as built: `preparePrerelease` tags an *existing* commit
+  (`release-prepare.ts`), so there is no commit to carry a notes file. So either
+  rc's stop working until they can carry notes, or they keep generated notes as
+  a named gap, or the rc path grows a commit to attach them to. Final releases
+  are unaffected either way and are being implemented now.
 
 ## Resolved questions
 
@@ -83,3 +95,21 @@ requirement is a candidate: it can be struck without argument.
   still applies it. No new decision was needed: ShipIt already excludes a
   downgrade from "an available update" at `update-notice.ts:86`, so req 8 as
   written does not reach it. → req 8a.
+- 2026-09-18 — **Should a release without a draft fall back to the generated
+  notes?** No: *"the today's notes (list of commits) should never be used.
+  Always agent-generated. If the user publishes the release, the agent-generated
+  notes are considered accepted even if the user didn't edit them."* This struck
+  req 6, which was an *[agent]* requirement asserting the opposite — the first
+  invented requirement the provenance markers caught. It inverts the design:
+  notes go from optional-with-fallback to a precondition enforced at
+  `prepare` and again in CI. → req 6, req 8.
+- 2026-09-18 — **"How exactly does it check that stable is behind? stable
+  commits are squashed, 1 per release."** The user was right and the answer
+  above was wrong about the mechanism. `isDowngrade = behindBy === 0`
+  (`updates.ts:250`) assumes the target is an ancestor of HEAD; squash-merged
+  stable commits are never reachable from `main`, so `HEAD..<stable tag>` counts
+  stable's *own* release commits (10 at v0.4.1) and can never be 0. The check is
+  unreachable for edge → stable, and an edge install is offered a release 1327
+  commits behind it as "10 commits behind" with no warning. Filed as
+  planning#598; out of scope here, and req 8a is restated as intent rather than
+  observed behaviour.
