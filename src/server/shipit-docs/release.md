@@ -324,7 +324,6 @@ release:
   version-source-path: packages/api/package.json
   tag-pattern: "v{version}"      # must contain {version}; default: "v{version}"
   prerelease-pattern: "v{version}-rc.{n}"  # {n} auto-increments; default shown
-  notes: github-generated        # accepted and validated, but not yet read by anything
   gate: "npm test"
   workflow: .github/workflows/release.yml
 ```

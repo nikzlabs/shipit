@@ -149,8 +149,12 @@ exception to "write nothing"), `prompts/releases.md`, `RELEASING.md`.
 
 ## Not in scope
 
-`release.notes` in `shipit.yaml` stays validated-but-unread
-(`shipit-config.ts:549-554`); wiring it is a separate question from this one.
+`release.notes` in `shipit.yaml` has since been **removed** rather than wired up:
+it was validated and read by nothing, and the values it advertised
+(`github-generated`) named the behaviour this feature took away. An unknown
+`release.*` key is a warning, not an error, so a config still carrying it keeps
+parsing.
+
 The `tag-triggered` mechanism and other repos keep generated notes (req 9) —
 `prepare` still commits the notes file on the tag path, so extending this is
 later a workflow change alone.

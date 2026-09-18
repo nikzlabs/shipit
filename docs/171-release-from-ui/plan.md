@@ -346,7 +346,6 @@ release:
   version-source: package.json
   tag-pattern: "v{version}"
   prerelease-pattern: "v{version}-rc.{n}"
-  notes: github-generated
   gate: "npm test"
   mechanism: tag-triggered
   workflow: .github/workflows/release.yml

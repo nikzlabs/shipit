@@ -33,7 +33,6 @@ export interface ReleaseConfig {
   branch?: string;
   tagPattern?: string;
   prereleasePattern?: string;
-  notes?: string;
   gate?: string;
   mechanism?: ReleaseMechanism;
   workflow?: string;
@@ -475,7 +474,6 @@ const KNOWN_RELEASE_KEYS = new Set([
   "branch",
   "tag-pattern",
   "prerelease-pattern",
-  "notes",
   "gate",
   "mechanism",
   "workflow",
@@ -544,14 +542,6 @@ function parseReleaseConfig(raw: unknown, warnings: string[]): ReleaseConfig | u
       throw new ShipitConfigError("`release.prerelease-pattern` must be a string");
     }
     result.prereleasePattern = pp;
-  }
-
-  if ("notes" in obj) {
-    const n = obj.notes;
-    if (typeof n !== "string") {
-      throw new ShipitConfigError("`release.notes` must be a string");
-    }
-    result.notes = n;
   }
 
   if ("gate" in obj) {
