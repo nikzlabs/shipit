@@ -11,6 +11,20 @@ const MAX_SCROLL_SETTLE_MS = 1000;
 
 const GESTURE_GRACE_MS = 400;
 
+/**
+ * planning#595 — how long a session goes on being "opening" after its
+ * conversation first renders. See `openUntilRef`.
+ *
+ * Measured rather than picked: in the dogfood instance, over a 900-message
+ * transcript with a 1,094px status card, the layout effect's pin landed at
+ * 79,714 of a real 84,075 and the `content-visibility` groups finished growing
+ * 760ms later. 1.5s clears that with room for a slower machine, and it is short
+ * enough that the reader is still reading rather than acting. Any real gesture
+ * ends the hold at once, so this is the bound on the case where the reader does
+ * nothing at all.
+ */
+const OPENING_HOLD_MS = 1500;
+
 function isNearBottom(container: HTMLElement): boolean {
   const { scrollTop, scrollHeight, clientHeight } = container;
   return scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD_PX;
@@ -72,7 +86,13 @@ function userIsDriving(dragging: { current: boolean }, lastGestureAt: { current:
  * keep correcting until `scrollHeight` has been unchanged for a few frames
  * (bounded by a safety cap so streaming never loops forever).
  */
-function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => boolean): () => void {
+function scheduleScrollToBottom(
+  container: HTMLElement,
+  shouldContinue: () => boolean,
+  // Pins AND records the position as ours, so a `scroll` event reporting it back
+  // is not mistaken for the reader's (see `pinnedTopRef`).
+  pin: () => void,
+): () => void {
   let cancelled = false;
   let lastHeight = -1;
   let stableFrames = 0;
@@ -80,7 +100,7 @@ function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => bo
 
   const tick = () => {
     if (cancelled || !shouldContinue()) return;
-    scrollToBottom(container);
+    pin();
 
     const height = container.scrollHeight;
     if (height === lastHeight) {
@@ -129,6 +149,57 @@ export function useMessageScroll(
 
   const shownSessionRef = useRef<string | null>(sessionId);
 
+  /**
+   * planning#595 — until when is the session still OPENING?
+   *
+   * `Infinity` from a displayed-session change and from mount, since the
+   * loading gap lasts as long as the history does; `OPENING_HOLD_MS` past the
+   * commit that first puts a conversation on screen; `-Infinity` once the
+   * reader has taken the scroll.
+   *
+   * An open needs its own state because landing at the end is not one act: the
+   * layout effect's pin measures a `content-visibility` ESTIMATE of a
+   * conversation that has not painted, and the corrections that close the gap
+   * arrive hundreds of milliseconds later and are individually conditional. A
+   * deadline rather than "the height settled", because a group sits at its
+   * estimate for some frames and then jumps, so a settled height is not
+   * evidence of a finished layout. Numbers and the rest of the rationale:
+   * docs/303-session-status-card/plan.md.
+   *
+   * **One rule ends it: the view is at a position this hook did not write**
+   * (`pinnedTopRef`) — so a scrollbar drag, a PageDown, a wheel and a touch
+   * drag all reach it through the same test, the loading gap included, where a
+   * card taller than the viewport is worth scrolling. A gesture that moves
+   * nothing is not the reader taking the view, which is why the position
+   * decides and the gesture does not.
+   *
+   * A text SELECTION is neither suspended nor cleared here: it stands every
+   * pinning path down during an open as at any other moment. Only the session
+   * switch clears one, because the conversation it was made in has gone.
+   */
+  const openUntilRef = useRef(Infinity);
+  const isOpening = () => now() < openUntilRef.current;
+
+  /**
+   * The scroll position this hook itself last wrote, so a `scroll` event can be
+   * told from the reader's. Read back from the container rather than assumed,
+   * because `scrollTop` is clamped to the scrollable range and is fractional on
+   * a scaled display.
+   *
+   * It is a coordinate, not proof of ownership. The browser moves the view
+   * too — clamping when content shrinks, and scroll anchoring when it grows
+   * above the viewport — and those end the open early. Both normally land at or
+   * near the bottom, where auto-follow stays on and the observer goes on
+   * correcting, so the cost is a shortened hold rather than a stranded view.
+   * Nothing here touches anything but refs and the argument, so the
+   * `[]`-dependency effect may hold the first render's copy.
+   */
+  const pinnedTopRef = useRef(-1);
+  const pin = (container: HTMLElement) => {
+    scrollToBottom(container);
+    pinnedTopRef.current = container.scrollTop;
+  };
+
   // scroll take authoritative control — we must never fight a user's scroll.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -136,6 +207,16 @@ export function useMessageScroll(
     if (!container) return;
 
     const handleScroll = () => {
+      // While the session is opening, a position WE wrote is not news: the pin
+      // lands on an estimated height and the real one arrives frames later, so
+      // reading it back says "scrolled away" about a conversation nobody has
+      // touched — and recording that stands down every path that closes the
+      // gap. A position we did not write is the reader's, wherever it came
+      // from, and it ends the open. This is the only place the open ends.
+      if (isOpening()) {
+        if (container.scrollTop === pinnedTopRef.current) return;
+        openUntilRef.current = -Infinity;
+      }
       const near = isNearBottom(container);
       autoScrollRef.current = near;
 
@@ -147,6 +228,9 @@ export function useMessageScroll(
     // never overridden, and stamp the gesture so the OTHER two auto-scroll paths
 
     const handleManualScroll = () => {
+      // Deliberately does NOT end the open: a gesture that moved nothing is not
+      // the reader taking the view, and the scroll it does produce ends it
+      // through `handleScroll` a moment later. One rule, one place.
       lastGestureAtRef.current = now();
       cancelSettleRef.current?.();
     };
@@ -177,8 +261,17 @@ export function useMessageScroll(
 
     const observer = typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
+          // During the open this is the correction that closes the estimate, so
+          // it answers to the open rather than to flags describing the reader of
+          // a conversation that was not on screen yet. A selection is not one of
+          // those flags: the open clears the ones it may disregard, so any that
+          // is live here was made in the conversation now on screen.
+          if (isOpening()) {
+            if (!hasActiveSelectionInside(container)) pin(container);
+            return;
+          }
           if (userIsDriving(touchDraggingRef, lastGestureAtRef)) return;
-          if (autoScrollRef.current && !hasActiveSelectionInside(container)) scrollToBottom(container);
+          if (autoScrollRef.current && !hasActiveSelectionInside(container)) pin(container);
         })
       : null;
     observer?.observe(container);
@@ -218,6 +311,9 @@ export function useMessageScroll(
      */
     if (shownSessionRef.current !== sessionId) {
       shownSessionRef.current = sessionId;
+      // The open begins here, on the gap's ceiling until the conversation is on
+      // screen to start the real hold.
+      openUntilRef.current = Infinity;
       autoScrollRef.current = true;
       touchDraggingRef.current = false;
       lastGestureAtRef.current = -Infinity;
@@ -238,8 +334,28 @@ export function useMessageScroll(
     const previousMessageCount = previousMessageCountRef.current;
     previousMessageCountRef.current = messages.length;
     const latestMessage = messages[messages.length - 1];
-    const appendedUserMessage = messages.length > previousMessageCount && latestMessage?.role === "user";
+    // `previousMessageCount > 0` is what separates an APPEND from the arrival of
+    // a whole history. Without it, hydrating a conversation whose last row
+    // happens to be a user message reads as "the reader has just sent
+    // something" — and that exception is the strongest one there is: it
+    // overrides the follow flag AND clears the gesture state. So opening a
+    // session that is mid-turn, before its first reply, threw a reader who had
+    // scrolled the loading card back to the end. Found in review of
+    // planning#595; the hydration/append confusion is older.
+    const appendedUserMessage = previousMessageCount > 0
+      && messages.length > previousMessageCount
+      && latestMessage?.role === "user";
 
+    // The open's deadline starts at the commit that first puts a conversation
+    // on screen — not at the switch, since the loading gap lasts as long as the
+    // history takes and none of it is time the reader has had the conversation.
+    if (isOpening() && previousMessageCount === 0 && messages.length > 0) {
+      openUntilRef.current = now() + OPENING_HOLD_MS;
+    }
+
+    // No `opening` term here on purpose: an open begins with `autoScrollRef`
+    // true and the one path that clears it ends the open in the same breath, so
+    // "opening and not following" cannot happen.
     if (!autoScrollRef.current && !appendedUserMessage) return;
 
     if (appendedUserMessage) {
@@ -252,14 +368,20 @@ export function useMessageScroll(
     const container = containerRef.current;
     if (!container) return;
 
-    scrollToBottom(container);
+    pin(container);
     autoScrollRef.current = true;
 
     const cancel = scheduleScrollToBottom(container, () => {
       const latestContainer = containerRef.current;
+      if (latestContainer !== container) return false;
+      // A selection stands this loop down like every other pinning path. It
+      // never did, which is how a loop already running could walk content out
+      // from under a selection made after it started — found in review, and
+      // covered by `useMessageScroll.test.tsx`.
+      if (hasActiveSelectionInside(container)) return false;
       if (userIsDriving(touchDraggingRef, lastGestureAtRef)) return false;
-      return latestContainer === container && autoScrollRef.current;
-    });
+      return autoScrollRef.current;
+    }, () => pin(container));
     cancelSettleRef.current = cancel;
     return () => {
       cancel();

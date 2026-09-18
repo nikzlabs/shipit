@@ -828,6 +828,108 @@ removed on their own and watched fail; the message-count reset and the effect's
 `sessionId` dependency are consistency rather than separately guarded
 behaviour, and the fixture says so.
 
+#### Landing there is not the same as pinning there (planning#595, second report)
+
+The reset above makes the first pin HAPPEN. It does not make it LAND, and the
+report came back: *"I switch to a session, first see the card immediately, and
+then the conversation loads, sometimes scrolling to the top."*
+
+The open is a single pin followed by a chain of **conditional** corrections, and
+the pin itself is wrong when it is made. Measured in the dogfood instance, two
+900-message sessions with a 1,094px card, instrumented per frame:
+
+| Moment | Position / height |
+|---|---|
+| Loading gap, card alone | 501 / 1,126 |
+| Layout effect's pin, rows just committed | 79,714 / 80,339 |
+| After the groups paint | 83,450 / 84,075 |
+
+The pin measures a `content-visibility` **estimate** — every group reports its
+`contain-intrinsic-size` until Chrome renders it — so the effect finishes about
+4,300px above the end, and the corrections arrive 600–760ms later. Everything
+that closes that gap can stand down inside it: the settle loop ends after three
+stable frames or a 1s cap (in several traces `settle-end` is logged *before* the
+correction), the `ResizeObserver` declines for `autoScrollRef`, for a live
+gesture and for a text selection, and a single `scroll` read taken while the
+content is taller than the pin sets `autoScrollRef` false **and** cancels the
+loop. Any one of those firing in that window leaves the reader at the position
+the loading gap left — which, with the whole conversation now rendered beneath
+it, is its top.
+
+So `useMessageScroll` holds an **open**: `openUntilRef`, armed on mount and at
+each displayed-session change, and given a deadline of `OPENING_HOLD_MS` (1.5s,
+over the measured 760ms) at the commit that first puts a conversation on screen.
+It changes exactly two things. `handleScroll` does not record a position the hook
+itself wrote — `pinnedTopRef` — so reading our own pin back against a height that
+has since grown no longer latches auto-follow off and cancels the loop. And the
+`ResizeObserver`, which is the correction that closes the estimate, answers to
+the open rather than to a follow flag describing a conversation that was not on
+screen when it was set.
+
+A deadline rather than "the height stopped moving", because the height stopping
+is what cannot be trusted here: a group sits at its estimate for a few frames and
+then jumps, and an open that ended on that plateau handed the correction straight
+back to the paths it was covering for.
+
+**One rule ends it: the view is at a position the hook did not write.** A
+scrollbar drag, a PageDown, a wheel and a touch drag all reach it through the
+same test, at the moment they take effect — the loading gap included, where the
+card can be taller than the viewport and reading its first paragraph means
+scrolling up. A gesture that moves *nothing* — a momentum tick left over from the
+conversation just left — is not the reader taking the view, which is why the
+position decides and the gesture does not. Two earlier cuts got this wrong in
+both directions: one let a gesture decide the open by a different route from the
+scroll it produced, so the same action decided it differently according to
+delivery order; the other exempted the gap outright and so fought a reader who
+had done nothing but scroll a card.
+
+**Hydration is not an append.** `appendedUserMessage` is the strongest exception
+in the hook — it overrides the follow flag *and* clears gesture state — and it
+read the arrival of a whole history whose last row happens to be the user's as
+"they have just sent something". Opening a session that is mid-turn, before its
+first reply, therefore threw a reader who had scrolled the loading card back to
+the end, on the strength of a message they sent before they opened it. It now
+requires a conversation to have been on screen already. The confusion is older
+than this change; the reader promise above is what made it visible.
+
+**A text selection is never suspended and never cleared here.** It stands every
+pinning path down during an open exactly as at any other moment — the settle
+loop included, which never asked, so a loop already running could walk content
+out from under text selected after it started. That is older than this change and
+is fixed with it. Only the session *switch* clears a selection, and only because
+the conversation it was made in has gone; an earlier cut also cleared one at the
+arrival commit, and review caught that the card a selection is usually in is
+content that stays on screen.
+
+**This is not the card's defect.** With the setting off the gap position is 0 and
+the same failure reads the same way; the card is what makes the gap position
+non-zero, which is why it correlates without being the cause.
+
+Guard: `session-open-settle.test.tsx`, which models `scrollHeight` in two stages
+— placeholder until the transcript is painted, laid-out afterwards — because the
+two stages are the defect. Every part of the change is red on its own under some
+case, here or in `useMessageScroll.test.tsx`; nothing is carried as consistency.
+Both files say what they cannot fail on: deadline expiry and the settle cap,
+which the new fixture's frames never deliberately cross; `CompactLayout`'s
+competing writes, which need row rectangles jsdom has none of; scroll anchoring;
+Chrome's own choice of when a group paints. Four things were written and then
+**removed** for being unfalsifiable — two `CompactLayout` guards (the view is
+short of the bottom only between a growth and the resize that corrects it, and
+those are the same frame), the layout effect's own bypass of a stale gesture and
+the settle loop's (the observer reaches both a frame later), and a `pinnedTopRef`
+reset at the switch that the same effect's pin immediately overwrites. Two
+existing cases in `useMessageScroll.test.tsx` advance the clock past the hold for
+a fixture reason rather than a behavioural one: their geometry is installed after
+mount, so the pin records a 0 that their own "scrolled away" position equals by
+accident.
+
+**And `session-open-scroll.test.tsx`'s own claim narrowed, which its preamble now
+says.** When the first fix shipped, removing the follow flag or either gesture
+ref turned one of its cases red. The observer's opening branch now covers for
+those removals a frame later, so only the selection clearing still fails a case
+there on its own. The resets stay because the open's invariant rests on them: it
+holds only while the follow flag is true across a switch.
+
 ### A card that waits for an answer goes last (req 32)
 
 The status card is not moved for this; the **answer card is lifted out of the
