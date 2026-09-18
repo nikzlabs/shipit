@@ -1,12 +1,24 @@
 import type { WsError } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
-import { dropPredictedQueueEntry } from "../../utils/predicted-queue.js";
+import {
+  dropPredictedQueueEntry,
+  restorePredictedQueueEntries,
+} from "../../utils/predicted-queue.js";
 import type { Handler } from "./types.js";
 
 export const handleError: Handler<WsError> = (_ctx, data) => {
   const session = useSessionStore.getState();
   session.setIsLoading(false);
   session.setActivity(undefined);
+  // An error ends the send a predicted row was waiting on, and MOST refusals
+  // carry no request id to correlate with — an unresolvable attachment, an
+  // absent workspace, a refused agent. Put the message back in the transcript,
+  // above the error, which is where an un-predicted send leaves it. The
+  // untrusted-repo branch below is the one refusal that means the opposite: it
+  // deletes the message, so its row is dropped rather than restored.
+  if (!(data.code === "repository_untrusted" && data.requestId)) {
+    restorePredictedQueueEntries();
+  }
   session.setMessages((prev) => {
     const withoutRejected = data.code === "repository_untrusted" && data.requestId
       ? prev.filter((m) => m.clientRequestId !== data.requestId)

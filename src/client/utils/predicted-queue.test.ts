@@ -4,7 +4,9 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { AgentOption } from "../agent-types.js";
+import { handleError } from "../hooks/message-handlers/error.js";
 import { handleMessageQueued } from "../hooks/message-handlers/message-queued.js";
+import { handleMessageSteered } from "../hooks/message-handlers/message-steered.js";
 import { handleQueueUpdated } from "../hooks/message-handlers/queue-updated.js";
 import { handleSystemUserMessage } from "../hooks/message-handlers/system-user-message.js";
 import type { HandlerContext } from "../hooks/message-handlers/types.js";
@@ -86,6 +88,14 @@ describe("compactRunsBeforeTurn", () => {
     expect(compactRunsBeforeTurn("s1", "/compact tighten it up")).toBe(false);
     expect(compactRunsBeforeTurn("s1", "/goal clear")).toBe(false);
   });
+
+  it("is false while a turn runs — that send is queued or STEERED, not compacted", () => {
+    // Reachable with the offer still standing: a manual `/compact` leaves the
+    // session eligible, so the very next message can be sent mid-turn.
+    offeringCompaction();
+    useSessionStore.setState({ isLoading: true });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
+  });
 });
 
 /**
@@ -166,6 +176,7 @@ describe("a send that a compaction will run ahead of", () => {
 
     handleSystemUserMessage(ctx(), {
       type: "system_user_message",
+      sessionId: "s1",
       text: "next slice",
       clientRequestId: requestId!,
     });
@@ -174,5 +185,74 @@ describe("a send that a compaction will run ahead of", () => {
     expect(useSessionStore.getState().messages).toMatchObject([
       { role: "user", text: "next slice" },
     ]);
+  });
+
+  /**
+   * Most refusals carry no request id — an unresolvable attachment, an absent
+   * workspace, a refused agent all reach `ctx.send({ type: "error" })` with
+   * nothing to correlate on. The row has to go anyway, or it sits above the
+   * composer claiming a message is queued for a turn that will never run.
+   */
+  it("puts the message back above the error when the server refuses it", () => {
+    offeringCompaction();
+    send();
+    handleError(ctx(), { type: "error", message: "That file does not exist" });
+
+    expect(useSessionStore.getState().queuedMessages).toEqual([]);
+    expect(useSessionStore.getState().messages).toMatchObject([
+      { role: "user", text: "next slice" },
+      { role: "assistant", isError: true },
+    ]);
+  });
+
+  it("restores the message once when the server steers it into a running turn", () => {
+    offeringCompaction();
+    send();
+    handleMessageSteered(ctx(), { type: "message_steered", sessionId: "s1", text: "next slice" });
+
+    expect(useSessionStore.getState().queuedMessages).toEqual([]);
+    // Restoring it first is what lets the steer handler's own dedupe recognise
+    // it; without that the transcript would carry the message twice.
+    expect(useSessionStore.getState().messages).toMatchObject([
+      { role: "user", text: "next slice" },
+    ]);
+  });
+
+  /**
+   * `runCompactionAhead` emits `message_queued` before the compaction starts,
+   * and the turn executor then clears the event buffer — so a tab that
+   * reconnects mid-compaction gets the queue SNAPSHOT and never that message.
+   * The snapshot used to replace the predicted row outright, which threw away
+   * the composed bubble before it reached the stash.
+   */
+  it("keeps the composed message when only a queue snapshot confirms the row", () => {
+    offeringCompaction();
+    sendUserTurn({
+      sessionId: "s1",
+      frame: { text: "look at this", sessionId: "s1" },
+      bubble: { role: "user", text: "look at this", uploadPaths: ["/uploads/shot.png"] },
+      activity: "Thinking...",
+      dispatch: () => true,
+    });
+    const c = ctx();
+    handleQueueUpdated(c, {
+      type: "queue_updated",
+      queue: [{ text: "look at this", position: 1 }],
+    });
+    handleQueueUpdated(c, { type: "queue_updated", queue: [], dequeued: "look at this" });
+
+    expect(useSessionStore.getState().messages).toMatchObject([
+      { role: "user", text: "look at this", uploadPaths: ["/uploads/shot.png"] },
+    ]);
+  });
+
+  it("survives a snapshot that predates it rather than being erased by one", () => {
+    offeringCompaction();
+    send();
+    // The server's answer to something else — a cancel, another tab's dequeue —
+    // is not evidence that this send was refused.
+    handleQueueUpdated(ctx(), { type: "queue_updated", queue: [] });
+
+    expect(useSessionStore.getState().queuedMessages).toMatchObject([{ text: "next slice" }]);
   });
 });

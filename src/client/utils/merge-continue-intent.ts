@@ -1,4 +1,5 @@
 import { usePrStore } from "../stores/pr-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { isCompactCommand } from "../../server/shared/compact-command.js";
@@ -78,11 +79,21 @@ export function mergeContinueFrameFields(
  *
  * A `/compact` and a `/goal` are excluded for the reason the optimistic hide in
  * `MessageInput` excludes them: the server skips the whole hook for both.
+ *
+ * **`!isLoading` matters as much as the rest**, and not only because
+ * `showCompactControl` carries it. A send made while a turn runs never reaches
+ * the compaction decision at all: the handler queues it behind the running turn
+ * or — with live steering — feeds it straight into the running process and
+ * answers with `message_steered`, which puts the message in the transcript. A
+ * prediction there would put the same message in the queue strip as well. The
+ * sequence is reachable: a manual `/compact` leaves the session eligible, so
+ * the very next message can be sent mid-turn with the offer still standing.
  */
 export function compactRunsBeforeTurn(sessionId: string | undefined, text: string): boolean {
   if (!sessionId) return false;
   const trimmed = text.trim();
   if (isCompactCommand(trimmed) || isGoalCommand(trimmed)) return false;
+  if (useSessionStore.getState().isLoading) return false;
   if (!usePrStore.getState().resetEligibleBySession[sessionId]) return false;
   if (!useSettingsStore.getState().autoResetMergedBranch) return false;
   const ui = useUiStore.getState();
