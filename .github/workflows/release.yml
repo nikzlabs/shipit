@@ -187,10 +187,11 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
 
-          # Agent-authored notes (docs/309) when the release carries them, else
-          # GitHub's per-PR list. Read from the TAG, not the checkout: a repair
-          # run publishes an older tag while the checkout is a later commit that
-          # can carry different notes for the same version.
+          # A FINAL release never publishes GitHub's generated per-PR list
+          # (docs/309 req 6) — it publishes agent-authored notes or it fails.
+          # Read from the TAG, not the checkout: a repair run publishes an older
+          # tag while the checkout is a later commit that can carry different
+          # notes for the same version.
           NOTES_PATH=".release-notes/${TAG}.md"
           BODY_FILE="$(mktemp)"
           if git show "${TAG}:${NOTES_PATH}" > "$BODY_FILE" 2>/dev/null && [ -s "$BODY_FILE" ]; then
@@ -215,12 +216,22 @@ jobs:
             exit 0
           fi
 
-          echo "No $NOTES_PATH at $TAG — falling back to generated notes."
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --generate-notes \
-            --verify-tag \
-            $PRERELEASE_FLAG
+          # An rc tags an existing commit, so it cannot carry a notes file. That
+          # is the one named gap (docs/309 req 6a): it reaches no install
+          # automatically, so its body is never what anyone reads to decide
+          # whether to update.
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "No $NOTES_PATH at $TAG — prerelease, publishing generated notes."
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              --verify-tag \
+              --prerelease
+            exit 0
+          fi
+
+          echo "::error title=Release $TAG has no notes::A final release never publishes GitHub's generated per-PR list (docs/309). The tag $TAG carries no $NOTES_PATH. Cut releases through 'shipit release prepare', which refuses without notes; a hand-pushed final tag must carry that file on its commit."
+          exit 1
 
   # Final releases forward-port their version to main through a PR.
   sync-main:

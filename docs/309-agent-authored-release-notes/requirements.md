@@ -41,6 +41,12 @@ requirement is a candidate: it can be struck without argument.
    as they stand — the user does not have to have edited them for them to count
    as accepted. Drafting notes is therefore a **precondition** for cutting a
    release, not an optional extra.
+   - 6a. *[stated]* **Release candidates are the one named gap.** An rc tags an
+     existing commit and so cannot carry a notes file; it keeps the generated
+     list. This is recorded, not hidden — an rc reaches no install
+     automatically, so it is never the notes anyone reads to decide whether to
+     update. Every **final** release is covered with no exception, including a
+     hand-pushed final tag.
 7. *[stated]* The draft is a **file** the user opens and edits in ShipIt's own
    editor — chosen over an editable chat card, for simplicity.
 8. *[stated]* Settings → Update shows the notes for the version it is offering
@@ -60,20 +66,7 @@ requirement is a candidate: it can be struck without argument.
 
 ## Open questions
 
-- **Release candidates.** Req 6 says the generated list is never published. An
-  **rc** cannot satisfy it as built: `preparePrerelease` tags an *existing*
-  commit, so there is no commit to carry a notes file. Options: rc's keep
-  generated notes as a named gap; the rc path grows a commit to attach them to;
-  or rc's are blocked. Evidence gathered 2026-09-18, for whoever decides:
-  - An rc never reaches an install. The stable channel resolves the latest
-    **final** tag (`pickLatestFinalTag` skips prereleases) and edge tracks
-    `main`, not tags — `RELEASING.md:188` states it outright. Testers pin the
-    tag by hand, so an rc's body is never read in the update panel, which is
-    what req 8 is about.
-  - **No rc has ever been cut here**: `git tag --list 'v*-*'` is empty across
-    v0.1.0…v0.4.1.
-
-  Final releases are unaffected by the answer.
+- (none)
 
 ## Resolved questions
 
@@ -110,6 +103,13 @@ requirement is a candidate: it can be struck without argument.
   invented requirement the provenance markers caught. It inverts the design:
   notes go from optional-with-fallback to a precondition enforced at
   `prepare` and again in CI. → req 6, req 8.
+- 2026-09-18 — **Under req 6, what happens to release candidates, which cannot
+  carry a notes file?** They keep the generated list, as a named gap. Evidence
+  the user asked for and decided on: an rc reaches no install automatically —
+  the stable channel resolves the latest **final** tag (`pickLatestFinalTag`
+  skips prereleases) and edge tracks `main`, not tags (`RELEASING.md:188`), so
+  testers pin the tag by hand — and **no rc has ever been cut here**
+  (`git tag --list 'v*-*'` is empty across v0.1.0…v0.4.1). → req 6a.
 - 2026-09-18 — **"How exactly does it check that stable is behind? stable
   commits are squashed, 1 per release."** The user was right and the answer
   above was wrong about the mechanism. `isDowngrade = behindBy === 0`

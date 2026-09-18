@@ -23,6 +23,11 @@
 - [x] Req 4 resolved — one action, "confirm release"; no separate acceptance step
 - [x] Req 8a resolved — a downgrade is not an offered update, so req 8 does not reach it
 - [x] Requirements marked *[stated]* vs *[agent]* after the user noted invented requirements
+- [x] Req 6 inverted — no fallback; `prepare` refuses a release with no notes, before any tree rewrite
+- [x] Req 6 — `release.yml` fails a final release with no notes at the tag
+- [x] Req 6a — rc's keep generated notes, the one named gap
+- [x] Refusal guards proven red alone (4 of them)
+- [x] Docs rewritten off the fallback: `prompts/releases.md`, `shipit-docs/release.md`, `RELEASING.md`
 - [ ] Known gap: `checkForUpdates()`'s `releaseNotes` wiring is uncovered — it reads the
       fixed `HOST_REPO_DIR` (`/opt/shipit`), which no test can supply. `resolveReleaseNotes`
       is tested directly instead.

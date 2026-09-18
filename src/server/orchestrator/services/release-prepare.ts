@@ -297,6 +297,26 @@ async function prepareFinalRelease(
     throw new ServiceError(409, wrongBasePrMessage(headBranch, releaseBranch, existing.number, existing.base, false));
   }
 
+  /*
+    A final release never publishes GitHub's generated per-PR list (docs/309
+    req 6), so notes are a precondition rather than an extra. Resolved and
+    enforced here, before the branch is touched: refusing after the checkout
+    would leave the session on a rewritten tree for a fixable mistake.
+
+    Re-running prepare resets this branch to the release branch and rebuilds it,
+    and the draft is gone once a previous run consumed it — so with no draft the
+    notes already on the pushed branch are what the release keeps.
+  */
+  const notesBody = draftNotes ?? (await git.showFileAtRef(`origin/${headBranch}`, notesRelPath(tag)));
+  if (!notesBody?.trim()) {
+    throw new ServiceError(
+      400,
+      `This release has no notes, and a release never publishes GitHub's generated per-PR list. ` +
+        `Write a compact summary of what ${tag} contains to "${NOTES_DRAFT_FILE}" at the repo root, ` +
+        `then re-run. (It is gitignored, so it will not dirty the tree this command checks.)`,
+    );
+  }
+
   let startPoint = `origin/${releaseBranch}`;
   if (!remoteBranches.includes(releaseBranch)) {
     if (!args.bootstrap) {
@@ -370,18 +390,11 @@ async function prepareFinalRelease(
   writeVersionToSource(detected, version);
   const relPath = path.relative(args.dir, detected.path!);
   const lockRel = detected.source === "package.json" ? path.join(path.dirname(relPath), "package-lock.json") : null;
-  /*
-    Re-running prepare for the same version resets this branch to the release
-    branch and rebuilds it, and the draft is gone once a previous run consumed
-    it — so without recovering the notes already on the pushed branch, the retry
-    would replace an accepted release with one that has none.
-  */
-  const notesBody = draftNotes ?? (await git.showFileAtRef(`origin/${headBranch}`, notesRelPath(tag)));
-  const notesRel = notesBody?.trim() ? await writeNotesFile(args.dir, tag, notesBody) : null;
+  const notesRel = await writeNotesFile(args.dir, tag, notesBody);
 
   const message = `Release ${tag}\n\n${BUMP_TRAILER}: ${version}`;
   const commitHash = await git.commitPaths(
-    [relPath, ...(lockRel ? [lockRel] : []), ...(notesRel ? [notesRel] : [])],
+    [relPath, ...(lockRel ? [lockRel] : []), notesRel],
     message,
   );
   if (!commitHash) {

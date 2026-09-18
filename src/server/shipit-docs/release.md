@@ -265,11 +265,12 @@ By default the published GitHub Release body is whatever `gh release create
 tag. To publish something shorter, **write the notes yourself and let the user
 edit them** (docs/309-agent-authored-release-notes).
 
-**First check the repo supports it** — two greps, not assumptions: the release
-workflow must publish `.release-notes/<tag>.md`, and `RELEASE_NOTES.draft.md`
-must be in `.gitignore`. Where either is missing, skip this entirely: a draft the
-workflow ignores is a stray file, and one the ignore rule doesn't cover is
-auto-committed onto the release PR. ShipIt's own repo satisfies both. Then:
+**On a repo set up for it this is required, not optional** — `prepare` and CI
+both refuse a final release without notes. Two greps tell you whether a repo is
+set up: the release workflow must publish `.release-notes/<tag>.md`, and
+`RELEASE_NOTES.draft.md` must be in `.gitignore`. Where either is missing, skip
+this entirely — there a draft is only a stray file. ShipIt's own repo satisfies
+both. Then:
 
 1. **Before you emit the proposal marker** — there is one action, **Confirm &
    publish**, and it accepts the notes as well as the release, so the draft has
@@ -293,9 +294,14 @@ auto-committed onto the release PR. ShipIt's own repo satisfies both. Then:
    `--notes-file`, appending the `**Full Changelog**` link (a supplied body gets
    no link of its own).
 
-No draft ⇒ the release publishes with the generated per-PR list. That is a
-fallback, not a failure: never block a release on notes. The file is
-version-stamped so a release cut without notes can never inherit the previous
+**There is no fallback.** A final release never publishes the generated per-PR
+list: `prepare` refuses a release with no notes (before touching the branch, so
+the fix costs nothing), and CI fails the publish if the tag carries no notes
+file. Write the draft or the release does not go out. **Release candidates are
+the sole exception** — an rc tags an existing commit and so cannot carry a file,
+and it reaches no install automatically, so it keeps generated notes.
+
+The file is version-stamped, so a release can never inherit the previous
 release's text.
 
 The same file is what **Settings → Update** shows as the changelog for a pending

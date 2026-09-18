@@ -44,10 +44,10 @@ verify the ignore rule exists before drafting at all, which is what keeps this
 from reaching a repo that never adopted the flow.
 
 The committed file is **version-stamped**, not a single rolling
-`RELEASE_NOTES.md`. A rolling file lets CI publish the *previous* release's notes
-whenever a release is cut without drafting any; stamping makes that impossible —
-the lookup is for the tag being published, so absence is unambiguous and falls
-back to today's generated notes (req 6).
+`RELEASE_NOTES.md`. A rolling file would let CI publish the *previous* release's
+notes; stamping makes that impossible — the lookup is for the tag being
+published, so absence is unambiguous, and under req 6 absence fails the publish
+rather than falling back.
 
 ## Flow
 
@@ -74,9 +74,15 @@ doc rather than left for the agent to infer.
 ## Changes
 
 **`src/server/orchestrator/services/release-prepare.ts`** — the draft is read
-into memory **before any branch work**, written to `.release-notes/<tag>.md`
-after the bump, added to the commit, and unlinked **only once the PR exists**.
-Three failure cases drove that ordering, all raised by review:
+into memory **before any branch work**, the notes are **resolved and required**
+before the branch is touched, written to `.release-notes/<tag>.md` after the
+bump, added to the commit, and unlinked **only once the PR exists**.
+
+The requirement is a refusal, not a fallback (req 6): with no draft and nothing
+recoverable, `prepare` throws a 400 naming `RELEASE_NOTES.draft.md`. It is
+checked **before** `createBranchFrom` so a fixable omission never costs the
+session a rewritten tree, and CI fails the publish for the same reason on the
+other side. Three further failure cases drove the ordering, all raised by review:
 
 - *Retry.* `prepare` is documented to "open **or update**" the PR, and an update
   resets `release/<version>` to the release branch and rebuilds it. With the
@@ -90,8 +96,9 @@ Three failure cases drove that ordering, all raised by review:
   whether the text survives, which also contains the gap below.
 
 **`.github/workflows/release.yml`** (publish step) — publish with `--notes-file`
-when `.release-notes/<TAG>.md` exists **at the tag**; otherwise keep
-`--generate-notes`. Reading from the tag rather than the checkout is what the
+when `.release-notes/<TAG>.md` exists **at the tag**. With no such file the job
+**fails** for a final release, and keeps `--generate-notes` only for a
+prerelease (req 6a). Reading from the tag rather than the checkout is what the
 **repair path** needs: it republishes an older tag while the checkout is a later
 `stable` commit that can carry different notes for the same version, and
 `resolveReleaseNotes` reads the tag — so a checkout-sourced body would make reqs
