@@ -89,6 +89,19 @@ export async function assessMergeAutoPublish(git: GitManager, branch: string): P
   };
 }
 
+/**
+ * Whether the workflow that will RUN publishes authored notes (docs/309).
+ *
+ * Read from the ref whose tree the release ships, not from the session
+ * checkout: `--from main` merges that branch's workflow onto the release
+ * commit, while `--pick` keeps the maintenance branch's own. Checking the
+ * wrong one lets a hotfix commit notes that the running workflow ignores.
+ */
+export async function workflowPublishesAuthoredNotes(git: GitManager, payloadRef: string): Promise<boolean> {
+  const yamlText = await git.showFileAtRef(payloadRef, WORKFLOW_PATH);
+  return yamlText?.includes(".release-notes/") ?? false;
+}
+
 function buildWarning(branch: string, workflowPresent: boolean): string {
   const cause = workflowPresent
     ? `the \`.github/workflows/release.yml\` on \`${branch}\` has no \`push\` trigger for \`${branch}\` (it's the legacy tag-triggered workflow)`

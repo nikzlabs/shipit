@@ -21,7 +21,9 @@ coding session. Two rules hold for the rest of it:
   in the repo. The post-turn auto-commit commits onto whatever `HEAD` points at
   and the auto-push targets the checked-out branch, so a file written here is
   committed and pushed onto the open release PR — silently changing what
-  merging it ships.
+  merging it ships. **`RELEASE_NOTES.draft.md` is the one exception** (see
+  *Release notes* below): it is gitignored, so the auto-commit cannot reach it
+  and the reason for this rule does not apply.
 
 A release session's only output is the release itself: run the command, report
 what happened, stop. If the user asks for unrelated work mid-release, say why it
@@ -138,7 +140,8 @@ When the user asks to cut/tag/publish a release:
 2. Compute the next [semver](https://semver.org) for the requested bump
    (`patch`/`minor`/`major`, or the explicit version the user named).
 3. Derive the tag: `v{version}` (e.g. `v0.3.0`).
-4. Draft a short notes preview.
+4. Draft a short notes preview, and write the full notes to
+   `RELEASE_NOTES.draft.md` — see *Release notes* below.
 5. **Emit a proposal marker** on its own line, then stop and wait:
 
 ```
@@ -255,6 +258,62 @@ rendered chat — they drive the card.
 | `{"action":"already-released","tag":…}` | Tag already exists | Card → "already released" |
 | `{"action":"cancelled"}` | User cancelled | Card dismissed |
 
+## Release notes
+
+By default the published GitHub Release body is whatever `gh release create
+--generate-notes` produces: one line per merged pull request since the previous
+tag. To publish something shorter, **write the notes yourself and let the user
+edit them** (docs/309-agent-authored-release-notes).
+
+**On a repo set up for it this is required, not optional** — `prepare` and CI
+both refuse a final release without notes. Two greps tell you whether a repo is
+set up: the release workflow must publish `.release-notes/<tag>.md`, and
+`RELEASE_NOTES.draft.md` must be in `.gitignore`. Where either is missing, skip
+this entirely — there a draft is only a stray file. ShipIt's own repo satisfies
+both. Then:
+
+1. **Before you emit the proposal marker** — there is one action, **Confirm &
+   publish**, and it accepts the notes as well as the release, so the draft has
+   to exist and be named in your message by the time the card appears.
+
+   **Summarize what this release ships, which is not `<release-branch>..<source>`.**
+   A squash-merged maintenance branch has release commits unreachable from the
+   source branch, so that range returns everything since the branches diverged,
+   already-released work included. Use the payload instead: for `--from
+   <branch>`, that branch's work since the previous release's point on it; for
+   `--pick`, exactly the picked commits; for `--bootstrap`, the branch as a
+   first release; for `--allow-empty`, say it ships no changes. Say in chat
+   which anchor you used, so the user can tell whether the summary covers the
+   right span. Write it to **`RELEASE_NOTES.draft.md`** at the repo root:
+   grouped highlights in the user's terms, not one line per commit or per PR,
+   which is the thing the generated notes already do.
+2. **Tell the user the draft is there** and that they can edit it before
+   confirming. They open it from the file tree. It is gitignored, so their edit
+   cannot dirty the working tree `prepare` refuses to run against, and it
+   survives the checkout onto the release branch.
+3. `shipit release prepare` commits it as **`.release-notes/<tag>.md`** beside
+   the version bump — so the notes are part of the diff the user merges — and
+   deletes the draft only once the PR exists. Re-running `prepare` for the same
+   version rebuilds the branch from scratch; it recovers the notes already on
+   the pushed release branch, so a retry never silently drops them.
+4. On merge, CI publishes that file **as it exists at the tag** verbatim with
+   `--notes-file`, appending the `**Full Changelog**` link (a supplied body gets
+   no link of its own).
+
+**There is no fallback.** A final release never publishes the generated per-PR
+list: `prepare` refuses a release with no notes (before touching the branch, so
+the fix costs nothing), and CI fails the publish if the tag carries no notes
+file. Write the draft or the release does not go out. **Release candidates are
+the sole exception** — an rc tags an existing commit and so cannot carry a file,
+and it reaches no install automatically, so it keeps generated notes.
+
+The file is version-stamped, so a release can never inherit the previous
+release's text.
+
+The same file is what **Settings → Update** shows as the changelog for a pending
+stable update, in place of its raw commit list — so a compact draft is what the
+user reads in-product as well as on GitHub.
+
 ## Per-repo configuration (shipit.yaml)
 
 ```yaml
@@ -265,7 +324,7 @@ release:
   version-source-path: packages/api/package.json
   tag-pattern: "v{version}"      # must contain {version}; default: "v{version}"
   prerelease-pattern: "v{version}-rc.{n}"  # {n} auto-increments; default shown
-  notes: github-generated        # github-generated | commits | changelog:CHANGELOG.md
+  notes: github-generated        # accepted and validated, but not yet read by anything
   gate: "npm test"
   workflow: .github/workflows/release.yml
 ```

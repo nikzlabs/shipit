@@ -1,4 +1,5 @@
 import path from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { GitManager } from "../../shared/git.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -8,6 +9,7 @@ import type { ReleaseBumpType } from "../../shared/types/release-types.js";
 import type { ReleaseProposeInput } from "../release-status-poller.js";
 import { ServiceError } from "./types.js";
 import { agentCreatePr, findBranchPullRequest } from "./github.js";
+import { workflowPublishesAuthoredNotes } from "../release-autopublish-check.js";
 import {
   computeNextVersion,
   detectAllVersionSources,
@@ -23,6 +25,10 @@ import {
 } from "../release-version.js";
 
 const BUMP_TRAILER = "Shipit-Release-Version";
+
+/** Gitignored (docs/309-agent-authored-release-notes): a tracked draft would trip the clean-tree check the user's edit lands in front of, and would not survive the checkout onto the release branch. */
+export const NOTES_DRAFT_FILE = "RELEASE_NOTES.draft.md";
+export const NOTES_DIR = ".release-notes";
 
 const BUMP_TYPES: ReadonlySet<string> = new Set(["major", "minor", "patch", "prerelease"]);
 
@@ -277,6 +283,7 @@ async function prepareFinalRelease(
   if ((args.pick?.length ?? 0) > 0 && args.from) {
     throw new ServiceError(400, "Pass either --pick (cherry-pick) or --from (merge), not both.");
   }
+  const draftNotes = await readDraftNotes(args.dir);
   if (!(await git.isClean())) {
     throw new ServiceError(409, "The working tree has uncommitted changes — commit or discard them first.");
   }
@@ -290,6 +297,41 @@ async function prepareFinalRelease(
   if (existing?.state === "open" && existing.base !== releaseBranch) {
     throw new ServiceError(409, wrongBasePrMessage(headBranch, releaseBranch, existing.number, existing.base, false));
   }
+
+  /*
+    A release whose workflow publishes authored notes never publishes GitHub's
+    generated per-PR list (docs/309 req 6), so notes are a precondition there
+    rather than an extra. Gated on the workflow the release will actually run,
+    not unconditionally: a repo that never adopted the flow must stay
+    releasable (req 9), and a `--pick` hotfix onto a maintenance branch still
+    carrying the old workflow would otherwise commit notes nothing publishes.
+
+    Enforced before the branch is touched — refusing after the checkout would
+    leave the session on a rewritten tree for a mistake one file fixes.
+
+    Re-running prepare resets this branch to the release branch and rebuilds it,
+    and the draft is gone once a previous run consumed it — so with no draft the
+    notes already on the pushed branch are what the release keeps.
+  */
+  const payloadRef = await resolvePayloadRef(git, args.from, releaseBranch, remoteBranches);
+  const notesPublished = await workflowPublishesAuthoredNotes(git, payloadRef);
+  const notesBody = draftNotes ?? (await git.showFileAtRef(`origin/${headBranch}`, notesRelPath(tag)));
+  if (notesPublished && !notesBody?.trim()) {
+    throw new ServiceError(
+      400,
+      `This release has no notes, and its release workflow publishes authored notes rather than ` +
+        `GitHub's generated per-PR list — so it would fail to publish. Write a compact summary of ` +
+        `what ${tag} contains to "${NOTES_DRAFT_FILE}" at the repo root, then re-run. ` +
+        `(It is gitignored, so it will not dirty the tree this command checks.)`,
+    );
+  }
+  const notesWarning =
+    !notesPublished && notesBody?.trim()
+      ? `⚠ These release notes will NOT be published: the \`.github/workflows/release.yml\` this release ships ` +
+        `(from \`${payloadRef}\`) does not read \`.release-notes/<tag>.md\`, so ${tag} publishes GitHub's ` +
+        `generated per-PR list instead. Bring the notes-aware workflow into the release (e.g. \`--from main\`) ` +
+        `to publish authored notes.`
+      : undefined;
 
   let startPoint = `origin/${releaseBranch}`;
   if (!remoteBranches.includes(releaseBranch)) {
@@ -364,8 +406,13 @@ async function prepareFinalRelease(
   writeVersionToSource(detected, version);
   const relPath = path.relative(args.dir, detected.path!);
   const lockRel = detected.source === "package.json" ? path.join(path.dirname(relPath), "package-lock.json") : null;
+  const notesRel = notesBody?.trim() ? await writeNotesFile(args.dir, tag, notesBody) : null;
+
   const message = `Release ${tag}\n\n${BUMP_TRAILER}: ${version}`;
-  const commitHash = await git.commitPaths(lockRel ? [relPath, lockRel] : [relPath], message);
+  const commitHash = await git.commitPaths(
+    [relPath, ...(lockRel ? [lockRel] : []), ...(notesRel ? [notesRel] : [])],
+    message,
+  );
   if (!commitHash) {
     throw new ServiceError(500, "Version bump produced no commit (the version may already be set).");
   }
@@ -395,8 +442,13 @@ async function prepareFinalRelease(
     throw new ServiceError(409, wrongBasePrMessage(headBranch, releaseBranch, pr.number, pr.baseBranch, true));
   }
 
+  // Last: until the notes are on a pushed branch carrying a live PR, the draft
+  // is the only copy, and every path above can still fail.
+  if (draftNotes && notesRel) await rm(path.join(args.dir, NOTES_DRAFT_FILE), { force: true });
+
   return {
     kind: "pr-opened",
+    ...(notesWarning ? { warning: notesWarning } : {}),
     version,
     tag,
     bumpType,
@@ -489,6 +541,39 @@ function deadReleasePrMessage(
     `The branch "${headBranch}" already has ${state}. The version bump was pushed to "${headBranch}" but has ` +
     `no pull request to carry it, so nothing would publish. ${remedy}`
   );
+}
+
+function notesRelPath(tag: string): string {
+  return path.join(NOTES_DIR, `${tag}.md`);
+}
+
+/** The ref whose tree the release ships — and so whose workflow will run. Mirrors the branch selection below. */
+async function resolvePayloadRef(
+  git: GitManager,
+  from: string | undefined,
+  releaseBranch: string,
+  remoteBranches: string[],
+): Promise<string> {
+  if (from) return remoteBranches.includes(from) ? `origin/${from}` : from;
+  if (remoteBranches.includes(releaseBranch)) return `origin/${releaseBranch}`;
+  return `origin/${await git.getDefaultBranch()}`;
+}
+
+/** Read before any branch work: a checkout must never be what decides whether the user's text survives. */
+async function readDraftNotes(dir: string): Promise<string | null> {
+  try {
+    const body = await readFile(path.join(dir, NOTES_DRAFT_FILE), "utf-8");
+    return body.trim() ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeNotesFile(dir: string, tag: string, body: string): Promise<string> {
+  const rel = notesRelPath(tag);
+  await mkdir(path.join(dir, NOTES_DIR), { recursive: true });
+  await writeFile(path.join(dir, rel), `${body.trimEnd()}\n`, "utf-8");
+  return rel;
 }
 
 function buildPrBody(version: string, tag: string, releaseBranch: string, notes?: string): string {

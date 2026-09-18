@@ -57,6 +57,7 @@ export interface UpdateStatus {
   latestVersion: string;
   isDowngrade: boolean;
   releaseUrl?: string;
+  releaseNotes?: string;
   updateMode: UpdateMode;
   lastUpdateError?: UpdateFailureRecord;
 }
@@ -90,6 +91,29 @@ async function resolveReleaseUrl(
     const parsed = parseGitHubRemote(stdout.trim());
     if (!parsed) return undefined;
     return `https://github.com/${parsed.owner}/${parsed.repo}/releases/tag/${version}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The authored notes a release shipped with (docs/309), read from the tag rather
+ * than fetched from the GitHub Release: same text, no network and no token on
+ * the update-status path. `releaseUrl` remains the route to the published body.
+ */
+export async function resolveReleaseNotes(
+  version: string,
+  channel: ReleaseChannel,
+  gitOpts: { cwd: string; timeout: number },
+): Promise<string | undefined> {
+  if (channel !== "stable" || !/^v\d+\.\d+\.\d+/.test(version)) return undefined;
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      gitArgsWithHooksDisabled(["show", `${version}:.release-notes/${version}.md`]),
+      gitOpts,
+    );
+    return stdout.trim() || undefined;
   } catch {
     return undefined;
   }
@@ -232,6 +256,14 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
     );
     const commitMessages = logOutput.trim().split("\n").filter(Boolean);
 
+    // A downgrade is not an offered update — `update-notice.ts` computes
+    // `available && !isDowngrade` — and its commit list is what you would lose,
+    // which the target's own notes do not describe (docs/309 req 8a). Note
+    // `isDowngrade` is currently unreachable for edge → stable: planning#598.
+    const releaseNotes = isDowngrade
+      ? undefined
+      : await resolveReleaseNotes(latestVersion, channel, gitOpts);
+
     return {
       available: true,
       currentCommit: current,
@@ -243,6 +275,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
       latestVersion,
       isDowngrade,
       releaseUrl,
+      ...(releaseNotes ? { releaseNotes } : {}),
       updateMode: getUpdateMode(),
       lastUpdateError,
     };

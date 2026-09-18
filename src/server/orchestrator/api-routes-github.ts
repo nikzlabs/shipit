@@ -452,7 +452,10 @@ export async function registerGitHubRoutes(
 
         if (result.kind === "pr-opened") {
           const assessment = await assessMergeAutoPublish(git, result.releaseBranch);
-          if (assessment.warning) result.warning = assessment.warning;
+          // prepare may already warn that the notes won't publish (docs/309);
+          // both describe the same merge, so neither may silence the other.
+          const warnings = [result.warning, assessment.warning].filter(Boolean);
+          if (warnings.length > 0) result.warning = warnings.join(" ");
         }
         return result;
       } catch (err) {

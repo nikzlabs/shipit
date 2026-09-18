@@ -27,6 +27,7 @@ interface UpdateStatusResult {
   latestVersion: string;
   isDowngrade: boolean;
   releaseUrl?: string;
+  releaseNotes?: string;
   updateMode?: "managed" | "manual";
 
   lastUpdateError?: {
@@ -256,14 +257,23 @@ export function UpdatePanel() {
                   {updateStatus.behindBy} commit{updateStatus.behindBy === 1 ? "" : "s"} behind
                 </p>
               )}
-              <ul className="mt-1 ml-4 list-disc space-y-0.5 text-xs font-mono text-(--color-text-tertiary)">
-                {updateStatus.commitMessages.slice(0, 10).map((msg, i) => (
-                  <li key={i}>{msg}</li>
-                ))}
-                {updateStatus.commitMessages.length > 10 && (
-                  <li>...and {updateStatus.commitMessages.length - 10} more</li>
-                )}
-              </ul>
+              {updateStatus.releaseNotes ? (
+                <div
+                  data-testid="settings-release-notes"
+                  className="mt-1.5 max-h-56 overflow-y-auto rounded-md bg-(--color-bg-tertiary) p-2 text-xs whitespace-pre-wrap text-(--color-text-secondary)"
+                >
+                  {updateStatus.releaseNotes}
+                </div>
+              ) : (
+                <ul className="mt-1 ml-4 list-disc space-y-0.5 text-xs font-mono text-(--color-text-tertiary)">
+                  {updateStatus.commitMessages.slice(0, 10).map((msg, i) => (
+                    <li key={i}>{msg}</li>
+                  ))}
+                  {updateStatus.commitMessages.length > 10 && (
+                    <li>...and {updateStatus.commitMessages.length - 10} more</li>
+                  )}
+                </ul>
+              )}
               {/* Overflow-only escape hatch — the inline changelog above
                   is the primary affordance (CLAUDE.md §2). */}
               {updateStatus.releaseUrl && (

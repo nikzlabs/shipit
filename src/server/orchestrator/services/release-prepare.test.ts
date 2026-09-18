@@ -23,7 +23,13 @@ interface GitOverrides {
   diffFiles?: number;
   isClean?: boolean;
   stableVersion?: string | null;
+  remoteNotes?: string | null;
+  /** Whether the workflow the release ships reads `.release-notes/` (docs/309). */
+  notesWorkflow?: boolean;
 }
+
+const NOTES_AWARE_WORKFLOW = "on:\n  push:\n    branches: [stable]\njobs:\n  publish:\n    steps:\n      - run: cat .release-notes/$TAG.md\n";
+const LEGACY_WORKFLOW = "on:\n  push:\n    tags: ['v*']\njobs:\n  publish:\n    steps:\n      - run: gh release create --generate-notes\n";
 
 function makeGit(over: GitOverrides = {}) {
   const calls = {
@@ -33,7 +39,7 @@ function makeGit(over: GitOverrides = {}) {
     merge: vi.fn(async () => ({ success: true })),
     mergeOverride: vi.fn(async () => {}),
     createBranchFrom: vi.fn(async () => {}),
-    commitPaths: vi.fn(async () => "deadbeefcafe"),
+    commitPaths: vi.fn(async (_paths: string[], _message: string): Promise<string | null> => "deadbeefcafe"),
     forcePush: vi.fn(async () => ""),
     push: vi.fn(async () => ""),
     fetch: vi.fn(async () => {}),
@@ -44,9 +50,14 @@ function makeGit(over: GitOverrides = {}) {
     tipCommitMessage: vi.fn(async () => null),
     createAndPushTag: vi.fn(async () => {}),
     getHeadHash: vi.fn(async () => "abc123def456"),
-    showFileAtRef: vi.fn(async (_ref: string, _file: string) =>
-      over.stableVersion ? JSON.stringify({ name: "x", version: over.stableVersion }) : null,
-    ),
+    // Three different reads land here — version lookup, notes recovery, and the
+    // workflow probe. A fake answering them alike could not fail on reading the
+    // wrong one.
+    showFileAtRef: vi.fn(async (_ref: string, file: string) => {
+      if (file.startsWith(".release-notes/")) return over.remoteNotes ?? null;
+      if (file.endsWith("release.yml")) return over.notesWorkflow === false ? LEGACY_WORKFLOW : NOTES_AWARE_WORKFLOW;
+      return over.stableVersion ? JSON.stringify({ name: "x", version: over.stableVersion }) : null;
+    }),
   };
   return { git: calls as unknown as GitManager, calls };
 }
@@ -71,6 +82,9 @@ beforeEach(() => {
   });
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-prepare-"));
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "x", version: "0.2.0" }, null, 2));
+  // A release without notes is refused (docs/309 req 6), so every other case
+  // needs one present to reach the behaviour it is about.
+  fs.writeFileSync(path.join(dir, "RELEASE_NOTES.draft.md"), "## Notes\n");
 });
 
 afterEach(() => {
@@ -513,5 +527,147 @@ describe("buildPlanProposeInput (docs/214 — plan-route propose options)", () =
     const input = buildPlanProposeInput({ ...basePlan, bumpType: "explicit" }, "release-branch");
     expect(input).not.toHaveProperty("bumpType");
     expect(input.mechanism).toBe("release-branch");
+  });
+});
+
+describe("prepareRelease — authored release notes (docs/309)", () => {
+  const draft = () => path.join(dir, "RELEASE_NOTES.draft.md");
+  const published = () => path.join(dir, ".release-notes", "v0.2.1.md");
+
+  it("commits the user's draft as the tag's notes file and removes the draft", async () => {
+    fs.writeFileSync(draft(), "## Highlights\n\nPreviews reconnect on their own.\n");
+    const { git, calls } = makeGit({ diffFiles: 4 });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(fs.readFileSync(published(), "utf-8")).toBe("## Highlights\n\nPreviews reconnect on their own.\n");
+    expect(calls.commitPaths.mock.calls[0]![0]).toContain(path.join(".release-notes", "v0.2.1.md"));
+    expect(fs.existsSync(draft())).toBe(false);
+  });
+
+  it("refuses a release with no notes rather than publishing the generated list", async () => {
+    fs.rmSync(draft());
+    const { git, calls } = makeGit({ diffFiles: 4 });
+
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+
+    expect(calls.commitPaths).not.toHaveBeenCalled();
+    expect(agentCreatePrMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses before rewriting the tree, so a fixable mistake costs no checkout", async () => {
+    fs.rmSync(draft());
+    const { git, calls } = makeGit({ diffFiles: 4 });
+    const onTreeRewrite = vi.fn();
+
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main", onTreeRewrite }),
+    ).rejects.toThrow(/no notes/i);
+
+    expect(calls.createBranchFrom).not.toHaveBeenCalled();
+    expect(calls.mergeOverride).not.toHaveBeenCalled();
+    expect(onTreeRewrite).not.toHaveBeenCalled();
+  });
+
+  it("names the draft file in the refusal, so the fix is one write away", async () => {
+    fs.rmSync(draft());
+    const { git } = makeGit({ diffFiles: 4 });
+
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
+    ).rejects.toThrow(/RELEASE_NOTES\.draft\.md/);
+  });
+
+  it("treats a whitespace-only draft as no draft", async () => {
+    fs.writeFileSync(draft(), "   \n\n");
+    const { git, calls } = makeGit({ diffFiles: 4 });
+
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+
+    expect(calls.commitPaths).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft when the commit does not land, so the user's text is not lost", async () => {
+    fs.writeFileSync(draft(), "## Highlights\n");
+    const { git, calls } = makeGit({ diffFiles: 4 });
+    calls.commitPaths.mockResolvedValue(null);
+
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
+    ).rejects.toMatchObject({ statusCode: 500 });
+
+    expect(calls.commitPaths.mock.calls[0]![0]).toContain(path.join(".release-notes", "v0.2.1.md"));
+    expect(fs.existsSync(draft())).toBe(true);
+  });
+
+  it("keeps the draft when the push fails, so a retry still has the text", async () => {
+    fs.writeFileSync(draft(), "## Highlights\n");
+    const { git, calls } = makeGit({ diffFiles: 4 });
+    calls.forcePush.mockRejectedValue(new Error("network"));
+
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
+    ).rejects.toThrow(/network/);
+
+    expect(fs.existsSync(draft())).toBe(true);
+  });
+
+  it("recovers the notes already on the release branch when re-run without a draft", async () => {
+    fs.rmSync(draft());
+    const { git, calls } = makeGit({ diffFiles: 4, remoteNotes: "## Highlights\n\nFrom the first run.\n" });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/release/0.2.1", path.join(".release-notes", "v0.2.1.md"));
+    expect(fs.readFileSync(published(), "utf-8")).toBe("## Highlights\n\nFrom the first run.\n");
+    expect(calls.commitPaths.mock.calls[0]![0]).toContain(path.join(".release-notes", "v0.2.1.md"));
+  });
+
+  it("does not gate a repo whose release workflow publishes generated notes", async () => {
+    fs.rmSync(draft());
+    const { git, calls } = makeGit({ diffFiles: 4, notesWorkflow: false });
+
+    const res = await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(res.kind).toBe("pr-opened");
+    expect(calls.commitPaths.mock.calls[0]![0]).toEqual(["package.json", "package-lock.json"]);
+  });
+
+  it("warns when notes were written but the workflow the release ships ignores them", async () => {
+    const { git } = makeGit({ diffFiles: 4, notesWorkflow: false });
+
+    const res = await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(res).toMatchObject({ kind: "pr-opened" });
+    expect((res as { warning?: string }).warning).toMatch(/will NOT be published/i);
+  });
+
+  it("probes the workflow on the ref the release ships, not the maintenance branch", async () => {
+    const { git, calls } = makeGit({ diffFiles: 4 });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/main", ".github/workflows/release.yml");
+  });
+
+  it("probes the maintenance branch's workflow for a --pick hotfix, which keeps that tree", async () => {
+    const { git, calls } = makeGit({ commitsAhead: 1 });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", pick: ["abc123"] });
+
+    expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/stable", ".github/workflows/release.yml");
+  });
+
+  it("prefers a fresh draft over the notes already on the release branch", async () => {
+    fs.writeFileSync(draft(), "## Rewritten\n");
+    const { git } = makeGit({ diffFiles: 4, remoteNotes: "## Stale\n" });
+
+    await prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" });
+
+    expect(fs.readFileSync(published(), "utf-8")).toBe("## Rewritten\n");
   });
 });
