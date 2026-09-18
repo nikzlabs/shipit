@@ -114,6 +114,61 @@ on this host) and the candidate redesign. The store-upper copy-up itself
 (`index.db`, ~0.7 MB here / ~48 KB for a tiny repo, 1.3% of the store for this
 workload) is bounded and not the issue; the `node_modules` copy is.
 
+## Result: share the tree, not the store — works on ext4
+
+After req 12 (ext4 must be supported) ruled the store-in-overlay shape out, the
+candidate redesign in plan.md section 5 was spiked by
+[`tree-overlay-spike.sh`](./tree-overlay-spike.sh) on the same host (ext4): a
+`node_modules` produced by one trusted install is the overlay **lowerdir**
+mounted at each session's `<project>/node_modules` (the docs/183 topology);
+each session has its own package.json + lockfile and a **private, empty pnpm
+store** at the same container path the base was built with. **PASS=12
+FAIL=0**, hard-asserted, on a base of 7,395 files / 78.6 MB (8 top-level deps,
+no install scripts — see below).
+
+| Cell | Result |
+|---|---|
+| base-hit `pnpm install --offline --frozen-lockfile` over the lower, empty private store | **rc=0** ("resolution step is skipped"); private store untouched (0 files); upper **8 KB** |
+| `pnpm add left-pad` against the empty private store, copy import | rc=0; package real in the session; went through the private store (32 files); upper +229 KB (the package plus pnpm's rewritten lock/modules metadata); **base byte-unchanged** |
+| edit a file inside a base package (req 11) | only that file copies up (+569 KB for a 544 KB file); base byte-unchanged |
+| second session over the same base | rc=0; sees neither the added package nor the edit; upper 8 KB |
+
+Read against the requirements, on ext4 with no reflink:
+
+- **Req 10:** a base-hit session pays **8 KB**, not the 58.6 MB copy of the
+  store-in-overlay shape. Not today's 0 B hardlink either, but the same order.
+  Only a session that adds a package pays, and only for that package.
+- **Req 1 / 4 / 6 / 11:** there is no shared writable store, so H2/H3/H4 have no
+  cross-session path; a session's add or edit is real for it and invisible to
+  the next session; the base is never written.
+- **Req 9:** the agent runs `pnpm install` / `pnpm add` itself, against its
+  private store.
+- **Req 7:** a base-hit install imports nothing (pnpm reports the tree up to
+  date in a few milliseconds), so it is faster than today's hardlink install,
+  not slower. Not separately timed.
+
+Two details the wiring must respect, both found here:
+
+- **The private store must sit at the same container path the base was built
+  with.** pnpm records `storeDir` in `node_modules/.modules.yaml` and refuses
+  another (`ERR_PNPM_UNEXPECTED_STORE`). ShipIt already fixes that path
+  (`/workspace/.pnpm-store`); each session's container maps it to its own host
+  directory. Verified: an empty private store at the recorded path is accepted.
+- **Packages with install scripts make pnpm 12 exit 1 even on a no-op install**
+  — `Ignored build scripts: esbuild@0.21.5`, `help: Run "pnpm approve-builds"`.
+  Measured on a vite-carrying base: the base build itself exits 1, and so does
+  the no-op install over the lower. This is pnpm's default, independent of the
+  overlay; the project's `pnpm approve-builds` / `onlyBuiltDependencies`
+  settles it. The spike uses a scriptless dependency set so rc is a clean
+  signal. Note for verify-and-admit: `pendingBuilds` / `ignoredBuilds` in
+  `.modules.yaml` are part of the base's state.
+
+What it does **not** establish: the base here is a fixture from one pnpm
+install, not the content-verified base. Verify-and-admit applied to the tree
+(every file under `node_modules/.pnpm/<pkg>/` hashing to its manifest digest)
+and the publish of a session's verified additions into a new base generation
+are the remaining orchestrator-side steps, shared with planning#599.
+
 ## Finding: offline resolution needs metadata separate from the store
 
 pnpm keeps **resolution metadata** (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`,

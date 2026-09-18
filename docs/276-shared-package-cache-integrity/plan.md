@@ -298,11 +298,26 @@ under `node_modules/.pnpm/<pkg>/` must hash to the package's manifest digest
 before admission, the planning#599 shape. This meets req 10 on ext4 with no
 reflink. docs/183 excluded pnpm because a store hardlink cannot cross the
 overlay; with a private store and copy import for new packages only, that
-exclusion no longer applies. The trade: the pnpm store's cross-**repo** dedup is
-lost, so sharing becomes per-repo as npm's is — an open question in
-requirements.md, since req 2 says keep sharing what is shared today. To spike:
-pnpm treats a lowerdir-provided `node_modules` as up to date, and an incremental
-`pnpm add` works against an empty private store.
+exclusion no longer applies. The trade — the pnpm store's cross-**repo** dedup
+is lost, so sharing becomes per-repo as npm's is — was accepted by the requester
+on 2026-09-18 (req 13). **Spiked 2026-09-18, and it works**
+([`tree-overlay-spike.sh`](./tree-overlay-spike.sh), [FINDINGS.md](./FINDINGS.md),
+PASS=12, ext4): pnpm accepts the lowerdir tree as up to date with an empty
+private store ("resolution step is skipped", store untouched, upper **8 KB**);
+`pnpm add` works against the private store with copy import and lands only that
+package (+229 KB) in the upper; an edit inside a base package copies up only
+that file; a second session over the same base sees neither; the base is
+byte-unchanged throughout. So on ext4 a base-hit session pays 8 KB instead of a
+58.6 MB copy, and no shared writable store exists. Two wiring details it found:
+the private store must sit at the same container path the base was built with
+(pnpm records `storeDir` in `node_modules/.modules.yaml` and refuses another;
+ShipIt already fixes `/workspace/.pnpm-store`, so each session's container maps
+that path to its own host directory); and pnpm 12 exits 1 on an "Ignored build
+scripts" notice even for a no-op install — pnpm's default and the project's
+`approve-builds` concern, independent of the overlay. What remains is the
+orchestrator side: verify-and-admit applied to the tree (shared with
+planning#599), and publishing a session's verified additions as a new base
+generation.
 
 One thing the store overlay does **not** cover: pnpm keeps resolution metadata
 (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`, separate from the store, so an offline
@@ -331,12 +346,11 @@ verify-and-admit lifecycle above is the same fix for it. Filed as
 3. **The H2/H4 fix, redesigned for ext4 (section 5).** The store-in-overlay
    shape is measured as not viable on ext4, and req 12 rules reflink out of
    scope, so the candidate is to share a verified `node_modules` base per
-   (repo, runtime) via overlay and keep the pnpm store private per session.
-   Gating the build: the requester's answer on cross-repo store dedup
-   (requirements.md, open question); then the spike that pnpm accepts a
-   lowerdir-provided tree and an incremental add against a private store; then
-   the verify-and-admit lifecycle applied to the tree (shared with
-   planning#599).
+   (repo, runtime) via overlay and keep the pnpm store private per session
+   (cross-repo dedup given up, req 13). The spike passed (PASS=12,
+   FINDINGS.md). Gating the build: the verify-and-admit lifecycle applied to
+   the tree (shared with planning#599), and the publish of a session's
+   verified additions as a new base generation.
 4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
    pnpm store is safe against H3 and H4 (req 8).
 

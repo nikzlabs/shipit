@@ -83,17 +83,12 @@ project on the instance.
     other filesystems (reflink on btrfs / XFS) are out of scope. *(Requester,
     2026-09-18.)*
 
+13. Package sharing between sessions MUST hold within a repo. Sharing across
+    repos is not required. *(Requester, 2026-09-18.)*
+
 ## Open questions
 
-- The store-in-overlay fix cannot meet req 10 on ext4 (measured, FINDINGS.md),
-  and the candidate redesign (plan.md section 5) shares a verified
-  `node_modules` base per (repo, runtime) with a **private** per-session pnpm
-  store. That drops the pnpm store's cross-**repo** dedup — today it is shared
-  per runtime across every pnpm repo on the instance — so sharing becomes
-  per-repo, as npm's already is. Req 2 says sessions keep sharing what they
-  share today. Is losing cross-repo pnpm store dedup acceptable?
-  *Recommendation: yes — that cross-repo reach is what made H2/H4 worse-scoped
-  than H1, and req 10's savings hold within a repo.*
+None.
 
 ## Resolved questions
 
@@ -132,3 +127,7 @@ project on the instance.
   most likely have ext4. If there are optimizations for other file systems,
   they are out of scope of this effort."* Recorded as req 12. Consequence: the
   store-in-overlay design is not viable as written (plan.md section 5).
+- 2026-09-18 — Asked whether losing the pnpm store's cross-repo dedup is
+  acceptable (the ext4 redesign makes the store private per session, so sharing
+  becomes per-repo as npm's is): **"Yes, per-repo sharing is fine."** Recorded
+  as req 13; it qualifies req 2's "what they share today" for the pnpm store.

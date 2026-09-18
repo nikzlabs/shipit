@@ -64,13 +64,18 @@ recorded in [requirements.md](./requirements.md); none is open.
       why it cannot be rescued: `fs.protected_hardlinks=1` denies a session a
       hardlink to any file it cannot write, and a hardlink to an overlay lower
       copies the data up. The reflink re-measure is dropped.
-- [ ] Get the requester's answer on cross-repo pnpm store dedup (requirements.md
-      open question) — the candidate redesign shares a verified `node_modules`
-      base per (repo, runtime) and makes the store private per session.
-- [ ] Spike the redesign on the services host: pnpm treats a lowerdir-provided
-      `node_modules` as up to date (no import, no store access), and an
-      incremental `pnpm add` works against an empty private store with copy
-      import; measure the base-hit upper (expect ~4 KB) and the new-package cost.
+- [x] Requester's answer on cross-repo pnpm store dedup (2026-09-18): per-repo
+      sharing is fine. Recorded as req 13; the share-the-tree redesign is
+      unblocked.
+- [x] Spike the redesign (`tree-overlay-spike.sh`, services host, ext4,
+      2026-09-18, PASS=12): pnpm treats the lowerdir tree as up to date with an
+      empty private store (rc=0, store untouched, upper 8 KB); `pnpm add` works
+      against the private store (+229 KB upper, base byte-unchanged); an edit
+      copies up only that file; a second session sees neither. Two wiring
+      notes: the private store must sit at the base's recorded container path
+      (`.modules.yaml` `storeDir`), and pnpm 12 exits 1 on an "Ignored build
+      scripts" notice even for a no-op install (pnpm's default, the project's
+      `approve-builds` concern).
 - [ ] Rework verify-and-admit for the tree: every file under
       `node_modules/.pnpm/<pkg>/` hashes to the package's manifest digest before
       admission (the planning#599 shape). The store-entry version is superseded.
