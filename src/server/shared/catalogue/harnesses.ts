@@ -111,9 +111,7 @@ export const HARNESSES = [
     // Native service does not imply account login support; unshaped spawns cannot authenticate.
     nativeService: "opencode",
     // OpenCode appends /messages; its adapter adds /v1 to Anthropic catalogue URLs.
-    // Responses leads: resolveStyle takes the first match, and a GPT model that
-    // offers both shapes must use the one Codex uses (docs/310 req 8).
-    styles: ["openai-responses", "openai-chat-completions", "anthropic-messages"],
+    styles: ["openai-chat-completions", "anthropic-messages", "openai-responses"],
     spawn: {
       credential: {
         string: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY", styles: ["openai-chat-completions", "anthropic-messages", "openai-responses"] },

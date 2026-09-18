@@ -35,11 +35,19 @@ requirement and belongs in `plan.md`.
 7. Where a GPT model genuinely cannot run on OpenCode, ShipIt does not offer
    it, and the reason is recorded.
 8. On OpenCode, a GPT model reachable by more than one request shape uses the
-   same shape Codex uses, rather than the older one.
+   same shape Codex uses, rather than the older one. **Not yet delivered** —
+   see the open question below.
 
 ## Open questions
 
-- (none)
+- Req 8 has no lever that hits only GPT models. Both global orderings were
+  measured and both carry collateral the user did not ask for: preferring
+  Responses on the OpenCode harness moved 12 unrelated gateway combinations and
+  re-pointed a retired DeepSeek model's successor to a different vendor's model;
+  preferring each model row's own declared order instead moved 22 gateway rows
+  onto Anthropic Messages. Delivering req 8 therefore needs a per-row
+  preference, which is new mechanism. Is that worth building now, or is req 8
+  worth dropping given GPT models already reach OpenCode without it?
 
 ## Resolved questions
 

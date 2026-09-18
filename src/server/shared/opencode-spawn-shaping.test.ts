@@ -81,13 +81,12 @@ describe("opencodeProviderConfig", () => {
     expect(opencodeProviderConfig({ ...ROUTING, style: "gemini-generate-content" }, "gemini-3-pro")).toBeUndefined();
   });
 
+  // Uses a style that IS supported, so only the credential branch can refuse;
+  // with openai-responses the result would be undefined either way.
   it("refuses a credential the spawn cannot carry as an env var", () => {
-    expect(
-      opencodeProviderConfig(
-        { ...ROUTING, style: "openai-responses", credentialTarget: { kind: "config-file", path: "auth.json", pointer: "/key" } },
-        "gpt-6-astra",
-      ),
-    ).toBeUndefined();
+    const target = { kind: "config-file", path: "auth.json", pointer: "/key" } as const;
+    expect(opencodeProviderConfig({ ...ROUTING, credentialTarget: target }, "claude-haiku-4-5")).toBeUndefined();
+    expect(opencodeProviderConfig(ROUTING, "claude-haiku-4-5")).toBeDefined();
   });
 
   // @ai-sdk/openai is the package that posts to <base>/responses; the

@@ -139,7 +139,15 @@ export function modelIdentityFor(selection: ModelSelection): ModelIdentity | und
   return { canonicalModelKey: model.canonicalModelKey, family: model.family };
 }
 
-// Harness style order is a preference order.
+/**
+ * Harness style order is a preference order.
+ *
+ * It is global per harness, so it cannot express "GPT prefers Responses" on its
+ * own: measured on docs/310, leading OpenCode's list with Responses moved 12
+ * unrelated gateway combinations and re-pointed a retired-model successor
+ * cross-vendor, while preferring the model row's own order instead moved 22
+ * gateway rows onto Anthropic Messages. A per-row preference is what that needs.
+ */
 export function resolveStyle(harnessId: AgentId, model: ModelDef, via?: "account" | "string"): ApiStyle | undefined {
   const harness = getHarness(harnessId);
   if (!harness || (model.harnesses && !model.harnesses.includes(harnessId))) return undefined;

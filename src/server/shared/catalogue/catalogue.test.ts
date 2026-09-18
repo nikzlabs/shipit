@@ -1436,15 +1436,21 @@ describe("per-model image input (planning#460)", () => {
 
 
 // Which ChatGPT models OpenCode may carry is pinned to OpenCode's own filter
-// in opencode-subscription-models.test.ts; this covers the style it picks.
-it("prefers Responses over Chat Completions for OpenCode wherever both are offered", () => {
+// in opencode-subscription-models.test.ts.
+it("reaches a Responses-only model on OpenCode without moving a dual-shape one", () => {
+  const astra = getModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-6-astra" })!;
+  expect(astra.styles).toEqual(["openai-responses"]);
+  expect(resolveStyle("opencode", astra, "string")).toBe("openai-responses");
+
+  // docs/310: widening the credential target must not re-point a model that
+  // already resolved to another shape. Measured collateral of doing so was 12
+  // gateway combinations plus a cross-vendor retirement successor.
   const dualShape = catalogueEntriesForHarness("opencode").filter(
-    e => e.model.styles.includes("openai-responses") && e.model.styles.includes("openai-chat-completions"),
+    e => e.model.styles.includes("openai-responses") && e.model.styles.length > 1,
   );
   expect(dualShape.length).toBeGreaterThan(0);
   for (const entry of dualShape) {
-    const via = entry.mode.credentials[0]?.via;
-    expect([entry.model.id, resolveStyle("opencode", entry.model, via)]).toEqual([
+    expect([entry.model.id, resolveStyle("opencode", entry.model, entry.mode.credentials[0]?.via)]).not.toEqual([
       entry.model.id,
       "openai-responses",
     ]);
