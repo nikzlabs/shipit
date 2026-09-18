@@ -67,11 +67,14 @@ echo "control        rc=$crc  probe=$cbytes  (expect rc=0 present)"
 # cell asserts the INSTALLED BYTES, not just rc, and does not assume timing.
 H2="$SCRATCH/h2"; warm "$H2"
 ino=$(stat -c %i "$H2/proj/$PROBE_REL"); e=$(find "$H2/store" -inum "$ino" | head -1); s=$(stat -c %s "$e")
-cp "$e" "$H2/ref"
+mt0=$(stat -c %Y "$e")
+cp -p "$e" "$H2/ref"                       # -p keeps the ORIGINAL mtime on the copy
 python3 -c "open('$e','wb').write(b'POISON'+b'x'*($s-6))"; touch -r "$H2/ref" "$e"
+mt1=$(stat -c %Y "$e")
+[ "$mt0" = "$mt1" ] && mtkept=yes || mtkept=NO   # deliberate preservation, not timing luck
 rm -rf "$H2/proj/node_modules"; offline_install "$H2"; h2rc=$?
 grep -q POISON "$H2/proj/$PROBE_REL" 2>/dev/null && h2poison=INSTALLED || h2poison=absent
-echo "h2 mtime-kept  rc=$h2rc  poison=$h2poison  (mtime preserved -> poison INSTALLED; bump mtime >=1s -> fails closed)"
+echo "h2 mtime-kept  rc=$h2rc  poison=$h2poison  mtime-preserved=$mtkept  (kept -> poison INSTALLED; bump mtime >=1s -> fails closed)"
 
 # --- h4: rewrite the manifest to point at attacker content at a valid hash ---
 H4="$SCRATCH/h4"; warm "$H4"

@@ -121,15 +121,22 @@ for it and invisible to everyone else. docs/198's 464 MB-per-session objection
 applies only to sessions that change their dependencies; sessions that use the
 base's tree pay 4 KB.
 
-**This table is now backed by a committed harness.**
-[`store-overlay-spike.sh`](./store-overlay-spike.sh), run on a Docker host
-2026-09-18 ([FINDINGS.md](./FINDINGS.md)), measured the store-poisoning row with
-a control (attacker A poisons through its upper, victim B installs clean over
-the shared base, and the no-overlay control poisons B) and the installing-session
-disk and time: a base-hit install adds ~48 KB to a session's upper, a
-new-package install ~114 KB, and the store-on-overlay install matched the
-plain-store control within noise (0.35 s vs 0.36 s). So req 10 holds for an
-installing session, not only for a reader.
+**The store-poisoning row is now backed by a committed harness**
+([`store-overlay-spike.sh`](./store-overlay-spike.sh), Docker host 2026-09-18,
+[FINDINGS.md](./FINDINGS.md), PASS=13): attacker A poisons through its upper (H4
+and H2, each with its own no-overlay control that poisons the victim), and
+victim B installs clean over the shared base — clean asserted by the installed
+file's digest equalling the original, not merely "no marker". The other rows
+here (reading a base, a dependency edit staying private, the 63 MB add) are
+**not** reproduced by that harness. **The disk/time numbers do not establish req
+7 or req 10.** The store-upper copy-up is small (~48 KB base-hit, ~114 KB
+new-package), but every install also copies a fresh `node_modules` (~54 KB even
+for the unchanged set), which the store lowerdir does not share; req 10 is about
+total per-session **allocated** disk versus today's hardlink topology, not
+measured here (`du` reports apparent bytes). The timing (0.31 s overlay vs 0.35 s
+plain) is incremental overlay overhead with **both sides copying**, not the
+hardlink→copy transition. Both remain the req-10 ext4 gate below and an open
+req-7 measurement.
 
 Two constraints for implementation:
 
@@ -208,8 +215,11 @@ publications and verifies nothing about content). The lifecycle:
   it, and confirmed each blob hashes to its name. Nothing a session wrote is
   ever copied into the base unverified.
 - **Sessions install into their private upper (req 9), and read the base.** A
-  base-hit install copies nothing; a new package lands in the upper, real for
-  that session and invisible to others.
+  base-hit install copies no package *content* into the store (only the
+  `index.db` copy-up, ~48 KB measured); a new package's blobs land in the upper,
+  real for that session and invisible to others. Note the `node_modules` tree is
+  copied per session regardless (`package-import-method=copy`), separate from the
+  store.
 - **Publish = verify-and-admit, automatic.** After a session's install, the
   orchestrator reads the new entries from that session's upper, verifies each as
   above, and admits the verified ones to the base as a new generation. That
@@ -231,20 +241,23 @@ publications and verifies nothing about content). The lifecycle:
   per publish and the janitor reaps unreferenced ones.
 
 **Measured 2026-09-18 ([FINDINGS.md](./FINDINGS.md),
-[`store-overlay-spike.sh`](./store-overlay-spike.sh)).** With a warmed store as
-the overlay lowerdir, the H4 manifest rewrite and the H2 mtime-kept byte poison
-run through attacker session A stayed in A's private upper: the base `index.db`
-was byte-unchanged and victim session B installed clean, while the same attack
-with **no overlay** (shared bind) poisoned B — the copy-up isolation is the
-mitigation, measured with a control, not asserted. `index.db` is **1.3%** of the
-store at a realistic scale (659 KB on a 51 MB, 2 168-file store), so its
-whole-file copy-up on a session's first store write is bounded. An installing
-session's cost is small: ~48 KB added to the upper for a base-hit install, ~114
-KB for a new-package install, and a store-on-overlay install matched the
-plain-store control within noise (req 7, req 10). Two concurrent installs over
-one base into two uppers both succeeded — the store lock holds across a base and
-an upper. It cannot run in a session container (no Docker socket); it ran on the
-services host.
+[`store-overlay-spike.sh`](./store-overlay-spike.sh), PASS=13).** With a warmed
+store as the overlay lowerdir — a **fixture** standing in for the verified base,
+not the proposed verification — the H4 manifest rewrite and the H2 mtime-kept
+byte poison run through attacker session A stayed in A's private upper: the base
+`index.db` was byte-unchanged and victim session B installed clean (asserted by
+the installed digest matching the original), while the same attack with **no
+overlay** (shared bind) poisoned B. H4 and H2 each have their own control, so
+the copy-up isolation is measured, not asserted. `index.db` is **1.3% of the
+store for this workload** (659 KB on a 51 MB, 2 168-file store); a per-runtime
+index grows across repos, so measure its absolute copy-up at ShipIt's scale
+rather than treating 1.3% as a bound. What is **not** established: req 7 (the
+timing has no hardlink baseline — both sides copy) and req 10 (every install
+also copies a `node_modules` the store does not share, and disk was apparent not
+allocated bytes). The concurrency cell shows two installs into **separate**
+uppers do not error; with per-session uppers there is no shared writable index,
+so it is not a shared-lock-correctness test. It ran on the services host; it
+cannot run in a session container (no Docker socket).
 
 One thing the store overlay does **not** cover: pnpm keeps resolution metadata
 (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`, separate from the store, so an offline
@@ -272,10 +285,11 @@ verify-and-admit lifecycle above is the same fix for it. Filed as
    deliberately.
 3. **The pnpm store inside an overlay with a content-verified base (section
    5)** — the load-bearing step for H2/H4. The lifecycle is designed and the
-   overlay mechanism is measured (FINDINGS.md: attack isolation with a control,
-   bounded `index.db` copy-up, no material install slowdown). What still gates
-   building it is the verify-and-admit publish spike (the orchestrator side),
-   not the kernel mechanism.
+   overlay copy-up **mechanism** is measured (FINDINGS.md: H4 and H2 isolation,
+   each with a poisoning control). Still gating the build: the verify-and-admit
+   publish spike (the orchestrator side), plus the req-7 and req-10 measurements
+   the mechanism harness does not settle — a hardlink-baseline install timing,
+   and total per-session **allocated** disk including the copied `node_modules`.
 4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
    pnpm store is safe against H3 and H4 (req 8).
 

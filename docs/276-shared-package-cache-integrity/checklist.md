@@ -45,21 +45,28 @@ recorded in [requirements.md](./requirements.md); none is open.
       and what a verification failure does: drop the entry from the base, keep
       it private to the session, and surface it — never fail the session's own
       install (req 9).
-- [x] Measure store-in-overlay for real via Docker-mounted overlays
+- [x] Measure the store-in-overlay attack ISOLATION via Docker-mounted overlays
       (`store-overlay-spike.sh`, [FINDINGS.md](./FINDINGS.md), services host
-      2026-09-18). H4 + H2 through session A stayed in A's upper; base
-      `index.db` byte-unchanged; victim B installed clean; the no-overlay
-      shared-bind control poisoned B. The overlay copy-up is the mitigation,
-      measured with a control.
-- [x] Measure the install-time disk and time (req 7, req 10) with the store on
-      an overlay. `index.db` is 1.3% of the store at scale (whole-file copy-up
-      bounded); base-hit install adds ~48 KB to the upper, a new-package install
-      ~114 KB; store-on-overlay install matched the plain control within noise;
-      two concurrent installs over one base held the store lock (rc 0/0).
+      2026-09-18, PASS=13). H4 and H2 each in its own cell through session A
+      stayed in A's upper; base `index.db` byte-unchanged; victim B installed
+      clean (asserted by digest); each attack's own no-overlay control poisoned
+      B. The harness hard-asserts attack success and mandatory control poisoning,
+      so a no-op attack cannot read as a pass.
+- [ ] Establish req 7 with a real baseline: time repeated representative installs
+      on the overlay store against **today's hardlink** installs, not against a
+      plain-store copy install. The mechanism harness times overlay-copy vs
+      plain-copy only (0.31 s vs 0.35 s, single-shot) — incremental overlay
+      overhead, not the hardlink→copy transition.
+- [ ] Establish req 10 in **allocated** blocks, not `du` apparent bytes, and
+      include the per-session copied `node_modules` (~54 KB base-hit, measured)
+      which the store lowerdir does not share, plus retained base generations.
+      The store-upper copy-up alone (~48 KB base-hit / ~114 KB new-package,
+      `index.db` 1.3% of store for one workload) is not the whole per-session cost.
 - [ ] Record the metadata-cache dependency in the wiring: an offline install
-      needs `XDG_CACHE_HOME/pnpm` (resolution metadata, separate from the store)
-      or a committed lockfile. The store overlay alone does not make cross-session
-      offline installs resolve; the metadata cache is a separate surface and, if
+      needs resolution metadata (`XDG_CACHE_HOME/pnpm`, separate from the store)
+      — a shared or privately-seeded cache, a lockfile carrying the resolution,
+      or an online fetch. The store overlay alone does not make cross-session
+      offline installs resolve; that metadata is a separate surface and, if
       shared writable, its own integrity question (req 6 class).
 - [ ] Set `verify-store-integrity=true` explicitly (ShipIt sets neither pnpm
       value today), but treat it as necessary, not sufficient — it trusts the

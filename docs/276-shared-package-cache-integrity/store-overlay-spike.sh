@@ -4,48 +4,41 @@
 #   over a shared read-only base, isolate a store-index attack between sessions,
 #   and at what disk/time cost?
 #
-# This is the Docker-mounted measurement plan.md section 5 and the checklist
-# leave open. It CANNOT run in a session container (no Docker socket); run it on
-# a host with the Docker daemon (the "services" host). It needs only Docker; the
-# node and python toolchains come from images. Every host-filesystem access is
-# routed through a container, because the store files are written as root inside
-# the containers and the invoking user cannot read them under the volume path.
+# Run on a host with the Docker daemon (the "services" host); it CANNOT run in a
+# session container (no Docker socket). Needs only Docker; the node+python
+# toolchain comes from a baked image. Cleans up its volumes on exit.
 #
-# Model of production (docs/276 plan.md section 5):
-#   - The verified base = a warmed pnpm store, used as the overlay LOWERDIR.
-#   - Each session mounts base + its own UPPER/WORK, so every store write
-#     (index.db manifest or a content blob) copies up into that session's upper
-#     by the kernel copy-up contract, and the base stays immutable.
+# Every cell HARD-ASSERTS the facts it depends on and exits non-zero on any
+# failure, so a silently no-op attack, a failed control, or a failed install
+# cannot read as a pass:
+#   - an attack must report the change it claims (H4: >=1 manifest row; H2:
+#     mtime preserved on the poisoned blob);
+#   - "clean" means the installed file's sha512 EQUALS the original blob's
+#     digest, not merely "readable and lacking a marker";
+#   - "poison" means the marker is present AND the digest differs;
+#   - the no-overlay shared-bind control MUST poison the victim (fail, not warn);
+#   - H2 and H4 each get their own overlay cell and their own bind control.
 #
-# What it proves / measures:
-#   A. Attack isolation. Attacker session A runs H4 (index.db manifest rewrite)
-#      and H2 (mtime-preserved byte poison) against the store. Victim session B,
-#      same base + its own upper, installs the package offline with
-#      verify-store-integrity=true and must get CLEAN bytes. A shared-bind
-#      control (no overlay) must get POISONED — attack real, overlay the fix.
-#   B. Disk (req 7, req 10). Copy-up in A's upper after the attack; B's upper
-#      after a base-hit install and a new-package install; index.db fraction.
-#   C. Time (req 7). Base-hit overlay install vs a plain install.
-#   D. Store lock. Two concurrent installs over one base into two uppers.
+# What it measures (see FINDINGS.md for the numbers and their limits):
+#   - store-upper copy-up (index.db + any poisoned blob), NOT the copied
+#     node_modules tree, which is reported separately and is the req-10 cost;
+#   - base-hit vs new-package install cost;
+#   - incremental overlay overhead vs a plain-store COPY install (this is NOT
+#     the transition from today's hardlink installs — both sides copy here).
 #
 # Usage: ./store-overlay-spike.sh
 set -uo pipefail
 
-# One image with pnpm (baked, so containers don't re-download it and pollute
-# stdout) plus python3 (sqlite3 is in its stdlib) for the store attacks.
 IMG="pnpm-spike:local"
 build_img(){ docker image inspect "$IMG" >/dev/null 2>&1 && return
   docker build -q -t "$IMG" - >/dev/null <<'DOCKER'
 FROM node:22-bookworm-slim
-RUN corepack enable && corepack prepare pnpm@12.4.2 --activate
+RUN npm i -g pnpm@12.4.2 && pnpm --version
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 DOCKER
 }
-NODE_IMG="$IMG"
-PY_IMG="$IMG"
 CE="-e COREPACK_ENABLE_DOWNLOAD_PROMPT=0"
-PKG_SPEC="is-odd@3.0.1"
-NEW_SPEC="left-pad@1.3.0"
+PKG_SPEC="is-odd@3.0.1"; NEW_SPEC="left-pad@1.3.0"
 PKG_NAME="${PKG_SPEC%@*}"; PKG_VER="${PKG_SPEC#*@}"
 PROBE_REL="node_modules/.pnpm/$PKG_NAME@$PKG_VER/node_modules/$PKG_NAME/index.js"
 SCALE_PKGS='"express":"4.21.2","lodash":"4.17.21","react":"18.3.1","chalk":"5.3.0","typescript":"5.6.3","vite":"5.4.11","zod":"3.23.8","axios":"1.7.9"'
@@ -56,21 +49,26 @@ warn(){ echo -e "    \033[33m$1\033[0m"; }
 hdr(){ echo -e "\n\033[1m$1\033[0m"; }
 PASS=0; FAIL=0
 pass(){ ok "$1"; PASS=$((PASS+1)); }
-fail(){ bad "$1"; FAIL=$((FAIL+1)); }
+fail(){ bad "FAIL: $1"; FAIL=$((FAIL+1)); }
 
 command -v docker >/dev/null || { echo "docker CLI not found"; exit 2; }
 docker info >/dev/null 2>&1 || { echo "docker daemon not reachable"; exit 2; }
 
 VOL="pv-store"
-ALL_OVL="pv-ovlA pv-ovlB pv-ovlN pv-ovlT pv-ovlP pv-ovlQ"
+ALL_OVL="pv-a4 pv-b4 pv-a2 pv-b2 pv-n pv-t pv-p pv-q"
 cleanup(){ docker volume rm $ALL_OVL >/dev/null 2>&1 || true; docker volume rm "$VOL" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 cleanup
 docker volume create "$VOL" >/dev/null
 MP="$(docker volume inspect -f '{{.Mountpoint}}' "$VOL")"
+# host-fs ops (measurement, not a "session") run as root in a container on /mp
+mp(){ docker run --rm -v "$MP":/mp "$IMG" bash -c "$1"; }
 
-# every host-fs op runs as root in a container that mounts the work root at /mp
-mp(){ docker run --rm -v "$MP":/mp "$NODE_IMG" bash -c "$1"; }
+# pnpm keeps resolution metadata in XDG_CACHE_HOME/pnpm, SEPARATE from the
+# store; a fresh session cannot resolve offline without it. Sessions here get
+# ONLY that cache dir (not the whole backing dir), so a session cannot see the
+# base or other uppers except through its own /store overlay.
+CACHE_MOUNT() { echo "-v $MP/cache:/cache -e XDG_CACHE_HOME=/cache"; }
 
 hdr "0. Environment"
 build_img
@@ -78,23 +76,16 @@ echo "    docker $(docker version -f '{{.Server.Version}}')  driver $(docker inf
 echo "    image $IMG  pnpm $(docker run --rm $IMG pnpm --version)"
 echo "    work root (ext4): $MP"
 
-# pnpm keeps resolution metadata in XDG_CACHE_HOME/pnpm, separate from the
-# store; a fresh container has none, so offline resolution fails unless that
-# cache is shared. We share it on the volume at /mp/cache. (Finding recorded in
-# FINDINGS.md: offline install cross-session needs the metadata cache OR a
-# committed lockfile, not the store alone.) Installs also mount /mp for it.
-XDG="-e XDG_CACHE_HOME=/mp/cache"
-warm_base(){ docker run --rm $CE $XDG -v "$MP":/mp "$NODE_IMG" bash -c "
+warm_base(){ docker run --rm $CE -e XDG_CACHE_HOME=/mp/cache -v "$MP":/mp "$IMG" bash -c "
   set -e; mkdir -p /tmp/pw && cd /tmp/pw
   printf '{\"name\":\"w\",\"version\":\"1.0.0\",\"dependencies\":{$1}}' > package.json
   pnpm --store-dir /mp/$2 install --silent >/mp/$2.warm.log 2>&1"; }
 
-hdr "1. Warm the verified base store (lowerdir)"
+hdr "1. Warm the base store (lowerdir) — a WARMED FIXTURE, not the proposed verified base"
 warm_base "\"$PKG_NAME\":\"$PKG_VER\"" "base-store" && pass "base store warmed with $PKG_SPEC" \
   || { fail "warm failed"; mp 'tail -5 /mp/base-store.warm.log'; exit 1; }
-# Map the probe file to its store blob by CONTENT hash (== the blob's name);
-# installs copy cross-fs here so inode identity does not hold, but content does.
-read PROBE_HASH PROBE_SIZE < <(docker run --rm $CE $XDG -v "$MP":/mp "$NODE_IMG" bash -c "
+# original CLEAN digest, learned by content hash (== the store blob's name)
+read PROBE_HASH PROBE_SIZE < <(docker run --rm $CE $(CACHE_MOUNT) -v "$MP":/mp "$IMG" bash -c "
   set -e; mkdir -p /tmp/pj && cd /tmp/pj
   printf '{\"name\":\"j\",\"dependencies\":{\"$PKG_NAME\":\"$PKG_VER\"}}' > package.json
   pnpm --store-dir /mp/base-store --offline install --silent >/tmp/pj.log 2>&1
@@ -102,10 +93,10 @@ read PROBE_HASH PROBE_SIZE < <(docker run --rm $CE $XDG -v "$MP":/mp "$NODE_IMG"
   test -f /mp/base-store/v11/files/\${h:0:2}/\${h:2} && echo \"\$h \$(stat -c %s \"\$P\")\"" | tail -1)
 BASE_STORE_SZ=$(mp 'du -sb /mp/base-store' | cut -f1)
 BASE_IDX_SZ=$(mp 'stat -c %s "$(find /mp/base-store -name index.db)"')
-BASE_IDX_SUM=$(mp 'sha256sum "$(find /mp/base-store -name index.db)"' | cut -d' ' -f1)
-echo "    probe hash ${PROBE_HASH:0:16}…  size ${PROBE_SIZE:-?}B"
-echo "    base store ${BASE_STORE_SZ}B  index.db ${BASE_IDX_SZ}B  sum ${BASE_IDX_SUM:0:12}…"
-[ -n "$PROBE_HASH" ] && pass "probe file located by inode in the base store" || { fail "probe hash empty"; exit 1; }
+base_idx_sum(){ mp 'sha256sum "$(find /mp/base-store -name index.db)"' | cut -d' ' -f1; }
+BASE_IDX_SUM=$(base_idx_sum)
+echo "    clean probe digest ${PROBE_HASH:0:16}…  size ${PROBE_SIZE:-?}B  base ${BASE_STORE_SZ}B  index.db ${BASE_IDX_SZ}B"
+[ -n "$PROBE_HASH" ] || { fail "probe hash empty"; exit 1; }
 
 cat > /tmp/attack.py <<'PY'
 import sys, os, hashlib, sqlite3
@@ -125,102 +116,109 @@ if mode=="h4":
         if oldhash.encode() in data:
             nd=data.replace(oldhash.encode(),newhash.encode()); assert len(nd)==len(data)
             cur.execute("update package_index set data=? where key=?",(nd,key)); hit+=1
-    con.commit(); con.close(); print("h4 rows rewritten:",hit)
+    con.commit(); con.close(); print("ROWS=%d"%hit)
 elif mode=="h2":
-    st=os.stat(oldpath); poison=(b"POISON"+b"x"*max(0,osize-6))[:osize]
-    open(oldpath,"wb").write(poison); os.utime(oldpath,(st.st_atime,st.st_mtime)); print("h2 bytes poisoned, mtime kept")
+    st=os.stat(oldpath); old=int(st.st_mtime)          # copy-up preserves lower mtime
+    poison=(b"POISON"+b"x"*max(0,osize-6))[:osize]
+    open(oldpath,"wb").write(poison)                    # triggers copy-up; bumps mtime to now
+    os.utime(oldpath,(st.st_atime,st.st_mtime))         # restore -> defeats the mtime fast path
+    new=int(os.stat(oldpath).st_mtime)
+    print("MT_OLD=%d MT_NEW=%d"%(old,new))
 PY
-docker run --rm -v "$MP":/mp -v /tmp/attack.py:/attack.py "$PY_IMG" cp /attack.py /mp/attack.py
+mp 'true'; docker run --rm -v "$MP":/mp -v /tmp/attack.py:/attack.py "$IMG" cp /attack.py /mp/attack.py
 
-attack(){ docker run --rm -v "$1":/store -v "$MP/attack.py":/attack.py "$PY_IMG" bash -c "python3 /attack.py $2 $PROBE_HASH $PROBE_SIZE"; }
-victim_install(){
-  local out rc
-  out=$(docker run --rm $CE $XDG -v "$MP":/mp -v "$1":/store "$NODE_IMG" bash -c "
-    mkdir -p /tmp/v && cd /tmp/v
-    printf '{\"name\":\"v\",\"dependencies\":{\"${2%@*}\":\"${2#*@}\"}}' > package.json
-    pnpm --store-dir /store --offline --config.verify-store-integrity=true install --silent >/tmp/i.log 2>&1; echo RC=\$?
-    if   grep -q PWNED /tmp/v/$PROBE_REL 2>/dev/null; then echo B=poison
-    elif grep -q POISON /tmp/v/$PROBE_REL 2>/dev/null; then echo B=poison
-    elif head -c 20 /tmp/v/$PROBE_REL >/dev/null 2>&1; then echo B=clean
-    else echo B=absent; fi" 2>&1)
-  rc=$(echo "$out" | sed -n 's/^RC=//p' | head -1)
-  echo "rc=${rc:-?} bytes=$(echo "$out" | sed -n 's/^B=//p' | head -1)"
-}
+attack(){ docker run --rm -v "$1":/store -v "$MP/attack.py":/attack.py "$IMG" bash -c "python3 /attack.py $2 $PROBE_HASH $PROBE_SIZE"; }
+# prints: RC=<n> DIG=<sha512|-> NM=<bytes> PM=<PWNED|POISON|none>
+victim(){ docker run --rm $CE $(CACHE_MOUNT) -v "$1":/store "$IMG" bash -c "
+  mkdir -p /tmp/v && cd /tmp/v
+  printf '{\"name\":\"v\",\"dependencies\":{\"$PKG_NAME\":\"$PKG_VER\"}}' > package.json
+  pnpm --store-dir /store --offline --config.verify-store-integrity=true install --silent >/tmp/i.log 2>&1; rc=\$?
+  P=/tmp/v/$PROBE_REL; dig=\$(sha512sum \"\$P\" 2>/dev/null | cut -d' ' -f1); nm=\$(du -sb /tmp/v/node_modules 2>/dev/null | cut -f1)
+  if grep -q PWNED \"\$P\" 2>/dev/null; then pm=PWNED; elif grep -q POISON \"\$P\" 2>/dev/null; then pm=POISON; else pm=none; fi
+  echo RC=\$rc DIG=\${dig:--} NM=\${nm:-0} PM=\$pm" 2>&1 | tail -1; }
+field(){ echo "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
 make_ovl(){ docker volume rm "$1" >/dev/null 2>&1 || true; docker volume create "$1" --driver local --opt type=overlay --opt device=overlay --opt "o=lowerdir=$2,upperdir=$3,workdir=$4" >/dev/null; }
+# clean iff install succeeded AND the installed digest equals the original
+assert_clean(){ local r="$1" who="$2"; [ "$(field "$r" RC)" = 0 ] && [ "$(field "$r" DIG)" = "$PROBE_HASH" ] && [ "$(field "$r" PM)" = none ] \
+  && pass "$who installed CLEAN (rc=0, digest matches original)" || fail "$who not clean: $r"; }
+assert_poison(){ local r="$1" who="$2"; { [ "$(field "$r" PM)" = PWNED ] || [ "$(field "$r" PM)" = POISON ]; } && [ "$(field "$r" DIG)" != "$PROBE_HASH" ] \
+  && pass "$who got POISON (marker present, digest differs) — attack real, overlay is the mitigation" || fail "$who NOT poisoned (control must poison): $r"; }
 
-hdr "2. Overlay isolation — attack through A's upper, install through B's upper"
-mp 'mkdir -p /mp/A-up /mp/A-wk /mp/B-up /mp/B-wk'
-make_ovl pv-ovlA "$MP/base-store" "$MP/A-up" "$MP/A-wk"
-make_ovl pv-ovlB "$MP/base-store" "$MP/B-up" "$MP/B-wk"
-echo "    H4 via A: $(attack pv-ovlA h4)"
-echo "    H2 via A: $(attack pv-ovlA h2)"
-NOW_IDX_SUM=$(mp 'sha256sum "$(find /mp/base-store -name index.db)"' | cut -d' ' -f1)
-[ "$NOW_IDX_SUM" = "$BASE_IDX_SUM" ] && pass "base index.db BYTE-UNCHANGED after both attacks (copy-up hit A's upper)" \
-  || fail "base index.db changed ($NOW_IDX_SUM) — copy-up did NOT protect the base"
-[ -n "$(mp 'find /mp/A-up -name index.db')" ] && pass "A's index.db write landed in A's private upper" || warn "no index.db in A's upper"
-res=$(victim_install pv-ovlB "$PKG_SPEC"); echo "    victim B ($res)"
-echo "$res" | grep -q "bytes=clean" && pass "victim B installed CLEAN over the shared base (overlay isolated A's attack)" \
-  || fail "victim B did not get clean bytes: $res"
+hdr "2. H4 isolation — manifest rewrite through A's upper vs B's upper"
+mp 'mkdir -p /mp/a4-up /mp/a4-wk /mp/b4-up /mp/b4-wk'
+make_ovl pv-a4 "$MP/base-store" "$MP/a4-up" "$MP/a4-wk"; make_ovl pv-b4 "$MP/base-store" "$MP/b4-up" "$MP/b4-wk"
+a=$(attack pv-a4 h4); echo "    attack A: $a"
+[ "$(field "$a" ROWS)" -ge 1 ] 2>/dev/null && pass "H4 rewrote $(field "$a" ROWS) manifest row(s)" || { fail "H4 attack did not rewrite a manifest row: $a"; }
+[ "$(base_idx_sum)" = "$BASE_IDX_SUM" ] && pass "base index.db BYTE-UNCHANGED (copy-up hit A's upper)" || fail "base index.db changed"
+[ -n "$(mp 'find /mp/a4-up -name index.db')" ] && pass "A's rewritten index.db is in A's private upper" || fail "no index.db in A's upper — attack did not copy up"
+r=$(victim pv-b4); echo "    victim B: $r"; assert_clean "$r" "victim B (H4, own upper)"
 
-hdr "3. Shared-bind control — same attack, NO overlay, must poison B"
-warm_base "\"$PKG_NAME\":\"$PKG_VER\"" "bind-store" >/dev/null 2>&1
-echo "    H4 via bind: $(attack "$MP/bind-store" h4)"
-resb=$(victim_install "$MP/bind-store" "$PKG_SPEC"); echo "    victim B on shared bind ($resb)"
-echo "$resb" | grep -q "bytes=poison" && pass "shared bind: B got POISON — attack real; overlay is the mitigation" \
-  || warn "shared-bind control did not poison ($resb) — re-check"
+hdr "3. H4 shared-bind control — same attack, NO overlay, must poison B"
+warm_base "\"$PKG_NAME\":\"$PKG_VER\"" "bind4" >/dev/null 2>&1
+a=$(attack "$MP/bind4" h4); echo "    attack bind: $a"
+[ "$(field "$a" ROWS)" -ge 1 ] 2>/dev/null && pass "H4 rewrote the manifest on the shared bind" || fail "H4 bind attack no-op: $a"
+r=$(victim "$MP/bind4"); echo "    victim on bind: $r"; assert_poison "$r" "victim (H4, shared bind)"
 
-hdr "4. Disk — copy-up cost (req 7, req 10)"
-A_UP_SZ=$(mp 'du -sb /mp/A-up' | cut -f1)
-B_UP_SZ=$(mp 'du -sb /mp/B-up' | cut -f1)
-mp 'mkdir -p /mp/N-up /mp/N-wk'; make_ovl pv-ovlN "$MP/base-store" "$MP/N-up" "$MP/N-wk"
-docker run --rm $CE $XDG -v "$MP":/mp -v pv-ovlN:/store "$NODE_IMG" bash -c "
+hdr "4. H2 isolation — mtime-preserved byte poison, own cell + own control"
+mp 'mkdir -p /mp/a2-up /mp/a2-wk /mp/b2-up /mp/b2-wk'
+make_ovl pv-a2 "$MP/base-store" "$MP/a2-up" "$MP/a2-wk"; make_ovl pv-b2 "$MP/base-store" "$MP/b2-up" "$MP/b2-wk"
+a=$(attack pv-a2 h2); echo "    attack A: $a"
+mo=$(field "$a" MT_OLD); mn=$(field "$a" MT_NEW)
+{ [ -n "$mo" ] && [ "$mo" = "$mn" ]; } && pass "H2 preserved the blob mtime ($mo == $mn) — defeats the fast path" || fail "H2 did not preserve mtime ($mo vs $mn)"
+[ "$(base_idx_sum)" = "$BASE_IDX_SUM" ] && pass "base index.db still byte-unchanged after H2" || fail "base index.db changed under H2"
+r=$(victim pv-b2); echo "    victim B: $r"; assert_clean "$r" "victim B (H2, own upper)"
+warm_base "\"$PKG_NAME\":\"$PKG_VER\"" "bind2" >/dev/null 2>&1
+a=$(attack "$MP/bind2" h2); echo "    attack bind: $a"
+mo=$(field "$a" MT_OLD); mn=$(field "$a" MT_NEW); { [ -n "$mo" ] && [ "$mo" = "$mn" ]; } && pass "H2 bind attack preserved mtime" || fail "H2 bind attack mtime not preserved: $a"
+r=$(victim "$MP/bind2"); echo "    victim on bind: $r"; assert_poison "$r" "victim (H2, shared bind)"
+
+hdr "5. Disk — store-upper copy-up AND the copied node_modules (req 7, req 10)"
+A_UP_SZ=$(mp 'du -sb /mp/a4-up' | cut -f1)
+rb=$(victim pv-b4); B_NM=$(field "$rb" NM); B_UP_SZ=$(mp 'du -sb /mp/b4-up' | cut -f1)
+mp 'mkdir -p /mp/n-up /mp/n-wk'; make_ovl pv-n "$MP/base-store" "$MP/n-up" "$MP/n-wk"
+rn=$(docker run --rm $CE $(CACHE_MOUNT) -v pv-n:/store "$IMG" bash -c "
   mkdir -p /tmp/n && cd /tmp/n; printf '{\"name\":\"n\",\"dependencies\":{\"${NEW_SPEC%@*}\":\"${NEW_SPEC#*@}\"}}' > package.json
-  pnpm --store-dir /store install --silent >/dev/null 2>&1" || true
-N_UP_SZ=$(mp 'du -sb /mp/N-up' | cut -f1)
+  pnpm --store-dir /store install --silent >/dev/null 2>&1; echo NM=\$(du -sb /tmp/n/node_modules 2>/dev/null | cut -f1)" 2>&1 | tail -1)
+N_UP_SZ=$(mp 'du -sb /mp/n-up' | cut -f1); N_NM=$(field "$rn" NM)
 pct=$(awk "BEGIN{printf \"%.1f\", $BASE_IDX_SZ*100/$BASE_STORE_SZ}")
-printf "    %-42s %s\n" "base store total" "${BASE_STORE_SZ} B"
-printf "    %-42s %s (%s%% of store)\n" "index.db" "${BASE_IDX_SZ} B" "$pct"
-printf "    %-42s %s\n" "A upper after H4+H2 attack" "${A_UP_SZ} B"
-printf "    %-42s %s\n" "B upper after base-hit install" "${B_UP_SZ} B"
-printf "    %-42s %s\n" "fresh upper after NEW-package install" "${N_UP_SZ} B"
+warn "du -sb is APPARENT bytes, not allocated blocks; node_modules is copied per session (package-import-method=copy) and is NOT shared by the store lowerdir."
+printf "    %-46s %s\n" "base store total" "${BASE_STORE_SZ} B  (index.db ${BASE_IDX_SZ} B = ${pct}%)"
+printf "    %-46s %s\n" "A store-upper after H4 attack" "${A_UP_SZ} B"
+printf "    %-46s %s\n" "B store-upper after base-hit install" "${B_UP_SZ} B"
+printf "    %-46s %s\n" "B node_modules (base-hit, copied per session)" "${B_NM} B"
+printf "    %-46s %s\n" "new-pkg store-upper" "${N_UP_SZ} B"
+printf "    %-46s %s\n" "new-pkg node_modules" "${N_NM} B"
 
-hdr "4b. index.db fraction at a larger scale"
-# pnpm exits non-zero only for a real error; an "ignored build scripts" notice
-# still populates the store. Gate on the store existing, not the exit code.
+hdr "5b. index.db fraction at a larger scale (ratio for one workload, not a bound)"
 warm_base "$SCALE_PKGS" "scale-store" >/dev/null 2>&1 || true
 if [ -n "$(mp 'find /mp/scale-store -name index.db 2>/dev/null')" ]; then
-  S_SZ=$(mp 'du -sb /mp/scale-store' | cut -f1)
-  S_IDX_SZ=$(mp 'stat -c %s "$(find /mp/scale-store -name index.db)"')
-  S_N=$(mp 'find /mp/scale-store -path "*/files/*" -type f | wc -l')
-  spct=$(awk "BEGIN{printf \"%.1f\", $S_IDX_SZ*100/$S_SZ}")
-  printf "    %-42s %s files, %s B store, index.db %s B (%s%%)\n" "scale set (8 top-level deps)" "$S_N" "$S_SZ" "$S_IDX_SZ" "$spct"
-else warn "scale warm produced no store:"; mp 'tail -4 /mp/scale-store.warm.log 2>/dev/null'; fi
+  S_SZ=$(mp 'du -sb /mp/scale-store' | cut -f1); S_IDX_SZ=$(mp 'stat -c %s "$(find /mp/scale-store -name index.db)"')
+  S_N=$(mp 'find /mp/scale-store -path "*/files/*" -type f | wc -l'); spct=$(awk "BEGIN{printf \"%.1f\", $S_IDX_SZ*100/$S_SZ}")
+  printf "    %-46s %s files, %s B store, index.db %s B (%s%%)\n" "scale set (8 top-level deps)" "$S_N" "$S_SZ" "$S_IDX_SZ" "$spct"
+else warn "scale warm produced no store"; fi
 
-hdr "5. Time — base-hit overlay install vs plain install (req 7)"
-mp 'mkdir -p /mp/T-up /mp/T-wk'; make_ovl pv-ovlT "$MP/base-store" "$MP/T-up" "$MP/T-wk"
-t_ovl=$( { /usr/bin/time -f %e docker run --rm $CE $XDG -v "$MP":/mp -v pv-ovlT:/store "$NODE_IMG" bash -c "
+hdr "6. Time — overlay COPY install vs plain-store COPY install (NOT vs hardlink)"
+mp 'mkdir -p /mp/t-up /mp/t-wk'; make_ovl pv-t "$MP/base-store" "$MP/t-up" "$MP/t-wk"
+timed(){ { /usr/bin/time -f %e docker run --rm $CE $(CACHE_MOUNT) -v "$1":/store "$IMG" bash -c "
   mkdir -p /tmp/t && cd /tmp/t; printf '{\"name\":\"t\",\"dependencies\":{\"$PKG_NAME\":\"$PKG_VER\"}}' > package.json
-  pnpm --store-dir /store --offline install --silent"; } 2>&1 | tail -1)
-t_plain=$( { /usr/bin/time -f %e docker run --rm $CE $XDG -v "$MP":/mp -v "$MP/base-store":/store "$NODE_IMG" bash -c "
-  mkdir -p /tmp/t && cd /tmp/t; printf '{\"name\":\"t\",\"dependencies\":{\"$PKG_NAME\":\"$PKG_VER\"}}' > package.json
-  pnpm --store-dir /store --offline install --silent"; } 2>&1 | tail -1)
-printf "    %-42s %ss\n" "base-hit install, store on overlay" "$t_ovl"
-printf "    %-42s %ss\n" "base-hit install, plain store (control)" "$t_plain"
-warn "single-shot wall time incl. container spawn — order-of-magnitude, not a benchmark."
+  pnpm --store-dir /store --offline install --silent"; } 2>&1 | tail -1; }
+t_ovl=$(timed pv-t); t_plain=$(timed "$MP/base-store")
+printf "    %-46s %ss\n" "base-hit COPY install, store on overlay" "$t_ovl"
+printf "    %-46s %ss\n" "base-hit COPY install, plain store" "$t_plain"
+warn "single-shot, container spawn included, tiny package, BOTH sides copy — incremental overlay overhead only, NOT the change from today's hardlink installs. Not a req-7 verdict."
 
-hdr "6. Store lock — two concurrent installs, one base, two uppers"
-mp 'mkdir -p /mp/P-up /mp/P-wk /mp/Q-up /mp/Q-wk'
-make_ovl pv-ovlP "$MP/base-store" "$MP/P-up" "$MP/P-wk"
-make_ovl pv-ovlQ "$MP/base-store" "$MP/Q-up" "$MP/Q-wk"
-run_conc(){ docker run --rm $CE $XDG -v "$MP":/mp -v "$1":/store "$NODE_IMG" bash -c "
+hdr "7. Concurrency — two installs into separate uppers over one base"
+mp 'mkdir -p /mp/p-up /mp/p-wk /mp/q-up /mp/q-wk'
+make_ovl pv-p "$MP/base-store" "$MP/p-up" "$MP/p-wk"; make_ovl pv-q "$MP/base-store" "$MP/q-up" "$MP/q-wk"
+conc(){ docker run --rm $CE $(CACHE_MOUNT) -v "$1":/store "$IMG" bash -c "
   mkdir -p /tmp/c && cd /tmp/c; printf '{\"name\":\"c\",\"dependencies\":{\"$PKG_NAME\":\"$PKG_VER\"}}' > package.json
-  pnpm --store-dir /store --offline install --silent >/tmp/c.log 2>&1; echo \$?"; }
-r1=$(run_conc pv-ovlP & run_conc pv-ovlQ & wait)
-echo "    concurrent rcs: $(echo $r1)"
-echo "$r1" | grep -qE '[1-9]' && warn "a concurrent install returned non-zero — inspect store lock" \
-  || pass "two concurrent installs over one base, separate uppers — no lock error"
+  pnpm --store-dir /store --offline install --silent >/tmp/c.log 2>&1; echo RC=\$?" 2>&1 | tail -1; }
+c1=$(conc pv-p & conc pv-q & wait); r1=$(echo "$c1" | field "$(echo "$c1" | head -1)" RC)
+n_ok=$(echo "$c1" | grep -c 'RC=0'); n_all=$(echo "$c1" | grep -c 'RC=')
+[ "$n_ok" = "$n_all" ] && [ "$n_all" -ge 2 ] && pass "both concurrent installs succeeded ($n_ok/$n_all)" || fail "a concurrent install failed: $c1"
+warn "each session writes its OWN index.db in its OWN upper — there is no SHARED writable index to lock. This shows separate-upper installs do not error; it is NOT a shared-lock-correctness test."
 
 hdr "Summary"
 echo "    PASS=$PASS FAIL=$FAIL"
-[ "$FAIL" -eq 0 ] && ok "Store-in-overlay isolates the index attack; disk/time captured above." \
-  || bad "A cell failed — record which; the overlay store fix is not proven on this host."
+if [ "$FAIL" -eq 0 ]; then ok "Store-in-overlay isolates the H4 and H2 store-index attacks (each with a poisoning control); disk/time captured with their limits."; exit 0
+else bad "$FAIL cell(s) failed — the overlay store result is NOT established on this host."; exit 1; fi
