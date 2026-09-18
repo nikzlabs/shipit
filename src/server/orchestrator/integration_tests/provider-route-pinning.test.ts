@@ -350,7 +350,7 @@ describe("detached system turns run the session's agent through per-turn selecti
   }
 
   it("corrects a runner seeded with the global default before the turn's env-prep", async () => {
-    const { primary, secondary } = codexSessionWithTwoAccounts();
+    const { secondary } = codexSessionWithTwoAccounts();
     const stale = registry.getOrCreate(SESSION, path.join(root, "workspaces", SESSION), "claude");
     expect(stale.agentId).toBe("claude");
 
@@ -359,11 +359,10 @@ describe("detached system turns run the session's agent through per-turn selecti
     // This fixture does not wire account selection inside the dispatched turn.
     expect(registry.get(SESSION)?.agentId).toBe("codex");
     expect(accounts.get("openai", secondary)?.lastUsedAt).toBeUndefined();
-    void primary;
   });
 
   it("recreates a disposed runner from the persisted agent, not defaultAgentId", async () => {
-    const { primary } = codexSessionWithTwoAccounts();
+    codexSessionWithTwoAccounts();
     registry.getOrCreate(SESSION, path.join(root, "workspaces", SESSION), "codex");
     registry.dispose(SESSION, { force: true });
     expect(registry.get(SESSION)).toBeUndefined();
@@ -371,6 +370,5 @@ describe("detached system turns run the session's agent through per-turn selecti
     await wakeSessionWithTurn(wakeDeps(), sessions.get(SESSION)!, { text: "a merged PR needs you" });
 
     expect(registry.get(SESSION)?.agentId).toBe("codex");
-    void primary;
   });
 });

@@ -501,7 +501,6 @@ describe("ReviewerSection", () => {
   });
 
   it("offers no reasoning menu for a selection whose harness sends no level", async () => {
-    const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([
       autoSlot("first", {
         resolved: {
@@ -521,7 +520,6 @@ describe("ReviewerSection", () => {
 
     expect(agents.find((a) => a.id === "grok")?.reasoning?.options.length).toBeGreaterThan(0);
     expect(screen.queryByTestId("reviewer-reasoning-trigger-first")).toBeNull();
-    void user;
   });
 
   it("offers the levels on a selection whose harness does send them", async () => {

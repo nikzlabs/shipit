@@ -1700,8 +1700,6 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
   });
 });
 
-void vi;
-
 describe("local-mode workspace trust (docs/118, planning#61)", () => {
   let tmpDir: string;
   let home: string;
