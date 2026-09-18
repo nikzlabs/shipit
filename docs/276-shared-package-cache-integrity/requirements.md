@@ -33,8 +33,7 @@ project on the instance.
 ## Requirements
 
 1. A session MUST NOT be able to cause code of its choosing to run in another
-   session by writing to a shared package cache. *(The cache analogue of
-   `docs/270-per-session-worker-uids` req 1.)*
+   session by writing to a shared package cache.
 
 2. Sessions MUST keep sharing the caches they share today. A session MUST NOT
    fail an install, or silently fall back to a private copy, because a different
@@ -46,9 +45,7 @@ project on the instance.
    install the untrusted content.
 
 4. The protection MUST cover dependencies a session has **already installed**,
-   not only dependencies it installs after the poisoning. *(pnpm hardlinks store
-   files into `node_modules`, so a store write changes installed files with no
-   install event — see plan.md, H3.)*
+   not only dependencies it installs after the poisoning.
 
 5. Requirement 1 MUST hold for a repo that has no lockfile, or whose lockfile
    does not pin an integrity hash for every dependency. *(Agent-supplied;
@@ -57,11 +54,11 @@ project on the instance.
 
 6. Requirement 1 MUST hold against writes to cached **resolution data** (what
    version and what bytes a dependency name resolves to), not only against
-   writes to cached package content. *(Agent-supplied. The content half is
-   already safe; the resolution half is the demonstrated hole.)*
+   writes to cached package content. *(Agent-supplied.)*
 
 7. Whatever ShipIt does MUST NOT make a warm install materially slower than it
-   is today.
+   is today. *(Agent-supplied; confirmed by the requester 2026-09-18 — see
+   Resolved questions.)*
 
 8. ShipIt MUST NOT let a project's own git hooks fire on the orchestrator-side
    auto-commit path (`docs/266-orchestrator-git-trust-boundary` E4) while a
@@ -102,6 +99,13 @@ None.
   resolution cache covers a repo with no lockfile); the requester confirmed
   that answer. Repos without a lockfile keep working unchanged. Req 5 stands
   and is human-confirmed.
+- 2026-09-18 — Req 7 (a warm install must not get materially slower) had been
+  supplied by the agent with no provenance recorded. Asked whether to keep or
+  strike it, the requester said **keep it**. Req 7 is now human-confirmed.
+- 2026-09-18 — The requester ruled that requirements state the final state
+  only: explanatory notes about current behaviour or rationale do not belong
+  on a requirement. Such notes were removed from reqs 1, 4 and 6; provenance
+  tags (who supplied a requirement, and when it was confirmed) stay.
 - 2026-09-17 — Q4 (hold `docs/266-orchestrator-git-trust-boundary` E4 until the
   H3 fix ships): **(a) hold**. Approves req 8.
 - 2026-09-17 — Q5 (must the agent be able to edit files inside installed
