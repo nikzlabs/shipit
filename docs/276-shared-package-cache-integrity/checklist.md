@@ -86,18 +86,46 @@ recorded in [requirements.md](./requirements.md); none is open.
       admission, `skipped-unverified` outcome, session install never failed.
       Store private per session at the same container path. No shared
       metadata cache.
-- [ ] Spike `.bin/` shims: does a no-op `pnpm install` over a base that omits
-      `node_modules/.bin` and `.pnpm/<id>/node_modules/.bin` regenerate them?
-      If not, the verifier must check each shim against pnpm's template.
-- [ ] Spike carried state files: a `.pnpm/lock.yaml` or
-      `.pnpm-workspace-state-v1.json` that disagrees with the tree must make the
-      next session's install reinstall into its upper (a base miss), never skip
-      a package or trust a path. Confirm pnpm cross-checks against the
-      workspace `pnpm-lock.yaml`.
-- [ ] Map pnpm dep-path directory ids (peer suffixes, scoped names) back to
-      `<name>@<version>` for the registry lookup.
-- [ ] Later refinement: admit a verified subset instead of all-or-nothing, so a
-      git/`file:`/private-registry dependency does not block the whole publish.
+- [x] Spike `.bin/` shims and carried state (`tree-state-spike.sh`, PASS=9,
+      FINDINGS.md): shims are NOT regenerated on a genuine no-op; an
+      inconsistent carried lock.yaml self-heals on an install; a carried
+      `allowBuilds`/`pendingBuilds` does NOT run a script without the session's
+      own approval (positive control passes). And a base hit never runs pnpm
+      (pre-stamped marker, install skipped) — so nothing carried can be checked
+      later. Both settled by the revision: the orchestrator generates the tree,
+      shims and state.
+- [x] Independent review of the lifecycle (2026-09-18, reviewer role, both
+      briefs): five P1s, all verified at the source, folded into the revised
+      lifecycle (plan.md section 5). Dep-path id mapping dissolved (pnpm computes
+      the ids in the rebuild).
+- [ ] Verified namespace: salt the scope hash with the verifier identity;
+      pointer records `admission: {verifier, lockfileHash}`;
+      `prepareOverlaySpecs` mounts pnpm sessions only from it; the unverified
+      npm/yarn publisher cannot write there (until planning#599).
+- [ ] Rebuild-in-container: worker-image container, no workspace mount, no
+      network, orchestrator-private store from staged tarballs, `pnpm install
+      --offline --frozen-lockfile`, builds ignored; then `copySnapshotToBase` +
+      `publishBase`.
+- [ ] Staged hashing: tarball bytes (from `/dep-cache` or the registry) are
+      hashed while copied into orchestrator-private staging and only the staged
+      copy is used — never check-then-reopen a session-writable path.
+- [ ] Pre-stamp gate: pre-stamp only when the workspace lockfile hash equals the
+      base's `lockfileHash`; a repo with no committed lockfile never pre-stamps.
+      Add `pnpm-workspace.yaml` (pnpm 12 `allowBuilds`) to the install inputs.
+- [ ] `publishBase` takes no abort signal — give the rebuild step its own,
+      bound to the runner's disposal like the snapshot pull.
+- [ ] Janitor race: a renamed `g<N+1>` is reapable until the pointer is written
+      (`steady-state-reclaim.ts:379-393`). Write the pointer first, or claim the
+      generation for the window.
+- [ ] Dependency: section 1 (H1) lands first — `npm_config_cache=/dep-cache/npm`
+      is forwarded to every session (`container-lifecycle.ts:367`), pnpm repos
+      included.
+- [ ] Dependency: the Docker-proxy mount-path check has a documented symlink
+      race between check and mount (`docker-proxy-auth.ts:66`); the
+      group-writable base relies on mount confinement, so close it (own issue).
+- [ ] Later refinement: a partial base for repos with a git/`file:`/private-
+      registry dependency, which all-or-nothing leaves with no base (req 2 /
+      req 10 not met for them).
 - [ ] Record the metadata-cache dependency in the wiring: an offline install
       needs resolution metadata (`XDG_CACHE_HOME/pnpm`, separate from the store)
       — a shared or privately-seeded cache, a lockfile carrying the resolution,

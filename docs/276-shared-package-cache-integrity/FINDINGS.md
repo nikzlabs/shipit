@@ -169,6 +169,35 @@ install, not the content-verified base. Verify-and-admit applied to the tree
 and the publish of a session's verified additions into a new base generation
 are the remaining orchestrator-side steps, shared with planning#599.
 
+## Result: what pnpm does with a base it did not build (tree-state-spike.sh)
+
+Three facts the first lifecycle draft leaned on, measured on the services host
+([`tree-state-spike.sh`](./tree-state-spike.sh), PASS=9, hard-asserted). One
+caveat first, verified at the source: **a base-hit session never runs pnpm** —
+ShipIt pre-stamps the install marker (`overlay-session.ts:preStampInstallMarker`)
+and the worker skips the install (`install-controller.ts:96`, `skipped:
+"marker"`) — so cells A and B describe what an install *would* do, not what a
+base-hit session does.
+
+| Cell | Result |
+|---|---|
+| A. Base with every `.bin` dir removed; genuine no-op install (rc=0, "resolution step is skipped") | shims **not** regenerated; upper 8 KB |
+| B. Base whose `.pnpm/lock.yaml` lists a package whose directory is absent; install with the correct workspace lockfile | pnpm **reinstalls** it into the upper (a base miss) |
+| C1. Base `.modules.yaml` carries `allowBuilds` + `pendingBuilds` for a package; the session does not approve | script **not** run (`ERR_PNPM_IGNORED_BUILDS`); pnpm resets `allowBuilds` from the workspace file |
+| C2. Same base; the session approves in `pnpm-workspace.yaml` (`allowBuilds: {"<id>": true}`, pnpm 12's form) | script runs — the positive control, so C1 is a real negative |
+| C3. Package already linked, nothing pending; the session approves | script runs on a plain install and on `pnpm rebuild` |
+
+Consequences: `.bin` shims are part of the base; carried approvals cannot
+trigger a script, because pnpm 12 reads approvals only from
+`pnpm-workspace.yaml`, keyed by package id (`"pwn@file:pwn"` for a `file:`
+dependency); and since the base-hit path skips the install, nothing carried
+can be validated later — which is why the revised lifecycle has the
+orchestrator generate the tree, shims and state from verified inputs instead of
+carrying any of them. A first draft of cell A used a base containing an
+ignored-script package and reported shims *regenerated*; that was the
+ignored-script notice forcing a relink, not a no-op, which is why the cell
+asserts rc=0 and "resolution step is skipped".
+
 ## Finding: offline resolution needs metadata separate from the store
 
 pnpm keeps **resolution metadata** (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`,
