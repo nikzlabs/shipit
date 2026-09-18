@@ -139,11 +139,11 @@ link counts asserted). Both regress on ext4, and both because of the copy:
 
 So on ext4 the design trades the hardlink's zero per-session cost for a full
 `node_modules` copy, and is ~1.5× slower on a warm install — the req-10 ext4
-gate below, quantified, and a measurable (if small-absolute) req-7 cost. **A
-reflink filesystem (btrfs / XFS) removes both**, since `copy` becomes a reflink;
-`du` cannot see reflink sharing, so re-measure there with a `df` delta. The
-store-upper copy-up itself (`index.db`, ~0.7 MB at scale / ~48 KB tiny) is
-bounded and not the cost. The other rows above (reading a base, a dependency
+gate below, quantified, and a measurable (if small-absolute) req-7 cost. A
+reflink filesystem would remove both, but **req 12 rules that out of scope:
+ext4 must be supported**, so the store-in-overlay shape does not meet req 10
+(section 5, "not viable on ext4"). The store-upper copy-up itself (`index.db`,
+~0.7 MB at scale / ~48 KB tiny) is bounded and not the cost. The other rows above (reading a base, a dependency
 edit staying private, the 63 MB add) are not reproduced by the harness.
 
 Two constraints for implementation:
@@ -270,6 +270,40 @@ with per-session uppers there is no shared writable index, so it is not a
 shared-lock-correctness test. It ran on the services host; it cannot run in a
 session container (no Docker socket).
 
+**Not viable on ext4 (2026-09-18).** The requester ruled that ext4 must be
+supported and reflink-only optimisations are out of scope (req 12). On ext4
+this design costs a full per-session `node_modules` copy (58.6 MB vs 0 B,
+measured), which req 10 forbids — and the cost cannot be engineered away while
+the store stays shared. Verified on the services host: (a)
+`fs.protected_hardlinks=1`, the distro default, refuses a hardlink to a file the
+caller cannot write, so a session can link a shared store blob only if it can
+also poison it — linkable and writable are the same inode, which is H3; and (b)
+hardlinking a lower file inside an overlay copies the data up (a 5 MB link grew
+the upper by 5 MB), so overlay plus hardlink shares nothing. A store writable by
+sessions is the hole; a store read-only to sessions cannot be hardlinked by a
+session, only by the orchestrator, which req 9 rules out. So on ext4 the shared
+pnpm **store** cannot be both safe and free.
+
+**Candidate redesign — share the tree, not the store.** Apply docs/183's
+overlay-dep-dir model to pnpm. The shared unit becomes a content-verified,
+orchestrator-written `node_modules` **base** per (repo, runtime), mounted as
+each session's lowerdir; the pnpm store becomes **private per session**,
+holding only packages that session adds. A base-hit session imports nothing
+(pnpm sees an up-to-date tree) and pays the overlay's 4 KB; a new package is
+copied into the upper once; an edit inside a package copies up that one file
+(req 11). No shared writable store exists, so H2, H3 and H4 have no
+cross-session path. The base is protected by the same verify-and-admit
+lifecycle, applied to the tree's files rather than store entries — every file
+under `node_modules/.pnpm/<pkg>/` must hash to the package's manifest digest
+before admission, the planning#599 shape. This meets req 10 on ext4 with no
+reflink. docs/183 excluded pnpm because a store hardlink cannot cross the
+overlay; with a private store and copy import for new packages only, that
+exclusion no longer applies. The trade: the pnpm store's cross-**repo** dedup is
+lost, so sharing becomes per-repo as npm's is — an open question in
+requirements.md, since req 2 says keep sharing what is shared today. To spike:
+pnpm treats a lowerdir-provided `node_modules` as up to date, and an incremental
+`pnpm add` works against an empty private store.
+
 One thing the store overlay does **not** cover: pnpm keeps resolution metadata
 (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`, separate from the store, so an offline
 install fails to *resolve* a name with an empty metadata cache even when the
@@ -294,14 +328,15 @@ verify-and-admit lifecycle above is the same fix for it. Filed as
    **On ext4, section 2 alone regresses disk ~1.8× (req 10) until section 3
    lands**, so on ext4 ship 2 and 3 together, or accept the interim cost
    deliberately.
-3. **The pnpm store inside an overlay with a content-verified base (section
-   5)** — the load-bearing step for H2/H4. The lifecycle is designed, the
-   overlay copy-up **mechanism** is measured (FINDINGS.md: H4 and H2 isolation,
-   each with a poisoning control), and req 7 / req 10 are measured against a
-   hardlink baseline: **the fix depends on reflink storage** (on ext4 it is
-   ~1.47× slower and costs a full per-session `node_modules` copy). Still gating
-   the build: the verify-and-admit publish spike (the orchestrator side), and a
-   reflink-filesystem `df`-delta re-measure to confirm req 7 / req 10 there.
+3. **The H2/H4 fix, redesigned for ext4 (section 5).** The store-in-overlay
+   shape is measured as not viable on ext4, and req 12 rules reflink out of
+   scope, so the candidate is to share a verified `node_modules` base per
+   (repo, runtime) via overlay and keep the pnpm store private per session.
+   Gating the build: the requester's answer on cross-repo store dedup
+   (requirements.md, open question); then the spike that pnpm accepts a
+   lowerdir-provided tree and an incremental add against a private store; then
+   the verify-and-admit lifecycle applied to the tree (shared with
+   planning#599).
 4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
    pnpm store is safe against H3 and H4 (req 8).
 

@@ -79,9 +79,21 @@ project on the instance.
     and the edit MUST NOT be visible to any other session. *(Requester,
     2026-09-17, Q5 — see the receipt for how the answer was read.)*
 
+12. These requirements MUST be met on ext4. Optimisations that exist only on
+    other filesystems (reflink on btrfs / XFS) are out of scope. *(Requester,
+    2026-09-18.)*
+
 ## Open questions
 
-None.
+- The store-in-overlay fix cannot meet req 10 on ext4 (measured, FINDINGS.md),
+  and the candidate redesign (plan.md section 5) shares a verified
+  `node_modules` base per (repo, runtime) with a **private** per-session pnpm
+  store. That drops the pnpm store's cross-**repo** dedup — today it is shared
+  per runtime across every pnpm repo on the instance — so sharing becomes
+  per-repo, as npm's already is. Req 2 says sessions keep sharing what they
+  share today. Is losing cross-repo pnpm store dedup acceptable?
+  *Recommendation: yes — that cross-repo reach is what made H2/H4 worse-scoped
+  than H1, and req 10's savings hold within a repo.*
 
 ## Resolved questions
 
@@ -114,3 +126,9 @@ None.
   call `npm install` or similar"*. The words restate req 9; the option selected
   is the editing capability, and that is what req 11 records. If that reading
   is wrong, req 11 is the thing to strike.
+- 2026-09-18 — Asked to decide storage after the ext4 measurements showed the
+  store-in-overlay fix needs reflink to meet req 7 / req 10, the requester
+  said: *"We need to support ext4: users run ShipIt on their machines or hosts
+  most likely have ext4. If there are optimizations for other file systems,
+  they are out of scope of this effort."* Recorded as req 12. Consequence: the
+  store-in-overlay design is not viable as written (plan.md section 5).

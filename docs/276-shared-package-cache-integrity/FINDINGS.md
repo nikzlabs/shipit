@@ -105,7 +105,12 @@ now quantified:
 both time and space. `du` cannot see reflink sharing, so re-measure req 10 there
 with a `df` used-space delta. **The store-in-overlay fix therefore depends on
 reflink storage to satisfy req 7 and req 10** — on ext4 it trades the hardlink's
-zero marginal for a full per-session copy. The store-upper copy-up itself
+zero marginal for a full per-session copy. **The requester then ruled (req 12)
+that ext4 must be supported and reflink-only optimisations are out of scope, so
+this shape is not viable.** plan.md section 5 records why it cannot be rescued
+on ext4 (`fs.protected_hardlinks=1` denies a session a hardlink to any file it
+cannot write; a hardlink to an overlay lower copies the data up — both verified
+on this host) and the candidate redesign. The store-upper copy-up itself
 (`index.db`, ~0.7 MB here / ~48 KB for a tiny repo, 1.3% of the store for this
 workload) is bounded and not the issue; the `node_modules` copy is.
 

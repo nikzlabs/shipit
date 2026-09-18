@@ -37,14 +37,10 @@ recorded in [requirements.md](./requirements.md); none is open.
       manifest re-derivable from the tarball — both measured). Sessions install
       into private uppers; publish = verify-and-admit; start the base empty
       rather than promote today's writable store; per-runtime key stays.
-- [ ] Spike verify-and-admit: from a session upper, list new `index.db` entries,
-      fetch each tarball by key, check hash == key, re-derive the manifest and
-      match it, check each blob hashes to its name, admit to a new generation.
-      Measure fetch cost per new package and confirm pnpm accepts the result.
-- [ ] Decide the publish trigger (after each session install, as docs/183 does)
-      and what a verification failure does: drop the entry from the base, keep
-      it private to the session, and surface it — never fail the session's own
-      install (req 9).
+- [ ] Decide the publish trigger for the tree base (after each session install,
+      as docs/183 does) and what a verification failure does: leave the package
+      out of the base, keep it private to the session, and surface it — never
+      fail the session's own install (req 9).
 - [x] Measure the store-in-overlay attack ISOLATION via Docker-mounted overlays
       (`store-overlay-spike.sh`, [FINDINGS.md](./FINDINGS.md), services host
       2026-09-18, PASS=13). H4 and H2 each in its own cell through session A
@@ -62,11 +58,22 @@ recorded in [requirements.md](./requirements.md); none is open.
       design pays **58.6 MB** (a full per-session node_modules copy). **Req 10 is
       NOT met on ext4 by copy alone** — the docs/198 per-session-copy objection,
       quantified.
-- [ ] **Re-measure req 7 and req 10 on a reflink filesystem (btrfs / XFS) with a
-      `df` used-space delta** (`du` is blind to reflink sharing). Both ext4
-      regressions are the copy; a reflink makes `package-import-method=copy` a
-      near-free reflink. This confirms whether the store-in-overlay fix meets
-      req 7 / req 10 on reflink storage — the storage it depends on.
+- [x] Storage decision (2026-09-18, req 12): ext4 must be supported; reflink-only
+      optimisations are out of scope. So the store-in-overlay shape is **not
+      viable** (it needs reflink to meet req 10). Verified on the services host
+      why it cannot be rescued: `fs.protected_hardlinks=1` denies a session a
+      hardlink to any file it cannot write, and a hardlink to an overlay lower
+      copies the data up. The reflink re-measure is dropped.
+- [ ] Get the requester's answer on cross-repo pnpm store dedup (requirements.md
+      open question) — the candidate redesign shares a verified `node_modules`
+      base per (repo, runtime) and makes the store private per session.
+- [ ] Spike the redesign on the services host: pnpm treats a lowerdir-provided
+      `node_modules` as up to date (no import, no store access), and an
+      incremental `pnpm add` works against an empty private store with copy
+      import; measure the base-hit upper (expect ~4 KB) and the new-package cost.
+- [ ] Rework verify-and-admit for the tree: every file under
+      `node_modules/.pnpm/<pkg>/` hashes to the package's manifest digest before
+      admission (the planning#599 shape). The store-entry version is superseded.
 - [ ] Record the metadata-cache dependency in the wiring: an offline install
       needs resolution metadata (`XDG_CACHE_HOME/pnpm`, separate from the store)
       — a shared or privately-seeded cache, a lockfile carrying the resolution,
@@ -76,17 +83,18 @@ recorded in [requirements.md](./requirements.md); none is open.
 - [ ] Set `verify-store-integrity=true` explicitly (ShipIt sets neither pnpm
       value today), but treat it as necessary, not sufficient — it trusts the
       writable `index.db`.
-- [ ] Regression test: a manifest rewrite in the shared store must not reach an
-      install in another session.
+- [ ] Regression test: a manifest rewrite in one session's store, or a write to
+      the shared base, must not reach an install in another session.
 
 ## H3 — pnpm hardlink (reqs 1, 4, 10, 11)
 
 - [ ] Set `package-import-method=copy` explicitly. Not `clone`: it fails the
       install where reflink is unavailable.
-- [ ] `copy` alone does not make the shared store safe (H2/H4 survive); the
-      store must also move inside an overlay (the H2/H4 section above). `copy` is
-      also a prerequisite for that move, since a hardlink import cannot cross the
-      overlay boundary.
+- [ ] `copy` alone does not make a shared store safe (H2/H4 survive); the store
+      must stop being shared — private per session, with the verified
+      `node_modules` base as the shared unit (the H2/H4 section above). `copy` is
+      the import method for a new package into the overlay upper, since a
+      hardlink cannot cross the overlay boundary.
 - [ ] Regression test for H3: a write to a store file must not change an
       already-installed `node_modules` file in another session.
 - [ ] Regression test for req 11: an edit inside one session's installed
