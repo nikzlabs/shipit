@@ -63,7 +63,8 @@ What this means in practice:
 | `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Cleared only by a full session reset. |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
-| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's and pnpm's caches, and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
+| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
+| `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
 | `/session-state/npm-cache` | **`npm_config_cache` points here** — your session's own npm cache. Private to this session. |
 | `/home/shipit` | Your home directory. Agent credentials (via symlink), npm global prefix, and caches live here. |
 
@@ -97,34 +98,43 @@ be choosing what your `npm install` runs.
   (the repo's shared content is left intact). Your next install re-downloads
   privately; the link is restored the next time the container starts.
 
-`yarn` and `pnpm` are unaffected by this and still use `/dep-cache` directly.
+`yarn` is unaffected by this and still uses `/dep-cache` directly. `pnpm` has its own
+arrangement — see below.
 
-### What another session can reach in a pnpm install
+### The pnpm store is yours alone
 
-Your installed packages are yours, by one of two mechanisms depending on the pnpm
-version the repo pins. Either way you can edit a file inside an installed package — a
-`patch-package`-style fix, or instrumenting a dependency to debug it — and the edit
-stays in this session.
+In a repo-backed session, `/workspace/.pnpm-store` is **private to this session** — a
+directory under this session's own state, mounted at that path because a `node_modules`
+records the store it was built against and refuses another. No other session can read
+or write it, so nothing another session installs can decide what yours does. It survives
+a container restart and is removed with the session. (Elsewhere pnpm uses its own
+in-container default, which is private too but does not survive a restart.)
 
-- **pnpm 10 and older** share a store between sessions at `/workspace/.pnpm-store`, so
-  ShipIt sets `package-import-method=copy`: the files under `node_modules` are copies
-  rather than hardlinks into that store, and nothing written to the store can change a
-  package you have already installed. The cost is disk — a `node_modules` no longer
-  shares inodes with the store (about 1.8× the combined tree on ext4).
-- **pnpm 11 and newer** use their own store inside this container, which no other
-  session can reach, so imports stay hardlinks and nothing is copied. The trade is
-  that downloads are not shared: a fresh container installs cold.
+Consequences for the commands you run:
 
-The copy applies to packages imported *since* the setting arrived. On pnpm 10, a
-`node_modules` installed earlier is still hardlinked into the shared store, and pnpm
-will not re-import a tree it considers up to date — not even with `--force`. If you
-need the isolation on such a tree (you are about to patch a dependency, say), remove
-`node_modules` and install again; `stat -c %h <file>` reports 1 for a copy and 2 or
-more for a hardlink.
+- `pnpm install`, `pnpm add` and `pnpm store` all work normally, against your store.
+  `pnpm store prune` and `pnpm store path` affect nothing outside this session.
+- **Downloads are not shared with other sessions.** A cold container installs cold.
+- You can edit a file inside an installed package — a `patch-package`-style fix, or
+  instrumenting a dependency to debug it — and the edit stays in this session, **for any
+  tree installed or re-imported since this arrived**. See the caveat below for older trees.
+- On **pnpm 10 and older** ShipIt also sets `package-import-method=copy`, so the files
+  under `node_modules` are copies rather than hardlinks into the store.
 
-The shared store itself is not yet a boundary between sessions: pnpm's
-`verify-store-integrity` is a local check on the store this session reads, so do not
-read it as protection against what another session wrote.
+**Caveat for a `node_modules` that predates this.** A pnpm 10 tree installed while the
+store was still shared between sessions is hardlinked into *that* store, and mounting a
+new private store does not detach those inodes — so editing such a file still writes
+through to the old shared store. pnpm will not re-import a tree it considers up to date,
+not even with `--force`. If you are about to patch a dependency, remove `node_modules` and
+install again first; `stat -c %h <file>` reports 1 for a copy and 2 or more for a hardlink.
+
+`verify-store-integrity` is a local check on the store this session reads. It is left
+at pnpm's default and is not a cross-session protection — the private store is.
+
+ShipIt is building a shared `node_modules` **base** that it verifies against the
+registry itself and mounts read-only under your own writable layer. Until that exists
+for a repo, every pnpm session installs from scratch into its private store; when it
+does, you still run your own `pnpm install` over it, and everything above still holds.
 
 ### Write-protected paths
 

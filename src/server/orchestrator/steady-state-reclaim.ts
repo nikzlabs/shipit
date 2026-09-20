@@ -1,13 +1,14 @@
 // Periodic cache reclaim; failed-teardown recovery remains in startup-janitor.ts.
 import path from "node:path";
 import fs from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import type { RepoStore } from "./repo-store.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { REPO_MEMORY_SUBDIR } from "./session-credentials.js";
 import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
 import { liveOverlayBaseClaims } from "./overlay-base-claims.js";
-import { PNPM_STORE_SUBDIR } from "./overlay-session.js";
+import { retiredSharedPnpmStoreRoot } from "./overlay-session.js";
 import { getMessage, sleep, defaultRunDocker } from "./disk-utils.js";
 
 const DEFAULT_CACHE_DAYS = 30;
@@ -23,8 +24,6 @@ export interface SteadyStateReclaimDeps {
   runDocker?: (args: string[]) => Promise<string>;
   /** Current-runtime scopes resumable sessions would mount; omission skips overlay reclaim. */
   liveOverlayScopeHashes?: () => Set<string>;
-  /** Null permits reclaim of every cold store; omission skips the sweep. */
-  pnpmStoreRuntimeHash?: () => string | null;
   /** Plugin artifacts are not represented by repoStore or session dep-dir scopes. */
   livePluginStoreArtifacts?: () => Promise<{ scopeHashes: Set<string>; cacheHashes: Set<string> }>;
   paceMs?: number;
@@ -91,17 +90,10 @@ export async function runSteadyStateReclaim(
     }
   }
 
-  if (deps.pnpmStoreRuntimeHash) {
-    try {
-      result.pnpmStoresRemoved = await sweepStalePnpmStores(
-        deps.stateDir,
-        deps.pnpmStoreRuntimeHash(),
-        cacheDays,
-        paceMs,
-      );
-    } catch (err) {
-      console.warn("[disk-janitor] pnpm-store sweep failed:", getMessage(err));
-    }
+  try {
+    result.pnpmStoresRemoved = await sweepRetiredPnpmStores(deps.stateDir, cacheDays, paceMs);
+  } catch (err) {
+    console.warn("[disk-janitor] pnpm-store sweep failed:", getMessage(err));
   }
 
   if (deps.credentialsDir) {
@@ -495,14 +487,16 @@ async function liveMountedOverlayBaseGenerations(
   return { keys, complete: mounts.complete && vols.complete };
 }
 
-async function sweepStalePnpmStores(
+// The per-runtime shared store is retired (docs/276 section 5): every session now has its own
+// store under its session dir, so nothing here is live. Age the old trees out rather than deleting
+// them at once — a container created before the upgrade still mounts one.
+async function sweepRetiredPnpmStores(
   stateDir: string,
-  liveHash: string | null,
   days: number,
   paceMs: number,
 ): Promise<number> {
   const cutoffMs = Date.now() - days * 86_400_000;
-  const dir = path.join(stateDir, PNPM_STORE_SUBDIR);
+  const dir = retiredSharedPnpmStoreRoot(stateDir);
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
@@ -512,25 +506,55 @@ async function sweepStalePnpmStores(
 
   let removed = 0;
   for (const entry of entries) {
-    if (liveHash !== null && entry === liveHash) continue;
     const full = path.join(dir, entry);
-    let mtimeMs: number;
+    let newestMs: number;
     try {
-      const st = await fs.lstat(full);
-      if (!st.isDirectory()) continue;
-      mtimeMs = st.mtimeMs;
+      if (!(await fs.lstat(full)).isDirectory()) continue;
+      newestMs = await newestMtimeShallow(full, PNPM_STORE_AGE_PROBE_DEPTH);
     } catch {
       continue;
     }
-    if (mtimeMs >= cutoffMs) continue;
+    if (newestMs >= cutoffMs) continue;
     try {
       await sleep(paceMs);
       await fs.rm(full, { recursive: true, force: true });
       removed += 1;
-      console.log(`[disk-janitor] removed stale pnpm store ${full}`);
+      console.log(`[disk-janitor] removed retired shared pnpm store ${full}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
     }
   }
   return removed;
+}
+
+// `<store>/v11/files/<xx>/` — deep enough that any write pnpm makes moves one of the directories
+// this walks, shallow enough to stay a few hundred stats.
+const PNPM_STORE_AGE_PROBE_DEPTH = 3;
+
+/**
+ * Newest directory mtime within `depth` levels. The store root's own mtime is not an activity
+ * signal: pnpm writes under `v<N>/files/<xx>/`, which never touches the ancestor, so a store a
+ * surviving pre-upgrade container is still filling can look untouched for months and be reaped
+ * out from under it.
+ */
+async function newestMtimeShallow(dir: string, depth: number): Promise<number> {
+  let newest: number;
+  try {
+    newest = (await fs.lstat(dir)).mtimeMs;
+  } catch {
+    return 0;
+  }
+  if (depth <= 0) return newest;
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return newest;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const child = await newestMtimeShallow(path.join(dir, entry.name), depth - 1);
+    if (child > newest) newest = child;
+  }
+  return newest;
 }

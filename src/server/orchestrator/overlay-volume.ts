@@ -20,7 +20,15 @@ export function depDirDiscriminator(depDir: string): string {
   return crypto.createHash("sha256").update(depDir).digest("hex").slice(0, 8);
 }
 
-export function overlayScopeHash(repoUrl: string, runtimeKey: string, depDir?: string): string {
+// `namespace` partitions bases by who is allowed to write them (docs/276 section 5): only the
+// verifying publisher writes a namespaced scope, so an unverified publisher cannot reach it.
+// Omitting it keeps the pre-namespace hash, so existing npm/yarn bases stay addressable.
+export function overlayScopeHash(
+  repoUrl: string,
+  runtimeKey: string,
+  depDir?: string,
+  namespace?: string,
+): string {
   const hash = crypto
     .createHash("sha256")
     .update(repoUrl)
@@ -28,6 +36,9 @@ export function overlayScopeHash(repoUrl: string, runtimeKey: string, depDir?: s
     .update(runtimeKey);
   if (depDir !== undefined) {
     hash.update("\0").update(depDir);
+  }
+  if (namespace !== undefined) {
+    hash.update("\0").update(namespace);
   }
   return hash.digest("hex").slice(0, 16);
 }

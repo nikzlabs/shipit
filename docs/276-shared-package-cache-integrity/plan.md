@@ -20,9 +20,22 @@ behaviour) and [`verify-reflink.sh`](./verify-reflink.sh) (import methods). Note
 | Hole | Surface | Status |
 |---|---|---|
 | **H1** — cached npm *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` `_cacache/index-v5` | **Closed** by section 1. Was install-time RCE: rewrite `dist.integrity` to attacker content placed at its own hash, set `hasInstallScript: true`, and `npm install` runs the attacker's `postinstall` — with the network available, because npm serves a fresh local cache entry without asking the registry. Both halves are asserted in CI by `integration_tests/npm-cache-poisoning.test.ts`. |
-| **H2** — poisoned pnpm store *content* (bytes changed in place) installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Conditional on mtime, and subsumed by H4.** pnpm skips re-hashing a store file whose mtime matches what `index.db` recorded (second granularity). Measured 2026-09-17: an in-place poison that **preserves mtime** (`touch -r`, trivial) installs offline with `verify-store-integrity=true`; the same poison that **bumps mtime ≥1s** fails closed. So the check is a size-and-mtime fast path, not a content re-hash, and `verify-store-integrity=true` is necessary but not sufficient. |
-| **H3** — store file mutated in place under a live `node_modules` | `/workspace/.pnpm-store` | **Open, and unreachable by verification.** Store files are hardlinked into `node_modules` (`links=2`), so a store write changes already-installed files with no install event. Req 4 exists for this. |
-| **H4** — pnpm store *manifest* (`v11/index.db`) rewritten to point a package's file at attacker content placed at its own valid hash | `/workspace/.pnpm-store` | **Open, and `verify-store-integrity` does not close it.** The per-package manifest is trusted layout data, the pnpm analogue of npm's `index-v5`. Verification checks each file against the digest the manifest names, not the manifest against the package's integrity. Measured 2026-09-17: offline, `verify-store-integrity=true`, a rewritten manifest installed attacker bytes (rc=0), and a second repo sharing the store got them too. pnpm's own security policy confirms it: store integrity does not defend an attacker who rewrites both files and their recorded hashes. |
+| **H2** — poisoned pnpm store *content* (bytes changed in place) installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Conditional on mtime, subsumed by H4, and reachable only on pnpm ≤ 10.** pnpm skips re-hashing a store file whose mtime matches what `index.db` recorded (second granularity). Measured 2026-09-17: an in-place poison that **preserves mtime** (`touch -r`, trivial) installs offline with `verify-store-integrity=true`; the same poison that **bumps mtime ≥1s** fails closed. So the check is a size-and-mtime fast path, not a content re-hash, and `verify-store-integrity=true` is necessary but not sufficient. |
+| **H3** — store file mutated in place under a live `node_modules` | `/workspace/.pnpm-store` | **Reachable only on pnpm ≤ 10, and unreachable by verification.** Store files are hardlinked into `node_modules` (`links=2`), so a store write changes already-installed files with no install event. Req 4 exists for this. Closed there by section 2's copy import. |
+| **H4** — pnpm store *manifest* (`v11/index.db`) rewritten to point a package's file at attacker content placed at its own valid hash | `/workspace/.pnpm-store` | **Reachable only on pnpm ≤ 10, and `verify-store-integrity` does not close it.** The per-package manifest is trusted layout data, the pnpm analogue of npm's `index-v5`. Verification checks each file against the digest the manifest names, not the manifest against the package's integrity. Measured 2026-09-17: offline, `verify-store-integrity=true`, a rewritten manifest installed attacker bytes (rc=0), and a second repo sharing the store got them too. pnpm's own security policy confirms it: store integrity does not defend an attacker who rewrites both files and their recorded hashes. |
+
+**H2, H3 and H4 are open only for pnpm ≤ 10 repos**, because only those ever shared a store.
+Verified 2026-09-20 on pnpm 12.5.1 with `pnpm store path`, which reports the resolved value:
+`PNPM_CONFIG_STORE_DIR` relocates the store; **`npm_config_store_dir`** (the shared-store wiring)
+and **`PNPM_STORE_DIR`** (the `/dep-cache/pnpm` line docs/075 and docs/148 describe) both move
+nothing — neither is a pnpm config env for that version. So a
+pnpm ≥ 11 session ran a **private in-container store**, shared nothing, re-downloaded on every
+cold container, and left the `/workspace/.pnpm-store` mount unused. Two consequences for section 5:
+for those repos it **adds** sharing to a private store rather than fixing a shared one — req 2's
+baseline for them is "no sharing" and req 10's is "a private store with hardlinks" — and there is
+no shared store to migrate off. `PNPM_STORE_DIR` is not merely inert but latently wrong: its target
+`/dep-cache/pnpm` is writable by every session of the repo, so a release that started honouring it
+would arm H2/H4 at repo scope. It is removed rather than left set.
 
 Facts that shape the design:
 
@@ -241,17 +254,16 @@ migration (detecting store-hardlinked trees and rebuilding them) is a
 deliberate destructive step and is left to the requester; section 5 replaces the
 shape entirely, since its base tree is orchestrator-built and its store is private.
 
-**Finding: the store relocation uses the pre-11 spelling too, so pnpm ≥ 11 shares no
-store.** `npm_config_store_dir=/workspace/.pnpm-store` (`container-lifecycle.ts:377`)
-is inert for pnpm ≥ 11, which falls back to its default store in the container's home
-— private to that container, and the mount at `/workspace/.pnpm-store` goes unused.
-That is what makes H3 unreachable there, and what makes copy pointless there. Adding
-`PNPM_CONFIG_STORE_DIR` would start sharing a store that H2 and H4 are still open
-against, so it is a deliberate decision rather than a typo fix: **the requester ruled
-on 2026-09-20 not to add it**, and section 5 replaces the store shape anyway. Two
-consequences to carry into section 5: those sessions re-download on every cold
-container rather than sharing downloads (docs/198's per-runtime sharing is not
-happening for modern pnpm), and there is no shared store to migrate off for them.
+**Finding: the store relocation used the pre-11 spelling too, so pnpm ≥ 11 shared no
+store** (the holes table above records the measurement). `npm_config_store_dir` moved
+nothing for pnpm ≥ 11, which fell back to its default store in the container's home —
+private to that container, with the `/workspace/.pnpm-store` mount unused. That is what
+made H3 unreachable there, and copy pointless there. Adding `PNPM_CONFIG_STORE_DIR`
+while the store was still **shared** would have started sharing a store H2 and H4 were
+open against, so **the requester ruled on 2026-09-20 not to add it**. Section 5 adds it
+once the store is **private per session**, where relocating every version is the fix
+rather than the hole: a store no other session can name has nothing for H2/H4 to
+rewrite. Never point either spelling at a shared directory.
 
 ### 3. ext4 — overlayfs gives copy-on-write without reflink (reqs 10, 11)
 
@@ -567,15 +579,53 @@ only asserted (`preUserInstall: true`), done for real; the session's own install
 still runs (req 9).
 
 *Scope and store.* pnpm's dep dir is `node_modules`; the pnpm early-returns
-(`container-overlay-provisioner.ts:79`, `overlay-publish.ts:102`) go. The
-store becomes **private per session**: `preparePnpmStore` /
-`pnpmStoreDirForRuntime` resolve to a host directory under the session's own
-overlay scope dir, still mounted at `/workspace/.pnpm-store`, dropped with the
-session's volumes; the shared per-runtime store and its sweep are retired.
-`package-import-method=copy` is set beside `npm_config_store_dir`
-(`container-lifecycle.ts`) because a hardlink cannot cross the overlay boundary
-— an import-compatibility setting; with the store private it is no longer a
-cross-session security boundary. Nothing is migrated from today's store.
+(`container-overlay-provisioner.ts`, `overlay-publish.ts`) go. The store becomes
+**private per session** — `preparePnpmStore` resolves `sessionPnpmStoreDir`,
+`<stateDir>/sessions/<id>/overlay/pnpm-store`, still mounted at
+`/workspace/.pnpm-store` and dropped with the session's directory — and the
+shared per-runtime store is retired. `package-import-method=copy` is set beside
+the store path (`container-lifecycle.ts`) because a hardlink cannot cross the
+overlay boundary — an import-compatibility setting; with the store private it is
+no longer a cross-session security boundary. Nothing is migrated from today's store.
+
+**Shipped 2026-09-20** (the private store and the verified namespace), with three
+recorded deviations from the sentence above:
+
+- **Both env spellings set the store path**, not just the pre-11 one: `PNPM_CONFIG_STORE_DIR`
+  and `npm_config_store_dir`. One spelling reaches half the pnpm versions, and the half it
+  misses keeps a store the verified base was not built against — which
+  `ERR_PNPM_UNEXPECTED_STORE` then refuses. The reason it was a hole before (a *shared*
+  target) is gone.
+- **The janitor's pnpm-store sweep is kept, not dropped.** It is what reclaims the retired
+  shared trees: deleting the sweep would leak them forever. It now exempts no hash, so every
+  tree under `<stateDir>/pnpm-store` ages out at the cold-artifact threshold — an age-out
+  rather than an immediate delete, because a container created before the upgrade still mounts
+  one. The per-session store is under the session dir and is not swept.
+- **The store is sealed 0700 to the session's own uid**, replacing `shareTreeOnce`'s group
+  share. Carrying the group share over would have left every session able to write every other
+  session's index — H2/H4 with extra steps.
+
+Also removed with it: `PNPM_STORE_DIR` (see the holes table). The per-session store survives a
+container restart, where pnpm ≥ 11's in-container default did not.
+
+Placing it under `sessions/<id>/overlay/` is what makes it reclaimable rather than a new leak:
+that directory is already in `REGENERABLE_SESSION_SUBDIRS` (`disk-utils.ts`), so both disk-tier
+paths — the full reclaim and `reclaimBlockedSessionCaches`, which archive and a blocked evict
+call — drop the store with the overlay upper it filled, and drop the install marker in the same
+act so the next start reinstalls. A store is a cache; it is reclaimed with the tree it built.
+
+*Provenance in code.* The verified namespace is a fourth field of `overlayScopeHash`
+and an optional `namespace` on `OverlayScope`, so the pointer, the publish and the
+mount all address the same scope. `prepareOverlaySpecs` mounts a pnpm session only
+when a **published pointer exists in the verified namespace for every ELIGIBLE dep dir**
+— the gate reads the pointer of the scope each spec actually names, so it cannot drift
+from what would be mounted, and an ineligible declaration is already dropped before it;
+with nothing publishing there yet, a pnpm session installs privately exactly as
+it did before, and an unverified pointer in the un-namespaced scope opens nothing.
+All-or-nothing across dep dirs: a partly-mounted set has no single answer to what the
+session is running. `liveOverlayScopeHashes` claims **both** addresses for every
+session, because package-manager detection reads the mutable checkout and must not be
+what decides whether a base is reapable.
 
 *Provenance — a verified namespace.* Verified generations live in their **own
 scope namespace**: one fixed discriminator (`pnpm-verified-v1`) added to
@@ -758,19 +808,17 @@ For anyone re-running or extending the harnesses:
 
 | File | Why it matters |
 |---|---|
-| `src/server/orchestrator/overlay-publish.ts:102`, `:163-191` | The pnpm early-return to drop, and the pull → `publishBase` sequence the tree verifier is inserted into (section 5, lifecycle). |
-| `src/server/orchestrator/container-overlay-provisioner.ts:79`, `:157` | The pnpm early-return to drop; `preparePnpmStore`, which becomes the per-session private store. |
-| `src/server/orchestrator/overlay-base.ts` | `publishBase` reused for ordering (CAS authenticates nothing); `withScopeLock` (`:101`) becomes the one per-scope lock for claim, publish and sweep; `copySnapshotToBase` hardlink-dedup is a **disk** optimization, not a verification step. |
-| `src/server/orchestrator/overlay-volume.ts:23` | `overlayScopeHash` — repo + runtime + dep dir, no publisher identity; the verified namespace is one fixed discriminator added here. |
+| `src/server/orchestrator/overlay-publish.ts` | The pnpm early-return to replace with the builder — the snapshot publisher must never write the verified namespace — and the pull → `publishBase` sequence (section 5, lifecycle). |
+| `src/server/orchestrator/overlay-base.ts` | `publishBase` reused for ordering (CAS authenticates nothing); `withScopeLock` (`:101`) becomes the one per-scope lock for claim, publish and sweep; `copySnapshotToBase` hardlink-dedup is a **disk** optimization, not a verification step. `OverlayScope.namespace` runs through `scopeHashOf`, so pointer reads and publishes address the same namespaced scope. |
+| `src/server/orchestrator/overlay-volume.ts` | `overlayScopeHash` — repo + runtime + dep dir + an optional **namespace**, the verified-base discriminator; omitting it reproduces the pre-namespace hash, so existing npm/yarn bases stay addressable. Also the Docker `overlay` volume (`:196`), now also for pnpm's `node_modules`. |
+| `src/server/orchestrator/container-overlay-provisioner.ts` | `hasVerifiedBaseForEveryDepDir` — the pnpm mount gate; `preparePnpmStore` — the per-session private store. |
 | `src/server/shared/deps-hash.ts:21`, `:89` | pnpm's default hash inputs include `pnpm-workspace.yaml`; a custom `installInputs` replaces the list, so the pnpm marker must add it back. |
-| `src/server/orchestrator/overlay-session.ts:316` | `pnpmStoreDirForRuntime` — today the shared per-runtime store; becomes a per-session host dir at the same container path. |
-| `src/server/orchestrator/container-lifecycle.ts:143` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`; where `package-import-method=copy` is set. |
+| `src/server/orchestrator/overlay-session.ts` | `PNPM_VERIFIED_NAMESPACE`; `sessionPnpmStoreDir` — the per-session private store; `retiredSharedPnpmStoreRoot` — the tree the janitor ages out. |
+| `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `package-import-method=copy`, and `npm_config_cache` (section 1); `createContainer` retires the shared npm index. |
 | `src/server/session/dep-snapshot.ts`, `src/server/orchestrator/overlay-snapshot.ts` | The merged-tree tar and its pull — unchanged; untrusted, and admission no longer depends on it. |
-| `src/server/orchestrator/overlay-volume.ts:196` | The Docker `overlay` volume, now also for pnpm's `node_modules`. |
 | `src/server/orchestrator/session-worker-uid.ts:124` | `shareOne` — group write on the shared surfaces (docs/270 req 9). |
 | `src/server/orchestrator/session-dir-factory.ts:58` | `createDepCacheDirHelper` — `/dep-cache` keyed per repo; the verifier's self-verifying tarball source. |
 | `src/server/shared/npm-cache.ts` | Section 1's whole mechanism: the per-session cache path, the `content-v2` link, and the retirement of the shared index. |
-| `src/server/orchestrator/container-lifecycle.ts` | `buildEnv` points `npm_config_cache` at the session's own cache; `createContainer` retires the shared index. |
 | `src/server/session/session-worker.ts` | Calls `linkSessionNpmCache` before the listener opens, so no install, terminal or service can reach npm through an unlinked cache. |
 | `src/server/orchestrator/integration_tests/npm-cache-poisoning.test.ts` | The H1 attack and its control, against real npm and a local registry. |
 | `src/server/session/install-controller.ts` | The install path; also serves `GET /workspace/dep-snapshot`. |

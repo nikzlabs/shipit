@@ -179,11 +179,36 @@ recorded in [requirements.md](./requirements.md); none is open.
       `nodeLinker`) or the entry is `git`/`file:`/`link:`/`workspace:`/patched
       (first cut); a missing lockfile-covered dep skips the publish without
       failing the session install.
-- [ ] Verified namespace: add one fixed discriminator (`pnpm-verified-v1`) to
-      `overlayScopeHash` (`overlay-volume.ts:23`); `prepareOverlaySpecs` mounts
-      pnpm sessions only from it and never falls back to an unverified base; the
-      unverified npm/yarn publisher cannot write there. No `admission` pointer
-      fields.
+- [x] Baseline correction (2026-09-20, re-verified on pnpm 12.5.1 with `pnpm store
+      path`): `PNPM_CONFIG_STORE_DIR` relocates the store; `npm_config_store_dir` and
+      `PNPM_STORE_DIR` move nothing for pnpm >= 11. So H2/H3/H4 were open only for
+      pnpm <= 10, and for pnpm >= 11 section 5 ADDS sharing to a private store rather
+      than fixing a shared one — req 2's baseline for them is "no sharing", req 10's
+      is "a private store with hardlinks", and there is nothing to migrate off.
+      `PNPM_STORE_DIR` removed: its `/dep-cache/pnpm` target is writable by every
+      session of the repo, so a release that honoured it would arm H2/H4 at repo scope.
+      Holes table and section 5 framing rewritten, not annotated.
+- [x] Private per-session pnpm store: `preparePnpmStore` resolves
+      `sessionPnpmStoreDir` (`<stateDir>/sessions/<id>/overlay/pnpm-store`), mounted at
+      the same `/workspace/.pnpm-store` the base is built against, dropped with the
+      session dir. Store path set under BOTH env spellings now that the target is
+      private. `ensurePnpmStoreDir` seals it **0700 to the session uid**, replacing the
+      group share — carrying that over would have left every session able to write
+      every other session's index. The shared per-runtime store is retired; nothing is
+      migrated from it. **Deviation:** its janitor sweep is kept rather than dropped —
+      it is what reclaims the retired trees, and it now exempts no hash, ageing them
+      out instead of deleting at once (a pre-upgrade container may still mount one).
+- [x] Verified namespace: one fixed discriminator (`pnpm-verified-v1`) as a fourth
+      field of `overlayScopeHash`, and an optional `namespace` on `OverlayScope` so the
+      pointer, the publish and the mount address one scope. Omitting it reproduces the
+      pre-namespace hash, so existing npm/yarn bases stay addressable.
+      `prepareOverlaySpecs` mounts a pnpm session only when a published pointer exists
+      in that namespace for every ELIGIBLE dep dir — read off the specs themselves, so
+      the gate cannot address a different scope than the mount — and never falls back; a pointer in
+      the un-namespaced scope — what the untrusted snapshot publisher writes — opens
+      nothing, asserted as the control. `liveOverlayScopeHashes` claims both addresses
+      for every session, since package-manager detection reads the mutable checkout and
+      must not decide whether a base is reapable. No `admission` pointer fields.
 - [ ] Rebuild-in-container: dedicated builder, no workspace, no network; private
       store built inside the sandbox by unpacking staged integrity-checked
       tarballs (not the session's store index); staged manifests + config; then
@@ -199,6 +224,21 @@ recorded in [requirements.md](./requirements.md); none is open.
       marginal build-output disk in the upper. The 8 KB result used scriptless
       deps and does not cover this; the tree spikes also ran as root, not as
       distinct session uids.
+- [x] Independent review of the store + namespace slice (2026-09-20, reviewer role). Its
+      P1 on the retired-store sweep was confirmed and fixed: ageing on the store ROOT's
+      mtime is not an activity signal, because pnpm writes under `v11/files/<xx>/` and
+      never touches the ancestor, so a store a surviving pre-upgrade container was still
+      filling could be reaped. The sweep now ages on the newest mtime within 3 levels,
+      with a guard that goes red on the root-only rule. Its P1 on
+      `ERR_PNPM_UNEXPECTED_STORE` did NOT reproduce — measured on pnpm 12.5.1, the
+      relocation re-fetches and rewrites `.modules.yaml`, rc=0 (FINDINGS.md); pnpm <= 10
+      keeps the same recorded path. Also fixed: a tautological backward-compat hash
+      assertion (now a literal pre-namespace digest), an ownership test that could not
+      tell per-session identity from one global uid (the resolver is now injected), and
+      two overstated agent-facing claims. Its P2 — liveness hashing `overlayRuntimeKey`
+      alone while creation adds `overlayPinSegment` — is the pre-existing mismatch the
+      concurrency item below already owns; it cannot bite yet, since nothing publishes
+      into the verified namespace.
 - [ ] Concurrency (R2/R3, simplified R4): no runner-bound cancellation — a
       build that outlives its trigger finishes. Serialize claim-taking, publish
       and sweep on one per-scope lock (`withScopeLock`, `overlay-base.ts:101`,

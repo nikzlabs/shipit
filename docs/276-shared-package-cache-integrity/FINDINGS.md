@@ -229,6 +229,27 @@ measured; whether `--ignore-pnpmfile` also suppresses a `.pnpmfile.mjs` and a
 `configDependencies` plugin is unmeasured, which is why those two stay
 ineligible for a base until it is.
 
+## Finding: relocating the store does not break an existing `node_modules`
+
+Measured 2026-09-20 on pnpm 12.5.1, because moving pnpm >= 11 off its in-container default
+onto a per-session host directory changes the `storeDir` recorded in
+`node_modules/.modules.yaml`, and `ERR_PNPM_UNEXPECTED_STORE` is documented for that
+mismatch. It does not fire on this version:
+
+| Cell | Result |
+|---|---|
+| install against store A, then `pnpm install` with `PNPM_CONFIG_STORE_DIR` pointing at store B | rc=0, "Already up to date" |
+| then `pnpm add left-pad` against store B | rc=0; re-fetched the 3 packages, rewrote `.modules.yaml` to store B |
+| `pnpm install --frozen-lockfile` against an empty store D, online | rc=0 |
+| `pnpm install --frozen-lockfile --offline` against an empty store C | rc=1, "snapshot not present in local store" — the ordinary cold-store failure, not a store mismatch |
+
+So the relocation costs a re-fetch of what the new store lacks, and nothing else. That cost
+was already paid on every cold container by these sessions, whose in-container store did not
+survive a restart. pnpm <= 10 is unaffected either way: its recorded `storeDir` is the same
+`/workspace/.pnpm-store` string before and after — only the host directory behind it changed.
+The `ERR_PNPM_UNEXPECTED_STORE` seen in the tree spike came from a lowerdir base built at a
+different container path, which is why the private store must keep that path.
+
 ## Finding: offline resolution needs metadata separate from the store
 
 pnpm keeps **resolution metadata** (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`,

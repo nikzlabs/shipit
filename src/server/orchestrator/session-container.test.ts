@@ -13,6 +13,14 @@ import {
   SESSION_CPU_SHARES,
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
+import {
+  PNPM_VERIFIED_NAMESPACE,
+  overlayPinSegment,
+  overlayRuntimeKey,
+  sessionPnpmStoreDir,
+} from "./overlay-session.js";
+import { overlayScopeHash } from "./overlay-volume.js";
+import { OVERLAY_POINTER_SUBDIR } from "./overlay-base.js";
 import { allowEgressHost, clearEgressPolicy } from "./egress-policy.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
@@ -384,23 +392,21 @@ describe("SessionContainerManager", () => {
       );
     });
 
-    it("hands the pnpm store dir to the shared worker gid before mounting it", async () => {
+    // docs/276: the store is private to this session, so it is sealed to the session's own uid
+    // rather than shared with the worker gid as it was while one store served every session.
+    it("seals the pnpm store dir to the session before mounting it", async () => {
       const myUid = process.getuid?.();
-      const myGid = process.getgid?.();
-      if (myUid === undefined || myGid === undefined) return;
+      if (myUid === undefined) return;
       const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
-      // This variable also selects the shared gid; use a group this process can assign.
-      process.env.SHIPIT_SESSION_WORKER_UID = String(myGid);
-      const storeDir = path.join(TEST_SESSION_DIR, "pnpm-store", "deadbeefcafe0001");
-      const spy = vi.spyOn(fs, "lchownSync");
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const storeDir = path.join(TEST_SESSION_DIR, "sessions", "sess-1", "overlay", "pnpm-store");
       try {
         await manager.create(buildConfig({ pnpmStoreDir: storeDir }));
         expect(fs.existsSync(storeDir)).toBe(true);
-        expect(spy).toHaveBeenCalledWith(storeDir, myUid, myGid);
+        expect(fs.lstatSync(storeDir).mode & 0o7777).toBe(0o700);
         const call = mockDocker.createContainer.mock.calls[0][0];
         expect(call.HostConfig.Binds).toContain(`${storeDir}:/workspace/.pnpm-store:rw`);
       } finally {
-        spy.mockRestore();
         if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
         else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
       }
@@ -411,7 +417,7 @@ describe("SessionContainerManager", () => {
       if (myUid === undefined) return;
       const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
-      const storeDir = path.join(TEST_SESSION_DIR, "pnpm-store", "deadbeefcafe0002");
+      const storeDir = path.join(TEST_SESSION_DIR, "sessions", "sess-2", "overlay", "pnpm-store");
       const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
       try {
         await manager.create(buildConfig({ pnpmStoreDir: storeDir }));
@@ -1051,7 +1057,9 @@ describe("SessionContainerManager", () => {
 
     const PNPM_YAML = "agent:\n  install:\n    - pnpm install\n";
 
-    it("returns [] for a pnpm repo even when otherwise overlay-eligible", async () => {
+    // docs/276 section 5: a pnpm session mounts only a base the verifying builder published.
+    // Nothing publishes into that namespace yet, so it still installs privately.
+    it("returns [] for a pnpm repo with no verified base published", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
       expect(await ovlManager.prepareOverlaySpecs({ sessionId: "pnpm-1", workspaceDir: dir, session: eligible }))
@@ -1072,14 +1080,78 @@ describe("SessionContainerManager", () => {
       return { mgr, stateDir };
     }
 
-    it("preparePnpmStore returns the shared store dir for a pnpm repo (flag on)", async () => {
+    /**
+     * docs/276 section 5. Two halves, and the control is the load-bearing one: a pointer in the
+     * UN-namespaced scope is exactly what the npm/yarn snapshot publisher writes from an
+     * untrusted session's tree, and it must not become a pnpm session's lowerdir.
+     */
+    it("mounts a pnpm session only from the verified namespace, never from an unverified base", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const { mgr, stateDir } = managerWithState();
+      try {
+        const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
+        const runtimeKey = overlayRuntimeKey() + overlayPinSegment(dir);
+        const unverified = overlayScopeHash(eligible.remoteUrl, runtimeKey, "node_modules");
+        const verified = overlayScopeHash(
+          eligible.remoteUrl, runtimeKey, "node_modules", PNPM_VERIFIED_NAMESPACE,
+        );
+        const writePointer = (hash: string): void => {
+          const metaDir = path.join(stateDir, OVERLAY_POINTER_SUBDIR);
+          fs.mkdirSync(metaDir, { recursive: true });
+          fs.writeFileSync(path.join(metaDir, `${hash}.json`), JSON.stringify({
+            scopeHash: hash, commit: "c".repeat(40), depth: 0, generation: 3,
+            baseDir: "unused", updatedAt: new Date().toISOString(),
+          }));
+        };
+
+        // Control: an unverified base exists and alone must open nothing.
+        writePointer(unverified);
+        expect(await mgr.prepareOverlaySpecs({ sessionId: "pnpm-ns-1", workspaceDir: dir, session: eligible }))
+          .toEqual([]);
+
+        writePointer(verified);
+        const specs = await mgr.prepareOverlaySpecs({
+          sessionId: "pnpm-ns-1", workspaceDir: dir, session: eligible,
+        });
+        expect(specs).toHaveLength(1);
+        expect(specs[0].scopeHash).toBe(verified);
+        expect(specs[0].scope.namespace).toBe(PNPM_VERIFIED_NAMESPACE);
+        expect(specs[0].generation).toBe(3);
+        expect(specs[0].lowerdir).toContain(`overlay-base/${verified}/g3`);
+      } finally {
+        await mgr.dispose();
+      }
+    });
+
+    it("an npm repo still mounts the un-namespaced base (the verified namespace is pnpm-only)", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const { mgr } = managerWithState();
+      try {
+        const dir = await ws({ gitignore: "node_modules\n" });
+        const specs = await mgr.prepareOverlaySpecs({
+          sessionId: "npm-ns-1", workspaceDir: dir, session: eligible,
+        });
+        expect(specs).toHaveLength(1);
+        expect(specs[0].scope.namespace).toBeUndefined();
+        expect(specs[0].scopeHash).toBe(
+          overlayScopeHash(eligible.remoteUrl, overlayRuntimeKey() + overlayPinSegment(dir), "node_modules"),
+        );
+      } finally {
+        await mgr.dispose();
+      }
+    });
+
+    it("preparePnpmStore returns a store dir PRIVATE to the session (docs/276 req 1)", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const { mgr, stateDir } = managerWithState();
       try {
         const dir = await ws({ shipitYaml: PNPM_YAML });
-        const store = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
-        expect(store).toBeDefined();
-        expect(store!.startsWith(path.join(stateDir, "pnpm-store"))).toBe(true);
+        const a = mgr.preparePnpmStore({ sessionId: "pnpm-a", workspaceDir: dir, session: eligible });
+        const b = mgr.preparePnpmStore({ sessionId: "pnpm-b", workspaceDir: dir, session: eligible });
+        expect(a).toBe(sessionPnpmStoreDir(stateDir, "pnpm-a"));
+        expect(b).not.toBe(a);
+        // Under the session dir, so session teardown drops it with the rest of the session.
+        expect(a!.startsWith(path.join(stateDir, "sessions", "pnpm-a") + path.sep)).toBe(true);
       } finally {
         await mgr.dispose();
       }
@@ -1090,7 +1162,7 @@ describe("SessionContainerManager", () => {
       const { mgr } = managerWithState();
       try {
         const dir = await ws({ gitignore: "node_modules\n" });
-        expect(mgr.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
+        expect(mgr.preparePnpmStore({ sessionId: "s1", workspaceDir: dir, session: eligible })).toBeUndefined();
       } finally {
         await mgr.dispose();
       }
@@ -1101,10 +1173,10 @@ describe("SessionContainerManager", () => {
       try {
         const dir = await ws({ shipitYaml: PNPM_YAML });
         process.env.OVERLAY_DEP_STORE = "0";
-        expect(mgr.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
+        expect(mgr.preparePnpmStore({ sessionId: "s1", workspaceDir: dir, session: eligible })).toBeUndefined();
         process.env.OVERLAY_DEP_STORE = "1";
-        expect(mgr.preparePnpmStore({ workspaceDir: dir, session: { remoteUrl: "", kind: undefined } })).toBeUndefined();
-        expect(mgr.preparePnpmStore({ workspaceDir: dir, session: { remoteUrl: "r", kind: "ops" } })).toBeUndefined();
+        expect(mgr.preparePnpmStore({ sessionId: "s1", workspaceDir: dir, session: { remoteUrl: "", kind: undefined } })).toBeUndefined();
+        expect(mgr.preparePnpmStore({ sessionId: "s1", workspaceDir: dir, session: { remoteUrl: "r", kind: "ops" } })).toBeUndefined();
       } finally {
         await mgr.dispose();
       }
@@ -1113,20 +1185,20 @@ describe("SessionContainerManager", () => {
     it("preparePnpmStore is undefined without a workspace state volume or state dir", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const dir = await ws({ shipitYaml: PNPM_YAML });
-      expect(ovlManager.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
+      expect(ovlManager.preparePnpmStore({ sessionId: "s1", workspaceDir: dir, session: eligible })).toBeUndefined();
     });
 
-    it("end-to-end: a pnpm session mounts the store + sets npm_config_store_dir and gets NO overlay", async () => {
+    it("end-to-end: a pnpm session mounts its private store and gets NO overlay", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
-      // Use a shared gid this process can assign, or create() omits the store mount.
+      // The store must end up owned by this uid, or create() drops the mount.
       const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
-      process.env.SHIPIT_SESSION_WORKER_UID = String(process.getgid?.() ?? 0);
+      process.env.SHIPIT_SESSION_WORKER_UID = String(process.getuid?.() ?? 0);
       const { mgr } = managerWithState();
       try {
         const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
         const overlaySpecs = await mgr.prepareOverlaySpecs({ sessionId: "pnpm-e2e-1", workspaceDir: dir, session: eligible });
         expect(overlaySpecs).toEqual([]);
-        const pnpmStoreDir = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
+        const pnpmStoreDir = mgr.preparePnpmStore({ sessionId: "pnpm-e2e-1", workspaceDir: dir, session: eligible });
         const config = mgr.buildConfigForWorkspace({
           sessionId: "pnpm-e2e-1", sessionDir: path.dirname(dir), workspaceDir: dir,
           credentialsDir: TEST_CREDENTIALS_DIR, overlaySpecs, pnpmStoreDir,
@@ -1135,9 +1207,11 @@ describe("SessionContainerManager", () => {
         const call = mockDocker.createContainer.mock.calls.at(-1)![0];
         const storeMount = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/.pnpm-store");
         expect(storeMount?.Source).toBe(STATE_VOL);
-        expect(storeMount?.VolumeOptions?.Subpath).toContain("pnpm-store/");
+        expect(storeMount?.VolumeOptions?.Subpath).toContain("sessions/pnpm-e2e-1/overlay/pnpm-store");
         const nested = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/node_modules");
         expect(nested).toBeUndefined();
+        // Both spellings: pnpm moved its config env prefix at 11 and the store is private now.
+        expect(call.Env).toContain("PNPM_CONFIG_STORE_DIR=/workspace/.pnpm-store");
         expect(call.Env).toContain("npm_config_store_dir=/workspace/.pnpm-store");
       } finally {
         if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;

@@ -3,7 +3,8 @@ import {
   buildOverlaySpecs,
   depDirsForSession,
   isPnpmRepo,
-  pnpmStoreDirForRuntime,
+  sessionPnpmStoreDir,
+  PNPM_VERIFIED_NAMESPACE,
   resolveOverlayScope,
   classifyDepDirsForOverlay,
   type DepDirOverlaySpec,
@@ -75,8 +76,7 @@ export async function prepareOverlaySpecs(
   const scope = resolveOverlayScope(opts.session, process.env, opts.workspaceDir);
   if (!scope) return [];
   if (!deps.workspaceVolume) return [];
-  // pnpm hardlinks cannot cross overlayfs; use a shared store on the workspace filesystem.
-  if (isPnpmRepo(opts.workspaceDir)) return [];
+  const pnpm = isPnpmRepo(opts.workspaceDir);
   const declared = depDirsForSession({ workspaceDir: opts.workspaceDir });
   const { valid, dropped } = await classifyDepDirsForOverlay(declared, opts.workspaceDir);
   // A dropped dir gets no overlay and no install (the marker pre-stamp refuses on a partial
@@ -97,10 +97,20 @@ export async function prepareOverlaySpecs(
     depDirs: valid,
     volumeMountpoint,
     stateRoot: stateDir,
+    ...(pnpm ? { namespace: PNPM_VERIFIED_NAMESPACE } : {}),
     generationForScope: stateDir
       ? (scopeHash) => readBasePointerByHash(stateDir, scopeHash)?.generation ?? 0
       : undefined,
   });
+  // A pnpm session mounts ONLY a base the orchestrator's verifying builder published, and never
+  // falls back to an unverified one (docs/276 section 5) — so the gate reads the pointer of the
+  // scope each spec actually names, rather than recomputing the hash and risking drift from it.
+  // All-or-nothing: a partly-mounted set would leave one declared dep dir on the verified base
+  // and the next on a private install, with no single answer to what the session is running.
+  // Until every one has a published generation the session installs privately, as it does today.
+  if (pnpm && !specs.every((s) => stateDir && readBasePointerByHash(stateDir, s.scopeHash))) {
+    return [];
+  }
   if (!opts.requireProvisioned) {
     // Pin at selection: until the container exists, Docker cannot show the janitor that this base is needed.
     for (const spec of specs) claimOverlayBaseGeneration(spec.scopeHash, spec.generation);
@@ -157,6 +167,7 @@ export async function resolveSiblingOverlayDepDirs(
 export function preparePnpmStore(
   deps: Pick<OverlayProvisionerDeps, "workspaceVolume" | "stateDir">,
   opts: {
+    sessionId: string;
     workspaceDir: string;
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
   },
@@ -165,5 +176,5 @@ export function preparePnpmStore(
   if (!deps.workspaceVolume) return undefined;
   if (!deps.stateDir) return undefined;
   if (!isPnpmRepo(opts.workspaceDir)) return undefined;
-  return pnpmStoreDirForRuntime(deps.stateDir);
+  return sessionPnpmStoreDir(deps.stateDir, opts.sessionId);
 }

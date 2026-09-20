@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { safeSimpleGit } from "../shared/git-hooks-guard.js";
@@ -62,6 +61,10 @@ export function resolveOverlayScope(
   };
 }
 
+// Only the orchestrator's verifying builder publishes into this namespace, so a pnpm session can
+// never be handed a base another session's install produced (docs/276 section 5).
+export const PNPM_VERIFIED_NAMESPACE = "pnpm-verified-v1";
+
 export interface DepDirOverlaySpec extends OverlaySpec {
   depDir: string;
   mountPath: string;
@@ -116,13 +119,15 @@ export function buildOverlaySpecs(args: {
   depDirs: string[];
   volumeMountpoint: string;
   stateRoot?: string;
+  /** Partitions the base by its publisher; see PNPM_VERIFIED_NAMESPACE. */
+  namespace?: string;
   // Generation 0 is the empty cold-start base.
   generationForScope?: (scopeHash: string) => number;
 }): DepDirOverlaySpec[] {
-  const { sessionId, scope, depDirs, volumeMountpoint, stateRoot } = args;
+  const { sessionId, scope, depDirs, volumeMountpoint, stateRoot, namespace } = args;
   const generationForScope = args.generationForScope ?? (() => 0);
   return depDirs.map((depDir) => {
-    const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
+    const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir, namespace);
     const generation = generationForScope(scopeHash);
     const sessionOverlayDir = sessionOverlayGenDir(volumeMountpoint, sessionId, scopeHash, generation);
     const orchSessionOverlayDir = stateRoot
@@ -135,7 +140,12 @@ export function buildOverlaySpecs(args: {
       workdir: path.join(sessionOverlayDir, "work"),
       depDir,
       mountPath: path.posix.join(CONTAINER_WORKSPACE_PATH, depDir),
-      scope: { repoUrl: scope.repoUrl, runtimeKey: scope.runtimeKey, depDir },
+      scope: {
+        repoUrl: scope.repoUrl,
+        runtimeKey: scope.runtimeKey,
+        depDir,
+        ...(namespace !== undefined ? { namespace } : {}),
+      },
       scopeHash,
       generation,
       ...(stateRoot && orchSessionOverlayDir
@@ -193,6 +203,10 @@ export function liveOverlayScopeHashes(
     if (s.diskTier === "evicted") continue;
     for (const depDir of resolveDepDirs(s)) {
       live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir));
+      // Claim the verified namespace unconditionally: package-manager detection reads the
+      // MUTABLE checkout, so a session that flips to npm mid-life would otherwise let the sweep
+      // reap the verified base it comes back to. Naming a hash with no directory costs nothing.
+      live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir, PNPM_VERIFIED_NAMESPACE));
     }
   }
   return live;
@@ -306,15 +320,20 @@ export function missingDepDirParents(depDir: string, workspaceDir: string): stri
   return depDirAncestors(depDir).filter((a) => !fs.existsSync(path.join(workspaceDir, a)));
 }
 
-// Keep the pnpm store on the workspace filesystem: overlayfs forces hardlinks into copies.
 export const PNPM_STORE_SUBDIR = "pnpm-store";
 
-export function pnpmStoreHash(runtimeKey: string): string {
-  return crypto.createHash("sha256").update(runtimeKey).digest("hex").slice(0, 16);
+// The store is PRIVATE to one session (docs/276 section 5, req 1): a store index every pnpm
+// session could write is H2/H4, and no permission bit fixes that while the writer owns the inode.
+// It sits beside the session's overlay layers so it is dropped with the session's directory, and
+// still mounts at PNPM_STORE_CONTAINER_PATH — pnpm records storeDir in .modules.yaml and refuses
+// a base built against another path.
+export function sessionPnpmStoreDir(root: string, sessionId: string): string {
+  return path.join(root, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, PNPM_STORE_SUBDIR);
 }
 
-export function pnpmStoreDirForRuntime(stateDir: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(stateDir, PNPM_STORE_SUBDIR, pnpmStoreHash(overlayRuntimeKey(env)));
+// <stateDir>/pnpm-store held the retired per-runtime shared store; nothing writes it any more.
+export function retiredSharedPnpmStoreRoot(stateDir: string): string {
+  return path.join(stateDir, PNPM_STORE_SUBDIR);
 }
 
 function readPackageManagerField(workspaceDir: string): string | null {

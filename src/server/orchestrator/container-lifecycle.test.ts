@@ -110,20 +110,22 @@ describe("buildMounts", () => {
     expect(depMount!.VolumeOptions?.Subpath).toBe("dep-cache/abc123");
   });
 
-  it("mounts pnpmStoreDir at pnpm 11's relocation target /workspace/.pnpm-store as a volume subpath", () => {
-    const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
+  // Every session's own store maps to the SAME container path: pnpm records storeDir in
+  // node_modules/.modules.yaml and refuses a tree built against another (docs/276 FINDINGS).
+  it("mounts a session's private pnpmStoreDir at /workspace/.pnpm-store as a volume subpath", () => {
+    const config = baseConfig({ pnpmStoreDir: "/workspace/sessions/sess-1/overlay/pnpm-store" });
     const result = buildMounts(config, "my-workspace-vol", undefined);
     const storeMount = result.mounts.find((m) => m.Target === PNPM_STORE_CONTAINER_PATH);
     expect(storeMount).toBeDefined();
     expect(PNPM_STORE_CONTAINER_PATH).toBe("/workspace/.pnpm-store");
     expect(storeMount!.Source).toBe("my-workspace-vol");
-    expect(storeMount!.VolumeOptions?.Subpath).toBe("pnpm-store/deadbeefcafe0001");
+    expect(storeMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1/overlay/pnpm-store");
   });
 
   it("mounts pnpmStoreDir as a bind when no workspaceVolume (dev mode)", () => {
-    const config = baseConfig({ pnpmStoreDir: "/state/pnpm-store/deadbeefcafe0001" });
+    const config = baseConfig({ pnpmStoreDir: "/state/sessions/sess-1/overlay/pnpm-store" });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.binds).toContain("/state/pnpm-store/deadbeefcafe0001:/workspace/.pnpm-store:rw");
+    expect(result.binds).toContain("/state/sessions/sess-1/overlay/pnpm-store:/workspace/.pnpm-store:rw");
   });
 
   it("adds no pnpm store mount when pnpmStoreDir is undefined (flag-off / non-pnpm)", () => {
@@ -337,7 +339,15 @@ describe("buildEnv", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env).toContain("YARN_CACHE_FOLDER=/dep-cache/yarn");
-    expect(env).toContain("PNPM_STORE_DIR=/dep-cache/pnpm");
+  });
+
+  // Measured 2026-09-20 with `pnpm store path` on 12.5.1: PNPM_STORE_DIR moves nothing. It used
+  // to point pnpm at a per-repo WRITABLE /dep-cache/pnpm, so were a release ever to honour it
+  // the shared-index hole (H2/H4) would reappear at repo scope. Removed rather than left armed.
+  it("sets no PNPM_STORE_DIR — it is not a pnpm config env, and its target is session-writable", () => {
+    const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env.filter((e) => e.startsWith("PNPM_STORE_DIR="))).toHaveLength(0);
   });
 
   /**
@@ -390,41 +400,44 @@ describe("buildEnv", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
     const cacheVars = env.filter((e) =>
       e.startsWith("npm_config_cache=") ||
-      e.startsWith("YARN_CACHE_FOLDER=") ||
-      e.startsWith("PNPM_STORE_DIR="),
+      e.startsWith("YARN_CACHE_FOLDER="),
     );
     expect(cacheVars).toHaveLength(0);
   });
 
-  it("sets npm_config_store_dir to the relocation target when pnpmStoreDir is set", () => {
-    const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
+  // docs/276 section 5: the store this points at is PRIVATE to the session, so every pnpm
+  // version must be relocated onto it. Measured 2026-09-20 with `pnpm store path`: 12.5.1 honours
+  // only PNPM_CONFIG_STORE_DIR, 10.x only npm_config_store_dir — one spelling reaches half the
+  // versions, and the half it misses keeps a store the verified base was not built against.
+  it("relocates the store under BOTH pnpm config env spellings when pnpmStoreDir is set", () => {
+    const config = baseConfig({ pnpmStoreDir: "/workspace/sessions/s1/overlay/pnpm-store" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env).toContain("PNPM_CONFIG_STORE_DIR=/workspace/.pnpm-store");
     expect(env).toContain("npm_config_store_dir=/workspace/.pnpm-store");
   });
 
-  it("does not set npm_config_store_dir when pnpmStoreDir is undefined (flag-off / non-pnpm)", () => {
+  it("sets neither store-dir spelling when pnpmStoreDir is undefined (flag-off / non-pnpm)", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
-    expect(env.filter((e) => e.startsWith("npm_config_store_dir="))).toHaveLength(0);
+    expect(env.filter((e) => /^(npm_config_store_dir|PNPM_CONFIG_STORE_DIR)=/.test(e))).toHaveLength(0);
   });
 
-  // docs/276 H3. The pre-11 spelling is the whole setting, deliberately: pnpm moved its env
-  // prefix at 11, and the versions that read `npm_config_*` are the same ones that read
-  // `npm_config_store_dir`, so copy reaches exactly the sessions that share a store. pnpm
-  // >= 11 keeps a private in-container store and is left on hardlinks until section 5.
+  // docs/276 H3. The pre-11 spelling only, still: pnpm >= 11 is on hardlinks into its own store
+  // until the verified base lands (plan.md section 5 step 8), where the import must cross the
+  // overlay boundary anyway. Copying there today would cost ~1.8x the disk on ext4 for nothing.
   it("imports pnpm store files by copy when pnpmStoreDir is set", () => {
-    const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
+    const config = baseConfig({ pnpmStoreDir: "/workspace/sessions/s1/overlay/pnpm-store" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env).toContain("npm_config_package_import_method=copy");
-    expect(env.filter((e) => e.startsWith("PNPM_CONFIG_"))).toHaveLength(0);
+    expect(env.filter((e) => e.startsWith("PNPM_CONFIG_PACKAGE_IMPORT_METHOD="))).toHaveLength(0);
   });
 
   it("never asks for the clone import method, which fails ENOTSUP on ext4", () => {
-    const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
+    const config = baseConfig({ pnpmStoreDir: "/workspace/sessions/s1/overlay/pnpm-store" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env.filter((e) => /package.import.method=(?!copy$)/i.test(e))).toHaveLength(0);
   });
 
-  it("does not set the import method when pnpmStoreDir is undefined (no shared store)", () => {
+  it("does not set the import method when pnpmStoreDir is undefined (no relocated store)", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
     expect(env.filter((e) => /package.import.method=/i.test(e))).toHaveLength(0);
   });
@@ -1292,13 +1305,11 @@ describe("prepareOverlayDirs (planning#147)", () => {
   });
 });
 
-describe("ensurePnpmStoreDir (planning#2286)", () => {
+describe("ensurePnpmStoreDir (planning#2286; private per session — docs/276)", () => {
   let tmpDir: string;
   const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
 
-  // Use our GID for permitted chgrp calls; it need not equal our UID.
   const selfUid = process.getuid?.();
-  const selfGid = process.getgid?.();
 
   afterEach(() => {
     if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
@@ -1306,83 +1317,114 @@ describe("ensurePnpmStoreDir (planning#2286)", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  const storePath = (n: string): string =>
+    path.join(tmpDir, "sessions", n, "overlay", "pnpm-store");
+
   it("creates the store dir and its parents", () => {
     delete process.env.SHIPIT_SESSION_WORKER_UID;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
-    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0001");
+    const storeDir = storePath("sess-1");
     expect(ensurePnpmStoreDir(storeDir)).toBe(true);
     expect(fs.existsSync(storeDir)).toBe(true);
   });
 
-  it("hands the store dir to the shared worker gid", () => {
-    if (selfUid === undefined || selfGid === undefined) return;
-    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
+  /**
+   * The store index is what H2/H4 rewrite, so this store must be reachable by exactly one
+   * session. Group write is how the SHARED store was made usable, and carrying it over would
+   * leave every session able to poison every other one's index — the hole, not the fix.
+   */
+  it("seals the store to its own session: 0700, no group or other access", () => {
+    if (selfUid === undefined) return;
+    process.env.SHIPIT_SESSION_WORKER_UID = String(selfUid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
-    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0002");
-    const spy = vi.spyOn(fs, "lchownSync");
-    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
-    expect(spy).toHaveBeenCalledWith(storeDir, selfUid, selfGid);
-    spy.mockRestore();
-  });
-
-  it("re-chowns an existing store dir (repairs one left root-owned by an earlier build)", () => {
-    if (selfUid === undefined || selfGid === undefined) return;
-    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
-    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0003");
+    const storeDir = storePath("sess-1");
     fs.mkdirSync(storeDir, { recursive: true });
-    const spy = vi.spyOn(fs, "lchownSync");
+    fs.chmodSync(storeDir, 0o2775);
     expect(ensurePnpmStoreDir(storeDir)).toBe(true);
-    expect(spy).toHaveBeenCalledWith(storeDir, selfUid, selfGid);
-    spy.mockRestore();
+    expect(fs.lstatSync(storeDir).mode & 0o7777).toBe(0o700);
   });
 
-  it("walks the store contents ONCE, then skips on every later create", () => {
-    if (selfGid === undefined) return;
-    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
+  it("does not walk the store when its uid already matches", () => {
+    if (selfUid === undefined) return;
+    process.env.SHIPIT_SESSION_WORKER_UID = String(selfUid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
-    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0004");
+    const storeDir = storePath("sess-1");
     fs.mkdirSync(path.join(storeDir, "files", "00"), { recursive: true });
     fs.writeFileSync(path.join(storeDir, "files", "00", "abc"), "x");
 
-    const first = vi.spyOn(fs, "lchownSync");
-    ensurePnpmStoreDir(storeDir);
-    expect(first.mock.calls.length).toBeGreaterThan(1);
-    first.mockRestore();
-
-    const second = vi.spyOn(fs, "lchownSync");
-    ensurePnpmStoreDir(storeDir);
-    expect(second).not.toHaveBeenCalled();
-    second.mockRestore();
-  });
-
-  it("chowns nothing when SHIPIT_SESSION_WORKER_UID is unset (legacy root runtime)", () => {
-    delete process.env.SHIPIT_SESSION_WORKER_UID;
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
-    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0005");
     const spy = vi.spyOn(fs, "lchownSync");
     expect(ensurePnpmStoreDir(storeDir)).toBe(true);
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
 
-  it("reports false when the handoff did not take (mount must be dropped)", () => {
-    const myUid = process.getuid?.();
-    if (myUid === undefined) return;
-    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
+  /**
+   * Per-session uids (docs/270) mean the owner has to come from the STORE'S OWN PATH — one global
+   * worker uid would seal every session's store to the same identity, which is the sharing this
+   * change exists to end. The stub gives two sessions two different uids, which the real resolver
+   * cannot be made to do on a test host that is not root.
+   */
+  it("seals each store to the identity resolved from its own path, not one global uid", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
-    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0006");
-    const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
-    expect(ensurePnpmStoreDir(storeDir)).toBe(false);
+    const asked: string[] = [];
+    const perSession = (p: string): { uid: number; gid: number } => {
+      asked.push(p);
+      return p.includes("sess-1") ? { uid: 4001, gid: 4001 } : { uid: 4002, gid: 4002 };
+    };
+    const chown = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
+
+    ensurePnpmStoreDir(storePath("sess-1"), perSession);
+    ensurePnpmStoreDir(storePath("sess-2"), perSession);
+
+    expect(asked).toEqual([storePath("sess-1"), storePath("sess-2")]);
+    expect(chown).toHaveBeenCalledWith(storePath("sess-1"), 4001, 4001);
+    expect(chown).toHaveBeenCalledWith(storePath("sess-2"), 4002, 4002);
+    chown.mockRestore();
+  });
+
+  // The orchestrator creates the dir as root, and the entrypoint prunes .pnpm-store from its own
+  // chown walk, so a store owned by anyone else stays unwritable unless this repairs it.
+  it("chowns the store and its CONTENTS when it is owned by another uid", () => {
+    if (selfUid === undefined) return;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = storePath("sess-1");
+    fs.mkdirSync(path.join(storeDir, "files", "00"), { recursive: true });
+    fs.writeFileSync(path.join(storeDir, "files", "00", "abc"), "x");
+
+    const chown = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
+    ensurePnpmStoreDir(storeDir, () => ({ uid: selfUid + 1, gid: selfUid + 1 }));
+    expect(chown).toHaveBeenCalledWith(storeDir, selfUid + 1, selfUid + 1);
+    expect(chown).toHaveBeenCalledWith(
+      path.join(storeDir, "files", "00", "abc"), selfUid + 1, selfUid + 1,
+    );
+    chown.mockRestore();
+  });
+
+  it("reports false when the chown did not take, so the mount is dropped", () => {
+    if (selfUid === undefined) return;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const chown = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
+    expect(ensurePnpmStoreDir(storePath("sess-1"), () => ({ uid: selfUid + 1, gid: selfUid + 1 })))
+      .toBe(false);
+    chown.mockRestore();
+  });
+
+  it("chowns nothing when SHIPIT_SESSION_WORKER_UID is unset (legacy root runtime)", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = storePath("sess-1");
+    const spy = vi.spyOn(fs, "lchownSync");
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
 
   it("reports false when the store dir cannot be created", () => {
     delete process.env.SHIPIT_SESSION_WORKER_UID;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
-    const blocker = path.join(tmpDir, "pnpm-store");
+    const blocker = path.join(tmpDir, "sessions");
     fs.writeFileSync(blocker, "not a dir");
-    expect(ensurePnpmStoreDir(path.join(blocker, "deadbeefcafe0007"))).toBe(false);
+    expect(ensurePnpmStoreDir(path.join(blocker, "s", "overlay", "pnpm-store"))).toBe(false);
   });
 });
 

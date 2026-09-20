@@ -43,12 +43,13 @@ import {
 } from "./overlay-session.js";
 import {
   chownToSessionWorker,
+  chownTreeToSessionWorker,
   handWorkspaceBackToWorker,
   reconcileDepDirCacheOwnership,
-  sessionWorkerGid,
   shareTreeOnce,
   identityForTarget,
 } from "./session-worker-uid.js";
+import type { SessionIdentity } from "../shared/session-identity.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import { SSH_AGENT_SOCKET_PATH } from "./ssh-provision.js";
 import {
@@ -140,23 +141,34 @@ export const PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
 export const ANDROID_SDK_ROOT = "/opt/android-sdk";
 export const JAVA_HOME = "/opt/java";
 
-// Match pnpm 11's automatic relocation path; keep the store on the workspace filesystem for hardlinks.
+// A base records its storeDir in .modules.yaml and refuses another, so every session maps its own
+// private store to this one container path (docs/276 FINDINGS).
 export const PNPM_STORE_CONTAINER_PATH = "/workspace/.pnpm-store";
 
-/** Verify shared-store ownership before mounting; the worker cannot repair a failed handoff. */
-export function ensurePnpmStoreDir(storeDir: string): boolean {
+/**
+ * Hand the session's PRIVATE pnpm store to its own uid before mounting; the worker cannot repair a
+ * failed handoff. Never group-shared: a store index every session may write is H2/H4 (docs/276).
+ */
+export function ensurePnpmStoreDir(
+  storeDir: string,
+  // Resolved from the store's own path, so each session's store is sealed to THAT session's
+  // identity rather than to one worker uid shared by all of them (docs/270).
+  resolveOwner: (targetPath: string) => SessionIdentity | null = identityForTarget,
+): boolean {
   try {
     fs.mkdirSync(storeDir, { recursive: true });
   } catch (err) {
     console.warn(`[containers] pnpm store mkdir failed for ${storeDir}:`, err);
     return false;
   }
-  const gid = sessionWorkerGid();
-  if (gid === null) return true;
-  // Share contents once per GID; the entrypoint excludes this nested mount from its chown walk.
-  shareTreeOnce(storeDir);
+  const owner = resolveOwner(storeDir);
+  if (owner === null) return true;
   try {
-    return fs.lstatSync(storeDir).gid === gid;
+    // The entrypoint prunes this nested mount from its chown walk, so a uid change must be
+    // repaired here; one stat keeps the normal case off the walk.
+    if (fs.lstatSync(storeDir).uid !== owner.uid) chownTreeToSessionWorker(storeDir, owner);
+    fs.chmodSync(storeDir, 0o700);
+    return fs.lstatSync(storeDir).uid === owner.uid;
   } catch (err) {
     console.warn(`[containers] pnpm store ownership check failed for ${storeDir}:`, err);
     return false;
@@ -370,18 +382,19 @@ export function buildEnv(
     // never be the one this session installs from.
     env.push(`npm_config_cache=${sessionNpmCacheDir(CONTAINER_SESSION_STATE_DIR)}`);
     env.push(`YARN_CACHE_FOLDER=${DEP_CACHE_CONTAINER_PATH}/yarn`);
-    env.push(`PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`);
   }
 
   if (config.pnpmStoreDir) {
+    // Both spellings: pnpm moved its config env prefix at 11 (measured 2026-09-20 with
+    // `pnpm store path` — 12.5.1 reads only PNPM_CONFIG_*, 10.x only npm_config_*). The store
+    // this points at is private to the session, so relocating every version is the fix, not the
+    // hole it would have been while the store was shared (docs/276 section 5).
+    env.push(`PNPM_CONFIG_STORE_DIR=${PNPM_STORE_CONTAINER_PATH}`);
     env.push(`npm_config_store_dir=${PNPM_STORE_CONTAINER_PATH}`);
-    // docs/276 H3: import store files by copy, so a write to the shared store cannot change
-    // a file another session already installed. Not `clone` — it is the strict reflink
-    // spelling and fails ENOTSUP on ext4. Only pnpm <= 10 reads this spelling, and only
-    // those versions read `npm_config_store_dir` above, so copy reaches exactly the sessions
-    // that share a store; pnpm >= 11 keeps a private in-container store, where copy would buy
-    // no isolation and cost ~1.8x the disk. Section 5 re-adds it when the overlay makes the
-    // copy free (plan.md).
+    // docs/276 H3: import store files by copy so a store write cannot change an already-installed
+    // file (req 4, req 11). Not `clone` — the strict reflink spelling, ENOTSUP on ext4. pnpm >= 11
+    // stays on hardlinks until the verified base lands, where the import must cross the overlay
+    // boundary anyway and the copy becomes free (plan.md section 5, step 8).
     env.push("npm_config_package_import_method=copy");
   }
   // Ops must select the read-only proxy even if dockerAccess is also true.

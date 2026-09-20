@@ -82,6 +82,7 @@ export function createWarmPool(
         session: { remoteUrl: repoUrl, kind: undefined },
       });
       const pnpmStoreDir = containerManager.preparePnpmStore({
+        sessionId,
         workspaceDir,
         session: { remoteUrl: repoUrl, kind: undefined },
       });
