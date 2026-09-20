@@ -99,6 +99,21 @@ be choosing what your `npm install` runs.
 
 `yarn` and `pnpm` are unaffected by this and still use `/dep-cache` directly.
 
+### pnpm installs from its store by copy
+
+ShipIt sets pnpm's `package-import-method=copy`, so the files under `node_modules`
+are copies rather than hardlinks into the pnpm store. Two things follow. You can
+edit a file inside an installed package — a `patch-package`-style fix, or
+instrumenting a dependency to debug it — and the edit stays in this session; it
+reaches neither the store nor another session. And nothing written to the store can
+change a package this session has already installed. The cost is disk: a pnpm
+`node_modules` no longer shares inodes with the store (about 1.8× the combined tree
+on ext4).
+
+The store itself is not yet a boundary between sessions: pnpm's
+`verify-store-integrity` is a local check on the store this session reads, so do not
+read it as protection against what another session wrote.
+
 ### Write-protected paths
 
 The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing under `/workspace` and elsewhere is unrestricted, but the file-edit tools (Edit/Write/MultiEdit/NotebookEdit) are **denied** on a few infrastructure paths:

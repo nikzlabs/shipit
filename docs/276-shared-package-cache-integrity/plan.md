@@ -175,6 +175,32 @@ in the design selects behaviour from a reflink probe, so there is none. A
 loopback XFS image is not a ShipIt feature: it needs `CAP_SYS_ADMIN`, which the
 orchestrator does not take, and is Linux-only.
 
+**Shipped 2026-09-20, before the overlay, with the ext4 disk cost accepted.** The
+requester chose to land H3 on its own rather than hold it for section 5, so until
+that lands a pnpm session pays roughly 1.8× the disk of the hardlink import for the
+same tree on ext4 (the row above). The req 10 gate is therefore **not** met by this
+change and stays open in the checklist; it closes when the tree overlay makes the
+copy free again.
+
+**The setting is pushed under both env spellings, because pnpm moved its prefix at
+11** (measured 2026-09-20 with `pnpm store path`, which reports the resolved value):
+pnpm 10.28.2 reads `npm_config_*` and ignores `PNPM_CONFIG_*`; 11.22.0 and 12.5.1 do
+the reverse. `buildEnv` pushes `npm_config_package_import_method=copy` and
+`PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy` beside the store path, so the import method
+holds whichever version a repo's `packageManager` pins.
+
+**Finding, not fixed here: the store relocation itself uses the pre-11 spelling.**
+`npm_config_store_dir=/workspace/.pnpm-store` (`container-lifecycle.ts:377`) is
+therefore inert for pnpm ≥ 11, which falls back to its default store in the
+container's home — so those sessions share no store today, and the mount at
+`/workspace/.pnpm-store` goes unused. Adding `PNPM_CONFIG_STORE_DIR` would start
+sharing a store that H2 and H4 are still open against (section 5), so it is a
+deliberate decision rather than a typo fix, and it is left to the requester. The
+copy import above is correct either way: for pnpm ≤ 10 it closes H3 on the store
+sessions do share, and for ≥ 11 it closes it in advance. The pre-11 spelling costs
+one `npm warn Unknown env config "package-import-method"` per npm command in a pnpm
+session, next to the one `npm_config_store_dir` already emits.
+
 ### 3. ext4 — overlayfs gives copy-on-write without reflink (reqs 10, 11)
 
 overlayfs implements copy-on-write in the VFS, so it works on any filesystem.

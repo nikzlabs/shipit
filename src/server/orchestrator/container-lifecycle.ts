@@ -375,6 +375,13 @@ export function buildEnv(
 
   if (config.pnpmStoreDir) {
     env.push(`npm_config_store_dir=${PNPM_STORE_CONTAINER_PATH}`);
+    // docs/276 H3: import store files by copy, so a write to the shared store cannot change
+    // a file another session already installed. Not `clone` — it is the strict reflink
+    // spelling and fails ENOTSUP on ext4. Both spellings because pnpm changed its env
+    // prefix: pnpm <= 10 reads `npm_config_*`, pnpm >= 11 only `PNPM_CONFIG_*` (measured
+    // 2026-09-20 against 10.28.2, 11.22.0 and 12.5.1).
+    env.push("npm_config_package_import_method=copy");
+    env.push("PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy");
   }
   // Ops must select the read-only proxy even if dockerAccess is also true.
   if (config.opsSession) {
