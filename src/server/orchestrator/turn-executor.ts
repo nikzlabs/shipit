@@ -38,17 +38,14 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
-import { prepareDispatch } from "./prepared-dispatch.js";
 import {
   clearConversationThread,
-  markSessionStatusStale,
-  shouldNudgeForStatusCard,
-  statusNudgePrompt,
+  settleSessionStatusCard,
+  shouldCarryStatusNudge,
   type SessionStatusDeps,
   type TurnStatusFacts,
 } from "./services/session-status.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
-import { systemTurnBlockedByResidentWork } from "./turn-admission.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
@@ -117,7 +114,6 @@ export interface TurnInput {
   /** docs/303 req 36 — the harness answers this turn by compacting the conversation. */
   harnessCommand?: boolean;
   /** docs/303 req 15 — this turn IS the status nudge, so it is never nudged again. */
-  statusNudge?: boolean;
 }
 
 export async function executeAgentTurn(
@@ -297,10 +293,6 @@ export async function executeAgentTurn(
       // queue. Synchronous, so no successor can appear between the decision and the claim;
       // in a `finally`, so a throwing completion callback cannot strand the entry.
       if (releasesSystemHold && drainSettled && postTurn !== "none") releaseQueuedTurn(runner);
-      // docs/303 — a system turn holds systemTurnInProgress until here, so a nudge decided
-      // during its post-turn sequence could only have queued behind it. Dispatch now that
-      // the hold is off; the call is a no-op once the nudge has gone out.
-      dispatchStatusNudge();
     }
   };
 
@@ -378,7 +370,6 @@ export async function executeAgentTurn(
       await postTurnStep("drain", tryDrain);
       await postTurnStep("commit", runCommitAndPr);
       await postTurnStep("finished", emitFinishedIfIdle);
-      await postTurnStep("status-card", settleStatusCard);
       finishTurn();
     } finally {
       releasePostTurn();
@@ -692,8 +683,7 @@ export async function executeAgentTurn(
         await postTurnStep("drain", tryDrain);
         await postTurnStep("commit", runCommitAndPr);
         await postTurnStep("finished", emitFinishedIfIdle);
-        await postTurnStep("status-card", settleStatusCard);
-        finishTurn();
+          finishTurn();
       } finally {
         releasePostTurn();
       }
@@ -710,9 +700,9 @@ export async function executeAgentTurn(
   // recovery semantics hold: this says THIS turn produced a result of its own.
   let sawOwnResult = false;
 
-  // ---- docs/303 — status-card settlement (req 11–15) ----
-  // Read at each use, never captured: the user can turn the setting off mid-turn, and the
-  // nudge must not then start a turn asking for a tool the agent no longer has (req 21).
+  // ---- docs/303 — status-card settlement (req 11–15, 38) ----
+  // Read at the settlement rather than captured at turn start: the user can turn the
+  // setting off mid-turn, and with it off the card is not ShipIt's to touch (req 21).
   const statusCardOn = (): boolean => deps.statusCardEnabled?.() ?? false;
   const statusDeps: SessionStatusDeps = {
     sessionManager: deps.listenerDeps.sessionManager,
@@ -732,21 +722,15 @@ export async function executeAgentTurn(
     const cardOn = statusCardOn();
     const facts: TurnStatusFacts = {
       statusUpdated: runner?.statusUpdated ?? false,
-      wasInterrupted: runner?.wasInterrupted ?? false,
+      // Not `wasInterrupted`: that also latches on a user stop, and a stopped turn did the
+      // session's work, so req 38 asks it for the card like any other (docs/303 plan.md).
+      awaitingAnswer: runner?.awaitingUserAnswer ?? false,
       // Not `receivedResult`: adoption keeps that from the predecessor on purpose, and a
       // crashed adopted turn produced no result of its own to judge.
       receivedResult: sawOwnResult,
       // Only when the result is this prompt's: a resident CLI can start a turn of its
       // own before the command is submitted, and that turn is work the card must report.
       harnessCommand: harnessCommandTurn && ownTurn !== "queued",
-      statusNudge: input.statusNudge === true,
-      // Taken here, with the rest, because a drained successor resets both
-      // (`resetRunnerTurnState`, and this executor's own re-arm) — read live at the
-      // decision they can describe some later turn instead of the one being judged.
-      // Any steer counts, answered or not: whether the agent answered it is not
-      // knowable here (docs/303 plan.md → Turn settlement).
-      steered: (runner?.steeredMessages.length ?? 0) > 0,
-      promptQueued: ownTurn === "queued",
       postTurn,
       writeSeq: 0,
     };
@@ -757,114 +741,20 @@ export async function executeAgentTurn(
       console.error(`[turn] reading the status card for ${sessionId} failed:`, err);
     }
     turnFacts = facts;
-    if (cardOn && !facts.harnessCommand && !facts.statusUpdated) {
-      void markSessionStatusStale(statusDeps, sessionId, facts.writeSeq).catch((err: unknown) => {
-        console.error(`[turn] marking the status card stale for ${sessionId} failed:`, err);
+    // req 36 — a harness command produced no work of the agent's own, so it neither marks
+    // the card nor counts as a turn the card could have fallen behind.
+    if (cardOn && !facts.harnessCommand) {
+      void settleSessionStatusCard(statusDeps, sessionId, {
+        ifWriteSeq: facts.writeSeq,
+        statusUpdated: facts.statusUpdated,
+        // req 38 — the ask rides the next turn's prompt, so it is decided here and
+        // dispatched nowhere: the card carries it until a call answers it.
+        nudgePending: shouldCarryStatusNudge(facts),
+      }).catch((err: unknown) => {
+        console.error(`[turn] settling the status card for ${sessionId} failed:`, err);
       });
     }
     return facts;
-  };
-
-  let nudgeDecided = false;
-  let nudgePending = false;
-  let nudgeDispatched = false;
-  /**
-   * req 34 (planning#589) — a message that reached the agent mid-turn is owed an answer,
-   * and `promptQueued` is owed one exactly once. The prompt lifecycle deliberately never
-   * moves a queued prompt on (it is undecidable which result answered it), so reading the
-   * state itself would defer every later turn this resident settles.
-   */
-  let queuedPromptDeferralSpent = false;
-  // Decided on the snapshot alone, after idle; dispatched separately, because a system
-  // turn still holds systemTurnInProgress here and would only queue the nudge behind it.
-  const decideStatusNudge = (): void => {
-    if (nudgeDecided) return;
-    nudgeDecided = true;
-    if (!statusCardOn() || !runner) return;
-    const facts = settleTurnFacts();
-    const deferForQueuedPrompt = facts.promptQueued && !queuedPromptDeferralSpent;
-    if (deferForQueuedPrompt) queuedPromptDeferralSpent = true;
-    nudgePending = shouldNudgeForStatusCard(
-      facts,
-      storedStatus(),
-      // The live two say a successor has already taken the session; the two from the
-      // snapshot say this turn left a message unanswered, which neither can see.
-      runner.running || runner.queueLength > 0 || facts.steered || deferForQueuedPrompt,
-    );
-  };
-
-  const dispatchStatusNudge = (): void => {
-    if (!nudgePending || nudgeDispatched || !runner || runner.disposed) return;
-    // Re-read rather than trust the decision: a setting turned off since then takes the
-    // tool with it, and the turn would ask for something the agent cannot call.
-    if (!statusCardOn()) return;
-    // Re-checked here, not only at the decision: the deferral is about the session's
-    // state when the nudge would start, and that turn is checked afresh when it ends.
-    if (runner.running || runner.systemTurnInProgress || runner.mergeHold) return;
-    // Live state only: the snapshot's own reasons to defer were settled at the decision,
-    // and re-reading them here would read a successor's state instead of this turn's.
-    if (runner.queueLength > 0) {
-      nudgePending = false;
-      return;
-    }
-    // A system turn would replace the resident process and destroy its background work.
-    // One attempt per missing update (req 15), so a blocked nudge is simply not made: the
-    // card stays stale and the next ordinary turn is checked afresh.
-    if (!runner.canRunDispatchedTurn || systemTurnBlockedByResidentWork(runner, true)) return;
-    nudgeDispatched = true;
-    // The nudge is this turn's post-turn work until the turn it starts takes over — and
-    // "takes over" is not when `dispatch` returns. It sets `running` synchronously, but the
-    // turn epoch only advances when the successor enters its executor, so a predecessor
-    // exiting during the async setup in between still reads as current and clears the
-    // reservation. The lease spans that window; `PostTurnHold` expires on its own, so a
-    // turn that outlives the deadline is covered by `running` and the epoch by then.
-    runner.beginPostTurnWork();
-    let leaseHeld = true;
-    const releaseLease = (): void => {
-      if (!leaseHeld) return;
-      leaseHeld = false;
-      runner.endPostTurnWork();
-    };
-    try {
-      // Through `dispatch`, not an enqueue plus a drain: only that path owns recovery when
-      // turn setup rejects, and without it a message queued during setup is stranded with
-      // nothing left to start it.
-      const handle = runner.dispatch(prepareDispatch({
-        text: statusNudgePrompt(storedStatus()),
-        agentInterface: undefined,
-        messageOrigin: undefined,
-        execution: "dispatched",
-        activity: "Updating the status card…",
-        images: undefined,
-        files: undefined,
-        uploads: undefined,
-        permissionMode: input.permissionMode,
-        postTurn: undefined,
-        systemTurn: true,
-        onTurnComplete: undefined,
-        deliveryId: undefined,
-        dictated: undefined,
-        resetMergedBranch: undefined,
-        compactContext: undefined,
-        silent: undefined,
-        statusNudge: true,
-      }));
-      void (async () => {
-        try {
-          await handle.settled;
-        } finally {
-          releaseLease();
-        }
-      })();
-    } catch (err) {
-      console.error(`[turn] dispatching the status-card nudge for ${sessionId} failed:`, err);
-      releaseLease();
-    }
-  };
-
-  const settleStatusCard = (): void => {
-    decideStatusNudge();
-    dispatchStatusNudge();
   };
 
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
@@ -895,8 +785,7 @@ export async function executeAgentTurn(
         await postTurnStep("commit", runCommitAndPr);
         // A quota refusal can reach the executor as an adapter error; continue from here too.
         await postTurnStep("quota-continuation", runQuotaContinuation);
-        await postTurnStep("status-card", settleStatusCard);
-      } finally {
+        } finally {
         releasePostTurn();
       }
     },
@@ -1147,9 +1036,6 @@ export async function executeAgentTurn(
     turnFacts = null;
     sawOwnResult = false;
     harnessCommandTurn = false;
-    nudgeDecided = false;
-    nudgePending = false;
-    nudgeDispatched = false;
     thisTurnEpoch = runner?.turnEpoch;
   };
 
@@ -1259,8 +1145,7 @@ export async function executeAgentTurn(
           await postTurnStep("idle", signalIdleIfIdle);
           // Last of all: the continuation is a new turn, so this one must be fully settled.
           await postTurnStep("quota-continuation", runQuotaContinuation);
-          await postTurnStep("status-card", settleStatusCard);
-        } finally {
+            } finally {
           releasePostTurn();
         }
       })();
@@ -1382,8 +1267,7 @@ export async function executeAgentTurn(
         await postTurnStep("idle", signalIdleIfIdle);
         // Only fires when the result's own sequence did not reach it (a second result).
         await postTurnStep("quota-continuation", runQuotaContinuation);
-        await postTurnStep("status-card", settleStatusCard);
-        finishTurn();
+          finishTurn();
         return;
       }
 
@@ -1402,7 +1286,6 @@ export async function executeAgentTurn(
           () => input.drainNext({ ownsSystemHold: ownsSystemHold() }),
         );
       }
-      await postTurnStep("status-card", settleStatusCard);
       finishTurn();
       // A message that arrived after the result queued behind this turn's hold, which
       // finishTurn only just released; tryDrain was spent and idle declines on a
@@ -1485,7 +1368,6 @@ export async function executeAgentTurn(
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       // docs/303 req 15 — the worker reports it back, so a restart mid-nudge adopts a turn
       // that still knows it is one and is not nudged again.
-      if (input.statusNudge === true) agent.setStatusNudge?.(true);
       const paramsBegan = Date.now();
       const runParams = await deps.buildRunParams(
         sessionId,

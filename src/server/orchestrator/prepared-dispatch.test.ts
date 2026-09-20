@@ -29,7 +29,6 @@ const FULL_INIT: AgentDispatchInit = {
   resetMergedBranch: false,
   compactContext: false,
   silent: true,
-  statusNudge: true,
 };
 
 function newRunner(): SessionRunner {
@@ -83,13 +82,11 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
 
   // docs/303 — `toQueuedMessage` is hand-written, so a field added to the options but not
   // to it survives every dispatch except a queued one, which is the hard case to notice.
-  it("carries statusNudge and silent through the HAND-WRITTEN queued conversion", () => {
-    const queued = toQueuedMessage(prepareDispatch({ ...FULL_INIT, silent: true, statusNudge: true }));
-    expect(queued.statusNudge).toBe(true);
+  it("carries silent through the HAND-WRITTEN queued conversion", () => {
+    const queued = toQueuedMessage(prepareDispatch({ ...FULL_INIT, silent: true }));
     expect(queued.silent).toBe(true);
 
     const restored = queuedMessageToDispatchOptions(queued);
-    expect(restored.statusNudge).toBe(true);
     expect(restored.silent).toBe(true);
   });
 

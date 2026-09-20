@@ -105,7 +105,7 @@ describe("recordSessionStatusOffersTaken", () => {
   const stored: SessionStatus = {
     status: "Routes done",
     fresh: true,
-    writeSeq: 3,
+    writeSeq: 3, turnSeq: 0,
     actions: [
       { id: "a", offerId: "o1", label: "Wire it", payload: "Wire it", offeredAt: "2026-09-14T10:00:00.000Z" },
       { id: "b", offerId: "o2", label: "Retry", payload: "Retry", offeredAt: "2026-09-14T10:00:00.000Z" },

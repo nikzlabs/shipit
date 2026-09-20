@@ -20,6 +20,11 @@ export class TurnAccumulator {
    * the card and then keeps working still counts as updated.
    */
   statusUpdated = false;
+  /**
+   * docs/303 req 13, 38 — this turn ended by asking the user something: a question card
+   * or a plan to approve. Narrower than `wasInterrupted`, which a user stop also sets.
+   */
+  awaitingUserAnswer = false;
 
   private _messageQueue: QueuedMessage[] = [];
   private _turnEventBuffer: WsServerMessage[] = [];

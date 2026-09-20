@@ -142,6 +142,10 @@ export interface OfferedAction extends ActionChecklistItem {
   headSha?: string;
   /** When the user sent this offer to the agent; it stays on the card, greyed. */
   takenAt?: string;
+  /** docs/303 req 40 — `turnSeq` when this offer was made, so the block can show its age. */
+  offeredSeq?: number;
+  /** docs/303 req 40 — `turnSeq` when the user sent it. */
+  takenSeq?: number;
 }
 
 export interface SessionStatus {
@@ -161,6 +165,20 @@ export interface SessionStatus {
   fresh: boolean;
   /** Moves only on an accepted agent write, so a settling predecessor can tell its own turn from a later one. */
   writeSeq: number;
+  /**
+   * docs/303 req 40 — turns settled against this card since it was written. It moves once
+   * per checked turn, so a difference of seqs is an age in turns; a card stored before
+   * req 40 reads 0 and its entries carry no seq, which shows as no age rather than a
+   * wrong one.
+   */
+  turnSeq: number;
+  /**
+   * docs/303 req 38 — the last checked turn ended without an update, so the next turn's
+   * prompt carries the miss notice. Cleared by any accepted call; never shown to a viewer.
+   */
+  nudgePending?: boolean;
+  /** docs/303 req 40 — `turnSeq` per `needsYou` entry, index-aligned; written with it. */
+  stepSeq?: number[];
 }
 
 export interface PreviousMergedPr {

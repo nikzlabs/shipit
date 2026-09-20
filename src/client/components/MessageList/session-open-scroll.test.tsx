@@ -122,7 +122,7 @@ const status: SessionStatus = {
   needsYou: ["Paste a token."],
   actions: [],
   fresh: true,
-  writeSeq: 1,
+  writeSeq: 1, turnSeq: 0,
 };
 
 function session(id: string): SessionInfo {

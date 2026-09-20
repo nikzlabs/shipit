@@ -126,7 +126,6 @@ export async function wakeSessionWithTurn(
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
-    statusNudge: undefined,
     execution: undefined,
     images: undefined,
     files: undefined,

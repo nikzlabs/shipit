@@ -868,7 +868,6 @@ export function createPrStatusPoller(
         resetMergedBranch: undefined,
         compactContext: undefined,
         silent: undefined,
-        statusNudge: undefined,
       })).settled;
       const detail = outcome.detail ? ` (${outcome.detail})` : "";
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);
