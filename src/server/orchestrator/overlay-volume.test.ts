@@ -89,6 +89,27 @@ describe("overlay naming helpers", () => {
     expect(overlayScopeHash(repo, "a", "b")).not.toBe(overlayScopeHash(repo, "ab", ""));
   });
 
+  /**
+   * docs/276 section 5: the verified namespace is what keeps an unverified publisher out of a
+   * pnpm session's base. That only holds if the namespace changes the address AND if omitting it
+   * still addresses every base published before the namespace existed.
+   */
+  it("overlayScopeHash mixes in the namespace, and omitting it reproduces the un-namespaced hash", () => {
+    const repo = "https://github.com/o/r";
+    const rt = "img|x64";
+    // A literal pre-namespace digest, not a comparison against the same call: every base
+    // published before the namespace existed is addressed by this exact string, and an
+    // implementation that fed the namespace in unconditionally would orphan all of them.
+    expect(overlayScopeHash(repo, rt, "node_modules")).toBe("28c5de208f383605");
+    const verified = overlayScopeHash(repo, rt, "node_modules", "pnpm-verified-v1");
+    expect(verified).toBe("1b98a18a129396ec");
+    expect(verified).not.toBe(overlayScopeHash(repo, rt, "node_modules"));
+    expect(verified).not.toBe(overlayScopeHash(repo, rt, "node_modules", "pnpm-verified-v2"));
+    expect(verified).toHaveLength(16);
+    // The dep dir and the namespace must not run together into one field.
+    expect(overlayScopeHash(repo, rt, "a", "b")).not.toBe(overlayScopeHash(repo, rt, "ab", ""));
+  });
+
   it("overlayVolumeName with a dep dir is stable, distinct per dir, and still sweep-matchable", () => {
     const sessionId = "abcdef012345-6789-...";
     const nm = overlayVolumeName(sessionId, "node_modules");

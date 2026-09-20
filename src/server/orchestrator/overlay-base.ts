@@ -10,6 +10,8 @@ export interface OverlayScope {
   repoUrl: string;
   runtimeKey: string;
   depDir?: string;
+  /** Partitions the base by publisher; see PNPM_VERIFIED_NAMESPACE (docs/276 section 5). */
+  namespace?: string;
 }
 
 export interface BasePointer {
@@ -92,7 +94,7 @@ function writeBasePointer(stateDir: string, pointer: BasePointer): void {
 }
 
 function scopeHashOf(scope: OverlayScope): string {
-  return overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir);
+  return overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir, scope.namespace);
 }
 
 // One orchestrator owns all publishes; serialize each scope through materialization and pointer swap.

@@ -315,29 +315,28 @@ agent:
   the `OVERLAY_DEP_STORE=0` kill switch, in which case dep dirs fall back to a
   plain install.) See docs/183.
 
-#### pnpm projects: shared store instead of overlay
+#### pnpm projects: a private store, and a verified base
 
 pnpm is detected automatically — from `package.json`'s `packageManager: "pnpm@…"`
 field, a `pnpm` command in `agent.install`, or a `pnpm-lock.yaml` at the root (in
-that precedence order). For a pnpm repo, ShipIt **skips the `node_modules` overlay**
-and instead mounts a **shared, content-addressed store** on the same filesystem as
-your workspace. The store is mounted at `/workspace/.pnpm-store` — which is exactly
-where pnpm 11 relocates its store when its default location is on a different device
-(it ignores `store-dir` config in that case), so pnpm uses the shared store with no
-configuration; older pnpm versions are pointed there via `npm_config_store_dir` too.
-This is strictly better for pnpm: installs become resolve + hardlink (seconds),
-per-session disk is ~zero, and packages dedupe across versions and repos. `dep-dirs`
-is ignored for pnpm repos — the store replaces the overlay, so there's nothing to
-declare. The store directory (`.pnpm-store/`) is auto-excluded from git per session,
-so it never lands in a commit. Like the overlay, the pnpm store is enabled by
-default and shares the same `OVERLAY_DEP_STORE` operator kill switch.
+that precedence order). For a pnpm repo, ShipIt mounts a **store private to the
+session** at `/workspace/.pnpm-store` — the path every session's store maps to,
+because a `node_modules` records the store it was built against and refuses another.
+No other session can reach it, so nothing another session installs can change what
+this one runs. The store directory (`.pnpm-store/`) is auto-excluded from git per
+session, so it never lands in a commit. It is enabled by default and shares the
+overlay's `OVERLAY_DEP_STORE` operator kill switch.
 
-> **Caveat — in-place patching of installed packages.** Because the store hardlinks
-> files into every `node_modules`, editing a dependency's files in place (the old
-> `patch-package` style) would mutate the shared store and leak the change into other
-> sessions. Use pnpm's built-in `pnpm patch` / `pnpm patch-commit` flow instead — it
-> copies-on-write rather than mutating the linked original. pnpm also integrity-checks
-> the store on link, so a corrupted store entry is detected, not silently propagated.
+A private store is not shared storage, so sharing comes back as a `node_modules`
+**base** ShipIt builds itself from the repo's committed manifests and lockfile,
+verifying every package against the registry, and mounts read-only under each
+session's own writable layer. A pnpm session is mounted on such a base only once one has
+been published for every one of its eligible `dep-dirs`; until then it installs from
+scratch into its private store. See docs/276.
+
+> **Patching an installed package** works normally: an edit inside `node_modules`
+> stays in this session. pnpm's built-in `pnpm patch` / `pnpm patch-commit` flow is
+> still the right way to make a patch reproducible for everyone else.
 
 ### `compose` (optional)
 

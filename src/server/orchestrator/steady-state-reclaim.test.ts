@@ -8,7 +8,7 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runSteadyStateReclaim } from "./steady-state-reclaim.js";
 import { repoUrlToHash } from "./git-utils.js";
-import { liveOverlayScopeHashes, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
+import { liveOverlayScopeHashes, overlayRuntimeKey, sessionPnpmStoreDir } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
 import {
   claimOverlayBaseGeneration,
@@ -231,25 +231,9 @@ describe("runSteadyStateReclaim", () => {
     expect(result.overlayBasesRemoved).toBe(2);
   });
 
-  it("pnpm-store sweep is skipped when pnpmStoreRuntimeHash is not provided", async () => {
-    setup();
-    const repoStore = new RepoStore(dbManager!);
-
-    const storeDir = path.join(tmpDir, "pnpm-store", "0123456789abcdef");
-    fs.mkdirSync(storeDir, { recursive: true });
-    const old = Date.now() / 1000 - 99 * 86_400;
-    fs.utimesSync(storeDir, old, old);
-
-    const result = await runSteadyStateReclaim({
-      repoStore, stateDir: tmpDir,
-      runDocker: () => Promise.resolve(""),
-    });
-
-    expect(fs.existsSync(storeDir)).toBe(true);
-    expect(result.pnpmStoresRemoved).toBe(0);
-  });
-
-  it("pnpm-store sweep keeps the live store, reaps a stale-runtime store, keeps a young one", async () => {
+  // docs/276 section 5: the per-runtime shared store is retired, so EVERY tree under
+  // <stateDir>/pnpm-store is dead — no hash is exempt any more.
+  it("pnpm-store sweep reaps every aged-out retired store, exempting no hash", async () => {
     setup();
     const repoStore = new RepoStore(dbManager!);
 
@@ -257,13 +241,15 @@ describe("runSteadyStateReclaim", () => {
     fs.mkdirSync(root, { recursive: true });
     const mk = (hash: string, ageDays: number) => {
       const d = path.join(root, hash);
-      fs.mkdirSync(d, { recursive: true });
+      const files = path.join(d, "v11", "files", "ab");
+      fs.mkdirSync(files, { recursive: true });
       const t = Date.now() / 1000 - ageDays * 86_400;
-      fs.utimesSync(d, t, t);
+      for (const p of [files, path.join(d, "v11", "files"), path.join(d, "v11"), d]) {
+        fs.utimesSync(p, t, t);
+      }
       return d;
     };
-    const liveHash = pnpmStoreHash(overlayRuntimeKey());
-    const liveStore = mk(liveHash, 99);
+    const formerlyLive = mk("aaaaaaaaaaaaaaaa", 99);
     const staleStore = mk("bbbbbbbbbbbbbbbb", 99);
     const youngStore = mk("cccccccccccccccc", 1);
     fs.writeFileSync(path.join(root, "stray.txt"), "x");
@@ -271,38 +257,64 @@ describe("runSteadyStateReclaim", () => {
     const result = await runSteadyStateReclaim({
       repoStore, stateDir: tmpDir,
       cacheDays: 30,
-      pnpmStoreRuntimeHash: () => liveHash,
       runDocker: () => Promise.resolve(""),
     });
 
-    expect(fs.existsSync(liveStore)).toBe(true);
+    expect(fs.existsSync(formerlyLive)).toBe(false);
     expect(fs.existsSync(staleStore)).toBe(false);
+    // A container created before the upgrade may still mount a recently-touched store.
     expect(fs.existsSync(youngStore)).toBe(true);
     expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
-    expect(result.pnpmStoresRemoved).toBe(1);
+    expect(result.pnpmStoresRemoved).toBe(2);
   });
 
-  it("pnpm-store sweep reaps ALL stale stores when the feature is off (null live hash)", async () => {
+  /**
+   * The store root's mtime is not an activity signal — pnpm writes under `v11/files/<xx>/`, which
+   * never touches the ancestor. Ageing on the root alone would reap the store of a surviving
+   * pre-upgrade container that is still filling it.
+   */
+  it("keeps a retired store whose deep contents were written recently", async () => {
     setup();
     const repoStore = new RepoStore(dbManager!);
 
     const root = path.join(tmpDir, "pnpm-store");
-    fs.mkdirSync(root, { recursive: true });
+    const store = path.join(root, "aaaaaaaaaaaaaaaa");
+    const files = path.join(store, "v11", "files", "ab");
+    fs.mkdirSync(files, { recursive: true });
+    fs.writeFileSync(path.join(files, "cdef"), "x");
+    // Every ancestor looks long dead; only the leaf directory is fresh.
     const old = Date.now() / 1000 - 99 * 86_400;
-    for (const h of ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]) {
-      const d = path.join(root, h);
-      fs.mkdirSync(d, { recursive: true });
+    for (const d of [root, store, path.join(store, "v11"), path.join(store, "v11", "files")]) {
       fs.utimesSync(d, old, old);
     }
 
     const result = await runSteadyStateReclaim({
       repoStore, stateDir: tmpDir,
       cacheDays: 30,
-      pnpmStoreRuntimeHash: () => null,
       runDocker: () => Promise.resolve(""),
     });
 
-    expect(result.pnpmStoresRemoved).toBe(2);
+    expect(fs.existsSync(store)).toBe(true);
+    expect(result.pnpmStoresRemoved).toBe(0);
+  });
+
+  it("leaves a session's own private pnpm store alone", async () => {
+    setup();
+    const repoStore = new RepoStore(dbManager!);
+
+    const store = sessionPnpmStoreDir(tmpDir, "sess-1");
+    fs.mkdirSync(store, { recursive: true });
+    const old = Date.now() / 1000 - 99 * 86_400;
+    fs.utimesSync(store, old, old);
+
+    const result = await runSteadyStateReclaim({
+      repoStore, stateDir: tmpDir,
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(store)).toBe(true);
+    expect(result.pnpmStoresRemoved).toBe(0);
   });
 
   it("reaps superseded generations inside a LIVE scope via the live-mount check, keeping g0 + current + pinned", async () => {

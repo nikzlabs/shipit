@@ -1270,6 +1270,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   preparePnpmStore(opts: {
+    sessionId: string;
     workspaceDir: string;
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
   }): string | undefined {

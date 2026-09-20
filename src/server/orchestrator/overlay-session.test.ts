@@ -13,8 +13,9 @@ import {
   supersededSessionOverlayLayers,
   isPnpmRepo,
   preStampInstallMarker,
-  pnpmStoreHash,
-  pnpmStoreDirForRuntime,
+  sessionPnpmStoreDir,
+  retiredSharedPnpmStoreRoot,
+  PNPM_VERIFIED_NAMESPACE,
   type DepDirOverlaySpec,
   isOverlayEligible,
   isOverlayEnabled,
@@ -190,13 +191,29 @@ describe("liveOverlayScopeHashes", () => {
         ? ["node_modules", "packages/app/node_modules"]
         : ["node_modules"];
     const live = liveOverlayScopeHashes(sessions, resolve, ON);
+    const NS = PNPM_VERIFIED_NAMESPACE;
     expect(live).toEqual(
       new Set([
         overlayScopeHash("https://github.com/acme/one.git", rt, "node_modules"),
         overlayScopeHash("https://github.com/acme/one.git", rt, "packages/app/node_modules"),
         overlayScopeHash("https://github.com/acme/two.git", rt, "node_modules"),
+        overlayScopeHash("https://github.com/acme/one.git", rt, "node_modules", NS),
+        overlayScopeHash("https://github.com/acme/one.git", rt, "packages/app/node_modules", NS),
+        overlayScopeHash("https://github.com/acme/two.git", rt, "node_modules", NS),
       ]),
     );
+  });
+
+  /**
+   * Package-manager detection reads the mutable checkout, so "is this a pnpm session right now"
+   * cannot decide whether its verified base is live. Claiming both addresses over-retains a hash
+   * with no directory, which costs nothing; getting it wrong deletes a base a session is on.
+   */
+  it("claims the verified-namespace hash for every session, not only pnpm ones", () => {
+    const rt = overlayRuntimeKey(ON);
+    const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
+    const repo = "https://github.com/acme/repo.git";
+    expect(live).toContain(overlayScopeHash(repo, rt, "node_modules", PNPM_VERIFIED_NAMESPACE));
   });
 
   it("uses the per-dep-dir hash, not the legacy (repo, runtime) hash", () => {
@@ -976,17 +993,16 @@ describe("isPnpmRepo (docs/197 Part 2)", () => {
   });
 });
 
-describe("pnpm store helpers (docs/197 Part 2)", () => {
-  it("pnpmStoreHash is a stable 16-hex digest of the runtime key", () => {
-    const h = pnpmStoreHash("img@sha256:abc|x64");
-    expect(h).toMatch(/^[a-f0-9]{16}$/);
-    expect(pnpmStoreHash("img@sha256:abc|x64")).toBe(h);
-    expect(pnpmStoreHash("other|x64")).not.toBe(h);
+// docs/276 section 5: the store is private per session. The runtime key deliberately plays no
+// part — two sessions of the SAME repo on the SAME runtime must not share a store index.
+describe("pnpm store helpers", () => {
+  it("sessionPnpmStoreDir is keyed by session and lives under the session's directory", () => {
+    const dir = sessionPnpmStoreDir("/state", "sess-1");
+    expect(dir).toBe(path.join("/state", "sessions", "sess-1", "overlay", "pnpm-store"));
+    expect(sessionPnpmStoreDir("/state", "sess-2")).not.toBe(dir);
   });
 
-  it("pnpmStoreDirForRuntime nests under <stateDir>/pnpm-store/<hash>", () => {
-    const env = { SESSION_WORKER_IMAGE_ID: "img-1" } as NodeJS.ProcessEnv;
-    const dir = pnpmStoreDirForRuntime("/state", env);
-    expect(dir).toBe(path.join("/state", "pnpm-store", pnpmStoreHash(overlayRuntimeKey(env))));
+  it("the retired shared root is the path the janitor ages out", () => {
+    expect(retiredSharedPnpmStoreRoot("/state")).toBe(path.join("/state", "pnpm-store"));
   });
 });

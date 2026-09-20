@@ -391,7 +391,7 @@ async function attemptContainerCreate(
       ? await mgr.prepareOverlaySpecs({ sessionId, workspaceDir: opts.workspaceDir, session: opts.session })
       : [];
     const pnpmStoreDir = opts.session
-      ? mgr.preparePnpmStore({ workspaceDir: opts.workspaceDir, session: opts.session })
+      ? mgr.preparePnpmStore({ sessionId, workspaceDir: opts.workspaceDir, session: opts.session })
       : undefined;
     const sandboxDockerAccess = opts.session?.kind === "sandbox"
       ? !!opts.session.capabilities?.docker

@@ -110,7 +110,6 @@ describe("docs/299 req 8 — the cleanup container is never reclaimed", () => {
         repoStore: { list: () => [] } as unknown as RepoStore,
         runDocker: async () => "",
         liveOverlayScopeHashes: () => new Set<string>(),
-        pnpmStoreRuntimeHash: () => null,
       });
 
       expect(fs.existsSync(workspace)).toBe(true);

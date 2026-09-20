@@ -53,6 +53,17 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "It is never a clone: the container holds no repository at all, so there is no "
       + "object store to descend into and nothing shares an inode with a bare cache.",
   },
+  "orchestrator/container-lifecycle.ts": {
+    count: 1,
+    why: "The session's own pnpm store (docs/276 section 5), repaired only when its uid does "
+      + "not already match. It is private to one session and holds package content, never a "
+      + "git tree: nothing under it is hardlinked from `repo-cache` or from another session, "
+      + "because pnpm creates every blob in it from that session's own downloads. On pnpm >= 11 "
+      + "the blobs ARE hardlinked into that same session's `node_modules`, which is the point — "
+      + "both sides must move to the session's uid together, and the worker entrypoint prunes "
+      + "`.pnpm-store` and every dep dir from its own chown walk, so this is the only pass that "
+      + "reaches them.",
+  },
   "orchestrator/session-dir-factory.ts": {
     count: 1,
     why: "A session directory that has just been created and holds nothing yet — "
