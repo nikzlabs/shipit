@@ -135,12 +135,43 @@ in `src/server/shipit-docs/environment.md`:
   the container next starts, when the worker discards the unshared content it
   accumulated and relinks.
 
-Not in scope, and newly noted: the **plugin install container** still gets
-`npm_config_cache=/dep-cache/npm` over a cache keyed per plugin *source*
-(`plugin-install.ts:385`, `plugin-dep-store.ts:382`). No session can write it, so
-this is not a session-to-session hole; but a plugin's own install scripts can
-poison the resolution data for the next install of *that plugin*, which is H1 at
-plugin scope. Filed as **planning#603**.
+**The same split now covers the plugin install container (planning#603).** Its
+download cache is keyed per plugin *source* (`plugin-dep-store.ts`), so no session
+can write it and this was never a session-to-session hole; but a plugin's own
+install scripts run in that container with write access to the cache, so they could
+poison the resolution data for the next install of *that plugin* — H1 at plugin
+scope. `npm_config_cache` is now `/plugin-npm-cache`, a directory of this
+generation's work dir mounted into the install container, with its `content-v2`
+symlinked to the shared store and the shared `index-v5` removed
+(`plugin-install.ts`, `pluginInstallCommand`). Both halves name the shared paths
+through `shared/npm-cache.ts`, so the two splits cannot drift.
+
+**What bounds the forgery is that the private cache is reset, not merely that it is
+not the shared one.** The work dir is keyed by session, plugin and generation, so a
+different install job already lands somewhere else; `resetPluginNpmCache` covers the
+one path that returns to the same directory, a forced re-install of the same
+generation. It runs beside `prepareLayer`, which already discards the previous
+attempt's writable layer.
+
+**A tmpfs was tried first and is wrong**, which is worth recording because it looks
+like the tidier answer — nothing to reset, private by construction. npm puts far
+more than the index under its cache root: `_npx` keeps whole extracted trees there,
+and a git dependency is cloned and *prepared* there. Measured: one `npx cowsay`
+leaves **2.7 MB** under the cache root, against an index of a few KB. RAM-backing
+that caps a dependency tree at the tmpfs size and charges it to the container's
+2 GiB limit — and Docker mounts a tmpfs `noexec` unless told otherwise (which is why
+every other tmpfs in this repo spells out `exec`, guarded by
+`container-hardening.test.ts`), so anything `npx` installed would fail to run.
+
+**Measured** against real npm 11.12.1 with both halves on ext4, the layout the
+container actually gets. Content lands in the shared store at mode **0664**, which
+is what the shared-gid model needs, and the shared `index-v5` is never re-created.
+A **reset** private cache — exactly what every install job starts from — then
+installs `npm ci --offline` **entirely from the shared store: 0 new blobs**. That is
+the number that matters here, because the private index is cold on *every* plugin
+install job and the lockfile install shape plugins use does not need it. It is a
+single-package measurement: it establishes that no download is needed, not a
+throughput claim.
 
 ### 2. H3 — `package-import-method=copy` (reqs 1, 4, 10)
 

@@ -200,6 +200,14 @@ download cache. It runs **before** the new commit goes live, so an install that
 fails is simply a failed refresh — the previous commit stays active and the
 Plugins tab reports why, with the command's own output.
 
+That download cache shares **package bytes** between installs, never npm's
+resolution data: `npm_config_cache` points at a cache private to this install,
+reset before it runs, whose `_cacache/content-v2` is symlinked to the shared store.
+So a lockfile install still costs no downloads, while `npm install --offline <pkg>`
+for a package this install has not resolved itself fails `ENOTCACHED`. Sharing
+resolution data would let one install decide what the next install of the same
+plugin fetches and executes.
+
 You will not see the result. Dependencies and build output land in that
 writable layer, which belongs to the plugin's execution environment; your
 `/plugins/<name>` still shows plain source. The plugin's own containers see all

@@ -44,9 +44,22 @@ recorded in [requirements.md](./requirements.md); none is open.
 - [x] shipit-docs updated (`environment.md`): the split, the per-session cache
       path, and the two commands that change. Repos without a lockfile install as
       before.
-- [ ] Follow-up, out of this issue's scope: the plugin install container still
-      shares its npm resolution index across installs of one plugin — H1 at plugin
-      scope, no session-to-session path. Filed as **planning#603**.
+- [x] Same split at plugin scope (**planning#603**): the install container's
+      `npm_config_cache` is `/plugin-npm-cache`, a directory of this generation's
+      work dir reset before every install job, with `content-v2` symlinked to the
+      shared per-source store and the shared `index-v5` removed. The reset is what
+      bounds a forged packument — a different job already has its own directory, so
+      the reset covers the forced same-generation re-install. Measured with both
+      halves on ext4: a reset private cache installs `npm ci --offline` from the
+      shared store alone (0 new blobs), content lands there at mode 0664, and the
+      shared `index-v5` is never re-created. Single-package, so it establishes no
+      download is needed, not throughput.
+- [x] Rejected for the plugin split, on review: a **tmpfs** private root. It reads
+      as the tidier answer (nothing to reset) and is wrong — npm keeps `_npx` trees
+      and git-dependency checkouts under its cache root (measured: 2.7 MB for one
+      `npx cowsay`, against a few KB of index), so RAM-backing caps a dependency
+      tree against the container's memory limit, and Docker's tmpfs default is
+      `noexec`, which would break running anything `npx` installed.
 
 ## H2/H4 — the pnpm store index is trusted (reqs 1, 3, 6)
 
