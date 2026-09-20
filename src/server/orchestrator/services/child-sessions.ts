@@ -812,23 +812,3 @@ export async function waitForChildIdle(
   });
 }
 
-// The route performs archiveSession to avoid a cycle through session.ts's re-exports.
-export function assertArchivableChild(
-  sessionManager: SessionManager,
-  runnerRegistry: SessionRunnerRegistry,
-  parentSessionId: string,
-  childSessionId: string,
-): SessionInfo {
-  const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  if (child.archived) {
-    throw new ServiceError(400, "Child session is already archived");
-  }
-  const runner = runnerRegistry.get(childSessionId);
-  if (runner?.running) {
-    throw new ServiceError(
-      409,
-      "Cannot archive a running child session. Wait for it to finish (try `shipit session wait`) or interrupt it from the UI.",
-    );
-  }
-  return child;
-}

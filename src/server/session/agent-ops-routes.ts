@@ -611,17 +611,6 @@ export function registerAgentOpsRoutes(
   );
 
   app.post<{ Params: { childId: string } }>(
-    "/agent-ops/session/archive/:childId",
-    async (request, reply) =>
-      relay(
-        "POST",
-        `/children/${encodeURIComponent(request.params.childId)}/archive`,
-        {},
-        reply,
-      ),
-  );
-
-  app.post<{ Params: { childId: string } }>(
     "/agent-ops/session/notify-on-merge/:childId",
     async (request, reply) =>
       relay(

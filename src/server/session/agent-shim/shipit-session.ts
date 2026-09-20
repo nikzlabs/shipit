@@ -930,45 +930,6 @@ function renderMultiWait(
   deps.io.exit(exit);
 }
 
-export async function handleSessionArchive(args: string[], deps: RunDeps): Promise<void> {
-  const parsed = parseFlags(args, {
-    values: {},
-    booleans: { "--json": "json" },
-  });
-  if (parsed.unsupported.length > 0) {
-    fail(deps.io, `Unsupported flag for shipit session archive: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
-  }
-  const id = parsed.positional[0];
-  if (!id) {
-    fail(deps.io, "shipit session archive: child session id is required.");
-  }
-
-  const res = await deps.call(
-    "POST",
-    `/agent-ops/session/archive/${encodeURIComponent(id)}`,
-    {},
-    deps.env,
-  );
-  if (res.status === 404) {
-    fail(deps.io, `${CHILD_NOT_FOUND}\n${WHOAMI_HINT}`, 1);
-  }
-  if (res.status < 200 || res.status >= 300) {
-    fail(deps.io, formatError(res, "Failed to archive spawned session"), 1);
-  }
-
-  if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
-    deps.io.exit(0);
-    return;
-  }
-  // A checkout survives an archive when its commits are on no remote. Say so: pushing
-  // that branch is the one thing the agent can still do about it. Archiving a child
-  // archives its own children, so there can be several.
-  const retained = (res.body as { checkoutsRetained?: { message?: unknown }[] }).checkoutsRetained ?? [];
-  const notes = retained.map((r) => `\nnote:       ${asString(r.message)}`).join("");
-  success(deps.io, `session-id: ${id}\narchived:   true${notes}`);
-}
-
 export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {},

@@ -131,8 +131,7 @@ value:**
 `shipit issue status`, `shipit issue assign`, `shipit issue comment edit`,
 `shipit issue label edit` and `shipit session rename` all set a value rather
 than append one. `shipit service start`/`stop` set a state, and
-`shipit plugin refresh` re-reads one. `shipit session archive` refuses a session
-that is already archived. `shipit branch reset-to-base` and
+`shipit plugin refresh` re-reads one. `shipit branch reset-to-base` and
 `shipit session continue-after-rebase` re-check their own preconditions.
 `shipit release plan` computes without writing, and `shipit release prepare`
 updates the existing release PR rather than opening a second.

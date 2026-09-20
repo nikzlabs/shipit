@@ -505,26 +505,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/children/ses_a?wait=true");
   });
 
-  it("POST /agent-ops/session/archive/:childId forwards to /children/:childId/archive", async () => {
-    client.setResponse("POST", "/children/ses_a/archive", {
-      ok: true, status: 200, body: { archived: true, sessions: [] },
-    });
-    const res = await app.inject({ method: "POST", url: "/agent-ops/session/archive/ses_a" });
-    expect(res.statusCode).toBe(200);
-    expect(client.calls[0].method).toBe("POST");
-    expect(client.calls[0].path).toBe("/children/ses_a/archive");
-    expect(client.calls[0].body).toEqual({});
-  });
-
-  it("POST /agent-ops/session/archive/:childId surfaces a 409 (still running) verbatim", async () => {
-    client.setResponse("POST", "/children/ses_a/archive", {
-      ok: false, status: 409, body: { error: "Cannot archive a running child session" },
-    });
-    const res = await app.inject({ method: "POST", url: "/agent-ops/session/archive/ses_a" });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().error).toContain("Cannot archive");
-  });
-
   it("POST /agent-ops/git/credential forwards host/protocol to /git/credential", async () => {
     client.setResponse("POST", "/git/credential", {
       ok: true, status: 200,

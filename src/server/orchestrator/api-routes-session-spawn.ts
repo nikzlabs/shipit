@@ -18,14 +18,12 @@ import {
   sendChildMessage,
   ResolvedChildMessageError,
   waitForChildIdle,
-  assertArchivableChild,
   registerMergeWatch,
   armFollowupNote,
   armSelfMergeWatch,
   cancelSelfMergeWatch,
   deliverSessionReport,
   resolveSessionCohort,
-  archiveSession,
   DEFAULT_WAIT_FOR_CHILD_IDLE_MS,
   MAX_WAIT_FOR_CHILD_IDLE_MS,
   ServiceError,
@@ -476,45 +474,6 @@ export async function registerSessionSpawnRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to send child message: ${getErrorMessage(err)}` });
-      }
-    },
-  );
-
-  app.post<{
-    Params: { parentId: string; childId: string };
-  }>(
-    "/api/sessions/:parentId/children/:childId/archive",
-    { config: { containerAccessible: true } },
-    async (request, reply) => {
-      try {
-        assertArchivableChild(
-          sessionManager,
-          deps.runnerRegistry,
-          request.params.parentId,
-          request.params.childId,
-        );
-        const result = await archiveSession(
-          sessionManager,
-          deps.runnerRegistry,
-          deps.getSharedRepoDir,
-          request.params.childId,
-          deps.pruneSessionVolumes,
-          deps.containerManager,
-          deps.removeSessionLogs,
-          createGitManager,
-        );
-        deps.sseBroadcast("session_list", { sessions: result.sessions });
-        return {
-          archived: true,
-          sessions: result.sessions,
-          ...(result.checkoutsRetained ? { checkoutsRetained: result.checkoutsRetained } : {}),
-        };
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Failed to archive child session: ${getErrorMessage(err)}` });
       }
     },
   );
