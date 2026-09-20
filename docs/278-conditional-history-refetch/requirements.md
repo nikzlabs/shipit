@@ -33,9 +33,10 @@ correct today and asks to keep. Requirement 8 is the subtlety it asks the design
 4. The saving must hold for a long session, which is the case that hurts. It must not
    depend on the conversation being short.
 
-5. The WebSocket still reconnects unconditionally on foreground. A backgrounded socket can
-   read `OPEN` while being dead, so a health check cannot be trusted; only the history
-   payload is elided, never the reconnect.
+5. Only the history payload is elided, never the connection's recovery. What a resume does
+   with the WebSocket is `docs/311-foreground-grace-window`'s subject — a socket is kept only
+   once it has proved it is alive, because a backgrounded one reads `OPEN` while being dead —
+   and nothing here may weaken that or make the elision conditional on the socket surviving.
 
 6. The refetch must stay a **validated** conditional request, never "skip it if we already
    have history". The turn-event buffer is cleared at the next turn start, so events from

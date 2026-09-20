@@ -43,11 +43,13 @@ function backoffMs(attempt: number): number {
 }
 
 /**
- * How long the page may have been away and still have its socket kept (docs/311
- * req 3). Past this the socket is replaced without asking, which is cheaper
- * than probing and then replacing it anyway.
+ * How long an absence may be before the socket stops being worth keeping
+ * (docs/311). One number in the two shapes an absence takes: the page is
+ * **visible but unfocused**, and this caps how long an absence may be and still
+ * have its socket probed rather than replaced (req 3); or the page is
+ * **hidden**, and this is how long before the socket is released (req 4).
  */
-export const KEEP_SOCKET_MAX_AWAY_MS = 60_000;
+export const AWAY_LIMIT_MS = 60_000;
 
 /** How long a liveness probe waits for any byte before calling the socket dead. */
 export const PROBE_TIMEOUT_MS = 2000;
@@ -85,8 +87,11 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const foregroundRetryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const connectStartedAtRef = useRef(0);
+  const hiddenReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  /** This socket was given up on purpose, so its close must not start a backoff. */
+  const releasedRef = useRef(false);
   const probeRef = useRef<{
-    id: string;
     settle: (outcome: ProbeOutcome) => void;
     promise: Promise<ProbeOutcome>;
   } | null>(null);
@@ -114,23 +119,30 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     const ws = wsRef.current;
     if (ws?.readyState !== WebSocket.OPEN) return Promise.resolve<ProbeOutcome>("dead");
 
-    const id = randomId();
     let resolve!: (outcome: ProbeOutcome) => void;
     const promise = new Promise<ProbeOutcome>((r) => { resolve = r; });
     const timer = setTimeout(() => settleProbe("dead"), PROBE_TIMEOUT_MS);
     probeRef.current = {
-      id,
       settle: (outcome) => { clearTimeout(timer); resolve(outcome); },
       promise,
     };
 
     try {
-      ws.send(JSON.stringify({ type: "ping", id }));
+      // The id is correlation for a reader of the wire; the answer this waits
+      // on is any inbound frame, so nothing matches on it.
+      ws.send(JSON.stringify({ type: "ping", id: randomId() }));
     } catch {
       settleProbe("dead");
     }
     return promise;
   }, [settleProbe]);
+
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
 
   const clearForegroundRetryTimers = useCallback(() => {
     for (const timer of foregroundRetryTimersRef.current) {
@@ -138,6 +150,43 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     }
     foregroundRetryTimersRef.current = [];
   }, []);
+
+  const clearHiddenReleaseTimer = useCallback(() => {
+    if (hiddenReleaseTimerRef.current) {
+      clearTimeout(hiddenReleaseTimerRef.current);
+      hiddenReleaseTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Give the socket up once the page has been hidden for the whole away limit
+   * (docs/311 req 4).
+   *
+   * An attached viewer is what keeps PR and CI polling running for every
+   * tracked session and what makes the session's container ineligible for
+   * reclamation — both of which a tab nobody is looking at should stop
+   * claiming. Any pending backoff is cancelled with it: a socket given up on
+   * purpose must not reconnect itself behind a hidden page.
+   */
+  const armHiddenRelease = useCallback(() => {
+    clearHiddenReleaseTimer();
+    hiddenReleaseTimerRef.current = setTimeout(() => {
+      hiddenReleaseTimerRef.current = null;
+      // The evidence only said the page left; `hidden` says it stayed away.
+      if (!document.hidden) return;
+
+      releasedRef.current = true;
+      settleProbe("abandoned");
+      clearForegroundRetryTimers();
+      clearReconnectTimer();
+
+      const ws = wsRef.current;
+      if (ws && ws.readyState !== WebSocket.CLOSING && ws.readyState !== WebSocket.CLOSED) {
+        ws.close();
+      }
+      setStatus("closed");
+    }, AWAY_LIMIT_MS);
+  }, [clearForegroundRetryTimers, clearHiddenReleaseTimer, clearReconnectTimer, settleProbe]);
 
   const openedUrlRef = useRef<string | null>(null);
 
@@ -162,7 +211,15 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     const ws = new WebSocket(url);
     wsRef.current = ws;
     connectStartedAtRef.current = Date.now();
+    releasedRef.current = false;
     setStatus("connecting");
+
+    // A socket opened while the page is ALREADY hidden never gets an `onAway`
+    // of its own — nothing hid; it was born hidden — so without this it would
+    // hold the viewer and the polling gate for as long as the tab lives. Covers
+    // both a session loaded into a background tab and a session switched while
+    // hidden, whose previous socket's release timer the cleanup below cancels.
+    if (document.hidden) armHiddenRelease();
 
     ws.onopen = () => {
       if (intentionalClose) {
@@ -178,6 +235,9 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     ws.onclose = () => {
       if (intentionalClose) return;
       setStatus("closed");
+      // A released socket reconnects when the user comes back, not on a timer
+      // behind a hidden page.
+      if (releasedRef.current) return;
       const attempt = reconnectAttemptRef.current;
       reconnectAttemptRef.current = attempt + 1;
       setReconnectAttempt(attempt + 1);
@@ -216,9 +276,17 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
         ws.close();
       }
     };
-  }, [url, connectAttempt, clearForegroundRetryTimers, settleProbe]);
+  }, [url, connectAttempt, armHiddenRelease, clearForegroundRetryTimers, settleProbe]);
 
   const send = useCallback((data: unknown): boolean => {
+    // A socket under a liveness probe has not yet shown it is alive, and this
+    // boolean is what a caller shows the user a confirmation on (docs/311
+    // req 5). Writing to it would turn "the OS killed this socket while you
+    // were away" from a refusal the composer keeps your text through into a
+    // message that silently vanishes. The wait is one round trip, not the
+    // probe's timeout — and before this it was a whole handshake, because the
+    // socket was replaced on every return.
+    if (probeRef.current) return false;
     if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
     try {
       wsRef.current.send(JSON.stringify(data));
@@ -231,15 +299,12 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
 
   const openFreshSocket = useCallback(() => {
 
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
+    clearReconnectTimer();
 
     reconnectAttemptRef.current = 0;
     setReconnectAttempt(0);
     setConnectAttempt((n) => n + 1);
-  }, []);
+  }, [clearReconnectTimer]);
 
   const reconnect = useCallback(() => {
     clearForegroundRetryTimers();
@@ -283,35 +348,54 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
    * throughout, so there is no banner, no history refetch and no attach burst.
    */
   const reconnectForForeground = useCallback(({ awayMs }: ForegroundResume) => {
+    clearHiddenReleaseTimer();
     clearForegroundRetryTimers();
     settleProbe("abandoned");
 
     const keepable =
       wsRef.current?.readyState === WebSocket.OPEN
-      && (awayMs === undefined || awayMs < KEEP_SOCKET_MAX_AWAY_MS);
+      && (awayMs === undefined || awayMs < AWAY_LIMIT_MS);
     if (!keepable) {
       forceFreshSocket();
       return;
     }
 
-    void probeSocket().then((outcome) => {
+    void (async () => {
+      const outcome = await probeSocket();
+      if (outcome !== "dead") return;
+      // A probe that settles synchronously — a `send` that threw — resolves
+      // before teardown can abandon it, so the answer has to be checked against
+      // the hook still being here. Otherwise it arms retry timers over a
+      // connection that no longer exists.
+      if (!mountedRef.current) return;
       // Away again before the answer arrived: the next resume asks afresh.
-      if (outcome === "dead" && !document.hidden) forceFreshSocket();
-    });
-  }, [clearForegroundRetryTimers, forceFreshSocket, probeSocket, settleProbe]);
+      if (document.hidden) return;
+      forceFreshSocket();
+    })();
+  }, [clearForegroundRetryTimers, clearHiddenReleaseTimer, forceFreshSocket, probeSocket, settleProbe]);
 
   // why a bare window `focus` must NOT tear this socket down; see its docstring.
 
   useForegroundSignal({
     enabled: Boolean(url),
     onForeground: reconnectForForeground,
+    onAway: armHiddenRelease,
     isConnectionLive: () =>
       wsRef.current?.readyState === WebSocket.OPEN ||
       wsRef.current?.readyState === WebSocket.CONNECTING,
   });
 
-  // eslint-disable-next-line no-restricted-syntax -- non-listener cleanup (clear foreground retry timers on url change/unmount)
-  useEffect(() => () => clearForegroundRetryTimers(), [url, clearForegroundRetryTimers]);
+  // eslint-disable-next-line no-restricted-syntax -- non-listener cleanup (clear foreground/release timers on url change/unmount)
+  useEffect(() => () => {
+    clearForegroundRetryTimers();
+    clearHiddenReleaseTimer();
+  }, [url, clearForegroundRetryTimers, clearHiddenReleaseTimer]);
+
+  // eslint-disable-next-line no-restricted-syntax -- non-listener cleanup (lifetime flag for async continuations)
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const drainMessages = useCallback((): MessageEvent[] => {
     const msgs = messageQueueRef.current;

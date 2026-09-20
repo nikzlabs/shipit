@@ -1062,8 +1062,15 @@ export async function registerRoutes(
       const dispatchSessionMessage = (msg: WsClientMessage): void | Promise<void> => {
         switch (msg.type) {
           // docs/311 — a liveness probe answers from the socket alone and must
-          // touch no session state; first so it stays that way.
-          case "ping": { send({ type: "pong", id: msg.id }); return; }
+          // touch no session state; first so it stays that way. The id is
+          // echoed, so it is bounded here rather than reflected at whatever
+          // size the client chose to send.
+          case "ping": {
+            // Declared `string`, but this is the wire: a client sends what it likes.
+            const probeId: unknown = msg.id;
+            send({ type: "pong", id: typeof probeId === "string" ? probeId.slice(0, 64) : "" });
+            return;
+          }
           case "terminal_start": return terminalHandlers.handleTerminalStart(ctx, msg);
           case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
           case "terminal_resize": return terminalHandlers.handleTerminalResize(ctx, msg);

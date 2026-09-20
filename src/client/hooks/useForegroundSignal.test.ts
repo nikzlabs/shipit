@@ -25,15 +25,21 @@ afterEach(() => {
 
 function setup(opts: { live?: boolean; enabled?: boolean } = {}) {
   const onForeground = vi.fn();
+  const onAway = vi.fn();
   const live = { current: opts.live ?? true };
   const view = renderHook(() =>
     useForegroundSignal({
       ...(opts.enabled === undefined ? {} : { enabled: opts.enabled }),
       onForeground,
+      onAway,
       isConnectionLive: () => live.current,
     }),
   );
-  return { onForeground, live, view };
+  return { onForeground, onAway, live, view };
+}
+
+function lastResume(onForeground: ReturnType<typeof vi.fn>): { awayMs?: number } {
+  return onForeground.mock.calls.at(-1)?.[0] as { awayMs?: number };
 }
 
 function settle(): void {
@@ -206,6 +212,76 @@ describe("useForegroundSignal", () => {
     fire(window, "focus");
     fire(window, "online");
     expect(onForeground).not.toHaveBeenCalled();
+  });
+
+  describe("measuring the absence", () => {
+    it("reports how long the page was hidden", () => {
+      const { onForeground } = setup();
+      pageHidden = true;
+      fire(document, "visibilitychange");
+      act(() => { vi.advanceTimersByTime(45_000); });
+      pageHidden = false;
+      fire(document, "visibilitychange");
+
+      expect(lastResume(onForeground).awayMs).toBe(45_000);
+    });
+
+    it("measures a blur to another window from the blur", () => {
+      const { onForeground } = setup();
+      blurToAnotherWindow();
+      act(() => { vi.advanceTimersByTime(20_000); });
+      fire(window, "focus");
+
+      expect(lastResume(onForeground).awayMs).toBe(20_000);
+    });
+
+    // An iframe steal never left the page, so it starts no absence — and the
+    // next real resume must not be dated from it.
+    it("reports no duration when nothing showed the page leaving", () => {
+      const { onForeground } = setup({ live: false });
+      blurToIframe();
+      act(() => { vi.advanceTimersByTime(20_000); });
+      fire(window, "pageshow");
+
+      expect(lastResume(onForeground).awayMs).toBeUndefined();
+    });
+
+    it("measures each absence from scratch", () => {
+      const { onForeground } = setup();
+      pageHidden = true;
+      fire(document, "visibilitychange");
+      act(() => { vi.advanceTimersByTime(30_000); });
+      pageHidden = false;
+      fire(document, "visibilitychange");
+      expect(lastResume(onForeground).awayMs).toBe(30_000);
+
+      settle();
+      pageHidden = true;
+      fire(document, "visibilitychange");
+      act(() => { vi.advanceTimersByTime(5_000); });
+      pageHidden = false;
+      fire(document, "visibilitychange");
+      expect(lastResume(onForeground).awayMs).toBe(5_000);
+    });
+  });
+
+  describe("onAway", () => {
+    it.each([
+      ["hidden", () => { pageHidden = true; fire(document, "visibilitychange"); }],
+      ["pagehide", () => fire(window, "pagehide")],
+      ["freeze", () => fire(document, "freeze")],
+    ])("fires on %s", (_name, dispatch) => {
+      const { onAway } = setup();
+      dispatch();
+      expect(onAway).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not fire on a blur, which is not evidence the page left", () => {
+      const { onAway } = setup();
+      blurToIframe();
+      blurToAnotherWindow();
+      expect(onAway).not.toHaveBeenCalled();
+    });
   });
 
   it("attaches nothing when disabled", () => {

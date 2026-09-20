@@ -48,23 +48,53 @@ seeing.
 - Probe times out → **force a fresh socket**, which is exactly today's behaviour, delayed by up to
   2 s.
 
-The probe runs on the *existing* socket while it is still `OPEN`, so the composer is live for its
-whole duration — a message sent during the window goes out on a socket that is either healthy (the
-common case) or was already dead before the user returned. That second case is the pre-existing
-silent-loss hole documented on `UseWebSocketReturn.send`; closing it needs a server-side ack keyed
-on `requestId` and is out of scope here.
+**`send()` refuses while a probe is pending**, because req 5 is about the composer and not only
+about the transcript. The probe runs on the existing socket while it still reads `OPEN`, so without
+this a message sent in that window is written to a socket that may already be dead — and its
+`true` return is exactly what a caller shows a confirmation on, so the composer would clear the
+text and leave an optimistic bubble over a message that never went anywhere. Refusing keeps the
+existing honest failure: `MessageInput` returns early on a refused send and keeps the text and
+attachments (docs/293 req 4), and the user retries into a socket that has since answered.
 
-### The one-minute rule is a cap on the probe, not a replacement for it
+The wait that costs is one round trip, not the probe's timeout, and the resume fires the moment the
+tab is shown — before a hand can reach the send button. Against what this replaces it is strictly
+shorter: the socket used to be thrown away on every return, so the same send was refused for a
+whole handshake.
 
-An absence of a minute or more skips the probe and forces a fresh socket outright (req 3). Away
-time is measured from the evidence that the page actually left — `visibilitychange` → hidden,
-`pagehide`, `freeze`, or a `blur` classified as external — and `useForegroundSignal` hands it to
-its consumer as `onForeground({ awayMs })`. An absence it could not measure (`awayMs`
-`undefined` — a `pageshow` or an `online` with no preceding away signal) probes rather than
-forces: the probe is the cheaper answer and it is correct either way.
+### One minute, applied in the two places the page can be away
 
-Nothing closes the socket while the page is hidden (req 4); the rule governs the return only, and
-the reasoning is in the requirements doc's resolved questions.
+`AWAY_LIMIT_MS` is a single number doing one job — "this absence was long enough that the socket is
+no longer worth keeping" — in the two shapes an absence takes.
+
+**Visible but unfocused** (another application on the desktop; the page never hides) — the number
+is the *trust cap*. Under it, probe and keep; over it, force a fresh socket without probing, which
+is cheaper than probing and then replacing it anyway (req 3). Away time is measured from the
+evidence that the page left — `visibilitychange` → hidden, `pagehide`, `freeze`, or a `blur`
+classified as external — and `useForegroundSignal` hands it over as `onForeground({ awayMs })`. An
+absence it could not measure (`awayMs` `undefined` — a `pageshow` or `online` with nothing before
+it) probes rather than forces: the probe is the cheaper answer and it is correct either way.
+
+**Hidden** — the number is the *release timer* (req 4). `useForegroundSignal` gains an `onAway`
+callback, fired from the same evidence that already marked the page backgrounded, so there is still
+one listener set rather than a second hand-rolled one. `useWebSocket` arms the timer there and
+disarms it on resume; the callback re-checks `document.hidden` at fire time, so evidence that
+turned out not to mean "hidden" releases nothing.
+
+The release closes the socket without scheduling backoff — a socket given up on purpose must not
+reconnect itself behind a hidden page — and the resume then finds nothing to keep, so req 3's fresh
+connection falls out of req 4 rather than being a second rule.
+
+A socket **opened while the page is already hidden** gets no `onAway` of its own: nothing hid, it
+was born hidden. So the connect effect arms the release itself when `document.hidden`, which covers
+both a session loaded into a background tab and a session switched to while hidden — the latter
+otherwise cancelling the previous socket's timer and arming nothing. Without it those sockets hold
+the viewer and the polling gate for the life of the tab, which is the whole thing req 4 is for.
+
+**SSE is not released.** It is what tells a hidden tab that the agent finished or wants permission:
+`activeRunnerSessions` and `awaitingPermissionSessions` are both SSE-fed (`useServerEvents.ts`), and
+`useNotification` only fires while `document.hidden`. Releasing it would mute exactly the case it
+exists for — and it is also why the battery argument cannot be won by closing the WebSocket: the
+30-second keepalive cadence continues on the stream that stays.
 
 ### The retry burst only fires at a handshake old enough to be stalled
 
@@ -96,8 +126,8 @@ acts on the answer.
 
 | File | Change |
 |---|---|
-| `src/client/hooks/useForegroundSignal.ts` | Track away-since; hand `{ awayMs }` to `onForeground`. |
-| `src/client/hooks/useWebSocket.ts` | Probe, grace decision, `connectStartedAt`, stalled-handshake retry rule. |
+| `src/client/hooks/useForegroundSignal.ts` | Track away-since; hand `{ awayMs }` to `onForeground`; `onAway`. |
+| `src/client/hooks/useWebSocket.ts` | Probe, grace decision, hidden release, `connectStartedAt`, stalled-handshake retry rule. |
 | `src/server/shared/types/ws-client-messages.ts` | `WsPing`. |
 | `src/server/shared/types/ws-server-messages/misc.ts` | `WsPong`. |
 | `src/server/orchestrator/route-registry.ts` | `ping` → `pong`, answered before any session work. |
@@ -105,9 +135,10 @@ acts on the answer.
 
 ## What this does not change
 
-- Nothing closes a socket because the page is hidden, so a hidden tab keeps pinning its container
-  exactly as before (req 4).
 - A resume that finds the socket already `closed` or in backoff reconnects immediately, as today —
   there is nothing to probe.
+- A detached viewer never stops the session's worker resources or its preview services
+  (`detachViewer`). A released socket only makes the container *eligible* for reclamation, which
+  still happens solely under memory pressure and never while the agent is busy.
 - The history refetch path (`docs/278`) is untouched. A kept socket never resets `historyLoaded`,
   so the conditional refetch simply stops being reached on short switches.

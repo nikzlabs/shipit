@@ -11,11 +11,13 @@ Implements [`requirements.md`](./requirements.md). Requirements are cited as `(r
 ## The path being fixed
 
 Four listeners (`visibilitychange`, `pageshow`, `focus`, `online`) feed
-`useForegroundSignal`, which force-reconnects the session WebSocket when the tab returns to
-the foreground. The reconnect is deliberate and stays (req 5): mobile OSes kill or stall a
-backgrounded socket without telling the JS layer, so `readyState` can read `OPEN` on a dead
-one — verified at `useWebSocket.ts` (`reconnectForForeground` and the comment above
-`useForegroundSignal`).
+`useForegroundSignal`, which decides what happens to the session WebSocket when the tab
+returns to the foreground. Recovering the connection is deliberate and stays (req 5): mobile
+OSes kill or stall a backgrounded socket without telling the JS layer, so `readyState` can
+read `OPEN` on a dead one. That recovery is `docs/311-foreground-grace-window`'s subject —
+since then a socket is kept when a liveness probe answers and replaced when it does not,
+rather than replaced every time — and either way the refetch below is what this feature
+elides.
 
 The new socket drives `status` through `connecting`/`closed`, which resets `historyLoadedRef`
 in `useConnectionSync`; on `open` it calls `loadSessionHistory`, which issues

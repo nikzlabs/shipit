@@ -72,6 +72,13 @@ export interface ForegroundSignalOptions {
 
   onForeground: (resume: ForegroundResume) => void;
   /**
+   * The page left — hidden, `pagehide` or `freeze`. Fired from the same
+   * evidence that marks it backgrounded so there is one listener set, not two;
+   * a consumer that acts on it later must re-check `document.hidden` then,
+   * because this only says the page went away, not that it stayed away.
+   */
+  onAway?: () => void;
+  /**
    * Whether the connection currently exists and is OPEN or still CONNECTING.
    * Consulted only for a `focus` with no preceding `blur` to classify it —
    * there it decides between "leave the healthy connection alone" and "nothing
@@ -87,6 +94,7 @@ type BlurKind = "internal" | "external" | "none";
 export function useForegroundSignal({
   enabled = true,
   onForeground,
+  onAway,
   isConnectionLive,
 }: ForegroundSignalOptions): void {
   const lastForegroundRef = useRef(0);
@@ -117,6 +125,7 @@ export function useForegroundSignal({
     markAway();
 
     lastForegroundRef.current = 0;
+    onAway?.();
   }
 
   function handleVisibilityChange(): void {
