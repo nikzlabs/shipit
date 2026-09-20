@@ -12,6 +12,14 @@
  *
  * The cache is written here by hand rather than through npm's bundled `cacache`,
  * which is exactly the access an attacking session has — group write on the tree.
+ *
+ * What this cannot cover: every npm here runs as one uid, so it does not exercise
+ * req 2's cross-session ownership. That rests on machinery this change does not
+ * touch — the entrypoint's `share_cache_with_all_sessions` handoff and its
+ * `umask 002` (docs/270). The one part of it the split *could* have broken is the
+ * mode of content written across the new mount boundary, where cacache falls back
+ * from `rename` to `copyFile`: verified 2026-09-20 that `copyFile` preserves the
+ * source's mode (0664 under that umask) exactly as `rename` does.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import http from "node:http";
@@ -22,7 +30,12 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { prepareSessionNpmCache, sharedNpmContentDir } from "../../shared/npm-cache.js";
+import {
+  linkSessionNpmCache,
+  prepareSessionNpmCache,
+  sessionNpmCacheDir,
+  sharedNpmContentDir,
+} from "../../shared/npm-cache.js";
 
 const run = promisify(execFile);
 const PKG = "shipit-h1-probe";
@@ -85,6 +98,7 @@ let server: http.Server;
 let registry: string;
 let legit: Blob;
 let evil: Blob;
+let cleanEntry: CacheEntry;
 const hits = { packument: 0, tarball: 0 };
 
 function project(name: string, withLockfile: boolean): string {
@@ -126,6 +140,46 @@ async function npmRun(dir: string, cacheRoot: string, args: string[]): Promise<{
 
 const marker = (): string => path.join(root, "PWNED");
 const pwned = (): boolean => fs.existsSync(marker());
+const packumentKey = (): string => `make-fetch-happen:request-cache:${registry}${PKG}`;
+
+/**
+ * The attacker's two writes, both of which the shared tree's group write permits: the
+ * evil tarball at its own valid hash, and a packument pointing `dist.integrity` at it.
+ * Re-applied per test, because the fix retires the shared index — without this, a later
+ * cell could pass simply because no poison was left to resist.
+ */
+function poisonSharedIndex(): void {
+  writeContent(sharedCacache, evil);
+  const doc = JSON.parse(
+    fs.readFileSync(contentPath(sharedCacache, cleanEntry.integrity), "utf-8"),
+  ) as { versions: Record<string, { dist: { integrity: string }; hasInstallScript?: boolean }> };
+  doc.versions[VERSION].dist.integrity = evil.integrity;
+  doc.versions[VERSION].hasInstallScript = true;
+  const body = Buffer.from(JSON.stringify(doc));
+  const poisoned: Blob = {
+    data: body,
+    integrity: `sha512-${crypto.createHash("sha512").update(body).digest("base64")}`,
+  };
+  writeContent(sharedCacache, poisoned);
+  appendEntry(sharedCacache, {
+    ...cleanEntry,
+    integrity: poisoned.integrity,
+    size: body.length,
+    time: Date.now(),
+  });
+}
+
+function sharedIndexIsPoisoned(): boolean {
+  try {
+    const entry = readEntry(sharedCacache, packumentKey());
+    const doc = JSON.parse(fs.readFileSync(contentPath(sharedCacache, entry.integrity), "utf-8")) as {
+      versions: Record<string, { dist: { integrity: string } }>;
+    };
+    return doc.versions[VERSION].dist.integrity === evil.integrity;
+  } catch {
+    return false;
+  }
+}
 
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "npm-h1-"));
@@ -189,31 +243,11 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   registry = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
 
-  // Seed the shared cache the way this repo's first session would.
+  // Seed the shared cache the way this repo's first session would, and keep the clean
+  // entry so every cell can be re-poisoned from a known state.
   const seeded = await npmRun(project("seed", true), sharedCacheRoot, ["install", PKG]);
   expect(seeded.ok, seeded.out).toBe(true);
-
-  // The attacker's two writes, both of which the shared tree's group write permits.
-  writeContent(sharedCacache, evil);
-  const key = `make-fetch-happen:request-cache:${registry}${PKG}`;
-  const entry = readEntry(sharedCacache, key);
-  const doc = JSON.parse(fs.readFileSync(contentPath(sharedCacache, entry.integrity), "utf-8")) as {
-    versions: Record<string, { dist: { integrity: string }; hasInstallScript?: boolean }>;
-  };
-  doc.versions[VERSION].dist.integrity = evil.integrity;
-  doc.versions[VERSION].hasInstallScript = true;
-  const body = Buffer.from(JSON.stringify(doc));
-  const poisoned: Blob = {
-    data: body,
-    integrity: `sha512-${crypto.createHash("sha512").update(body).digest("base64")}`,
-  };
-  writeContent(sharedCacache, poisoned);
-  appendEntry(sharedCacache, {
-    ...entry,
-    integrity: poisoned.integrity,
-    size: body.length,
-    time: Date.now(),
-  });
+  cleanEntry = readEntry(sharedCacache, packumentKey());
 }, NPM_TIMEOUT_MS);
 
 afterAll(async () => {
@@ -223,6 +257,8 @@ afterAll(async () => {
 
 beforeEach(() => {
   fs.rmSync(marker(), { force: true });
+  poisonSharedIndex();
+  expect(sharedIndexIsPoisoned()).toBe(true);
 });
 
 describe("Integration: shared npm cache poisoning (docs/276 H1)", () => {
@@ -241,8 +277,17 @@ describe("Integration: shared npm cache poisoning (docs/276 H1)", () => {
     const label = withLockfile ? "with a lockfile present" : "with no lockfile (req 5)";
 
     it(`FIX: a private resolution index installs the real package ${label}`, async () => {
-      const cacheRoot = path.join(root, `private-${suffix}`);
-      expect(prepareSessionNpmCache(cacheRoot, sharedNpmContentDir(depCacheDir)).shared).toBe(true);
+      // Through the worker's own entry point, with the env the orchestrator sets, so the
+      // cell covers the wiring and not just the layout helper.
+      const stateDir = path.join(root, `state-${suffix}`);
+      const cacheRoot = sessionNpmCacheDir(stateDir);
+      const outcome = linkSessionNpmCache(stateDir, depCacheDir, { npm_config_cache: cacheRoot });
+      expect(outcome?.shared).toBe(true);
+      // Retiring the shared index is hygiene, not the protection. Put the poison back so
+      // the private index is what has to resist it, or this cell would pass on an empty
+      // shared cache and prove nothing.
+      poisonSharedIndex();
+      expect(sharedIndexIsPoisoned()).toBe(true);
       const dir = project(`victim-private-${suffix}`, withLockfile);
       const beforePackument = hits.packument;
       const beforeTarball = hits.tarball;

@@ -10,16 +10,26 @@ recorded in [requirements.md](./requirements.md); none is open.
       64 KB private / 688 KB shared, and a write to the shared `index-v5` no
       longer affects the victim.
 - [x] Measured warm-install time against req 7 and the command compatibility of a
-      split cache (`verify-h1.mjs`, PASS=11, npm 11.12.1, ext4): warm
-      `--prefer-offline` install **1 822 → 1 861 ms (1.02×)**, and **1.00×** with
-      the private index cold, because an in-sync lockfile install writes no
-      resolution index at all. The link survives an install that writes content;
-      a new package's bytes still land in the shared store. `npm cache verify` and
-      `npm doctor` **fail** on the split (cacache globs the content dir and gets
-      the symlink back) but damage nothing — it aborts before its first delete;
-      a real directory there would instead let one session's GC strip the repo's
-      shared store. `npm cache clean --force` works and leaves the shared store
-      intact. Both caveats are in `shipit-docs/environment.md`.
+      split cache (`verify-h1.mjs`, PASS=17, npm 11.12.1, ext4, two full runs):
+      warm `--prefer-offline` **0.97× / 1.07×**, cold private index
+      **0.99× / 1.03×**, and the no-lockfile case that actually uses the index
+      **1.05× / 0.99×**. Every cell is inside the ±5 % the same cell moves between
+      runs, in both directions — no measurable cost, and not a speed-up either.
+      An in-sync lockfile install writes no resolution index at all. The link
+      survives an install that writes content; a new package's bytes still land in
+      the shared store. `npm cache verify` and `npm doctor` **fail** on the split
+      (cacache globs the content dir and gets the symlink back); `cache verify`
+      aborts before its first delete and `doctor` loses and rewrites nothing,
+      asserted per blob rather than by count. A real directory there would instead
+      let one session's GC strip the repo's shared store. `npm cache clean --force`
+      works and leaves the shared store byte-identical. All in
+      `shipit-docs/environment.md`.
+- [x] The one genuine reduction in sharing, measured and documented: resolution is
+      no longer shared, so `npm install --offline <pkg>` for a package this session
+      has never resolved fails `ENOTCACHED` where it could previously reuse another
+      session's packument. Not a req 2 breach (no install fails *because another
+      session wrote first*), and ShipIt's own install line is `--prefer-offline`
+      (`install-runtime.ts:29`), which falls back to the registry.
 - [x] Confirmed npm re-hashes shared `content-v2` on read with **no**
       verification-skip marker — `cacache/lib/content/read.js` checks every read
       and records no `checkedAt`; `hasContent` only stats. Measured: a blob

@@ -95,6 +95,34 @@ describe("prepareSessionNpmCache", () => {
 
     expect(outcome.shared).toBe(false);
   });
+
+  // A link npm follows into a store that is not there is worse than no link: it reports
+  // unshared while npm still fails to write content.
+  it("removes a link it cannot honour, so an unshared cache really is a working one", () => {
+    const { depCacheDir, cacheRoot, link } = dirs();
+    prepareSessionNpmCache(cacheRoot, sharedNpmContentDir(depCacheDir));
+    // The shared store's path is now occupied by a file, so it can never be a content dir.
+    fs.rmSync(sharedNpmContentDir(depCacheDir), { recursive: true, force: true });
+    fs.writeFileSync(sharedNpmContentDir(depCacheDir), "not a directory");
+
+    const outcome = prepareSessionNpmCache(cacheRoot, sharedNpmContentDir(depCacheDir));
+
+    expect(outcome.shared).toBe(false);
+    expect(fs.existsSync(link)).toBe(false);
+  });
+
+  it("keeps a real content directory when the share cannot be established", () => {
+    const { depCacheDir, cacheRoot, link } = dirs();
+    fs.mkdirSync(link, { recursive: true });
+    fs.writeFileSync(path.join(link, "blob"), "this session's own content");
+    fs.mkdirSync(path.dirname(sharedNpmContentDir(depCacheDir)), { recursive: true });
+    fs.writeFileSync(sharedNpmContentDir(depCacheDir), "not a directory");
+
+    const outcome = prepareSessionNpmCache(cacheRoot, sharedNpmContentDir(depCacheDir));
+
+    expect(outcome.shared).toBe(false);
+    expect(fs.readFileSync(path.join(link, "blob"), "utf-8")).toBe("this session's own content");
+  });
 });
 
 describe("linkSessionNpmCache", () => {

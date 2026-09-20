@@ -29,6 +29,7 @@ import {
   sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
 import { OVERLAY_VERIFY_FAILURE } from "./overlay-volume.js";
+import { linkSessionNpmCache } from "../shared/npm-cache.js";
 import type { HostMount } from "../shared/shipit-config.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
@@ -351,6 +352,38 @@ describe("buildEnv", () => {
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env).toContain("npm_config_cache=/session-state/npm-cache");
     expect(env.some((e) => e.startsWith("npm_config_cache=") && e.includes("/dep-cache"))).toBe(false);
+  });
+
+  /**
+   * The two halves are set in different processes, so drift between them is the
+   * realistic failure: the worker would prepare a layout npm never looks at, and
+   * every install would quietly go private. Drive the worker's side with the
+   * orchestrator's own value rather than a literal.
+   */
+  it("hands the worker a cache path it prepares the split for", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "npm-cache-wiring-"));
+    try {
+      const env = buildEnv(
+        baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" }),
+        "/workspace", 9100, undefined, undefined,
+      );
+      const stateDir = env.find((e) => e.startsWith("SHIPIT_SESSION_STATE_DIR="))!
+        .slice("SHIPIT_SESSION_STATE_DIR=".length);
+      const cacheRoot = env.find((e) => e.startsWith("npm_config_cache="))!
+        .slice("npm_config_cache=".length);
+
+      // Re-root both container paths under a temp dir to exercise the real fs calls.
+      const outcome = linkSessionNpmCache(
+        path.join(tmp, stateDir),
+        path.join(tmp, "dep-cache", "abc123"),
+        { npm_config_cache: path.join(tmp, cacheRoot) },
+      );
+
+      expect(outcome).not.toBeNull();
+      expect(outcome?.shared).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("does not include cache env vars when depCacheDir is undefined", () => {

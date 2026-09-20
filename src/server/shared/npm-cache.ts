@@ -50,9 +50,14 @@ export function prepareSessionNpmCache(
   const contentLink = path.join(cacheRoot, "_cacache", "content-v2");
   try {
     fs.mkdirSync(path.dirname(contentLink), { recursive: true });
-    fs.mkdirSync(sharedContentDir, { recursive: true });
   } catch (err) {
     return { shared: false, reason: message(err) };
+  }
+
+  try {
+    fs.mkdirSync(sharedContentDir, { recursive: true });
+  } catch (err) {
+    return fallBackToPrivate(contentLink, err);
   }
 
   let discardedPrivateContent = false;
@@ -72,9 +77,25 @@ export function prepareSessionNpmCache(
     fs.rmSync(contentLink, { recursive: true, force: true });
     fs.symlinkSync(sharedContentDir, contentLink);
   } catch (err) {
-    return { shared: false, reason: message(err) };
+    return fallBackToPrivate(contentLink, err);
   }
   return { shared: true, relinked: true, discardedPrivateContent };
+}
+
+/**
+ * A link we cannot honour is worse than no link: npm would follow it and fail to write
+ * content, so "unshared but working" is only true once the link is gone. Never removes a
+ * real directory — that holds this session's own content.
+ */
+function fallBackToPrivate(contentLink: string, err: unknown): NpmCacheSplitOutcome {
+  const reason = message(err);
+  if (lstatOrNull(contentLink)?.isSymbolicLink() !== true) return { shared: false, reason };
+  try {
+    fs.rmSync(contentLink, { force: true });
+    return { shared: false, reason };
+  } catch (rmErr) {
+    return { shared: false, reason: `${reason}; the stale link also survived: ${message(rmErr)}` };
+  }
 }
 
 /**
@@ -98,8 +119,8 @@ export function linkSessionNpmCache(
   }
   if (!outcome.shared) {
     console.warn(
-      `[npm-cache] ${cacheRoot} could not be linked to the shared content store ` +
-      `(${outcome.reason}); installs still work and stay private, but they will re-download`,
+      `[npm-cache] ${cacheRoot} is not sharing the repo's npm content store ` +
+      `(${outcome.reason}); installs will re-download rather than reuse it`,
     );
     return outcome;
   }

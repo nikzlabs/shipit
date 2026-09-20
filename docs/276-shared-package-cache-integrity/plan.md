@@ -84,38 +84,56 @@ poisoned in place with its **mtime preserved** — the poison pnpm installs — 
 closed offline and is re-downloaded and repaired when the network is up (req 3).
 
 **Measured** (`verify-h1.mjs`, 8 deps / 7 480 files / 53.5 MB `node_modules` /
-22.7 MB shared cache, npm 11.12.1, ext4, best-of-5, PASS=11):
+22.7 MB shared cache, npm 11.12.1, ext4, best-of-5, PASS=17). Two full runs, both
+reported, because the spread between them is what the result rests on:
 
-| | today (shared index) | design (private index) |
+| `npm install --prefer-offline` (ShipIt's line, `install-runtime.ts:29`) | today (shared index) | design (private index) |
 |---|---|---|
-| warm install, `--prefer-offline` (ShipIt's line, `install-runtime.ts:29`) | 1 822 ms | 1 861 ms (**1.02×**) |
-| same, private index cold | — | 1 820 ms (**1.00×**) |
-| per-session disk | 0 B | **0 B** with an in-sync lockfile, **0.9 MB** when resolution runs |
-| new package's bytes | shared store | shared store (+4 blobs) |
+| warm, lockfile in sync | 1 955 / 1 839 ms | 1 896 / 1 967 ms (**0.97× / 1.07×**) |
+| warm, lockfile in sync, private index cold | — | 1 935 / 1 897 ms (**0.99× / 1.03×**) |
+| **no lockfile — the case that does use the index** | 3 400 / 3 403 ms | 3 566 / 3 375 ms (**1.05× / 0.99×**) |
 
-req 7 and req 10 are met with no measurable cost, and the reason is that **an
-in-sync lockfile install writes no resolution index at all**: the lockfile carries
-the resolution and tarballs are found in `content-v2` by digest, so the private
-half stays empty. Only resolution — `npm install <new-package>`, an out-of-sync or
-absent lockfile — touches it, which is exactly what H1 attacked. A fresh session
-pays packument fetches (JSON), never tarballs.
+Every cell lands inside the ±5 % that the same cell moves between runs on this
+host, in both directions, so **the honest reading is no measurable cost, not a
+measured speed-up**. req 7 is met. Per-session disk is **0 B** with an in-sync
+lockfile and **0.9 MB** when resolution runs; a newly downloaded package's bytes
+still land in the shared store (+4 blobs), so req 10 and req 2 hold.
 
-Two npm commands change, both documented in
-`src/server/shipit-docs/environment.md`:
+The reason the cost is this small is that **an in-sync lockfile install writes no
+resolution index at all**: the lockfile carries the resolution and tarballs are
+found in `content-v2` by digest, so the private half stays empty. Only resolution
+— `npm install <new-package>`, an out-of-sync or absent lockfile — touches it,
+which is exactly what H1 attacked. A fresh session pays packument fetches (JSON),
+never tarballs.
 
+**What the split costs, stated plainly.** Three behaviours change, all documented
+in `src/server/shipit-docs/environment.md`:
+
+- **Resolution is no longer shared between sessions, only content.** So
+  `npm install --offline <pkg>` for a package *this* session has never resolved now
+  fails `ENOTCACHED`, where before it could reuse another session's cached
+  packument. Measured. This is a genuine reduction in what is shared, and it is
+  the point: shared resolution data *is* H1. It does not breach req 2, whose
+  clause is that no install may fail *because another session wrote the cache
+  first* — and ShipIt's own install line is `--prefer-offline`
+  (`install-runtime.ts:29`), which falls back to the registry, so no ShipIt-driven
+  install is affected. An agent that types `--offline` by hand is.
 - **`npm cache verify` and `npm doctor` fail** with `Cannot read properties of null
   (reading 'toString')`. `cacache/lib/verify.js:132` globs the content directory
-  with `follow: false`, so the symlink itself comes back as a match, and
-  `ssri.fromHex` on those path segments returns null. It aborts before its first
-  delete: the shared store and the link are byte-unchanged (asserted in the
-  harness). A *real directory* there would not crash — but then its mark-and-sweep
-  would reclaim every blob this session's private index does not reference, i.e.
-  one session's `cache verify` would strip the repo's shared store. Failing loudly
-  and changing nothing is the better of the two, and npm's own `cache clean` text
-  says what replaces it: the cache treats a bad entry as a miss and re-downloads.
-- **`npm cache clean --force` removes the link** with the rest of the cache (the
-  shared store survives). That session installs privately until the container next
-  starts; the worker discards the unshared content it accumulated and relinks.
+  with `follow: false`, so the symlink itself comes back as a match and
+  `ssri.fromHex` on those path segments returns null. `cache verify` aborts before
+  its first delete — the shared store is byte-identical afterwards, asserted per
+  blob. `doctor` likewise loses and rewrites nothing, though its own registry probe
+  *adds* a blob. A *real directory* there would not crash — but then the
+  mark-and-sweep would reclaim every blob this session's private index does not
+  reference, i.e. one session's `cache verify` would strip the repo's shared store.
+  Failing loudly and changing nothing is the better of the two, and npm's own
+  `cache clean` text says what replaces it: the cache treats a bad entry as a miss
+  and re-downloads.
+- **`npm cache clean --force` removes the link** with the rest of the cache; the
+  shared store is byte-identical afterwards. That session installs privately until
+  the container next starts, when the worker discards the unshared content it
+  accumulated and relinks.
 
 Not in scope, and newly noted: the **plugin install container** still gets
 `npm_config_cache=/dep-cache/npm` over a cache keyed per plugin *source*

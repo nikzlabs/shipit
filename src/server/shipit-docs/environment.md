@@ -78,16 +78,21 @@ and re-hashed on every read, so sharing it cannot make you install something els
 Resolution data has no such property, and a session that could write yours would
 be choosing what your `npm install` runs.
 
-`npm install`, `npm ci`, `npm install <pkg>`, `npm install -g`, `npm cache clean
---force` and every other install form work normally. Two consequences to know:
+`npm install`, `npm ci`, `npm install <pkg>`, `npm install -g` and
+`npm cache clean --force` all work normally. Three consequences to know:
 
+- **`npm install --offline <pkg>` fails** with `ENOTCACHED` for a package this
+  session has never resolved, even when another session has already downloaded it.
+  Resolution is what is private; the download is not. Drop the flag, or use
+  `--prefer-offline` (which is what ShipIt's own install command uses): it reads
+  the cache first and asks the registry only for what is missing.
 - **`npm cache verify` and `npm doctor` fail** on a split cache, with
   `Cannot read properties of null (reading 'toString')` — npm's garbage collector
-  walks the content directory and does not expect it to be a link. Nothing is
-  damaged when they fail. You do not need them: npm treats a bad cache entry as a
-  miss and re-downloads, which is exactly what `cache verify` would repair. If a
-  cache problem really is in the way, use `npm cache clean --force`, or
-  `npm install --cache /tmp/fresh-cache` for a one-off.
+  walks the content directory and does not expect it to be a link. Neither damages
+  anything: the shared store is byte-identical afterwards. You do not need them —
+  npm treats a bad cache entry as a miss and re-downloads, which is exactly what
+  `cache verify` would repair. If a cache problem really is in the way, use
+  `npm cache clean --force`, or `npm install --cache /tmp/fresh-cache` for a one-off.
 - **`npm cache clean --force` removes the link** along with the rest of your cache
   (the repo's shared content is left intact). Your next install re-downloads
   privately; the link is restored the next time the container starts.

@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -73,10 +74,13 @@ async function npm(dir, cache, args) {
   }
 }
 
-async function bestOf5(dir, cache, args, { coldIndex = false } = {}) {
+async function bestOf5(dir, cache, args, { coldIndex = false, noLockfile = false } = {}) {
   let best = Infinity;
   for (let i = 0; i < 5; i++) {
     fs.rmSync(path.join(dir, "node_modules"), { recursive: true, force: true });
+    // npm writes a lockfile on the first install; without this the later runs would
+    // measure a lockfile install and the no-lockfile cells would prove nothing.
+    if (noLockfile) fs.rmSync(path.join(dir, "package-lock.json"), { force: true });
     if (coldIndex) fs.rmSync(path.join(cache, "_cacache", "index-v5"), { recursive: true, force: true });
     const started = process.hrtime.bigint();
     const res = await npm(dir, cache, args);
@@ -113,6 +117,27 @@ const blobs = (p) => {
   };
   try { walk(p); } catch { return 0; }
   return n;
+};
+
+// A count cannot show a deletion that a later addition masks, nor a byte changed in
+// place. Record every blob's path and content hash instead.
+const storeEntries = (p) => {
+  const entries = new Map();
+  const walk = (q) => {
+    for (const e of fs.readdirSync(q, { withFileTypes: true })) {
+      const child = path.join(q, e.name);
+      if (e.isDirectory()) walk(child);
+      else entries.set(path.relative(p, child), crypto.createHash("sha256").update(fs.readFileSync(child)).digest("hex"));
+    }
+  };
+  try { walk(p); } catch { /* absent */ }
+  return entries;
+};
+
+/** Additions are harmless (a command may legitimately fetch); losses and rewrites are not. */
+const nothingLost = (before, after) => {
+  for (const [rel, digest] of before) if (after.get(rel) !== digest) return false;
+  return true;
 };
 
 try {
@@ -152,9 +177,25 @@ try {
     "an in-sync lockfile install writes no resolution index at all",
   );
 
-  // req 10 — what the private half costs when resolution does run (no lockfile).
+  // req 7 / req 10 — the case that actually uses the resolution index. Both caches start
+  // cold here, so this is the cost of resolving over a warm content store, not of a
+  // lockfile install that never touches the index.
+  const opts = { coldIndex: true, noLockfile: true };
+  const nolockShared = await bestOf5(project("nolock-a"), SHARED, ["install", "--prefer-offline"], opts);
   const nolockCache = privateCache("nolock-cache");
-  const nolock = await npm(project("nolock"), nolockCache, ["install", "--prefer-offline"]);
+  const nolockDir = project("nolock-b");
+  const nolockPrivate = await bestOf5(nolockDir, nolockCache, ["install", "--prefer-offline"], opts);
+  console.log(`\nC  no lockfile, shared index (today)     ${nolockShared.ms} ms`);
+  console.log(`D  no lockfile, private index            ${nolockPrivate.ms} ms  (${(nolockPrivate.ms / nolockShared.ms).toFixed(2)}×)`);
+  check(
+    nolockPrivate.ms !== null && nolockPrivate.ms < nolockShared.ms * 1.2,
+    "req 7: a no-lockfile install, which does use the index, is not materially slower",
+  );
+  // Resolve once more from cold, with neither a tree nor a lockfile to short-circuit it.
+  fs.rmSync(path.join(nolockDir, "node_modules"), { recursive: true, force: true });
+  fs.rmSync(path.join(nolockDir, "package-lock.json"), { force: true });
+  fs.rmSync(path.join(nolockCache, "_cacache", "index-v5"), { recursive: true, force: true });
+  const nolock = await npm(nolockDir, nolockCache, ["install", "--prefer-offline"]);
   check(nolock.ok, "no-lockfile install over the shared content store", nolock.ok ? "" : nolock.out.slice(0, 200));
   const indexBytes = du(path.join(nolockCache, "_cacache", "index-v5"));
   console.log(`\nprivate resolution index, no lockfile:   ${mb(indexBytes)}`);
@@ -174,25 +215,54 @@ try {
     "the content-v2 link survives an install that writes content",
   );
 
-  // Which npm commands a split cache changes.
+  // Which npm commands a split cache changes, and whether they damage the shared store.
+  const beforeVerify = storeEntries(SHARED_CONTENT);
   const verify = await npm(addDir, addCache, ["cache", "verify"]);
   console.log(`\nnpm cache verify: ok=${verify.ok} — ${verify.out.split("\n").find((l) => l.trim())?.trim().slice(0, 90)}`);
-  const doctor = await npm(addDir, addCache, ["doctor"]);
-  console.log(`npm doctor:       ok=${doctor.ok}`);
   check(!verify.ok, "npm cache verify FAILS on a split cache (documented in shipit-docs/environment.md)");
+  const afterVerify = storeEntries(SHARED_CONTENT);
   check(
-    blobs(SHARED_CONTENT) >= before && fs.lstatSync(path.join(addCache, "_cacache", "content-v2")).isSymbolicLink(),
-    "a failed cache verify damages neither the shared store nor the link",
+    afterVerify.size === beforeVerify.size && nothingLost(beforeVerify, afterVerify),
+    "a failed cache verify leaves the shared store byte-identical — it aborts before its first delete",
   );
-  void doctor;
+  check(
+    fs.lstatSync(path.join(addCache, "_cacache", "content-v2")).isSymbolicLink(),
+    "a failed cache verify leaves the content-v2 link in place",
+  );
 
-  const beforeClean = blobs(SHARED_CONTENT);
+  const beforeDoctor = storeEntries(SHARED_CONTENT);
+  const doctor = await npm(addDir, addCache, ["doctor"]);
+  const afterDoctor = storeEntries(SHARED_CONTENT);
+  console.log(`npm doctor:       ok=${doctor.ok}, shared blobs ${beforeDoctor.size}→${afterDoctor.size}`);
+  check(!doctor.ok, "npm doctor FAILS on a split cache — its cache check is the same code");
+  // doctor's registry probe fetches a manifest, so it may ADD a blob. What matters is
+  // that nothing it wrote removed or rewrote what other sessions rely on.
+  check(
+    nothingLost(beforeDoctor, afterDoctor),
+    "a failed npm doctor loses and rewrites nothing in the shared store",
+    `+${afterDoctor.size - beforeDoctor.size} blobs from its own registry probe`,
+  );
+
+  const beforeClean = storeEntries(SHARED_CONTENT);
   const clean = await npm(addDir, addCache, ["cache", "clean", "--force"]);
+  const afterClean = storeEntries(SHARED_CONTENT);
   check(clean.ok, "npm cache clean --force succeeds");
   check(
-    blobs(SHARED_CONTENT) === beforeClean,
-    "npm cache clean --force leaves the repo's shared store intact (it unlinks a symlink)",
-    `${beforeClean} blobs`,
+    afterClean.size === beforeClean.size && nothingLost(beforeClean, afterClean),
+    "npm cache clean --force leaves the repo's shared store byte-identical (it unlinks a symlink)",
+  );
+  check(
+    !fs.existsSync(path.join(addCache, "_cacache")),
+    "npm cache clean --force does remove this session's own cache, link included",
+  );
+
+  // The documented consequence of a private index: resolution is no longer shared, so a
+  // strictly offline install of a package this session has never resolved cannot work.
+  const offlineCache = privateCache("offline-cache");
+  const offline = await npm(project("offline"), offlineCache, ["install", "is-odd@3.0.1", "--offline"]);
+  check(
+    !offline.ok && /ENOTCACHED|offline/i.test(offline.out),
+    "`npm install --offline <pkg>` a session has not resolved fails (req 2 note in plan.md)",
   );
 } finally {
   console.log(`\nPASS=${pass} FAIL=${fail}`);
