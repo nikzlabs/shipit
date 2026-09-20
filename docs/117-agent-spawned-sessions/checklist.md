@@ -13,7 +13,7 @@ endpoints are live. The agent is not yet *told* to use them — that's
 Phase 2.
 
 - [x] `/usr/local/bin/shipit` shim installed in `Dockerfile.session-worker.{dev,prod,dogfood}` (mode 0755, root-owned).
-- [x] `src/server/session/agent-shim/shipit.ts` — `create`, `list`, `view`, `help` subcommands; rejection set for `delete`/`archive`/`message`/`wait`/`adopt`/`merge`/`fork`/`rename`/`switch`; `--repo`/`--owner` rejected with a helpful pointer.
+- [x] `src/server/session/agent-shim/shipit.ts` — `create`, `list`, `view`, `help` subcommands; rejection set for `delete`/`archive`/`message`/`wait`/`adopt`/`merge`/`fork`/`rename`/`switch`; `--repo`/`--owner` rejected with a helpful pointer. (`message` and `wait` left the rejection set in Phase 3; `archive` returned to it.)
 - [x] `src/server/session/agent-shim/shipit.test.ts` — argument parsing, allowlist, JSON output, exit codes (38 cases).
 - [x] `src/server/session/agent-ops-routes.ts` — relay routes `/agent-ops/session/create|list|view/:childId`, injecting `:parentId` from `SESSION_ID`.
 - [x] `src/server/session/agent-ops-routes.test.ts` — 6 cases covering relay paths + 404 / 429 status pass-through.
@@ -46,21 +46,21 @@ spawned children indented under their parent.
 - [x] Component tests for `SpawnedSessionCard` (idle/running/archived/missing-child statuses, Open button click handler, branch omission, disabled Open when missing).
 - [x] Integration coverage: `POST /api/sessions/:parentId/spawn` emits a `session_spawned` event on the parent's WS — verified in `agent-spawned-session.test.ts`.
 
-## Phase 3 — `message`, `wait`, `archive` (DONE)
+## Phase 3 — `message`, `wait` (DONE)
 
-The coordination subcommands are live. The parent agent can now drive a
-child to completion without the user babysitting it: spawn → message
-follow-ups → wait → archive.
+The coordination subcommands are live: spawn → message follow-ups → wait.
+`archive` shipped here too and was **removed** afterwards; see *The parent
+never archives a child* in `plan.md`.
 
-- [x] Drop `message`, `wait`, `archive` from `REJECTED_SESSION_SUBCOMMANDS` in `shipit.ts`; add their handlers.
+- [x] Drop `message` and `wait` from `REJECTED_SESSION_SUBCOMMANDS` in `shipit.ts`; add their handlers.
 - [x] `shipit session message <id> -m "TEXT" [--json]` — `POST /agent-ops/session/message/:childId` → `POST /api/sessions/:parentId/children/:childId/message`. Returns `{ queuePosition, enqueued }`.
 - [x] `shipit session wait <id> [--timeout SECONDS] [--json]` — `GET /agent-ops/session/wait/:childId?timeout=N` → long-poll `GET /api/sessions/:parentId/children/:childId?wait=true&timeout=N`. Default 300s, cap 3600s. Non-zero exit when the timeout fires.
-- [x] `shipit session archive <id>` — `POST /agent-ops/session/archive/:childId` → `POST /api/sessions/:parentId/children/:childId/archive`. Only archives children the parent itself spawned; refuses when the child is running (HTTP 409).
-- [x] `services/child-sessions.ts` — added `sendChildMessage`, `waitForChildIdle`, `assertArchivableChild`; preserve the cross-tenancy 404 contract via `assertChildOfParent`. (The archive route then calls the existing `archiveSession` service for the heavy lifting, sidestepping a module cycle.)
+- [x] ~~`shipit session archive <id>`~~ — **removed.** The shim refuses it and names the UI; `POST /agent-ops/session/archive/:childId` and `POST /api/sessions/:parentId/children/:childId/archive` are deleted, as is the `assertArchivableChild` guard. Archiving is the user's action, and a child is archived with its parent.
+- [x] `services/child-sessions.ts` — added `sendChildMessage` and `waitForChildIdle`; preserve the cross-tenancy 404 contract via `assertChildOfParent`.
 - [x] Extended `ChildSessionView` with `latestAssistantMessage` and `prUrl` via the new `ChildViewProjections` plumbing. `ChatHistoryManager.loadLatestAssistantText()` is the read-only projection for the latest assistant text; `PrStatusPoller.getStatus()` provides the PR URL.
 - [x] Env-var overrides for the quota constants — `MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`. Read once at module init; bad values (non-integer or ≤ 0) log a warning and fall back to the compile-time default.
 - [x] Unit tests for the three new shim handlers (happy path, 404, 409/429 surfacing, timeout exit).
-- [x] Integration tests: message enqueues on the child runner; wait blocks until `running=false && queueLength=0` (both the "already idle" fast path and the "register listener then finish" path); archive moves the child to archived and refuses with 409 when it's running.
+- [x] Integration tests: message enqueues on the child runner; wait blocks until `running=false && queueLength=0` (both the "already idle" fast path and the "register listener then finish" path).
 
 ## Agent/model selection — validation + view exposure (DONE)
 
@@ -98,3 +98,19 @@ out of scope for 117 — see the rationale beside each.
 - [ ] ~~Decide whether spawned-children quota should count archived children~~ — current behavior (active-only) is intentional; archived children don't consume containers, so the capacity argument doesn't apply. Not a blocker.
 - [ ] ~~Grand-children quotas (depth limit)~~ — the per-parent + global container caps bound runaway depth in practice. Revisit if telemetry shows >2-level chains in the wild.
 - [ ] ~~"Child spawned this session" indicator on the parent's PR card~~ — nice-to-have visual polish, doesn't block the feature.
+
+## The parent never archives a child (DONE)
+
+Removing the agent-facing archive API after a parent archived a child that had
+merely paused to ask the user a question. Rationale and source citations in
+`plan.md` → *The parent never archives a child*.
+
+- [x] `agent-shim/shipit.ts` — refuse `shipit session archive` before dispatch, with a message naming the UI; drop the handler, the `HELP` line, and the `--help` path.
+- [x] `agent-shim/shipit-session.ts` — delete `handleSessionArchive`.
+- [x] `session/agent-ops-routes.ts` — delete the `/agent-ops/session/archive/:childId` relay.
+- [x] `orchestrator/api-routes-session-spawn.ts` — delete `POST /api/sessions/:parentId/children/:childId/archive` and its now-dead imports.
+- [x] `orchestrator/services/child-sessions.ts` — delete `assertArchivableChild` and its `session.ts` re-export.
+- [x] Tests: replace the shim's archive suite with one refusal test (proven red without the branch); delete the worker-relay, container-guard-allowlist, and integration-route tests for the removed endpoints.
+- [x] `shipit-docs/sessions.md` — drop `archive` from the reference table and the coordination example; add *You do not archive a child*; rewrite the `wait`→`archive` and quota guidance; note that `idle` includes a child paused on a question.
+- [x] All five agent `system-prompt.md` variants — one line: a parent never archives a child, and a child's chat is a surface the parent cannot read.
+- [x] The user's own archive/unarchive in the client UI is untouched.

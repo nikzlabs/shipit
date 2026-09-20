@@ -47,8 +47,10 @@ Phases 1, 2, and 3 are live as of this revision. What works today:
   the orchestrator until the child reports idle
   (`running=false && queueLength=0`) or the timeout fires. Default 5
   minutes, server-capped at 1 hour. Exits non-zero on timeout.
-- **(Phase 3.)** `shipit session archive <id>` archives a child the parent
-  spawned. Refuses while the child is running (HTTP 409 + clear stderr).
+- **(Phase 3, since removed.)** `shipit session archive <id>` archived a child
+  the parent spawned. **Removed** — see *The parent never archives a child*
+  below. The shim refuses the subcommand and names the UI; the worker relay and
+  the orchestrator route are gone.
 - **(Phase 3.)** `shipit session view` (and `wait`) now surface the
   child's `latestAssistantMessage` and `prUrl` so the parent agent can
   get a snapshot without scraping the child's chat history.
@@ -184,7 +186,7 @@ Today the only path for (1)–(4) — and for *any* parallel work under Codex �
 - **Not** a way for the agent to bypass the user. New sessions appear in the sidebar immediately and emit a chat-side notification in the parent session. Nothing happens behind the user's back.
 - **Not** cross-account / cross-user. Spawned sessions inherit the parent's owner, GitHub auth, and credential store.
 - **Not** unbounded. Per-turn and per-parent-session caps prevent the agent from spraying the sidebar.
-- **Not** a way to delete or archive arbitrary sessions. The agent can only manage the sessions it spawned during the current turn (or earlier turns, identified by parent-session linkage).
+- **Not** a way to delete or archive sessions — not even the ones it spawned. The agent can only *read from* and *talk to* its own children (parent-session linkage scopes even that); ending a session's life is the user's action in the UI. See *The parent never archives a child*.
 
 ## Design
 
@@ -326,13 +328,67 @@ These extend the same three-layer pattern shipped in Phase 1:
 |---|---|---|---|
 | `shipit session message <id> -m "TEXT" [--json]` | `POST /agent-ops/session/message/:childId` | `POST /api/sessions/:parentId/children/:childId/message` | Sends a follow-up prompt. Body `{ text }`. Returns `{ queuePosition, enqueued }` — `enqueued=true` means the prompt landed behind a running turn; `enqueued=false` means the orchestrator started a turn immediately. |
 | `shipit session wait <id> [--timeout SECONDS] [--json]` | `GET /agent-ops/session/wait/:childId?timeout=N` | `GET /api/sessions/:parentId/children/:childId?wait=true&timeout=N` | Long-polls until the child reports idle (`running=false && queueLength=0`) or the timeout fires. Default 300s, server-capped at 3600s. Response includes the child snapshot, `idle`, and `timedOut`. The shim exits non-zero on timeout. |
-| `shipit session archive <id> [--json]` | `POST /agent-ops/session/archive/:childId` | `POST /api/sessions/:parentId/children/:childId/archive` | Archives a child the parent itself spawned. Refuses (HTTP 409) when the child is still running. Reuses the existing `archiveSession` service for workspace + container teardown. |
+
+**`shipit session archive` is no longer part of this table.** It shipped in
+Phase 3 as a third row, brokering
+`POST /agent-ops/session/archive/:childId` →
+`POST /api/sessions/:parentId/children/:childId/archive`. Both routes, and the
+`assertArchivableChild` guard behind them, were deleted — see *The parent never
+archives a child*. The shim refuses `archive` before dispatch and names the UI.
 
 Environment-variable overrides for the quota constants are also live in
 Phase 3: `MAX_SPAWNED_SESSIONS_PER_PARENT` (positive integer; default
 `16`) and `MAX_SPAWNED_SESSIONS_PER_TURN` (positive integer; default
 `6`). Both are read once at module init and an invalid value (non-integer
 or ≤ 0) logs a warning and falls back to the compile-time default.
+
+### The parent never archives a child
+
+Phase 3 gave the parent agent four downward levers: `wait`, `message`,
+`notify-on-merge`, and `archive`. **`archive` was a mistake and has been
+removed** — not restricted, not documented-against, removed from the shim, the
+worker relay, and the orchestrator route.
+
+**The incident (2026-09-20).** A parent spawned a child for one fix. The child's
+PR merged; the user then approved a follow-up on the child's own status card,
+and the child implemented it. The parent, which can see only the child's last
+summary line, read that as scope drift, ran `shipit session wait` — which
+returned `idle` — and then `shipit session archive`. The child had in fact
+*paused to ask the user a question*. Its container was destroyed with the user's
+approved work committed on the branch and no PR open.
+
+Three properties of the system made that outcome reachable, and all three are
+real:
+
+1. **A paused child is indistinguishable from a finished one.** A well-formed
+   `AskUserQuestion` makes the orchestrator call `agent.interrupt()`
+   (`src/server/orchestrator/ws-handlers/agent-listeners.ts:626-633`), which
+   ends the turn exactly as completing it would. `runner.awaitingUserAnswer` is
+   set one line earlier (`:622`) but is read only by `turn-executor.ts:733` —
+   neither the wait derivation nor the archive guard consulted it. So `wait`
+   exits `0` and the ex-`assertArchivableChild` `runner?.running` check passes.
+2. **The parent cannot see why.** The user steers children in the children's own
+   chats. None of that reaches the parent, so "the child is doing something I
+   did not ask for" has a likelier explanation than a runaway agent: the user
+   asked for it.
+3. **Nothing in the parent's reach can undo it.** `unarchiveSession`
+   (`src/server/orchestrator/services/session.ts:208`) exists and the archive
+   does set `user_archived = 1` (`orchestrator/sessions.ts:532-537`), so the
+   user *can* restore the session from the UI — but the agent has no
+   `unarchive`, and it will not know to ask for one.
+
+**Why removal rather than a warning.** The shim was the only caller of the
+orchestrator route, so no legitimate caller was lost. And the pre-existing
+guidance already said to be careful; guidance is what the parent followed into
+this incident, since the doc listed `archive` as a lever and paired it with
+`wait`. A verb an agent must never use should not be in its hand.
+
+**What replaces it.** Nothing needs to. Archiving is the user's action in the
+UI, and `archiveSession` already recurses into `sessionManager.findChildren`
+(`src/server/orchestrator/services/session.ts:712-728`), so a cohort is archived
+in one user action when the parent goes. The one exception is deliberate:
+children of an **Ops** session are independent incident fixes and are skipped by
+that recursion (`:712`).
 
 ### When the agent should reach for `shipit session create`
 
@@ -426,7 +482,7 @@ agent's eyes (and debugger logs).
 require importing `ChatHistoryManager` into the child-sessions service
 and tracking a "most recent assistant text" projection. The plain-text
 rendering degrades gracefully (the fields just don't print) and the
-Phase 3 work (`wait` / `archive` / `message`) can land them at the same
+Phase 3 work (`wait` / `message`) can land them at the same
 time as it adds the long-poll status surface.
 
 ### Trust and scoping
@@ -437,7 +493,7 @@ The trust boundary that matters: **the worker's `/agent-ops/session/*` allowlist
 |---|---|
 | Agent spawns a session against a different user's repo | The orchestrator route requires the parent session to be the same as the worker's bound session ID. Cross-tenant routing is impossible. |
 | Agent reads or writes other sessions' files | Spawned sessions get their own container and workspace. The agent has no path to a sibling's filesystem from within its container. |
-| Agent escalates to the orchestrator's full session API | Worker only exposes `/agent-ops/session/{create,list,view}` today (Phase 3 adds `{message,wait,archive}`). Generic session CRUD is not reachable. |
+| Agent escalates to the orchestrator's full session API | Worker only exposes `/agent-ops/session/{create,list,view}` today (Phase 3 adds `{message,wait}`). Generic session CRUD is not reachable. |
 | Agent loops creating sessions | Per-turn quota (`maxSpawnedSessionsPerTurn = 6`) + per-parent total cap (`maxActiveSpawnedSessions = 16`). Both fail-closed. **Neither bounds a determined agent** — there is no spawn-depth limit, so nested spawns route around both (see the quota note below). They bound accidental loops, not adversarial ones. |
 | Agent injects credentials into a child session | Children inherit credentials from the orchestrator's `CredentialStore`, not from agent input. The `prompt` field is just a string sent as a user message. |
 | Agent spawns a session and uses it as a backdoor to mutate the parent's repo | Children push to their own branch, never to the parent's. PR creation goes through the same `gh` shim + auth as anything else. |
@@ -520,7 +576,7 @@ Regression coverage: `integration_tests/child-message-resume.test.ts` (fake-Dock
 |---|---|---|
 | **1** | Build the shim + worker `/agent-ops/session/*` routes + `POST /api/sessions/:parentId/spawn` + `parentSessionId` field. Update `shipit-docs/sessions.md`. **No agent prompt changes.** Sidebar grouping is *not* shipped in Phase 1 (deferred to Phase 2 alongside the SpawnedSessionCard rendering). | done |
 | **2** | Update `agent-instructions.ts` to teach the agent when to reach for `shipit session create` vs `Task`. Sidebar grouping enabled. SpawnedSessionCard rendered in parent chats. | done |
-| **3** | Add `wait`, `archive`, and follow-up `message` flows once telemetry shows the agent uses Phase 1 reliably. Surface `latestAssistantMessage` + `prUrl` on the `view` snapshot. Env-var overrides for quota constants. | done |
+| **3** | Add `wait` and follow-up `message` flows once telemetry shows the agent uses Phase 1 reliably (`archive` also shipped here and was later removed — see *The parent never archives a child*). Surface `latestAssistantMessage` + `prUrl` on the `view` snapshot. Env-var overrides for quota constants. | done |
 | **Cross-cutting** | Inline `SpawnFailedCard` on quota / invalid-request rejections; spawn-invocation telemetry counters dimensioned by parent / turn / agent / outcome. | done |
 | **4** *(optional)* | Cross-repo spawns (different `--repo`) for advanced workflows. Probably gated by a per-account setting. Deferred — no user demand yet. | deferred |
 
@@ -549,12 +605,12 @@ In addition to the per-threat table above, two systemic notes:
 
 | File | Change | Status |
 |---|---|---|
-| `src/server/session/agent-shim/shipit.ts` | **New.** The shim entry point. Mirrors `gh.ts` from doc 116. Parses `shipit session create/list/view/message/wait/archive`, brokers via the worker. | done |
-| `src/server/session/agent-shim/shipit.test.ts` | **New.** Unit tests — argument parsing, allowlist (every rejected subcommand), happy paths for create/list/view/message/wait/archive, quota 429 + 400 error formatting, JSON output. | done |
-| `src/server/session/agent-ops-routes.ts` | Added `/agent-ops/session/{create,list,view,message,wait,archive}` routes. | done |
+| `src/server/session/agent-shim/shipit.ts` | **New.** The shim entry point. Mirrors `gh.ts` from doc 116. Parses `shipit session create/list/view/message/wait`, brokers via the worker. `archive` is refused before dispatch (*The parent never archives a child*). | done |
+| `src/server/session/agent-shim/shipit.test.ts` | **New.** Unit tests — argument parsing, allowlist (every rejected subcommand), happy paths for create/list/view/message/wait, the `archive` refusal, quota 429 + 400 error formatting, JSON output. | done |
+| `src/server/session/agent-ops-routes.ts` | Added `/agent-ops/session/{create,list,view,message,wait}` routes. (`archive` shipped here and was removed.) | done |
 | `src/server/session/agent-ops-routes.test.ts` | Cases covering the `/agent-ops/session/*` relay routes and 404/409/429 status pass-through. | done |
 | `src/server/session/orchestrator-client.ts` | No change — the existing client already covers session-scoped routes. | done |
-| `src/server/orchestrator/api-routes-session.ts` | Added `POST /api/sessions/:parentId/spawn`, `GET /api/sessions/:parentId/children`, `GET /api/sessions/:parentId/children/:childId` (with optional `?wait=true&timeout=N`), `POST /api/sessions/:parentId/children/:childId/message`, `POST /api/sessions/:parentId/children/:childId/archive`. | done |
+| `src/server/orchestrator/api-routes-session.ts` | Added `POST /api/sessions/:parentId/spawn`, `GET /api/sessions/:parentId/children`, `GET /api/sessions/:parentId/children/:childId` (with optional `?wait=true&timeout=N`), `POST /api/sessions/:parentId/children/:childId/message`. (A `.../archive` route shipped here and was removed.) | done |
 | `src/server/orchestrator/services/session.ts` | Re-exports the child-sessions service surface (`spawnChildSession`, `listSpawnedChildren`, `getSpawnedChild`, `sendChildMessage`, `waitForChildIdle`, `assertArchivableChild`, plus the quota / wait constants). | done |
 | `src/server/orchestrator/services/child-sessions.ts` | Implementation of all child-session service functions. Phase 3 added `sendChildMessage`, `waitForChildIdle`, `assertArchivableChild`, `ChildViewProjections`, and env-var overrides for the quota constants. | done |
 | `src/server/orchestrator/chat-history.ts` | Added `loadLatestAssistantText(sessionId)` — read-only helper for the `view`/`wait` snapshot. | done |
@@ -598,4 +654,4 @@ In addition to the per-threat table above, two systemic notes:
 - **Parent → child message streaming** — push assistant messages from the child back into the parent's chat as they arrive (behind a flag), so the parent agent can react in real time without polling.
 - **Cross-account spawns** — for organizations running shared ShipIt instances, a child could be spawned under a different user's account with that user's auth. Significant trust-model work; not v1.
 - **Templates** — `shipit session create --template scaffold-react` to spawn a session pre-loaded with a scaffolding template. Reuses the existing template machinery from doc 058.
-- **Job-style sessions** — sessions that auto-archive once their initial prompt completes, for fire-and-forget research tasks. Today the agent would spawn → wait → view → archive; a `--job` flag could collapse that to one call.
+- **Job-style sessions** — sessions that auto-archive once their initial prompt completes, for fire-and-forget research tasks. Note this is *not* a way back to an agent-driven archive: the close-out would be ShipIt's, on a condition the user opted into at spawn time, never a judgement the parent makes about a child mid-flight.

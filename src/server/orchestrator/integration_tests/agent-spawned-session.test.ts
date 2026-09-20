@@ -742,46 +742,6 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(body.idle).toBe(false);
   });
 
-  it("POST /children/:childId/archive archives an idle child the parent spawned", { timeout: 15_000 }, async () => {
-    const parentId = await createParentSession();
-    const childId = await spawnAndIdleChild(parentId);
-
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${parentId}/children/${childId}/archive`,
-    });
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as { archived: boolean; sessions: { id: string }[] };
-    expect(body.archived).toBe(true);
-
-    const reloaded = sessionManager.get(childId);
-    expect(reloaded?.archived).toBe(true);
-  });
-
-  it("POST /children/:childId/archive refuses to archive a running child with 409", { timeout: 15_000 }, async () => {
-    const parentId = await createParentSession();
-    const childId = await spawnChild(parentId);
-
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${parentId}/children/${childId}/archive`,
-    });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().error).toContain("running");
-  });
-
-  it("POST /children/:childId/archive returns 404 for a cross-tenant child", { timeout: 15_000 }, async () => {
-    const parentAId = await createParentSession("Parent A");
-    const parentBId = await createParentSession("Parent B");
-    const childId = await spawnChild(parentAId);
-
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${parentBId}/children/${childId}/archive`,
-    });
-    expect(res.statusCode).toBe(404);
-  });
-
   it("spawned session's first agent.run(...) carries the full WS-path params", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const before = createdClaudes.length;

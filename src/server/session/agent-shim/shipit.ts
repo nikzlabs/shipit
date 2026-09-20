@@ -10,7 +10,6 @@ import {
 } from "./shim-common.js";
 import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 import {
-  handleSessionArchive,
   handleSessionCreate,
   handleSessionFind,
   handleSessionList,
@@ -101,7 +100,6 @@ Supported subcommands:
                           conflicts. That turn ends BEFORE the rebase does;
                           ShipIt gives your note back as a turn once the rebase
                           concludes. A rebase that is aborted delivers nothing.
-  shipit session archive <id> [--json]
   shipit session whoami  [--json]
   shipit session rename  --title T [--json]
                           Retitle THIS session (never another). Do it when you
@@ -518,6 +516,15 @@ const REJECTED_SESSION_SUBCOMMANDS = new Set([
   "switch",
 ]);
 
+// `archive` was an agent lever until a parent archived a child that had merely paused to
+// ask the user a question, destroying its container with the user's approved work on the
+// branch and no PR. The refusal names the reason, because a bare "unsupported" reads as an
+// oversight to work around. See /shipit-docs/sessions.md.
+const ARCHIVE_REFUSAL = `${SHIM_NAME} does not support \`shipit session archive\` — archiving a session is the user's action, in the ShipIt UI.
+A child you spawned is archived by the user, or automatically together with you when your own session is archived. You never archive one.
+You cannot read a child's chat, so work you did not ask for is most likely work the user asked it for. If you think a child has gone wrong, say so to the user and let them decide.
+See /shipit-docs/sessions.md → "You do not archive a child".`;
+
 const REJECTED_SOURCE_SUBCOMMANDS = new Set([
   "edit",
   "write",
@@ -547,7 +554,6 @@ const SESSION_HANDLERS: Record<
   view: handleSessionView,
   message: handleSessionMessage,
   wait: handleSessionWait,
-  archive: handleSessionArchive,
   "notify-on-merge": handleSessionNotifyOnMerge,
   "continue-after-rebase": handleSessionContinueAfterRebase,
   report: handleSessionReport,
@@ -733,6 +739,10 @@ export async function runShim(
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     success(io, HELP);
     return;
+  }
+
+  if (sub === "archive") {
+    fail(io, ARCHIVE_REFUSAL);
   }
 
   if (REJECTED_SESSION_SUBCOMMANDS.has(sub)) {

@@ -39,7 +39,6 @@ export {
   sendChildMessage,
   ResolvedChildMessageError,
   waitForChildIdle,
-  assertArchivableChild,
   registerMergeWatch,
 } from "./child-sessions.js";
 export type {
