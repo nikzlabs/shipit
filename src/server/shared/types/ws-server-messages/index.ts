@@ -133,6 +133,7 @@ import type {
 } from "./cards.js";
 import type {
   WsError,
+  WsPong,
   WsGlobalSettings,
   WsTemplateApplied,
   WsTurnDiff,
@@ -187,6 +188,7 @@ export type WsServerMessage =
   | WsIssueWriteUpdate
   | WsIssueRefCard
   | WsError
+  | WsPong
   | WsPreviewStatus
   | WsGitLog
   | WsGitCommitted

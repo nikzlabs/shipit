@@ -75,6 +75,30 @@ describe("Integration: Connection", () => {
     client.close();
   });
 
+  // docs/311 — the answer a returning client keeps its socket on.
+  it("answers a liveness ping with a matching pong", async () => {
+    const client = await TestClient.connect(port);
+
+    client.send({ type: "ping", id: "probe-1" });
+    const msg = await client.receiveType("pong");
+
+    expect(msg).toMatchObject({ type: "pong", id: "probe-1" });
+
+    client.close();
+  });
+
+  // The id is echoed, so it cannot be a client-chosen amount of memory.
+  it("bounds the id it echoes back", async () => {
+    const client = await TestClient.connect(port);
+
+    client.send({ type: "ping", id: "x".repeat(5000) });
+    const msg = await client.receiveType("pong");
+
+    expect((msg as { id: string }).id.length).toBe(64);
+
+    client.close();
+  });
+
   it("returns error for invalid JSON", async () => {
     const client = await TestClient.connect(port);
 

@@ -4,6 +4,15 @@ import type { PermissionMode } from "../attachment-types.js";
 import type { FileDiff } from "../domain-types.js";
 import type { SubscriptionLimitsMap } from "../usage-limits-types.js";
 
+/**
+ * Answer to a client liveness probe (docs/311). Transport bookkeeping: the
+ * client's socket layer consumes it, so it never reaches a message handler.
+ */
+export interface WsPong {
+  type: "pong";
+  id: string;
+}
+
 export interface WsError {
   type: "error";
   message: string;
