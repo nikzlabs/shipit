@@ -35,11 +35,18 @@ import type { SessionInfo, SessionStatus } from "../../../server/shared/types.js
  * fired where the browser fires it — but on the test's timing, not Chrome's);
  * real text measurement and layout growth; an interrupted deferred render;
  * and the search-match scroll. Those were measured live in the dogfood
- * instance instead, and the numbers are in the PR. Of the reset itself, the
- * follow flag, the two gesture refs and the selection clearing each fail a
- * case here when removed alone; the message-count line and the effect's
- * `sessionId` dependency are consistency, and no case below distinguishes
- * them.
+ * instance instead, and the numbers are in the PR.
+ *
+ * **What these cases distinguish has since narrowed, and this is the honest
+ * statement of it.** When they were written, removing the follow flag, either
+ * gesture ref or the selection clearing each turned one red. The second pass on
+ * planning#595 added an "opening" state whose `ResizeObserver` branch now pins
+ * through an open regardless of the follow flag and a stale gesture stamp — so
+ * it covers for those removals a frame later, and only the selection clearing
+ * still fails a case here on its own. The resets are kept because the open's
+ * invariant rests on them: it holds only while the follow flag is true across a
+ * switch, which is what the reset makes so. `session-open-settle.test.tsx` is
+ * where the opening state's own parts are each held red.
  */
 
 const VIEWPORT = 625;
