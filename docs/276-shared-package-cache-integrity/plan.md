@@ -140,23 +140,38 @@ download cache is keyed per plugin *source* (`plugin-dep-store.ts`), so no sessi
 can write it and this was never a session-to-session hole; but a plugin's own
 install scripts run in that container with write access to the cache, so they could
 poison the resolution data for the next install of *that plugin* — H1 at plugin
-scope. `npm_config_cache` is now `/plugin-npm-cache`, a **tmpfs** mounted into the
-install container, with its `content-v2` symlinked to the shared store and the
-shared `index-v5` removed (`plugin-install.ts`, `pluginInstallCommand`). A tmpfs is
-what makes the index private *by construction*: it cannot outlive the container, so
-there is nothing to wipe and nothing a later install can read. Both halves name the
-shared paths through `shared/npm-cache.ts`, so the two splits cannot drift.
+scope. `npm_config_cache` is now `/plugin-npm-cache`, a directory of this
+generation's work dir mounted into the install container, with its `content-v2`
+symlinked to the shared store and the shared `index-v5` removed
+(`plugin-install.ts`, `pluginInstallCommand`). Both halves name the shared paths
+through `shared/npm-cache.ts`, so the two splits cannot drift.
 
-The plugin case pays even less than the session case, because the private index is
-cold on *every* job and that costs nothing for the install shape plugins actually
-use. Measured against real npm with the private root on a tmpfs and `content-v2`
-symlinked across a filesystem boundary to ext4: `npm ci --offline` with a wholly
-cold private index installed **entirely from the shared store — 0 new blobs, 0
-index entries written**. Content written the other way crosses the boundary through
-cacache's `rename`→`copyFile` fallback and lands at mode **0664**, which is what the
-shared-gid model needs. `npm cache clean --force` inside the container unlinks the
-symlink and leaves the shared store byte-count intact, the same reason the split is
-a symlink here too.
+**What bounds the forgery is that the private cache is reset, not merely that it is
+not the shared one.** The work dir is keyed by session, plugin and generation, so a
+different install job already lands somewhere else; `resetPluginNpmCache` covers the
+one path that returns to the same directory, a forced re-install of the same
+generation. It runs beside `prepareLayer`, which already discards the previous
+attempt's writable layer.
+
+**A tmpfs was tried first and is wrong**, which is worth recording because it looks
+like the tidier answer — nothing to reset, private by construction. npm puts far
+more than the index under its cache root: `_npx` keeps whole extracted trees there,
+and a git dependency is cloned and *prepared* there. Measured: one `npx cowsay`
+leaves **2.7 MB** under the cache root, against an index of a few KB. RAM-backing
+that caps a dependency tree at the tmpfs size and charges it to the container's
+2 GiB limit — and Docker mounts a tmpfs `noexec` unless told otherwise (which is why
+every other tmpfs in this repo spells out `exec`, guarded by
+`container-hardening.test.ts`), so anything `npx` installed would fail to run.
+
+**Measured** against real npm 11.12.1 with both halves on ext4, the layout the
+container actually gets. Content lands in the shared store at mode **0664**, which
+is what the shared-gid model needs, and the shared `index-v5` is never re-created.
+A **reset** private cache — exactly what every install job starts from — then
+installs `npm ci --offline` **entirely from the shared store: 0 new blobs**. That is
+the number that matters here, because the private index is cold on *every* plugin
+install job and the lockfile install shape plugins use does not need it. It is a
+single-package measurement: it establishes that no download is needed, not a
+throughput claim.
 
 ### 2. H3 — `package-import-method=copy` (reqs 1, 4, 10)
 

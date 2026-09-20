@@ -201,10 +201,10 @@ fails is simply a failed refresh — the previous commit stays active and the
 Plugins tab reports why, with the command's own output.
 
 That download cache shares **package bytes** between installs, never npm's
-resolution data: `npm_config_cache` points at a cache private to the one install
-container, whose `_cacache/content-v2` is symlinked to the shared store. So a
-lockfile install still costs no downloads, while `npm install --offline <pkg>` for
-a package this install has not resolved itself fails `ENOTCACHED`. Sharing
+resolution data: `npm_config_cache` points at a cache private to this install,
+reset before it runs, whose `_cacache/content-v2` is symlinked to the shared store.
+So a lockfile install still costs no downloads, while `npm install --offline <pkg>`
+for a package this install has not resolved itself fails `ENOTCACHED`. Sharing
 resolution data would let one install decide what the next install of the same
 plugin fetches and executes.
 
