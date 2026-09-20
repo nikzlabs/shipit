@@ -733,6 +733,37 @@ describe("OpenCode ChatGPT account route", () => {
     adapter.kill();
   });
 
+  it("emits done and permits another turn when a result listener throws", async () => {
+    provision(testHome);
+    const children = [new FakeChild(), new FakeChild()];
+    const spawnFn = vi.fn()
+      .mockReturnValueOnce(children[0] as unknown as ChildProcess)
+      .mockReturnValueOnce(children[1] as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    const errors = vi.fn();
+    adapter.on("error", errors);
+    const brokenListener = (event: AgentEvent) => {
+      if (event.type === "agent_result") throw new Error("Result listener failed");
+    };
+    adapter.on("event", brokenListener);
+    try {
+      const firstDone = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+      children[0].emitStdout(CAPTURED);
+      children[0].close(0);
+      await firstDone;
+      adapter.off("event", brokenListener);
+
+      const secondDone = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+      expect(spawnFn).toHaveBeenCalledTimes(2);
+      children[1].emitStdout(CAPTURED);
+      children[1].close(0);
+      await secondDone;
+      expect(errors).not.toHaveBeenCalled();
+    } finally { adapter.kill(); }
+  });
+
   it("settles a successful turn even when usage reads fail", async () => {
     provision(testHome);
     const { adapter, child, events } = makeAdapter();

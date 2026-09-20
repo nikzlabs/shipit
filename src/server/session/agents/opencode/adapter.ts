@@ -286,14 +286,17 @@ export class OpencodeAdapter
       this.drainStderrLines(true);
       this.cleanupTurnFiles();
       this.finishSubscriptionLimits(() => {
-        if (this.stdinFailure && !this.sawAnyEvent()) {
-          this.emit("error", this.stdinFailure);
-        } else {
-          this.emitSynthesizedResult(exitCode, signal);
+        try {
+          if (this.stdinFailure && !this.sawAnyEvent()) {
+            this.emit("error", this.stdinFailure);
+          } else {
+            this.emitSynthesizedResult(exitCode, signal);
+          }
+        } finally {
+          this.stdinFailure = null;
+          this.proc = null;
+          this.emit("done", exitCode ?? 0);
         }
-        this.stdinFailure = null;
-        this.proc = null;
-        this.emit("done", exitCode ?? 0);
       });
     });
 
@@ -466,7 +469,7 @@ export class OpencodeAdapter
       void limits.finish().finally(() => {
         if (this.subscriptionLimits === limits) this.subscriptionLimits = undefined;
         settle();
-      }).catch(() => { console.warn("[opencode] subscription limit settlement failed"); });
+      }).catch(() => { console.warn("[opencode] turn settlement failed"); });
     } else settle();
   }
 

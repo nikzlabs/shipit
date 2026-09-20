@@ -144,6 +144,15 @@ cover the captured response, millisecond timestamps, API-key routes, compaction,
 interrupt, disposal, and late responses. The start read remains so a first long
 turn can populate the meter before completion.
 
+A second configured review found a terminal-listener failure path. The close
+handler now clears its process state and emits `done` in a `finally` block,
+so a throwing result listener cannot leave the adapter busy. A regression test
+checks both completion and reuse; account-service mapping is also tested.
+The review's partial-window concerns remain conditional: there is no verified
+case where this HTTP source omits an active window reported by Codex for the
+same account. Snapshot replacement and refusal recovery keep their existing
+semantics rather than treating a missing window as stale data without evidence.
+
 ### Independent implementation review
 
 ShipIt's configured reviewer checked the implementation. The fixes retain the
