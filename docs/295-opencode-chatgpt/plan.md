@@ -105,9 +105,12 @@ a visible percentage change in the provider's quota display.
 
 OpenCode's JSON stream supplies token counts, but no account-limit events.
 The adapter now starts a turn-scoped reader for the OpenAI subscription route.
-It reads limits at start, every minute while active, and once before settlement,
-including compaction. Key routes do not start the reader. Interrupt and disposal
-abort it; each request has a five-second timeout. Failed reads retain the last
+It reads limits at start and once before settlement, including compaction.
+Key routes and locally invalid compaction requests do not start the reader.
+Interrupt and disposal abort it. The initial read has a five-second timeout;
+the final read is limited to two seconds so quota telemetry cannot hold turn
+settlement longer. There is no periodic polling; an HTTP 429 suppresses the
+final request, and at most one failure is logged per turn. Failed reads retain the last
 reported values and do not change the model turn's result.
 
 The reader uses the access-only projection and checks its captured route before
@@ -118,12 +121,28 @@ follow [Codex's account usage reader](https://github.com/openai/codex/blob/rust-
 and its generated `RateLimitWindowSnapshot` model. Windows are selected by their
 reported duration, so a weekly primary window is not labeled as five-hour use.
 
+A live read-only check on 2026-09-20 returned HTTP 200, and the production reader
+emitted a weekly-only update. The fixture at
+`session/agents/opencode/__fixtures__/chatgpt-usage-weekly.json` preserves that
+response's limit structure, with account fields removed and usage/reset values
+replaced. This is a different path from the abandoned `/backend-api/codex/usage`
+probe in docs/135: it uses `/backend-api/wham/usage` with the account header.
+The check verifies this account and response shape, not every plan or the
+endpoint's request budget. Start/end reads avoid an unverified polling rate.
+
 The reader emits `agent_rate_limits` before the terminal result. Verified at
 `ws-handlers/agent-listeners.ts:wireAgentListeners` and
 `bootstrap-managers.ts:recordAgentRateLimits`: the captured credential route
 selects the existing OpenAI quota pool and the limits registry broadcasts it to
 the existing UI. No new meter, account, or quota pool is introduced. The prior
 implementation shared the pool but did not feed it from OpenCode turns.
+
+Independent review confirmed the account attribution and cancellation paths.
+The final design removes periodic polling, limits the final wait to two seconds,
+suppresses repeat failure logs, and contains listener failures. Regression tests
+cover the captured response, millisecond timestamps, API-key routes, compaction,
+interrupt, disposal, and late responses. The start read remains so a first long
+turn can populate the meter before completion.
 
 ### Independent implementation review
 

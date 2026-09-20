@@ -5,6 +5,14 @@ import path from "node:path";
 import { OpenCodeSubscriptionLimits, parseOpenCodeSubscriptionLimits } from "./subscription-limits.js";
 import { openCodeAccessToken, OPENCODE_ACCOUNT_MARKER, writeOpenCodeAccount } from "../../../shared/opencode-account.js";
 
+import capturedWeekly from "./__fixtures__/chatgpt-usage-weekly.json";
+
+it("parses a sanitized live ChatGPT usage response captured on 2026-09-20", () => {
+  expect(parseOpenCodeSubscriptionLimits(capturedWeekly)).toMatchObject({
+    type: "agent_rate_limits", session: null, weekly: { usedPct: 37, resetAt: "2033-05-18T03:33:20.000Z" },
+  });
+});
+
 const fiveHour = { used_percent: 42, limit_window_seconds: 18_000, reset_at: 2_000_000_000 };
 const weekly = { used_percent: 73, limit_window_seconds: 604_800, reset_at: 2_000_500_000 };
 const payload = { rate_limit: { primary_window: fiveHour, secondary_window: weekly } };
@@ -23,6 +31,11 @@ it.each([null, {}, { rate_limit: null }, { rate_limit: { primary_window: { ...fi
   { rate_limit: { primary_window: { ...fiveHour, limit_window_seconds: 60 } } },
 ])("rejects missing or malformed windows without inventing zero usage: %j", (raw) => {
   expect(parseOpenCodeSubscriptionLimits(raw)).toBeNull();
+});
+
+it("normalizes a millisecond reset timestamp", () => {
+  expect(parseOpenCodeSubscriptionLimits({ rate_limit: { primary_window: { ...fiveHour, reset_at: fiveHour.reset_at * 1000 } } }))
+    .toEqual(parseOpenCodeSubscriptionLimits({ rate_limit: { primary_window: fiveHour } }));
 });
 
 describe("OpenCode account limit reader", () => {
@@ -53,20 +66,21 @@ describe("OpenCode account limit reader", () => {
     fs.rmSync(dataHome, { recursive: true, force: true });
   });
 
-  it("reads at start, each minute, and finish, with current credentials and no later polling", async () => {
+  it("reads at start and finish with current credentials, without polling", async () => {
     monitor.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(onLimits).toHaveBeenCalledOnce();
     const renewed = provision("external-a", "renewed");
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchFn).toHaveBeenCalledOnce();
+    await monitor.finish();
     expect(fetchFn).toHaveBeenLastCalledWith("https://chatgpt.com/backend-api/wham/usage", expect.objectContaining({
       headers: expect.objectContaining({ Authorization: `Bearer ${renewed}`, "ChatGPT-Account-Id": "external-a" }),
       redirect: "error",
     }));
-    await monitor.finish();
-    expect(onLimits).toHaveBeenCalledTimes(3);
+    expect(onLimits).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("does not request an account whose route marker no longer matches", async () => {
@@ -97,7 +111,7 @@ describe("OpenCode account limit reader", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(onFailure).toHaveBeenCalledOnce();
     const finished = monitor.finish();
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(2_000);
     await finished;
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(onLimits).not.toHaveBeenCalled();
@@ -113,6 +127,21 @@ describe("OpenCode account limit reader", () => {
     expect(onLimits).not.toHaveBeenCalled();
     expect(onFailure).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not retry a rate-limited start request at settlement", async () => {
+    fetchFn.mockImplementation(async () => new Response("", { status: 429 }));
+    monitor.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await monitor.finish();
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledOnce();
+  });
+
+  it("keeps listener failures separate from usage read failures", async () => {
+    onLimits.mockImplementationOnce(() => { throw new Error("listener failed"); });
+    await expect(monitor.finish()).resolves.toBeUndefined();
+    expect(onFailure).toHaveBeenCalledWith("OpenAI subscription limit update could not be delivered.");
   });
 
   it("rejects a response for another account", async () => {

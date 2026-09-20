@@ -658,6 +658,62 @@ describe("OpenCode ChatGPT account route", () => {
     fs.writeFileSync(path.join(data, OPENCODE_ACCOUNT_MARKER), JSON.stringify({ accountId: "account-a" }));
     return data;
   }
+  it("makes no subscription usage request for an API-key route", () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+    const { adapter, child } = makeAdapter();
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: {
+      serviceId: "openai", serviceName: "OpenAI", billingMode: "key", style: "openai-responses",
+      baseUrl: "https://api.openai.com/v1", credentialSourceEnv: "OPENAI_API_KEY",
+      credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+    } });
+    child.close(0);
+    expect(fetch).not.toHaveBeenCalled();
+    adapter.kill();
+  });
+
+  it("does not fetch limits for a locally rejected compaction request", () => {
+    provision(testHome);
+    const { adapter, events } = makeAdapter();
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, compact: true });
+    expect(events.at(-1)).toMatchObject({ type: "agent_result", status: "error" });
+    expect(fetch).not.toHaveBeenCalled();
+    adapter.kill();
+  });
+
+  it("reports limits before compaction settles", async () => {
+    provision(testHome);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => url.includes("/wham/usage")
+      ? Response.json({ rate_limit: { primary_window: { used_percent: 42, limit_window_seconds: 18000, reset_at: 2000000000 } } })
+      : new Response("true")));
+    const { adapter, child, events } = makeAdapter();
+    const done = new Promise<void>((resolve) => adapter.on("event", (event) => {
+      if (event.type === "agent_result") resolve();
+    }));
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, compact: true, sessionId: SESSION });
+    child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:34439\n"));
+    await done;
+    expect(events.at(-2)).toMatchObject({ type: "agent_rate_limits", session: { usedPct: 42 } });
+    expect(events.at(-1)).toMatchObject({ type: "agent_result", status: "success" });
+    adapter.kill();
+  });
+
+  it.each(["interrupt", "kill"] as const)("stops usage reads on %s and still emits done", async (method) => {
+    provision(testHome);
+    const fetchFn = vi.fn().mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetchFn);
+    const { adapter, child, events } = makeAdapter();
+    const done = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+    adapter[method]();
+    child.close(null, "SIGTERM");
+    await done;
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(events.some((event) => event.type === "agent_rate_limits")).toBe(false);
+    adapter.kill();
+  });
+
   it("reports account limits before settling the turn, without a Codex session", async () => {
     provision(testHome);
     const response = { rate_limit: { primary_window: { used_percent: 42, limit_window_seconds: 18000, reset_at: 2000000000 } } };

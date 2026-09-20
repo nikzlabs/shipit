@@ -104,7 +104,7 @@ export class OpencodeAdapter
   }
 
   run(params: AgentRunParams): void {
-    if (this.proc) {
+    if (this.proc || this.compactionProc || this.subscriptionLimits) {
       this.emit("error", new Error("OpenCode adapter: run() called while a turn is in flight"));
       return;
     }
@@ -218,7 +218,7 @@ export class OpencodeAdapter
       );
     }
 
-    if (isOpenCodeAccountRouting(params.serviceRouting)) {
+    if (isOpenCodeAccountRouting(params.serviceRouting) && (!params.compact || (params.sessionId && params.model))) {
       this.subscriptionLimits = new OpenCodeSubscriptionLimits({
         dataHome,
         routeId: params.serviceRouting.credentialTarget.accountId,
@@ -246,6 +246,7 @@ export class OpencodeAdapter
       });
     } catch (err) {
       this.subscriptionLimits?.stop();
+      this.subscriptionLimits = undefined;
       this.cleanupTurnFiles();
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
       this.proc = null;
@@ -465,7 +466,7 @@ export class OpencodeAdapter
       void limits.finish().finally(() => {
         if (this.subscriptionLimits === limits) this.subscriptionLimits = undefined;
         settle();
-      });
+      }).catch(() => { console.warn("[opencode] subscription limit settlement failed"); });
     } else settle();
   }
 

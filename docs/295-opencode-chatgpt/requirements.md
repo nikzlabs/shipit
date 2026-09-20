@@ -11,6 +11,10 @@ The user asked to investigate OpenCode's OpenAI subscription support, then
 said: “go ahead and design this integration”, then “go ahead and implement it.”
 This change implements the account integration.
 
+On 2026-09-20, the user asked whether OpenCode supplies OpenAI subscription
+limits to ShipIt, then said “Fix it” after the missing update path was identified.
+Requirement 10 records that request.
+
 The user goal is to use ChatGPT subscription access with the OpenCode harness
 inside ShipIt. The requirements below express the requested experience and
 safety constraints. Shared account storage and token projection are design
@@ -46,7 +50,6 @@ choices, not additional requests from the user.
 10. OpenCode subscription turns update the existing OpenAI account limit display
     without requiring a Codex session. Show the reported five-hour and weekly
     usage and reset times; a failed usage read must not fail the model turn.
-    This requirement follows the user's request to fix missing limit data.
 
 The user subsequently authorized implementation. The initial supported model is
 GPT-5.5; additional models need runtime validation before they are offered.

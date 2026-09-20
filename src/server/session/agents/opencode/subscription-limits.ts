@@ -11,8 +11,9 @@ function windowFrom(raw: unknown): { seconds: number; window: SubscriptionLimits
   if (typeof used !== "number" || !Number.isFinite(used)
     || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0
     || typeof reset !== "number" || !Number.isFinite(reset) || reset <= 0) return null;
-  const end = new Date(reset * 1000);
-  const start = new Date((reset - seconds) * 1000);
+  const resetMs = reset < 10_000_000_000 ? reset * 1000 : reset;
+  const end = new Date(resetMs);
+  const start = new Date(resetMs - seconds * 1000);
   if (!Number.isFinite(end.getTime()) || !Number.isFinite(start.getTime())) return null;
   return {
     seconds,
@@ -33,9 +34,10 @@ export function parseOpenCodeSubscriptionLimits(raw: unknown): RateLimitsEvent |
 
 /** OpenCode's JSON stream omits quota; read the same account endpoint as Codex. */
 export class OpenCodeSubscriptionLimits {
-  private timer: NodeJS.Timeout | undefined;
   private request: AbortController | undefined;
   private stopped = false;
+  private reportedFailure = false;
+  private rateLimited = false;
 
   constructor(private readonly options: {
     dataHome: string;
@@ -46,31 +48,28 @@ export class OpenCodeSubscriptionLimits {
   }) {}
 
   start(): void {
-    void this.refresh();
-    this.timer = setInterval(() => { void this.refresh(); }, 60_000);
-    this.timer.unref();
+    void this.refresh(5_000);
   }
 
   async finish(): Promise<void> {
-    clearInterval(this.timer);
     // A reading started before the last model call cannot measure that call.
     this.request?.abort();
     this.request = undefined;
-    await this.refresh();
+    await this.refresh(2_000);
     this.stop();
   }
 
   stop(): void {
     this.stopped = true;
-    clearInterval(this.timer);
     this.request?.abort();
   }
 
-  private async refresh(): Promise<void> {
-    if (this.stopped || this.request) return;
+  private async refresh(timeoutMs: number): Promise<void> {
+    if (this.stopped || this.request || this.rateLimited) return;
     const request = new AbortController();
     this.request = request;
-    const timeout = setTimeout(() => request.abort(), 5_000);
+    const timeout = setTimeout(() => request.abort(), timeoutMs);
+    let event: RateLimitsEvent | null;
     try {
       const token = readOpenCodeAccount(this.options.dataHome, this.options.routeId);
       const response = await (this.options.fetchFn ?? fetch)("https://chatgpt.com/backend-api/wham/usage", {
@@ -78,25 +77,38 @@ export class OpenCodeSubscriptionLimits {
         redirect: "error",
         signal: request.signal,
       });
+      if (request.signal.aborted || this.stopped) return;
+      if (response.status === 429) this.rateLimited = true;
       if (!response.ok) throw new Error("Usage request failed");
       const raw: unknown = await response.json();
       if (raw && typeof raw === "object" && "account_id" in raw
         && raw.account_id !== null && raw.account_id !== undefined && raw.account_id !== token.accountId) {
         throw new Error("Usage response account does not match");
       }
-      const event = parseOpenCodeSubscriptionLimits(raw);
+      event = parseOpenCodeSubscriptionLimits(raw);
       if (!event) throw new Error("Usage response has no supported windows");
       const current = readOpenCodeAccount(this.options.dataHome, this.options.routeId);
       if (current.accountId !== token.accountId || request.signal.aborted || this.stopped) return;
-      this.options.onLimits(event);
     } catch {
-      // Never log upstream bodies or exception text: either can contain credentials.
+      event = null;
       if (!this.stopped && this.request === request) {
-        this.options.onFailure("OpenAI subscription limits could not be updated; keeping the last reading.");
+        this.reportFailure("OpenAI subscription limits could not be updated; keeping the last reading.");
       }
     } finally {
       clearTimeout(timeout);
       if (this.request === request) this.request = undefined;
     }
+    if (event && !this.stopped && !request.signal.aborted) {
+      try { this.options.onLimits(event); }
+      catch { this.reportFailure("OpenAI subscription limit update could not be delivered."); }
+    }
+  }
+
+  private reportFailure(message: string): void {
+    if (this.reportedFailure) return;
+    this.reportedFailure = true;
+    // Never log upstream bodies or exception text: either can contain credentials.
+    try { this.options.onFailure(message); }
+    catch { console.warn(`[opencode] ${message}`); }
   }
 }
