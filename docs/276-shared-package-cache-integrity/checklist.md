@@ -9,19 +9,44 @@ recorded in [requirements.md](./requirements.md); none is open.
       `content-v2`. Offline install succeeds, the symlink survives, split is
       64 KB private / 688 KB shared, and a write to the shared `index-v5` no
       longer affects the victim.
-- [ ] Measure warm-install time against req 7, and whether the symlinked
-      `content-v2` survives `npm cache verify` and npm's own GC.
-- [ ] Confirm npm re-hashes shared `content-v2` on read with no verification-skip
-      cache — the exact failure mode found in pnpm's store (H2/H4). If npm trusts
-      a `checkedAt`-style marker, sharing `content-v2` reopens the hole and the
-      H1 fix is incomplete.
-- [ ] Regression test: poisoned packument (`dist.integrity` **and**
-      `hasInstallScript`) plus `npm install <new-package>` with a valid lockfile
-      present must not run the attacker's `postinstall`. Cover the no-lockfile
-      repo in the same test.
-- [ ] Do not add lockfile pinning as a security measure; it covers only `npm ci`
-      and an in-sync `npm install`.
-- [ ] shipit-docs update if repos without a lockfile change behaviour.
+- [x] Measured warm-install time against req 7 and the command compatibility of a
+      split cache (`verify-h1.mjs`, PASS=17, npm 11.12.1, ext4, two full runs):
+      warm `--prefer-offline` **0.97× / 1.07×**, cold private index
+      **0.99× / 1.03×**, and the no-lockfile case that actually uses the index
+      **1.05× / 0.99×**. Every cell is inside the ±5 % the same cell moves between
+      runs, in both directions — no measurable cost, and not a speed-up either.
+      An in-sync lockfile install writes no resolution index at all. The link
+      survives an install that writes content; a new package's bytes still land in
+      the shared store. `npm cache verify` and `npm doctor` **fail** on the split
+      (cacache globs the content dir and gets the symlink back); `cache verify`
+      aborts before its first delete and `doctor` loses and rewrites nothing,
+      asserted per blob rather than by count. A real directory there would instead
+      let one session's GC strip the repo's shared store. `npm cache clean --force`
+      works and leaves the shared store byte-identical. All in
+      `shipit-docs/environment.md`.
+- [x] The one genuine reduction in sharing, measured and documented: resolution is
+      no longer shared, so `npm install --offline <pkg>` for a package this session
+      has never resolved fails `ENOTCACHED` where it could previously reuse another
+      session's packument. Not a req 2 breach (no install fails *because another
+      session wrote first*), and ShipIt's own install line is `--prefer-offline`
+      (`install-runtime.ts:29`), which falls back to the registry.
+- [x] Confirmed npm re-hashes shared `content-v2` on read with **no**
+      verification-skip marker — `cacache/lib/content/read.js` checks every read
+      and records no `checkedAt`; `hasContent` only stats. Measured: a blob
+      poisoned in place with its mtime preserved (pnpm's H2 poison) fails closed
+      offline and self-heals online. Sharing `content-v2` does not reopen the hole.
+- [x] Regression test: `integration_tests/npm-cache-poisoning.test.ts` — poisoned
+      packument (`dist.integrity` **and** `hasInstallScript`) against real npm and
+      a local registry, `npm install <new-package>` with and without a lockfile
+      (req 5), plus a control that asserts the attack does fire on a shared index
+      with the registry reachable, and a content-poisoning cell for req 3.
+- [x] No lockfile pinning was added; the split covers the adding case too.
+- [x] shipit-docs updated (`environment.md`): the split, the per-session cache
+      path, and the two commands that change. Repos without a lockfile install as
+      before.
+- [ ] Follow-up, out of this issue's scope: the plugin install container still
+      shares its npm resolution index across installs of one plugin — H1 at plugin
+      scope, no session-to-session path. Filed as **planning#603**.
 
 ## H2/H4 — the pnpm store index is trusted (reqs 1, 3, 6)
 
@@ -172,9 +197,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       with the same scope function creation uses (`resolveOverlayScope` keys on
       runtime key + `overlayPinSegment`; `liveOverlayScopeHashes` uses runtime
       key alone — `overlay-session.ts:61` vs `:189`).
-- [ ] Dependency: section 1 (H1) lands first — `npm_config_cache=/dep-cache/npm`
-      is forwarded to every session (`container-lifecycle.ts:367`), pnpm repos
-      included.
+- [x] Dependency: section 1 (H1) landed first — `npm_config_cache` is now the
+      session's own cache, pnpm repos included, so a pnpm repo whose agent runs
+      npm is no longer exposed to H1.
 - [ ] Dependency: the Docker-proxy mount-path check is TOCTOU
       (`docker-proxy-auth.ts:66` → `docker-proxy-sanitize.ts:112`); the
       group-writable base relies on mount confinement. Filed as **planning#601**.

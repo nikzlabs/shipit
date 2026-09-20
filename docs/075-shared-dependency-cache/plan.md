@@ -17,7 +17,7 @@ Mount a **per-repo dependency cache directory** into every session container. Pa
 
 | Package manager | Env var | Value |
 |-----------------|---------|-------|
-| npm | `npm_config_cache` | `/dep-cache/npm` |
+| npm | `npm_config_cache` | `/session-state/npm-cache` — per session, with `_cacache/content-v2` symlinked to `/dep-cache/npm/_cacache/content-v2` (`docs/276-shared-package-cache-integrity` section 1). Sharing the resolution index was install-time RCE between sessions of one repo. |
 | yarn (v1) | `YARN_CACHE_FOLDER` | `/dep-cache/yarn` |
 | yarn (berry) | `YARN_CACHE_FOLDER` | `/dep-cache/yarn` |
 | pnpm | `PNPM_STORE_DIR` | `/dep-cache/pnpm` |

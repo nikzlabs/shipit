@@ -30,9 +30,11 @@ identity — see the "Services share the agent's user" section of
 
 What this means in practice:
 
-- **Writable:** `/workspace`, `/persist`, `/dep-cache`, `/credentials`,
-  and your home `/home/shipit` (including `~/.claude`, `~/.codex`, `~/.grok`, the npm
-  global prefix at `~/.npm-global`, and the npm cache at `~/.npm`).
+- **Writable:** `/workspace`, `/persist`, `/dep-cache`, `/session-state`,
+  `/credentials`, and your home `/home/shipit` (including `~/.claude`, `~/.codex`,
+  `~/.grok` and the npm global prefix at `~/.npm-global`). npm's cache is at
+  `/session-state/npm-cache` for a repo-backed session — see
+  [The npm cache is split](#the-npm-cache-is-split) — and at `~/.npm` otherwise.
 - **Persistent scratch:** `/persist` is a writable, non-git directory that
   **survives container restarts** (like `/workspace`, but never committed). Put
   files here that should outlive the container without entering the repo — see
@@ -61,8 +63,41 @@ What this means in practice:
 | `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Cleared only by a full session reset. |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
-| `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |
+| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's and pnpm's caches, and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
+| `/session-state/npm-cache` | **`npm_config_cache` points here** — your session's own npm cache. Private to this session. |
 | `/home/shipit` | Your home directory. Agent credentials (via symlink), npm global prefix, and caches live here. |
+
+### The npm cache is split
+
+`npm_config_cache` is `/session-state/npm-cache`, which only this session can
+reach, and its `_cacache/content-v2` is a symlink to the repo's shared store under
+`/dep-cache`. So npm's **resolution data** (which version and which bytes a name
+resolves to) is yours alone, while downloaded **package content** is still shared
+with the repo's other sessions — content is addressed by the hash of its own bytes
+and re-hashed on every read, so sharing it cannot make you install something else.
+Resolution data has no such property, and a session that could write yours would
+be choosing what your `npm install` runs.
+
+`npm install`, `npm ci`, `npm install <pkg>`, `npm install -g` and
+`npm cache clean --force` all work normally. Three consequences to know:
+
+- **`npm install --offline <pkg>` fails** with `ENOTCACHED` for a package this
+  session has never resolved, even when another session has already downloaded it.
+  Resolution is what is private; the download is not. Drop the flag, or use
+  `--prefer-offline` (which is what ShipIt's own install command uses): it reads
+  the cache first and asks the registry only for what is missing.
+- **`npm cache verify` and `npm doctor` fail** on a split cache, with
+  `Cannot read properties of null (reading 'toString')` — npm's garbage collector
+  walks the content directory and does not expect it to be a link. Neither damages
+  anything: the shared store is byte-identical afterwards. You do not need them —
+  npm treats a bad cache entry as a miss and re-downloads, which is exactly what
+  `cache verify` would repair. If a cache problem really is in the way, use
+  `npm cache clean --force`, or `npm install --cache /tmp/fresh-cache` for a one-off.
+- **`npm cache clean --force` removes the link** along with the rest of your cache
+  (the repo's shared content is left intact). Your next install re-downloads
+  privately; the link is restored the next time the container starts.
+
+`yarn` and `pnpm` are unaffected by this and still use `/dep-cache` directly.
 
 ### Write-protected paths
 
