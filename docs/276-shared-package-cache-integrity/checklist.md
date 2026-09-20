@@ -44,9 +44,15 @@ recorded in [requirements.md](./requirements.md); none is open.
 - [x] shipit-docs updated (`environment.md`): the split, the per-session cache
       path, and the two commands that change. Repos without a lockfile install as
       before.
-- [ ] Follow-up, out of this issue's scope: the plugin install container still
-      shares its npm resolution index across installs of one plugin — H1 at plugin
-      scope, no session-to-session path. Filed as **planning#603**.
+- [x] Same split at plugin scope (**planning#603**): the install container's
+      `npm_config_cache` is `/plugin-npm-cache`, a tmpfs — private by construction,
+      since it cannot outlive the container — with `content-v2` symlinked to the
+      shared per-source store and the shared `index-v5` removed. Measured against
+      real npm with the private root on tmpfs and the shared store on ext4:
+      `npm ci --offline` with a wholly cold private index installs from the shared
+      store alone (0 new blobs, 0 index entries), content written the other way
+      crosses the boundary at mode 0664, and `npm cache clean --force` leaves the
+      shared store intact.
 
 ## H2/H4 — the pnpm store index is trusted (reqs 1, 3, 6)
 

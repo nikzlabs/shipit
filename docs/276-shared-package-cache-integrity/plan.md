@@ -135,12 +135,28 @@ in `src/server/shipit-docs/environment.md`:
   the container next starts, when the worker discards the unshared content it
   accumulated and relinks.
 
-Not in scope, and newly noted: the **plugin install container** still gets
-`npm_config_cache=/dep-cache/npm` over a cache keyed per plugin *source*
-(`plugin-install.ts:385`, `plugin-dep-store.ts:382`). No session can write it, so
-this is not a session-to-session hole; but a plugin's own install scripts can
-poison the resolution data for the next install of *that plugin*, which is H1 at
-plugin scope. Filed as **planning#603**.
+**The same split now covers the plugin install container (planning#603).** Its
+download cache is keyed per plugin *source* (`plugin-dep-store.ts`), so no session
+can write it and this was never a session-to-session hole; but a plugin's own
+install scripts run in that container with write access to the cache, so they could
+poison the resolution data for the next install of *that plugin* — H1 at plugin
+scope. `npm_config_cache` is now `/plugin-npm-cache`, a **tmpfs** mounted into the
+install container, with its `content-v2` symlinked to the shared store and the
+shared `index-v5` removed (`plugin-install.ts`, `pluginInstallCommand`). A tmpfs is
+what makes the index private *by construction*: it cannot outlive the container, so
+there is nothing to wipe and nothing a later install can read. Both halves name the
+shared paths through `shared/npm-cache.ts`, so the two splits cannot drift.
+
+The plugin case pays even less than the session case, because the private index is
+cold on *every* job and that costs nothing for the install shape plugins actually
+use. Measured against real npm with the private root on a tmpfs and `content-v2`
+symlinked across a filesystem boundary to ext4: `npm ci --offline` with a wholly
+cold private index installed **entirely from the shared store — 0 new blobs, 0
+index entries written**. Content written the other way crosses the boundary through
+cacache's `rename`→`copyFile` fallback and lands at mode **0664**, which is what the
+shared-gid model needs. `npm cache clean --force` inside the container unlinks the
+symlink and leaves the shared store byte-count intact, the same reason the split is
+a symlink here too.
 
 ### 2. H3 — `package-import-method=copy` (reqs 1, 4, 10)
 

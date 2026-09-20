@@ -43,6 +43,7 @@ import { PLUGIN_CLI_LABEL, sessionPathMount, type MountSpec } from "./plugin-cli
 import { stackLabel, stackLabelFilters } from "./stack-label.js";
 import { pluginContainerEnv, PLUGIN_TOOLCHAIN_DIRS } from "./plugin-container-env.js";
 import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
+import { sharedNpmContentDir, sharedNpmIndexDir } from "../shared/npm-cache.js";
 import { readInstallRecord, writeInstallRecord, type PluginInstallOutcome } from "./plugin-install-record.js";
 
 export const PLUGIN_INSTALL_DIR = CONTAINER_PLUGIN_DIR;
@@ -50,6 +51,17 @@ export const PLUGIN_INSTALL_DIR = CONTAINER_PLUGIN_DIR;
 export const PLUGIN_INSTALL_NETWORK = "shipit-plugin-install";
 export const PLUGIN_INSTALL_LABEL = "shipit-plugin-install";
 export const DEFAULT_PLUGIN_INSTALL_TIMEOUT_MS = 10 * 60_000;
+
+// planning#603 — docs/276 section 1 at plugin scope. `_cacache/index-v5` is forgeable
+// resolution data: a plugin's own install scripts run here with write access to the
+// download cache, so they can rewrite a cached packument's `dist.integrity` to content
+// they placed at its own valid hash, set `hasInstallScript`, and have the NEXT install of
+// that plugin run their postinstall — for another session, with the network up, because
+// npm serves a fresh cache entry without asking the registry. So the index is private to
+// one install container and dies with it, while `content-v2` stays shared: cacache
+// re-hashes content on every read, so no one can make npm install bytes of their choosing
+// through it.
+export const PLUGIN_NPM_CACHE_DIR = "/plugin-npm-cache";
 
 const INSTALL_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 const INSTALL_PIDS_LIMIT = 512;
@@ -79,6 +91,31 @@ export function installCommands(exportsList: readonly PluginExport[]): InstallCo
   return exportsList
     .filter((e): e is PluginExport & { install: string } => Boolean(e.install?.trim()))
     .map((e) => ({ plugin: e.name, command: e.install.trim() }));
+}
+
+/**
+ * The shell the install container runs. With a download cache it also splits npm's
+ * `_cacache`: the private root is a tmpfs, and its `content-v2` is a **symlink** to the
+ * shared store rather than a mount, because `npm cache clean --force` is an `rm -rf` of
+ * the cache root — through a mount that deletes the shared store and then fails `EBUSY`,
+ * while it merely unlinks a symlink (docs/276 section 1). Both halves name the shared
+ * paths through `shared/npm-cache.ts` so they cannot drift from the session-side split.
+ */
+export function pluginInstallCommand(command: string, shareNpmContent: boolean): string {
+  const steps = [`mkdir -p ${PLUGIN_TOOLCHAIN_DIRS.join(" ")}`];
+  if (shareNpmContent) {
+    const content = sharedNpmContentDir(DEP_CACHE_CONTAINER_PATH);
+    steps.push(
+      // Created here, not by the orchestrator: under `umask 002` as the session uid it
+      // comes out group-writable, the way the rest of this cache already does.
+      `mkdir -p ${content} ${PLUGIN_NPM_CACHE_DIR}/_cacache`,
+      // Nothing reads the shared index after the split, so it is dead weight and the one
+      // surface this was exploitable through.
+      `rm -rf ${sharedNpmIndexDir(DEP_CACHE_CONTAINER_PATH)}`,
+      `ln -sfn ${content} ${PLUGIN_NPM_CACHE_DIR}/_cacache/content-v2`,
+    );
+  }
+  return `umask 002; ${steps.join("; ")}; ${command}`;
 }
 
 export function installStamp(job: PluginInstallJob): string {
@@ -373,7 +410,7 @@ async function runInstallContainer(
     Labels: { [PLUGIN_INSTALL_LABEL]: deps.sessionId, ...stackLabel(deps.stackName) },
     Entrypoint: ["/bin/sh", "-c"],
     // Shared caches and promoted trees need group writes across session UIDs.
-    Cmd: [`umask 002; mkdir -p ${PLUGIN_TOOLCHAIN_DIRS.join(" ")}; ${command}`],
+    Cmd: [pluginInstallCommand(command, depCache !== null)],
     WorkingDir: PLUGIN_INSTALL_DIR,
     ...(identity !== null ? { User: `${identity.uid}:${identity.gid}` } : {}),
     // Docker merges image ENV; pluginContainerEnv replaces its unwritable tool paths.
@@ -382,7 +419,9 @@ async function runInstallContainer(
       ...(await pluginContainerEnv(deps.docker, deps.image, { toolchain: true })),
       ...(depCache
         ? [
-          `npm_config_cache=${DEP_CACHE_CONTAINER_PATH}/npm`,
+          // Set explicitly, not left to `HOME`: env beats a project `.npmrc`, so the
+          // plugin cannot point npm back at the shared resolution index.
+          `npm_config_cache=${PLUGIN_NPM_CACHE_DIR}`,
           `YARN_CACHE_FOLDER=${DEP_CACHE_CONTAINER_PATH}/yarn`,
           `PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`,
         ]
@@ -397,7 +436,14 @@ async function runInstallContainer(
       SecurityOpt: ["no-new-privileges"],
       Memory: INSTALL_MEMORY_BYTES,
       PidsLimit: INSTALL_PIDS_LIMIT,
-      Tmpfs: { "/tmp": "rw,exec,nosuid,size=512m" },
+      Tmpfs: {
+        "/tmp": "rw,exec,nosuid,size=512m",
+        // A tmpfs is what makes the private index private *by construction* — it cannot
+        // outlive the container, so no later install can read it. Only the index and
+        // cacache's write staging land here; finished content moves out to the shared
+        // store, so the size matches /tmp's and the ceiling stays the 2 GiB memory limit.
+        ...(depCache ? { [PLUGIN_NPM_CACHE_DIR]: "rw,nosuid,size=512m" } : {}),
+      },
     },
   });
 

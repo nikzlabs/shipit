@@ -7,9 +7,11 @@ import {
   createPluginInstallRunner,
   installCommands,
   installStampPath,
+  pluginInstallCommand,
   reapOrphanPluginInstalls,
   PLUGIN_INSTALL_DIR,
   PLUGIN_INSTALL_NETWORK,
+  PLUGIN_NPM_CACHE_DIR,
 } from "./plugin-install.js";
 import {
   PLUGIN_BROWSERS_DIR,
@@ -226,6 +228,28 @@ describe("installCommands", () => {
   it("keeps only exports that declare a non-empty install", () => {
     expect(installCommands([exportWith("a", "npm ci"), exportWith("b"), exportWith("c", "  ")]))
       .toEqual([{ plugin: "a", command: "npm ci" }]);
+  });
+});
+
+describe("pluginInstallCommand", () => {
+  it("leaves npm alone when there is no shared download cache", () => {
+    // Without one there is nothing to share, and npm's own default under HOME=/tmp is
+    // already private to this container.
+    expect(pluginInstallCommand("npm ci", false)).toBe(
+      `umask 002; mkdir -p ${PLUGIN_BROWSERS_DIR} ${PLUGIN_NPM_PREFIX_DIR}; npm ci`,
+    );
+  });
+
+  it("splits the cache before the plugin's own command can run (planning#603)", () => {
+    const cmd = pluginInstallCommand("npm ci", true);
+    const link = cmd.indexOf("ln -sfn");
+    const prune = cmd.indexOf("rm -rf /dep-cache/npm/_cacache/index-v5");
+    expect(link).toBeGreaterThan(-1);
+    expect(prune).toBeGreaterThan(-1);
+    expect(cmd.indexOf("npm ci")).toBeGreaterThan(Math.max(link, prune));
+    // A symlink, never a mount: `npm cache clean --force` rm -rf's the cache root.
+    expect(cmd).not.toContain("mount");
+    expect(cmd.endsWith("; npm ci")).toBe(true);
   });
 });
 
@@ -839,7 +863,32 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     expect(host.Mounts![0]!.Source).toContain(path.join(stateDir, "dep-cache"));
     expect(host.Mounts![0]!.ReadOnly).toBe(false);
     const env = (containers[0]!.opts as { Env: string[] }).Env;
-    expect(env).toContain("npm_config_cache=/dep-cache/npm");
+    expect(env).toContain(`npm_config_cache=${PLUGIN_NPM_CACHE_DIR}`);
+    expect(env).toContain("YARN_CACHE_FOLDER=/dep-cache/yarn");
+  });
+
+  // planning#603 — a plugin's install scripts can forge a packument in a shared
+  // `index-v5` and get their postinstall run by the next install of that plugin.
+  it("keeps npm's resolution index out of the shared download cache (planning#603)", async () => {
+    const { docker, containers } = fakeDocker({ onStart: installs() });
+    await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([npmExport()]));
+
+    const opts = containers[0]!.opts as {
+      Env: string[];
+      Cmd: string[];
+      HostConfig: { Tmpfs: Record<string, string> };
+    };
+    expect(opts.Env).toContain(`npm_config_cache=${PLUGIN_NPM_CACHE_DIR}`);
+    expect(opts.Env.join("\n")).not.toContain("npm_config_cache=/dep-cache");
+    // Private by construction: a tmpfs cannot outlive the container that mounts it.
+    expect(opts.HostConfig.Tmpfs[PLUGIN_NPM_CACHE_DIR]).toBeDefined();
+    expect(opts.Cmd[0]).toContain("rm -rf /dep-cache/npm/_cacache/index-v5");
+    // Content stays shared — cacache re-hashes it on every read.
+    expect(opts.Cmd[0]).toContain(
+      `ln -sfn /dep-cache/npm/_cacache/content-v2 ${PLUGIN_NPM_CACHE_DIR}/_cacache/content-v2`,
+    );
   });
 
   it("keeps the download cache in this repository's own subtree (req 15)", async () => {
