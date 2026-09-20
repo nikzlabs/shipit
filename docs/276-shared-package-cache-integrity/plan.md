@@ -46,8 +46,9 @@ Facts that shape the design:
   <new-package>` and an out-of-sync lockfile are not. And after a poisoned add,
   `package-lock.json` records the attacker's hash, which the post-turn
   auto-commit then pushes to the user's repository.
-- ShipIt sets neither `package-import-method` nor `verify-store-integrity`
-  anywhere in `src/`; both run on pnpm defaults.
+- ShipIt set neither `package-import-method` nor `verify-store-integrity`
+  anywhere in `src/`; both ran on pnpm defaults. Section 2 shipped the import
+  method on 2026-09-20; `verify-store-integrity` is still the default (section 4).
 
 ## Design
 
@@ -205,6 +206,52 @@ Desktop VMs, most of which are ext4, and req 12 makes ext4 the target. Nothing
 in the design selects behaviour from a reflink probe, so there is none. A
 loopback XFS image is not a ShipIt feature: it needs `CAP_SYS_ADMIN`, which the
 orchestrator does not take, and is Linux-only.
+
+**Shipped 2026-09-20, before the overlay, with the ext4 disk cost accepted.** The
+requester chose to land H3 on its own rather than hold it for section 5, so until
+that lands a pnpm ≤ 10 session pays roughly 1.8× the disk of the hardlink import for
+the same tree on ext4 (the row above). The req 10 gate is therefore **not** met by
+this change and stays open in the checklist; it closes when the tree overlay makes
+the copy free again. Paying that cost where it buys nothing is what scopes the
+setting to pnpm ≤ 10, below.
+
+**Scoped to pnpm ≤ 10, deliberately — pnpm moved its config env prefix at 11**
+(measured 2026-09-20 with `pnpm store path`, which reports the resolved value): pnpm
+10.28.2 reads `npm_config_*` and ignores `PNPM_CONFIG_*`; 11.22.0 and 12.5.1 do the
+reverse. `buildEnv` pushes only `npm_config_package_import_method=copy`, beside the
+store path, which uses the same pre-11 spelling — so copy reaches **exactly the
+versions that share a store**. pnpm ≥ 11 keeps a private in-container store (next
+paragraph), where a copy would buy no cross-session isolation and would still cost
+~1.8× the disk on ext4, so it is left on hardlinks. Requester's decision 2026-09-20,
+on review of the first cut, which had set both spellings; **section 5 owns re-adding
+copy for pnpm ≥ 11**, where the overlay makes it free and the import must cross the
+overlay boundary anyway. The pre-11 spelling costs one `npm warn Unknown env config
+"package-import-method"` per npm command in a pnpm session, next to the one
+`npm_config_store_dir` already emits.
+
+**The setting governs an import, so it does not detach links that already exist**
+(measured 2026-09-20 on pnpm 12.5.1, and the cell
+`integration_tests/pnpm-store-import-method.test.ts` "GAP" holds it): a tree
+installed under the hardlink import keeps `nlink` 2 across a plain reinstall **and
+across `pnpm install --force`**; only removing `node_modules` and installing again
+re-imports it as copies. So reqs 4 and 11 hold for a session from its next cold
+install, not from the moment the setting arrives. Scope: a repo on pnpm ≤ 10 with a
+tree installed before this change, since pnpm ≥ 11 is not given copy at all. A
+migration (detecting store-hardlinked trees and rebuilding them) is a
+deliberate destructive step and is left to the requester; section 5 replaces the
+shape entirely, since its base tree is orchestrator-built and its store is private.
+
+**Finding: the store relocation uses the pre-11 spelling too, so pnpm ≥ 11 shares no
+store.** `npm_config_store_dir=/workspace/.pnpm-store` (`container-lifecycle.ts:377`)
+is inert for pnpm ≥ 11, which falls back to its default store in the container's home
+— private to that container, and the mount at `/workspace/.pnpm-store` goes unused.
+That is what makes H3 unreachable there, and what makes copy pointless there. Adding
+`PNPM_CONFIG_STORE_DIR` would start sharing a store that H2 and H4 are still open
+against, so it is a deliberate decision rather than a typo fix: **the requester ruled
+on 2026-09-20 not to add it**, and section 5 replaces the store shape anyway. Two
+consequences to carry into section 5: those sessions re-download on every cold
+container rather than sharing downloads (docs/198's per-runtime sharing is not
+happening for modern pnpm), and there is no shared store to migrate off for them.
 
 ### 3. ext4 — overlayfs gives copy-on-write without reflink (reqs 10, 11)
 

@@ -375,6 +375,14 @@ export function buildEnv(
 
   if (config.pnpmStoreDir) {
     env.push(`npm_config_store_dir=${PNPM_STORE_CONTAINER_PATH}`);
+    // docs/276 H3: import store files by copy, so a write to the shared store cannot change
+    // a file another session already installed. Not `clone` — it is the strict reflink
+    // spelling and fails ENOTSUP on ext4. Only pnpm <= 10 reads this spelling, and only
+    // those versions read `npm_config_store_dir` above, so copy reaches exactly the sessions
+    // that share a store; pnpm >= 11 keeps a private in-container store, where copy would buy
+    // no isolation and cost ~1.8x the disk. Section 5 re-adds it when the overlay makes the
+    // copy free (plan.md).
+    env.push("npm_config_package_import_method=copy");
   }
   // Ops must select the read-only proxy even if dockerAccess is also true.
   if (config.opsSession) {

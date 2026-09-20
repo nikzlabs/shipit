@@ -228,22 +228,61 @@ recorded in [requirements.md](./requirements.md); none is open.
 
 ## H3 — pnpm hardlink (reqs 1, 4, 10, 11)
 
-- [ ] Set `package-import-method=copy` explicitly. Not `clone`: it fails the
+- [x] Set `package-import-method=copy` explicitly. Not `clone`: it fails the
       install where reflink is unavailable. With the store private, `copy` is an
       import-compatibility setting (a hardlink cannot cross the overlay
       boundary), not a cross-session security boundary — the private store and
-      the verified base are that boundary.
-- [ ] Regression test for H3: a write to a store file must not change an
+      the verified base are that boundary. Shipped in `buildEnv`
+      (`container-lifecycle.ts`) beside the store path, as
+      `npm_config_package_import_method=copy` only — measured 2026-09-20 that
+      pnpm 10.28.2 reads `npm_config_*` while 11.22.0 / 12.5.1 read only
+      `PNPM_CONFIG_*`, and the store relocation uses the same pre-11 spelling, so
+      copy reaches exactly the versions that share a store. pnpm ≥ 11 has a
+      private in-container store and stays on hardlinks (requester's decision
+      2026-09-20: copy there costs ~1.8× disk for no cross-session gain);
+      **section 5 owns re-adding it** when the overlay makes the copy free. A
+      unit test pins the shipped spelling, the absence of the pnpm ≥ 11 one, and
+      that `clone` is never requested.
+- [x] Regression test for H3: a write to a store file must not change an
       already-installed `node_modules` file in another session.
-- [ ] Regression test for req 11: an edit inside one session's installed
+      `integration_tests/pnpm-store-import-method.test.ts`, real pnpm 10 (the
+      range the shipped setting reaches) against a local registry: the poison is
+      an in-place overwrite that keeps size and mtime, and the cell asserts the
+      store file really changed before asserting the installed file did not. Its
+      control imports by hardlink and shows the same write reaching the victim
+      (`nlink` 2 → 1 across the pair).
+- [x] Regression test for req 11: an edit inside one session's installed
       packages must stay invisible to another session. A future return to
-      hardlink sharing would silently break this.
+      hardlink sharing would silently break this — its control measures exactly
+      that, the same edit under the default import reaching the other session.
+      Both fix cells were run red against a spelling that pnpm version ignores,
+      so they fail on an ineffective setting, not only on a missing line. The
+      controls request `hardlink` explicitly rather than pnpm's default, so a
+      reflink filesystem or an inherited import method cannot decide what they
+      measure.
 - [ ] Req 10 gate: on ext4, `package-import-method=copy` alone regresses disk
       ~1.8×. Land the overlay (or accept the interim cost deliberately) before
       calling req 10 met — do not ship copy on ext4 as if it were free.
-- [ ] Never `chown -R` through an overlay mount; act on the base or the upper.
-- [ ] shipit-docs: describe the boundary as the private store plus the verified
+      **Still open after the 2026-09-20 ship**: the requester chose to land H3
+      first and accept the interim ext4 cost (plan.md section 2), so this closes
+      only when section 5's tree overlay makes the copy free again.
+- [x] Never `chown -R` through an overlay mount; act on the base or the upper.
+      Nothing was added that chowns: verified at the source that the worker
+      entrypoint prunes `.pnpm-store` and every `SHIPIT_DEP_DIRS` entry from its
+      chown/chmod walks (`docker/session-worker/entrypoint.sh:15-34`).
+- [x] shipit-docs: describe the boundary as the private store plus the verified
       base; do not present `verify-store-integrity` as cross-session protection.
+      `environment.md` now describes the copy import, the edit-stays-local
+      consequence (req 11) and its ext4 disk cost, and says plainly that the
+      store is not yet a boundary and `verify-store-integrity` is a local check.
+- [ ] Migration for trees installed before the setting (independent review,
+      2026-09-20, confirmed by measurement): `copy` governs an import, so an
+      existing `node_modules` keeps its store hardlinks through a plain reinstall
+      **and through `pnpm install --force`**; only removing the tree re-imports
+      it. Reqs 4 and 11 hold for such a session from its next cold install. The
+      "GAP" cell in `integration_tests/pnpm-store-import-method.test.ts` pins the
+      behaviour so the caveat can be dropped if pnpm changes. Rebuilding those
+      trees is a destructive step and a requester decision; section 5 moots it.
 - [x] Correct the "integrity-checked on link" claim in
       `docs/198-dep-cache-content-keying-and-pnpm-store/plan.md`.
 

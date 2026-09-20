@@ -407,6 +407,28 @@ describe("buildEnv", () => {
     expect(env.filter((e) => e.startsWith("npm_config_store_dir="))).toHaveLength(0);
   });
 
+  // docs/276 H3. The pre-11 spelling is the whole setting, deliberately: pnpm moved its env
+  // prefix at 11, and the versions that read `npm_config_*` are the same ones that read
+  // `npm_config_store_dir`, so copy reaches exactly the sessions that share a store. pnpm
+  // >= 11 keeps a private in-container store and is left on hardlinks until section 5.
+  it("imports pnpm store files by copy when pnpmStoreDir is set", () => {
+    const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env).toContain("npm_config_package_import_method=copy");
+    expect(env.filter((e) => e.startsWith("PNPM_CONFIG_"))).toHaveLength(0);
+  });
+
+  it("never asks for the clone import method, which fails ENOTSUP on ext4", () => {
+    const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env.filter((e) => /package.import.method=(?!copy$)/i.test(e))).toHaveLength(0);
+  });
+
+  it("does not set the import method when pnpmStoreDir is undefined (no shared store)", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
+    expect(env.filter((e) => /package.import.method=/i.test(e))).toHaveLength(0);
+  });
+
   it("includes standard env vars alongside cache vars", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
