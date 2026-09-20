@@ -173,11 +173,13 @@ are the remaining orchestrator-side steps, shared with planning#599.
 
 Three facts the first lifecycle draft leaned on, measured on the services host
 ([`tree-state-spike.sh`](./tree-state-spike.sh), PASS=9, hard-asserted). One
-caveat first, verified at the source: **a base-hit session never runs pnpm** —
-ShipIt pre-stamps the install marker (`overlay-session.ts:preStampInstallMarker`)
-and the worker skips the install (`install-controller.ts:96`, `skipped:
-"marker"`) — so cells A and B describe what an install *would* do, not what a
-base-hit session does.
+caveat first, verified at the source: in docs/183's flow **a base-hit session
+never runs the package manager** — ShipIt pre-stamps the install marker
+(`overlay-session.ts:preStampInstallMarker`) and the worker skips the install
+(`install-controller.ts:96`, `skipped: "marker"`). pnpm is excluded from that
+flow today (`container-overlay-provisioner.ts:79`), so this describes what
+extending it to pnpm unchanged would do; cells A and B describe what an install
+*would* do over such a base.
 
 | Cell | Result |
 |---|---|
@@ -221,9 +223,11 @@ not stop it. Consequence for the base rebuild: a hook source — a committed
 package supplies — executes code in the builder that can rewrite the "canonical"
 output the orchestrator then publishes. The sandbox protects the host but does
 not make the output trustworthy after attacker code has run. The fix is to
-reject hook sources in preflight **and** build with `--ignore-pnpmfile` plus a
-sterile config (no inherited global settings, package-manager switching
-disabled).
+build with `--ignore-pnpmfile` under an explicit known config (no inherited
+global settings, package-manager switching disabled). Only the `.cjs` case was
+measured; whether `--ignore-pnpmfile` also suppresses a `.pnpmfile.mjs` and a
+`configDependencies` plugin is unmeasured, which is why those two stay
+ineligible for a base until it is.
 
 ## Finding: offline resolution needs metadata separate from the store
 
@@ -254,6 +258,20 @@ authenticate which content a name should *select* (the req 6 class).
   This shows separate-upper installs do not error; it does not establish lock
   correctness over a shared critical section.
 - **Wall times include container spawn** and are single-shot.
+- **PASS counts exclude warn-only cells.** `tree-overlay-spike.sh` only warns
+  when the private store is touched on a base hit or left empty after an add;
+  `store-overlay-spike.sh` only warns on unexpected link counts, and its timing
+  cells tolerate an install failure (`|| true`). Read those lines as observed,
+  not asserted.
+- **C2/C3 use a `file:` package and a base built by an ordinary install**, not
+  the proposed `--ignore-scripts` builder, and C3 reports without asserting. They
+  establish pnpm 12's approval behaviour, not the build-inclusive lifecycle.
+- **The archive-to-manifest derivation** (tarball sha512 == `index.db` key;
+  per-file digests reproduced) was verified interactively on 2026-09-18, not by
+  a committed harness; `verify-h4.sh` rewrites manifest bytes and does not
+  perform it.
+- **The tree spikes run as root** (no `--user`), so they do not exercise
+  distinct session uids over the group-writable base (docs/270).
 
 ## Reproduce
 

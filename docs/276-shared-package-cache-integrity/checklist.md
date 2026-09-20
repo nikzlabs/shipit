@@ -39,7 +39,7 @@ recorded in [requirements.md](./requirements.md); none is open.
       rather than promote today's writable store; per-runtime key stays.
 - [x] Publish trigger decided (2026-09-18): after a successful declared
       install, where docs/183 publishes; a verification failure skips the
-      publish (`skipped-unverified`, first failing package named), the session
+      publish (a publish outcome naming the first failing package), the session
       keeps its private tree, its install is never failed (req 9). A post-turn
       publish for mid-session `pnpm add` is a follow-up.
 - [x] Measure the store-in-overlay attack ISOLATION via Docker-mounted overlays
@@ -101,108 +101,111 @@ recorded in [requirements.md](./requirements.md); none is open.
       no-lockfile gate must be per CONSUMER not per repo; the worker marker skips
       on commit alone; concurrency needs operation-lifetime claims. All folded
       into plan.md section 5.
-- [ ] Sterile builder (R3 P1): reject every hook source (`.pnpmfile.cjs`/`.mjs`,
-      `configDependencies`) in preflight; run `pnpm install --offline
-      --frozen-lockfile --ignore-scripts --ignore-pnpmfile`; disable
-      `packageManager` version-switching (baking pnpm is not enough — a repo pin
-      can switch it); no inherited global `.npmrc`/`pnpm-workspace.yaml`, no
-      env a config value could expand. Measured: a `.pnpmfile.cjs` hook ran under
-      `--ignore-scripts` and only `--ignore-pnpmfile` stopped it (FINDINGS.md).
-- [ ] No-lockfile is a per-CONSUMER gate (R3 P1), enforced in
-      `prepareOverlaySpecs`: a session with no independently established lockfile
-      (none committed, or removed over the mount) gets **no base lowerdir**, since
-      pnpm would synthesize the graph from the base's `.pnpm/lock.yaml`. An
-      initial presence check is not enough — cover lockfile removal over a live
-      mount. The base being built from committed default-branch inputs does not
-      substitute for this.
+- [x] Fourth review, subtractive (2026-09-20, reviewer role: for each element,
+      would anyone notice if it were removed?). Cut: runner-bound cancellation
+      of the build, the fleet census, `verify-store-integrity` as part of the
+      fix, reflink detection, the optional per-repo store key, the extractor
+      four-limit mandate, the live lockfile watcher. Narrowed: hook-presence
+      rejection to `.mjs`/`configDependencies` only (`.cjs` suppression is
+      measured), `npm:` aliases admitted, layout rejection to output that
+      escapes `node_modules`. Simplified: the namespace to one fixed
+      discriminator, claims to one per-scope lock, a missing generation to
+      generation 0. Rejected: a gate over the existing snapshot publisher (it
+      authenticates nothing). Folded into plan.md section 5.
+- [ ] Builder configuration (R3 P1, narrowed R4): run `pnpm install --offline
+      --frozen-lockfile --ignore-scripts --ignore-pnpmfile` with an explicit
+      known config — no inherited global `.npmrc`/`pnpm-workspace.yaml`, no
+      credentials, `packageManager` version-switching disabled (a repo pin can
+      switch the baked pnpm). `.pnpmfile.cjs` is admitted (hook suppressed,
+      measured); `.pnpmfile.mjs` and `configDependencies` are ineligible until
+      their suppression is measured.
+- [ ] No-lockfile consumer gate (R3 P1, narrowed R4): where `prepareOverlaySpecs`
+      selects specs (`container-overlay-provisioner.ts:65`), a checkout with no
+      `pnpm-lock.yaml` (committed or not) gets no base lowerdir. One-shot at
+      mount; no live watcher — a later deletion inherits the default-branch
+      graph the orchestrator built, the repo's own trust boundary.
 - [ ] Worker install marker (R3): `markerMatches` returns `commit || depsHash`
       (`install-marker.ts:52`), so a same-commit approval change skips the
-      install and the build never runs. For pnpm the marker must require the
-      content hash, or invalidate on an input change.
-- [ ] Input contract (R3 P2), each with an explicit outcome: verify
-      `optionalDependencies` like the rest; trust `bundledDependencies` as part
-      of the authenticated outer tarball; for an `npm:` alias verify the resolved
-      target's digest not the alias; use an orchestrator-authorized
-      scope→registry map for a private registry (`.npmrc` must not override it);
-      do not reject a deprecated-but-present version; reject output-layout
-      settings (`modulesDir`, `virtualStoreDir`, non-isolated `nodeLinker`,
-      relocated global store); a missing lockfile-covered dep rejects the
-      candidate without failing the session install.
-- [ ] Verified namespace: salt the scope hash with the verifier identity;
-      `prepareOverlaySpecs` mounts pnpm sessions only from it and never falls back
-      to an unverified base; the unverified npm/yarn publisher cannot write there
-      (until planning#599). No `admission` pointer fields — `lockfileHash` and a
-      separate `verifier` are cut (nothing gates on them; the salted namespace and
-      the source commit already identify verifier and inputs).
+      install and the build never runs. For pnpm require the content hash, and
+      always include `pnpm-workspace.yaml` in it — the default input list does
+      (`deps-hash.ts:21`) but a custom `installInputs` replaces the list (`:89`).
+- [ ] Input contract (R3 P2, narrowed R4), one eligibility decision over the
+      staged input set: verify `optionalDependencies` like the rest; trust
+      `bundledDependencies` as part of the authenticated outer tarball; for an
+      `npm:` alias verify the resolved target's digest; use the
+      orchestrator-authorized scope→registry map for a scoped registry (`.npmrc`
+      must not override it) and admit when mapped; do not reject a
+      deprecated-but-present version; override a relocated global store to the
+      fixed builder path; ineligible only when output escapes one
+      `node_modules` (`modulesDir`, `virtualStoreDir`, non-isolated
+      `nodeLinker`) or the entry is `git`/`file:`/`link:`/`workspace:`/patched
+      (first cut); a missing lockfile-covered dep skips the publish without
+      failing the session install.
+- [ ] Verified namespace: add one fixed discriminator (`pnpm-verified-v1`) to
+      `overlayScopeHash` (`overlay-volume.ts:23`); `prepareOverlaySpecs` mounts
+      pnpm sessions only from it and never falls back to an unverified base; the
+      unverified npm/yarn publisher cannot write there. No `admission` pointer
+      fields.
 - [ ] Rebuild-in-container: dedicated builder, no workspace, no network; private
       store built inside the sandbox by unpacking staged integrity-checked
       tarballs (not the session's store index); staged manifests + config; then
-      `copySnapshotToBase` + `publishBase`. **Bound the unpack** — pnpm's audited
-      extractor rejects path traversal and non-regular entries but falls back to
-      streaming past its eager limit without rejecting, so cap total expanded
-      bytes, entry count, duration and staging disk.
+      `copySnapshotToBase` + `publishBase` (reusing `withScopeLock` and
+      `finalize`). Resource-limit the builder container (disk, time); the
+      archive-to-manifest derivation was verified interactively, not by a
+      committed harness, so script it.
 - [ ] Immutable input snapshot: stage the manifests, lockfile and config from
       one snapshot of the default-branch commit; resolve the registry the
       orchestrator selects, never a lockfile URL.
 - [ ] Measure the build-inclusive base-hit install cost (approved registry dep +
       `--ignore-scripts` base + empty private store): warm-install time and the
       marginal build-output disk in the upper. The 8 KB result used scriptless
-      deps and does not cover this.
-- [ ] Concurrency (R2/R3): give the rebuild-and-publish an abort signal bound to
-      the runner. Pointer-last is necessary but not sufficient — the sweeps
-      sample claims and the pointer separately and `claimOverlayBaseGeneration`
-      expires at 10 min, so reclamation must consult **current** claims at the
-      irreversible-delete moment and the claim must live for the whole
-      select→claim→mount. A missing published generation must **fail closed**,
-      not be recreated by `prepareOverlayDirs`. Compute liveness with the same
-      scope function creation uses (`resolveOverlayScope` keys on runtime key +
-      `overlayPinSegment`; `liveOverlayScopeHashes` uses runtime key alone —
-      `overlay-session.ts:61` vs `:189`).
+      deps and does not cover this; the tree spikes also ran as root, not as
+      distinct session uids.
+- [ ] Concurrency (R2/R3, simplified R4): no runner-bound cancellation — a
+      build that outlives its trigger finishes. Serialize claim-taking, publish
+      and sweep on one per-scope lock (`withScopeLock`, `overlay-base.ts:101`,
+      today publisher-only) and make a claim live for the whole select→mount;
+      `claimOverlayBaseGeneration`'s 10-min expiry and the sweeps' separate
+      sampling are what this replaces. A missing published generation selects
+      generation 0 (`overlay-session.ts:119`) and installs; never `mkdirSync`
+      the pointer's lowerdir (`container-lifecycle.ts:459`). Compute liveness
+      with the same scope function creation uses (`resolveOverlayScope` keys on
+      runtime key + `overlayPinSegment`; `liveOverlayScopeHashes` uses runtime
+      key alone — `overlay-session.ts:61` vs `:189`).
 - [ ] Dependency: section 1 (H1) lands first — `npm_config_cache=/dep-cache/npm`
       is forwarded to every session (`container-lifecycle.ts:367`), pnpm repos
       included.
 - [ ] Dependency: the Docker-proxy mount-path check is TOCTOU
       (`docker-proxy-auth.ts:66` → `docker-proxy-sanitize.ts:112`); the
       group-writable base relies on mount confinement. Filed as **planning#601**.
-- [ ] Partial-base sharing for repos with a git/`file:`/`link:`/`workspace:`/
-      patched/pnpmfile dependency — **required, not optional**: all-or-nothing
-      leaves them with no base, so req 2 / req 10 / req 13 are not met for them.
-      Measure how many real repos fall in this set before calling the feature
-      done; design an unbuilt-base / private-build path for the built ones.
-- [ ] Record the metadata-cache dependency in the wiring: an offline install
-      needs resolution metadata (`XDG_CACHE_HOME/pnpm`, separate from the store)
-      — a shared or privately-seeded cache, a lockfile carrying the resolution,
-      or an online fetch. The store overlay alone does not make cross-session
-      offline installs resolve; that metadata is a separate surface and, if
-      shared writable, its own integrity question (req 6 class).
-- [ ] Set `verify-store-integrity=true` explicitly (ShipIt sets neither pnpm
-      value today), but treat it as necessary, not sufficient — it trusts the
-      writable `index.db`.
+- [ ] Sharing for ineligible repos (git/`file:`/`link:`/`workspace:`/patched/
+      `.mjs`-hook) — **required, not optional**: no base leaves req 2 / req 10 /
+      req 13 unmet for them. Reuse the unbuilt-base / private-build shape; no
+      second build path.
+- [ ] Resolution metadata stays private per session (the container's own
+      `XDG_CACHE_HOME/pnpm`); a lockfile carries the resolution for the offline
+      case (FINDINGS.md). No shared or seeded metadata cache.
 - [ ] Regression test: a manifest rewrite in one session's store, or a write to
       the shared base, must not reach an install in another session.
 
 ## H3 — pnpm hardlink (reqs 1, 4, 10, 11)
 
 - [ ] Set `package-import-method=copy` explicitly. Not `clone`: it fails the
-      install where reflink is unavailable.
-- [ ] `copy` alone does not make a shared store safe (H2/H4 survive); the store
-      must stop being shared — private per session, with the verified
-      `node_modules` base as the shared unit (the H2/H4 section above). `copy` is
-      the import method for a new package into the overlay upper, since a
-      hardlink cannot cross the overlay boundary.
+      install where reflink is unavailable. With the store private, `copy` is an
+      import-compatibility setting (a hardlink cannot cross the overlay
+      boundary), not a cross-session security boundary — the private store and
+      the verified base are that boundary.
 - [ ] Regression test for H3: a write to a store file must not change an
       already-installed `node_modules` file in another session.
 - [ ] Regression test for req 11: an edit inside one session's installed
       packages must stay invisible to another session. A future return to
       hardlink sharing would silently break this.
-- [ ] Detect reflink support on the state directory at startup and report it;
-      never require it.
 - [ ] Req 10 gate: on ext4, `package-import-method=copy` alone regresses disk
       ~1.8×. Land the overlay (or accept the interim cost deliberately) before
       calling req 10 met — do not ship copy on ext4 as if it were free.
 - [ ] Never `chown -R` through an overlay mount; act on the base or the upper.
-- [ ] shipit-docs: describe store verification as pnpm's, and name
-      `verify-store-integrity` as what it depends on.
+- [ ] shipit-docs: describe the boundary as the private store plus the verified
+      base; do not present `verify-store-integrity` as cross-session protection.
 - [x] Correct the "integrity-checked on link" claim in
       `docs/198-dep-cache-content-keying-and-pnpm-store/plan.md`.
 
@@ -210,11 +213,3 @@ recorded in [requirements.md](./requirements.md); none is open.
 
 - [ ] `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until the H1
       fix lands and the pnpm store is safe against H3 and H4.
-
-## Optional — per-repo pnpm store key
-
-Not needed for any requirement. Only if cross-repo blast radius is wanted on its
-own.
-
-- [ ] Add the repo hash to `pnpmStoreDirForRuntime` and extend the disk-janitor
-      sweep; measure the disk regression from losing cross-repo dedup first.
