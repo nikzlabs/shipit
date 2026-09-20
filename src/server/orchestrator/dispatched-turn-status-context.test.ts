@@ -42,14 +42,6 @@ describe("dispatched turn — the status card in the prompt (docs/303 req 35)", 
     expect(prompts[0]!.indexOf(CARD)).toBeLessThan(prompts[0]!.indexOf("Fix the failing build"));
   });
 
-  it("leaves it out of the nudge, whose own prompt carries the same block", async () => {
-    const { prompts } = setup();
-    runner.dispatch(testDispatch({ text: "[ShipIt] update the card", systemTurn: true, statusNudge: true }));
-    await flushTurn();
-
-    expect(prompts[0]).not.toContain("<session_status_card>");
-  });
-
   it("leaves it out of a driver-owned turn, which is never checked for an update", async () => {
     const { prompts } = setup();
     runner.dispatch(testDispatch({ text: "resolve the conflict", systemTurn: true, postTurn: "none" }));

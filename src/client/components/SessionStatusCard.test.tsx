@@ -21,7 +21,7 @@ function card(over: Partial<SessionStatus> = {}): SessionStatus {
     status: "Billing service: routes and tests done; PR #212 ready to merge.",
     actions: [],
     fresh: true,
-    writeSeq: 1,
+    writeSeq: 1, turnSeq: 0,
     ...over,
   };
 }

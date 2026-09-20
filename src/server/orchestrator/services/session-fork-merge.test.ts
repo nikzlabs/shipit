@@ -262,7 +262,7 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
       needsYou: ["Add the Stripe key."],
       actions: [{ id: "webhook", label: "Wire it", payload: "Add the route.", offerId: "o-1", offeredAt: "2026-09-15T00:00:00.000Z" }],
       fresh: true,
-      writeSeq: 3,
+      writeSeq: 3, turnSeq: 0,
     };
     const { result, rows } = await fork(parentDir, {
       id: "parent-id", title: "Parent", workspaceDir: parentDir,

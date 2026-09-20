@@ -23,7 +23,6 @@ export function testDispatch(
     resetMergedBranch: opts.resetMergedBranch,
     compactContext: opts.compactContext,
     silent: opts.silent,
-    statusNudge: opts.statusNudge,
     deliveryId: opts.deliveryId,
     dictated: opts.dictated,
   });

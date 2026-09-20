@@ -1943,7 +1943,7 @@ describe("session status card slot", () => {
     status: "Billing routes done; PR #212 ready to merge.",
     actions: [],
     fresh: true,
-    writeSeq: 1,
+    writeSeq: 1, turnSeq: 0,
   };
 
   function seed(sessionStatus?: SessionStatus): void {

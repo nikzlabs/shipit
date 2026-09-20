@@ -66,10 +66,10 @@ taken inside one session, without building an agent that talks to many.
     current when it may be behind.
 12. ShipIt checks at the end of each turn that the agent updated or confirmed
     the card.
-    If it did not, ShipIt sends the agent a further turn that asks for the
-    update, on every harness alike, except in the cases of req 13 and
-    req 15. That turn is visible in the conversation, as a regular turn, for
-    transparency.
+    If it did not, ShipIt asks the agent for the update, on every harness alike,
+    except in the cases of req 13 and req 15. Since req 38 the ask is a line in
+    the next turn's prompt and costs no turn; it was a further turn of ShipIt's
+    own, visible in the conversation for transparency, while it did.
 13. A turn that ended with a question card is complete without a card
     update. The card may lag by a turn there; updating it would waste tokens
     and turns. The card then shows that it may be behind (req 14).
@@ -85,9 +85,11 @@ taken inside one session, without building an agent that talks to many.
     is spent on it: a current card carries no mark at all; a stale one
     carries a small "Stale" label at the right-hand end of the Status cap
     (req 33), which covers the whole stack and is read first.
-15. ShipIt nudges once per missing update. If the agent ignores the nudge,
-    ShipIt does not nudge again for that turn; the card is marked stale
-    (req 14) and the next ordinary turn is checked afresh.
+15. ShipIt asks once per missing update. If the agent ignores the ask, ShipIt
+    does not repeat it for that turn; the card is marked stale (req 14) and the
+    next ordinary turn is checked afresh. Since req 38 the ask is carried by the
+    next turn's prompt, so "once per missing update" is one outstanding ask, not
+    one attempt that can be lost when it cannot be sent.
 16. The follow-up actions the agent offers are part of the status card. They
     are the same thing as the card: what can happen next in this session.
 17. Offered actions persist across turns. A turn does not clear them; only
@@ -244,11 +246,79 @@ taken inside one session, without building an agent that talks to many.
     field is not on the row until the user asks for it, so a card nobody
     annotates is the card of req 2.
 
+38. Asking for a missing update costs no turn. When a turn ends without one, ShipIt
+    asks for it in the next turn's prompt, beside the card, rather than by sending a
+    turn of its own. Because the ask is free, it is made after every turn that missed
+    — a turn the user steered, one they stopped, one whose agent is holding background
+    work, one a git driver owns — and not only after the turns a further turn could
+    safely be spent on. Four turns are still not asked: one that updated the card, one
+    that ended with a question or a plan to approve (req 13), one that crashed, and one
+    the harness answered by operating on the conversation (req 36). A turn the user
+    stopped is not one of the four: it did the session's work, whether or not the
+    harness answered the stop with a result. A session with no card yet is asked for its
+    first one the same way. The ask stands until a call answers it — no later turn drops
+    it, not even one that is itself exempt — so a turn ShipIt composes no prompt for
+    defers the ask to the next turn that has one rather than losing it. This supersedes the mechanism of reqs 12 and 15 — the
+    visible further turn, and the one attempt per miss — and leaves what they were for
+    unchanged: every miss is asked about exactly once, and the card meanwhile says it
+    may be behind (req 14).
+
+39. The reconciliation the turn owes closes the card block. The block ends with the
+    instruction, in the words ShipIt used when it spent a turn on it, so that the last
+    thing read before the user's message is what to do about the card.
+
+40. The block shows how long each manual step and each offer has been on the card,
+    counted in turns — "offered 9 turns ago" — and how long ago the user sent an offer
+    they took. Drift the agent has stopped noticing is then something it can see rather
+    than remember. An entry whose turn was never recorded says so, and keeps saying so:
+    nothing but the agent introducing an entry gives it an age.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-20 — Nik, on `drift-measurement.md`, which counted 650 production turns:
+  one work turn in four ends with no update, the nudge fires on 48% of the misses,
+  and two calls in five say nothing about the manual steps or the offers. He approved
+  the three changes the report proposes, and ruled out the fourth it names: a call
+  that omits `needsYou` while manual steps are open must not be refused or discounted,
+  because ShipIt shows the card and does nothing more (his 2026-09-16 ruling below).
+  → reqs 38, 39, 40; reqs 12 and 15 superseded in mechanism by req 38.
+
+  What the numbers support, and what they do not: the agent obeys an instruction that
+  arrives in the turn prompt (81 of 81 nudged turns complied) and obeys the same rule
+  in the system prompt about three times in four, while making the card *visible* moved
+  the rate not at all. So the three changes are about where the instruction sits, not
+  about how much data the agent has.
+
+  Decided here and not by him. **Which exemptions survive**: `wasInterrupted` was one
+  gate covering a question card, a plan approval and the Stop button; only the first two
+  are req 13's, so the settlement now reads a narrower fact and a stopped turn is asked
+  like any other. **A cardless session** is asked for its first card by the same block,
+  because the nudge turn used to do that and its removal would otherwise take the only
+  ask such a session gets. **The age is counted in turns settled against the card**, not
+  in wall-clock time and not in card writes: it is the cheapest count that is honest,
+  it needs no subsystem, and an entry stored before this change says "at an unrecorded
+  turn" rather than claiming an age of zero.
+
+  Four defects the independent review found, all fixed before the PR: an exempt turn
+  settling on top of an outstanding ask dropped it; a stop the harness answered by
+  exiting rather than by a result was read as a crash; the first bare confirmation after
+  this change gave every legacy manual step a birthday it had not earned; and a
+  driver-owned turn was left as a fifth exemption, which the review was right to reject —
+  withholding the ask there was about not starting a turn inside the driver's interval,
+  and there is no turn to start.
+
+  On the report's finding 2 — a text-only turn updated the card 0 times in 46 — the
+  0 is definitional: the report defines a text-only turn as one that used no tool at
+  all, and `session_status` is a tool. What is real in that finding is that those 46
+  turns got no ask either, and the code was read and probed rather than guessed at: a
+  plain text-only turn IS nudged on `main`, so no gate keys on tool use. Three gates
+  produce the class instead, each reproduced against `main` — a steer (`steered`,
+  req 34), a user stop (`wasInterrupted`), and a resident agent holding background
+  work, where the dispatch is refused with no log line at all. Req 38 covers all three.
 
 - 2026-09-18 — Nik: "manual steps sometimes require the user to enter something,
   or the user wants to leave a comment per step." Five options were drawn in

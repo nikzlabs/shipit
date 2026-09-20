@@ -741,7 +741,6 @@ function dispatchRebaseResolutionTurn(
       resetMergedBranch: undefined,
       compactContext: undefined,
       silent: undefined,
-      statusNudge: undefined,
       onTurnComplete: (outcome) => {
         // Late duplicate callbacks must not re-lock the runner after the flow releases it.
         if (turnSettled) return;

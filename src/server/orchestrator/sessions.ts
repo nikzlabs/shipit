@@ -99,9 +99,14 @@ function parseSessionStatus(json: string): SessionStatus | undefined {
       ...(Array.isArray(card.needsYou) && card.needsYou.length > 0
         ? { needsYou: card.needsYou.filter((item: unknown): item is string => typeof item === "string") }
         : {}),
+      ...(Array.isArray(card.stepSeq)
+        ? { stepSeq: card.stepSeq.map((n: unknown) => (typeof n === "number" ? n : null)) }
+        : {}),
       actions: Array.isArray(card.actions) ? card.actions : [],
       fresh: card.fresh === true,
       writeSeq: typeof card.writeSeq === "number" ? card.writeSeq : 0,
+      turnSeq: typeof card.turnSeq === "number" ? card.turnSeq : 0,
+      ...(card.nudgePending === true ? { nudgePending: true } : {}),
     };
   } catch {
     return undefined;

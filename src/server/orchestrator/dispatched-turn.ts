@@ -125,7 +125,6 @@ async function runDispatchedTurnInner(
       resetMergedBranch: undefined,
       compactContext: undefined,
       silent: true,
-      statusNudge: undefined,
     }), createAgent);
     return;
   }
@@ -242,7 +241,7 @@ async function runDispatchedTurnInner(
   // every turn. Not on the nudge, whose own prompt carries the same block, and not on
   // a driver-owned turn, which is never checked for an update either.
   const statusContext =
-    opts.postTurn !== "none" && !isCompactRequest && !opts.statusNudge
+    opts.postTurn !== "none" && !isCompactRequest
       ? deps.sessionStatusContext?.(runner.sessionId) ?? ""
       : "";
 
@@ -363,7 +362,6 @@ async function runDispatchedTurnInner(
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),
-      ...(opts.statusNudge !== undefined ? { statusNudge: opts.statusNudge } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
       emitUserEcho: attempt === 0 && !opts.silent,
