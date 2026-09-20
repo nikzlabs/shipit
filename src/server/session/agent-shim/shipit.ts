@@ -521,7 +521,6 @@ const REJECTED_SESSION_SUBCOMMANDS = new Set([
 // branch and no PR. The refusal names the reason, because a bare "unsupported" reads as an
 // oversight to work around. See /shipit-docs/sessions.md.
 const ARCHIVE_REFUSAL = `${SHIM_NAME} does not support \`shipit session archive\` — archiving a session is the user's action, in the ShipIt UI.
-A child you spawned is archived by the user, or automatically together with you when your own session is archived. You never archive one.
 You cannot read a child's chat, so work you did not ask for is most likely work the user asked it for. If you think a child has gone wrong, say so to the user and let them decide.
 See /shipit-docs/sessions.md → "You do not archive a child".`;
 

@@ -372,7 +372,7 @@ real:
    did not ask for" has a likelier explanation than a runaway agent: the user
    asked for it.
 3. **Nothing in the parent's reach can undo it.** `unarchiveSession`
-   (`src/server/orchestrator/services/session.ts:208`) exists and the archive
+   (`src/server/orchestrator/services/session.ts:207`) exists and the archive
    does set `user_archived = 1` (`orchestrator/sessions.ts:532-537`), so the
    user *can* restore the session from the UI — but the agent has no
    `unarchive`, and it will not know to ask for one.
@@ -385,10 +385,10 @@ this incident, since the doc listed `archive` as a lever and paired it with
 
 **What replaces it.** Nothing needs to. Archiving is the user's action in the
 UI, and `archiveSession` already recurses into `sessionManager.findChildren`
-(`src/server/orchestrator/services/session.ts:712-728`), so a cohort is archived
+(`src/server/orchestrator/services/session.ts:711-727`), so a cohort is archived
 in one user action when the parent goes. The one exception is deliberate:
-children of an **Ops** session are independent incident fixes and are skipped by
-that recursion (`:712`).
+an **Ops** session's own archiving does not cascade, because its children are
+independent incident fixes (`:711` tests the kind of the session being archived).
 
 ### When the agent should reach for `shipit session create`
 
@@ -510,11 +510,12 @@ The shim itself is a convenience; the worker is the gate.
 
 ### What the parent agent can and cannot do with the child
 
-After spawning, the parent agent has three levers:
+After spawning, the parent agent has three levers, and none of them ends a
+child's life (*The parent never archives a child*):
 
-1. **Read child status** — `shipit session view <id>` (snapshot) or `shipit session wait <id>` (block until idle).
+1. **Read child status** — `shipit session view <id>` (snapshot) or `shipit session wait <id>` (block until idle). Note `idle` includes a child that paused to ask the user a question.
 2. **Send follow-up messages** — `shipit session message <id> -m "<text>"`. This is the only mutation. Useful for "actually, also do X" without the user having to switch sessions.
-3. **Archive the child** — only sessions the parent itself spawned, only when the child is idle.
+3. **Be woken on merge** — `shipit session notify-on-merge <id>`, which costs no turn time.
 
 The parent **cannot**:
 
@@ -611,8 +612,8 @@ In addition to the per-threat table above, two systemic notes:
 | `src/server/session/agent-ops-routes.test.ts` | Cases covering the `/agent-ops/session/*` relay routes and 404/409/429 status pass-through. | done |
 | `src/server/session/orchestrator-client.ts` | No change — the existing client already covers session-scoped routes. | done |
 | `src/server/orchestrator/api-routes-session.ts` | Added `POST /api/sessions/:parentId/spawn`, `GET /api/sessions/:parentId/children`, `GET /api/sessions/:parentId/children/:childId` (with optional `?wait=true&timeout=N`), `POST /api/sessions/:parentId/children/:childId/message`. (A `.../archive` route shipped here and was removed.) | done |
-| `src/server/orchestrator/services/session.ts` | Re-exports the child-sessions service surface (`spawnChildSession`, `listSpawnedChildren`, `getSpawnedChild`, `sendChildMessage`, `waitForChildIdle`, `assertArchivableChild`, plus the quota / wait constants). | done |
-| `src/server/orchestrator/services/child-sessions.ts` | Implementation of all child-session service functions. Phase 3 added `sendChildMessage`, `waitForChildIdle`, `assertArchivableChild`, `ChildViewProjections`, and env-var overrides for the quota constants. | done |
+| `src/server/orchestrator/services/session.ts` | Re-exports the child-sessions service surface (`spawnChildSession`, `listSpawnedChildren`, `getSpawnedChild`, `sendChildMessage`, `waitForChildIdle`, plus the quota / wait constants). | done |
+| `src/server/orchestrator/services/child-sessions.ts` | Implementation of all child-session service functions. Phase 3 added `sendChildMessage`, `waitForChildIdle`, `ChildViewProjections`, and env-var overrides for the quota constants. (Phase 3's `assertArchivableChild` was deleted with the archive route.) | done |
 | `src/server/orchestrator/chat-history.ts` | Added `loadLatestAssistantText(sessionId)` — read-only helper for the `view`/`wait` snapshot. | done |
 | `src/server/orchestrator/sessions.ts` | Added `parent_session_id` and `spawned_by_turn` columns to the SQL row mapping; new `setParentSession()` and `findChildren()` query. | done |
 | `src/server/shared/database.ts` | Migration 11 — adds `parent_session_id`, `spawned_by_turn` columns + `idx_sessions_parent` index. | done |

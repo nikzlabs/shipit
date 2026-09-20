@@ -375,14 +375,21 @@ you cannot operate on sessions you didn't spawn. Every one of them is a way to
 *You do not archive a child* below. (The upward direction is
 `shipit session report`, below.)
 
-- **`notify-on-merge` is the default lever.** It costs no turn time and it
-  answers the question you usually have — did the child's work ship? Arm it and
-  end your turn.
-- **`wait` is for a fan-in you actually have to do**: you spawned several
-  children to split one job, and your own next step needs them finished — you
-  are going to read their PRs, or integrate on top. `wait ... --all` (or
-  `--any`) is that. It is not a way to supervise a single child; for one child
-  that you only need the outcome of, arm `notify-on-merge` instead.
+**Pick between `notify-on-merge` and `wait` by the event you need, not by how
+many children you have.** They resolve on different things and neither
+substitutes for the other:
+
+- **`notify-on-merge` resolves when the child's PR is merged or closed** — a
+  human act, which can take days. It costs no turn time: arm it, end your turn,
+  and ShipIt wakes you. Use it whenever your next step needs the child's work
+  *landed* — you are going to rebase onto it, or build on it.
+- **`wait` resolves when the child's agent turn ends**, which is much earlier
+  and is a different question. Use it when your next step needs the child
+  *finished working*, not merged: you are going to read its PR before anyone
+  merges it, or it was research that produces no PR at all. `--all` / `--any`
+  make one call cover a cohort. Do not use it to supervise a child whose work
+  you merely want the outcome of — that is `notify-on-merge`, and `wait` would
+  return long before the outcome exists.
 - **`message` is for a correction the child cannot derive**: a constraint that
   changed, a file it must not touch, a blocker you found. Be conservative —
   every prompt lands in the child's chat, visible to the user, and it is their
@@ -432,9 +439,11 @@ wrong, say so to the user in your own chat and let them decide.
 
 If a child turns out to be a duplicate — the retry case in *When a spawn fails
 to answer* — the same rule holds: tell the user which one is the duplicate and
-let them archive it. A duplicate that nobody archives costs a container until
-its parent is archived; a child you archived out from under the user costs the
-user's work.
+let them archive it. Leaving it is the cheap mistake: it opens a redundant PR,
+and its container is reclaimable once it goes idle. Archiving it yourself is the
+expensive one — you interrupt whatever the user had that session doing, and even
+though archiving preserves a checkout it cannot prove is on the remote, and the
+user can restore the session, it is their work and their turn you spent.
 
 ### Reporting upward
 
