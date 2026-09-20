@@ -101,6 +101,30 @@ route's owner selects the quota provider, and at
 scope account selection. This does not claim that a tiny smoke call can measure
 a visible percentage change in the provider's quota display.
 
+### OpenCode subscription limit updates
+
+OpenCode's JSON stream supplies token counts, but no account-limit events.
+The adapter now starts a turn-scoped reader for the OpenAI subscription route.
+It reads limits at start, every minute while active, and once before settlement,
+including compaction. Key routes do not start the reader. Interrupt and disposal
+abort it; each request has a five-second timeout. Failed reads retain the last
+reported values and do not change the model turn's result.
+
+The reader uses the access-only projection and checks its captured route before
+and after each request. It rereads the file to follow token renewal and rejects
+late responses after cancellation, revocation, or account replacement. It never
+refreshes a token. The fixed, non-redirecting GET endpoint and window schema
+follow [Codex's account usage reader](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/backend-client/src/client/rate_limit_resets.rs)
+and its generated `RateLimitWindowSnapshot` model. Windows are selected by their
+reported duration, so a weekly primary window is not labeled as five-hour use.
+
+The reader emits `agent_rate_limits` before the terminal result. Verified at
+`ws-handlers/agent-listeners.ts:wireAgentListeners` and
+`bootstrap-managers.ts:recordAgentRateLimits`: the captured credential route
+selects the existing OpenAI quota pool and the limits registry broadcasts it to
+the existing UI. No new meter, account, or quota pool is introduced. The prior
+implementation shared the pool but did not feed it from OpenCode turns.
+
 ### Independent implementation review
 
 ShipIt's configured reviewer checked the implementation. The fixes retain the

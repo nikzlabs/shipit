@@ -43,6 +43,11 @@ choices, not additional requests from the user.
    route. Subscription usage remains subscription usage; API-price estimates
    are not presented as charges.
 
+10. OpenCode subscription turns update the existing OpenAI account limit display
+    without requiring a Codex session. Show the reported five-hour and weekly
+    usage and reset times; a failed usage read must not fail the model turn.
+    This requirement follows the user's request to fix missing limit data.
+
 The user subsequently authorized implementation. The initial supported model is
 GPT-5.5; additional models need runtime validation before they are offered.
 

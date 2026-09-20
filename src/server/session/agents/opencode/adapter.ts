@@ -28,6 +28,7 @@ import { normalizeOpencodeToolCall, normalizeOpencodeToolResult } from "./openco
 import { compactOpencodeSession } from "./compaction.js";
 
 import { ensureManagedOpenCodeData, readOpenCodeAccount, removeOpenCodeAccount } from "../../../shared/opencode-account.js";
+import { OpenCodeSubscriptionLimits } from "./subscription-limits.js";
 import { shipitToolSpec } from "../../mcp-tool-spec.js";
 
 const OPENCODE_REASONING = HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning;
@@ -87,6 +88,7 @@ export class OpencodeAdapter
   private pendingMcpServers: Record<string, unknown> = {};
   private _isStreaming = false;
   private usingChatGPT = false;
+  private subscriptionLimits: OpenCodeSubscriptionLimits | undefined;
 
   constructor(opts?: {
     resolveHome?: AgentHomeResolver;
@@ -216,6 +218,16 @@ export class OpencodeAdapter
       );
     }
 
+    if (isOpenCodeAccountRouting(params.serviceRouting)) {
+      this.subscriptionLimits = new OpenCodeSubscriptionLimits({
+        dataHome,
+        routeId: params.serviceRouting.credentialTarget.accountId,
+        onLimits: (event) => this.emit("event", event),
+        onFailure: (message) => this.emit("log", "server", message),
+      });
+      this.subscriptionLimits.start();
+    }
+
     if (params.compact) {
       this.runCompaction(params, spawnEnv);
       return;
@@ -233,6 +245,7 @@ export class OpencodeAdapter
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
+      this.subscriptionLimits?.stop();
       this.cleanupTurnFiles();
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
       this.proc = null;
@@ -271,14 +284,16 @@ export class OpencodeAdapter
       this.drainLines(true);
       this.drainStderrLines(true);
       this.cleanupTurnFiles();
-      if (this.stdinFailure && !this.sawAnyEvent()) {
-        this.emit("error", this.stdinFailure);
-      } else {
-        this.emitSynthesizedResult(exitCode, signal);
-      }
-      this.stdinFailure = null;
-      this.emit("done", exitCode ?? 0);
-      this.proc = null;
+      this.finishSubscriptionLimits(() => {
+        if (this.stdinFailure && !this.sawAnyEvent()) {
+          this.emit("error", this.stdinFailure);
+        } else {
+          this.emitSynthesizedResult(exitCode, signal);
+        }
+        this.stdinFailure = null;
+        this.proc = null;
+        this.emit("done", exitCode ?? 0);
+      });
     });
 
     // Stdin avoids Linux's 128 KiB per-argument limit.
@@ -397,13 +412,15 @@ export class OpencodeAdapter
     const settle = (error?: string): void => {
       if (settled) return;
       settled = true;
-      this.compactionProc = null;
       this.cleanupTurnFiles();
-      this.emit("event", {
-        type: "agent_result",
-        status: error ? "error" : "success",
-        sessionId: sessionId ?? "",
-        ...(error ? { error } : {}),
+      this.finishSubscriptionLimits(() => {
+        this.compactionProc = null;
+        this.emit("event", {
+          type: "agent_result",
+          status: error ? "error" : "success",
+          sessionId: sessionId ?? "",
+          ...(error ? { error } : {}),
+        });
       });
     };
 
@@ -440,6 +457,16 @@ export class OpencodeAdapter
         settle(`Compaction failed: ${reason}`);
       }
     })();
+  }
+
+  private finishSubscriptionLimits(settle: () => void): void {
+    const limits = this.subscriptionLimits;
+    if (limits) {
+      void limits.finish().finally(() => {
+        if (this.subscriptionLimits === limits) this.subscriptionLimits = undefined;
+        settle();
+      });
+    } else settle();
   }
 
   private drainLines(flush = false): void {
@@ -572,6 +599,7 @@ export class OpencodeAdapter
   }
 
   interrupt(): void {
+    this.subscriptionLimits?.stop();
     const compacting = this.compactionProc;
     if (compacting) killProcessTree(compacting, "SIGTERM", { label: "opencode-compaction" });
 
@@ -592,6 +620,7 @@ export class OpencodeAdapter
   }
 
   kill(): void {
+    this.subscriptionLimits?.stop();
     this.clearErrorKillTimer();
     if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "opencode" });
     if (this.compactionProc) killProcessTree(this.compactionProc, "SIGTERM", { label: "opencode-compaction" });

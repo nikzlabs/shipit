@@ -648,6 +648,8 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
 
 
 describe("OpenCode ChatGPT account route", () => {
+  beforeEach(() => { vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 503 }))); });
+  afterEach(() => { vi.unstubAllGlobals(); });
   const routing = { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } as const;
   function provision(home: string) {
     const data = ensureManagedOpenCodeData(home);
@@ -656,6 +658,38 @@ describe("OpenCode ChatGPT account route", () => {
     fs.writeFileSync(path.join(data, OPENCODE_ACCOUNT_MARKER), JSON.stringify({ accountId: "account-a" }));
     return data;
   }
+  it("reports account limits before settling the turn, without a Codex session", async () => {
+    provision(testHome);
+    const response = { rate_limit: { primary_window: { used_percent: 42, limit_window_seconds: 18000, reset_at: 2000000000 } } };
+    const fetchFn = vi.fn().mockImplementation(async () => Response.json(response));
+    vi.stubGlobal("fetch", fetchFn);
+    const { adapter, child, events } = makeAdapter();
+    const done = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+    await vi.waitFor(() => expect(events.some((e) => e.type === "agent_rate_limits")).toBe(true));
+    response.rate_limit.primary_window.used_percent = 43;
+    child.emitStdout(CAPTURED);
+    child.close(0);
+    await done;
+    expect(events.filter((e) => e.type === "agent_rate_limits").at(-1)).toMatchObject({ session: { usedPct: 43 } });
+    expect(events.at(-1)).toMatchObject({ type: "agent_result", status: "success" });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    adapter.kill();
+  });
+
+  it("settles a successful turn even when usage reads fail", async () => {
+    provision(testHome);
+    const { adapter, child, events } = makeAdapter();
+    const done = new Promise<void>((resolve) => adapter.once("done", () => resolve()));
+    adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing });
+    child.emitStdout(CAPTURED);
+    child.close(0);
+    await done;
+    expect(events.at(-1)).toMatchObject({ type: "agent_result", status: "success" });
+    expect(events.some((e) => e.type === "agent_rate_limits")).toBe(false);
+    adapter.kill();
+  });
+
   it("uses native routing and a private home, scrubs ambient credentials, and preserves resume", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-account-adapter-"));
     const data = provision(home);
