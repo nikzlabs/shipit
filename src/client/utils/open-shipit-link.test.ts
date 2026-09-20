@@ -159,6 +159,71 @@ describe("openShipitLink — present (req 3, req 9)", () => {
     openShipitLink(link("shipit-present:docs/plan.md"));
     expect(usePresentStore.getState().linkTarget?.presentId).toBe("p1");
   });
+
+  it.each([
+    ["design/combat/shared-skills/plan.md", "/workspace/design/combat/shared-skills/plan.md"],
+    ["/workspace/design/combat/shared-skills/plan.md", "design/combat/shared-skills/plan.md"],
+    ["./design/combat/shared-skills/plan.md", "/workspace/design/combat/shared-skills/plan.md"],
+    ["/workspace/design/combat/shared-skills/plan.md", "./design/combat/shared-skills/plan.md"],
+  ])("opens %s through %s, including after hydration and update", (filePath, target) => {
+    const store = usePresentStore.getState();
+    store.addOrReplace({ ...artifact, filePath });
+    store.addOrReplace({ ...artifact, presentId: "p2", filePath: "/persist/other.md" });
+
+    const href = `shipit-present:${target}?focus=7&shipit-render=button#req-7`;
+    for (const restored of [false, true]) {
+      if (restored) {
+        const entries = usePresentStore.getState().presentations;
+        store.reset();
+        store.hydrate(entries);
+      }
+      store.setGalleryOpen(true);
+      openShipitLink(link(href), "sess-1");
+      expect(useUiStore.getState().rightTab).toBe("present");
+      expect(usePresentStore.getState()).toMatchObject({
+        activePresentIndex: 0,
+        galleryOpen: false,
+        linkTarget: { presentId: "p1", fragment: "req-7" },
+      });
+      expect(toast()).toBeUndefined();
+    }
+
+    store.addOrReplace({ ...artifact, filePath: target, createdAt: "2026-09-20T00:00:00Z" });
+    openShipitLink(link(`shipit-present:${filePath}#req-9?shipit-render=badge`));
+    expect(usePresentStore.getState().presentations).toHaveLength(2);
+    expect(usePresentStore.getState().linkTarget).toMatchObject({ presentId: "p1", fragment: "req-9" });
+  });
+
+  it.each([
+    ["/persist/reqs.html", "persist/reqs.html"],
+    ["persist/reqs.html", "/persist/reqs.html"],
+    ["/workspace-other/reqs.html", "reqs.html"],
+    ["/other/reqs.html", "reqs.html"],
+  ])("does not confuse %s with %s", (filePath, target) => {
+    usePresentStore.getState().addOrReplace({ ...artifact, filePath });
+    openShipitLink(link(`shipit-present:${target}`));
+    expect(usePresentStore.getState().linkTarget).toBeNull();
+    expect(useUiStore.getState().rightTab).toBe("files");
+    expect(toast()).toContain(target);
+  });
+
+  it("prefers the exact path when legacy registrations have separate IDs for equivalent paths", () => {
+    const store = usePresentStore.getState();
+    store.addOrReplace({ ...artifact, filePath: "design/plan.md" });
+    store.addOrReplace({ ...artifact, presentId: "p2", filePath: "/workspace/./design/plan.md" });
+    openShipitLink(link("shipit-present:/workspace/./design/plan.md"));
+    expect(usePresentStore.getState().linkTarget?.presentId).toBe("p2");
+    openShipitLink(link("shipit-present:design/plan.md"));
+    expect(usePresentStore.getState().linkTarget?.presentId).toBe("p1");
+  });
+
+  it("does not open an equivalent path from another session's transcript", () => {
+    usePresentStore.getState().addOrReplace({ ...artifact, filePath: "docs/plan.md" });
+    openShipitLink(link("shipit-present:/workspace/docs/plan.md"), "other-session");
+    expect(usePresentStore.getState().linkTarget).toBeNull();
+    expect(useUiStore.getState().rightTab).toBe("files");
+    expect(toast()).toBeUndefined();
+  });
 });
 
 describe("openShipitLink — malformed", () => {

@@ -1,6 +1,7 @@
 
 
 import { create } from "zustand";
+import { CONTAINER_WORKSPACE_DIR } from "../../server/shared/fs-constants.js";
 import { useSessionStore } from "./session-store.js";
 import {
   getSavedActivePresentBySession,
@@ -103,7 +104,9 @@ const initialState = {
 };
 
 function normalizeArtifactPath(filePath: string): string {
-  return filePath.startsWith("./") ? filePath.slice(2) : filePath;
+  const workspacePrefix = `${CONTAINER_WORKSPACE_DIR}/`;
+  const relativePath = filePath.startsWith(workspacePrefix) ? filePath.slice(workspacePrefix.length) : filePath;
+  return relativePath.startsWith("./") ? relativePath.slice(2) : relativePath;
 }
 
 function toEntry(p: PresentationMeta, content?: string): Presentation {
@@ -221,7 +224,12 @@ export const usePresentStore = create<PresentState>((set) => ({
 
   focusByPath: (filePath): Presentation | null => {
     const presentations: Presentation[] = usePresentStore.getState().presentations;
-    const idx = presentations.findIndex((p) => normalizeArtifactPath(p.filePath) === filePath);
+    const normalizedPath = normalizeArtifactPath(filePath);
+    // Older registrations can have distinct IDs for absolute paths containing ./.
+    const exactIndex = presentations.findIndex((p) => p.filePath === filePath);
+    const idx = exactIndex >= 0
+      ? exactIndex
+      : presentations.findIndex((p) => normalizeArtifactPath(p.filePath) === normalizedPath);
     if (idx < 0) return null;
     rememberActive(presentations[idx].presentId);
     set({ activePresentIndex: idx, unseenCount: 0, galleryOpen: false });

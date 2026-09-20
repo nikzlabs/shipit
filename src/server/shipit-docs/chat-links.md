@@ -59,6 +59,12 @@ The file path is the one you passed to the `present` tool; the artifact must
 already have been presented (a pointer never reads a new file from disk). ShipIt
 selects the Present tab, focuses that artifact, and scrolls to the fragment.
 
+Workspace-relative paths and absolute `/workspace/` paths match the same
+artifact: `design/plan.md`, `./design/plan.md`, and `/workspace/design/plan.md`
+are interchangeable, whichever form you passed to `present`. This match is
+limited to the current session. Other absolute paths stay distinct:
+`/persist/plan.md` is not `persist/plan.md` inside the workspace.
+
 ```markdown
 [REQ-7](shipit-present:/persist/requirements.html#req-7)
 [the risks section](shipit-present:docs/258-agent-authored-links/plan.md#unopenable-pointers)

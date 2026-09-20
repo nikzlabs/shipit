@@ -217,6 +217,29 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     expect(body.error).toContain("Could not read file");
   });
 
+  it.each([false, true])("keeps one artifact when switching workspace path forms (absolute first: %s)", async (absoluteFirst) => {
+    const relativePath = "plan.md";
+    const absolutePath = path.join(tmpDir, relativePath);
+    await writeFile(absolutePath, "# Plan", "utf8");
+    const paths = absoluteFirst ? [absolutePath, relativePath] : [relativePath, absolutePath];
+    const ids: string[] = [];
+    for (const file of paths) {
+      const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file }),
+      });
+      expect(res.ok).toBe(true);
+      ids.push(((await res.json()) as { presentId: string }).presentId);
+    }
+    await waitFor(() => presentContentMsgs().length === 2);
+    expect(ids[0]).toBe(ids[1]);
+    expect(presentContentMsgs().map((msg) => msg.filePath)).toEqual(paths);
+    expect(runner.presentations).toHaveLength(1);
+    expect(runner.presentations[0]).toMatchObject({ presentId: ids[0], filePath: paths[1] });
+    expect(await fetchRaw(workerUrl, ids[0])).toMatchObject({ content: "# Plan" });
+  });
+
   it("re-presenting the same file updates the entry in place under the same id", async () => {
     const samePath = path.join(tmpDir, "mockup.html");
     const first = await submitPresent(workerUrl, {

@@ -46,6 +46,8 @@
 ## Present flow
 
 - [x] `present-store` — `focusByPath` (closes the gallery), `linkTarget`
+- [x] Workspace-relative and absolute paths resolve through one lookup, with
+      exact matches preferred for legacy entries (req 15)
 - [x] Delivery switches source view to rendered, and waits for content
 - [x] The fetch error is keyed to its artifact; a handled target is released so
       reopening the tab does not replay it
@@ -83,6 +85,9 @@
       from inside an artifact, and where the schemes are inert
 
 ## Tests
+
+- [x] Workspace path forms in both directions: registration, link lookup,
+      hydration, updates, external path separation, and session isolation (req 15)
 
 - [x] Parse: both schemes, every rejection case, the render allowlist
 - [x] Branch order vs repo-file links; all three rendered forms

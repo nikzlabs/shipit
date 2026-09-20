@@ -14,6 +14,12 @@ The Present tab is a carousel, and **the file path is the identity**:
 - Present the **same path again** → that entry updates in place (this is how you
   iterate — edit the file and re-present it; no version flag).
 
+For workspace files, `design/plan.md`, `./design/plan.md`, and
+`/workspace/design/plan.md` identify the same artifact. You can also use any of
+these forms in a `shipit-present:` chat link, regardless of which form you used
+to present the file. Other absolute paths, such as `/persist/plan.md`, stay
+separate from workspace-relative paths. Artifact identity is session-specific.
+
 So when you produce several artifacts the user should compare — three
 landing-page variants, a before/after pair, a set of charts — **present them
 all**: write each to its own file and call `present` once per file. Don't show a
