@@ -70,19 +70,13 @@ export function openShipitLinkHref(href: unknown, owningSession?: string | null)
 
 function openPresentLink(link: Extract<ShipitLink, { kind: "present" }>): void {
   const present = usePresentStore.getState();
-  // Matching only ever selects an already-presented entry; a pointer never
-
-  const found = present.presentations.some(
-    (p) => (p.filePath.startsWith("./") ? p.filePath.slice(2) : p.filePath) === link.filePath,
-  );
-  if (!found) {
+  const entry = present.focusByPath(link.filePath);
+  if (!entry) {
     reportUnopenable(`Nothing has been presented from ${link.filePath}.`);
     return;
   }
 
   revealWorkspaceTab("present");
-  const entry = present.focusByPath(link.filePath);
-  if (!entry) return;                                                          
   present.setLinkTarget({
     presentId: entry.presentId,
     ...(link.fragment !== undefined ? { fragment: link.fragment } : {}),
