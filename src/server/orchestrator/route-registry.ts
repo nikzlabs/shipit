@@ -1061,6 +1061,9 @@ export async function registerRoutes(
 
       const dispatchSessionMessage = (msg: WsClientMessage): void | Promise<void> => {
         switch (msg.type) {
+          // docs/311 — a liveness probe answers from the socket alone and must
+          // touch no session state; first so it stays that way.
+          case "ping": { send({ type: "pong", id: msg.id }); return; }
           case "terminal_start": return terminalHandlers.handleTerminalStart(ctx, msg);
           case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
           case "terminal_resize": return terminalHandlers.handleTerminalResize(ctx, msg);

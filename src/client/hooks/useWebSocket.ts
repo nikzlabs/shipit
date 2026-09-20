@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: WebSocket connection lifecycle with cleanup and reconnection (external system sync)
 import { useRef, useEffect, useCallback, useState } from "react";
-import { useForegroundSignal } from "./useForegroundSignal.js";
+import { useForegroundSignal, type ForegroundResume } from "./useForegroundSignal.js";
+import { randomId } from "../utils/random-id.js";
 
 export type WsStatus = "connecting" | "open" | "closed";
 
@@ -41,6 +42,38 @@ function backoffMs(attempt: number): number {
   return Math.min(2000 * Math.pow(2, attempt), 30_000);
 }
 
+/**
+ * How long the page may have been away and still have its socket kept (docs/311
+ * req 3). Past this the socket is replaced without asking, which is cheaper
+ * than probing and then replacing it anyway.
+ */
+export const KEEP_SOCKET_MAX_AWAY_MS = 60_000;
+
+/** How long a liveness probe waits for any byte before calling the socket dead. */
+export const PROBE_TIMEOUT_MS = 2000;
+
+/**
+ * How long a handshake may be in flight before a foreground retry may tear it
+ * down (docs/311 req 6). A cellular handshake routinely outlives the old 300 ms
+ * retry, which restarted the connection it was waiting for.
+ */
+export const STALLED_HANDSHAKE_MS = 3000;
+
+/** Only for a handshake that never completes and never fires `close`; backoff owns the rest. */
+const FOREGROUND_RETRY_DELAYS_MS = [3000, 9000];
+
+type ProbeOutcome = "alive" | "dead" | "abandoned";
+
+/** Transport bookkeeping, so it is consumed here rather than dispatched. */
+function isPongFrame(data: unknown): boolean {
+  if (typeof data !== "string" || data.length > 128) return false;
+  try {
+    return (JSON.parse(data) as { type?: unknown }).type === "pong";
+  } catch {
+    return false;
+  }
+}
+
 export function useWebSocket(url: string | null): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState<WsStatus>(url ? "connecting" : "closed");
@@ -51,6 +84,53 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const foregroundRetryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const connectStartedAtRef = useRef(0);
+  const probeRef = useRef<{
+    id: string;
+    settle: (outcome: ProbeOutcome) => void;
+    promise: Promise<ProbeOutcome>;
+  } | null>(null);
+
+  const settleProbe = useCallback((outcome: ProbeOutcome) => {
+    const probe = probeRef.current;
+    if (!probe) return;
+    probeRef.current = null;
+    probe.settle(outcome);
+  }, []);
+
+  /**
+   * Ask the socket whether it is still there (docs/311 req 5).
+   *
+   * `readyState` cannot answer: a mobile OS kills a backgrounded connection
+   * without telling the JS layer, leaving it `OPEN` forever. Nor can a protocol
+   * ping — those are server-initiated and answered beneath JS — so the question
+   * is an application frame, and *any* inbound byte is the answer. The server's
+   * `pong` exists only so a server with nothing else to say still produces one.
+   */
+  const probeSocket = useCallback((): Promise<ProbeOutcome> => {
+    const existing = probeRef.current;
+    if (existing) return existing.promise;
+
+    const ws = wsRef.current;
+    if (ws?.readyState !== WebSocket.OPEN) return Promise.resolve<ProbeOutcome>("dead");
+
+    const id = randomId();
+    let resolve!: (outcome: ProbeOutcome) => void;
+    const promise = new Promise<ProbeOutcome>((r) => { resolve = r; });
+    const timer = setTimeout(() => settleProbe("dead"), PROBE_TIMEOUT_MS);
+    probeRef.current = {
+      id,
+      settle: (outcome) => { clearTimeout(timer); resolve(outcome); },
+      promise,
+    };
+
+    try {
+      ws.send(JSON.stringify({ type: "ping", id }));
+    } catch {
+      settleProbe("dead");
+    }
+    return promise;
+  }, [settleProbe]);
 
   const clearForegroundRetryTimers = useCallback(() => {
     for (const timer of foregroundRetryTimersRef.current) {
@@ -81,6 +161,7 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
 
     const ws = new WebSocket(url);
     wsRef.current = ws;
+    connectStartedAtRef.current = Date.now();
     setStatus("connecting");
 
     ws.onopen = () => {
@@ -109,12 +190,17 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     };
 
     ws.onmessage = (event) => {
+      // Bytes arriving prove the path works, whatever they say.
+      settleProbe("alive");
+      if (isPongFrame(event.data)) return;
       messageQueueRef.current.push(event);
       setLastMessage(event);
     };
 
     return () => {
       intentionalClose = true;
+      // The socket this probe was asking about is gone; its answer decides nothing.
+      settleProbe("abandoned");
       messageQueueRef.current = [];
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
@@ -130,7 +216,7 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
         ws.close();
       }
     };
-  }, [url, connectAttempt, clearForegroundRetryTimers]);
+  }, [url, connectAttempt, clearForegroundRetryTimers, settleProbe]);
 
   const send = useCallback((data: unknown): boolean => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
@@ -160,18 +246,59 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     openFreshSocket();
   }, [clearForegroundRetryTimers, openFreshSocket]);
 
-  const reconnectForForeground = useCallback(() => {
+  /**
+   * A handshake young enough that replacing it would only restart it. The
+   * foreground retries exist for a socket stuck in `CONNECTING` forever with no
+   * `close` — a radio that never finished waking — and that is the only thing
+   * they may act on (docs/311 req 6).
+   */
+  const handshakeIsYoung = useCallback(
+    () =>
+      wsRef.current?.readyState === WebSocket.CONNECTING
+      && Date.now() - connectStartedAtRef.current < STALLED_HANDSHAKE_MS,
+    [],
+  );
+
+  const forceFreshSocket = useCallback(() => {
     clearForegroundRetryTimers();
-    openFreshSocket();
-    for (const delay of [300, 1200, 3000]) {
+    if (!handshakeIsYoung()) openFreshSocket();
+    for (const delay of FOREGROUND_RETRY_DELAYS_MS) {
       const timer = setTimeout(() => {
         if (document.hidden) return;
         if (wsRef.current?.readyState === WebSocket.OPEN) return;
+        if (handshakeIsYoung()) return;
         openFreshSocket();
       }, delay);
       foregroundRetryTimersRef.current.push(timer);
     }
-  }, [clearForegroundRetryTimers, openFreshSocket]);
+  }, [clearForegroundRetryTimers, handshakeIsYoung, openFreshSocket]);
+
+  /**
+   * Returning to the app used to replace the socket every time, however brief
+   * the switch away — which is what put a "Reconnecting" banner on an alt-tab
+   * and left a returning mobile user unable to send (docs/311 req 1, req 2).
+   *
+   * A socket the page was only briefly away from is kept if it can prove it is
+   * alive, and replaced if it cannot. Keeping it leaves `status` at `open`
+   * throughout, so there is no banner, no history refetch and no attach burst.
+   */
+  const reconnectForForeground = useCallback(({ awayMs }: ForegroundResume) => {
+    clearForegroundRetryTimers();
+    settleProbe("abandoned");
+
+    const keepable =
+      wsRef.current?.readyState === WebSocket.OPEN
+      && (awayMs === undefined || awayMs < KEEP_SOCKET_MAX_AWAY_MS);
+    if (!keepable) {
+      forceFreshSocket();
+      return;
+    }
+
+    void probeSocket().then((outcome) => {
+      // Away again before the answer arrived: the next resume asks afresh.
+      if (outcome === "dead" && !document.hidden) forceFreshSocket();
+    });
+  }, [clearForegroundRetryTimers, forceFreshSocket, probeSocket, settleProbe]);
 
   // why a bare window `focus` must NOT tear this socket down; see its docstring.
 

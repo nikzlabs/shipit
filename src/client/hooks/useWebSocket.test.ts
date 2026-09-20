@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
-import { useWebSocket } from "./useWebSocket.js";
+import {
+  useWebSocket,
+  KEEP_SOCKET_MAX_AWAY_MS,
+  PROBE_TIMEOUT_MS,
+  STALLED_HANDSHAKE_MS,
+} from "./useWebSocket.js";
 
 type WsHandler = ((ev: { data: string }) => void) | null;
 
