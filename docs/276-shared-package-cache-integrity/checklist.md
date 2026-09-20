@@ -236,7 +236,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       hardlink sharing would silently break this — its control measures exactly
       that, the same edit under the default import reaching the other session.
       Both fix cells were run red against the pre-11 spelling alone, so they
-      fail on a setting pnpm ignores, not only on a missing line.
+      fail on a setting pnpm ignores, not only on a missing line. The controls
+      request `hardlink` explicitly rather than pnpm's default, so a reflink
+      filesystem or an inherited import method cannot decide what they measure.
 - [ ] Req 10 gate: on ext4, `package-import-method=copy` alone regresses disk
       ~1.8×. Land the overlay (or accept the interim cost deliberately) before
       calling req 10 met — do not ship copy on ext4 as if it were free.
@@ -252,6 +254,14 @@ recorded in [requirements.md](./requirements.md); none is open.
       `environment.md` now describes the copy import, the edit-stays-local
       consequence (req 11) and its ext4 disk cost, and says plainly that the
       store is not yet a boundary and `verify-store-integrity` is a local check.
+- [ ] Migration for trees installed before the setting (independent review,
+      2026-09-20, confirmed by measurement): `copy` governs an import, so an
+      existing `node_modules` keeps its store hardlinks through a plain reinstall
+      **and through `pnpm install --force`**; only removing the tree re-imports
+      it. Reqs 4 and 11 hold for such a session from its next cold install. The
+      "GAP" cell in `integration_tests/pnpm-store-import-method.test.ts` pins the
+      behaviour so the caveat can be dropped if pnpm changes. Rebuilding those
+      trees is a destructive step and a requester decision; section 5 moots it.
 - [x] Correct the "integrity-checked on link" claim in
       `docs/198-dep-cache-content-keying-and-pnpm-store/plan.md`.
 

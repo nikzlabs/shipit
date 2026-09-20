@@ -111,10 +111,23 @@ function freshStore(): string {
   return dir;
 }
 
+/** Pinned rather than left to pnpm's default: `auto` clones on a reflink filesystem, which
+ *  would make the attack controls measure the host's storage instead of the hardlink they
+ *  exist to demonstrate. ext4's default is hardlink (plan.md section 2). */
+const HARDLINK_IMPORT = {
+  npm_config_package_import_method: "hardlink",
+  PNPM_CONFIG_PACKAGE_IMPORT_METHOD: "hardlink",
+};
+
 async function pnpmInstall(dir: string, storeDir: string, extra: Record<string, string>): Promise<string> {
   const [bin, ...prefix] = pnpmCmd!;
+  // Drop an inherited import method: `extra` sets its own spelling, and leaving the other one
+  // in place would let the host decide which method a cell actually measured.
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !/package.import.method/i.test(k)),
+  );
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...inherited,
     COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
     // Both spellings, so the store is shared whatever pnpm the host resolves.
     npm_config_store_dir: storeDir,
@@ -214,10 +227,10 @@ afterAll(async () => {
 });
 
 describe.skipIf(!pnpmCmd)("Integration: pnpm store import method (docs/276 H3)", () => {
-  it("CONTROL: pnpm's default import lets a store write change an installed file", async () => {
+  it("CONTROL: a hardlink import lets a store write change an installed file", async () => {
     const store = freshStore();
     const victim = project("control-victim");
-    await pnpmInstall(victim, store, {});
+    await pnpmInstall(victim, store, HARDLINK_IMPORT);
     const file = installedFile(victim);
     expect(fs.readFileSync(file, "utf-8")).toBe(LEGIT);
 
@@ -247,12 +260,12 @@ describe.skipIf(!pnpmCmd)("Integration: pnpm store import method (docs/276 H3)",
     expect(fs.statSync(file).nlink).toBe(1);
   }, PNPM_TIMEOUT_MS);
 
-  it("CONTROL: pnpm's default import leaks an edit inside installed packages between sessions", async () => {
+  it("CONTROL: a hardlink import leaks an edit inside installed packages between sessions", async () => {
     const store = freshStore();
     const a = project("control-edit-a");
     const b = project("control-edit-b");
-    await pnpmInstall(a, store, {});
-    await pnpmInstall(b, store, {});
+    await pnpmInstall(a, store, HARDLINK_IMPORT);
+    await pnpmInstall(b, store, HARDLINK_IMPORT);
 
     poisonInPlace(installedFile(a));
 
@@ -274,5 +287,28 @@ describe.skipIf(!pnpmCmd)("Integration: pnpm store import method (docs/276 H3)",
     expect(fs.readFileSync(installedFile(b), "utf-8")).toBe(LEGIT);
     // The edit did not reach the shared store either, so a later session installs it clean.
     expect(fs.readFileSync(storeBlob(store, LEGIT), "utf-8")).toBe(LEGIT);
+  }, PNPM_TIMEOUT_MS);
+
+  /**
+   * The upgrade gap, measured rather than assumed: the setting governs an *import*, and a
+   * tree pnpm considers up to date is not re-imported. So a session that installed before
+   * this change keeps its hardlinks — reqs 4 and 11 are met for it only after the tree is
+   * removed and rebuilt. The cell fails if pnpm ever starts repairing the tree in place,
+   * which is when the caveat in shipit-docs and plan.md section 2 can go.
+   */
+  it("GAP: a tree installed under hardlink stays hardlinked until node_modules is removed", async () => {
+    const store = freshStore();
+    const dir = project("upgrade");
+    await pnpmInstall(dir, store, HARDLINK_IMPORT);
+    expect(fs.statSync(installedFile(dir)).nlink).toBeGreaterThan(1);
+    const method = importMethodEnv();
+
+    await pnpmInstall(dir, store, method);
+    expect(fs.statSync(installedFile(dir)).nlink, "a reinstall re-imported the tree").toBeGreaterThan(1);
+
+    fs.rmSync(path.join(dir, "node_modules"), { recursive: true, force: true });
+    await pnpmInstall(dir, store, method);
+
+    expect(fs.statSync(installedFile(dir)).nlink).toBe(1);
   }, PNPM_TIMEOUT_MS);
 });

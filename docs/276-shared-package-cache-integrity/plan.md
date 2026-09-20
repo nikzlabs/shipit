@@ -46,8 +46,9 @@ Facts that shape the design:
   <new-package>` and an out-of-sync lockfile are not. And after a poisoned add,
   `package-lock.json` records the attacker's hash, which the post-turn
   auto-commit then pushes to the user's repository.
-- ShipIt sets neither `package-import-method` nor `verify-store-integrity`
-  anywhere in `src/`; both run on pnpm defaults.
+- ShipIt set neither `package-import-method` nor `verify-store-integrity`
+  anywhere in `src/`; both ran on pnpm defaults. Section 2 shipped the import
+  method on 2026-09-20; `verify-store-integrity` is still the default (section 4).
 
 ## Design
 
@@ -188,6 +189,18 @@ pnpm 10.28.2 reads `npm_config_*` and ignores `PNPM_CONFIG_*`; 11.22.0 and 12.5.
 the reverse. `buildEnv` pushes `npm_config_package_import_method=copy` and
 `PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy` beside the store path, so the import method
 holds whichever version a repo's `packageManager` pins.
+
+**The setting governs an import, so it does not detach links that already exist**
+(measured 2026-09-20 on pnpm 12.5.1, and the cell
+`integration_tests/pnpm-store-import-method.test.ts` "GAP" holds it): a tree
+installed under the hardlink import keeps `nlink` 2 across a plain reinstall **and
+across `pnpm install --force`**; only removing `node_modules` and installing again
+re-imports it as copies. So reqs 4 and 11 hold for a session from its next cold
+install, not from the moment the setting arrives. Scope: a repo on pnpm ≤ 10 with a
+tree installed before this change — pnpm ≥ 11 never shared a store at all (next
+paragraph). A migration (detecting store-hardlinked trees and rebuilding them) is a
+deliberate destructive step and is left to the requester; section 5 replaces the
+shape entirely, since its base tree is orchestrator-built and its store is private.
 
 **Finding, not fixed here: the store relocation itself uses the pre-11 spelling.**
 `npm_config_store_dir=/workspace/.pnpm-store` (`container-lifecycle.ts:377`) is

@@ -110,6 +110,12 @@ change a package this session has already installed. The cost is disk: a pnpm
 `node_modules` no longer shares inodes with the store (about 1.8× the combined tree
 on ext4).
 
+This applies to packages imported *since* the setting arrived. A `node_modules`
+installed earlier is still hardlinked into the store, and pnpm will not re-import a
+tree it considers up to date — not even with `--force`. If you need the isolation on
+such a tree (you are about to patch a dependency, say), remove `node_modules` and
+install again; `stat -c %h <file>` reports 1 for a copy and 2 or more for a hardlink.
+
 The store itself is not yet a boundary between sessions: pnpm's
 `verify-store-integrity` is a local check on the store this session reads, so do not
 read it as protection against what another session wrote.
