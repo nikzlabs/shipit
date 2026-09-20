@@ -220,25 +220,33 @@ recorded in [requirements.md](./requirements.md); none is open.
       import-compatibility setting (a hardlink cannot cross the overlay
       boundary), not a cross-session security boundary — the private store and
       the verified base are that boundary. Shipped in `buildEnv`
-      (`container-lifecycle.ts`) beside the store path, under **both** env
-      spellings: measured 2026-09-20 that pnpm 10.28.2 reads `npm_config_*` and
-      pnpm 11.22.0 / 12.5.1 read only `PNPM_CONFIG_*`. A unit test pins both and
-      asserts `clone` is never requested.
+      (`container-lifecycle.ts`) beside the store path, as
+      `npm_config_package_import_method=copy` only — measured 2026-09-20 that
+      pnpm 10.28.2 reads `npm_config_*` while 11.22.0 / 12.5.1 read only
+      `PNPM_CONFIG_*`, and the store relocation uses the same pre-11 spelling, so
+      copy reaches exactly the versions that share a store. pnpm ≥ 11 has a
+      private in-container store and stays on hardlinks (requester's decision
+      2026-09-20: copy there costs ~1.8× disk for no cross-session gain);
+      **section 5 owns re-adding it** when the overlay makes the copy free. A
+      unit test pins the shipped spelling, the absence of the pnpm ≥ 11 one, and
+      that `clone` is never requested.
 - [x] Regression test for H3: a write to a store file must not change an
       already-installed `node_modules` file in another session.
-      `integration_tests/pnpm-store-import-method.test.ts`, real pnpm against a
-      local registry: the poison is an in-place overwrite that keeps size and
-      mtime, and the cell asserts the store file really changed before asserting
-      the installed file did not. Its control runs pnpm's default import and
-      shows the same write reaching the victim (`nlink` 2 → 1 across the pair).
+      `integration_tests/pnpm-store-import-method.test.ts`, real pnpm 10 (the
+      range the shipped setting reaches) against a local registry: the poison is
+      an in-place overwrite that keeps size and mtime, and the cell asserts the
+      store file really changed before asserting the installed file did not. Its
+      control imports by hardlink and shows the same write reaching the victim
+      (`nlink` 2 → 1 across the pair).
 - [x] Regression test for req 11: an edit inside one session's installed
       packages must stay invisible to another session. A future return to
       hardlink sharing would silently break this — its control measures exactly
       that, the same edit under the default import reaching the other session.
-      Both fix cells were run red against the pre-11 spelling alone, so they
-      fail on a setting pnpm ignores, not only on a missing line. The controls
-      request `hardlink` explicitly rather than pnpm's default, so a reflink
-      filesystem or an inherited import method cannot decide what they measure.
+      Both fix cells were run red against a spelling that pnpm version ignores,
+      so they fail on an ineffective setting, not only on a missing line. The
+      controls request `hardlink` explicitly rather than pnpm's default, so a
+      reflink filesystem or an inherited import method cannot decide what they
+      measure.
 - [ ] Req 10 gate: on ext4, `package-import-method=copy` alone regresses disk
       ~1.8×. Land the overlay (or accept the interim cost deliberately) before
       calling req 10 met — do not ship copy on ext4 as if it were free.

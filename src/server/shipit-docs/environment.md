@@ -99,24 +99,30 @@ be choosing what your `npm install` runs.
 
 `yarn` and `pnpm` are unaffected by this and still use `/dep-cache` directly.
 
-### pnpm installs from its store by copy
+### What another session can reach in a pnpm install
 
-ShipIt sets pnpm's `package-import-method=copy`, so the files under `node_modules`
-are copies rather than hardlinks into the pnpm store. Two things follow. You can
-edit a file inside an installed package — a `patch-package`-style fix, or
-instrumenting a dependency to debug it — and the edit stays in this session; it
-reaches neither the store nor another session. And nothing written to the store can
-change a package this session has already installed. The cost is disk: a pnpm
-`node_modules` no longer shares inodes with the store (about 1.8× the combined tree
-on ext4).
+Your installed packages are yours, by one of two mechanisms depending on the pnpm
+version the repo pins. Either way you can edit a file inside an installed package — a
+`patch-package`-style fix, or instrumenting a dependency to debug it — and the edit
+stays in this session.
 
-This applies to packages imported *since* the setting arrived. A `node_modules`
-installed earlier is still hardlinked into the store, and pnpm will not re-import a
-tree it considers up to date — not even with `--force`. If you need the isolation on
-such a tree (you are about to patch a dependency, say), remove `node_modules` and
-install again; `stat -c %h <file>` reports 1 for a copy and 2 or more for a hardlink.
+- **pnpm 10 and older** share a store between sessions at `/workspace/.pnpm-store`, so
+  ShipIt sets `package-import-method=copy`: the files under `node_modules` are copies
+  rather than hardlinks into that store, and nothing written to the store can change a
+  package you have already installed. The cost is disk — a `node_modules` no longer
+  shares inodes with the store (about 1.8× the combined tree on ext4).
+- **pnpm 11 and newer** use their own store inside this container, which no other
+  session can reach, so imports stay hardlinks and nothing is copied. The trade is
+  that downloads are not shared: a fresh container installs cold.
 
-The store itself is not yet a boundary between sessions: pnpm's
+The copy applies to packages imported *since* the setting arrived. On pnpm 10, a
+`node_modules` installed earlier is still hardlinked into the shared store, and pnpm
+will not re-import a tree it considers up to date — not even with `--force`. If you
+need the isolation on such a tree (you are about to patch a dependency, say), remove
+`node_modules` and install again; `stat -c %h <file>` reports 1 for a copy and 2 or
+more for a hardlink.
+
+The shared store itself is not yet a boundary between sessions: pnpm's
 `verify-store-integrity` is a local check on the store this session reads, so do not
 read it as protection against what another session wrote.
 

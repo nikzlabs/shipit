@@ -6,14 +6,17 @@
  * to the shared store changes files another session has *already installed* (req 4), with
  * no install event to verify. Copies give each session its own inode.
  *
- * Every fix cell has a control that runs pnpm's default import method and shows the write
- * does propagate, so a cell cannot pass because the attack was a no-op.
+ * Every fix cell has a control that imports by hardlink and shows the write does propagate,
+ * so a cell cannot pass because the attack was a no-op.
  *
- * The store is shared here by env, because that is the one part of the wiring this test
- * cannot take from the orchestrator: `buildEnv` relocates the store with
- * `npm_config_store_dir`, a spelling pnpm >= 11 ignores (measured 2026-09-20 — pnpm 10.28.2
- * reads `npm_config_*`, 11.22.0 and 12.5.1 read only `PNPM_CONFIG_*`). The import method is
- * taken from `buildEnv` verbatim, so the cells fail if that setting is dropped or misspelled.
+ * It runs on **pnpm 10**, because that is the range the shipped setting reaches: pnpm moved
+ * its config env prefix at 11 (measured 2026-09-20 — 10.28.2 reads `npm_config_*`, while
+ * 11.22.0 and 12.5.1 read only `PNPM_CONFIG_*`), and both the import method and
+ * `npm_config_store_dir` use the pre-11 spelling, so pnpm <= 10 is exactly the range that
+ * shares a store. pnpm >= 11 keeps a private in-container store and stays on hardlinks until
+ * section 5 (plan.md). The import method is taken from `buildEnv` verbatim, so the fix cells
+ * fail if that setting is dropped or misspelled; the store is relocated by the harness, which
+ * is the one part of the wiring it cannot take from the orchestrator.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
@@ -35,15 +38,21 @@ const LEGIT = "module.exports = 'legit';\n";
 const EVIL = "module.exports = 'EVIL!';\n";
 const PNPM_TIMEOUT_MS = 180_000;
 
-/** The container has pnpm on PATH; the CI runner image does not, so fall back to corepack. */
+/**
+ * Any pnpm whose major reads the shipped spelling, so the pin is a floor on the behaviour
+ * rather than a version this contract is tied to. A host pnpm is preferred when it qualifies;
+ * otherwise corepack fetches one (the container has pnpm on PATH, the CI runner image
+ * does not).
+ */
+const PNPM_PIN = "10.28.2";
 function resolvePnpm(): string[] | null {
-  for (const cmd of [["pnpm"], ["corepack", "pnpm@12.5.1"]]) {
+  for (const cmd of [["pnpm"], ["corepack", `pnpm@${PNPM_PIN}`]]) {
     try {
-      execFileSync(cmd[0], [...cmd.slice(1), "--version"], {
-        stdio: "ignore",
+      const version = execFileSync(cmd[0], [...cmd.slice(1), "--version"], {
+        encoding: "utf-8",
         env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" },
-      });
-      return cmd;
+      }).trim();
+      if (parseInt(version, 10) <= 10) return cmd;
     } catch {
       /* Try the next candidate. */
     }
@@ -53,7 +62,7 @@ function resolvePnpm(): string[] | null {
 
 const pnpmCmd = resolvePnpm();
 if (!pnpmCmd) {
-  console.warn("[docs/276 H3] no pnpm and no corepack — the import-method contract is NOT covered here");
+  console.warn("[docs/276 H3] no pnpm <= 10 and no corepack — the import-method contract is NOT covered here");
 }
 
 function containerConfig(): ContainerConfig {

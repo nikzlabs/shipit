@@ -407,14 +407,15 @@ describe("buildEnv", () => {
     expect(env.filter((e) => e.startsWith("npm_config_store_dir="))).toHaveLength(0);
   });
 
-  // docs/276 H3. Both spellings, because pnpm moved its env prefix at 11: a repo that pins
-  // pnpm 10 reads only `npm_config_*`, and that is exactly the version whose store the
-  // orchestrator does relocate, so dropping either spelling leaves a session on hardlinks.
+  // docs/276 H3. The pre-11 spelling is the whole setting, deliberately: pnpm moved its env
+  // prefix at 11, and the versions that read `npm_config_*` are the same ones that read
+  // `npm_config_store_dir`, so copy reaches exactly the sessions that share a store. pnpm
+  // >= 11 keeps a private in-container store and is left on hardlinks until section 5.
   it("imports pnpm store files by copy when pnpmStoreDir is set", () => {
     const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env).toContain("npm_config_package_import_method=copy");
-    expect(env).toContain("PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy");
+    expect(env.filter((e) => e.startsWith("PNPM_CONFIG_"))).toHaveLength(0);
   });
 
   it("never asks for the clone import method, which fails ENOTSUP on ext4", () => {
