@@ -19,7 +19,7 @@ behaviour) and [`verify-reflink.sh`](./verify-reflink.sh) (import methods). Note
 
 | Hole | Surface | Status |
 |---|---|---|
-| **H1** — cached npm *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` `_cacache/index-v5` | **Open.** Install-time RCE: rewrite `dist.integrity` to attacker content placed at its own hash, set `hasInstallScript: true`, and `npm install` runs the attacker's `postinstall`. Works with the network available, because npm serves its local cache without asking the registry. |
+| **H1** — cached npm *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` `_cacache/index-v5` | **Closed** by section 1. Was install-time RCE: rewrite `dist.integrity` to attacker content placed at its own hash, set `hasInstallScript: true`, and `npm install` runs the attacker's `postinstall` — with the network available, because npm serves a fresh local cache entry without asking the registry. Both halves are asserted in CI by `integration_tests/npm-cache-poisoning.test.ts`. |
 | **H2** — poisoned pnpm store *content* (bytes changed in place) installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **Conditional on mtime, and subsumed by H4.** pnpm skips re-hashing a store file whose mtime matches what `index.db` recorded (second granularity). Measured 2026-09-17: an in-place poison that **preserves mtime** (`touch -r`, trivial) installs offline with `verify-store-integrity=true`; the same poison that **bumps mtime ≥1s** fails closed. So the check is a size-and-mtime fast path, not a content re-hash, and `verify-store-integrity=true` is necessary but not sufficient. |
 | **H3** — store file mutated in place under a live `node_modules` | `/workspace/.pnpm-store` | **Open, and unreachable by verification.** Store files are hardlinked into `node_modules` (`links=2`), so a store write changes already-installed files with no install event. Req 4 exists for this. |
 | **H4** — pnpm store *manifest* (`v11/index.db`) rewritten to point a package's file at attacker content placed at its own valid hash | `/workspace/.pnpm-store` | **Open, and `verify-store-integrity` does not close it.** The per-package manifest is trusted layout data, the pnpm analogue of npm's `index-v5`. Verification checks each file against the digest the manifest names, not the manifest against the package's integrity. Measured 2026-09-17: offline, `verify-store-integrity=true`, a rewritten manifest installed attacker bytes (rc=0), and a second repo sharing the store got them too. pnpm's own security policy confirms it: store integrity does not defend an attacker who rewrites both files and their recorded hashes. |
@@ -59,11 +59,70 @@ every install form is protected, including `npm install <new-package>` and a
 repo with no lockfile. The download saving stays: tarballs are found in
 `content-v2` by digest without an index entry.
 
-Spiked: a private `index-v5` beside a symlinked shared `content-v2` installs
-offline, the symlink survives the install, and the split is 64 KB private /
-688 KB shared. An attacker's write to the shared `index-v5` had no effect on
-the victim. Still to measure: warm-install time (req 7) and whether the
-symlinked `content-v2` survives `npm cache verify`.
+**Shipped.** `npm_config_cache` is `/session-state/npm-cache` — inside the
+session-state mount, so it needs no new mount and no other session can name it —
+and the worker links its `_cacache/content-v2` to `/dep-cache/npm/_cacache/content-v2`
+before it opens its listener (`shared/npm-cache.ts`, called from `session-worker.ts`).
+The same call retires the shared `index-v5`: after the split nothing reads it, and it
+was the whole exploitable surface. It runs in the worker rather than the orchestrator
+because the shared tree is group-owned by the session gid, and orchestrator root has
+no `DAC_OVERRIDE` to fall back on. yarn and pnpm keep `/dep-cache` unchanged.
+
+**The split is a symlink, not a mount, and that is the load-bearing choice.**
+`npm cache clean --force` is `fs.rm(<cache>/_cacache, {recursive, force})`
+(`npm/lib/commands/cache.js`): through a bind mount that deletes the repo's shared
+content store and then fails `EBUSY`, while on a symlink it unlinks the link and
+leaves the store intact — measured. A mount is also the unsafe failure direction:
+a mount that does not apply leaves npm reading the shared index, whereas an
+unlinked private root is merely private.
+
+**Sharing `content-v2` does not reopen the hole — npm has no verification-skip
+marker, the exact thing pnpm's `index.db` provides (H2/H4).** `cacache/lib/content/read.js`
+re-hashes on *every* read (`ssri.checkData` under 64 MB, an `integrityStream` above
+it); `hasContent` only stats, and nothing records a `checkedAt`. Measured: a blob
+poisoned in place with its **mtime preserved** — the poison pnpm installs — fails
+closed offline and is re-downloaded and repaired when the network is up (req 3).
+
+**Measured** (`verify-h1.mjs`, 8 deps / 7 480 files / 53.5 MB `node_modules` /
+22.7 MB shared cache, npm 11.12.1, ext4, best-of-5, PASS=11):
+
+| | today (shared index) | design (private index) |
+|---|---|---|
+| warm install, `--prefer-offline` (ShipIt's line, `install-runtime.ts:29`) | 1 822 ms | 1 861 ms (**1.02×**) |
+| same, private index cold | — | 1 820 ms (**1.00×**) |
+| per-session disk | 0 B | **0 B** with an in-sync lockfile, **0.9 MB** when resolution runs |
+| new package's bytes | shared store | shared store (+4 blobs) |
+
+req 7 and req 10 are met with no measurable cost, and the reason is that **an
+in-sync lockfile install writes no resolution index at all**: the lockfile carries
+the resolution and tarballs are found in `content-v2` by digest, so the private
+half stays empty. Only resolution — `npm install <new-package>`, an out-of-sync or
+absent lockfile — touches it, which is exactly what H1 attacked. A fresh session
+pays packument fetches (JSON), never tarballs.
+
+Two npm commands change, both documented in
+`src/server/shipit-docs/environment.md`:
+
+- **`npm cache verify` and `npm doctor` fail** with `Cannot read properties of null
+  (reading 'toString')`. `cacache/lib/verify.js:132` globs the content directory
+  with `follow: false`, so the symlink itself comes back as a match, and
+  `ssri.fromHex` on those path segments returns null. It aborts before its first
+  delete: the shared store and the link are byte-unchanged (asserted in the
+  harness). A *real directory* there would not crash — but then its mark-and-sweep
+  would reclaim every blob this session's private index does not reference, i.e.
+  one session's `cache verify` would strip the repo's shared store. Failing loudly
+  and changing nothing is the better of the two, and npm's own `cache clean` text
+  says what replaces it: the cache treats a bad entry as a miss and re-downloads.
+- **`npm cache clean --force` removes the link** with the rest of the cache (the
+  shared store survives). That session installs privately until the container next
+  starts; the worker discards the unshared content it accumulated and relinks.
+
+Not in scope, and newly noted: the **plugin install container** still gets
+`npm_config_cache=/dep-cache/npm` over a cache keyed per plugin *source*
+(`plugin-install.ts:385`, `plugin-dep-store.ts:382`). No session can write it, so
+this is not a session-to-session hole; but a plugin's own install scripts can
+poison the resolution data for the next install of *that plugin*, which is H1 at
+plugin scope. Filed as **planning#603**.
 
 ### 2. H3 — `package-import-method=copy` (reqs 1, 4, 10)
 
@@ -511,10 +570,9 @@ computed by the **same scope function** creation uses:
 alone (`:189`) — a pre-existing mismatch the verified namespace must not inherit, or a
 stopped session's pinned scope is swept despite a current pointer.
 
-*What this still depends on.* `/dep-cache` stays shared-writable and
-`npm_config_cache=/dep-cache/npm` is forwarded to every session
-(`container-lifecycle.ts:367`), so H1 reaches a pnpm repo whose agent runs
-npm: section 1 lands first. The base is group-writable to the session gid by
+*What this still depends on.* `/dep-cache` stays shared-writable, but the npm
+resolution index no longer lives there (section 1, shipped), so a pnpm repo whose
+agent also runs npm is no longer exposed to H1. The base is group-writable to the session gid by
 design (`shareOne`): overlay copy-up preserves the lower's ownership and modes,
 and a session must be able to edit a copied-up file (req 11). So the base's
 safety is **mount confinement**, and the Docker-proxy path check
@@ -543,7 +601,7 @@ verify-and-admit lifecycle above is the same fix for it. Filed as
 
 ### Sequencing
 
-1. Section 1 (H1). It is a working RCE and the cheapest fix.
+1. Section 1 (H1) — **shipped**. It was a working RCE and the cheapest fix.
 2. Sections 2 and 4 (pnpm settings). Ship on the storage ShipIt already has.
    **On ext4, section 2 alone regresses disk ~1.8× (req 10) until section 3
    lands**, so on ext4 ship 2 and 3 together, or accept the interim cost
@@ -615,6 +673,10 @@ For anyone re-running or extending the harnesses:
 | `src/server/orchestrator/overlay-volume.ts:196` | The Docker `overlay` volume, now also for pnpm's `node_modules`. |
 | `src/server/orchestrator/session-worker-uid.ts:124` | `shareOne` — group write on the shared surfaces (docs/270 req 9). |
 | `src/server/orchestrator/session-dir-factory.ts:58` | `createDepCacheDirHelper` — `/dep-cache` keyed per repo; the verifier's self-verifying tarball source. |
+| `src/server/shared/npm-cache.ts` | Section 1's whole mechanism: the per-session cache path, the `content-v2` link, and the retirement of the shared index. |
+| `src/server/orchestrator/container-lifecycle.ts` | `buildEnv` points `npm_config_cache` at the session's own cache; `createContainer` retires the shared index. |
+| `src/server/session/session-worker.ts` | Calls `linkSessionNpmCache` before the listener opens, so no install, terminal or service can reach npm through an unlinked cache. |
+| `src/server/orchestrator/integration_tests/npm-cache-poisoning.test.ts` | The H1 attack and its control, against real npm and a local registry. |
 | `src/server/session/install-controller.ts` | The install path; also serves `GET /workspace/dep-snapshot`. |
 
 ## Related

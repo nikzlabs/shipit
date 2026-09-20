@@ -16,6 +16,7 @@ import {
   CONTAINER_WORKSPACE_DIR,
   DEP_CACHE_CONTAINER_PATH,
 } from "../shared/fs-constants.js";
+import { sessionNpmCacheDir } from "../shared/npm-cache.js";
 import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
@@ -364,7 +365,10 @@ export function buildEnv(
   }
 
   if (config.depCacheDir) {
-    env.push(`npm_config_cache=${DEP_CACHE_CONTAINER_PATH}/npm`);
+    // docs/276 H1: npm's resolution index is private per session (the worker links its
+    // `content-v2` back to the shared store), so a packument another session wrote can
+    // never be the one this session installs from.
+    env.push(`npm_config_cache=${sessionNpmCacheDir(CONTAINER_SESSION_STATE_DIR)}`);
     env.push(`YARN_CACHE_FOLDER=${DEP_CACHE_CONTAINER_PATH}/yarn`);
     env.push(`PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`);
   }

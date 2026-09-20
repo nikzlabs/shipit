@@ -335,9 +335,22 @@ describe("buildEnv", () => {
   it("includes package manager cache env vars when depCacheDir is set", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
-    expect(env).toContain("npm_config_cache=/dep-cache/npm");
     expect(env).toContain("YARN_CACHE_FOLDER=/dep-cache/yarn");
     expect(env).toContain("PNPM_STORE_DIR=/dep-cache/pnpm");
+  });
+
+  /**
+   * docs/276 H1 — a shared `index-v5` is install-time RCE between sessions of one
+   * repo: rewrite a cached packument's `dist.integrity` to content placed at its own
+   * hash and the next session runs the attacker's postinstall. The cache root is
+   * per-session for that reason; the worker links `content-v2` back to the shared
+   * store, which is self-verifying and keeps the download saving.
+   */
+  it("points npm's cache at the per-session state dir, never at the shared dep cache", () => {
+    const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env).toContain("npm_config_cache=/session-state/npm-cache");
+    expect(env.some((e) => e.startsWith("npm_config_cache=") && e.includes("/dep-cache"))).toBe(false);
   });
 
   it("does not include cache env vars when depCacheDir is undefined", () => {
