@@ -100,7 +100,7 @@ function parseSessionStatus(json: string): SessionStatus | undefined {
         ? { needsYou: card.needsYou.filter((item: unknown): item is string => typeof item === "string") }
         : {}),
       ...(Array.isArray(card.stepSeq)
-        ? { stepSeq: card.stepSeq.filter((n: unknown): n is number => typeof n === "number") }
+        ? { stepSeq: card.stepSeq.map((n: unknown) => (typeof n === "number" ? n : null)) }
         : {}),
       actions: Array.isArray(card.actions) ? card.actions : [],
       fresh: card.fresh === true,

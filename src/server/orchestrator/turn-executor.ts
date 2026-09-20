@@ -113,7 +113,6 @@ export interface TurnInput {
   silent?: boolean;
   /** docs/303 req 36 — the harness answers this turn by compacting the conversation. */
   harnessCommand?: boolean;
-  /** docs/303 req 15 — this turn IS the status nudge, so it is never nudged again. */
 }
 
 export async function executeAgentTurn(
@@ -712,6 +711,13 @@ export async function executeAgentTurn(
 
   let turnFacts: TurnStatusFacts | null = null;
   /**
+   * The settlement's card write, so the drain can wait for it. Never rejects — the write
+   * catches its own errors — so awaiting it cannot abandon the commit behind it
+   * (invariant 3). Without the wait a queued successor's prompt could be composed before
+   * the ask lands, and req 38's "the next turn's prompt" would be a turn later.
+   */
+  let statusCardSettled: Promise<void> = Promise.resolve();
+  /**
    * Taken before the drain, because the drained successor resets the runner state these
    * read (docs/303 plan.md → Turn settlement). It CANNOT throw: its call sites are the
    * head of the terminal sequence, before the hold and outside `postTurnStep`, so a throw
@@ -731,7 +737,9 @@ export async function executeAgentTurn(
       // Only when the result is this prompt's: a resident CLI can start a turn of its
       // own before the command is submitted, and that turn is work the card must report.
       harnessCommand: harnessCommandTurn && ownTurn !== "queued",
-      postTurn,
+      // The Stop button and `killAgent` both latch this, and a crash does not: it is what
+      // separates a turn the user ended from one that fell over (req 38).
+      userStopped: runner?.wasInterrupted ?? false,
       writeSeq: 0,
     };
     try {
@@ -744,7 +752,7 @@ export async function executeAgentTurn(
     // req 36 — a harness command produced no work of the agent's own, so it neither marks
     // the card nor counts as a turn the card could have fallen behind.
     if (cardOn && !facts.harnessCommand) {
-      void settleSessionStatusCard(statusDeps, sessionId, {
+      statusCardSettled = settleSessionStatusCard(statusDeps, sessionId, {
         ifWriteSeq: facts.writeSeq,
         statusUpdated: facts.statusUpdated,
         // req 38 — the ask rides the next turn's prompt, so it is decided here and
@@ -858,6 +866,8 @@ export async function executeAgentTurn(
     if (drainFired) return;
     drainFired = true;
     try {
+      // Before the successor's prompt is composed, so it carries what this turn settled.
+      await statusCardSettled;
       if (!turnIsCurrent()) return;
       if (runner) runner.running = false;
       if (postTurn === "none") return;

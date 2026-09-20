@@ -177,8 +177,11 @@ export interface SessionStatus {
    * prompt carries the miss notice. Cleared by any accepted call; never shown to a viewer.
    */
   nudgePending?: boolean;
-  /** docs/303 req 40 — `turnSeq` per `needsYou` entry, index-aligned; written with it. */
-  stepSeq?: number[];
+  /**
+   * docs/303 req 40 — `turnSeq` per `needsYou` entry, index-aligned and written with it.
+   * `null` is a step whose turn was never recorded, which stays unrecorded.
+   */
+  stepSeq?: (number | null)[];
 }
 
 export interface PreviousMergedPr {

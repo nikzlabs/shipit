@@ -129,11 +129,13 @@ function reconcileStepSeq(
   steps: string[],
   stored: SessionStatus | undefined,
   turnSeq: number,
-): number[] {
+): (number | null)[] {
   return steps.map((text) => {
     const at = stored?.needsYou?.indexOf(text) ?? -1;
-    const previous = at >= 0 ? stored?.stepSeq?.[at] : undefined;
-    return previous ?? turnSeq;
+    // Already on the card: keep its turn, and keep "unrecorded" unrecorded — a step
+    // stored before req 40 must not be given a birthday by the next bare confirmation.
+    if (at >= 0) return stored?.stepSeq?.[at] ?? null;
+    return turnSeq;
   });
 }
 
@@ -205,12 +207,13 @@ export function settleSessionStatusCard(
       return;
     }
     if (stored.writeSeq !== turn.ifWriteSeq) return;
-    const { nudgePending: _cleared, ...rest } = stored;
     deps.sessionManager.setSessionStatus(sessionId, {
-      ...rest,
+      ...stored,
       fresh: false,
       turnSeq: stored.turnSeq + 1,
-      ...(turn.nudgePending ? { nudgePending: true } : {}),
+      // req 38 — an ask stands until a CALL answers it. An exempt turn settling on top of
+      // one (a question, a crash) records no ask of its own and must not drop that one.
+      ...(turn.nudgePending || stored.nudgePending ? { nudgePending: true } : {}),
     });
     // `turnSeq` and the notice are bookkeeping; only the freshness mark is on screen.
     if (stored.fresh) broadcast(deps);
@@ -283,7 +286,8 @@ export interface TurnStatusFacts {
    * be behind and there is nothing to ask about.
    */
   harnessCommand: boolean;
-  postTurn: "commit-push" | "none";
+  /** req 38 — the Stop button or a kill, which `wasInterrupted` latches and a crash does not. */
+  userStopped: boolean;
   /** The record as the turn saw it, so a predecessor can tell its own state from a later write. */
   writeSeq: number;
 }
@@ -296,18 +300,22 @@ export interface TurnStatusFacts {
  * prompt, a running or queued successor, the nudge turn itself — is gone with it, and a
  * miss on any of those shapes is now asked about.
  *
- * What is left are the four exemptions that stand on their own terms.
+ * What is left are the four exemptions that stand on their own terms. A driver-owned turn
+ * (`postTurn: "none"`) is NOT among them any more: it does real work and its card is marked
+ * stale, so its ask is recorded like any other and read by the next turn that carries a
+ * prompt. Withholding it was about not starting a turn inside the driver's interval, and
+ * there is no turn to start.
  */
 export function shouldCarryStatusNudge(facts: TurnStatusFacts): boolean {
   if (facts.statusUpdated) return false;
   // A question card or a plan to approve: the turn is complete without one (req 13).
   if (facts.awaitingAnswer) return false;
-  // A crash has its own recovery, and produced no work of the agent's to report.
-  if (!facts.receivedResult) return false;
+  // A crash has its own recovery, and produced no work of the agent's to report. A turn
+  // the user STOPPED is not that: it did the session's work, and a harness that answers a
+  // stop by exiting rather than by a result must not be read as a crash.
+  if (!facts.receivedResult && !facts.userStopped) return false;
   // The harness answered by operating on the conversation, so the card is not behind (req 36).
   if (facts.harnessCommand) return false;
-  // A driver owns this turn and the interval around it; the block rides no such turn either.
-  if (facts.postTurn === "none") return false;
   return true;
 }
 
@@ -322,8 +330,8 @@ type OfferDetail = "full" | "no-payload" | "id-only";
  * against. A card or an entry stored before req 40 carries no seq, and says nothing
  * rather than claiming an age of zero.
  */
-function turnsAgo(turnSeq: number, seq: number | undefined): string {
-  if (seq === undefined) return "at an unrecorded turn";
+function turnsAgo(turnSeq: number, seq: number | null | undefined): string {
+  if (seq === undefined || seq === null) return "at an unrecorded turn";
   const n = Math.max(0, turnSeq - seq);
   if (n === 0) return "this turn";
   return n === 1 ? "1 turn ago" : `${n} turns ago`;

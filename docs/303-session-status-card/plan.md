@@ -238,14 +238,25 @@ adoption resets it where it resets the other memoized work
 **The ask decision** (req 38) is made in the same step, from the snapshot alone, and
 written to the card as `nudgePending`. `shouldCarryStatusNudge` says **no** on exactly
 four turns: one that wrote the card; one that ended with a question card or a plan to
-approve (`awaitingAnswer`, req 13); one with no `agent_result` (a crash has its own
-recovery); and one the harness answered by compacting (`harnessCommand`, req 36). A
-`postTurn: "none"` driver-owned turn is a fifth line in the predicate and not a fifth
-rule: the block rides no such turn either, so an ask recorded there could not be read.
+approve (`awaitingAnswer`, req 13); one that crashed; and one the harness answered by
+compacting (`harnessCommand`, req 36).
 
-The record of the ask is on the card, so a turn ShipIt composes no prompt for — an
-adopted CLI-started turn, a verbatim `/goal` command — defers it to the next turn that
-has one rather than losing it. Only `recordSessionStatus` clears it.
+"Crashed" is `!receivedResult && !userStopped`, not `!receivedResult`. `wasInterrupted`
+latches on the Stop button and on `killAgent` and a crash does not, so it is what
+separates a turn the user ended — which did the session's work — from one that fell over.
+A harness that answers a stop by exiting rather than by a result would otherwise take the
+crash exemption, and a test that stages the stop *with* a result cannot fail on it.
+
+A **driver-owned turn** (`postTurn: "none"`) is deliberately not a fifth exemption. It
+does real work and its card IS marked stale, so its ask is recorded like any other; the
+block simply does not ride such a turn, so the ask waits on the card. Withholding it was
+about not starting a turn inside the git driver's interval, and there is no turn to start.
+
+The record of the ask is on the card, so a turn ShipIt composes no prompt for — a
+driver-owned turn, an adopted CLI-started turn, a verbatim `/goal` command — defers it to
+the next turn that has one rather than losing it. **Only an accepted call clears it**: a
+turn that records no ask of its own leaves an outstanding one standing, or an exempt turn
+arriving next would drop an ask that never reached the agent.
 
 Everything else the old decision weighed is gone with the nudge turn, and this is the
 whole of what req 38 changes in behaviour. Each of those gates existed because a nudge
@@ -260,7 +271,15 @@ recorded it and the process that would have delivered it, so it lives where the 
 does. `settleSessionStatusCard` is the one write a settling turn makes: it marks the
 card stale when the turn missed, records `nudgePending`, and bumps `turnSeq` — which is
 req 40's clock. It broadcasts only when the freshness the user reads changed, so the
-per-turn write costs no SSE traffic.
+per-turn write costs no SSE traffic. A turn that DID write says nothing about freshness or
+the ask — its own call settled both, and a successor may have written or missed in between
+— so it only counts itself; that is also why it cannot use the `ifWriteSeq` guard, which
+its own write moved past.
+
+**The drain waits for that write**, and for nothing else: `tryDrain` awaits the settled
+promise before a queued successor's turn is composed, so "the next turn's prompt" is the
+next turn and not the one after. The promise never rejects — the write catches its own
+errors — so the await cannot abandon the commit behind it (invariant 3).
 
 **What a text-only turn turned out to be** (`drift-measurement.md` finding 2). The
 report could not say which gate swallowed the 46 turns that used no tool and got no
@@ -336,10 +355,10 @@ and its `/agent/status`.
 
 `harnessCommand` also governs the **stale mark**, which `silent` governed before
 it: a turn that produced no work of the agent's own cannot have left the card
-behind. The driver-owned exemption keeps its existing split and is deliberately
-not folded in — a conflict-remediation turn (`postTurn: "none"`) does real work,
-so the card IS marked stale after it; it is only the *ask* that is withheld,
-because a git driver owns the interval around it.
+behind. A driver-owned turn is not in the same class — a conflict-remediation turn
+(`postTurn: "none"`) does real work, so the card IS marked stale after it, and since
+req 38 it is asked about too: what was withheld there was a turn, and the ask is no
+longer one.
 
 Every ShipIt-started turn, enumerated from the dispatch sites rather than from
 memory, walked against the rule:
@@ -356,7 +375,7 @@ memory, walked against the rule:
 | A child session's first prompt; a message sent to a child | `services/child-sessions.ts` | **yes** |
 | A headless session's prompt | `services/headless-sessions.ts` | **yes** |
 | A message through the HTTP API | `services/agent.ts` | **yes**, unless its text is itself a harness command |
-| Conflict remediation | `services/rebase-driver.ts` (`postTurn: "none"`) | **no ask**, driver-owned; still marked stale |
+| Conflict remediation | `services/rebase-driver.ts` (`postTurn: "none"`) | **yes** — marked stale and asked; the ask waits for a turn that carries a prompt |
 | Pre-turn compaction before a post-merge turn | `dispatched-turn.ts`, `runCompactionAhead` | **no** — `harnessCommand` |
 | A compaction wrapped as another session's message | `services/child-sessions.ts` | **yes**, conservatively — see the narrowing above |
 
@@ -1118,7 +1137,11 @@ table, one field on a JSON blob that was already being written. An offer records
 unchanged, alongside `offerId`), `takenSeq` when the user sends it; a manual step is a
 plain string with no identity (the req 37 receipt), so `stepSeq` rides index-aligned
 beside `needsYou` and is matched by text on each write. A card or an entry written before
-req 40 has no seq and prints "at an unrecorded turn" rather than an age of zero.
+req 40 has no seq and prints "at an unrecorded turn" rather than an age of zero — and
+**keeps printing it**: a step already on the card whose turn was never recorded stores
+`null` rather than the current one, so a bare confirmation, which reviews nothing, cannot
+make the oldest step on the card read as the newest. Only introducing a step gives it a
+turn.
 
 **Wiring.** `SystemTurnDeps.sessionStatusContext?: (sessionId) => string` — the
 gate and the read together, so a dispatched turn needs neither the session

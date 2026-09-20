@@ -402,7 +402,7 @@ describe("shouldCarryStatusNudge (docs/303 req 12–15, 38)", () => {
     awaitingAnswer: false,
     receivedResult: true,
     harnessCommand: false,
-    postTurn: "commit-push",
+    userStopped: false,
     writeSeq: 3,
     ...over,
   });
@@ -416,7 +416,6 @@ describe("shouldCarryStatusNudge (docs/303 req 12–15, 38)", () => {
     ["the turn ended with a question or a plan to approve", { awaitingAnswer: true }],
     ["no result came back — a crash has its own recovery", { receivedResult: false }],
     ["the harness answered the turn by compacting the conversation", { harnessCommand: true }],
-    ["a driver owns the turn", { postTurn: "none" }],
   ];
   for (const [why, over] of noCases) {
     it(`does not ask when ${why}`, () => {
@@ -433,9 +432,16 @@ describe("shouldCarryStatusNudge (docs/303 req 12–15, 38)", () => {
     expect(shouldCarryStatusNudge(plainTurn())).toBe(true);
   });
 
-  it("asks about a turn the user stopped, which did the session's work", () => {
-    // `wasInterrupted` latched here too; `awaitingAnswer` does not.
-    expect(shouldCarryStatusNudge(plainTurn({ awaitingAnswer: false }))).toBe(true);
+  it("asks about a turn the user stopped, even when it produced no result", () => {
+    // `wasInterrupted` latched on a stop AND on a question; only the second is req 13's,
+    // and a stop that ends the process without a result is not the crash exemption.
+    expect(shouldCarryStatusNudge(plainTurn({ receivedResult: false, userStopped: true })))
+      .toBe(true);
+  });
+
+  it("asks about a driver-owned turn, which does real work (req 38)", () => {
+    // The block does not ride such a turn; the next one that carries a prompt reads the ask.
+    expect(shouldCarryStatusNudge(plainTurn())).toBe(true);
   });
 });
 
@@ -585,6 +591,49 @@ describe("formatSessionStatusContext (docs/303 req 35)", () => {
 
     const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
     expect(block).toContain("offered 2 turns ago, ALREADY SENT to you 1 turn ago");
+  });
+
+  /*
+    A bare confirmation reviews nothing, so it must not turn "we do not know when this
+    step appeared" into "it appeared just now" — which would read as the freshest entry on
+    the card and send the agent to the wrong one first.
+  */
+  it("does not give a legacy manual step an age the next confirmation invents", async () => {
+    const sessions = fakeSessions({
+      s1: {
+        status: "Old card.",
+        needsYou: ["Paste the key."],
+        actions: [],
+        fresh: true,
+        writeSeq: 4,
+        turnSeq: 6,
+      },
+    });
+    const d = deps(sessions);
+    await recordSessionStatus(d, "s1", {});
+
+    const block = formatSessionStatusContext(d.sessionManager.get("s1")!.sessionStatus);
+    expect(block).toContain("added at an unrecorded turn");
+  });
+
+  it("keeps an offer's age and its sent turn through a replacement that repeats it", async () => {
+    const { d } = await seededCard();
+    const stored = d.sessionManager.get("s1")!.sessionStatus!;
+    await takeOfferedActions(d, "s1", [stored.actions[0]!.offerId]);
+    const taken = d.sessionManager.get("s1")!.sessionStatus!.actions[0]!;
+
+    await recordSessionStatus(d, "s1", {
+      actions: [{ id: "webhook", label: "Wire the webhook", payload: "Add the webhook route." }],
+      replaceActions: true,
+    });
+
+    const after = d.sessionManager.get("s1")!.sessionStatus!.actions;
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({
+      offerId: taken.offerId,
+      offeredSeq: taken.offeredSeq,
+      takenSeq: taken.takenSeq,
+    });
   });
 
   it("says nothing about the age of a card stored before req 40", () => {

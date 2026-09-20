@@ -250,13 +250,15 @@ taken inside one session, without building an agent that talks to many.
     asks for it in the next turn's prompt, beside the card, rather than by sending a
     turn of its own. Because the ask is free, it is made after every turn that missed
     — a turn the user steered, one they stopped, one whose agent is holding background
-    work — and not only after the turns a further turn could safely be spent on. Four
-    turns are still not asked: one that updated the card, one that ended with a
-    question or a plan to approve (req 13), one that crashed, and one the harness
-    answered by operating on the conversation (req 36). A session with no card yet is
-    asked for its first one the same way. The ask stands until a call answers it, so a
-    turn ShipIt composes no prompt for defers the ask to the next turn that has one
-    rather than losing it. This supersedes the mechanism of reqs 12 and 15 — the
+    work, one a git driver owns — and not only after the turns a further turn could
+    safely be spent on. Four turns are still not asked: one that updated the card, one
+    that ended with a question or a plan to approve (req 13), one that crashed, and one
+    the harness answered by operating on the conversation (req 36). A turn the user
+    stopped is not one of the four: it did the session's work, whether or not the
+    harness answered the stop with a result. A session with no card yet is asked for its
+    first one the same way. The ask stands until a call answers it — no later turn drops
+    it, not even one that is itself exempt — so a turn ShipIt composes no prompt for
+    defers the ask to the next turn that has one rather than losing it. This supersedes the mechanism of reqs 12 and 15 — the
     visible further turn, and the one attempt per miss — and leaves what they were for
     unchanged: every miss is asked about exactly once, and the card meanwhile says it
     may be behind (req 14).
@@ -268,7 +270,8 @@ taken inside one session, without building an agent that talks to many.
 40. The block shows how long each manual step and each offer has been on the card,
     counted in turns — "offered 9 turns ago" — and how long ago the user sent an offer
     they took. Drift the agent has stopped noticing is then something it can see rather
-    than remember.
+    than remember. An entry whose turn was never recorded says so, and keeps saying so:
+    nothing but the agent introducing an entry gives it an age.
 
 ## Open questions
 
@@ -299,6 +302,14 @@ taken inside one session, without building an agent that talks to many.
   in wall-clock time and not in card writes: it is the cheapest count that is honest,
   it needs no subsystem, and an entry stored before this change says "at an unrecorded
   turn" rather than claiming an age of zero.
+
+  Four defects the independent review found, all fixed before the PR: an exempt turn
+  settling on top of an outstanding ask dropped it; a stop the harness answered by
+  exiting rather than by a result was read as a crash; the first bare confirmation after
+  this change gave every legacy manual step a birthday it had not earned; and a
+  driver-owned turn was left as a fifth exemption, which the review was right to reject —
+  withholding the ask there was about not starting a turn inside the driver's interval,
+  and there is no turn to start.
 
   On the report's finding 2 — a text-only turn updated the card 0 times in 46 — the
   0 is definitional: the report defines a text-only turn as one that used no tool at

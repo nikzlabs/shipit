@@ -274,14 +274,19 @@ describe("settleTurnFacts and the status-card ask (docs/303 req 11–15, 38)", (
     h.runner.dispose({ force: true });
   });
 
-  it("asks a turn the user stopped, which did the session's work (req 38)", async () => {
+  /*
+    A stop is not a crash: the turn did the session's work. Staged the way a stop really
+    ends — the process exits with no `agent_result` — because a test that emits one is
+    passing on the ordinary path and would not fail if the stop were read as a crash.
+  */
+  it("asks a turn the user stopped, which produces no result of its own (req 38)", async () => {
     const h = harness({ card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "do the thing" }));
     await waitFor(() => h.agents.length === 1, "turn started");
-    // What the Stop button sets. It is not a question card, so req 13 does not cover it.
+    // What the Stop button and `killAgent` set.
     h.runner.wasInterrupted = true;
-    finishTurn(h.agents[0]!);
+    h.agents[0]!.emit("done", 0);
     await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
 
     h.runner.dispose({ force: true });
@@ -457,18 +462,45 @@ describe("settleTurnFacts and the status-card ask (docs/303 req 11–15, 38)", (
     h.runner.dispose({ force: true });
   });
 
-  it("does not ask a driver-owned turn (postTurn: none)", async () => {
+  /*
+    A driver-owned turn does real work and its card is marked stale, so req 38 records its
+    ask like any other. The block does not ride such a turn, which is why the ask waits on
+    the card for the next turn that carries a prompt — the same path an adopted turn takes.
+  */
+  it("asks a driver-owned turn (postTurn: none), whose ask waits for a turn with a prompt", async () => {
     const h = harness({ card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "rebase step", systemTurn: true, postTurn: "none" }));
     await waitFor(() => h.agents.length === 1, "turn started");
     finishTurn(h.agents[0]!);
-    await waitFor(() => !h.runner.running, "turn finished");
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
+
+    expect(h.card()!.fresh).toBe(false);
+    expect(h.asks()).toHaveLength(0);
+    h.runner.dispose({ force: true });
+  });
+
+  /*
+    req 38 — an ask stands until a CALL answers it. The turn after a miss can be one that
+    is exempt from asking (a question, a crash); recording nothing of its own must not
+    drop the ask the earlier turn earned, which would never then reach the agent.
+  */
+  it("keeps an outstanding ask across a turn that is itself exempt", async () => {
+    const h = harness({ card: { ...seeded } });
+
+    h.runner.dispatch(testDispatch({ text: "do the thing" }));
+    await waitFor(() => h.agents.length === 1, "turn 1 started");
+    finishTurn(h.agents[0]!);
+    await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
+
+    h.runner.dispatch(testDispatch({ text: "and now a question" }));
+    await waitFor(() => h.agents.length === 2, "turn 2 started");
+    h.runner.awaitingUserAnswer = true;
+    finishTurn(h.agents[1]!);
+    await waitFor(() => !h.runner.running, "turn 2 finished");
     await flush();
 
-    // It did real work, so the card is marked; only the ask is withheld.
-    expect(h.card()!.fresh).toBe(false);
-    expect(h.card()!.nudgePending).toBeUndefined();
+    expect(h.card()!.nudgePending).toBe(true);
     h.runner.dispose({ force: true });
   });
 
