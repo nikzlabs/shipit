@@ -163,12 +163,25 @@ Two properties of `syncLocalDefaultBranchToOrigin` matter for these callers:
   uncommitted work — `restoreInPlace` exists precisely to preserve it. A session
   sitting *on* the default branch therefore keeps its stale ref, and the
   push-side refusals are what cover that case.
-- **It now moves the ref only when that discards nothing.** `git branch -f` drops
-  whatever the local ref has and the remote does not; a cache snapshot never has
-  commits of its own, but a checkout ShipIt inherits can. When
-  `origin/<branch>..<branch>` is non-empty it warns and leaves the ref alone.
-  That costs nothing for the warm-pool and claim callers, whose local default is
-  always an ancestor of origin's.
+- **It now moves the ref only when that discards nothing.** Moving the ref drops
+  whatever it has and the remote does not; a cache snapshot never has commits of
+  its own, but a checkout ShipIt inherits can. When the local ref has commits
+  `origin/<branch>` lacks, it warns and leaves the ref alone.
+
+  The cost falls on the warm-pool and claim callers in one case: after an
+  **upstream rewrite** of the default branch, the old local commits are "local
+  only" by hash, so the ref is now left stale where it used to be realigned, and
+  a `main..HEAD` diff is wrong until the next clone. Chosen over the other
+  failure, which is deleting a user's commits with no record.
+
+Two smaller decisions inside it. Every ref is **fully qualified**: a *tag* named
+`main` outranks the branch in git's revision lookup, so a bare name can measure
+one ref and then move another. And the write is `update-ref <ref> <new> <old>`,
+a compare-and-swap, because a worker git operation can move either ref between
+the check and the write — the same "believe the ref is where I last saw it"
+property the leases above lack. It gives up `git branch -f`'s refusal to move a
+branch checked out in another worktree; ShipIt creates none, the primary
+worktree is covered by the early return, and the move is a fast-forward.
 
 ## Known gaps, deliberately not closed here
 
@@ -195,6 +208,14 @@ Two properties of `syncLocalDefaultBranchToOrigin` matter for these callers:
   that fetches many times ends the day holding a stale `main`. Healing on every
   fetch would mean a hook inside the container; refusing the push is the
   guarantee, and this only narrows the window.
+- **Browser activation of a retained `light` checkout is not healed.**
+  `materializeRunnerSync` (`services/materialize-runner.ts`) promotes a `light`
+  session straight to `hot` and builds its runner without going through
+  `restoreSessionWorkspace`, so the interactive path — the one most turns start
+  on — keeps its stale ref. Closing it means either a contract change on a
+  function that is synchronous on purpose (to preserve WS connect-frame order)
+  or a fire-and-forget git call on every attach, including the many that already
+  have a live runner. Both are wider than this change and are left for a call.
 
 ## Key files
 
