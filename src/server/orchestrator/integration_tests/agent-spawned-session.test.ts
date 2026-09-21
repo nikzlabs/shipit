@@ -489,6 +489,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const parentId = await createParentSession();
     const parentClient = await TestClient.connect(port, parentId);
     try {
+      // The card is only emitted when the parent has a registered runner, and the
+      // socket opens before activation registers one. Waiting for the first server
+      // frame — sent after the attach — orders this on the server's own sequence
+      // rather than on how many ticks activation happens to take.
+      await parentClient.receive();
+
       const res = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
