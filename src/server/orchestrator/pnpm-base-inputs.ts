@@ -64,7 +64,8 @@ export type PnpmIneligibleCode =
   | "config-dependencies"
   | "unauthorized-registry"
   | "escaping-layout"
-  | "incompatible-package-manager";
+  | "incompatible-package-manager"
+  | "install-script";
 
 export interface PnpmIneligible {
   eligible: false;

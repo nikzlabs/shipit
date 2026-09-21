@@ -2,6 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import type { PnpmIneligible } from "./pnpm-base-inputs.js";
+import { scanTarballForBuildTriggers } from "./pnpm-install-scripts.js";
+
 /**
  * Resolve, fetch and verify the tarballs the verified pnpm base is built from
  * (docs/276-shared-package-cache-integrity plan.md section 5, "Inputs and verification").
@@ -10,6 +13,10 @@ import path from "node:path";
  * configures — never a URL the lockfile names — and admitted only when three digests agree:
  * the lockfile's `resolution.integrity`, the packument's `dist.integrity`, and the sha512 of
  * the bytes actually downloaded. A disagreement between the first two is the H1 shape.
+ *
+ * This is also where the ONE eligibility decision sees package CONTENT: a package carrying an
+ * install-time build makes the candidate ineligible (planning#604), and the verified bytes here
+ * are the only place lockfile v9 leaves that readable.
  */
 
 export const DEFAULT_REGISTRY_URL = "https://registry.npmjs.org/";
@@ -46,7 +53,20 @@ export interface VerificationFailure {
   detail: string;
 }
 
-export type StageRegistryResult = ({ ok: true } & StagedRegistry) | VerificationFailure;
+/**
+ * Not a failure: the candidate simply gets no base, and the repo takes the plain private
+ * install it took before verified bases existed. Reported through the ineligible path so a
+ * build-bearing repo never reads as a verification problem.
+ */
+export interface RegistryIneligible {
+  ok: false;
+  ineligible: PnpmIneligible;
+}
+
+export type StageRegistryResult =
+  | ({ ok: true } & StagedRegistry)
+  | VerificationFailure
+  | RegistryIneligible;
 
 export function sha512Integrity(bytes: Buffer): string {
   return `sha512-${crypto.createHash("sha512").update(bytes).digest("base64")}`;
@@ -238,6 +258,31 @@ export async function stageVerifiedRegistry(args: {
         ok: false,
         failedPackage: pkg.key,
         detail: `downloaded bytes hash to ${actual}, not the pinned ${pkg.integrity}`,
+      };
+    }
+
+    // Read AFTER the three digests agree, so the scan runs over the bytes the registry
+    // published rather than over whatever the download happened to return.
+    const scan = await scanTarballForBuildTriggers(bytes);
+    if (scan.kind === "requires-build") {
+      return {
+        ok: false,
+        ineligible: {
+          eligible: false,
+          code: "install-script",
+          detail: `${pkg.key} carries ${scan.trigger}, which the builder does not run and a `
+            + "session installing over a mounted base does not run either (planning#604)",
+        },
+      };
+    }
+    if (scan.kind === "unreadable") {
+      return {
+        ok: false,
+        ineligible: {
+          eligible: false,
+          code: "unreadable-input",
+          detail: `${pkg.key} could not be checked for an install-time build: ${scan.detail}`,
+        },
       };
     }
 

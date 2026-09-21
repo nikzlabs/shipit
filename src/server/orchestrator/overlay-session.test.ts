@@ -215,6 +215,20 @@ describe("liveOverlayScopeHashes", () => {
     expect(live).toContain(overlayScopeHash(repo, rt, "node_modules", PNPM_VERIFIED_NAMESPACE));
   });
 
+  /**
+   * planning#604: the eligibility contract changed, and a base decided under the old one is
+   * still on disk with a live pointer. Nothing invalidates a published pointer per se, so the
+   * NAMESPACE is the version boundary — a session must not be able to address a `v1` base, and
+   * the janitor then reclaims those scopes because no session claims them any more.
+   */
+  it("does not address a base published under the previous eligibility contract", () => {
+    const rt = overlayRuntimeKey(ON);
+    const repo = "https://github.com/acme/repo.git";
+    const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
+    expect(PNPM_VERIFIED_NAMESPACE).not.toBe("pnpm-verified-v1");
+    expect(live).not.toContain(overlayScopeHash(repo, rt, "node_modules", "pnpm-verified-v1"));
+  });
+
   it("uses the per-dep-dir hash, not the legacy (repo, runtime) hash", () => {
     const rt = overlayRuntimeKey(ON);
     const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);

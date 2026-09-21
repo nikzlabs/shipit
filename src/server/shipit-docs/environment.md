@@ -136,14 +136,18 @@ layer. It builds one itself, from the repo's committed manifests and `pnpm-lock.
 the default-branch commit, after a session's declared install succeeds on that commit —
 never from any session's installed tree, and only when every package in the lockfile is a
 registry download whose digest the registry confirms. You still run your own
-`pnpm install` over it, so your own lockfile and your own approved builds decide what the
-tree ends up as, and everything above still holds.
+`pnpm install` over it, so your own lockfile decides what the tree ends up as, and
+everything above still holds. Your approved **builds** are the exception, and they are why
+a repo with any of them never gets a base at all — see the list below.
 
 **No new base is built** — so until one was published, every session installs from
 scratch into its private store — when:
 
 - the lockfile pins anything that is not a plain registry package (`workspace:`, `link:`,
   `file:`, a git URL, or a `patchedDependencies` entry);
+- **any dependency builds at install time** — a `preinstall`, `install` or `postinstall`
+  script in its own `package.json`, a `binding.gyp` at its root, or a `.hooks/` directory
+  (see below);
 - the repo loads pnpm plugin code (a `.pnpmfile.mjs`, `configDependencies`, or a
   `pnpmfile` setting in `.npmrc` / `pnpm-workspace.yaml`);
 - the install output is not one self-contained `node_modules` (`modulesDir`,
@@ -153,6 +157,16 @@ scratch into its private store — when:
 - `package.json` declares pnpm 10 or older, through `packageManager` or
   `devEngines.packageManager`. pnpm resolves its store as `<store>/v<N>` and records that
   path; pnpm 10 would recreate the whole tree rather than read a base pnpm 12 built.
+
+The install-time-build rule is a wide one, and it does not depend on whether the repo
+*approves* the build: one transitive dependency is enough, and `esbuild` has a
+`postinstall`, so anything reaching it through Vite is in this case — as is any native
+module (`better-sqlite3`, `node-pty`, `sharp`). The reason is that a build cannot be added
+to a mounted base afterwards: the base is built with scripts off, an install over it then
+reports nothing pending, and `pnpm rebuild` / `pnpm install --force` both fail with
+`Operation not permitted` because the base's files are owned by another user. So such a
+repo installs from scratch in every session, exactly as it did before bases existed — the
+install works, it is just not warm, and there is nothing to fix on your side.
 
 Introducing one of these into a repo that already published a base stops the *next* base
 from being built; it does not retire the one already published, so sessions keep mounting

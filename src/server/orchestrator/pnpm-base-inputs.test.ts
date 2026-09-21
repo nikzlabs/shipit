@@ -370,6 +370,23 @@ patchedDependencies:
     expect(decision.eligible).toBe(true);
   });
 
+  it("admits a repo whose OWN manifest runs install scripts", async () => {
+    // Only a dependency's install-time build makes a candidate ineligible (planning#604). The
+    // builder never runs the root project's scripts, and the session runs them itself over
+    // whatever tree it ends up with, built or not.
+    const decision = decide(
+      await stage({
+        ...BASE_FILES,
+        "package.json": JSON.stringify({
+          name: "app",
+          dependencies: { "left-pad": "1.3.0" },
+          scripts: { preinstall: "node tools/check.js", postinstall: "node tools/gen.js" },
+        }),
+      }),
+    );
+    expect(decision.eligible).toBe(true);
+  });
+
   it("admits a deprecated-but-present version, which is still a published tarball", async () => {
     const decision = decide(
       await stage({

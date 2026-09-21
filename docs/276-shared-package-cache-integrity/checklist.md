@@ -210,7 +210,8 @@ recorded in [requirements.md](./requirements.md); none is open.
       migrated from it. **Deviation:** its janitor sweep is kept rather than dropped —
       it is what reclaims the retired trees, and it now exempts no hash, ageing them
       out instead of deleting at once (a pre-upgrade container may still mount one).
-- [x] Verified namespace: one fixed discriminator (`pnpm-verified-v1`) as a fourth
+- [x] Verified namespace: one discriminator (`pnpm-verified-v<N>`, at `v2` since
+      planning#604 retired the pre-fix bases) as a fourth
       field of `overlayScopeHash`, and an optional `namespace` on `OverlayScope` so the
       pointer, the publish and the mount address one scope. Omitting it reproduces the
       pre-namespace hash, so existing npm/yarn bases stay addressable.
@@ -335,18 +336,23 @@ recorded in [requirements.md](./requirements.md); none is open.
       base byte-unchanged, session 2 inherits nothing. Two probe errors caught and
       recorded rather than shipped as passes (esbuild's binary comes from an
       optional dep; `require('better-sqlite3')` succeeds with no binding).
-- [ ] **A script-bearing repo gets a silently unbuilt tree once a base exists**
-      (found by the measurement above, 2026-09-21). The session's own install
-      skips `pendingBuilds` — "Lockfile is up to date, resolution step is
-      skipped" — and the two repairs fail under the session's own uid with
-      `Operation not permitted`, because copy-up keeps the lower's owner and a
-      session may rewrite a base file but not `chmod` it (`shareOne`,
+- [x] **A script-bearing repo gets a silently unbuilt tree once a base exists**
+      (found by the measurement above, 2026-09-21; planning#604). The session's
+      own install skips `pendingBuilds` — "Lockfile is up to date, resolution
+      step is skipped" — and the two repairs fail under the session's own uid
+      with `Operation not permitted`, because copy-up keeps the lower's owner and
+      a session may rewrite a base file but not `chmod` it (`shareOne`,
       `session-worker-uid.ts:124`). The repo works from its first private install
       and breaks from the next container start. plan.md section 5's "that install
-      is where builds run" is corrected there. A design decision, not a fix to
-      slot in here: exclude a repo with pending builds from eligibility, have the
-      base carry built output, or give the session a repair that works as its own
-      uid.
+      is where builds run" is corrected there. Of the three candidates, the
+      **fail-safe** shipped: a candidate whose packages carry an install-time
+      script is INELIGIBLE (`pnpm-install-scripts.ts`, pnpm's own
+      `pkgRequiresBuild` set read from the digest-verified tarballs) — no base,
+      plain private install. A base carrying built output was rejected outright;
+      the session-uid repair moves to "sharing for ineligible repos" below.
+      Retiring the bases ALREADY published under the old rule is part of the same
+      fix: a pointer is never invalidated in place, so the verified namespace
+      went `pnpm-verified-v1` → `v2`.
 - [x] The `.pnpmfile.mjs` and `configDependencies` suppression gap measured
       (2026-09-21, pnpm 12.4.1, FINDINGS.md): `--ignore-pnpmfile` suppresses
       **both** — module body and `readPackage` — exactly as it does `.cjs`. So
@@ -402,8 +408,18 @@ recorded in [requirements.md](./requirements.md); none is open.
       group-writable base relies on mount confinement. Filed as **planning#601**.
 - [ ] Sharing for ineligible repos (git/`file:`/`link:`/`workspace:`/patched/
       `.mjs`-hook) — **required, not optional**: no base leaves req 2 / req 10 /
-      req 13 unmet for them. Reuse the unbuilt-base / private-build shape; no
-      second build path.
+      req 13 unmet for them. No second build path.
+- [ ] **Build-bearing repos are now in that set too** — a dependency with an
+      install-time script (`preinstall`/`install`/`postinstall`, `binding.gyp`,
+      `.hooks/`) is ineligible as of planning#604, because over a mounted base
+      the approved build never runs and neither repair works as the session's
+      uid. That is the fail-safe, not the answer: reqs 2 / 10 / 13 stay unmet for
+      a `better-sqlite3`-shaped repo until this item picks a shape. The
+      "unbuilt-base / private-build" shape this item used to name is the one
+      planning#604 refuted, so it is not the shape to reuse; a session-uid repair
+      (whiteout the package dir in the upper so the install re-imports it with
+      scripts) is the candidate, and a base carrying built output is rejected —
+      it contradicts the builder's no-script posture.
 - [x] Resolution metadata stays private per session — **verified at the source 2026-09-21**,
       not inferred: nothing in `src/` sets `XDG_CACHE_HOME` for a session container, so pnpm
       falls back to `$HOME/.cache/pnpm` under `HOME=/home/shipit` (`buildEnv`,

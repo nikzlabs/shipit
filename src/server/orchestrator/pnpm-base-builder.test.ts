@@ -24,6 +24,7 @@ import {
 import { CONTAINER_WORKSPACE_PATH, PNPM_VERIFIED_NAMESPACE } from "./overlay-session.js";
 import { PNPM_STORE_CONTAINER_PATH } from "./container-lifecycle.js";
 import { sha512Integrity, type FetchLike } from "./pnpm-base-registry.js";
+import { makeNpmTarball } from "./pnpm-tarball-test-helpers.js";
 import type { OverlayScope, PublishBaseArgs, PublishResult } from "./overlay-base.js";
 
 const SCOPE: OverlayScope = {
@@ -49,7 +50,11 @@ packages:
     resolution: {integrity: INTEGRITY}
 `;
 
-const TARBALL = Buffer.from("left-pad tarball bytes");
+/** A real published tarball: staging reads each one for an install-time build (planning#604). */
+const TARBALL = makeNpmTarball({ manifest: { name: "left-pad", version: "1.3.0" } });
+const BUILD_BEARING_TARBALL = makeNpmTarball({
+  manifest: { name: "left-pad", version: "1.3.0", scripts: { postinstall: "node-gyp rebuild" } },
+});
 
 function git(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
@@ -70,34 +75,42 @@ function makeRepo(files: Record<string, string>): { dir: string; commit: string 
   return { dir, commit: git(dir, "rev-parse", "HEAD") };
 }
 
-function eligibleRepo(): { dir: string; commit: string } {
+function repoFor(tarball: Buffer = TARBALL): { dir: string; commit: string } {
   return makeRepo({
     "package.json": JSON.stringify({ name: "app", dependencies: { "left-pad": "1.3.0" } }),
-    "pnpm-lock.yaml": LOCK.replace("INTEGRITY", sha512Integrity(TARBALL)),
+    "pnpm-lock.yaml": LOCK.replace("INTEGRITY", sha512Integrity(tarball)),
   });
 }
 
-const okFetch: FetchLike = (url) => {
-  if (url.endsWith(".tgz")) {
-    return Promise.resolve(new Response(new Uint8Array(TARBALL), { status: 200 }));
-  }
-  return Promise.resolve(
-    new Response(
-      JSON.stringify({
-        name: "left-pad",
-        versions: {
-          "1.3.0": {
-            dist: {
-              integrity: sha512Integrity(TARBALL),
-              tarball: "https://registry.example.test/left-pad/-/left-pad-1.3.0.tgz",
+function eligibleRepo(): { dir: string; commit: string } {
+  return repoFor();
+}
+
+function fetchFor(tarball: Buffer): FetchLike {
+  return (url) => {
+    if (url.endsWith(".tgz")) {
+      return Promise.resolve(new Response(new Uint8Array(tarball), { status: 200 }));
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          name: "left-pad",
+          versions: {
+            "1.3.0": {
+              dist: {
+                integrity: sha512Integrity(tarball),
+                tarball: "https://registry.example.test/left-pad/-/left-pad-1.3.0.tgz",
+              },
             },
           },
-        },
-      }),
-      { status: 200 },
-    ),
-  );
-};
+        }),
+        { status: 200 },
+      ),
+    );
+  };
+}
+
+const okFetch: FetchLike = fetchFor(TARBALL);
 
 /** A Docker stub that records what it was asked to run and pretends the build succeeded. */
 function fakeDocker(opts: { exitCode?: number; onRun?: (cfg: Docker.ContainerCreateOptions) => void } = {}): {
@@ -274,6 +287,32 @@ describe("buildVerifiedPnpmBase", () => {
     );
     expect(result).toMatchObject({ status: "ineligible" });
     expect(fetched).toBe(0);
+    expect(fake.created).toHaveLength(0);
+  });
+
+  it("gives a repo whose dependency builds at install time no base, and no builder run", async () => {
+    // planning#604: the builder runs `--ignore-scripts`, and the session's own install over the
+    // resulting base reports nothing pending, so the approved build runs nowhere.
+    const repo = repoFor(BUILD_BEARING_TARBALL);
+    cleanup.push(repo.dir);
+    let published = 0;
+    const fake = fakeDocker();
+    const result = await buildVerifiedPnpmBase(
+      deps(fake.docker, {
+        fetchImpl: fetchFor(BUILD_BEARING_TARBALL),
+        publish: () => {
+          published++;
+          return Promise.resolve({ outcome: "created", pointer: null });
+        },
+      }),
+      request(repo),
+    );
+    expect(result).toMatchObject({
+      status: "ineligible",
+      reason: { code: "install-script" },
+    });
+    expect(result.status === "ineligible" ? result.detail : "").toContain("left-pad@1.3.0");
+    expect(published).toBe(0);
     expect(fake.created).toHaveLength(0);
   });
 

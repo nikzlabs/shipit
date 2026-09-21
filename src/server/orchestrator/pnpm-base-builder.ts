@@ -344,6 +344,12 @@ export async function buildVerifiedPnpmBase(
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     });
     if (!stagedRegistry.ok) {
+      // The same one decision, taken where the verified package content is readable: a package
+      // with an install-time build gets no base rather than an unverified one (planning#604).
+      if ("ineligible" in stagedRegistry) {
+        const reason = stagedRegistry.ineligible;
+        return { status: "ineligible", detail: describeIneligible(reason), reason };
+      }
       return {
         status: "verification-failed",
         failedPackage: stagedRegistry.failedPackage,

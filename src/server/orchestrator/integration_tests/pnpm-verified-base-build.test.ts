@@ -31,7 +31,13 @@ import net from "node:net";
 import { promisify } from "node:util";
 
 import { BUILD_REGISTRY_SERVER, builderEnv, builderScript } from "../pnpm-base-builder.js";
-import { sha512Integrity, stageVerifiedRegistry, type FetchLike } from "../pnpm-base-registry.js";
+import {
+  conventionalTarballPath,
+  sha512Integrity,
+  stageVerifiedRegistry,
+  tarballFileName,
+  type FetchLike,
+} from "../pnpm-base-registry.js";
 
 const run = promisify(execFile);
 const PNPM_TIMEOUT_MS = 300_000;
@@ -97,6 +103,83 @@ function makeTarball(
   return fs.readFileSync(out);
 }
 
+/**
+ * The orchestrator's side: resolve and verify against a registry it controls. The fixture
+ * stands in for that registry; everything downstream of it is what is under test.
+ */
+function fetchFrom(tarballs: Map<string, Buffer>): FetchLike {
+  return (url) => {
+    const tgz = /\/([^/]+)\/-\/[^/]+-([\d.]+)\.tgz$/.exec(url);
+    if (tgz) {
+      const bytes = tarballs.get(`${tgz[1]}@${tgz[2]}`);
+      return Promise.resolve(
+        bytes
+          ? new Response(new Uint8Array(bytes), { status: 200 })
+          : new Response("", { status: 404 }),
+      );
+    }
+    const name = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+    const bytes = tarballs.get(`${name}@${VERSION}`);
+    if (!bytes) return Promise.resolve(new Response("{}", { status: 404 }));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          name,
+          versions: {
+            [VERSION]: {
+              name,
+              version: VERSION,
+              dist: {
+                integrity: sha512Integrity(bytes),
+                tarball: `https://fixture.test/${name}/-/${name}-${VERSION}.tgz`,
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+  };
+}
+
+/**
+ * The registry layout `stageVerifiedRegistry` produces, written by hand for the ONE input
+ * production can no longer stage: since planning#604 a dependency with an install-time script
+ * makes the candidate ineligible, so the cell that measures the builder's `--ignore-scripts` —
+ * the layer BEHIND that rule, and the reason a script never runs even if one reaches here —
+ * has to assemble its own.
+ */
+function stageRegistryByHand(
+  destDir: string,
+  entries: { name: string; bytes: Buffer }[],
+  builderRegistryUrl: string,
+): void {
+  fs.mkdirSync(path.join(destDir, "tarballs"), { recursive: true });
+  const index: Record<string, unknown> = {};
+  const routes: Record<string, string> = {};
+  for (const { name, bytes } of entries) {
+    const integrity = sha512Integrity(bytes);
+    const file = tarballFileName(integrity);
+    fs.writeFileSync(path.join(destDir, "tarballs", file), bytes);
+    const route = conventionalTarballPath(name, VERSION);
+    routes[route] = file;
+    index[name] = {
+      name,
+      "dist-tags": { latest: VERSION },
+      versions: {
+        [VERSION]: {
+          name,
+          version: VERSION,
+          dist: { tarball: `${builderRegistryUrl.replace(/\/+$/, "")}${route}`, integrity },
+        },
+      },
+    };
+  }
+  fs.writeFileSync(path.join(destDir, "index.json"), JSON.stringify(index));
+  fs.writeFileSync(path.join(destDir, "tarballs.json"), JSON.stringify(routes));
+  fs.writeFileSync(path.join(destDir, "server.mjs"), BUILD_REGISTRY_SERVER);
+}
+
 function envFor(homeDir: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -155,6 +238,8 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
   /** Allocated in beforeAll; indexes are per cell, so two cells never share one. */
   const ports: number[] = [];
   const tarballs = new Map<string, Buffer>();
+  /** The same package with the build script back on; only the two script cells use it. */
+  let scriptedRoot: Buffer;
 
   beforeAll(async () => {
     for (let i = 0; i < 5; i++) ports.push(await freePort());
@@ -173,59 +258,28 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
         "index.js": "module.exports = 'leaf';\n",
       }),
     );
-    tarballs.set(
-      `${ROOT}@${VERSION}`,
-      makeTarball(
-        tmp,
-        ROOT,
-        {
-          name: ROOT,
-          version: VERSION,
-          main: "index.js",
-          bin: { [ROOT]: "./cli.js" },
-          // The build script the builder must leave unrun (section 5: packages with build
-          // scripts land unbuilt, and each session builds the ones it approves in its upper).
-          scripts: { postinstall: `node -e "require('fs').writeFileSync('${SCRIPT_MARKER}','')"` },
-          dependencies: { [LEAF]: VERSION },
-        },
-        { "index.js": "module.exports = 'root';\n", "cli.js": "#!/usr/bin/env node\n" },
-      ),
+    const rootManifest = {
+      name: ROOT,
+      version: VERSION,
+      main: "index.js",
+      bin: { [ROOT]: "./cli.js" },
+      dependencies: { [LEAF]: VERSION },
+    };
+    const rootFiles = { "index.js": "module.exports = 'root';\n", "cli.js": "#!/usr/bin/env node\n" };
+    tarballs.set(`${ROOT}@${VERSION}`, makeTarball(tmp, ROOT, rootManifest, rootFiles));
+    scriptedRoot = makeTarball(
+      tmp,
+      ROOT,
+      {
+        ...rootManifest,
+        // The build script: a candidate carrying one is now ineligible (planning#604), and the
+        // builder still has to suppress it if one ever reaches the container.
+        scripts: { postinstall: `node -e "require('fs').writeFileSync('${SCRIPT_MARKER}','')"` },
+      },
+      rootFiles,
     );
 
-    // The orchestrator's side: resolve and verify against a registry it controls. The fixture
-    // stands in for that registry; everything downstream of it is what is under test.
-    const fixtureFetch: FetchLike = (url) => {
-      const tgz = /\/([^/]+)\/-\/[^/]+-([\d.]+)\.tgz$/.exec(url);
-      if (tgz) {
-        const bytes = tarballs.get(`${tgz[1]}@${tgz[2]}`);
-        return Promise.resolve(
-          bytes
-            ? new Response(new Uint8Array(bytes), { status: 200 })
-            : new Response("", { status: 404 }),
-        );
-      }
-      const name = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
-      const bytes = tarballs.get(`${name}@${VERSION}`);
-      if (!bytes) return Promise.resolve(new Response("{}", { status: 404 }));
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            name,
-            versions: {
-              [VERSION]: {
-                name,
-                version: VERSION,
-                dist: {
-                  integrity: sha512Integrity(bytes),
-                  tarball: `https://fixture.test/${name}/-/${name}-${VERSION}.tgz`,
-                },
-              },
-            },
-          }),
-          { status: 200 },
-        ),
-      );
-    };
+    const fixtureFetch = fetchFrom(tarballs);
 
     const staged = await stageVerifiedRegistry({
       packages: [ROOT, LEAF].map((name) => ({
@@ -246,7 +300,8 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
   }, PNPM_TIMEOUT_MS);
 
   /** The committed inputs: a repo pin the builder must ignore, and the graph it must follow. */
-  function writeProject(dir: string): void {
+  function writeProject(dir: string, rootTarball?: Buffer): void {
+    const rootBytes = rootTarball ?? tarballs.get(`${ROOT}@${VERSION}`)!;
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, "package.json"),
@@ -280,7 +335,7 @@ importers:
 packages:
 
   ${ROOT}@${VERSION}:
-    resolution: {integrity: ${sha512Integrity(tarballs.get(`${ROOT}@${VERSION}`)!)}}
+    resolution: {integrity: ${sha512Integrity(rootBytes)}}
     hasBin: true
 
   ${LEAF}@${VERSION}:
@@ -452,19 +507,57 @@ snapshots:
     expect(fs.existsSync(path.join(thinProject, "node_modules", ROOT))).toBe(false);
   }, PNPM_TIMEOUT_MS);
 
+  it("gives a dependency with an install-time script no base at all", async () => {
+    // planning#604: the builder installs `--ignore-scripts`, so the base carries the package
+    // unbuilt — and the session's own install over it reports nothing pending and exits 0, while
+    // both repairs fail to chmod as the session's uid. No base is the fail-safe.
+    // The tarball here is GNU tar's own output, so this also holds the scan against a real
+    // archive rather than against the fixture writer the unit tests use.
+    const scriptedSet = new Map(tarballs);
+    scriptedSet.set(`${ROOT}@${VERSION}`, scriptedRoot);
+    const result = await stageVerifiedRegistry({
+      packages: [ROOT, LEAF].map((name) => ({
+        key: `${name}@${VERSION}`,
+        name,
+        version: VERSION,
+        integrity: sha512Integrity(scriptedSet.get(`${name}@${VERSION}`)!),
+      })),
+      destDir: fs.mkdtempSync(path.join(tmp, "scripted-stage-")),
+      registryUrl: "https://fixture.test/",
+      builderRegistryUrl: `http://127.0.0.1:${ports[0]}/`,
+      fetchImpl: fetchFrom(scriptedSet),
+    });
+
+    expect(result).toMatchObject({ ok: false, ineligible: { code: "install-script" } });
+    expect("ineligible" in result ? result.ineligible.detail : "").toContain(
+      `${ROOT}@${VERSION}`,
+    );
+  }, PNPM_TIMEOUT_MS);
+
   it("leaves an APPROVED build script unrun, with a control that shows it would otherwise run", async () => {
-    // Section 5: "packages with build scripts land unbuilt; each session builds the ones it
-    // approves in its own upper". The fixture approves the build in `pnpm-workspace.yaml`, so
-    // the control is a genuine positive — pnpm 12 refuses an unapproved build either way, and
-    // this cell would then measure nothing.
+    // Section 5: "packages with build scripts land unbuilt". Since planning#604 such a package
+    // never reaches the builder — the cell above refuses it — so this measures the layer
+    // behind that rule: `--ignore-scripts` is what makes "no repo code runs in the builder" a
+    // fact rather than a consequence of the eligibility decision above it. The fixture
+    // approves the build in `pnpm-workspace.yaml`, so the control is a genuine positive —
+    // pnpm 12 refuses an unapproved build either way, and this cell would then measure nothing.
     const scratch = fs.mkdtempSync(path.join(tmp, "scripts-"));
+    const scriptedRegistry = path.join(scratch, "registry");
+    stageRegistryByHand(
+      scriptedRegistry,
+      [
+        { name: ROOT, bytes: scriptedRoot },
+        { name: LEAF, bytes: tarballs.get(`${LEAF}@${VERSION}`)! },
+      ],
+      `http://127.0.0.1:${ports[2]}/`,
+    );
     const scripted = path.join(scratch, "project");
-    writeProject(scripted);
+    writeProject(scripted, scriptedRoot);
 
     const paths = {
       pnpmBin: pnpmCmd!,
       projectDir: scripted,
-      registryDir,
+      registryDir: scriptedRegistry,
       storeDir: path.join(scratch, "store"),
       registryUrl: `http://127.0.0.1:${ports[2]}/`,
       readyFile: path.join(scratch, "registry.ready"),
