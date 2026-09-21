@@ -1,7 +1,6 @@
-// eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+// eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount, and focus continuity across the collapse toggle
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  CaretDownIcon,
   CaretUpIcon,
   ChatCircleDotsIcon,
   ClipboardTextIcon,
@@ -163,36 +162,10 @@ export interface SessionStatusCardProps {
   ) => boolean;
 }
 
-/**
- * req 42 — collapsed is the user's own per-session choice: manual in both
- * directions, remembered for that session until they open it again, and never
- * decided by the card's contents.
- */
-function useCollapsed(sessionId: string | undefined): [boolean, (next: boolean) => void] {
-  const [collapsed, setCollapsed] = useState(() =>
-    sessionId ? getSavedStatusCardCollapsed(sessionId) : false,
-  );
-  // Read again when the card is handed another session without remounting;
-  // a render-phase update is React's documented way to reset state on a prop.
-  const shown = useRef(sessionId);
-  if (shown.current !== sessionId) {
-    shown.current = sessionId;
-    setCollapsed(sessionId ? getSavedStatusCardCollapsed(sessionId) : false);
-  }
-  const set = useCallback(
-    (next: boolean) => {
-      setCollapsed(next);
-      if (sessionId) saveStatusCardCollapsed(sessionId, next);
-    },
-    [sessionId],
-  );
-  return [collapsed, set];
-}
-
-/** One count on the collapsed pill: what is still outstanding, and its name. */
+/** One count on the collapsed control: what is still outstanding, and its kind. */
 function CollapsedCount({ icon, count }: { icon: ReactNode; count: number }) {
   return (
-    <span className="inline-flex items-center gap-1 text-(--color-text-secondary)">
+    <span className="inline-flex items-center gap-0.5 font-semibold text-(--color-text-secondary)">
       <span className="shrink-0 text-(--color-accent)">{icon}</span>
       {count}
     </span>
@@ -204,7 +177,17 @@ function CollapsedCount({ icon, count }: { icon: ReactNode; count: number }) {
  * conversation. Not a transcript row: it is read from the session record.
  */
 export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatusCardProps) {
-  const [collapsed, setCollapsed] = useCollapsed(sessionId);
+  /** req 42 — collapsed is the user's own per-session choice, never the card's. */
+  const [collapsed, setCollapsed] = useState(() =>
+    sessionId ? getSavedStatusCardCollapsed(sessionId) : false,
+  );
+  /**
+   * The session every piece of interaction state below belongs to. It is STATE
+   * and not a ref on purpose: the reset is a render-phase update, and a ref
+   * would survive a render React discards while the updates beside it did not,
+   * leaving the card showing one session's ticks under another session's id.
+   */
+  const [owner, setOwner] = useState(sessionId);
   /**
    * req 17 — an offer reads as sent the moment its message goes, without waiting
    * for the server's `takenAt`, which is a round trip behind. It stays tickable:
@@ -263,6 +246,52 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
   // depends on it — is added afterwards rather than inside them.
   const steps = useChecklistSelection(stepBase);
 
+  /**
+   * Handed another session without remounting, the card starts that session's
+   * state from nothing and reads its own collapsed choice (req 42). Everything
+   * below is keyed by a manual step's TEXT, so two sessions with a step worded
+   * the same would otherwise share a SENT grey and an unsent note — and the
+   * collapsed control would then report the second session's step as done.
+   *
+   * The offer selection is deliberately left alone: its keys are server-owned
+   * offer ids, which `useChecklistSelection` already prunes when they leave, and
+   * clearing it here would swallow an arriving offer's `defaultChecked` tick.
+   */
+  if (owner !== sessionId) {
+    setOwner(sessionId);
+    setCollapsed(sessionId ? getSavedStatusCardCollapsed(sessionId) : false);
+    setSent(new Set());
+    setReportedSteps(new Set());
+    setNotes(new Map());
+    setOpenNotes(new Set());
+    setSendFailed(false);
+    steps.clear();
+  }
+
+  /**
+   * The two collapse controls replace one another across different DOM
+   * subtrees, so the browser drops focus to the body on every press. Keyboard
+   * use then dead-ends at the control the user just operated, and only a press
+   * moves focus: the effect runs on nothing else.
+   */
+  const collapseControl = useRef<HTMLButtonElement | null>(null);
+  const expandControl = useRef<HTMLButtonElement | null>(null);
+  const movedByPress = useRef(false);
+  useLayoutEffect(() => {
+    if (!movedByPress.current) return;
+    movedByPress.current = false;
+    (collapsed ? expandControl : collapseControl).current?.focus();
+  }, [collapsed]);
+
+  const collapse = useCallback(
+    (next: boolean) => {
+      movedByPress.current = true;
+      setCollapsed(next);
+      if (sessionId) saveStatusCardCollapsed(sessionId, next);
+    },
+    [sessionId],
+  );
+
   const stepItems = useMemo<ChecklistItem[]>(
     () =>
       stepBase.map((item) =>
@@ -299,6 +328,9 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
     [stepRows, steps.selected, notes],
   );
 
+  /** The step whose note field was just opened by a press, and so wants focus. */
+  const justOpened = useRef<string | null>(null);
+
   const setNote = useCallback((key: string, value: string) => {
     setNotes((prev) => {
       const next = new Map(prev);
@@ -316,6 +348,10 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
    * with an empty note open submitted nothing.
    */
   const toggleNote = useCallback((key: string) => {
+    // Focused by the press that opens it, never by `autoFocus`, which fires on
+    // every mount: reopening a collapsed card would then pull focus into a note
+    // field the user had not asked for.
+    if (!openNotes.has(key)) justOpened.current = key;
     setOpenNotes((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -330,7 +366,7 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
       next.delete(key);
       return next;
     });
-  }, []);
+  }, [openNotes]);
 
   const handleSubmit = useCallback(() => {
     // req 17 — a sent offer stays selectable, so a ticked one is re-sent on
@@ -385,16 +421,24 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
   const hasNextSteps = hasOffers || needsYou.length > 0;
 
   /**
-   * req 42 — what the collapsed pill has to carry. Collapsing hides the card's
-   * words, never the fact that something is waiting: a step the user has not
-   * reported and an offer they have not sent are both counted here, by the same
-   * `taken` the rows grey themselves on, so the pill and the rows can never
-   * disagree. Nothing else is added when a step or an offer arrives — the count
-   * going from none to one IS the signal, and a "new" dot would need a
-   * seen/unseen lifetime of its own to clear.
+   * req 42 — what the collapsed control has to carry. Collapsing hides the
+   * card's words, never the fact that something is waiting, so a row counts
+   * while anything about it is still unsent: never sent at all, ticked again
+   * after a send, or carrying a note the agent has not been told. Counting only
+   * `!taken` concealed exactly the two cases the user is most likely to be
+   * waiting on — a retry after a crash, and a note typed against a step already
+   * reported.
+   *
+   * Nothing is added when a step or an offer arrives: the count going from none
+   * to one IS the signal, and a "new" mark would need a seen/unseen lifetime of
+   * its own to clear.
    */
-  const openSteps = stepItems.filter((item) => !item.taken).length;
-  const openOffers = items.filter((item) => !item.taken).length;
+  const openSteps = stepItems.filter(
+    (item) => !item.taken || steps.selected.has(item.key) || notes.get(item.key)?.trim(),
+  ).length;
+  const openOffers = items.filter(
+    (item) => !item.taken || selected.has(item.key),
+  ).length;
 
   if (collapsed) {
     const parts = [
@@ -402,21 +446,22 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
       openOffers > 0 ? `${openOffers} follow-up${openOffers === 1 ? "" : "s"}` : null,
       stale ? "may be behind" : null,
     ].filter((part): part is string => part !== null);
+    const name = `Show session status${parts.length > 0 ? ` — ${parts.join(", ")}` : ""}`;
     return (
       <div data-testid="session-status-card" className="flex text-xs">
+        {/* req 42 — a single icon, which is all it is when nothing is
+            outstanding. It grows only by what collapsing must not conceal. */}
         <button
           type="button"
+          ref={expandControl}
           data-testid="session-status-collapsed"
-          onClick={() => setCollapsed(false)}
+          onClick={() => collapse(false)}
           aria-expanded={false}
-          title="Show session status"
-          aria-label={`Show session status${parts.length > 0 ? ` — ${parts.join(", ")}` : ""}`}
-          className="inline-flex items-center gap-2 rounded-lg border border-(--color-accent)/45 bg-(--color-accent-subtle) px-2.5 py-1 font-semibold text-(--color-text-primary) hover:bg-(--color-accent)/15"
+          title={name}
+          aria-label={name}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-(--color-accent)/45 bg-(--color-accent-subtle) px-2 py-1 text-(--color-accent) hover:bg-(--color-accent)/15"
         >
-          <span className="shrink-0 text-(--color-accent)">
-            <GaugeIcon size={ICON_SIZE.SM} />
-          </span>
-          <span>Session status</span>
+          <GaugeIcon size={ICON_SIZE.SM} />
           {openSteps > 0 && (
             <CollapsedCount icon={<ClipboardTextIcon size={ICON_SIZE.XS} />} count={openSteps} />
           )}
@@ -424,12 +469,7 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
             <CollapsedCount icon={<ListChecksIcon size={ICON_SIZE.XS} />} count={openOffers} />
           )}
           {/* req 14 — the card always says whether it is current, collapsed included. */}
-          {stale && <span className="text-[11px] text-(--color-accent)">Stale</span>}
-          <CaretDownIcon
-            size={ICON_SIZE.XS}
-            weight="bold"
-            className="text-(--color-text-secondary)"
-          />
+          {stale && <span className="text-[11px] font-semibold">Stale</span>}
         </button>
       </div>
     );
@@ -451,13 +491,13 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
             {stale && (
               <span className="text-[11px] font-semibold text-(--color-accent)">Stale</span>
             )}
-            {/* req 42 — the one control that collapses the whole stack. It sits
-                on the first cap because that cap is always drawn: the last-turn
-                and next-steps cards each come and go. */}
+            {/* req 42 — on the first cap because that cap is always drawn: the
+                last-turn and next-steps cards each come and go. */}
             <button
               type="button"
+              ref={collapseControl}
               data-testid="session-status-collapse"
-              onClick={() => setCollapsed(true)}
+              onClick={() => collapse(true)}
               aria-expanded
               title="Collapse session status"
               aria-label="Collapse session status"
@@ -527,9 +567,12 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
                 renderBelow={(item) =>
                   openNotes.has(item.key) ? (
                     <textarea
-                      // Focused on mount: the field exists only because the
-                      // user pressed the control that opens it.
-                      autoFocus
+                      ref={(el) => {
+                        if (el && justOpened.current === item.key) {
+                          justOpened.current = null;
+                          el.focus();
+                        }
+                      }}
                       rows={2}
                       value={notes.get(item.key) ?? ""}
                       onChange={(e) => setNote(item.key, e.target.value)}
