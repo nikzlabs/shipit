@@ -40,8 +40,10 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
 import { resetRunnerTurnState } from "./session-runner.js";
 import {
   clearConversationThread,
+  refreshStatusContextInPrompt,
   settleSessionStatusCard,
   shouldCarryStatusNudge,
+  type InsertedStatusContext,
   type SessionStatusDeps,
   type TurnStatusFacts,
 } from "./services/session-status.js";
@@ -60,6 +62,13 @@ export interface TurnInput {
   agentId: AgentId;
   sessionId: string;
   prompt: string;
+  /**
+   * docs/303 req 35 — the `<session_status_card>` block as the composition site put it
+   * into `prompt`, and where. Every attempt of this turn swaps its own rendering in for
+   * it, so a retry reads the card as it stands rather than as it stood before the attempt
+   * that failed. Absent on a prompt composed without a block, which stays without one.
+   */
+  statusContext?: InsertedStatusContext;
   userText: string;
   agentInterface?: AgentInterfaceProvenance;
   messageOrigin?: SessionMessageOrigin;
@@ -115,13 +124,35 @@ export interface TurnInput {
   harnessCommand?: boolean;
 }
 
+/**
+ * The stored card, rendered for this attempt. It touches SQLite, which shutdown can close
+ * under a turn, and a prompt that keeps its first rendering is better than a turn that
+ * never reaches the agent — so a failed read leaves the prompt as it was.
+ */
+function readStatusContext(deps: SystemTurnDeps, sessionId: string): string {
+  try {
+    return deps.sessionStatusContext?.(sessionId) ?? "";
+  } catch (err) {
+    console.error(`[turn] re-reading the status card for ${sessionId} failed:`, err);
+    return "";
+  }
+}
+
 export async function executeAgentTurn(
   runner: SessionRunnerInterface | null,
   deps: SystemTurnDeps,
   agent: AgentProcess,
   input: TurnInput,
 ): Promise<void> {
-  const { agentId, prompt, activity, sessionId, emit } = input;
+  const { agentId, activity, sessionId, emit } = input;
+  // Per ATTEMPT, not per turn: this function is re-entered by every retry with the prompt
+  // the first attempt was given, and the card has moved since (docs/303 req 35). Read
+  // before the closures below capture it, so the echo check compares what was submitted.
+  const prompt = refreshStatusContextInPrompt(
+    input.prompt,
+    input.statusContext,
+    readStatusContext(deps, sessionId),
+  );
   deps.listenerDeps.sessionManager.track(sessionId);
   if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
     deps.listenerDeps.sseBroadcast("session_list", {
