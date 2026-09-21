@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,7 +14,10 @@ import {
   buildVerifiedPnpmBase,
   builderEnv,
   builderScript,
+  MAX_CONCURRENT_PNPM_BASE_BUILDS,
   PNPM_BUILDER_LABEL,
+  PNPM_BUILDER_RUN_LABEL,
+  pnpmBuildRootDir,
   reapOrphanPnpmBaseBuilds,
   type PnpmBaseBuilderDeps,
 } from "./pnpm-base-builder.js";
@@ -347,9 +350,122 @@ describe("buildVerifiedPnpmBase", () => {
       (fake.created[0].HostConfig?.Mounts ?? []).map((m) => (m as { Target?: string }).Target),
     ).toContain(BUILD_STORE_DIR);
     // Each run gets its own directory under the scope, and takes it with it when it ends.
-    const scopeDirs = fs.readdirSync(path.join(stateDir, "pnpm-base-build"));
+    const runDir = path.dirname(pnpmBuildRootDir(stateDir, "any"));
+    const scopeDirs = fs.readdirSync(runDir);
     expect(scopeDirs).toHaveLength(1);
-    expect(fs.readdirSync(path.join(stateDir, "pnpm-base-build", scopeDirs[0]))).toEqual([]);
+    expect(fs.readdirSync(path.join(runDir, scopeDirs[0]))).toEqual([]);
+  });
+
+  /** Holds a build open at the publish so a rival trigger can be measured against it. */
+  function heldBuild(): {
+    publish: NonNullable<PnpmBaseBuilderDeps["publish"]>;
+    entered: () => number;
+    release: () => void;
+  } {
+    let entered = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    return {
+      publish: async (): Promise<PublishResult> => {
+        entered++;
+        await gate;
+        return { outcome: "created", pointer: null };
+      },
+      entered: () => entered,
+      release,
+    };
+  }
+
+  function treeWritingDocker() {
+    return fakeDocker({
+      onRun: (cfg) => {
+        const mount = (cfg.HostConfig?.Mounts ?? []).find(
+          (m) => (m as { Target?: string }).Target === BUILD_PROJECT_DIR,
+        ) as { Source?: string } | undefined;
+        fs.mkdirSync(path.join(mount?.Source ?? "", "node_modules", "left-pad"), { recursive: true });
+      },
+    });
+  }
+
+  it("turns a second trigger for the same scope away instead of building in parallel", async () => {
+    const repo = eligibleRepo();
+    cleanup.push(repo.dir);
+    const held = heldBuild();
+    const fake = treeWritingDocker();
+
+    const first = buildVerifiedPnpmBase(deps(fake.docker, { publish: held.publish }), request(repo));
+    await vi.waitFor(() => expect(held.entered()).toBe(1));
+
+    const second = await buildVerifiedPnpmBase(
+      deps(fake.docker, { publish: held.publish }),
+      request(repo),
+    );
+    expect(second).toEqual({
+      status: "skipped-building",
+      detail: "a build of this base is already running",
+    });
+    // The point is the container, not the outcome string: a second build of the same scope would
+    // materialize a rival tree into the same generation.
+    expect(fake.created).toHaveLength(1);
+
+    held.release();
+    expect(await first).toMatchObject({ status: "published" });
+
+    // The scope is free again once the build ends, so the next commit is not locked out.
+    const third = await buildVerifiedPnpmBase(
+      deps(fake.docker, { publish: () => Promise.resolve({ outcome: "created", pointer: null }) }),
+      request(repo),
+    );
+    expect(third).toMatchObject({ status: "published" });
+  });
+
+  it("releases the scope's build slot when STAGING fails, not only when the build does", async () => {
+    const repo = eligibleRepo();
+    cleanup.push(repo.dir);
+    const fake = treeWritingDocker();
+    // A work dir that cannot be created — the ENOSPC / permission shape. It happens before the
+    // build's own try/finally used to open, so the slot leaked for the process's whole life.
+    const blocked = path.join(stateDir, "blocked");
+    fs.writeFileSync(blocked, "not a directory");
+
+    await expect(
+      buildVerifiedPnpmBase(
+        deps(fake.docker, { stateDir: blocked, publish: () => Promise.resolve({ outcome: "created", pointer: null }) }),
+        request(repo),
+      ),
+    ).rejects.toThrow();
+
+    const after = await buildVerifiedPnpmBase(
+      deps(fake.docker, { publish: () => Promise.resolve({ outcome: "created", pointer: null }) }),
+      request(repo),
+    );
+    expect(after).toMatchObject({ status: "published" });
+  });
+
+  it("caps how many scopes build at once, because each builder container is memory-capped", async () => {
+    const repos = [eligibleRepo(), eligibleRepo(), eligibleRepo()];
+    for (const r of repos) cleanup.push(r.dir);
+    const held = heldBuild();
+    const fake = treeWritingDocker();
+    const forRepo = (i: number) => ({
+      ...request(repos[i]),
+      scope: { ...SCOPE, repoUrl: `https://github.com/acme/repo-${i}.git` },
+    });
+
+    const running = repos.slice(0, MAX_CONCURRENT_PNPM_BASE_BUILDS).map((_, i) =>
+      buildVerifiedPnpmBase(deps(fake.docker, { publish: held.publish }), forRepo(i)),
+    );
+    await vi.waitFor(() => expect(held.entered()).toBe(MAX_CONCURRENT_PNPM_BASE_BUILDS));
+
+    const overflow = await buildVerifiedPnpmBase(
+      deps(fake.docker, { publish: held.publish }),
+      forRepo(MAX_CONCURRENT_PNPM_BASE_BUILDS),
+    );
+    expect(overflow.status).toBe("skipped-building");
+    expect(fake.created).toHaveLength(MAX_CONCURRENT_PNPM_BASE_BUILDS);
+
+    held.release();
+    for (const p of running) expect(await p).toMatchObject({ status: "published" });
   });
 });
 
@@ -358,8 +474,11 @@ describe("reapOrphanPnpmBaseBuilds", () => {
     // The builder's timeout and its `finally` both live in the orchestrator, so a crash
     // between creating the container and finishing the build leaves nothing else to reclaim.
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-reap-"));
-    const stranded = path.join(stateDir, "pnpm-base-build", "scope-1", "run-abc");
+    const stranded = path.join(stateDir, "pnpm-base-build", "run-of-a-dead-process", "scope-1");
     fs.mkdirSync(path.join(stranded, "registry", "tarballs"), { recursive: true });
+    // This process's own run dir, created the way a live build creates it.
+    const mine = pnpmBuildRootDir(stateDir, "scope-2");
+    fs.mkdirSync(mine, { recursive: true });
 
     const listed: unknown[] = [];
     const removed: string[] = [];
@@ -379,7 +498,41 @@ describe("reapOrphanPnpmBaseBuilds", () => {
     expect(await reapOrphanPnpmBaseBuilds(docker, stateDir)).toBe(1);
     expect(listed[0]).toContain(PNPM_BUILDER_LABEL);
     expect(removed).toEqual(["left-over"]);
-    expect(fs.existsSync(path.join(stateDir, "pnpm-base-build"))).toBe(false);
+    expect(fs.existsSync(stranded)).toBe(false);
+    expect(fs.existsSync(mine)).toBe(true);
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  /**
+   * The reaper is launched un-awaited (`startup-monitors.ts`) and does its pnpm sweep after paced
+   * plugin cleanup, so a restored session can finish its install and be building by the time it
+   * runs. Without the per-process scoping it killed that live build's container and deleted the
+   * staged inputs out from under it.
+   */
+  it("leaves a build THIS process already started alone", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-reap-live-"));
+    const removed: string[] = [];
+    const docker = {
+      listContainers: () =>
+        Promise.resolve([
+          { Id: "mine", Labels: { [PNPM_BUILDER_RUN_LABEL]: currentBuilderRunId(stateDir) } },
+          { Id: "theirs", Labels: { [PNPM_BUILDER_RUN_LABEL]: "a-dead-process" } },
+        ]),
+      getContainer: (id: string) => ({
+        remove: () => {
+          removed.push(id);
+          return Promise.resolve();
+        },
+      }),
+    } as unknown as Docker;
+
+    expect(await reapOrphanPnpmBaseBuilds(docker, stateDir)).toBe(1);
+    expect(removed).toEqual(["theirs"]);
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 });
+
+/** The run id is private; read it back off the path the builder actually stages under. */
+function currentBuilderRunId(stateDir: string): string {
+  return path.basename(path.dirname(pnpmBuildRootDir(stateDir, "any-scope")));
+}

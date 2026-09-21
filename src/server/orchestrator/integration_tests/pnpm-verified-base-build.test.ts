@@ -12,7 +12,10 @@
  * - **The repo does not choose the builder's pnpm.** The fixture pins
  *   `packageManager: pnpm@10.28.2`; `builderEnv()` is taken verbatim, so dropping its
  *   version-switch settings turns this red. Measured 2026-09-21: a repo pin reaches the
- *   builder by three routes, and each needs its own switch.
+ *   builder by three routes, and each needs its own switch. (`MIN_VERIFIED_BASE_PNPM_MAJOR`
+ *   now also refuses that exact pin at eligibility — a separate gate, for the consumer's store
+ *   version. Any pin, including a newer 12.x, still self-switches the builder, so the switches
+ *   this cell measures stay load-bearing.)
  * - **The output is pnpm's own**, virtual store and `.bin` shims included, so nothing
  *   downstream re-implements pnpm's layout.
  *

@@ -610,6 +610,10 @@ export function setupServiceManager(
     const s = session;
     void (async () => {
       const res = await p;
+      // Read the clock HERE, not after the publish: for pnpm the publish builds a base in its own
+      // container, so charging its minutes to `install_ms` would make the one line req 7 is judged
+      // from report an install that never happened.
+      const installDurationMs = Date.now() - installStartedAt;
       // Unverified completion cannot certify a shared dependency base.
       if (res.unverified) return;
       try {
@@ -624,12 +628,14 @@ export function setupServiceManager(
             sessionId: r.sessionId,
             repoUrl: s.remoteUrl,
             installOk: res.ok,
-            installDurationMs: Date.now() - installStartedAt,
+            installDurationMs,
             outcomes,
           }));
         }
         // Counts keep repo-declared path names out of the ops-readable log.
-        const failed = outcomes.filter((o) => o.outcome === "error").length;
+        const failed = outcomes.filter(
+          (o) => o.outcome === "error" || o.outcome === "build-failed",
+        ).length;
         if (failed > 0) {
           appendAgentLog(
             broadcastLog,

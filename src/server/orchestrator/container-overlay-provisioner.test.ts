@@ -305,9 +305,12 @@ describe("prepareOverlaySpecs — the pnpm no-lockfile consumer gate (docs/276 s
     return stateDir;
   }
 
-  async function pnpmWorkspace(opts: { lockfile: boolean }): Promise<string> {
+  async function pnpmWorkspace(opts: { lockfile: boolean; manifest?: object }): Promise<string> {
     const dir = await makeWorkspace();
-    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ packageManager: "pnpm@12.4.1" }));
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify(opts.manifest ?? { packageManager: "pnpm@12.4.1" }),
+    );
     if (opts.lockfile) fs.writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
     return dir;
   }
@@ -340,6 +343,33 @@ describe("prepareOverlaySpecs — the pnpm no-lockfile consumer gate (docs/276 s
 
     expect(specs).toEqual([]);
     expect(liveOverlayBaseClaims()).toEqual([]);
+  });
+
+  // Measured 2026-09-21: a pnpm 10 consumer does not fail on a base the pinned pnpm 12 builder
+  // produced — it prints "Recreating node_modules" and reinstalls, which over an overlay whiteouts
+  // every base file into this session's upper. A plain private install is strictly cheaper.
+  it("gives a pnpm checkout pinned to an older store version no base lowerdir", async () => {
+    // Both declaration routes: measured on corepack 0.34.6 that `devEngines.packageManager` alone,
+    // with no top-level `packageManager`, selects pnpm 10.28.2.
+    const pins = [
+      { packageManager: "pnpm@10.28.2" },
+      { devEngines: { packageManager: { name: "pnpm", version: "10.28.2" } } },
+    ];
+    for (const [i, manifest] of pins.entries()) {
+      const workspaceDir = await pnpmWorkspace({ lockfile: true, manifest });
+      const stateDir = verifiedStateDir(3);
+      const deps = makeDeps(["shipit-workspace"], { workspaceVolume: "shipit-workspace", stateDir });
+
+      const specs = await prepareOverlaySpecs(deps, {
+        sessionId: `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${i}`,
+        workspaceDir,
+        session: SESSION,
+        claimToken: newOverlayClaimToken(),
+      });
+
+      expect(specs, JSON.stringify(manifest)).toEqual([]);
+      expect(liveOverlayBaseClaims()).toEqual([]);
+    }
   });
 
   it("releases the claims it took when the all-or-nothing verified gate then refuses", async () => {

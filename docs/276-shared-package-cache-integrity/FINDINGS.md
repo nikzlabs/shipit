@@ -353,6 +353,47 @@ was 6 days old on 2026-09-21, inside the dependency policy's 7-day minimum; 12.4
 (2026-09-10) is the newest 12.x outside it. Re-measured: 12.4.1 runs the two phases above with
 the same results.
 
+## Finding: a pnpm ≤ 10 consumer RECREATES a base the pinned pnpm 12 builder produced
+
+Measured 2026-09-21, prompted by an independent review of the trigger. pnpm resolves its store as
+`<storeDir>/v<N>` and records that **resolved** path in `node_modules/.modules.yaml`; a consumer
+whose `N` differs re-creates the tree rather than reading it.
+
+| pnpm | `store path` under one `--store-dir` | consuming a 12.4.1-built tree, empty store at the recorded path |
+|---|---|---|
+| 10.28.2 | `…/v10` | **`Recreating node_modules`**, `downloaded 1` |
+| 11.22.0 | `…/v11` | no recreate, no download — a base hit |
+| 12.5.1 (the session image's corepack default, no repo pin) | `…/v11` | no recreate, no download — 20 ms |
+
+Three things this settles. It is **rc=0 on every row**, so it is not a req 9 failure — it is a
+req 7 and req 10 failure: over an overlay, "recreating" the tree whiteouts every base file into the
+session's upper and installs privately on top, so the base costs disk instead of saving it, on
+every container start. Nothing else in the eligibility decision would have caught such a repo:
+measured in the same run, pnpm 12.4.1 accepts a pnpm-10 `lockfileVersion: '9.0'` under
+`--frozen-lockfile` (rc=0, "Lockfile is up to date"), so a pnpm-10 repo is otherwise fully eligible.
+And an earlier probe that showed pnpm 11 recreating was a **confound** — its consumer store was at a
+different path from the recorded one; with the path matched, pnpm 11 hits the base.
+
+Hence two gates, `MIN_VERIFIED_BASE_PNPM_MAJOR = 11` (`src/server/shared/pnpm-repo.ts`): the
+publisher refuses a repo whose committed manifest declares an older major
+(`incompatible-package-manager`), so no container is spent on a base every session would throw
+away; and `prepareOverlaySpecs` mounts no base for a **checkout** that declares one, which covers a
+branch that downgrades pnpm under a repo whose default branch did not.
+
+**The declaration is two fields.** Measured on **corepack 0.34.6**, prompted by a second review that
+found reading `packageManager` alone leaves the gap open:
+
+| manifest | corepack selects |
+|---|---|
+| `devEngines.packageManager: {name: pnpm, version: 10.28.2}`, no top-level pin | **pnpm 10.28.2** — the missed route |
+| both fields, disagreeing | refuses to run any pnpm at all |
+| `devEngines` with a **range** (`^10.0.0`) | refused: "expected a semver version" |
+
+So the pin is `packageManager` if present, else an exact-version `devEngines.packageManager` naming
+pnpm; the other two shapes need no handling because they select nothing. One limit is left standing
+rather than engineered away: a manifest declaring neither is taken as the image's corepack default,
+so an `agent.install` command naming a version (`npx pnpm@10 install`) still recreates the tree.
+
 ## Finding: offline resolution needs metadata separate from the store
 
 pnpm keeps **resolution metadata** (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`,

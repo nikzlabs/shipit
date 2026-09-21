@@ -3,7 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { hasPnpmLockfile, isPnpmRepo } from "./pnpm-repo.js";
+import {
+  declaredPnpmFromManifest,
+  hasPnpmLockfile,
+  isPnpmRepo,
+  usesVerifiedBaseCompatiblePnpm,
+} from "./pnpm-repo.js";
 
 describe("isPnpmRepo (docs/197 Part 2)", () => {
   const tmpDirs: string[] = [];
@@ -91,5 +96,70 @@ describe("hasPnpmLockfile", () => {
     fs.mkdirSync(path.join(d, "packages", "app"), { recursive: true });
     fs.writeFileSync(path.join(d, "packages", "app", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
     expect(hasPnpmLockfile(d)).toBe(false);
+  });
+});
+
+/**
+ * Which pnpm corepack will select, which decides whether a session can READ the verified base or
+ * recreates it. Measured 2026-09-21 on corepack 0.34.6 (see `MIN_VERIFIED_BASE_PNPM_MAJOR` and
+ * docs/276 FINDINGS.md), so these cells encode a measurement rather than a reading of the docs.
+ */
+describe("declaredPnpmFromManifest / usesVerifiedBaseCompatiblePnpm", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+  function checkout(manifest: object | string): string {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-decl-"));
+    tmpDirs.push(d);
+    fs.writeFileSync(
+      path.join(d, "package.json"),
+      typeof manifest === "string" ? manifest : JSON.stringify(manifest),
+    );
+    return d;
+  }
+
+  it("reads the top-level packageManager pin", () => {
+    expect(declaredPnpmFromManifest({ packageManager: "pnpm@10.28.2" }))
+      .toEqual({ major: 10, declaration: "pnpm@10.28.2" });
+    expect(declaredPnpmFromManifest({ packageManager: "pnpm@12.4.1+sha512-abc" }))
+      .toMatchObject({ major: 12 });
+  });
+
+  // The route a `packageManager`-only reading misses: corepack selects pnpm 10.28.2 from this
+  // manifest alone, so a repo shaped this way passed both gates and recreated the base tree.
+  it("reads devEngines.packageManager when nothing is pinned at the top level", () => {
+    expect(declaredPnpmFromManifest({ devEngines: { packageManager: { name: "pnpm", version: "10.28.2" } } }))
+      .toEqual({ major: 10, declaration: "devEngines.packageManager pnpm@10.28.2" });
+  });
+
+  it("declares nothing for a manifest naming no pnpm version", () => {
+    for (const manifest of [
+      {},
+      { packageManager: "yarn@4.0.0" },
+      { devEngines: { packageManager: { name: "yarn", version: "4.0.0" } } },
+      // A devEngines RANGE selects nothing: corepack refuses it as "expected a semver version".
+      { devEngines: { packageManager: { name: "pnpm", version: "^10.0.0" } } },
+      // `packageManager` present but not pnpm wins over devEngines, as corepack resolves it.
+      { packageManager: "yarn@4.0.0", devEngines: { packageManager: { name: "pnpm", version: "10.0.0" } } },
+    ]) {
+      expect(declaredPnpmFromManifest(manifest), JSON.stringify(manifest)).toBeNull();
+    }
+  });
+
+  it("admits the builder's own major and anything newer, refuses anything older", () => {
+    expect(usesVerifiedBaseCompatiblePnpm(checkout({ packageManager: "pnpm@12.4.1" }))).toBe(true);
+    expect(usesVerifiedBaseCompatiblePnpm(checkout({ packageManager: "pnpm@11.22.0" }))).toBe(true);
+    expect(usesVerifiedBaseCompatiblePnpm(checkout({ packageManager: "pnpm@10.28.2" }))).toBe(false);
+    expect(
+      usesVerifiedBaseCompatiblePnpm(
+        checkout({ devEngines: { packageManager: { name: "pnpm", version: "10.28.2" } } }),
+      ),
+    ).toBe(false);
+  });
+
+  it("treats a checkout that declares nothing as the image's corepack default", () => {
+    expect(usesVerifiedBaseCompatiblePnpm(checkout({ name: "app" }))).toBe(true);
+    expect(usesVerifiedBaseCompatiblePnpm(checkout("{not json"))).toBe(true);
   });
 });

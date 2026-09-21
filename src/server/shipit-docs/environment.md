@@ -131,13 +131,39 @@ install again first; `stat -c %h <file>` reports 1 for a copy and 2 or more for 
 `verify-store-integrity` is a local check on the store this session reads. It is left
 at pnpm's default and is not a cross-session protection — the private store is.
 
-ShipIt is building a shared `node_modules` **base** that it verifies against the
-registry itself and mounts read-only under your own writable layer. Until that exists
-for a repo, every pnpm session installs from scratch into its private store; when it
-does, you still run your own `pnpm install` over it, and everything above still holds.
-A repo whose checkout has **no `pnpm-lock.yaml`** never gets that base and always
-installs privately — with no lockfile pnpm would take its version choices from the base
-rather than resolving your own.
+ShipIt may also mount a shared `node_modules` **base** read-only under your own writable
+layer. It builds one itself, from the repo's committed manifests and `pnpm-lock.yaml` at
+the default-branch commit, after a session's declared install succeeds on that commit —
+never from any session's installed tree, and only when every package in the lockfile is a
+registry download whose digest the registry confirms. You still run your own
+`pnpm install` over it, so your own lockfile and your own approved builds decide what the
+tree ends up as, and everything above still holds.
+
+**No new base is built** — so until one was published, every session installs from
+scratch into its private store — when:
+
+- the lockfile pins anything that is not a plain registry package (`workspace:`, `link:`,
+  `file:`, a git URL, or a `patchedDependencies` entry);
+- the repo loads pnpm plugin code (a `.pnpmfile.mjs`, `configDependencies`, or a
+  `pnpmfile` setting in `.npmrc` / `pnpm-workspace.yaml`);
+- the install output is not one self-contained `node_modules` (`modulesDir`,
+  `virtualStoreDir` or a non-isolated `nodeLinker`), or `agent.dep-dirs` declares a
+  directory besides `node_modules`;
+- `.npmrc` points at a registry the operator did not authorize;
+- `package.json` declares pnpm 10 or older, through `packageManager` or
+  `devEngines.packageManager`. pnpm resolves its store as `<store>/v<N>` and records that
+  path; pnpm 10 would recreate the whole tree rather than read a base pnpm 12 built.
+
+Introducing one of these into a repo that already published a base stops the *next* base
+from being built; it does not retire the one already published, so sessions keep mounting
+it until the base is rebuilt or reclaimed.
+
+Two things are decided from **your checkout** rather than the default branch, and each
+means no base is mounted for this session at all: a checkout with **no `pnpm-lock.yaml`**
+(with no lockfile pnpm would take its version choices from the base rather than resolving
+your own), and a checkout declaring pnpm 10 or older. Only the manifest is read for that
+second one — if you run an older pnpm through the command itself (`npx pnpm@10 install`),
+the install still succeeds, but it recreates the tree instead of reading the base.
 
 ### Write-protected paths
 

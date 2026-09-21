@@ -804,6 +804,64 @@ whose approved builds never ran — and declaring `install-inputs` restores the 
 to a *non-empty* custom list only, because adding it to an empty one would key on the approval
 file ALONE and then skip an install a lockfile change genuinely needed.
 
+**Shipped 2026-09-21** (the trigger — the last piece, so a verified base now exists in production
+for the first time). `overlay-publish.ts`'s pnpm early-return is replaced by
+`publishVerifiedPnpmBase`, which runs on docs/183's own trigger — a successful declared install
+whose session sits on the default-branch commit — and calls `buildVerifiedPnpmBase` for the
+verified scope. The session-snapshot pull is off this path entirely: nothing on it reads the
+session's `node_modules`, and every way this can fail — an ineligible input set, a failed
+verification, a build that does not finish, and a throw out of Docker, the filesystem or the
+publish — becomes a publish outcome on the measurement line, so a session's own install is never
+affected (req 9). That line's `install_ms` is read the moment the install settles, not after the
+publish, or for pnpm it would charge a builder's minutes to an install that took seconds — the one
+number req 7 is judged from. Seven things the paragraphs above left to the implementation.
+
+- **A pointer already naming the default-branch commit skips the build.** Every session's install
+  triggers, so without the pre-check the common case is a multi-minute builder container per
+  container start, for a base `publishBase` would then answer `skipped-equal` about. The read is an
+  optimization only — the compare-and-swap inside the publish is still what decides.
+- **Admission for the build is decided in `buildVerifiedPnpmBase`, not at the call site**: one build
+  per scope, claimed synchronously before the first await, plus a ceiling across scopes
+  (`MAX_CONCURRENT_PNPM_BASE_BUILDS`) because each builder container is capped at 4 GiB and several
+  at once is what the host feels. Over either bound the trigger **skips** rather than queues — the
+  next session's install triggers again, while a queue would hold work for a commit that has since
+  moved on.
+- **The BUILD carries no abort signal** (the trigger's preliminary HEAD request still does, and a
+  disposal there simply skips). The design said no runner-bound cancellation; the npm/yarn loop in
+  the same function turns an aborted signal into an `error` outcome per dep dir, so the pnpm branch
+  had to be written not to inherit that, and a cell holds it.
+- **`node_modules` is the only dep dir the builder can fill**, so a pnpm repo declaring another one
+  gets no base at all rather than a base its all-or-nothing mount gate could never accept.
+- **A repo that DECLARES pnpm ≤ 10 gets no base, at the publisher AND at the consumer.** Measured
+  2026-09-21 (FINDINGS.md): pnpm resolves its store as `<storeDir>/v<N>` and records the resolved
+  path in `.modules.yaml`, so a pnpm 10 consumer (store `v10`) of a tree the pinned pnpm 12 builder
+  wrote (store `v11`) prints `Recreating node_modules` and reinstalls — rc=0, so not a req 9
+  failure, but over an overlay it whiteouts every base file into the session's upper and installs
+  privately on top, which is reqs 7 and 10 inverted. pnpm 11 and 12 (both `v11`) hit the base with
+  no recreate and no download. Nothing else would have caught it: pnpm 12 accepts a pnpm-10
+  `lockfileVersion: '9.0'` under `--frozen-lockfile`. So `MIN_VERIFIED_BASE_PNPM_MAJOR` gates both
+  ends — the publisher on the committed manifest (no container spent on a base every session would
+  discard) and `prepareOverlaySpecs` on the checkout's (a branch that downgrades pnpm under a repo
+  whose default branch did not). **"Declares" is two fields, not one**: `packageManager`, else
+  `devEngines.packageManager`, which corepack honours on its own (measured on corepack 0.34.6, and
+  the gap an independent review found). The limit is stated rather than engineered away: a manifest
+  declaring neither is taken as the image's corepack default, so an `agent.install` command naming a
+  version (`npx pnpm@10 install`) still recreates the tree — a command string is not a declaration,
+  and parsing one is not worth what it would cost.
+- **The boot reaper never touches a build this process has already started.** It is launched
+  un-awaited (`startup-monitors.ts`) and sweeps pnpm work dirs after paced plugin cleanup, so a
+  restored session can finish its install and be building by the time it runs; it would then have
+  killed the live container and deleted its staged inputs. Every run nests under a per-process id
+  that is also a container label, so "a previous process's leftovers" is a fact rather than a timing
+  assumption — and no start barrier is needed. Found by the independent review of this slice.
+- **A publish whose generation the sweep reclaimed is repaired, not skipped.** The whole-scope sweep
+  removes a scope's base directory and leaves its pointer, which lives outside the swept tree
+  (`steady-state-reclaim.ts`, `wholeScopeCandidate`); `publishBase` answered `skipped-equal` about it
+  and `selectGeneration` fell back to the empty generation 0, so the scope got no base again until
+  the default branch moved. It now materializes a new generation (`repaired`) when the pointer's
+  `baseDir` is gone. Pre-existing and shared with the npm/yarn publisher; found by the independent
+  review of this slice.
+
 *What this still depends on.* `/dep-cache` stays shared-writable, but the npm
 resolution index no longer lives there (section 1, shipped), so a pnpm repo whose
 agent also runs npm is no longer exposed to H1. The base is group-writable to the session gid by
@@ -896,17 +954,19 @@ For anyone re-running or extending the harnesses:
 
 | File | Why it matters |
 |---|---|
-| `src/server/orchestrator/overlay-publish.ts` | The pnpm early-return to replace with the builder — the snapshot publisher must never write the verified namespace — and the pull → `publishBase` sequence (section 5, lifecycle). |
-| `src/server/orchestrator/overlay-base.ts` | `publishBase` reused for ordering (CAS authenticates nothing); `withScopeLock` (`:109`, exported) is the one per-scope lock for claim, publish and sweep; `copySnapshotToBase` hardlink-dedup is a **disk** optimization, not a verification step. `OverlayScope.namespace` runs through `scopeHashOf`, so pointer reads and publishes address the same namespaced scope. |
+| `src/server/orchestrator/overlay-publish.ts` | `publishVerifiedPnpmBase` — the trigger: docs/183's condition (declared install ok, session on the default-branch commit), the already-published pre-check, and the call into the builder with no abort signal. The snapshot publisher beside it (npm/yarn, the pull → `publishBase` sequence) never writes the verified namespace. |
+| `src/server/orchestrator/bootstrap-managers.ts` | `buildPnpmBase` — the one place the builder's Docker deps are bound; absent without a container manager, which is how a pnpm repo keeps installing privately where there is no Docker. |
+| `src/server/orchestrator/overlay-base.ts` | `publishBase` reused for ordering (CAS authenticates nothing); `withScopeLock` (`:109`, exported) is the one per-scope lock for claim, publish and sweep; `copySnapshotToBase` hardlink-dedup is a **disk** optimization, not a verification step. `OverlayScope.namespace` runs through `scopeHashOf`, so pointer reads and publishes address the same namespaced scope. An equal-commit publish whose generation directory is gone materializes again (`repaired`) rather than skipping — the sweep takes the directory and leaves the pointer. |
 | `src/server/orchestrator/overlay-base-claims.ts` | The select→mount lease. Keyed by an opaque per-OPERATION token (two creation attempts for one session overlap), held until `releaseOverlayBaseClaims`, no expiry — and the reason the sweep must read claims BEFORE it samples Docker. |
 | `src/server/shared/pnpm-repo.ts` | `isPnpmRepo` (moved out of `overlay-session.ts`, re-exported there) and `hasPnpmLockfile` — the no-lockfile consumer gate's narrower question. In `shared/` because the worker needs the same answer and may not import from `orchestrator/`. |
 | `src/server/shared/install-marker.ts:60` | `markerMatches(marker, stamp, { requireDepsHash })` — pnpm skips on the content hash alone, never on the commit, so a same-commit approval change still runs the install that performs the build. |
 | `src/server/orchestrator/overlay-volume.ts` | `overlayScopeHash` — repo + runtime + dep dir + an optional **namespace**, the verified-base discriminator; omitting it reproduces the pre-namespace hash, so existing npm/yarn bases stay addressable. Also the Docker `overlay` volume (`:196`), now also for pnpm's `node_modules`. |
 | `src/server/orchestrator/container-overlay-provisioner.ts` | `prepareOverlaySpecs` (`:67`) — the pnpm mount gate, the no-lockfile gate (`:98`) and the claim, all under the scope lock; `selectGeneration` (`:159`) — a published generation whose directory is gone selects 0; `preparePnpmStore` — the per-session private store. |
 | `src/server/orchestrator/pnpm-lockfile.ts` | What the builder reads out of `pnpm-lock.yaml`: which packages it pins, the digest it pins them to, and the entries that are not plain registry downloads. Classifies on the `resolution` SHAPE, so an unfamiliar future form stays ineligible rather than being silently admitted. |
-| `src/server/orchestrator/pnpm-base-inputs.ts` | `stagePnpmInputs` — the immutable snapshot, read out of one commit through git and never out of the session's checkout; `decidePnpmBaseEligibility` — the ONE eligibility decision, taken before any fetch. |
+| `src/server/orchestrator/pnpm-base-inputs.ts` | `stagePnpmInputs` — the immutable snapshot, read out of one commit through git and never out of the session's checkout; `decidePnpmBaseEligibility` — the ONE eligibility decision, taken before any fetch, including the committed `packageManager` store-version gate. |
+| `src/server/shared/pnpm-repo.ts` | `MIN_VERIFIED_BASE_PNPM_MAJOR` and the measurement behind it — pnpm records its resolved `<storeDir>/v<N>` in `.modules.yaml`, and a consumer on another `N` recreates the tree instead of reading it. Asked at both ends: the publisher's eligibility and `prepareOverlaySpecs`. |
 | `src/server/orchestrator/pnpm-base-registry.ts` | `stageVerifiedRegistry` — resolves `<name>@<version>` against the orchestrator's own registry, admits only when the lockfile digest, the packument's `dist.integrity` and the downloaded bytes' sha512 all agree, and names the first failing package. |
-| `src/server/orchestrator/pnpm-base-builder.ts` | `builderScript` (the two phases), `builderEnv` (the three `packageManager` switches and the emptied config), and `buildVerifiedPnpmBase`, which publishes through `copySnapshotToBase` + `publishBase`. |
+| `src/server/orchestrator/pnpm-base-builder.ts` | `builderScript` (the two phases), `builderEnv` (the three `packageManager` switches and the emptied config), and `buildVerifiedPnpmBase`, which owns build admission (one per scope, `MAX_CONCURRENT_PNPM_BASE_BUILDS` across scopes) and publishes through `copySnapshotToBase` + `publishBase`. |
 | `src/server/shared/deps-hash.ts:21`, `:102` | pnpm's default hash inputs include `pnpm-workspace.yaml`; a custom `installInputs` replaces the list, so `resolveDepsHashInputs` adds it back for a pnpm repo when given the workspace dir. |
 | `src/server/orchestrator/overlay-session.ts` | `PNPM_VERIFIED_NAMESPACE`; `sessionPnpmStoreDir` — the per-session private store; `retiredSharedPnpmStoreRoot` — the tree the janitor ages out. |
 | `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `package-import-method=copy`, and `npm_config_cache` (section 1); `prepareOverlayDirs` (`:487`) creates only generation 0's lowerdir; `createContainer` retires the shared npm index. |

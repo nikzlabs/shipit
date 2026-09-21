@@ -12,9 +12,10 @@ import {
   type AncestryOracle,
 } from "./overlay-publish.js";
 import { extractTarStream } from "./overlay-snapshot.js";
-import { readBasePointer, type OverlayScope } from "./overlay-base.js";
-import { overlayRuntimeKey } from "./overlay-session.js";
+import { publishBase, readBasePointer, type OverlayScope } from "./overlay-base.js";
+import { overlayRuntimeKey, PNPM_VERIFIED_NAMESPACE } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
+import type { PnpmBaseBuildOutcome, PnpmBaseBuildRequest } from "./pnpm-base-builder.js";
 
 const REPO_URL = "https://github.com/acme/widgets.git";
 const HEAD = "c0ffee".padEnd(40, "0");
@@ -525,6 +526,276 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   });
 });
 
+/**
+ * docs/276 section 5 — the trigger for the verified pnpm base. The builder itself is faked here;
+ * what these cells hold is WHEN it runs, WHAT it is asked to build from, and that no path through
+ * it can touch the session's own install (req 9).
+ */
+describe("overlay-publish: the verified pnpm base trigger", () => {
+  let tmpDir: string;
+  let stateDir: string;
+  let workspaceDir: string;
+  let env: NodeJS.ProcessEnv;
+  let runtimeKey: string;
+  let built: PnpmBaseBuildRequest[];
+  let pulled: string[];
+
+  const oracle: AncestryOracle = {
+    isAncestor: (a, b) => Promise.resolve(a !== b),
+    resolveDefaultBranchCommit: () => Promise.resolve(HEAD),
+  };
+
+  const PUBLISHED: PnpmBaseBuildOutcome = { status: "published", outcome: "created", generation: 1 };
+
+  function bareCacheDir(url: string): string {
+    return path.join(tmpDir, "cache", encodeURIComponent(url));
+  }
+
+  function depsWith(over: Partial<OverlayPublishDeps> = {}): OverlayPublishDeps {
+    return {
+      stateDir,
+      createRepoGit: () => oracle,
+      getBareCacheDir: bareCacheDir,
+      env,
+      fetchHeadInfo: () => Promise.resolve({ commit: HEAD, runtimeKey: "img|x64" }),
+      fetchSnapshot: (_url, depDir) => {
+        pulled.push(depDir);
+        return Promise.resolve(Readable.from([Buffer.from(depDir)]));
+      },
+      tmpRoot: tmpDir,
+      buildPnpmBase: (req) => {
+        built.push(req);
+        return Promise.resolve(PUBLISHED);
+      },
+      ...over,
+    };
+  }
+
+  function publish(over: Partial<OverlayPublishDeps> = {}, installOk = true) {
+    return publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk },
+      depsWith(over),
+    );
+  }
+
+  function verifiedPointer() {
+    return readBasePointer(stateDir, {
+      repoUrl: REPO_URL,
+      runtimeKey,
+      depDir: "node_modules",
+      namespace: PNPM_VERIFIED_NAMESPACE,
+    });
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-pub-pnpm-"));
+    stateDir = path.join(tmpDir, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    env = { OVERLAY_DEP_STORE: "1", SESSION_WORKER_IMAGE_ID: "img1" } as NodeJS.ProcessEnv;
+    runtimeKey = overlayRuntimeKey(env);
+    built = [];
+    pulled = [];
+    workspaceDir = makeWorkspace(["node_modules"]);
+    fs.writeFileSync(path.join(workspaceDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
+  });
+
+  it("builds from the default-branch commit in the bare cache, never from the session's tree", async () => {
+    const out = await publish();
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", generation: 1 }]);
+    expect(built).toHaveLength(1);
+    expect(built[0]).toMatchObject({
+      repoDir: bareCacheDir(REPO_URL),
+      defaultBranchCommit: HEAD,
+      scope: { repoUrl: REPO_URL, runtimeKey, depDir: "node_modules", namespace: PNPM_VERIFIED_NAMESPACE },
+    });
+    // The session-snapshot pull is off this path entirely: nothing reads the session's node_modules.
+    expect(pulled).toEqual([]);
+  });
+
+  it("gives an ineligible repo no base, and the session keeps its own install", async () => {
+    const buildPnpmBase = (): Promise<PnpmBaseBuildOutcome> =>
+      Promise.resolve({
+        status: "ineligible",
+        detail: "local-specifier: the root manifest depends on ui as workspace:*",
+        reason: { eligible: false, code: "local-specifier", detail: "workspace:*" },
+      });
+    const out = await publish({ buildPnpmBase });
+    expect(out).toEqual([
+      {
+        depDir: "node_modules",
+        outcome: "skipped-ineligible",
+        detail: "local-specifier: the root manifest depends on ui as workspace:*",
+      },
+    ]);
+    expect(verifiedPointer()).toBeNull();
+  });
+
+  it("skips the publish naming the first failing package when verification fails", async () => {
+    const buildPnpmBase = (): Promise<PnpmBaseBuildOutcome> =>
+      Promise.resolve({
+        status: "verification-failed",
+        failedPackage: "left-pad@1.3.0",
+        detail: "the downloaded bytes do not hash to the lockfile digest",
+      });
+    const out = await publish({ buildPnpmBase });
+    expect(out).toEqual([
+      {
+        depDir: "node_modules",
+        outcome: "skipped-unverified",
+        failedPackage: "left-pad@1.3.0",
+        detail: "the downloaded bytes do not hash to the lockfile digest",
+      },
+    ]);
+    expect(verifiedPointer()).toBeNull();
+  });
+
+  it("reports a build that did not finish, without failing the session", async () => {
+    const buildPnpmBase = (): Promise<PnpmBaseBuildOutcome> =>
+      Promise.resolve({ status: "build-failed", detail: "the build exited 1" });
+    const out = await publish({ buildPnpmBase });
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "build-failed", detail: "the build exited 1" },
+    ]);
+    expect(verifiedPointer()).toBeNull();
+  });
+
+  // Docker, the filesystem and the publish can all throw out of the builder. Losing the throw to
+  // the caller's catch would lose the measurement line with it.
+  it("reports a builder that threw as an error outcome rather than propagating it", async () => {
+    const out = await publish({
+      buildPnpmBase: () => Promise.reject(new Error("no such image: shipit-session-worker")),
+    });
+    expect(out).toEqual([
+      {
+        depDir: "node_modules",
+        outcome: "error",
+        error: "no such image: shipit-session-worker",
+      },
+    ]);
+  });
+
+  it("rebuilds when the pointer names a generation the sweep already reclaimed", async () => {
+    const snapshotDir = path.join(tmpDir, "swept");
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, "content"), "prebuilt");
+    const first = await publishBase({
+      stateDir,
+      scope: { repoUrl: REPO_URL, runtimeKey, depDir: "node_modules", namespace: PNPM_VERIFIED_NAMESPACE },
+      candidate: { commit: HEAD, exitCode: 0, preUserInstall: true, sourceIsDefaultBranch: true, snapshotDir },
+      isAncestor: () => Promise.resolve(false),
+    });
+    fs.rmSync(first.pointer!.baseDir, { recursive: true, force: true });
+
+    const out = await publish();
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", generation: 1 }]);
+    expect(built).toHaveLength(1);
+  });
+
+  it("reports a trigger the per-scope guard turned away, and builds nothing", async () => {
+    const buildPnpmBase = (): Promise<PnpmBaseBuildOutcome> =>
+      Promise.resolve({ status: "skipped-building", detail: "a build of this base is already running" });
+    const out = await publish({ buildPnpmBase });
+    expect(out).toEqual([
+      {
+        depDir: "node_modules",
+        outcome: "skipped-building",
+        detail: "a build of this base is already running",
+      },
+    ]);
+  });
+
+  it("does not build when the session is not on the remote default branch", async () => {
+    const other: AncestryOracle = {
+      isAncestor: () => Promise.resolve(false),
+      resolveDefaultBranchCommit: () => Promise.resolve("deadbeef".padEnd(40, "0")),
+    };
+    const out = await publish({ createRepoGit: () => other });
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-ineligible" }]);
+    expect(built).toEqual([]);
+  });
+
+  it("does not build when the declared install failed", async () => {
+    const out = await publish({}, false);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-ineligible" }]);
+    expect(built).toEqual([]);
+  });
+
+  it("does not spend a builder on a commit whose base is already published", async () => {
+    const snapshotDir = path.join(tmpDir, "already");
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, "content"), "prebuilt");
+    await publishBase({
+      stateDir,
+      scope: { repoUrl: REPO_URL, runtimeKey, depDir: "node_modules", namespace: PNPM_VERIFIED_NAMESPACE },
+      candidate: {
+        commit: HEAD,
+        exitCode: 0,
+        preUserInstall: true,
+        sourceIsDefaultBranch: true,
+        snapshotDir,
+      },
+      isAncestor: () => Promise.resolve(false),
+    });
+
+    const out = await publish();
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-equal", generation: 1 }]);
+    expect(built).toEqual([]);
+  });
+
+  // No runner-bound cancellation (plan.md section 5): the inputs are staged out of the bare cache
+  // and the registry is the orchestrator's, so a build outliving its triggering session finishes
+  // and publishes. Both directions of that, because the npm/yarn loop in the same function turns an
+  // aborted signal into an "error" outcome and an abort check copied onto this branch would take
+  // either one: a session disposed BEFORE the build is admitted, and one disposed MID-build.
+  it.each([["before", false], ["during", true]] as const)(
+    "publishes when the triggering session is disposed %s the build",
+    async (_when, duringBuild) => {
+      const controller = new AbortController();
+      const abort = (): void => controller.abort(new Error("session runner disposed"));
+      if (!duringBuild) abort();
+      const out = await publishDepDirOverlayBases(
+        {
+          session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+          workerUrl: "http://w",
+          installOk: true,
+          signal: controller.signal,
+        },
+        depsWith({
+          buildPnpmBase: async (req) => {
+            built.push(req);
+            if (duringBuild) abort();
+            // A real build spans many awaits after disposal; one is enough to show none of them
+            // observes the signal.
+            await Promise.resolve();
+            return PUBLISHED;
+          },
+        }),
+      );
+      expect(out).toEqual([{ depDir: "node_modules", outcome: "created", generation: 1 }]);
+      expect(built).toHaveLength(1);
+    },
+  );
+
+  it("builds nothing for a pnpm repo that declares a dep dir the builder cannot produce", async () => {
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
+    workspaceDir = makeWorkspace(["node_modules", "vendor"], {
+      shipitDepDirs: ["node_modules", "vendor"],
+    });
+    fs.writeFileSync(path.join(workspaceDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    const out = await publish();
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "skipped-ineligible", detail: expect.stringContaining("vendor") },
+      { depDir: "vendor", outcome: "skipped-ineligible", detail: expect.stringContaining("vendor") },
+    ]);
+    expect(built).toEqual([]);
+  });
+});
+
 describe("formatOverlayMeasurement", () => {
   it("renders a greppable single line with per-dir outcome + depth/generation", () => {
     const line = formatOverlayMeasurement({
@@ -554,6 +825,20 @@ describe("formatOverlayMeasurement", () => {
     expect(line).toBe(
       "[overlay-measure] session=s repo=r install_ok=false install_ms=12 dirs=node_modules:skipped-ineligible",
     );
+  });
+
+  it("renders the verified pnpm base's generation, which carries no lineage depth", () => {
+    const line = formatOverlayMeasurement({
+      sessionId: "s",
+      repoUrl: "r",
+      installOk: true,
+      installDurationMs: 9,
+      outcomes: [
+        { depDir: "node_modules", outcome: "created", generation: 3 },
+        { depDir: "node_modules", outcome: "skipped-unverified", failedPackage: "left-pad@1.3.0" },
+      ],
+    });
+    expect(line).toContain("dirs=node_modules:created:g3,node_modules:skipped-unverified:left-pad@1.3.0");
   });
 
   it("adds `a<attempts>` ONLY when the retry fired, so an ordinary line is unchanged", () => {
