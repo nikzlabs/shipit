@@ -566,7 +566,18 @@ export async function checkResetPreconditions(
   if (!branch) {
     return { clause: "detached-head", detail: "HEAD is detached, so a reset would not move the session branch" };
   }
-  if (session.branch && branch !== session.branch) {
+  // A session with no recorded branch used to pass this check on ANY branch,
+  // including the base — and the reset ends in `forcePush("origin")`, which
+  // publishes whatever is checked out. Unknown ownership is a refusal.
+  if (!session.branch) {
+    return {
+      clause: "wrong-branch",
+      detail:
+        `ShipIt has no record of this session's branch, so it cannot confirm that '${branch}' `
+        + "is the session's own branch rather than a shared one",
+    };
+  }
+  if (branch !== session.branch) {
     return {
       clause: "wrong-branch",
       detail: `HEAD is on '${branch}', not the session branch '${session.branch}'`,

@@ -835,12 +835,81 @@ export class GitManager {
     return this.forcePushWithLease(remote, currentBranch, expected);
   }
 
+  /**
+   * A force-push that only DISCARDS remote commits — the pushed commit is a
+   * proper ancestor of the remote tip, so the ref moves strictly backwards and
+   * nothing replaces what it drops.
+   *
+   * No caller intends this. Every legitimate force-push here republishes a
+   * rewritten branch (rebase, reset-onto-base, release prepare), which leaves
+   * the old remote tip on a diverged history rather than ahead of the new one;
+   * a fast-forward is not a force at all. A pure rewind is what a *stale* local
+   * ref produces, and the lease cannot catch it: `forcePush` reads its expected
+   * SHA from the live remote seconds earlier, so the lease is satisfied by
+   * construction and the push lands silently.
+   *
+   * That is not hypothetical. A session clone's local `main` is frozen at clone
+   * time and no fetch advances it, so any path that resolves a force-push
+   * target to `main` publishes a base branch as it stood hours ago, deleting
+   * every merge since — while GitHub still reports those pull requests merged,
+   * because it records the merge on the PR and not from the branch's contents.
+   */
+  private async refuseRewindingForcePush(
+    remote: string,
+    branch: string,
+    expectedRemoteSha: string,
+  ): Promise<void> {
+    const local = await this.getRefHash(branch);
+    if (!local || local === expectedRemoteSha) return;
+
+    // The tip is read with `ls-remote`, which transfers no objects — so on a
+    // stale checkout the very commit at risk is the one this repository has
+    // never seen, and an ancestry test would quietly answer "unrelated" for the
+    // exact case this exists to catch. Fetch it before deciding.
+    if (!(await this.hasCommit(expectedRemoteSha))) {
+      try {
+        await this.fetchBranch(remote, branch);
+      } catch {
+        // Reported below: an unreadable remote is not a cleared one.
+      }
+    }
+    if (!(await this.hasCommit(expectedRemoteSha))) {
+      throw new Error(
+        `Refusing to force-push ${remote}/${branch}: its remote tip is `
+        + `${expectedRemoteSha.slice(0, 8)}, a commit this checkout does not have and could not `
+        + `fetch, so ShipIt cannot tell whether overwriting it would discard work. Fetch the `
+        + `branch and retry.`,
+      );
+    }
+    if (!(await this.isAncestor(local, expectedRemoteSha))) return;
+
+    const discarded = await this.countCommitsAhead(branch, expectedRemoteSha);
+    throw new Error(
+      `Refusing to force-push ${remote}/${branch}: it would move the branch BACKWARDS from `
+      + `${expectedRemoteSha.slice(0, 8)} to ${local.slice(0, 8)}, discarding `
+      + `${discarded} commit(s) the remote has and this checkout does not — and replacing them `
+      + `with nothing. The local ref is stale; fetch and reconcile before publishing it. `
+      + `(A rewritten branch is never a strict ancestor of its own old tip, so a deliberate `
+      + `rewrite is unaffected by this check.)`,
+    );
+  }
+
+  private async hasCommit(sha: string): Promise<boolean> {
+    try {
+      await this.git.raw(["cat-file", "-e", `${sha}^{commit}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Null expects an absent remote branch and uses a plain push, without a lease.
   async forcePushWithLease(
     remote: string,
     branch: string,
     expectedRemoteSha: string | null,
   ): Promise<string> {
+    if (expectedRemoteSha) await this.refuseRewindingForcePush(remote, branch, expectedRemoteSha);
     const args = expectedRemoteSha
       ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
       : ["--set-upstream"];

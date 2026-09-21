@@ -5,7 +5,7 @@
  * test whose own pattern matches the command it is written in.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 // Sandbox sessions own their branches (docs/211). That exemption is about
 // branch ownership and nothing else, so it scopes the git checks below rather
@@ -59,6 +59,23 @@ function offends(seg) {
     if (rest.includes("-b") || rest.includes("-B")) {
       return "`git checkout -b` creates a new branch";
     }
+    // `git checkout main` moves off the session branch exactly as `git switch
+    // main` does, and used to pass while `switch` was refused. It matters more
+    // than the asymmetry suggests: a workspace left on the base branch aims
+    // ShipIt's own pull-request force-push at that branch, and a session
+    // clone's copy of it is frozen at clone time.
+    //
+    // Only the unambiguous branch form is judged. A pathspec restore — `git
+    // checkout .`, `-- <path>`, or any operand that could name a file — is
+    // ordinary work, and refusing it would cost more than this catches.
+    if (!rest.includes("--") && positionals.length === 1) {
+      const name = positionals[0];
+      // A name carrying a path character, or one that IS a path here, may be a
+      // restore. git itself treats that collision as ambiguous; so does this.
+      if (!/[./\\]/.test(name) && !existsSync(name)) {
+        return "`git checkout <branch>` moves off the session branch";
+      }
+    }
     return null;
   }
   if (sub === "switch") {
@@ -103,7 +120,7 @@ function offends(seg) {
 function offendsDestructive(seg) {
   const parsed = parseGit(seg);
   if (!parsed) return null;
-  const { sub, rest } = parsed;
+  const { sub, rest, positionals } = parsed;
 
   if (sub === "reset" && rest.includes("--hard")) {
     return "`git reset --hard` discards this branch's state";
@@ -145,6 +162,11 @@ function offendsDestructive(seg) {
     )
   ) {
     return "`git push --force` rewrites the remote branch";
+  }
+  // A leading `+` on the refspec is a force, with no flag to find: `git push
+  // origin +main` does everything `--force` does and read as an ordinary push.
+  if (sub === "push" && positionals.some((t) => t.startsWith("+"))) {
+    return "`git push origin +<ref>` is a forced refspec and rewrites the remote branch";
   }
   return null;
 }

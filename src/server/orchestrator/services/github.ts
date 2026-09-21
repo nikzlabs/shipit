@@ -11,6 +11,7 @@ import type { SessionManager } from "../sessions.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 import { resolvePrBaseBranch } from "./git.js";
+import { findSharedBranchRefusal } from "./push-target-guard.js";
 import { rankRepoSearchResults } from "./repo-search-ranking.js";
 import { ServiceError } from "./types.js";
 import { validateNonEmptyString } from "./validation.js";
@@ -556,6 +557,9 @@ export async function quickCreatePr(
     };
   }
 
+  const shared = await findSharedBranchRefusal(git, head, reArm?.baseBranch);
+  if (shared) throw new ServiceError(409, shared.message);
+
   try {
     if (reArm?.forceWithLease) {
       await git.forcePush("origin", head);
@@ -815,6 +819,11 @@ export async function agentCreatePr(
   }
 
   const head = await git.getCurrentBranch();
+
+  // Before the existing-PR lookup: a shared branch must not become a PR head at
+  // all, and both exits below this point push it.
+  const sharedHead = await findSharedBranchRefusal(git, head, options.base);
+  if (sharedHead) throw new ServiceError(409, sharedHead.message);
 
   // Leave the scheduled push armed on paths that return without pushing.
   const { sessionId, cancelAutoPush } = options;

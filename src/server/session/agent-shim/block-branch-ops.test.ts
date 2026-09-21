@@ -57,6 +57,14 @@ describe("block-branch-ops.mjs", () => {
       "git status | cat && git switch -c feature/foo",
       "GIT_PAGER=cat git checkout -b feature/foo",
       "git -C /workspace checkout -b feature/foo",
+      // `git checkout <branch>` is the same move as `git switch <branch>`, and
+      // used to pass. A workspace left on the base branch is what aims ShipIt's
+      // own pull-request force-push at a shared branch.
+      "git checkout main",
+      "git checkout master",
+      "git checkout stable",
+      "git checkout --force main",
+      "git fetch origin && git checkout main",
     ];
     for (const command of blocked) {
       it(`blocks: ${command}`, () => {
@@ -117,12 +125,13 @@ describe("block-branch-ops.mjs", () => {
       "git reset --hard origin/main",
       "git reset --hard HEAD~3",
       "git checkout -f",
-      "git checkout --force main",
       "git push --force",
       "git push -f origin HEAD",
       "git push --force-with-lease",
       "git push --force-with-lease=refs/heads/x:abc123",
       "git push --force-if-includes --force-with-lease origin HEAD",
+      "git push origin +main",
+      "git push origin +refs/heads/main:refs/heads/main",
       "git rebase origin/main",
       "git rebase",
       "git rebase -i origin/main",
