@@ -475,6 +475,29 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
     );
   }
 
+  /**
+   * req 42 — the control lives at the bottom-right of the LAST card in the
+   * stack, which is the corner nearest the composer and so nearest the user's
+   * hand. Which card that is moves: "Next steps" is absent with nothing to do,
+   * and "Last turn" is absent on a stale card and when the agent had nothing to
+   * say, leaving the status card alone.
+   */
+  const lastCard = hasNextSteps ? "nextSteps" : lastTurn ? "lastTurn" : "status";
+  const collapseButton = (
+    <button
+      type="button"
+      ref={collapseControl}
+      data-testid="session-status-collapse"
+      onClick={() => collapse(true)}
+      aria-expanded
+      title="Collapse session status"
+      aria-label="Collapse session status"
+      className="ml-auto -mr-1 shrink-0 rounded-md p-1 text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+    >
+      <CaretUpIcon size={ICON_SIZE.SM} weight="bold" />
+    </button>
+  );
+
   return (
     <div data-testid="session-status-card" className="flex flex-col gap-2 text-xs">
       {/* req 33 — the session's own state comes first: it is what the user
@@ -483,34 +506,24 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
         icon={<GaugeIcon size={ICON_SIZE.SM} />}
         title="Status"
         tone="soft"
-        trailing={
-          <span className="ml-auto flex items-center gap-2">
-            {/* req 14 — one mark for the whole stack, on the first cap, since
-                the stack has no single bottom-right corner any more. Full
-                strength, never faded: it is the smallest text on the cap. */}
-            {stale && (
-              <span className="text-[11px] font-semibold text-(--color-accent)">Stale</span>
-            )}
-            {/* req 42 — on the first cap because that cap is always drawn: the
-                last-turn and next-steps cards each come and go. */}
-            <button
-              type="button"
-              ref={collapseControl}
-              data-testid="session-status-collapse"
-              onClick={() => collapse(true)}
-              aria-expanded
-              title="Collapse session status"
-              aria-label="Collapse session status"
-              className="-mr-1 shrink-0 rounded-md p-0.5 text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
-            >
-              <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
-            </button>
-          </span>
-        }
+        testId="session-status-status"
+        {...(stale
+          ? {
+              // req 14 — one mark for the whole stack, on the first cap, since
+              // the stack has no single bottom-right corner. Full strength,
+              // never faded: it is the smallest text on the cap.
+              trailing: (
+                <span className="ml-auto text-[11px] font-semibold text-(--color-accent)">
+                  Stale
+                </span>
+              ),
+            }
+          : {})}
       >
         <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
           <MarkdownContent text={status.status} shipitLinks />
         </div>
+        {lastCard === "status" && <div className="mt-1 flex">{collapseButton}</div>}
       </Capped>
 
       {/* req 33 — what the last turn did, between the session's state and what
@@ -526,6 +539,7 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
           <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
             <MarkdownContent text={lastTurn} shipitLinks />
           </div>
+          {lastCard === "lastTurn" && <div className="mt-1 flex">{collapseButton}</div>}
         </Capped>
       )}
 
@@ -533,7 +547,12 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
           only card that asks something of the user, it carries the one Submit
           (req 29), and last puts it nearest the composer. */}
       {hasNextSteps && (
-        <Capped icon={<StepsIcon size={ICON_SIZE.SM} />} title="Next steps" tone="loud">
+        <Capped
+          icon={<StepsIcon size={ICON_SIZE.SM} />}
+          title="Next steps"
+          tone="loud"
+          testId="session-status-next-steps"
+        >
           {needsYou.length > 0 && (
             <div>
               <Subtitle icon={<ClipboardTextIcon size={ICON_SIZE.SM} />}>Manual steps</Subtitle>
@@ -618,6 +637,7 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
                 <ChatCircleDotsIcon size={ICON_SIZE.SM} />
                 Add comment…
               </Button>
+              {lastCard === "nextSteps" && collapseButton}
             </div>
           </div>
         </Capped>

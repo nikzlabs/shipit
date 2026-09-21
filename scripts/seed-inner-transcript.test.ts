@@ -6,7 +6,7 @@ import { DatabaseManager } from "../src/server/shared/database.js";
 import { ChatHistoryManager } from "../src/server/orchestrator/chat-history.js";
 import { SessionManager } from "../src/server/orchestrator/sessions.js";
 import {
-  SAMPLE_TURNS, buildTranscript, seedTranscript,
+  SAMPLE_STATUS, SAMPLE_TURNS, buildTranscript, seedTranscript,
   TRANSCRIPT_SESSION_ID, TRANSCRIPT_SESSION_TITLE,
 } from "./seed-inner-transcript.js";
 
@@ -76,6 +76,16 @@ describe("seedTranscript", () => {
     const db = read();
     expect(db.sessions.get(TRANSCRIPT_SESSION_ID)?.title).toBe(TRANSCRIPT_SESSION_TITLE);
     expect(db.history.load(TRANSCRIPT_SESSION_ID)).toHaveLength(buildTranscript().length);
+    db.close();
+  });
+
+  it("writes the session status card beside the transcript (docs/303)", async () => {
+    makeDatabase();
+    await seedTranscript({ env: {}, stateDir });
+
+    const db = read();
+    const card = db.sessions.get(TRANSCRIPT_SESSION_ID)?.sessionStatus;
+    expect(card).toEqual(SAMPLE_STATUS);
     db.close();
   });
 

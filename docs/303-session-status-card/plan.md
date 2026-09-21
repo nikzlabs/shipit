@@ -1007,12 +1007,16 @@ question last because it is what holds the session up (req 32).
 
 ### Collapsed to a single icon (req 42)
 
-A caret at the right-hand end of the **Status** cap — the one cap that is always
-drawn, since the last-turn and next-steps cards each come and go — replaces the
-whole stack with one accent-bordered icon button, and that button restores it.
-Both directions are the user's press: nothing in the card's contents collapses or
-expands it, so a manual step arriving into a collapsed card is legible the first
-time without one.
+A caret at the **bottom-right of the last card in the stack** replaces the whole
+stack with one accent-bordered icon button, and that button restores it. That
+corner is the one nearest the composer, and so nearest the user's hand; which
+card is last moves, because "Next steps" is absent with nothing to do and "Last
+turn" is absent on a stale card and when the agent had nothing to say, so the
+control follows it rather than sitting on a fixed card. On "Next steps" it joins
+the row that already carries Submit and "Add comment…". The "Stale" mark keeps
+its place in the Status cap. Both directions are the user's press: nothing in the
+card's contents collapses or expands it, so a manual step arriving into a
+collapsed card is legible the first time without one.
 
 - **Where the state lives.** `shipit-status-card-collapsed-by-session` in
   `localStorage` (`getSavedStatusCardCollapsed` / `saveStatusCardCollapsed`),
@@ -1042,6 +1046,17 @@ time without one.
   The offer selection is deliberately not reset: its keys are server-owned offer
   ids that `useChecklistSelection` already prunes, and clearing it would swallow
   an arriving offer's `defaultChecked` tick.
+- **Seeing it.** `scripts/seed-inner-status-card.ts` turns
+  `advanced.sessionStatusCard` on in the inner instance, and
+  `seed-inner-transcript.ts` writes `SAMPLE_STATUS` onto the session it already
+  seeds — markdown with a list, a last-turn line, two manual steps and three
+  offers of which one is taken and one recommended, so the whole stack and the
+  collapsed counts are on screen without spending a turn. The setting step runs
+  **before** the transcript step: turning the setting on marks every stored card
+  stale (`onSessionStatusCardEnabled`), so a card seeded first would come up
+  stale with its last-turn line hidden. `DOGFOOD_SEED_STATUS_CARD=0` switches the
+  setting step off; a hand toggle does not survive a reboot, because the stored
+  value reads `false` both when it was never set and when it was turned off.
 - **Focus.** The two controls live in different DOM subtrees, so the browser
   drops focus to the body on each press; a layout effect hands it to whichever
   control replaced the one pressed, and only a press arms it. A note field is

@@ -65,7 +65,7 @@ interface ApiResponse {
 
 export type FetchImpl = typeof globalThis.fetch;
 
-async function api(
+export async function api(
   fetchImpl: FetchImpl,
   baseUrl: string,
   method: string,
@@ -86,7 +86,8 @@ async function api(
   return { ok: res.ok, status: res.status, body: parsed };
 }
 
-async function waitForOrch(
+/** Shared with the other HTTP seed steps: they all need the inner orchestrator up. */
+export async function waitForOrch(
   fetchImpl: FetchImpl,
   baseUrl: string,
   opts: { timeoutMs?: number; pollIntervalMs?: number; now?: () => number } = {},

@@ -680,6 +680,27 @@ describe("SessionStatusCard", () => {
         actions: [offer({ offerId: "o1" })],
       });
 
+    it.each([
+      ["session-status-next-steps", () => full()],
+      ["session-status-last-turn", () => card({ lastTurn: "Wired the webhook route." })],
+      ["session-status-status", () => card()],
+    ])("puts the control in the last card of the stack — %s", (testId, status) => {
+      render(<SessionStatusCard status={status()} sessionId="s1" />);
+      expect(
+        within(screen.getByTestId(testId)).getByTestId("session-status-collapse"),
+      ).toBeInTheDocument();
+      expect(screen.getAllByTestId("session-status-collapse")).toHaveLength(1);
+    });
+
+    it("falls back to the status card when a stale card hides the last-turn line", () => {
+      render(
+        <SessionStatusCard status={card({ lastTurn: "Wired it.", fresh: false })} sessionId="s1" />,
+      );
+      expect(
+        within(screen.getByTestId("session-status-status")).getByTestId("session-status-collapse"),
+      ).toBeInTheDocument();
+    });
+
     it("opens expanded and collapses to a single control on the user's press", () => {
       render(<SessionStatusCard status={full()} sessionId="s1" />);
       expect(screen.getByText("Next steps")).toBeInTheDocument();

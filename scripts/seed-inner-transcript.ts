@@ -14,6 +14,7 @@ import path from "node:path";
 import { DatabaseManager } from "../src/server/shared/database.js";
 import { ChatHistoryManager, type PersistedMessage } from "../src/server/orchestrator/chat-history.js";
 import { SessionManager } from "../src/server/orchestrator/sessions.js";
+import type { SessionStatus } from "../src/server/shared/types.js";
 
 const DEFAULT_STATE_DIR = "/workspace/.inner-shipit";
 
@@ -301,6 +302,65 @@ export const SAMPLE_TURNS: readonly SampleTurn[] = [
   },
 ];
 
+/**
+ * The session status card for the same session (docs/303). It carries every
+ * shape the card can be in at once — markdown with a list in the status, a
+ * last-turn line, two manual steps, and three offers of which one is already
+ * taken and one is recommended — because the card is judged on how the whole
+ * stack reads, and the collapsed control (req 42) counts exactly these rows.
+ *
+ * `fresh`, so the last-turn card is shown; `turnSeq` is ahead of the offers'
+ * `offeredSeq` so the block's ages (req 40) are not all zero.
+ */
+export const SAMPLE_STATUS: SessionStatus = {
+  status:
+    "**Appearance and imports**, on `shipit/seeded-sample`.\n\n"
+    + "- The dark-mode toggle is done and covered by tests.\n"
+    + "- The import-order rule is in and the eleven files it flagged are fixed.\n"
+    + "- PR #212 is open and green; the convention is not documented yet.",
+  lastTurn: "Checked the composer's button spacing — it already matches the rest of the app, so nothing changed.",
+  needsYou: [
+    "Add the Stripe test key to the deploy environment — the agent cannot reach it.",
+    "Decide whether the import convention belongs in `CLAUDE.md` or in the lint rule alone.",
+  ],
+  actions: [
+    {
+      id: "system-theme-test",
+      offerId: "seed-offer-system-theme-test",
+      label: "Cover the system-theme path with a test",
+      description: "The `prefers-color-scheme` fallback only runs with nothing stored, which no test reaches today.",
+      defaultChecked: true,
+      payload: "Add a settings-store test for the prefers-color-scheme fallback when no theme is stored.",
+      offeredAt: "2026-09-14T10:41:00.000Z",
+      offeredSeq: 1,
+    },
+    {
+      id: "listen",
+      offerId: "seed-offer-listen",
+      label: "Follow the setting while the app is open",
+      description: "Right now `prefers-color-scheme` is read once at startup.",
+      payload: "Subscribe to the prefers-color-scheme media query so the theme follows a change made while ShipIt is open.",
+      offeredAt: "2026-09-14T10:41:00.000Z",
+      offeredSeq: 1,
+    },
+    {
+      id: "doc",
+      offerId: "seed-offer-doc",
+      label: "Note the import convention in `CLAUDE.md`",
+      description: "Sent already — this is what a taken offer looks like until the agent drops it.",
+      payload: "Add the import-order convention to the Code style section of CLAUDE.md.",
+      offeredAt: "2026-09-14T10:22:00.000Z",
+      offeredSeq: 1,
+      takenAt: "2026-09-14T10:44:00.000Z",
+      takenSeq: 3,
+    },
+  ],
+  fresh: true,
+  writeSeq: 4,
+  turnSeq: 4,
+  stepSeq: [2, 4],
+};
+
 export function buildTranscript(turns: readonly SampleTurn[] = SAMPLE_TURNS): PersistedMessage[] {
   toolSeq = 0;
   const messages: PersistedMessage[] = [];
@@ -337,6 +397,7 @@ export interface SeedTranscriptOpts {
   /** Rewrite the transcript of a session that is already there. */
   force?: boolean;
   turns?: readonly SampleTurn[];
+  status?: SessionStatus;
 }
 
 export type SeedTranscriptResult =
@@ -381,6 +442,9 @@ export async function seedTranscript(
     sessions.track(TRANSCRIPT_SESSION_ID, TRANSCRIPT_SESSION_TITLE, workspaceDir);
     const messages = buildTranscript(opts.turns ?? SAMPLE_TURNS);
     history.saveMessages(TRANSCRIPT_SESSION_ID, messages);
+    // docs/303 — the card is read from the session record, not the transcript,
+    // so it is a second write rather than another row.
+    sessions.setSessionStatus(TRANSCRIPT_SESSION_ID, opts.status ?? SAMPLE_STATUS);
     const turns = (opts.turns ?? SAMPLE_TURNS).length;
     log(
       `${TRANSCRIPT_SESSION_TITLE} — ${existing ? "rewritten" : "added"} with ${turns} turns `

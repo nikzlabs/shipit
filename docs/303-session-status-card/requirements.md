@@ -321,6 +321,18 @@ taken inside one session, without building an agent that talks to many.
   lifetime of its own to clear, and the count going from none to one already says
   the same thing in the place the user is looking.
 
+  Same day, on the first drawing, he moved the control: "it needs to be at the
+  bottom right on the bottom card, not in the 'status' necessarily." The first cut
+  had put it in the Status cap because that cap is the one always drawn; the
+  bottom-right of the last card is the corner nearest the composer, and so
+  nearest his hand. Which card is last moves — "Next steps" is absent with
+  nothing to do, and "Last turn" is absent on a stale card and when the agent had
+  nothing to say — so the control follows it rather than sitting on a fixed card.
+  The "Stale" mark stays in the Status cap, where the 2026-09-16 round put it.
+  Requirement 42 is unchanged: it says the card collapses into a single icon and
+  says nothing about where the control that does it lives, which is the design's
+  to settle.
+
 - 2026-09-21 — Nik: "All parts of the cards should be rendered as markdown, not
   only status. Links etc. are useful." → req 41. Not a question he was asked; the
   requirement is recorded here because the card's fields were markdown in one
