@@ -42,7 +42,6 @@ function setup(
     },
     githubAuthManager: { authenticated: true },
     sessionManager: {
-      consumeConversationReplay: () => undefined,
       get: () => session,
     },
     readSystemPrompt: async () => undefined,

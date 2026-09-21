@@ -52,8 +52,10 @@ export async function buildAgentRunParams(
   const mcpServers = Object.values(deps.credentialStore.getAllMcpServers()).filter(
     (s) => s.enabled,
   );
-  const replay = deps.sessionManager.consumeConversationReplay(sessionId);
   const sessionInfo = deps.sessionManager.get(sessionId);
+  // Read, not taken: every attempt of this turn must seed its agent with the same
+  // transcript, and the row is retired by `setAgentSessionId` once a conversation exists.
+  const replay = sessionInfo?.conversationReplay;
   // Prefer the session row: another viewer may have changed the connection's selection.
   const selectedModel = sessionInfo?.model ?? deps.getSelectedModel();
   const reasoningEffort = sessionInfo?.reasoningEffort ?? deps.getSelectedReasoning?.();
