@@ -473,6 +473,42 @@ export function saveChangedDocsExpanded(sessionId: string, expanded: boolean): v
   }
 }
 
+// docs/303-session-status-card req 42 — the card is collapsed by hand, per
+// session, and stays that way until the user opens it again. Stored beside the
+// other per-session view state rather than on the session record: it is what
+// this browser is showing, not something the agent or another viewer decides.
+const STATUS_CARD_COLLAPSED_KEY = "shipit-status-card-collapsed-by-session";
+
+function readStatusCardCollapsedMap(): Record<string, boolean> {
+  return getLocalStorageObject<Record<string, boolean>>(STATUS_CARD_COLLAPSED_KEY, {}, (parsed) => {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, boolean> = {};
+    for (const [id, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (v === true) out[id] = true;
+    }
+    return out;
+  });
+}
+
+export function getSavedStatusCardCollapsed(sessionId: string): boolean {
+  return readStatusCardCollapsedMap()[sessionId] ?? false;
+}
+
+/** Only the collapsed ids are stored, so the map does not grow with every session opened. */
+export function saveStatusCardCollapsed(sessionId: string, collapsed: boolean): void {
+  try {
+    const map = readStatusCardCollapsedMap();
+    const next: Record<string, boolean> = {};
+    for (const [id, v] of Object.entries(map)) {
+      if (id !== sessionId) next[id] = v;
+    }
+    if (collapsed) next[sessionId] = true;
+    localStorage.setItem(STATUS_CARD_COLLAPSED_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 const COLLAPSED_REPOS_KEY = "shipit-collapsed-repos";
 
 export function getSavedCollapsedRepos(): Set<string> {

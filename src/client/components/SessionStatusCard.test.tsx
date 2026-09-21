@@ -669,4 +669,269 @@ describe("SessionStatusCard", () => {
       expect(screen.getByText("#212").tagName).toBe("STRONG");
     });
   });
+
+  describe("collapsing the card (req 42)", () => {
+    afterEach(() => localStorage.clear());
+
+    const full = () =>
+      card({
+        lastTurn: "Wired the webhook route.",
+        needsYou: ["Add the Stripe test key."],
+        actions: [offer({ offerId: "o1" })],
+      });
+
+    it.each([
+      ["session-status-next-steps", () => full()],
+      ["session-status-last-turn", () => card({ lastTurn: "Wired the webhook route." })],
+      ["session-status-status", () => card()],
+    ])("puts the control in the last card of the stack — %s", (testId, status) => {
+      render(<SessionStatusCard status={status()} sessionId="s1" />);
+      expect(
+        within(screen.getByTestId(testId)).getByTestId("session-status-collapse"),
+      ).toBeInTheDocument();
+      expect(screen.getAllByTestId("session-status-collapse")).toHaveLength(1);
+    });
+
+    it("falls back to the status card when a stale card hides the last-turn line", () => {
+      render(
+        <SessionStatusCard status={card({ lastTurn: "Wired it.", fresh: false })} sessionId="s1" />,
+      );
+      expect(
+        within(screen.getByTestId("session-status-status")).getByTestId("session-status-collapse"),
+      ).toBeInTheDocument();
+    });
+
+    it("opens expanded and collapses to a single control on the user's press", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByText("Next steps")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+
+      expect(screen.queryByText("Next steps")).not.toBeInTheDocument();
+      expect(screen.queryByText(/routes and tests done/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Wired the webhook route.")).not.toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+    });
+
+    // The only thing jsdom can see of an alignment; the rendering was checked in
+    // a browser. Without it a restyle silently undoes something Nik asked for.
+    it("puts the collapsed icon at the right, where the control that collapsed it was", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-card").className).toContain("justify-end");
+    });
+
+    it("reopens from the collapsed control", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      expect(screen.getByText("Next steps")).toBeInTheDocument();
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+    });
+
+    it("stays collapsed for that session across a remount, and only that session", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      cleanup();
+
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      cleanup();
+
+      render(<SessionStatusCard status={full()} sessionId="s2" />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+    });
+
+    it("reads the new session's own state when handed one without remounting", () => {
+      const { rerender } = render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+
+      rerender(<SessionStatusCard status={full()} sessionId="s2" />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+
+      rerender(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+    });
+
+    it("stays collapsed when a manual step or an offer arrives, and counts it", () => {
+      const { rerender } = render(
+        <SessionStatusCard status={card({ needsYou: ["Add the key."] })} sessionId="s1" />,
+      );
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 manual step",
+      );
+
+      rerender(
+        <SessionStatusCard
+          status={card({ needsYou: ["Add the key.", "Merge #212."], actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+        />,
+      );
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 2 manual steps, 1 follow-up",
+      );
+    });
+
+    it("counts only what is still outstanding", () => {
+      render(
+        <SessionStatusCard
+          status={card({
+            actions: [offer({ offerId: "o1" }), offer({ offerId: "o2", takenAt: "2026-09-21T10:00:00.000Z" })],
+          })}
+          sessionId="s1"
+        />,
+      );
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 follow-up",
+      );
+    });
+
+    it("says nothing is waiting when nothing is", () => {
+      render(<SessionStatusCard status={card()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+    });
+
+    it("still shows the stale mark while collapsed (req 14)", () => {
+      render(<SessionStatusCard status={card({ fresh: false })} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByText("Stale")).toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — may be behind",
+      );
+    });
+
+    it("counts an offer ticked again after it was sent, so a retry is not concealed", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={card({ actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+          onSubmit={onSubmit}
+        />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o1" }));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o1" }));
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 follow-up",
+      );
+    });
+
+    it("counts a note written against a step already reported done", () => {
+      const onSubmit = vi.fn(() => true);
+      const status = card({ needsYou: ["Add the key."] });
+      render(<SessionStatusCard status={status} sessionId="s1" onSubmit={onSubmit} />);
+      fireEvent.click(screen.getByRole("checkbox", { name: "I've done this: Add the key." }));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      fireEvent.click(screen.getByRole("button", { name: "Add a note: Add the key." }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Note: Add the key." }), {
+        target: { value: "I named it billing-prod." },
+      });
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 manual step",
+      );
+    });
+
+    it("keeps ticks and notes through a collapse and a reopen", () => {
+      render(
+        <SessionStatusCard
+          status={card({ needsYou: ["Add the key."], actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+        />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o1" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add a note: Add the key." }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Note: Add the key." }), {
+        target: { value: "done, as billing-prod." },
+      });
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+
+      expect((screen.getByRole("checkbox", { name: "Label o1" }) as HTMLInputElement).checked).toBe(true);
+      expect(screen.getByRole("textbox", { name: "Note: Add the key." })).toHaveValue(
+        "done, as billing-prod.",
+      );
+    });
+
+    it("does not carry one session's reported steps and notes into another", () => {
+      const onSubmit = vi.fn(() => true);
+      const shared = () => card({ needsYou: ["Merge PR #212."] });
+      const { rerender } = render(
+        <SessionStatusCard status={shared()} sessionId="s1" onSubmit={onSubmit} />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: "I've done this: Merge PR #212." }));
+      fireEvent.click(screen.getByRole("button", { name: "Add a note: Merge PR #212." }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Note: Merge PR #212." }), {
+        target: { value: "GitHub will not let me." },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      expect(screen.getByText("SENT")).toBeInTheDocument();
+
+      rerender(<SessionStatusCard status={shared()} sessionId="s2" onSubmit={onSubmit} />);
+
+      expect(screen.queryByText("SENT")).not.toBeInTheDocument();
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(
+        (screen.getByRole("checkbox", { name: "I've done this: Merge PR #212." }) as HTMLInputElement)
+          .checked,
+      ).toBe(false);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 manual step",
+      );
+    });
+
+    it("hands focus to the control that replaces the one pressed", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      const collapseBtn = screen.getByTestId("session-status-collapse");
+      collapseBtn.focus();
+      fireEvent.click(collapseBtn);
+      expect(document.activeElement).toBe(screen.getByTestId("session-status-collapsed"));
+
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      expect(document.activeElement).toBe(screen.getByTestId("session-status-collapse"));
+    });
+
+    it("does not pull focus into an open note when the card is reopened", () => {
+      render(<SessionStatusCard status={card({ needsYou: ["Add the key."] })} sessionId="s1" />);
+      fireEvent.click(screen.getByRole("button", { name: "Add a note: Add the key." }));
+      expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Note: Add the key." }));
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+
+      expect(document.activeElement).toBe(screen.getByTestId("session-status-collapse"));
+    });
+
+    it("collapses per mount when there is no session to key on", () => {
+      render(<SessionStatusCard status={full()} />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      cleanup();
+
+      render(<SessionStatusCard status={full()} />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+    });
+  });
 });

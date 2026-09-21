@@ -279,11 +279,64 @@ taken inside one session, without building an agent that talks to many.
     clicking it does not tick the row it sits in. The same goes for the transcript
     action card, whose rows are the same rows.
 
+42. The card can be collapsed into a single icon, so that a long session's
+    growing list of steps, follow-ups and status does not take the screen. The
+    card opens expanded; the user collapses it, and it stays collapsed for that
+    session until they open it again. It never folds itself up: a new manual step
+    is visible the first time, without a press. Collapsing hides the card's words
+    and never the fact that something is waiting — what the collapsed icon shows
+    still says that the user is needed. This is the pinned card at the end of the
+    conversation; the transcript's own follow-up action card is unchanged.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-21 — Nik: "need a way to collapse the cards into a single icon, in a
+  long session the list of steps/followups/status only grows". → req 42. Two
+  things were put to him and both are in the requirement. **When it collapses**:
+  he chose manual only — the card opens expanded, an icon collapses it, and it
+  stays collapsed for that session until he opens it again; he rejected
+  collapsing itself once long, and rejected collapsed by default, because a new
+  manual step must be visible the first time without a press. **What it covers**:
+  offered the transcript cards as well, he answered that there is only a single
+  set of status cards. That is right for him — the transcript's
+  `ActionChecklistCard` is the older follow-up card from before this feature and
+  he does not see it — so the scope is the pinned card and that component is left
+  alone.
+
+  Decided here and not by him. **The collapsed state lives in this browser**, per
+  session, beside the other per-session view state: it is what this viewer is
+  showing, not something the agent or a second viewer decides, and it survives a
+  reload and a session switch because the point is a long session staying quiet.
+  **The icon carries what is outstanding** — a count of the manual steps not yet
+  reported, a count of the offers not yet sent, and the "Stale" mark — counted on
+  the same `taken` the rows grey themselves on, so the pill cannot disagree with
+  the card underneath it. Without that, collapsing would turn the card into a
+  hiding place the moment it was used. **An arriving step or offer does nothing
+  more than raise its count.** He ruled out expanding, and no separate "new" mark
+  was added beside the count: a mark means unseen, which needs a seen/unseen
+  lifetime of its own to clear, and the count going from none to one already says
+  the same thing in the place the user is looking.
+
+  Same day, on the first drawing, he moved the control: "it needs to be at the
+  bottom right on the bottom card, not in the 'status' necessarily." The first cut
+  had put it in the Status cap because that cap is the one always drawn; the
+  bottom-right of the last card is the corner nearest the composer, and so
+  nearest his hand. Which card is last moves — "Next steps" is absent with
+  nothing to do, and "Last turn" is absent on a stale card and when the agent had
+  nothing to say — so the control follows it rather than sitting on a fixed card.
+  The "Stale" mark stays in the Status cap, where the 2026-09-16 round put it.
+  Requirement 42 is unchanged: it says the card collapses into a single icon and
+  says nothing about where the control that does it lives, which is the design's
+  to settle.
+
+  And once it was in front of him collapsed: "the collapse button is on the
+  right side, but the collapsed card is on the left. Move it to the right, too."
+  So the icon is right-aligned and lands in the corner the control it replaced
+  sat in, rather than jumping the width of the card.
 
 - 2026-09-21 — Nik: "All parts of the cards should be rendered as markdown, not
   only status. Links etc. are useful." → req 41. Not a question he was asked; the

@@ -1049,6 +1049,74 @@ give is still the last thing below it. Its offers are unaffected — a turn can 
 with a question while the card offers actions, and both are reachable, the
 question last because it is what holds the session up (req 32).
 
+### Collapsed to a single icon (req 42)
+
+A caret at the **bottom-right of the last card in the stack** replaces the whole
+stack with one accent-bordered icon button, right-aligned so it lands in the
+corner the control it replaced sat in; that button restores it. That
+corner is the one nearest the composer, and so nearest the user's hand; which
+card is last moves, because "Next steps" is absent with nothing to do and "Last
+turn" is absent on a stale card and when the agent had nothing to say, so the
+control follows it rather than sitting on a fixed card. On "Next steps" it joins
+the row that already carries Submit and "Add comment…". The "Stale" mark keeps
+its place in the Status cap. Both directions are the user's press: nothing in the
+card's contents collapses or expands it, so a manual step arriving into a
+collapsed card is legible the first time without one.
+
+- **Where the state lives.** `shipit-status-card-collapsed-by-session` in
+  `localStorage` (`getSavedStatusCardCollapsed` / `saveStatusCardCollapsed`),
+  beside the per-session view state the preview target and the changed-docs
+  disclosure already keep there. It is what this browser is showing, not
+  something the agent or a second viewer decides, and it survives a reload and a
+  session switch — which is the point, since the session it quietens is a long
+  one. Only the collapsed ids are stored, so the map does not grow with every
+  session opened. A card with no `sessionId` collapses per mount.
+- **What the icon carries.** A count of the manual steps still outstanding, a
+  count of the outstanding offers, and the "Stale" mark (req 14). Outstanding
+  means anything about the row is unsent — never sent, ticked again after a send,
+  or carrying a note the agent has not been told — not merely `!taken`, which
+  concealed the two cases the user is most likely waiting on: a retry after a
+  crash, and a note written against a step already reported. With nothing
+  outstanding on a current card it is the bare gauge icon of req 42, and it grows
+  only by what collapsing must not conceal. Nothing marks an arrival beyond the
+  count: a "new" dot would need a seen/unseen lifetime of its own to clear.
+- **Session-scoped interaction state.** `owner` holds the session the sent set,
+  reported steps, notes, open notes and step selection belong to, and a
+  render-phase reset starts them from nothing when the card is handed another
+  session without remounting. It is state rather than a ref precisely because the
+  reset is a render-phase update: a ref survives a render React discards while
+  the updates beside it do not. Those keys are a manual step's TEXT, so two
+  sessions with a step worded the same otherwise shared a SENT grey and an unsent
+  note — and the collapsed count then reported the second session's step as done.
+  The offer selection is deliberately not reset: its keys are server-owned offer
+  ids that `useChecklistSelection` already prunes, and clearing it would swallow
+  an arriving offer's `defaultChecked` tick.
+- **Seeing it.** `scripts/seed-inner-status-card.ts` turns
+  `advanced.sessionStatusCard` on in the inner instance, and
+  `seed-inner-transcript.ts` writes `SAMPLE_STATUS` onto the session it already
+  seeds — markdown with a list, a last-turn line, two manual steps and three
+  offers of which one is taken and one recommended, so the whole stack and the
+  collapsed counts are on screen without spending a turn. The setting step runs
+  **before** the transcript step: turning the setting on marks every stored card
+  stale (`onSessionStatusCardEnabled`), so a card seeded first would come up
+  stale with its last-turn line hidden. `DOGFOOD_SEED_STATUS_CARD=0` switches the
+  setting step off; a hand toggle does not survive a reboot, because the stored
+  value reads `false` both when it was never set and when it was turned off.
+
+  The card write is NOT behind the transcript seed's already-present guard.
+  That guard exists so a real turn typed into the seeded session survives, and
+  the card is not a transcript row: every instance seeded before this change has
+  the session and no card, so gating the card on it is how the card fails to
+  appear on the one instance anybody is looking at — which is what happened. A
+  card that IS there is left alone, because an agent driven in that session owns
+  it from then on.
+- **Focus.** The two controls live in different DOM subtrees, so the browser
+  drops focus to the body on each press; a layout effect hands it to whichever
+  control replaced the one pressed, and only a press arms it. A note field is
+  focused by the press that opens it rather than by `autoFocus`, so reopening the
+  card does not pull focus into a note the user did not ask for. Both verified in
+  Chromium, where jsdom cannot see focus ordering.
+
 ## Evolving the action card (req 19, 21)
 
 - With the flag on, `propose_actions` is absent from every tool list, so no
@@ -1361,6 +1429,14 @@ built file is named in brackets. Every one of them exists.
   once, plural headings, and the two boundaries: every line of a multi-line note
   indented, a step's own text folded onto one line, and "Add comment…" composing
   by the same rule.
+- `SessionStatusCard.test.tsx` (req 42) — the collapse and the reopen; the
+  state kept per session across a remount and a rerender into another session;
+  the counts, including an offer ticked again after a send and a note written
+  against a step already reported, which are what a `!taken` count concealed;
+  the stale mark while collapsed; ticks and notes surviving a collapse; no
+  reported step or note carried into another session; and focus handed to the
+  control that replaced the one pressed. Each was reproduced red by mutating the
+  fix it guards.
 - `ActionChecklistCard.test.tsx` — unchanged behavior after the split.
 - `agent-instructions.test.ts` — section present in flag-on variants, absent
   in flag-off ones.
@@ -1394,6 +1470,7 @@ tests.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts`, `src/server/shared/types/domain-types/session.ts` — column and type.
 - `src/server/orchestrator/prompts/skeleton.md` (the `{{FOLLOW_UP_ACTIONS}}` slot), `prompts/propose-actions.md`, `prompts/session-status.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
 - `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx`, `src/client/components/message-markdown.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation, and the markdown every field renders through.
+- `src/client/utils/local-storage.ts` — `getSavedStatusCardCollapsed` / `saveStatusCardCollapsed`, the per-session collapsed state (req 42).
 - `src/client/components/MessageList/pending-answer.ts` — which elements render a card the user answers, and which one the conversation ends with (req 32).
 - `src/client/components/MessageList/hooks/useMessageScroll.ts` — follow-the-bottom state, reset on the displayed session (planning#595).
 
