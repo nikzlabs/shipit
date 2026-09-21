@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,9 +8,11 @@ import path from "node:path";
 import {
   decidePnpmBaseEligibility,
   stagePnpmInputs,
+  MAX_PATCH_BYTES,
   PNPM_LOCKFILE,
   PNPM_WORKSPACE_YAML,
   type PnpmBaseEligibility,
+  type PnpmIneligible,
   type StagedPnpmInputs,
 } from "./pnpm-base-inputs.js";
 
@@ -50,10 +53,16 @@ function makeRepo(files: Record<string, string>): { dir: string; commit: string 
   return { dir, commit: git(dir, "rev-parse", "HEAD") };
 }
 
-async function stage(files: Record<string, string>): Promise<StagedPnpmInputs> {
+async function stageRaw(
+  files: Record<string, string>,
+): Promise<StagedPnpmInputs | PnpmIneligible> {
   const repo = makeRepo(files);
   const destDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-stage-"));
-  const staged = await stagePnpmInputs({ repoDir: repo.dir, commit: repo.commit, destDir });
+  return stagePnpmInputs({ repoDir: repo.dir, commit: repo.commit, destDir });
+}
+
+async function stage(files: Record<string, string>): Promise<StagedPnpmInputs> {
+  const staged = await stageRaw(files);
   if ("eligible" in staged) throw new Error(`staging refused: ${staged.code} ${staged.detail}`);
   return staged;
 }
@@ -247,30 +256,121 @@ snapshots:
     expect(decision.eligible).toBe(true);
   });
 
-  it("refuses a patched dependency declared in the lockfile or the manifest", async () => {
-    const fromLock = decide(
-      await stage({
+  describe("patchedDependencies", () => {
+    const PATCH = "--- a/index.js\n+++ b/index.js\n";
+    const PATCH_SHA256 = crypto.createHash("sha256").update(PATCH).digest("hex");
+    const PATCH_PATH = "patches/left-pad@1.3.0.patch";
+
+    /** What `pnpm patch-commit` writes: the hash in the lockfile, the path in the workspace file. */
+    function patched(
+      opts: { hash?: string; declaredPath?: string | null; patchText?: string | null } = {},
+    ): Record<string, string> {
+      const hash = opts.hash ?? PATCH_SHA256;
+      const declaredPath = opts.declaredPath === undefined ? PATCH_PATH : opts.declaredPath;
+      return {
         ...BASE_FILES,
         [PNPM_LOCKFILE]: `${LOCK}
 patchedDependencies:
-  left-pad@1.3.0:
-    path: patches/left-pad.patch
+  left-pad@1.3.0: ${hash}
 `,
-      }),
-    );
-    expect(fromLock).toMatchObject({ eligible: false, code: "patched-dependency" });
+        ...(declaredPath === null
+          ? {}
+          : { [PNPM_WORKSPACE_YAML]: `patchedDependencies:\n  left-pad@1.3.0: ${declaredPath}\n` }),
+        ...(opts.patchText === null ? {} : { [PATCH_PATH]: opts.patchText ?? PATCH }),
+      };
+    }
 
-    const fromManifest = decide(
-      await stage({
+    it("admits a patch whose committed bytes hash to what the lockfile pins, and stages it", async () => {
+      const staged = await stage(patched());
+      expect(decide(staged).eligible).toBe(true);
+      // The patch has to REACH the builder: eligibility alone would stay green if staging never
+      // copied the file, and then the build would fail on a patch pnpm cannot read.
+      expect(fs.readFileSync(path.join(staged.dir, PATCH_PATH), "utf-8")).toBe(PATCH);
+      expect(staged.patches).toEqual([
+        { key: "left-pad@1.3.0", relPath: PATCH_PATH, sha256: PATCH_SHA256, lockHash: PATCH_SHA256 },
+      ]);
+    });
+
+    it("accepts the path pnpm resolves, so a leading ./ is the same file", async () => {
+      const staged = await stage(patched({ declaredPath: `./${PATCH_PATH}` }));
+      expect(decide(staged).eligible).toBe(true);
+    });
+
+    it("refuses a patch file the commit does not carry, naming the package", async () => {
+      const decision = decide(await stage(patched({ patchText: null })));
+      expect(decision).toMatchObject({ eligible: false, code: "patched-dependency" });
+      expect((decision as PnpmIneligible).detail).toContain("left-pad@1.3.0");
+      expect((decision as PnpmIneligible).detail).toContain(PATCH_PATH);
+    });
+
+    it("refuses a committed patch that hashes to anything but what the lockfile pins", async () => {
+      // The lockfile and the patch disagreeing is what a session's own `--frozen-lockfile`
+      // install refuses as ERR_PNPM_LOCKFILE_CONFIG_MISMATCH (measured 2026-09-21, pnpm 12.5.1).
+      const decision = decide(await stage(patched({ patchText: `${PATCH}+// edited\n` })));
+      expect(decision).toMatchObject({ eligible: false, code: "patched-dependency" });
+      expect((decision as PnpmIneligible).detail).toContain(PATCH_SHA256);
+    });
+
+    it("refuses a lockfile patch the workspace file names no path for", async () => {
+      const decision = decide(await stage(patched({ declaredPath: null })));
+      expect(decision).toMatchObject({ eligible: false, code: "patched-dependency" });
+      expect((decision as PnpmIneligible).detail).toContain("left-pad@1.3.0");
+    });
+
+    it("refuses a workspace-declared patch the lockfile pins nothing for", async () => {
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          [PNPM_WORKSPACE_YAML]: `patchedDependencies:\n  left-pad@1.3.0: ${PATCH_PATH}\n`,
+          [PATCH_PATH]: PATCH,
+        }),
+      );
+      expect(decision).toMatchObject({ eligible: false, code: "patched-dependency" });
+    });
+
+    it("hashes the patch the way pnpm does, so a CRLF patch is not refused", async () => {
+      // Measured 2026-09-21 on 12.5.1: a CRLF copy of a patch satisfies the LF hash its
+      // lockfile pins, so pnpm normalizes before hashing. Hashing raw bytes would take a base
+      // off every repo with a CRLF-committed patch, and the file is still staged verbatim.
+      const crlf = PATCH.replace(/\n/g, "\r\n");
+      const staged = await stage(patched({ patchText: crlf }));
+      expect(decide(staged).eligible).toBe(true);
+      expect(fs.readFileSync(path.join(staged.dir, PATCH_PATH), "utf-8")).toBe(crlf);
+    });
+
+    it("refuses patches past the total size cap", async () => {
+      const big = "x".repeat(MAX_PATCH_BYTES + 1);
+      const staged = await stageRaw(
+        patched({
+          hash: crypto.createHash("sha256").update(big).digest("hex"),
+          patchText: big,
+        }),
+      );
+      expect(staged).toMatchObject({ eligible: false, code: "patched-dependency" });
+    });
+
+    it("ignores patchedDependencies in package.json#pnpm, which pnpm 12 does not read", async () => {
+      // Measured 2026-09-21 on 12.5.1: "The \"pnpm\" field in package.json is no longer read by
+      // pnpm ... keys were ignored", and the package installs unpatched. So a patch declared
+      // only there reaches neither the builder nor a session, and must not cost either a base.
+      const staged = await stage({
         ...BASE_FILES,
         "package.json": JSON.stringify({
           name: "app",
           dependencies: { "left-pad": "1.3.0" },
-          pnpm: { patchedDependencies: { "left-pad@1.3.0": "patches/left-pad.patch" } },
+          pnpm: { patchedDependencies: { "left-pad@1.3.0": PATCH_PATH } },
         }),
-      }),
-    );
-    expect(fromManifest).toMatchObject({ eligible: false, code: "patched-dependency" });
+        [PATCH_PATH]: PATCH,
+      });
+      expect(decide(staged).eligible).toBe(true);
+      expect(staged.patches).toEqual([]);
+    });
+  });
+
+  it("leaves an unpatched repo's staged set and decision unchanged", async () => {
+    const staged = await stage(BASE_FILES);
+    expect(staged.patches).toEqual([]);
+    expect(decide(staged).eligible).toBe(true);
   });
 
   it.each([

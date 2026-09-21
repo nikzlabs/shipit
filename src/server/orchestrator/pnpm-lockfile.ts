@@ -38,12 +38,26 @@ export interface PnpmImporterSpecifier {
   resolved: string;
 }
 
+/**
+ * One `patchedDependencies` entry. `hash` is the sha256 of the patch file's bytes — measured
+ * 2026-09-21 on pnpm 12.5.1, which appends it to the package key as `(patch_hash=<hash>)` and
+ * refuses a `--frozen-lockfile` install whose committed patch hashes to anything else.
+ *
+ * pnpm 12 records the hash alone; a lockfile written by pnpm <= 11 records
+ * `{hash, path}`. The path is deliberately not read: pnpm 12 takes patch paths from
+ * `pnpm-workspace.yaml`, and the builder runs pnpm 12.
+ */
+export interface PnpmLockPatch {
+  key: string;
+  hash: string | null;
+}
+
 export interface ParsedPnpmLock {
   lockfileVersion: string;
   packages: PnpmLockPackage[];
   importers: PnpmImporterSpecifier[];
-  /** Keys of `patchedDependencies`; a patched entry is not verifiable from its tarball alone. */
-  patchedDependencies: string[];
+  /** `patchedDependencies`, which is what the frozen install reconciles the committed patches against. */
+  patchedDependencies: PnpmLockPatch[];
   /** Importer directories, so the builder stages every workspace manifest the lockfile names. */
   importerDirs: string[];
   /** Every `snapshots:` dependency edge target, which is where a transitive link shows up. */
@@ -167,7 +181,15 @@ export function parsePnpmLock(text: string): ParsedPnpmLock {
     }
   }
 
-  const patched = isRecord(doc.patchedDependencies) ? Object.keys(doc.patchedDependencies) : [];
+  const patched: PnpmLockPatch[] = [];
+  if (isRecord(doc.patchedDependencies)) {
+    for (const [key, value] of Object.entries(doc.patchedDependencies)) {
+      if (typeof value === "string") patched.push({ key, hash: value });
+      else if (isRecord(value) && typeof value.hash === "string") {
+        patched.push({ key, hash: value.hash });
+      } else patched.push({ key, hash: null });
+    }
+  }
 
   return {
     lockfileVersion,

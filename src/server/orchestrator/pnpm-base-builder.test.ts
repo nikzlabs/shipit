@@ -112,6 +112,20 @@ function fetchFor(tarball: Buffer): FetchLike {
 
 const okFetch: FetchLike = fetchFor(TARBALL);
 
+/**
+ * What the real container leaves behind: pnpm's tree and the `.modules.yaml` it writes beside
+ * it. `pendingBuilds` is pnpm's own record of packages that still have to build, which the
+ * builder now reads before publishing.
+ */
+function writeBuiltTree(cfg: Docker.ContainerCreateOptions, pendingBuilds: string[] = []): void {
+  const mount = (cfg.HostConfig?.Mounts ?? []).find(
+    (m) => (m as { Target?: string }).Target === BUILD_PROJECT_DIR,
+  ) as { Source?: string } | undefined;
+  const modules = path.join(mount?.Source ?? "", "node_modules");
+  fs.mkdirSync(path.join(modules, "left-pad"), { recursive: true });
+  fs.writeFileSync(path.join(modules, ".modules.yaml"), JSON.stringify({ pendingBuilds }));
+}
+
 /** A Docker stub that records what it was asked to run and pretends the build succeeded. */
 function fakeDocker(opts: { exitCode?: number; onRun?: (cfg: Docker.ContainerCreateOptions) => void } = {}): {
   docker: Docker;
@@ -249,15 +263,7 @@ describe("buildVerifiedPnpmBase", () => {
       });
     };
     const fake = fakeDocker({
-      onRun: (cfg) => {
-        // Stand in for the container: create the tree the real build would leave behind.
-        const mount = (cfg.HostConfig?.Mounts ?? []).find(
-          (m) => (m as { Target?: string }).Target === BUILD_PROJECT_DIR,
-        ) as { Source?: string } | undefined;
-        fs.mkdirSync(path.join(mount?.Source ?? "", "node_modules", "left-pad"), {
-          recursive: true,
-        });
-      },
+      onRun: writeBuiltTree,
     });
 
     const result = await buildVerifiedPnpmBase(deps(fake.docker, { publish }), request(repo));
@@ -340,6 +346,64 @@ describe("buildVerifiedPnpmBase", () => {
     expect(fake.created).toHaveLength(0);
   });
 
+  it.each([
+    [
+      "a package pnpm still has to build",
+      ["left-pad@1.3.0(patch_hash=abc)"],
+      "left-pad@1.3.0(patch_hash=abc)",
+    ],
+    ["a tree that cannot say whether anything is pending", null, "nothing left to build"],
+  ])("publishes no base for %s", async (_name, pendingBuilds, expected) => {
+    // The install-time-build refusal is taken over the staged TARBALLS, and a committed patch is
+    // content those do not carry: measured 2026-09-21, a patch adding a `postinstall` leaves the
+    // offline `--ignore-scripts` install at rc=0 with the package unbuilt and named here. A base
+    // carrying one hands the consuming session a build it cannot run (planning#604).
+    const repo = eligibleRepo();
+    cleanup.push(repo.dir);
+    let published = 0;
+    const fake = fakeDocker({
+      onRun: (cfg) => {
+        if (pendingBuilds === null) {
+          const mount = (cfg.HostConfig?.Mounts ?? []).find(
+            (m) => (m as { Target?: string }).Target === BUILD_PROJECT_DIR,
+          ) as { Source?: string } | undefined;
+          fs.mkdirSync(path.join(mount?.Source ?? "", "node_modules", "left-pad"), {
+            recursive: true,
+          });
+        } else writeBuiltTree(cfg, pendingBuilds);
+      },
+    });
+    const result = await buildVerifiedPnpmBase(
+      deps(fake.docker, {
+        publish: () => {
+          published++;
+          return Promise.resolve({ outcome: "created", pointer: null });
+        },
+      }),
+      request(repo),
+    );
+    expect(result).toMatchObject({ status: "build-failed" });
+    expect((result as { detail: string }).detail).toContain(expected);
+    expect(published).toBe(0);
+  });
+
+  it("publishes a base for a repo whose OWN lifecycle script is deferred", async () => {
+    // pnpm defers the PROJECT's scripts into `pendingBuilds` too, as bare importer ids —
+    // measured 2026-09-21, a repo with scriptless dependencies and a root `postinstall`
+    // records `["."]`. Those are the session's to run (plan.md section 5), so counting them
+    // would take a base off a repo that is eligible today.
+    const repo = eligibleRepo();
+    cleanup.push(repo.dir);
+    const fake = fakeDocker({ onRun: (cfg) => writeBuiltTree(cfg, ["."]) });
+    const result = await buildVerifiedPnpmBase(
+      deps(fake.docker, {
+        publish: () => Promise.resolve({ outcome: "created", pointer: null }),
+      }),
+      request(repo),
+    );
+    expect(result).toMatchObject({ status: "published" });
+  });
+
   it("reports a failed build and publishes nothing", async () => {
     const repo = eligibleRepo();
     cleanup.push(repo.dir);
@@ -362,14 +426,7 @@ describe("buildVerifiedPnpmBase", () => {
     const repo = eligibleRepo();
     cleanup.push(repo.dir);
     const fake = fakeDocker({
-      onRun: (cfg) => {
-        const mount = (cfg.HostConfig?.Mounts ?? []).find(
-          (m) => (m as { Target?: string }).Target === BUILD_PROJECT_DIR,
-        ) as { Source?: string } | undefined;
-        fs.mkdirSync(path.join(mount?.Source ?? "", "node_modules", "left-pad"), {
-          recursive: true,
-        });
-      },
+      onRun: writeBuiltTree,
     });
     await buildVerifiedPnpmBase(
       deps(fake.docker, {
@@ -417,12 +474,7 @@ describe("buildVerifiedPnpmBase", () => {
 
   function treeWritingDocker() {
     return fakeDocker({
-      onRun: (cfg) => {
-        const mount = (cfg.HostConfig?.Mounts ?? []).find(
-          (m) => (m as { Target?: string }).Target === BUILD_PROJECT_DIR,
-        ) as { Source?: string } | undefined;
-        fs.mkdirSync(path.join(mount?.Source ?? "", "node_modules", "left-pad"), { recursive: true });
-      },
+      onRun: writeBuiltTree,
     });
   }
 

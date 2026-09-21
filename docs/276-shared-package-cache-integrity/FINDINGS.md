@@ -670,7 +670,36 @@ exactly that ground.
 |---|---|
 | `.pnpmfile.mjs` | `--ignore-pnpmfile` suppresses **both** the module body and `readPackage`, with a positive control showing both run without the flag. **Admitted 2026-09-21** — the `hook-source` refusal of `.mjs` is gone, and a `.pnpmfile` was never staged in the first place |
 | `workspace:` / `link:` to an in-repo path | `pnpm install --frozen-lockfile --offline` against a dead registry succeeds with **only the manifests staged** — no member source needed — and the link pnpm writes is **relative** (`../../../lib`), so it resolves against the consuming session's own checkout rather than the builder's |
-| `patchedDependencies` | The committed patch is applied under `--ignore-scripts --ignore-pnpmfile`, and an unparseable patch **fails the install closed** rather than installing unpatched |
+| `patchedDependencies` | The committed patch is applied under `--ignore-scripts --ignore-pnpmfile`, and an unparseable patch **fails the install closed** rather than installing unpatched. **Admitted 2026-09-21** — re-measured on the real pipeline; see below |
+
+## Finding: what `patchedDependencies` costs, and the one rule it broke
+
+Measured 2026-09-21 in this container, pnpm **12.5.1** and the pinned **12.4.1** where noted. The
+class is now admitted; these are the measurements the admission rests on.
+
+| Question | Answer |
+|---|---|
+| Which config does pnpm 12 read patch paths from? | **`pnpm-workspace.yaml` only.** `package.json#pnpm` is not read at all — pnpm warns "The \"pnpm\" field in package.json is no longer read by pnpm ... keys were ignored" and installs the package **unpatched**. Confirmed on 12.4.1, the version the builder pins |
+| What is the lockfile's patch hash? | The **sha256 of the patch file's UTF-8 text with CRLF normalized to LF**, hex — not of its raw bytes: a CRLF copy of a patch satisfies the LF hash its lockfile pins, so hashing bytes would take a base off every repo with a CRLF-committed patch (found by independent review, then measured). pnpm records it as the `patchedDependencies` value and appends it to the importer and snapshot keys as `(patch_hash=<sha256>)`; the `packages:` entry stays the plain published version, so tarball verification is untouched. Matched byte-for-byte, and independently confirmed by the integration cell, whose hand-written lockfile hash 12.4.1 accepts under `--frozen-lockfile` |
+| Can a patch write outside the package it patches? | **No.** A diff naming `../../../../../../tmp/ESCAPED` is refused by pnpm's own applier — "patch path escapes target dir" — and the install fails closed, so the build yields no base. Independent review confirmed at pnpm 12.4.1's source that the applier also rejects absolute paths, creates regular files only (a diff mode header does not become a symlink or a setuid file), and preserves existing permissions on modification |
+| Does patch application run anything? | **No.** The same frozen offline install with `PATH=/nonexistent` and an empty environment still applies the patch, so it is an in-process diff apply, not `git apply`/`patch(1)` |
+| What does a frozen install do when the inputs disagree? | All four fail closed, rc=1: lockfile-without-workspace, workspace-without-lockfile and an **edited patch file** are `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`; a **missing patch file** is "Failed to read patch file". Each is a failure the repo's own install hits, which is why eligibility refuses the same four |
+
+**The rule it broke: a patch can add a build script the tarball scan cannot see.** A patch adding
+`scripts.postinstall` to the package it patches leaves the builder-equivalent install
+(`--frozen-lockfile --offline --ignore-scripts --ignore-pnpmfile`) at **rc=0** — `strictDepBuilds`
+does not fire — with the package unbuilt and named in `node_modules/.modules.yaml`'s
+`pendingBuilds`, while a clean build records `[]`. So the planning#604 refusal, which reads the
+staged **tarballs**, is blind to patched content. The builder now reads `pendingBuilds` off the
+built tree before publishing and refuses a non-empty or unreadable one — pnpm's own answer, rather
+than a diff parser that would have to decide what a hunk means.
+
+**`pendingBuilds` is not only dependencies.** pnpm defers the PROJECT's own lifecycle scripts there
+too, as bare importer ids: a repo with scriptless dependencies and a root `postinstall` records
+`["."]` after the same install. Those are the session's to run and the builder's to ignore, so the
+gate filters the lockfile's importer directories out — a dependency id is always `name@version`,
+never a bare directory. Found by independent review before the gate shipped; without the filter it
+would have taken the base off every repo with a root install script.
 
 ## Faithfulness and limits
 
@@ -689,11 +718,10 @@ exactly that ground.
   `pendingBuilds`, which was harmless in both and is not established as harmless. Peer-qualified
   duplicates, `npm:` aliases, optional/platform-skipped packages and a consumer lockfile differing
   from the publisher's commit are untested.
-- **The patch cell does not run the production pipeline.** It uses pnpm 12.5.1 online with
-  `--no-frozen-lockfile`, not the pinned 12.4.1 with verified tarballs, a separate fetch phase and a
-  frozen offline install. It establishes that the two suppression flags do not prevent patching, and
-  that an unparseable patch fails closed naming the patch — not compatibility with the verified
-  pipeline.
+- **The patch cell did not run the production pipeline; that gap is closed.** The original cell
+  used pnpm 12.5.1 online with `--no-frozen-lockfile`. The admission below re-measured the class on
+  the pinned 12.4.1 with verified tarballs, the loopback fetch phase and a frozen offline install
+  (`integration_tests/pnpm-verified-base-build.test.ts`).
 - **The pruned base is pruned by the harness, not by the orchestrator.** Removing a package from
   the carried `lock.yaml` is done with a line-oriented edit keyed on the package name; a real
   implementation reads and rewrites the YAML. The cell asserts the name no longer appears.

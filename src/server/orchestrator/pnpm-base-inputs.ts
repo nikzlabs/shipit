@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -29,6 +30,29 @@ export const MAX_STAGED_MANIFESTS = 2000;
 /** Every input here is repo-authored, so parsing one is work a repo can ask the orchestrator for. */
 export const MAX_INPUT_BYTES = 64 * 1024 * 1024;
 
+/**
+ * Total across every `patchedDependencies` file. A patch is a diff against one package, so this
+ * is generous; the bound exists because the patch paths are repo-chosen, and it is checked
+ * against each object's size BEFORE the object is read.
+ */
+export const MAX_PATCH_BYTES = 4 * 1024 * 1024;
+
+/**
+ * One `patchedDependencies` entry, resolved against the commit.
+ *
+ * `relPath` comes from `pnpm-workspace.yaml`, which is where pnpm 12 reads patch paths — the
+ * `pnpm` field in `package.json` is no longer read at all (measured 2026-09-21 on 12.5.1:
+ * "The \"pnpm\" field in package.json is no longer read by pnpm", and the patch is not applied).
+ */
+export interface StagedPatch {
+  key: string;
+  relPath: string | null;
+  /** The hash pnpm derives from the staged patch, or null when the commit carries no such file. */
+  sha256: string | null;
+  /** What `pnpm-lock.yaml` pins this patch to, or null when the lockfile pins nothing for it. */
+  lockHash: string | null;
+}
+
 export interface StagedPnpmInputs {
   /** Directory holding the staged copy of every build input. */
   dir: string;
@@ -38,12 +62,12 @@ export interface StagedPnpmInputs {
   workspaceYaml: Record<string, unknown> | null;
   /** `.npmrc` files that apply to the build, root first. */
   npmrc: { relPath: string; text: string }[];
-  /** The root manifest's `pnpm` field. */
-  pnpmField: Record<string, unknown> | null;
   /** The pnpm the root manifest declares, which is what corepack selects in a consuming session. */
   declaredPnpm: DeclaredPnpm | null;
   /** Repo-relative paths of staged manifests, root first. */
   manifests: string[];
+  /** Every `patchedDependencies` entry the lockfile or `pnpm-workspace.yaml` names. */
+  patches: StagedPatch[];
 }
 
 export type PnpmIneligibleCode =
@@ -120,10 +144,22 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 export type GitShow = (commit: string, relPath: string) => Promise<string | null>;
 export type GitListTree = (commit: string) => Promise<string[]>;
+export type GitSizeOf = (commit: string, relPath: string) => Promise<number | null>;
 
 export interface StagePnpmInputsDeps {
   show?: GitShow;
   listTree?: GitListTree;
+  sizeOf?: GitSizeOf;
+}
+
+/**
+ * pnpm hashes a patch as its UTF-8 text with CRLF normalized to LF, not as its raw bytes —
+ * measured 2026-09-21: a CRLF copy of a patch satisfies the LF hash its lockfile pins. Hashing
+ * the bytes would take a base off every repo with a CRLF-committed patch. The file is still
+ * staged verbatim, so the builder's own applier sees the committed bytes.
+ */
+function patchHash(text: string): string {
+  return crypto.createHash("sha256").update(text.replace(/\r\n/g, "\n")).digest("hex");
 }
 
 function defaultGit(repoDir: string): Required<StagePnpmInputsDeps> {
@@ -136,6 +172,14 @@ function defaultGit(repoDir: string): Required<StagePnpmInputsDeps> {
     show: async (commit, relPath) => {
       try {
         return await git.raw(["show", `${commit}:${relPath}`]);
+      } catch {
+        return null;
+      }
+    },
+    sizeOf: async (commit, relPath) => {
+      try {
+        const size = Number((await git.raw(["cat-file", "-s", `${commit}:${relPath}`])).trim());
+        return Number.isFinite(size) ? size : null;
       } catch {
         return null;
       }
@@ -209,30 +253,6 @@ export async function stagePnpmInputs(args: {
     ? await git.show(args.commit, PNPM_WORKSPACE_YAML)
     : null;
 
-  const staged: { relPath: string; text: string }[] = [
-    { relPath: PNPM_LOCKFILE, text: lockText },
-    ...(workspaceText !== null ? [{ relPath: PNPM_WORKSPACE_YAML, text: workspaceText }] : []),
-  ];
-  for (const rel of [...manifests, ...npmrcPaths]) {
-    const text = await git.show(args.commit, rel);
-    if (text !== null) staged.push({ relPath: rel, text });
-  }
-
-  for (const { relPath, text } of staged) {
-    const dest = path.join(args.destDir, relPath);
-    // git trees cannot carry `..`, but the staging root is a security boundary and this is
-    // the one place a repo-controlled string becomes a filesystem path.
-    if (dest !== path.normalize(dest) || !dest.startsWith(`${args.destDir}${path.sep}`)) {
-      return {
-        eligible: false,
-        code: "unsafe-input-path",
-        detail: `${relPath} does not stage inside the snapshot directory`,
-      };
-    }
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, text);
-  }
-
   // A file the decision cannot read is a file it cannot check, and pnpm may still read it —
   // so an unparseable input is ineligible rather than treated as absent.
   let workspaceYaml: Record<string, unknown> | null = null;
@@ -249,7 +269,40 @@ export async function stagePnpmInputs(args: {
     }
   }
 
-  let pnpmField: Record<string, unknown> | null = null;
+  const staged: { relPath: string; text: string }[] = [
+    { relPath: PNPM_LOCKFILE, text: lockText },
+    ...(workspaceText !== null ? [{ relPath: PNPM_WORKSPACE_YAML, text: workspaceText }] : []),
+  ];
+  for (const rel of [...manifests, ...npmrcPaths]) {
+    const text = await git.show(args.commit, rel);
+    if (text !== null) staged.push({ relPath: rel, text });
+  }
+
+  const patches = await resolvePatches({
+    lock,
+    workspaceYaml,
+    tree,
+    read: (rel) => git.show(args.commit, rel),
+    sizeOf: (rel) => git.sizeOf(args.commit, rel),
+  });
+  if ("eligible" in patches) return patches;
+  for (const { relPath, text } of patches.files) staged.push({ relPath, text });
+
+  for (const { relPath, text } of staged) {
+    const dest = path.join(args.destDir, relPath);
+    // git trees cannot carry `..`, but the staging root is a security boundary and this is
+    // the one place a repo-controlled string becomes a filesystem path.
+    if (dest !== path.normalize(dest) || !dest.startsWith(`${args.destDir}${path.sep}`)) {
+      return {
+        eligible: false,
+        code: "unsafe-input-path",
+        detail: `${relPath} does not stage inside the snapshot directory`,
+      };
+    }
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, text);
+  }
+
   let declaredPnpm: DeclaredPnpm | null = null;
   const rootManifest = staged.find((s) => s.relPath === "package.json");
   if (rootManifest) {
@@ -263,8 +316,6 @@ export async function stagePnpmInputs(args: {
         detail: `package.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-    const field = isRecord(parsed) ? parsed.pnpm : undefined;
-    pnpmField = isRecord(field) ? field : null;
     declaredPnpm = declaredPnpmFromManifest(parsed);
   }
 
@@ -277,10 +328,72 @@ export async function stagePnpmInputs(args: {
     npmrc: staged
       .filter((s) => path.basename(s.relPath) === ".npmrc")
       .map((s) => ({ relPath: s.relPath, text: s.text })),
-    pnpmField,
     declaredPnpm,
     manifests,
+    patches: patches.entries,
   };
+}
+
+/**
+ * Resolve every `patchedDependencies` entry against the commit, reading the patch bytes that
+ * `decidePnpmBaseEligibility` then checks against the lockfile's hash.
+ *
+ * The keys are the union of the lockfile's and `pnpm-workspace.yaml`'s, because a disagreement
+ * between the two is itself a refusal — measured 2026-09-21 on pnpm 12.5.1, where either half
+ * alone fails a `--frozen-lockfile` install with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`.
+ */
+async function resolvePatches(args: {
+  lock: ParsedPnpmLock;
+  workspaceYaml: Record<string, unknown> | null;
+  tree: string[];
+  read: (relPath: string) => Promise<string | null>;
+  sizeOf: (relPath: string) => Promise<number | null>;
+}): Promise<{ entries: StagedPatch[]; files: { relPath: string; text: string }[] } | PnpmIneligible> {
+  const declared = isRecord(args.workspaceYaml?.patchedDependencies)
+    ? args.workspaceYaml.patchedDependencies
+    : {};
+  const keys = [
+    ...args.lock.patchedDependencies.map((p) => p.key),
+    ...Object.keys(declared).filter((k) => !args.lock.patchedDependencies.some((p) => p.key === k)),
+  ];
+  if (keys.length === 0) return { entries: [], files: [] };
+
+  const inTree = new Set(args.tree);
+  const entries: StagedPatch[] = [];
+  const files: { relPath: string; text: string }[] = [];
+  let total = 0;
+  for (const key of keys) {
+    const lockHash = args.lock.patchedDependencies.find((p) => p.key === key)?.hash ?? null;
+    const raw = declared[key];
+    // pnpm resolves the path against the workspace root; `./x` and `x` are the same file.
+    const relPath = typeof raw === "string" ? raw.replace(/^\.\//, "") : null;
+    if (relPath === null || !inTree.has(relPath)) {
+      entries.push({ key, relPath, sha256: null, lockHash });
+      continue;
+    }
+    // The cap is checked against the object's SIZE before the object is read: a patch path is
+    // repo-chosen and can name any committed blob, so buffering first and refusing after would
+    // let one name a huge one and spend the orchestrator's memory on the way to being refused.
+    const size = await args.sizeOf(relPath);
+    total += size ?? MAX_PATCH_BYTES + 1;
+    if (total > MAX_PATCH_BYTES) {
+      return {
+        eligible: false,
+        code: "patched-dependency",
+        detail: size === null
+        ? `the patch for ${key} (${relPath}) could not be sized, so it cannot be read within the cap`
+        : `the patches through ${key} exceed the ${MAX_PATCH_BYTES}-byte cap on patch input`,
+      };
+    }
+    const text = await args.read(relPath);
+    if (text === null) {
+      entries.push({ key, relPath, sha256: null, lockHash });
+      continue;
+    }
+    entries.push({ key, relPath, sha256: patchHash(text), lockHash });
+    files.push({ relPath, text });
+  }
+  return { entries, files };
 }
 
 export interface EligibilityOptions {
@@ -363,21 +476,50 @@ export function decidePnpmBaseEligibility(
     };
   }
 
-  const patched = [
-    ...staged.lock.patchedDependencies,
-    ...(isRecord(staged.pnpmField?.patchedDependencies)
-      ? Object.keys(staged.pnpmField.patchedDependencies)
-      : []),
-    ...(isRecord(staged.workspaceYaml?.patchedDependencies)
-      ? Object.keys(staged.workspaceYaml.patchedDependencies)
-      : []),
-  ];
-  if (patched.length > 0) {
-    return {
-      eligible: false,
-      code: "patched-dependency",
-      detail: `patchedDependencies pins ${patched[0]}, whose installed bytes are not its published tarball`,
-    };
+  // A patched package's installed bytes are its verified tarball plus a patch that is committed
+  // at the same immutable commit as every other input, so the result is verifiable by
+  // construction: the tarball against three agreeing digests, and the patch against the sha256
+  // the lockfile pins, which is what pnpm derives from the patch file's own bytes (measured
+  // 2026-09-21 on 12.5.1). pnpm applies it in-process — an install with `PATH=/nonexistent`
+  // still patches, so no `git`/`patch` helper is spawned — under `--ignore-scripts
+  // --ignore-pnpmfile`, so admitting this runs no repo code.
+  //
+  // `package.json#pnpm.patchedDependencies` is not a source here: pnpm 12 does not read the
+  // `pnpm` field at all (measured — it warns the key was ignored and installs unpatched), so a
+  // patch declared only there reaches neither the builder nor a session on the same pnpm.
+  //
+  // Every failure below is one the repo's own frozen install would hit too, so refusing costs
+  // the repo only the base it could not have used.
+  for (const patch of staged.patches) {
+    if (patch.lockHash === null) {
+      return {
+        eligible: false,
+        code: "patched-dependency",
+        detail: `${PNPM_WORKSPACE_YAML} patches ${patch.key}, which ${PNPM_LOCKFILE} pins no patch for`,
+      };
+    }
+    if (patch.relPath === null) {
+      return {
+        eligible: false,
+        code: "patched-dependency",
+        detail: `${PNPM_LOCKFILE} pins a patch for ${patch.key} that ${PNPM_WORKSPACE_YAML} names no file for`,
+      };
+    }
+    if (patch.sha256 === null) {
+      return {
+        eligible: false,
+        code: "patched-dependency",
+        detail: `the patch for ${patch.key} (${patch.relPath}) is not committed at this commit`,
+      };
+    }
+    if (patch.sha256 !== patch.lockHash) {
+      return {
+        eligible: false,
+        code: "patched-dependency",
+        detail: `the committed patch for ${patch.key} (${patch.relPath}) hashes to ${patch.sha256}, `
+          + `not the ${patch.lockHash} ${PNPM_LOCKFILE} pins`,
+      };
+    }
   }
 
   for (const [key, value] of Object.entries(staged.workspaceYaml ?? {})) {
