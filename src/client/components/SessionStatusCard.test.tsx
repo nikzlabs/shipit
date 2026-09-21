@@ -225,7 +225,7 @@ describe("SessionStatusCard", () => {
     expect(screen.getByText("Stale")).toBeInTheDocument();
   });
 
-  it("renders a taken offer greyed and unticked, and still selectable", () => {
+  it("renders a taken offer greyed and unselected, and still selectable", () => {
     render(
       <SessionStatusCard
         status={card({
@@ -639,6 +639,167 @@ describe("SessionStatusCard", () => {
     });
   });
 
+  // req 44 — a row that WAS ticked when it went keeps a tick, so the card goes
+  // on saying which rows the user ticked rather than only that something went.
+  describe("the record of what was ticked (req 44)", () => {
+    /** The box the user sees, which is not the input: that carries selection. */
+    const boxOf = (input: HTMLElement) =>
+      new Set((input.nextElementSibling as HTMLElement).className.split(/\s+/));
+
+    const stepCard = (steps: string[] = ["Add the Stripe test key."]) =>
+      card({ needsYou: steps });
+
+    function openNoteFor(name: string) {
+      fireEvent.click(screen.getByRole("button", { name: `Add a note: ${name}` }));
+      return screen.getByRole("textbox", { name: `Note: ${name}` });
+    }
+
+    // A collapse is sticky per session id, so leaving one behind opens the next
+    // test's card collapsed and its rows are not in the DOM at all.
+    afterEach(() => localStorage.clear());
+
+    it("keeps a tick on a sent offer without selecting it", () => {
+      render(
+        <SessionStatusCard
+          status={card({
+            actions: [offer({ offerId: "o1", takenAt: "2026-09-14T11:00:00.000Z" })],
+          })}
+        />,
+      );
+      const box = screen.getByRole("checkbox") as HTMLInputElement;
+      expect(box.checked).toBe(false);
+      // Muted, never the accent: the record must not read as a tick waiting
+      // for Submit, and Submit has nothing to send.
+      expect(boxOf(box)).toContain("text-(--color-text-tertiary)");
+      expect(boxOf(box)).not.toContain("bg-(--color-accent)");
+      expect(box).toHaveAccessibleName(expect.stringContaining("(sent as ticked)"));
+      expect(screen.getByRole("button", { name: /^submit$/i })).toBeDisabled();
+    });
+
+    it("selects a recorded offer on a second tick, and untick leaves the record", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={card({ actions: [offer({ offerId: "o1", takenAt: "2026-09-14T11:00:00.000Z" })] })}
+          onSubmit={onSubmit}
+        />,
+      );
+      const box = screen.getByRole("checkbox") as HTMLInputElement;
+
+      fireEvent.click(box);
+      expect(box.checked).toBe(true);
+      // The fresh tick is the loud one and hides the record under it.
+      expect(boxOf(box)).toContain("bg-(--color-accent)");
+      expect(box).toHaveAccessibleName(expect.not.stringContaining("(sent as ticked)"));
+
+      fireEvent.click(box);
+      expect(box.checked).toBe(false);
+      expect(boxOf(box)).toContain("text-(--color-text-tertiary)");
+      expect(screen.getByRole("button", { name: /^submit$/i })).toBeDisabled();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    // The risk the record introduces: a box that shows a tick is a box Submit
+    // could be read as covering. A second send must carry the row the user
+    // ticked THIS time and nothing the record remembers.
+    it("sends only what is ticked now, never a row the record still shows", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={card({
+            needsYou: ["Add the key.", "Merge #212."],
+            actions: [offer({ offerId: "o1" }), offer({ offerId: "o2" })],
+          })}
+          onSubmit={onSubmit}
+        />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: /Add the key/ }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o1" }));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      fireEvent.click(screen.getByRole("checkbox", { name: /Merge #212/ }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Label o2" }));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      expect(onSubmit).toHaveBeenCalledTimes(2);
+      const [text, options] = onSubmit.mock.calls[1] as unknown as [
+        string,
+        { sessionStatusOfferIds: string[] },
+      ];
+      expect(options.sessionStatusOfferIds).toEqual(["o2"]);
+      expect(text).toContain("Merge #212.");
+      expect(text).not.toContain("Add the key.");
+      expect(text).toContain("Do o2");
+      expect(text).not.toContain("Do o1");
+    });
+
+    it("records a step that was ticked when it went, and not one answered alone", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={stepCard(["Add the key.", "Use Postgres."])}
+          onSubmit={onSubmit}
+        />,
+      );
+      fireEvent.click(screen.getAllByRole("checkbox")[0]);
+      fireEvent.change(openNoteFor("Use Postgres."), { target: { value: "no — SQLite." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      const [ticked, answered] = screen.getAllByRole("checkbox") as HTMLInputElement[];
+      expect(ticked.checked).toBe(false);
+      expect(boxOf(ticked)).toContain("text-(--color-text-tertiary)");
+      // Both went, and only one of them was ticked.
+      expect(screen.getAllByText("SENT")).toHaveLength(2);
+      expect(boxOf(answered)).toContain("text-transparent");
+    });
+
+    it("drops the record when the step is next sent as an answer alone", () => {
+      const onSubmit = vi.fn(() => true);
+      render(<SessionStatusCard status={stepCard()} onSubmit={onSubmit} />);
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      expect(boxOf(screen.getByRole("checkbox"))).toContain("text-(--color-text-tertiary)");
+
+      fireEvent.change(openNoteFor("Add the Stripe test key."), { target: { value: "blocked." } });
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      // The box may not go on claiming work the user has since qualified.
+      expect(boxOf(screen.getByRole("checkbox"))).toContain("text-transparent");
+    });
+
+    it("leaves the collapsed counts alone, because a record is already sent", () => {
+      const onSubmit = vi.fn(() => true);
+      render(
+        <SessionStatusCard
+          status={card({ needsYou: ["Add the key."], actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+          onSubmit={onSubmit}
+        />,
+      );
+      for (const box of screen.getAllByRole("checkbox")) fireEvent.click(box);
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+    });
+
+    it("does not carry one session's record into another", () => {
+      const onSubmit = vi.fn(() => true);
+      const { rerender } = render(
+        <SessionStatusCard status={stepCard()} sessionId="s1" onSubmit={onSubmit} />,
+      );
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("button", { name: /^submit$/i }));
+      expect(boxOf(screen.getByRole("checkbox"))).toContain("text-(--color-text-tertiary)");
+
+      rerender(<SessionStatusCard status={stepCard()} sessionId="s2" onSubmit={onSubmit} />);
+      expect(boxOf(screen.getByRole("checkbox"))).toContain("text-transparent");
+      expect(screen.queryByText("SENT")).not.toBeInTheDocument();
+    });
+  });
+
   // docs/303-session-status-card req 41
   describe("markdown", () => {
     it("renders a manual step and an offer as markdown, not as their source", () => {
@@ -823,7 +984,8 @@ describe("SessionStatusCard", () => {
       );
 
       fireEvent.click(screen.getByTestId("session-status-collapsed"));
-      fireEvent.click(screen.getByRole("checkbox", { name: "Label o1" }));
+      // The name now carries the record of the send (req 44).
+      fireEvent.click(screen.getByRole("checkbox", { name: /^Label o1/ }));
       fireEvent.click(screen.getByTestId("session-status-collapse"));
       expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
         "Show session status — 1 follow-up",

@@ -196,6 +196,13 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
   const [sent, setSent] = useState<ReadonlySet<string>>(() => new Set());
   /** req 29 — manual steps the user has ticked and already told the agent about. */
   const [reportedSteps, setReportedSteps] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * req 44 — of those, the ones that were TICKED when they went, so the card
+   * goes on showing which steps the user reported done. A step sent with a note
+   * alone was answered, not done, and is deliberately absent: the record has to
+   * distinguish the two, which "was it sent" cannot.
+   */
+  const [checkedSteps, setCheckedSteps] = useState<ReadonlySet<string>>(() => new Set());
   /** req 37 — what the user typed against a step, keyed by the step's row key. */
   const [notes, setNotes] = useState<ReadonlyMap<string, string>>(() => new Map());
   /**
@@ -221,7 +228,11 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
         label: offer.label,
         ...(offer.description ? { description: offer.description } : {}),
         ...(offer.defaultChecked ? { defaultChecked: true } : {}),
-        ...(offer.takenAt || sent.has(offer.offerId) ? { taken: true } : {}),
+        // req 44 — an offer can only be sent by ticking it, so every sent offer
+        // carries the record; there is no answer-only path to tell apart.
+        ...(offer.takenAt || sent.has(offer.offerId)
+          ? { taken: true, takenChecked: true }
+          : {}),
       })),
     [status.actions, sent],
   );
@@ -239,8 +250,9 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
         key: row.key,
         label: row.text,
         ...(reportedSteps.has(row.key) ? { taken: true } : {}),
+        ...(checkedSteps.has(row.key) ? { takenChecked: true } : {}),
       })),
-    [stepRows, reportedSteps],
+    [stepRows, reportedSteps, checkedSteps],
   );
   // The selection is derived from the rows, so the ANSWERED mark — which
   // depends on it — is added afterwards rather than inside them.
@@ -262,6 +274,7 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
     setCollapsed(sessionId ? getSavedStatusCardCollapsed(sessionId) : false);
     setSent(new Set());
     setReportedSteps(new Set());
+    setCheckedSteps(new Set());
     setNotes(new Map());
     setOpenNotes(new Set());
     setSendFailed(false);
@@ -389,10 +402,21 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
     setSent((prev) => new Set([...prev, ...offerIds]));
     // req 29 — a step that was answered has been reported too, so it greys like
     // one reported done; its note is delivered and lives in the transcript now.
-    const reported = stepRows
-      .filter((row) => steps.selected.has(row.key) || notes.get(row.key)?.trim())
-      .map((row) => row.key);
-    setReportedSteps((prev) => new Set([...prev, ...reported]));
+    const reported = stepRows.filter(
+      (row) => steps.selected.has(row.key) || notes.get(row.key)?.trim(),
+    );
+    setReportedSteps((prev) => new Set([...prev, ...reported.map((row) => row.key)]));
+    // req 44 — the record is what the LAST send said about the row, so a step
+    // re-sent as an answer alone loses the tick it earned earlier: the box may
+    // not claim the user reported done something they have since qualified.
+    setCheckedSteps((prev) => {
+      const next = new Set(prev);
+      for (const row of reported) {
+        if (steps.selected.has(row.key)) next.add(row.key);
+        else next.delete(row.key);
+      }
+      return next;
+    });
     setNotes(new Map());
     setOpenNotes(new Set());
     clear();
