@@ -428,6 +428,12 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET conversation_replay = ? WHERE id = ?").run(replay, id);
   }
 
+  /**
+   * A take: the replay is spent by the run parameters that carry it into a system prompt.
+   * An attempt that then fails without reaching the agent leaves the session threadless
+   * AND replayless, which is what `reseedConversationForRetry` (`turn-executor.ts`) puts
+   * back before a retry spawns.
+   */
   consumeConversationReplay(id: string): string | undefined {
     let replay: string | undefined;
     this.db.transaction(() => {

@@ -59,7 +59,7 @@ import {
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { CREDENTIAL_ROUTE_ENV_PREFIX } from "../shared/types/domain-types/credential-route.js";
-import { buildConversationReplay } from "./services/replay.js";
+import { armConversationReplay } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
 export const MCP_OAUTH_REFRESH_TIMEOUT_MS = 8_000;
@@ -112,17 +112,12 @@ export interface SessionAgentEnvDeps {
   sseBroadcast?: (event: string, data: unknown) => void;
 }
 
-// Run-parameter construction consumes this replay in the same turn.
-function armConversationReplay(deps: SessionAgentEnvDeps, sessionId: string): void {
-  const chatHistory = deps.chatHistoryManager;
-  if (!chatHistory) return;
+// Run-parameter construction consumes this replay in the same turn; a retry re-arms it.
+function armReplayForClearedThread(deps: SessionAgentEnvDeps, sessionId: string): void {
   try {
-    const messages = chatHistory.load(sessionId);
-    const replay = buildConversationReplay(messages);
-    if (!replay) return;
-    deps.sessionManager.setConversationReplay(sessionId, replay);
+    if (!armConversationReplay(deps, sessionId)) return;
     console.log(
-      `[credentials] armed visible-history replay for ${sessionId} (${messages.length} messages) — the new agent conversation continues the transcript instead of starting empty`,
+      `[credentials] armed visible-history replay for ${sessionId} — the new agent conversation continues the transcript instead of starting empty`,
     );
   } catch (err) {
     console.warn("[credentials] failed to arm conversation replay:", getErrorMessage(err));
@@ -480,7 +475,7 @@ export async function prepareSessionAgentEnvironment(
           if (current) {
             console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable conversation found on disk)`);
             clearConversationThread(deps, sessionId);
-            armConversationReplay(deps, sessionId);
+            armReplayForClearedThread(deps, sessionId);
           }
           return;
         }
