@@ -17,6 +17,10 @@
 #   G  `--ignore-pnpmfile` suppresses a `.pnpmfile.mjs` body and hook.
 #   H  a `workspace:` edge resolves under `--frozen-lockfile --offline` with only manifests staged.
 #   I  `patchedDependencies` applies under `--ignore-scripts --ignore-pnpmfile`.
+#   J  pnpm links (and chmods) executables from `directories.bin` with NO `bin` field — so a
+#      seed list built from `bin` alone misses them.
+#   K  a RETAINED package that depends on a PRUNED one still reconciles: the graph case most
+#      likely to break the prune.
 #
 # Usage: bash ineligible-sharing-spike.sh    (needs network for the registry packages)
 
@@ -204,8 +208,60 @@ grep -rlq "PATCHED MARKER" node_modules/.pnpm/is-odd*/node_modules/is-odd/index.
   && ok "the committed patch is applied by the builder's own flags" || bad "the patch was not applied"
 printf 'not a patch\n' > patches/is-odd@3.0.1.patch
 rm -rf node_modules "$ROOT/ptstore"
-PNPM_CONFIG_STORE_DIR="$ROOT/ptstore" pnpm install --no-frozen-lockfile --ignore-scripts --ignore-pnpmfile >/dev/null 2>&1
-[ $? -ne 0 ] && ok "an unparseable patch fails the install closed" || bad "an unparseable patch installed anyway"
+# Assert WHICH check fired: a nonzero exit alone would also be produced by an unrelated failure.
+OUT=$(PNPM_CONFIG_STORE_DIR="$ROOT/ptstore" pnpm install --no-frozen-lockfile --ignore-scripts --ignore-pnpmfile 2>&1); RC=$?
+if [ $RC -ne 0 ] && echo "$OUT" | grep -qi 'patch'; then ok "an unparseable patch fails the install closed, naming the patch"
+else bad "expected a patch-named failure; rc=$RC, output: $(echo "$OUT" | tail -1)"; fi
+
+echo; echo "== J. executables discovered through directories.bin =="
+# Found by an independent review of the design and measured here: a seed list keyed on
+# `package.json#bin` would skip these, and pnpm still chmods them when it links.
+rm -rf "$ROOT/db"; mkdir -p "$ROOT/db/pkg/tools" "$ROOT/db/proj"; cd "$ROOT/db"
+printf '{"name":"dirbin-probe","version":"1.0.0","directories":{"bin":"tools"}}\n' > pkg/package.json
+printf '#!/usr/bin/env node\nconsole.log("hi")\n' > pkg/tools/dirbin-cmd; chmod 644 pkg/tools/dirbin-cmd
+cd proj; echo '{"name":"p","version":"1.0.0","dependencies":{"dirbin-probe":"file:../pkg"}}' > package.json
+: > "$ROOT/j.log"
+CHMOD_LOG="$ROOT/j.log" LD_PRELOAD=$SPY PNPM_CONFIG_STORE_DIR="$ROOT/dbstore" \
+  pnpm install --no-frozen-lockfile --ignore-scripts >/dev/null 2>&1
+[ -e node_modules/.bin/dirbin-cmd ] && ok "pnpm created a shim for a directories.bin executable" \
+  || bad "no shim — pnpm does not honour directories.bin, and the seed list may key on bin alone"
+grep -q 'tools/dirbin-cmd' "$ROOT/j.log" \
+  && ok "and it CHMODS the package file, which a bin-only seed list would miss" \
+  || bad "the directories.bin target was not chmodded"
+
+echo; echo "== K. a retained package depending on a pruned one =="
+# vite -> esbuild: the real shape planning#604's exclusion is widest on. esbuild is the GRAPH probe
+# only — its binary ships in an optional dependency, so it is useless as a build probe.
+rm -rf "$ROOT/vb" "$ROOT/vbs" "$ROOT/vs" "$ROOT/vpriv"
+mkdir -p "$ROOT/vb" "$ROOT/vs"; cd "$ROOT/vb"
+VM='{"name":"probe","version":"1.0.0","dependencies":{"vite":"5.4.11"}}'
+echo "$VM" > package.json
+PNPM_CONFIG_STORE_DIR="$ROOT/vbs" pnpm install --no-frozen-lockfile --ignore-scripts >/dev/null 2>&1
+cp pnpm-lock.yaml "$ROOT/vlock.yaml"
+ESB=$(ls -d node_modules/.pnpm/esbuild@* 2>/dev/null | head -1)
+[ -n "$ESB" ] && ok "the base carries esbuild, which vite depends on" || bad "no esbuild in the tree"
+rm -rf "$ESB" node_modules/.pnpm/node_modules/esbuild
+node - "$ROOT/vb/node_modules/.pnpm/lock.yaml" esbuild <<'EOF'
+const fs=require('fs'), YAML=require('/workspace/node_modules/yaml');
+const [p,drop]=process.argv.slice(2); const d=YAML.parse(fs.readFileSync(p,'utf8'));
+for(const i of Object.values(d.importers||{}))
+  for(const g of ['dependencies','devDependencies','optionalDependencies']) if(i[g]) delete i[g][drop];
+for(const s of ['packages','snapshots'])
+  for(const k of Object.keys(d[s]||{})) if(k.startsWith(drop+'@')) delete d[s][k];
+fs.writeFileSync(p, YAML.stringify(d));
+EOF
+EDGES=$(grep -c 'esbuild' node_modules/.pnpm/lock.yaml)
+cd "$ROOT/vs"; echo "$VM" > package.json; cp "$ROOT/vlock.yaml" pnpm-lock.yaml
+cp -a "$ROOT/vb/node_modules" ./node_modules
+# Without an approval pnpm exits 1 on its "Ignored build scripts" notice — its own default, the
+# same as a no-base install of this repo — so approve, or rc would measure that instead.
+printf 'allowBuilds:\n  esbuild@0.21.5: true\n' > pnpm-workspace.yaml
+PNPM_CONFIG_STORE_DIR="$ROOT/vpriv" pnpm install >/dev/null 2>&1
+check "$?" "0" "a bare install over the pruned base succeeds ($EDGES incoming edges still name esbuild)"
+[ -d "$(ls -d node_modules/.pnpm/esbuild@* 2>/dev/null | head -1)" ] && ok "esbuild re-imported" || bad "esbuild not restored"
+LNK=$(readlink node_modules/.pnpm/vite@5.4.11/node_modules/esbuild 2>/dev/null || echo MISSING)
+[ "$LNK" != MISSING ] && ok "the RETAINED vite has its edge to esbuild relinked ($LNK)" || bad "vite's edge to esbuild is dangling"
+node -e "require('$ROOT/vs/node_modules/vite')" >/dev/null 2>&1 && ok "require('vite') loads" || bad "vite does not load"
 
 echo; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

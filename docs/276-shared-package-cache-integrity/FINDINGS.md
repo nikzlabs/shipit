@@ -573,8 +573,124 @@ lockfile-only comparisons. The integrity implication stands: session-writable
 resolution metadata is its own surface — verifying store *content* does not
 authenticate which content a name should *select* (the req 6 class).
 
+## Finding: pnpm chmods bin targets unconditionally, so any install that does work over a base EPERMs
+
+Measured 2026-09-21, both halves. The in-container half
+([`ineligible-sharing-spike.sh`](./ineligible-sharing-spike.sh), PASS=26 FAIL=0, pnpm 12.5.1)
+names **which** files pnpm chmods; the host half
+([`ineligible-sharing-host-spike.sh`](./ineligible-sharing-host-spike.sh), PASS=13 FAIL=0,
+services host, Docker 29.7.2, ext4, builder pnpm 12.4.1 / consumer 12.5.1, base owned by another
+uid with group write) asks whether those chmods **fail** on a real overlay. pnpm 12's installer is
+a native binary, so the calls are captured with an `LD_PRELOAD` interposer rather than read.
+
+| Session action over a verified base | chmod calls | on base (lower) files | over a real overlay as the session uid |
+|---|---|---|---|
+| base hit | **0** | — | rc=0, upper 8 192 B |
+| edit inside a base package, then install (req 11) | **0** | — | — |
+| **`pnpm add left-pad`** | **8** | **8 of 8** | **rc=1, `ERR_PNPM_CMD_SHIM_CHMOD` … `Operation not permitted`** |
+
+The eight are four `.bin` shims — which pnpm rewrites, so they whiteout into the upper — and four
+package files it does **not** rewrite: `semver/bin/semver.js`, `rimraf/dist/esm/bin.mjs`,
+`glob/dist/esm/bin.mjs`, `which/bin/node-which`. And the chmod is **unconditional**: 10 calls in
+the in-container harness set a mode the file already had. That is what rules out the repair that
+looks obvious — making the base's modes already correct. Ownership is not available either
+(per-session uids), and group write does not grant `chmod`.
+
+**This is not a property of ineligible repos. It is a live req 9 defect for ELIGIBLE ones**, since
+the trigger merged in shipit#2941: a session can install and can edit its dependencies, but
+`pnpm add <pkg>` fails. It is the same root cause planning#604 hit from the other side —
+`build-cost-spike.sh` recorded the identical EPERM on the identical file from `pnpm rebuild` and
+`pnpm install --force`, and read it as a property of those two commands. It is a property of any
+install that relinks bins. It escaped the tree spikes because they run as **root**
+(the limits section below says so), and `build-cost-spike.sh`, which introduced distinct uids,
+never ran an add.
+
+## Result: seeding the bin targets into the upper repairs it, and unlocks the pruned base
+
+Same host harness, cells 4 and 5. Two shapes, each measured unseeded and seeded.
+
+**The repair:** before the container starts, copy every executable target of every package in the
+tree into the session's **upper**, owned by the session uid. pnpm's unconditional chmod then lands on
+a file the session owns.
+
+**The set is `bin`, and `directories.bin` when `bin` is absent** — the second form was missed in the
+first cut, found by an independent review, and then measured (cell J): a package declaring only
+`directories: {bin: "tools"}` gets a shim, and pnpm **chmods its package file**, so a list keyed on
+`bin` alone leaves exactly those packages unseeded. The set is small either way:
+
+| Tree | executable targets | bytes |
+|---|---|---|
+| the harness base (2 001 files, 23 MiB) | 6 files | 28 KiB |
+| ShipIt's own `node_modules` (609 packages) | 28 files | 204 KiB |
+
+**The pruned base** is the shape for a repo whose packages build at install time. The builder builds
+the whole tree with `--ignore-scripts` as it does now; the build-bearing packages are then removed
+from the tree **and from the carried `node_modules/.pnpm/lock.yaml`**. Pruning the carried lockfile
+is the load-bearing half: a hole in the tree alone is repaired only under `--frozen-lockfile`, and a
+bare `pnpm install` short-circuits on "Already up to date" and leaves it (measured in-container,
+cell E). ShipIt cannot assume the flag: `agent.install` is repo-authored with no default, and
+`tuneNpmInstall` rewrites npm commands only, so the cells below use the weaker bare command.
+
+| Cell | unseeded | seeded |
+|---|---|---|
+| `pnpm add` over a base hit | rc=1, EPERM | **rc=0**, package present, upper 2.5 MB |
+| pruned base, **bare** `pnpm install`, `better-sqlite3` approved | rc=1, EPERM, unbuilt | **rc=0**, re-imported, **BUILT**, `new Database(':memory:')` loads; upper 12.6 MB |
+
+So a build-bearing repo gets the whole scriptless tree shared and pays, per session, only the
+packages that build. Measured within this harness: a base hit is **8 192 B of upper + 4 096 B of
+store**, the pruned arm is **12 MiB of upper + 12 MiB of private store**, and the shared base is
+23 MiB. (`build-cost-spike.sh`'s no-base arm was 59 MiB + 52 MiB, but on a different scriptless
+dependency set — indicative, not the same workload.) The build runs as the session's **own** uid,
+into its own upper, which is what the base's no-script posture requires.
+
+**A retained package depending on a pruned one is the case most likely to break, and it holds.**
+Measured in-container: `vite` retained, `esbuild` pruned, with **47** incoming edges still naming
+`esbuild` in the carried lockfile. A bare `pnpm install` re-imported `esbuild`, relinked `vite`'s
+edge to it, and `require("vite")` loads — so pnpm treats a missing `packages`/`snapshots` record as
+work to do and repairs the incoming edges, and the prune need not be transitively complete.
+`esbuild` is the graph probe only here; this file already records that its binary ships in an
+optional dependency, which makes it useless as a *build* probe.
+
+Isolation is unaffected and re-asserted under distinct uids: both bases stayed byte-unchanged, and
+a second session inherited neither the add nor the build.
+
+## Finding: three ineligible classes behave under the builder's own flags
+
+Measured in-container ([`ineligible-sharing-spike.sh`](./ineligible-sharing-spike.sh), cells G–I,
+pnpm 12.5.1). Each is currently refused by `decidePnpmBaseEligibility`; none needs a sharing shape,
+because the builder already handles it.
+
+| Class | Result |
+|---|---|
+| `.pnpmfile.mjs` | `--ignore-pnpmfile` suppresses **both** the module body and `readPackage`, with a positive control showing both run without the flag. The `hook-source` refusal of `.mjs` (`pnpm-base-inputs.ts:354`) is stale — its own code comment says "not measured", and the checklist has recorded the measurement since 2026-09-21 |
+| `workspace:` / `link:` to an in-repo path | `pnpm install --frozen-lockfile --offline` against a dead registry succeeds with **only the manifests staged** — no member source needed — and the link pnpm writes is **relative** (`../../../lib`), so it resolves against the consuming session's own checkout rather than the builder's |
+| `patchedDependencies` | The committed patch is applied under `--ignore-scripts --ignore-pnpmfile`, and an unparseable patch **fails the install closed** rather than installing unpatched |
+
 ## Faithfulness and limits
 
+- **The executable-target list is derived from `bin` plus `directories.bin`, and matched against the
+  chmod set observed for two tree shapes.** It covered every package file pnpm chmodded there, and
+  the seeded cells pass, which is the end-to-end check. It is not a proof that pnpm chmods nothing
+  else on a tree neither harness built — the first cut of this list missed `directories.bin`, which
+  is the reason to state the bound rather than assume it.
+- **The host harness deletes each upper before seeding**, so it measures the seeding mechanism and
+  not the rule the design states for an upper that already exists (seed once at creation, never
+  overwrite an existing entry, resolve inside the upper without following symlinks). That rule is
+  argued from `prepareOverlayDirs`, which resets an upper only on generation supersession, and is
+  not measured here.
+- **The prune's graph contract is measured for two shapes only** — a top-level package and a
+  retained dependent — and the prune leaves `.modules.yaml` naming the removed package in
+  `pendingBuilds`, which was harmless in both and is not established as harmless. Peer-qualified
+  duplicates, `npm:` aliases, optional/platform-skipped packages and a consumer lockfile differing
+  from the publisher's commit are untested.
+- **The patch cell does not run the production pipeline.** It uses pnpm 12.5.1 online with
+  `--no-frozen-lockfile`, not the pinned 12.4.1 with verified tarballs, a separate fetch phase and a
+  frozen offline install. It establishes that the two suppression flags do not prevent patching, and
+  that an unparseable patch fails closed naming the patch — not compatibility with the verified
+  pipeline.
+- **The pruned base is pruned by the harness, not by the orchestrator.** Removing a package from
+  the carried `lock.yaml` is done with a line-oriented edit keyed on the package name; a real
+  implementation reads and rewrites the YAML. The cell asserts the name no longer appears.
 - **The design copies, not hardlinks**, because `node_modules` (container fs)
   and the store (volume) are different filesystems — the same crossing the real
   design forces (store in an overlay, `node_modules` outside it), which is why
@@ -608,7 +724,17 @@ authenticate which content a name should *select* (the req 6 class).
 ```
 scp docs/276-shared-package-cache-integrity/store-overlay-spike.sh <docker-host>:/tmp/
 ssh <docker-host> bash /tmp/store-overlay-spike.sh   # PASS=14 FAIL=0, exit 0
+
+scp docs/276-shared-package-cache-integrity/ineligible-sharing-host-spike.sh <docker-host>:/tmp/
+ssh <docker-host> bash /tmp/ineligible-sharing-host-spike.sh   # PASS=13 FAIL=0, exit 0
 ```
 
-Needs only Docker on the host; the node + python toolchain comes from a baked
-image. It cleans up its volumes on exit.
+Both need only Docker on the host; the node + python toolchain comes from a baked
+image. They clean up their volumes on exit.
+
+The in-container half runs where the agent already is, and needs no Docker — only
+`gcc`, for the chmod interposer:
+
+```
+bash docs/276-shared-package-cache-integrity/ineligible-sharing-spike.sh   # PASS=26 FAIL=0
+```
