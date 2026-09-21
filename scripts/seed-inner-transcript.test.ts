@@ -105,6 +105,39 @@ describe("seedTranscript", () => {
     db.close();
   });
 
+  // Every instance seeded before docs/303 has this session and no card, so a
+  // card gated on the transcript guard would never appear on the one instance
+  // anybody is looking at — which is exactly what happened.
+  it("adds the card to a session that already has its transcript but no card", async () => {
+    makeDatabase();
+    await seedTranscript({ env: {}, stateDir });
+    const cleared = read();
+    cleared.sessions.setSessionStatus(TRANSCRIPT_SESSION_ID, null);
+    cleared.close();
+
+    const again = await seedTranscript({ env: {}, stateDir });
+    expect(again).toEqual({ outcome: "skipped", reason: "already-present", statusCard: "added" });
+
+    const db = read();
+    expect(db.sessions.get(TRANSCRIPT_SESSION_ID)?.sessionStatus).toEqual(SAMPLE_STATUS);
+    db.close();
+  });
+
+  it("leaves a card that is already there alone — a driven session owns it", async () => {
+    makeDatabase();
+    await seedTranscript({ env: {}, stateDir });
+    const edited = read();
+    const mine = { ...SAMPLE_STATUS, status: "written by a real turn" };
+    edited.sessions.setSessionStatus(TRANSCRIPT_SESSION_ID, mine);
+    edited.close();
+
+    await seedTranscript({ env: {}, stateDir });
+
+    const db = read();
+    expect(db.sessions.get(TRANSCRIPT_SESSION_ID)?.sessionStatus?.status).toBe("written by a real turn");
+    db.close();
+  });
+
   it("rewrites the transcript when forced", async () => {
     makeDatabase();
     await seedTranscript({ env: {}, stateDir });

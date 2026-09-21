@@ -1057,6 +1057,14 @@ collapsed card is legible the first time without one.
   stale with its last-turn line hidden. `DOGFOOD_SEED_STATUS_CARD=0` switches the
   setting step off; a hand toggle does not survive a reboot, because the stored
   value reads `false` both when it was never set and when it was turned off.
+
+  The card write is NOT behind the transcript seed's already-present guard.
+  That guard exists so a real turn typed into the seeded session survives, and
+  the card is not a transcript row: every instance seeded before this change has
+  the session and no card, so gating the card on it is how the card fails to
+  appear on the one instance anybody is looking at — which is what happened. A
+  card that IS there is left alone, because an agent driven in that session owns
+  it from then on.
 - **Focus.** The two controls live in different DOM subtrees, so the browser
   drops focus to the body on each press; a layout effect hands it to whichever
   control replaced the one pressed, and only a press arms it. A note field is

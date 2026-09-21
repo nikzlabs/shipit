@@ -401,7 +401,8 @@ export interface SeedTranscriptOpts {
 }
 
 export type SeedTranscriptResult =
-  | { outcome: "skipped"; reason: string }
+  /** `statusCard` says the card was written into a session that already had its transcript. */
+  | { outcome: "skipped"; reason: string; statusCard?: "added" }
   | { outcome: "seeded" | "rewritten"; sessionId: string; messages: number };
 
 export async function seedTranscript(
@@ -427,6 +428,18 @@ export async function seedTranscript(
     const history = new ChatHistoryManager(dbManager);
     const existing = sessions.get(TRANSCRIPT_SESSION_ID);
     if (existing && !opts.force) {
+      // The TRANSCRIPT is left alone, because a real turn typed into this
+      // session has to survive. The status card is not a transcript row and is
+      // not covered by that: every instance seeded before docs/303 has the
+      // session and no card, so gating the card on this guard is how the card
+      // never appears on the one instance anybody is looking at. A card that IS
+      // there is left alone — an agent driven in this session owns it from then
+      // on, and overwriting it would discard a real one.
+      if (!existing.sessionStatus) {
+        sessions.setSessionStatus(TRANSCRIPT_SESSION_ID, opts.status ?? SAMPLE_STATUS);
+        log(`${TRANSCRIPT_SESSION_TITLE} — transcript already present; added the missing status card`);
+        return { outcome: "skipped", reason: "already-present", statusCard: "added" };
+      }
       log(`${TRANSCRIPT_SESSION_TITLE} — already present, leaving it alone`);
       return { outcome: "skipped", reason: "already-present" };
     }
