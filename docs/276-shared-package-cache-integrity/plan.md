@@ -1128,12 +1128,19 @@ resolution index no longer lives there (section 1, shipped), so a pnpm repo whos
 agent also runs npm is no longer exposed to H1. The base is group-writable to the session gid by
 design (`shareOne`): overlay copy-up preserves the lower's ownership and modes,
 and a session must be able to edit a copied-up file (req 11). So the base's
-safety is **mount confinement**, and the Docker-proxy path check
-(`docker-proxy-auth.ts:66`, called from `docker-proxy-sanitize.ts:112`) is
-TOCTOU — it `realpath`-checks the requested bind but Docker mounts the original
-string, so a Docker-enabled hostile session can swap a symlink between check and
-mount to bind the base directory read-write. Filed as **planning#601**; a
-dependency inherited from docs/183, to be closed on its own.
+safety is **mount confinement**, and that confinement now holds: the Docker
+proxy pins every bind source to its realpath before forwarding it and re-checks
+the stored sources at `start` (`docker-proxy-sanitize.ts`, `pinMountPaths` /
+`verifyContainerMountPaths`), while a container that binds a host path may take
+neither a `RestartPolicy` nor an explicit `/restart` — both remount behind a
+check nothing can hold open. So a Docker-enabled session can no longer point a
+workspace symlink at the base after the check and have Docker mount it
+read-write.
+Closed by **planning#601**. Two limits, both in docs/088 finding 2: a
+directory-rename race against the start-time check, which the session cannot
+hold open; and **planning#607**, where the sanitizer's checks are bypassable
+by field-casing aliases — so this confinement holds for canonically-spelled
+requests until that is closed.
 `verify-store-integrity` (section 4) is a local check on a store that is now
 private; it is not part of this fix.
 

@@ -290,7 +290,7 @@ recorded in [requirements.md](./requirements.md); none is open.
       already-tracked Docker-proxy TOCTOU: the design records it as inherited from docs/183 and to
       be closed on its own, and the npm/yarn base has carried the same exposure since — this widens
       which repos have a shared base rather than adding a class of exposure. Stated in the PR body;
-      still open below.
+      closed below.
 - [x] Independent review of the builder slice (2026-09-21, reviewer role, given the design
       cold). Its **P1 reproduced and is fixed**: the FETCH phase omitted `--ignore-pnpmfile`,
       and `globalPnpmfile` was not a rejected key — so a staged `hooks.cjs/package.json` with
@@ -403,9 +403,15 @@ recorded in [requirements.md](./requirements.md); none is open.
 - [x] Dependency: section 1 (H1) landed first — `npm_config_cache` is now the
       session's own cache, pnpm repos included, so a pnpm repo whose agent runs
       npm is no longer exposed to H1.
-- [ ] Dependency: the Docker-proxy mount-path check is TOCTOU
-      (`docker-proxy-auth.ts:66` → `docker-proxy-sanitize.ts:112`); the
-      group-writable base relies on mount confinement. Filed as **planning#601**.
+- [x] Dependency: the Docker-proxy mount-path check was TOCTOU — it `realpath`-checked
+      the requested bind and Docker mounted the original string, so a symlink swap could
+      bind the group-writable base read-write. Closed in **planning#601**: bind sources
+      (`Binds` and `Mounts[].Source`) are rewritten to their realpath before forwarding,
+      and re-checked on `start`, where a directory swapped for a symlink after the create
+      is refused; a host bind may no longer ride a `RestartPolicy` or an explicit
+      `/restart`, both of which remount without a check that nothing can stall. The base's
+      mount confinement holds for canonically-spelled requests — **planning#607**, found by
+      that PR's review, is the remaining bypass (field-casing aliases).
 - [x] **Design: sharing for ineligible repos** (2026-09-21, plan.md section 5,
       "Sharing for ineligible repos"). Two committed harnesses,
       `ineligible-sharing-spike.sh` (in-container, PASS=26) and

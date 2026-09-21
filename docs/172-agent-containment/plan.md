@@ -62,7 +62,12 @@ doesn't weaken it:
   `CapAdd`, `NET_RAW` force-dropped, no host/container namespace sharing, no device
   maps, no `VolumesFrom`, binds restricted to the session workspace or session-labeled
   volumes, resource limits inherited. `Runtime`, `SecurityOpt`, `UsernsMode`, etc. are
-  stripped so a child can't re-open what the parent closed.
+  stripped so a child can't re-open what the parent closed. A bind source is **rewritten
+  to its realpath** before it reaches Docker and re-checked on `start`, and a container
+  carrying a host bind may take neither a `RestartPolicy` nor an explicit `/restart`:
+  every mount has to be preceded by a check nothing can stall, or a workspace path
+  repointed afterwards is what Docker mounts (planning#601, docs/088 finding 2). The
+  sanitizer's own bypass — field-casing aliases — is planning#607, still open.
 - **Agent container itself is hardened**: `CapDrop: ["ALL"]` with a minimal `CapAdd`,
   `SecurityOpt: ["no-new-privileges"]` (`container-lifecycle.ts:417-420`).
 - **Per-session network + label isolation**: each Docker-enabled session gets its own

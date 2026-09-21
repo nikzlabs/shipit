@@ -8,7 +8,7 @@ import { createDockerProxy, PARENT_SESSION_LABEL } from "../docker-proxy.js";
 import type { DockerProxyDeps } from "../docker-proxy.js";
 
 function createMockDaemon() {
-  const containers = new Map<string, { labels: Record<string, string>; running: boolean }>();
+  const containers = new Map<string, { labels: Record<string, string>; running: boolean; hostConfig: Record<string, unknown> }>();
   const networks = new Map<string, { labels: Record<string, string> }>();
   const volumes = new Map<string, { labels: Record<string, string> }>();
   const execs = new Map<string, string>();
@@ -39,7 +39,11 @@ function createMockDaemon() {
       if ((/\/containers\/create/.exec(url)) && method === "POST") {
         ctr++;
         const id = `c-${ctr}`;
-        containers.set(id, { labels: (body.Labels ?? {}) as Record<string, string>, running: false });
+        containers.set(id, {
+          labels: (body.Labels ?? {}) as Record<string, string>,
+          running: false,
+          hostConfig: (body.HostConfig ?? {}) as Record<string, unknown>,
+        });
         json(201, { Id: id });
         return;
       }
@@ -55,7 +59,12 @@ function createMockDaemon() {
       if (inspMatch && method === "GET") {
         const c = containers.get(inspMatch[1]);
         if (!c) { json(404, { message: "not found" }); return; }
-        json(200, { Id: inspMatch[1], Config: { Labels: c.labels }, State: { Running: c.running } });
+        json(200, {
+          Id: inspMatch[1],
+          Config: { Labels: c.labels },
+          State: { Running: c.running },
+          HostConfig: c.hostConfig,
+        });
         return;
       }
 
@@ -305,9 +314,9 @@ describe("Docker proxy integration", () => {
         Image: "alpine", HostConfig: {},
       });
       expect(createRes.status).toBe(201);
-      // This mock checks labels; it does not retain HostConfig for inspection.
       const container = daemon.containers.get((createRes.body as any).Id);
       expect(container?.labels[PARENT_SESSION_LABEL]).toBe("sess-1");
+      expect(container?.hostConfig.NetworkMode).toBe("shipit-session-sess1");
     });
 
     it("exec lifecycle through proxy", async () => {
@@ -400,6 +409,7 @@ describe("Docker proxy integration", () => {
       daemon.containers.set("foreign-c", {
         labels: { [PARENT_SESSION_LABEL]: "other-session" },
         running: true,
+        hostConfig: {},
       });
 
       const listRes = await req(proxyUrl, "GET", "/v1.41/containers/json");
@@ -430,7 +440,7 @@ describe("Docker proxy integration", () => {
       const netRes = await req(proxyUrl, "POST", "/v1.41/networks/create", { Name: "owned-net" });
       const networkId = (netRes.body as any).Id;
 
-      daemon.containers.set("foreign-c", { labels: { [PARENT_SESSION_LABEL]: "other" }, running: true });
+      daemon.containers.set("foreign-c", { labels: { [PARENT_SESSION_LABEL]: "other" }, running: true, hostConfig: {} });
 
       const res = await req(proxyUrl, "POST", `/v1.41/networks/${networkId}/connect`, {
         Container: "foreign-c",
