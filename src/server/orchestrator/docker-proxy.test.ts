@@ -427,6 +427,16 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(403);
       expect((res.body as any).message).toContain("Endpoint not allowed");
     });
+
+    it("returns 403 for an API version old enough to change daemon semantics", async () => {
+      // Below 1.24 the daemon reads HostConfig from a container start, which no route checks.
+      const res = await makeRequest(proxyUrl, "POST", "/v1.23/containers/mock-container-1/start", {
+        Privileged: true, Binds: ["/:/host"],
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("v1.23");
+      expect((res.body as any).message).toContain("minimum v1.24");
+    });
   });
 
   describe("container-topology brackets", () => {
@@ -690,6 +700,20 @@ describe("Docker API proxy", () => {
       expect((res.body as any).message).toContain("outside session workspace");
     });
 
+    it.each([
+      ["Devices", [{ PathOnHost: "/dev/sda", PathInContainer: "/dev/sda" }]],
+      ["DeviceCgroupRules", ["b 8:* rwm"]],
+      ["DeviceRequests", [{ Driver: "nvidia", Count: -1 }]],
+    ])("rejects HostConfig.%s", async (field, value) => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { [field]: value },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Device mappings");
+      expect(daemon.containers.size).toBe(0);
+    });
+
     // Container create is a volume-create surface too, so the DriverOpts rule POST /volumes/create
     // enforces has to hold here: `local` + `o=bind,device=` is a host bind under another name.
     it("rejects a volume mount whose DriverConfig binds a host path", async () => {
@@ -707,6 +731,30 @@ describe("Docker API proxy", () => {
       });
       expect(res.status).toBe(403);
       expect((res.body as any).message).toContain("DriverConfig options are not allowed");
+    });
+
+    it("rejects a VolumeOptions alias on a volume mount", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {
+          Mounts: [{
+            Type: "volume",
+            Target: "/host",
+            volumeoptions: { DriverConfig: { Options: { device: "/" } } },
+          }],
+        },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("allows an anonymous volume mount with no driver options", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Mounts: [{ Type: "volume", Target: "/data" }] },
+      });
+      expect(res.status).toBe(201);
     });
 
     it("rejects a volume mount on a non-local driver", async () => {
@@ -942,6 +990,164 @@ describe("Docker API proxy", () => {
         Detach: false,
       });
       expect(res.status).toBe(403);
+    });
+
+    it("rejects exec create with Privileged", async () => {
+      const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine", HostConfig: {},
+      });
+      const containerId = (createRes.body as any).Id;
+
+      const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${containerId}/exec`, {
+        Cmd: ["ls"], Privileged: true,
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Privileged");
+      expect(daemon.execs.size).toBe(0);
+    });
+
+    it("rejects exec create with a lowercase Privileged alias", async () => {
+      const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine", HostConfig: {},
+      });
+      const containerId = (createRes.body as any).Id;
+
+      const res = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${containerId}/exec`, {
+        Cmd: ["ls"], privileged: true,
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.execs.size).toBe(0);
+    });
+  });
+
+  // Docker matches JSON keys to Go struct fields case-insensitively, so a field spelled in any
+  // other casing is honoured by the daemon and invisible to every check here (planning#607).
+  describe("ambiguous field casing", () => {
+    it("control: the checks read exact property names, so a lowercase body reaches none of them", () => {
+      const body = { Image: "alpine", HostConfig: { privileged: true, binds: ["/:/host"] } };
+      const hostConfig = body.HostConfig as Record<string, unknown>;
+
+      expect(hostConfig.Privileged).toBeUndefined();
+      expect(hostConfig.Binds).toBeUndefined();
+    });
+
+    it("rejects a lowercase HostConfig alias on container create", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        hostconfig: { Privileged: true },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect((res.body as any).message).toContain("HostConfig");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("rejects the privileged + binds escape the sanitizer could not see", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { privileged: true, binds: ["/:/host"] },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it.each([
+      ["capadd", { capadd: ["SYS_ADMIN"] }],
+      ["CAPADD", { CAPADD: ["SYS_ADMIN"] }],
+      ["devices", { devices: [{ PathOnHost: "/dev/sda" }] }],
+      ["volumesfrom", { volumesfrom: ["other"] }],
+      ["networkmode", { networkmode: "host" }],
+      ["pidmode", { pidmode: "host" }],
+      ["ipcmode", { ipcmode: "host" }],
+      ["usernsmode", { usernsmode: "host" }],
+      ["securityopt", { securityopt: ["seccomp=unconfined"] }],
+      ["runtime", { runtime: "sysbox-runc" }],
+      ["Capdrop", { Capdrop: [] }],
+      ["pidslimit", { pidslimit: -1 }],
+    ])("rejects HostConfig.%s", async (_name, hostConfig) => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: hostConfig,
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("rejects an alias nested in Mounts", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { Mounts: [{ Type: "bind", Target: "/w", Source: "/tmp" }, { type: "bind", source: "/" }] },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("HostConfig.Mounts[1].type");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("rejects a Labels alias that would overwrite the ownership label", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {},
+        labels: { [PARENT_SESSION_LABEL]: "other-session" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+    });
+
+    it("accepts a canonical body whose label and sysctl names collide with guarded fields", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        Labels: { type: "web", source: "compose", privileged: "no" },
+        HostConfig: { Sysctls: { binds: "1" }, Mounts: [{ Type: "tmpfs", Target: "/scratch" }] },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("rejects a lowercase driveropts on volume create", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", {
+        Name: "escape-vol",
+        driveropts: { type: "none", o: "bind", device: "/etc" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.volumes.size).toBe(0);
+    });
+
+    it("rejects a lowercase driver on volume create", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", {
+        Name: "nfs-vol",
+        driver: "nfs",
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.volumes.size).toBe(0);
+    });
+
+    it("rejects a lowercase container alias on network connect", async () => {
+      const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "my-net" });
+      const networkId = (createRes.body as any).Id;
+      daemon.containers.set("foreign-c", {
+        labels: { [PARENT_SESSION_LABEL]: "other-session" },
+        running: true,
+      });
+
+      const res = await makeRequest(proxyUrl, "POST", `/v1.41/networks/${networkId}/connect`, {
+        container: "foreign-c",
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+    });
+
+    it("rejects a Labels alias on network create", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", {
+        Name: "my-net",
+        labels: { [PARENT_SESSION_LABEL]: "evil-session" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("Ambiguous field casing");
+      expect(daemon.networks.size).toBe(0);
     });
   });
 
