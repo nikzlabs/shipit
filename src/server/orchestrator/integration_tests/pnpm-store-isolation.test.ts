@@ -18,7 +18,9 @@
  * session's upper. The kernel half — that a write through the mount copies up instead of
  * reaching the base — is a property of overlayfs, measured on the services host by
  * `store-overlay-spike.sh` and `tree-overlay-spike.sh` (FINDINGS.md); it cannot run here, since
- * a session container has no Docker socket and cannot mount an overlay.
+ * a session container has no Docker socket and cannot mount an overlay. That cell asserts the
+ * mount SHAPE through `buildOverlaySpecs`; while planning#606 is open no pnpm session is selected
+ * for a base at all (`MOUNT_VERIFIED_PNPM_BASE`), which is the selection gate's own test.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";

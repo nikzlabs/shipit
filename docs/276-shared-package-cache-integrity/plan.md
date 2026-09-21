@@ -779,13 +779,40 @@ publisher, unverified until planning#599 lands, cannot write into the verified
 namespace, and a checkout that flips its package manager gets no verified base
 rather than another publisher's.
 
-*Per-session install — no pnpm pre-stamp (req 9, 10, 11).* Every pnpm session
-runs its own `pnpm install` over the base; pnpm pre-stamping is **cut for pnpm**
-(it stays for npm/yarn). The session's install reconciles against the session's
-own lockfile. It was also supposed to run its approved builds into its upper, so
-that an unbuilt base is completed per session; **measured 2026-09-21, it does
-not** — see the paragraph above and FINDINGS.md. What req 1 asks of the base is
-narrow and exact:
+*Per-session install — no pnpm pre-stamp (req 9, 10, 11).* **No pnpm session
+mounts a base today:** `MOUNT_VERIFIED_PNPM_BASE`
+(`container-overlay-provisioner.ts`) is false, beside the two consumer gates
+below, so an eligible pnpm repo installs privately exactly as it did before bases
+existed. A session's own install does not complete the base and cannot add to it,
+both measured. `pnpm add <pkg>` relinks `.bin` and `chmod`s every bin target
+unconditionally — 8 of 8 calls onto base files (`ineligible-sharing-spike.sh`) —
+and a session may rewrite a base file but not `chmod` one the publishing uid owns,
+so the add fails `Failed to chmod ".../semver/bin/semver.js": Operation not
+permitted` (`build-cost-spike.sh`), which is req 9. Its approved builds do not run
+over a base either (the paragraph above). That is planning#606, and the fail-safe
+is this gate: publishing is unchanged, so the repair — pre-seed the tree's bin
+targets into the session's upper at mount, owned by the session uid, so pnpm's
+chmod hits session-owned copies — flips the one constant back with no rebuild. A
+session that already had a base mounted has its install marker dropped and its
+overlay layers discarded on its next container start, the way a base-generation
+rotation discards a superseded upper: the marker was stamped over the MERGED view,
+so leaving it skips the install into a `node_modules` with no base under it, and
+re-adopting the upper the day mounting returns would hide everything installed
+privately meanwhile. The layers go only when nothing still mounts them — a Compose
+service preserved across an agent-container restart (`preserveComposeOnDispose`)
+holds its overlay volume, and emptying a running preview's `node_modules` is worse
+than waiting; an AUTOMATIC service is recreated onto the plain directories by the
+reconcile that follows the new agent recording no overlay, and the start after that
+discards the layers. A MANUAL one is not — `ServiceManager.start()` ups only
+automatic services — so it keeps the old mount, and its layers, until someone
+restarts it; that is the existing transition, not something this gate adds. The
+marker is dropped either way, since that is the correctness half. A container already running
+is not touched: it keeps its mount, and its `pnpm add` keeps failing, until it is
+replaced. Reqs 2, 10 and 13 are unmet for pnpm meanwhile, as they are for the
+ineligible repos below. The rest of this section is the shape that returns with the
+repair. pnpm pre-stamping is **cut for pnpm** (it stays for npm/yarn); the
+session's install reconciles against the session's own lockfile. What req 1 asks of
+the base is narrow and exact:
 **mounting the base must not introduce a graph choice absent from the consuming
 session's own inputs.** Authentic `overrides`/`catalog:`/peer selections in a
 session's *own* committed lockfile are that session's choice, not a cache

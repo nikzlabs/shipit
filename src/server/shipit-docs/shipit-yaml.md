@@ -315,7 +315,7 @@ agent:
   the `OVERLAY_DEP_STORE=0` kill switch, in which case dep dirs fall back to a
   plain install.) See docs/183.
 
-#### pnpm projects: a private store, and a verified base
+#### pnpm projects: a private store
 
 pnpm is detected automatically — from `package.json`'s `packageManager: "pnpm@…"`
 field, a `pnpm` command in `agent.install`, or a `pnpm-lock.yaml` at the root (in
@@ -327,12 +327,12 @@ this one runs. The store directory (`.pnpm-store/`) is auto-excluded from git pe
 session, so it never lands in a commit. It is enabled by default and shares the
 overlay's `OVERLAY_DEP_STORE` operator kill switch.
 
-A private store is not shared storage, so sharing comes back as a `node_modules`
-**base** ShipIt builds itself from the repo's committed manifests and lockfile,
-verifying every package against the registry, and mounts read-only under each
-session's own writable layer. A pnpm session is mounted on such a base only once one has
-been published for every one of its eligible `dep-dirs`; until then it installs from
-scratch into its private store. See docs/276.
+A private store is not shared storage, so sharing is meant to come back as a
+`node_modules` **base** ShipIt builds itself from the repo's committed manifests and
+lockfile, verifying every package against the registry, and mounts read-only under each
+session's own writable layer. **No session mounts one today** — `pnpm add` chmods the
+files it links into `.bin`, which a session cannot do to a file the base's builder owns —
+so every pnpm session installs from scratch into its private store. See docs/276.
 
 > **Patching an installed package** works normally: an edit inside `node_modules`
 > stays in this session. pnpm's built-in `pnpm patch` / `pnpm patch-commit` flow is

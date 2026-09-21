@@ -20,7 +20,6 @@ import { sessionNpmCacheDir } from "../shared/npm-cache.js";
 import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
-  INSTALL_MARKER_FILE,
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
 } from "./session-state-dir.js";
@@ -38,6 +37,7 @@ import {
   missingDepDirParents,
   PNPM_VERIFIED_NAMESPACE,
   preStampInstallMarker,
+  removeInstallMarkerForOverlayReset,
   sortOverlayDepDirs,
   supersededSessionOverlayLayers,
   type DepDirOverlaySpec,
@@ -468,7 +468,7 @@ export function prepareOverlayDirs(
   );
   if (superseded.length > 0) {
     // Invalidate before deleting layers; a populated new base can hide the loss of session-specific deps.
-    if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir);
+    if (opts.workspaceDir) removeInstallMarkerForOverlayReset(opts.workspaceDir);
     for (const dir of superseded) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -535,21 +535,6 @@ export function ensureDepDirMountParents(
       }
       chown(abs);
     }
-  }
-}
-
-function removeInstallMarkerForRotation(workspaceDir: string): void {
-  try {
-    const markerFile = path.join(
-      sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
-      INSTALL_MARKER_FILE,
-    );
-    fs.rmSync(markerFile, { force: true });
-  } catch (err) {
-    console.warn(
-      "[overlay] could not drop the install marker after a base-generation rotation:",
-      err instanceof Error ? err.message : String(err),
-    );
   }
 }
 

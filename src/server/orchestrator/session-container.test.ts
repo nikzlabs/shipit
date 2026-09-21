@@ -20,6 +20,7 @@ import {
   sessionPnpmStoreDir,
 } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
+import { MOUNT_VERIFIED_PNPM_BASE } from "./container-overlay-provisioner.js";
 import { OVERLAY_POINTER_SUBDIR } from "./overlay-base.js";
 import { allowEgressHost, clearEgressPolicy } from "./egress-policy.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
@@ -1121,6 +1122,12 @@ describe("SessionContainerManager", () => {
         const specs = await mgr.prepareOverlaySpecs({
           sessionId: "pnpm-ns-1", workspaceDir: dir, session: eligible,
         });
+        // planning#606 gates the mount off entirely; publishing is unchanged, so the pointer the
+        // half above reads is still written. The repair flips MOUNT_VERIFIED_PNPM_BASE back.
+        if (!MOUNT_VERIFIED_PNPM_BASE) {
+          expect(specs).toEqual([]);
+          return;
+        }
         expect(specs).toHaveLength(1);
         expect(specs[0].scopeHash).toBe(verified);
         expect(specs[0].scope.namespace).toBe(PNPM_VERIFIED_NAMESPACE);
