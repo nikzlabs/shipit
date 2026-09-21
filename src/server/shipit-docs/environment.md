@@ -121,8 +121,7 @@ Consequences for the commands you run:
   (`stat -c %h <file>` reports 1), and this costs you nothing: your store is mounted
   separately from your workspace, and Linux refuses a hardlink across two mounts even when
   they sit on one filesystem, so pnpm copies here whatever it is asked to do. ShipIt sets
-  `package-import-method=copy` explicitly on pnpm 10 and older, and on newer pnpm when a
-  shared base is mounted (below), where the import has to cross the overlay as well.
+  `package-import-method=copy` explicitly on pnpm 10 and older.
 
 That also answers the obvious worry about an **old `node_modules`**: it is a tree of copies
 too, so nothing in it is shared with another session and there is nothing to rebuild. Edit
@@ -131,53 +130,23 @@ inside it freely.
 `verify-store-integrity` is a local check on the store this session reads. It is left
 at pnpm's default and is not a cross-session protection — the private store is.
 
-ShipIt may also mount a shared `node_modules` **base** read-only under your own writable
-layer. It builds one itself, from the repo's committed manifests and `pnpm-lock.yaml` at
-the default-branch commit, after a session's declared install succeeds on that commit —
-never from any session's installed tree, and only when every package in the lockfile is a
-registry download whose digest the registry confirms. You still run your own
-`pnpm install` over it, so your own lockfile decides what the tree ends up as, and
-everything above still holds. Your approved **builds** are the exception, and they are why
-a repo with any of them never gets a base at all — see the list below.
+**No shared `node_modules` base is mounted in a pnpm session.** ShipIt can build one — a
+read-only tree under your own writable layer, so a warm session skips most of the download
+— and it is switched off: `pnpm add` makes pnpm `chmod` the files it links into `.bin`, and
+those files would belong to the user that built the base, which your session may rewrite but
+not `chmod`. The add would fail with `Operation not permitted`, so no session gets a base
+until that is repaired. Every pnpm repo installs from scratch into its private store, as it
+did before bases existed: the install works, it is just not warm, and there is nothing to fix
+on your side.
 
-**No new base is built** — so until one was published, every session installs from
-scratch into its private store — when:
+Your `node_modules` is therefore yours alone, whole — nothing in it is read-only, `pnpm
+rebuild` and `pnpm install --force` behave normally, and a dependency that builds at install
+time builds here.
 
-- the lockfile pins anything that is not a plain registry package (`workspace:`, `link:`,
-  `file:`, a git URL, or a `patchedDependencies` entry);
-- **any dependency builds at install time** — a `preinstall`, `install` or `postinstall`
-  script in its own `package.json`, a `binding.gyp` at its root, or a `.hooks/` directory
-  (see below);
-- the repo loads pnpm plugin code (a `.pnpmfile.mjs`, `configDependencies`, or a
-  `pnpmfile` setting in `.npmrc` / `pnpm-workspace.yaml`);
-- the install output is not one self-contained `node_modules` (`modulesDir`,
-  `virtualStoreDir` or a non-isolated `nodeLinker`), or `agent.dep-dirs` declares a
-  directory besides `node_modules`;
-- `.npmrc` points at a registry the operator did not authorize;
-- `package.json` declares pnpm 10 or older, through `packageManager` or
-  `devEngines.packageManager`. pnpm resolves its store as `<store>/v<N>` and records that
-  path; pnpm 10 would recreate the whole tree rather than read a base pnpm 12 built.
-
-The install-time-build rule is a wide one, and it does not depend on whether the repo
-*approves* the build: one transitive dependency is enough, and `esbuild` has a
-`postinstall`, so anything reaching it through Vite is in this case — as is any native
-module (`better-sqlite3`, `node-pty`, `sharp`). The reason is that a build cannot be added
-to a mounted base afterwards: the base is built with scripts off, an install over it then
-reports nothing pending, and `pnpm rebuild` / `pnpm install --force` both fail with
-`Operation not permitted` because the base's files are owned by another user. So such a
-repo installs from scratch in every session, exactly as it did before bases existed — the
-install works, it is just not warm, and there is nothing to fix on your side.
-
-Introducing one of these into a repo that already published a base stops the *next* base
-from being built; it does not retire the one already published, so sessions keep mounting
-it until the base is rebuilt or reclaimed.
-
-Two things are decided from **your checkout** rather than the default branch, and each
-means no base is mounted for this session at all: a checkout with **no `pnpm-lock.yaml`**
-(with no lockfile pnpm would take its version choices from the base rather than resolving
-your own), and a checkout declaring pnpm 10 or older. Only the manifest is read for that
-second one — if you run an older pnpm through the command itself (`npx pnpm@10 install`),
-the install still succeeds, but it recreates the tree instead of reading the base.
+One exception, and it is the one worth recognising: a session container started **before** this
+was switched off keeps the base it already has until that container is replaced. If `pnpm add`
+in such a session fails with `Operation not permitted` on a file under `node_modules`, that is
+this — not your repo. The session's next container start has no base and installs privately.
 
 ### Write-protected paths
 

@@ -353,6 +353,24 @@ recorded in [requirements.md](./requirements.md); none is open.
       Retiring the bases ALREADY published under the old rule is part of the same
       fix: a pointer is never invalidated in place, so the verified namespace
       went `pnpm-verified-v1` → `v2`.
+- [ ] **planning#606: mounting gated off until the bin-target pre-seed lands.**
+      `pnpm add` relinks `.bin` and `chmod`s every bin target unconditionally, and
+      those targets are base files owned by the publishing uid — so the add fails
+      `EPERM` for the session uid and req 9 is broken in production for every
+      eligible pnpm repo with a base. The fail-safe shipped first:
+      `MOUNT_VERIFIED_PNPM_BASE` (`container-overlay-provisioner.ts`) is false, so
+      a pnpm session gets no lowerdir and installs privately, and a session that
+      already had one has its install marker dropped and its overlay layers
+      discarded on its next container start (kept one start longer when a
+      preserved Compose service still mounts them). Two defects the independent
+      review found on the transition, both fixed here: the cleanup recomputed
+      today's scope hash, so a layer selected under an older namespace or runtime
+      key — and its marker — survived; and `applyOverlayDepDirsForSession`
+      discarded the change result when CLEARING the set, so a preserved service
+      kept mounting an overlay the agent no longer had. Publishing is unchanged, so the repair — pre-seeding the
+      tree's bin targets into the session's upper, owned by the session uid — flips
+      that one constant with no rebuild. reqs 2 / 10 / 13 are given back up for
+      pnpm meanwhile; req 9 is restored.
 - [x] The `.pnpmfile.mjs` and `configDependencies` suppression gap measured
       (2026-09-21, pnpm 12.4.1, FINDINGS.md): `--ignore-pnpmfile` suppresses
       **both** — module body and `readPackage` — exactly as it does `.cjs`. So

@@ -103,18 +103,20 @@ export async function applyOverlayDepDirsForSession(
     // An empty record is authoritative; an empty fallback must not replace a known set.
     if (pairs.length === 0) {
       if (provisioned) {
-        mgr.setOverlayDepDirs([]);
+        // Clearing a set the services still hold is a change like any other: without reporting it,
+        // a service preserved across the restart keeps mounting an overlay the agent no longer has.
+        const cleared = mgr.setOverlayDepDirs([]);
         console.log(
           `[overlay:${sessionId}] agent container has no dependency overlay — ` +
           `compose services use the plain workspace directories`,
         );
-      } else {
-        warn(
-          `could not tell which dependency overlays the agent container has (no container ` +
-          `record, and re-derivation found none) — compose services may see different ` +
-          `dependency directories than the agent.`,
-        );
+        return cleared;
       }
+      warn(
+        `could not tell which dependency overlays the agent container has (no container ` +
+        `record, and re-derivation found none) — compose services may see different ` +
+        `dependency directories than the agent.`,
+      );
       return false;
     }
 
