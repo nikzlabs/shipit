@@ -482,6 +482,62 @@ export const MarkdownContent = memo(({ text, shipitLinks = false }: {
 });
 
 /**
+ * The same overrides with the paragraph dropped, for a one-line field that has
+ * to stay inside its own line box — a checklist row's label, an offer's
+ * description. A `<p>` there would add block margins and break the row's
+ * layout, so the paragraph renders as its children and everything else (links,
+ * issue badges, code, emphasis) behaves exactly as it does in prose.
+ *
+ * Module-level for the same reason as the two maps above: `InlineMarkdown` is
+ * memoised on the premise that its components map is a stable constant.
+ */
+const inlineComponents: Components = {
+  ...markdownComponents,
+  p({ children }) {
+    return <>{children}</>;
+  },
+};
+
+const inlineShipitLinkComponents: Components = {
+  ...shipitLinkComponents,
+  p({ children }) {
+    return <>{children}</>;
+  },
+};
+
+/**
+ * Markdown for a short field rendered inline, outside the prose container
+ * (docs/303-session-status-card req 41). The caller owns the wrapper's colour
+ * and weight through `className`, and the text lands directly inside that
+ * element — a second span in between would take the colour away from the
+ * element a reader (or a test) finds the text on.
+ *
+ * Link styling is applied here rather than inherited: outside `.prose` there is
+ * no anchor rule at all, so a link would render as plain text.
+ */
+export const InlineMarkdown = memo(({ text, className = "", shipitLinks = false }: {
+  text: string;
+  className?: string;
+  shipitLinks?: boolean;
+}) => {
+  return (
+    <span
+      className={`[&_a]:text-(--color-text-link) [&_a]:underline [&_a]:cursor-pointer [&_code]:font-mono [&_code]:text-[0.9em] ${className}`}
+      data-testid="inline-markdown"
+    >
+      <Markdown
+        remarkPlugins={remarkPlugins}
+        components={shipitLinks ? inlineShipitLinkComponents : inlineComponents}
+        urlTransform={urlTransform}
+        skipHtml
+      >
+        {text}
+      </Markdown>
+    </span>
+  );
+});
+
+/**
  * Syntax-highlighted fenced code block with a header and "Copy" button.
  *
  * Three layers guard the highlight, each covering what the one inside it

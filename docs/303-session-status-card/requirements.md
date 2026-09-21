@@ -273,12 +273,22 @@ taken inside one session, without building an agent that talks to many.
     than remember. An entry whose turn was never recorded says so, and keeps saying so:
     nothing but the agent introducing an entry gives it an age.
 
+41. Every part of the card the agent wrote renders as markdown, not the status alone:
+    the last-turn line, each manual step, and each offer's label and description. A link
+    in any of them is a working link — into a file, an issue, or the running app — and
+    clicking it does not tick the row it sits in. The same goes for the transcript
+    action card, whose rows are the same rows.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
 
+- 2026-09-21 — Nik: "All parts of the cards should be rendered as markdown, not
+  only status. Links etc. are useful." → req 41. Not a question he was asked; the
+  requirement is recorded here because the card's fields were markdown in one
+  place and plain text in three.
 - 2026-09-20 — Nik, on `drift-measurement.md`, which counted 650 production turns:
   one work turn in four ends with no update, the nudge fires on 48% of the misses,
   and two calls in five say nothing about the manual steps or the offers. He approved

@@ -357,7 +357,7 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
           : {})}
       >
         <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
-          <MarkdownContent text={status.status} />
+          <MarkdownContent text={status.status} shipitLinks />
         </div>
       </Capped>
 
@@ -372,7 +372,7 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
           testId="session-status-last-turn"
         >
           <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
-            <MarkdownContent text={lastTurn} />
+            <MarkdownContent text={lastTurn} shipitLinks />
           </div>
         </Capped>
       )}

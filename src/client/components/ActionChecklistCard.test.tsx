@@ -147,3 +147,38 @@ describe("ActionChecklistCard — ack is conditional on delivery", () => {
     expect(screen.getByText(/Couldn't send/)).toBeInTheDocument();
   });
 });
+
+// docs/303-session-status-card req 41
+describe("ActionChecklistCard markdown", () => {
+  it("renders the card's title as markdown", () => {
+    render(<ActionChecklistCard card={card({ title: "Follow-ups for **billing**" })} />);
+    expect(screen.getByText("billing").tagName).toBe("STRONG");
+  });
+
+  it("renders a single action's label and description as markdown", () => {
+    render(
+      <ActionChecklistCard
+        card={card({
+          actions: [
+            {
+              id: "only",
+              label: "Open a PR for `billing`",
+              description: "See [the plan](https://example.com/p)",
+              payload: "Open a PR.",
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("billing").tagName).toBe("CODE");
+    expect(screen.getByRole("link", { name: "the plan" })).toHaveAttribute(
+      "href",
+      "https://example.com/p",
+    );
+  });
+
+  it("keeps the default title plain when the agent supplied none", () => {
+    render(<ActionChecklistCard card={{ ...card(), title: undefined }} />);
+    expect(screen.getByText("Optional follow-ups")).toBeInTheDocument();
+  });
+});

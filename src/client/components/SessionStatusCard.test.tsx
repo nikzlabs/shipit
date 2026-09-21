@@ -638,4 +638,35 @@ describe("SessionStatusCard", () => {
       expect(screen.queryByRole("button", { name: /add a note/i })).not.toBeInTheDocument();
     });
   });
+
+  // docs/303-session-status-card req 41
+  describe("markdown", () => {
+    it("renders a manual step and an offer as markdown, not as their source", () => {
+      render(
+        <SessionStatusCard
+          status={card({
+            needsYou: ["Paste the key into [the dashboard](https://example.com/k)"],
+            actions: [
+              offer({
+                offerId: "o1",
+                label: "Fix `parseRepoFileLink`",
+                description: "See **docs/258** for the rule",
+              }),
+            ],
+          })}
+        />,
+      );
+      expect(screen.getByRole("link", { name: "the dashboard" })).toHaveAttribute(
+        "href",
+        "https://example.com/k",
+      );
+      expect(screen.getByText("parseRepoFileLink").tagName).toBe("CODE");
+      expect(screen.getByText("docs/258").tagName).toBe("STRONG");
+    });
+
+    it("renders the last-turn line as markdown too", () => {
+      render(<SessionStatusCard status={card({ lastTurn: "Merged **#212**." })} />);
+      expect(screen.getByText("#212").tagName).toBe("STRONG");
+    });
+  });
 });

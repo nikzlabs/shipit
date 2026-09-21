@@ -410,7 +410,7 @@ it re-queues only steers with no output after them.
 `ws-handlers/agent-execution.ts`). With it off, neither the freshness mark nor the ask
 runs, and `sessionStatusTurnContext` sends nothing, so a session never sees the block.
 
-## Client (req 6–9, 14, 17, 18, 20, 24, 26–30)
+## Client (req 6–9, 14, 17, 18, 20, 24, 26–30, 41)
 
 `SessionStatusCard` (`src/client/components/SessionStatusCard.tsx`), rendered
 as a direct child of the `contentRef` element in
@@ -463,6 +463,33 @@ The rows, the
 badge and the submit button are the existing follow-up action card's, so a
 checkable item reads the same wherever the user meets one, and every offer
 shows its description (req 26).
+
+- **Every field is markdown (req 41).** `status` and `lastTurn` go through
+  `MarkdownContent`; a checklist row's label and description, and the
+  single-action card's two lines, go through `InlineMarkdown`
+  (`message-markdown.tsx`) — the same remark pipeline and the same component
+  map with the paragraph dropped, so the text keeps its own line box instead of
+  gaining block margins. The caller passes the row's colour and weight as
+  `className` and the text lands directly inside that element, because a span in
+  between would take the colour off the element the text is found on. Outside
+  `.prose` there is no anchor rule at all, so link styling is applied there too.
+  ShipIt pointers are enabled on these fields: every one of them is text the
+  agent composed in a tool call, at the trust level of its own transcript prose,
+  which enables them too — nothing ingests a repository, tracker or PR document
+  into a card row, which is what the boundary in `shipitLinkComponents` rules
+  out.
+
+  A checklist row's text sits **outside** the row's `<label>`, with a click
+  handler of its own that ignores anything interactive. This is not tidiness: a
+  repo-file link and a ShipIt pointer are rendered as an anchor with **no
+  `href`** (and the badge and button forms as a `<span>`), which the HTML
+  standard does not count as interactive content, so a `<label>` around one
+  forwards the click to its checkbox — opening a file would also tick the row.
+  `role` and `tabindex` do not help; measured in Chromium, where an href-less
+  anchor and a clickable span both ticked the box and a `<button>` and an anchor
+  with `href` did not. **No test can see this**: jsdom counts any element with
+  `tabindex` as interactive content and never forwards, so the guard asserts the
+  structure instead — the same reason req 37's note control is guarded that way.
 
 - **Three cards, and why (req 33).** The card shipped as one translucent
   surface and read as "one more transcript card" — the complaint that opened
@@ -1322,7 +1349,7 @@ tests.
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, `src/server/orchestrator/services/session-fork-merge.ts` — stale on rewind, copy-as-stale on fork.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts`, `src/server/shared/types/domain-types/session.ts` — column and type.
 - `src/server/orchestrator/prompts/skeleton.md` (the `{{FOLLOW_UP_ACTIONS}}` slot), `prompts/propose-actions.md`, `prompts/session-status.md`, `src/server/orchestrator/agent-instructions.ts` — the two variants.
-- `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation.
+- `src/client/components/SessionStatusCard.tsx`, `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts`, `src/client/components/MessageList/MessageList.tsx`, `src/client/components/message-markdown.tsx` — the element, the shared checklist, the wrappers, the render slot at the end of the conversation, and the markdown every field renders through.
 - `src/client/components/MessageList/pending-answer.ts` — which elements render a card the user answers, and which one the conversation ends with (req 32).
 - `src/client/components/MessageList/hooks/useMessageScroll.ts` — follow-the-bottom state, reset on the displayed session (planning#595).
 

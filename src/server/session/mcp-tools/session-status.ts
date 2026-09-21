@@ -19,6 +19,9 @@ const TOOL_DESCRIPTION = [
   "delta: every call rewrites it, and a call that omits it clears the line, so pass it again",
   "whenever the turn did something worth saying and leave it out when it did not.",
   `\`status\` is markdown and may carry a short list (up to ${MAX_STATUS_LEN} chars).`,
+  "EVERY field is markdown, not only `status`: a step, a label and a description all render it,",
+  "so a link into a file, an issue or the running app is a working link. Keep those to one",
+  "short line — a heading or a list does not belong in a checkbox row.",
   "`needsYou` is a LIST, one entry per thing only the USER can do by hand, shown on the card",
   "under \"Manual steps\" with a toggle each; send [] to clear it. An action is YOUR work,",
   "shown under \"Follow-ups\", and every action needs a `description` as well as a `label`.",
@@ -64,7 +67,7 @@ const inputSchema = {
       items: {
         type: "string",
         maxLength: MAX_NEEDS_YOU_LEN,
-        description: `One step the user has to do by hand (≤${MAX_NEEDS_YOU_LEN} chars).`,
+        description: `One step the user has to do by hand, as one short line of markdown (≤${MAX_NEEDS_YOU_LEN} chars).`,
       },
     },
     replaceActions: {
@@ -86,13 +89,13 @@ const inputSchema = {
           label: {
             type: "string",
             maxLength: MAX_LABEL_LEN,
-            description: `Short checkbox text (≤${MAX_LABEL_LEN} chars).`,
+            description: `Short checkbox text, markdown (≤${MAX_LABEL_LEN} chars).`,
           },
           description: {
             type: "string",
             maxLength: MAX_DESC_LEN,
             description:
-              "Required: the one-line explanation shown under the label, which is what the user "
+              "Required: the one-line explanation in markdown shown under the label, which is what the user "
               + `reads to know what the action does before ticking it (≤${MAX_DESC_LEN} chars).`,
           },
           defaultChecked: {
