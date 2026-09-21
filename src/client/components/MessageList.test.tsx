@@ -1984,6 +1984,29 @@ describe("session status card slot", () => {
     expect(content.contains(screen.getByText("done"))).toBe(true);
   });
 
+  // docs/303 req 43 — the stack sits immediately above the composer while the
+  // conversation is shorter than the scroller, and does not move when the rows
+  // land. This is pure layout and jsdom computes none of it: the guard asserts
+  // the two declarations that produce it, and CANNOT fail on the card actually
+  // being at the bottom, on the auto margin collapsing to 0 once the content
+  // overflows, or on the jump the requirement is about. Those were checked by
+  // hand in a real browser; see plan.md → "Immediately above the composer".
+  it("pushes the content to the bottom of a scroller it does not fill", () => {
+    seed(status);
+    const { container } = render(
+      <MessageList messages={[msg("assistant", "done")]} isLoading={false} />,
+    );
+    const scroller = container.querySelector<HTMLElement>("[data-chat-transcript]")!;
+    const content = scroller.lastElementChild as HTMLElement;
+    // The auto margin only absorbs free space in a flex formatting context, so
+    // the two travel together: either one alone is a no-op.
+    expect(scroller.className).toContain("flex flex-col");
+    expect(content.className).toContain("mt-auto");
+    // `justify-end` would reach the same place and make the overflow above the
+    // start edge unreachable on a long transcript.
+    expect(scroller.className).not.toContain("justify-end");
+  });
+
   it("renders nothing for a session with no stored card", () => {
     seed(undefined);
     render(<MessageList messages={[msg("assistant", "done")]} isLoading={false} />);
