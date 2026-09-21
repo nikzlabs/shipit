@@ -29,6 +29,7 @@ import {
 } from "./install-failure.js";
 import { MAX_REPORTED_MISMATCHES, staleDepDirs } from "./dep-tree-staleness.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { isPnpmRepo } from "../shared/pnpm-repo.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
@@ -344,7 +345,10 @@ export class InstallController {
       return false;
     }
     const marker = parseMarker(raw);
-    return marker !== null && markerMatches(marker, stamp);
+    return (
+      marker !== null &&
+      markerMatches(marker, stamp, { requireDepsHash: isPnpmRepo(this.workspaceDir) })
+    );
   }
 
   private computeDepsHash(commands: string[]): string | null {

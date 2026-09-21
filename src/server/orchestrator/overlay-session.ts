@@ -15,6 +15,10 @@ import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
 import { readNodePin, parseVersion, satisfies } from "../shared/node-pin.js";
 
+// Re-exported because every orchestrator caller of the detection used to live here; the detection
+// itself moved to shared/ so the session worker can reach the same answer.
+export { isPnpmRepo, hasPnpmLockfile } from "../shared/pnpm-repo.js";
+
 export function isOverlayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env.OVERLAY_DEP_STORE;
   return v !== "0" && v !== "false";
@@ -196,17 +200,23 @@ export function liveOverlayScopeHashes(
 ): Set<string> {
   const live = new Set<string>();
   if (!isOverlayEnabled(env)) return live;
-  const runtimeKey = overlayRuntimeKey(env);
+  const baseRuntimeKey = overlayRuntimeKey(env);
   for (const s of sessions) {
     if (!s.remoteUrl) continue;
     if (s.kind === "ops") continue;
     if (s.diskTier === "evicted") continue;
+    // Creation keys the scope on `overlayRuntimeKey + overlayPinSegment` (`resolveOverlayScope`),
+    // and the pin comes from the mutable checkout — so liveness claims BOTH: the sweep must never
+    // be what decides a base is reapable, and a stopped session's pinned scope was swept despite a
+    // current pointer while this read the runtime key alone. Naming a hash with no directory is free.
+    const runtimeKeys = new Set([baseRuntimeKey, baseRuntimeKey + overlayPinSegment(s.workspaceDir, env)]);
     for (const depDir of resolveDepDirs(s)) {
-      live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir));
-      // Claim the verified namespace unconditionally: package-manager detection reads the
-      // MUTABLE checkout, so a session that flips to npm mid-life would otherwise let the sweep
-      // reap the verified base it comes back to. Naming a hash with no directory costs nothing.
-      live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir, PNPM_VERIFIED_NAMESPACE));
+      for (const runtimeKey of runtimeKeys) {
+        live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir));
+        // Claim the verified namespace unconditionally too: a session that flips to npm mid-life
+        // would otherwise let the sweep reap the verified base it comes back to.
+        live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir, PNPM_VERIFIED_NAMESPACE));
+      }
     }
   }
   return live;
@@ -336,43 +346,6 @@ export function retiredSharedPnpmStoreRoot(stateDir: string): string {
   return path.join(stateDir, PNPM_STORE_SUBDIR);
 }
 
-function readPackageManagerField(workspaceDir: string): string | null {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(workspaceDir, "package.json"), "utf-8")) as {
-      packageManager?: unknown;
-    };
-    if (typeof pkg.packageManager === "string" && pkg.packageManager.trim()) {
-      return pkg.packageManager.trim();
-    }
-  } catch {
-    /* No package-manager signal. */
-  }
-  return null;
-}
-
-function pnpmSignalFromInstall(install: string[]): boolean | null {
-  let sawNonPnpm = false;
-  for (const cmd of install) {
-    if (/(?:^|[\s;&|(])pnpm(?:[\s;&|)]|$)/.test(cmd)) return true;
-    if (/(?:^|[\s;&|(])(?:npm|yarn|bun)(?:[\s;&|)]|$)/.test(cmd)) sawNonPnpm = true;
-  }
-  return sawNonPnpm ? false : null;
-}
-
-export function isPnpmRepo(workspaceDir: string): boolean {
-  const pm = readPackageManagerField(workspaceDir);
-  if (pm !== null) return pm.startsWith("pnpm");
-  let install: string[];
-  try {
-    install = resolveShipitConfig(workspaceDir).agent.install;
-  } catch {
-    install = [];
-  }
-  const installSignal = pnpmSignalFromInstall(install);
-  if (installSignal !== null) return installSignal;
-  return fs.existsSync(path.join(workspaceDir, "pnpm-lock.yaml"));
-}
-
 // Run after container start pins the lower layer, before exposing the worker URL for install.
 export async function preStampInstallMarker(args: {
   stateDir: string;
@@ -383,6 +356,12 @@ export async function preStampInstallMarker(args: {
 }): Promise<boolean> {
   const { stateDir, workspaceDir, specs } = args;
   if (specs.length === 0) return false;
+  // Pre-stamping is CUT for pnpm (docs/276 section 5, "Per-session install — no pnpm pre-stamp"):
+  // the verified base is published UNBUILT, so a session that skips its own install never runs the
+  // builds it approved, and a session whose lockfile merely matches adopts the base's graph. Read
+  // off the specs rather than re-detecting the package manager, so this decision cannot address a
+  // different scope than the one actually mounted.
+  if (specs.some((s) => s.scope.namespace === PNPM_VERIFIED_NAMESPACE)) return false;
   const readPointer = args.readPointer ?? readBasePointerByHash;
   const chown = args.chown ?? chownToSessionWorker;
 

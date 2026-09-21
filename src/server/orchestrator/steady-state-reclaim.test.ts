@@ -10,10 +10,11 @@ import { runSteadyStateReclaim } from "./steady-state-reclaim.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { liveOverlayScopeHashes, overlayRuntimeKey, sessionPnpmStoreDir } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
+import { withScopeLock } from "./overlay-base.js";
 import {
   claimOverlayBaseGeneration,
   clearOverlayBaseClaims,
-  OVERLAY_BASE_CLAIM_MS,
+  releaseOverlayBaseClaims,
 } from "./overlay-base-claims.js";
 
 function liveMountDocker(genLowerdirs: string[]): (args: string[]) => Promise<string> {
@@ -526,6 +527,8 @@ describe("runSteadyStateReclaim", () => {
   });
 
   describe("in-flight base-generation claims (planning#440)", () => {
+    const CREATING = "claim-token-of-one-create-attempt";
+
     function creatingFixture() {
       const hash = "1f2e3d4c5b6a7988";
       const mkGen = (gen: number) => {
@@ -554,7 +557,7 @@ describe("runSteadyStateReclaim", () => {
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      claimOverlayBaseGeneration(fx.hash, 7);
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
 
       const result = await runSteadyStateReclaim({
         repoStore, stateDir: tmpDir,
@@ -574,7 +577,7 @@ describe("runSteadyStateReclaim", () => {
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      claimOverlayBaseGeneration(fx.hash, 7);
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
 
       const result = await runSteadyStateReclaim({
         repoStore, stateDir: tmpDir,
@@ -589,14 +592,13 @@ describe("runSteadyStateReclaim", () => {
       expect(result.overlayBasesRemoved).toBe(1);
     });
 
-    it("stops protecting once the claim expires, so a dead create cannot pin a base forever", async () => {
+    it("stops protecting once the session releases, so a finished create cannot pin a base forever", async () => {
       setup();
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      claimOverlayBaseGeneration(fx.hash, 7);
-      const realNow = Date.now();
-      vi.spyOn(Date, "now").mockReturnValue(realNow + OVERLAY_BASE_CLAIM_MS + 1);
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
+      releaseOverlayBaseClaims(CREATING);
 
       const result = await runSteadyStateReclaim({
         repoStore, stateDir: tmpDir,
@@ -616,7 +618,7 @@ describe("runSteadyStateReclaim", () => {
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      claimOverlayBaseGeneration(fx.hash, 7);
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
 
       const result = await runSteadyStateReclaim({
         repoStore, stateDir: tmpDir,
@@ -630,6 +632,76 @@ describe("runSteadyStateReclaim", () => {
 
       expect(result.overlayBasesRemoved).toBe(0);
       expect(fs.existsSync(fx.superseded)).toBe(true);
+    });
+
+    /**
+     * A claim's WHOLE lifetime can fall between the pass-wide Docker sample and the per-scope claim
+     * read: claim, mount, release. Neither reading holds it, and the generation a running container
+     * is on is deleted underneath it. The cover is a Docker re-check taken AFTER the per-scope claim
+     * read — under the scope lock nothing more can be claimed, so a generation not claimed there had
+     * a visible container before its release, and the re-check sees it
+     * (docs/276-shared-package-cache-integrity section 5; review, 2026-09-21).
+     */
+    it("re-checks Docker after the per-scope claim read, covering a claim released mid-pass", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      claimOverlayBaseGeneration(fx.hash, 7, CREATING);
+
+      // The claim's whole lifetime happens between the two readings, and — as in production — the
+      // release comes only after the container is visible.
+      let visible = false;
+      const withMount = liveMountDocker([fx.claimed]);
+      const withoutMount = liveMountDocker([]);
+      const runDocker = (args: string[]): Promise<string> => {
+        const out = visible ? withMount(args) : withoutMount(args);
+        if (args[0] === "ps" && !visible) {
+          visible = true;
+          releaseOverlayBaseClaims(CREATING);
+        }
+        return out;
+      };
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker,
+      });
+
+      expect(fs.existsSync(fx.claimed)).toBe(true);
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(result.overlayBasesRemoved).toBe(1);
+    });
+
+    it("runs the sweep under the scope's own lock, so a publish cannot interleave", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const lockTaken = withScopeLock(fx.hash, () => held);
+      await Promise.resolve();
+
+      const sweep = runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker: () => Promise.resolve(""),
+      });
+      // Real timers, not microtasks: the sweep paces its deletes through setTimeout, so a
+      // microtask drain would never reach one and the cell would pass with no lock at all.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fs.existsSync(fx.superseded)).toBe(true);
+
+      release();
+      await lockTaken;
+      // Nothing claims here, so both non-current generations go — once the lock is free.
+      expect((await sweep).overlayBasesRemoved).toBe(2);
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(fs.existsSync(fx.current)).toBe(true);
     });
   });
 

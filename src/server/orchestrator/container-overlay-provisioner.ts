@@ -1,17 +1,18 @@
+import fs from "node:fs";
 import type Docker from "dockerode";
 import {
   buildOverlaySpecs,
   depDirsForSession,
-  isPnpmRepo,
   sessionPnpmStoreDir,
   PNPM_VERIFIED_NAMESPACE,
   resolveOverlayScope,
   classifyDepDirsForOverlay,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
-import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
-import { readBasePointerByHash } from "./overlay-base.js";
-import { claimOverlayBaseGeneration } from "./overlay-base-claims.js";
+import { hasPnpmLockfile, isPnpmRepo } from "../shared/pnpm-repo.js";
+import { overlayBaseGenDir, overlayScopeHash, resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
+import { readBasePointerByHash, withScopeLock } from "./overlay-base.js";
+import { claimOverlayBaseGeneration, releaseOverlayBaseClaims } from "./overlay-base-claims.js";
 import type { SessionInfo } from "../shared/types.js";
 
 export interface OverlayProvisionerDeps {
@@ -71,6 +72,12 @@ export async function prepareOverlaySpecs(
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
     /** Compose external-volume references must already exist; creation paths omit this. */
     requireProvisioned?: boolean;
+    /**
+     * A select→mount operation's claim token (`newOverlayClaimToken`). Passing one pins the
+     * generations this selection chose until the caller releases it; a read-back path passes none,
+     * because a running container already pins its own mount.
+     */
+    claimToken?: string;
   },
 ): Promise<DepDirOverlaySpec[]> {
   const scope = resolveOverlayScope(opts.session, process.env, opts.workspaceDir);
@@ -89,18 +96,40 @@ export async function prepareOverlaySpecs(
     );
   }
   if (valid.length === 0) return [];
+  // A pnpm session whose checkout has no lockfile gets NO base lowerdir (docs/276 section 5,
+  // "Per-session install"): pnpm would synthesize the wanted graph from the base's carried
+  // `.pnpm/lock.yaml`, so mounting one would introduce a graph choice absent from the session's own
+  // inputs. One-shot at mount, deliberately not watched — a session that deletes its lockfile
+  // afterwards inherits the default-branch commit's graph, the repo's own trust boundary.
+  if (pnpm && !hasPnpmLockfile(opts.workspaceDir)) return [];
   const volumeMountpoint = await resolveVolumeMountpoint(deps.docker, deps.workspaceVolume);
   const stateDir = deps.stateDir;
+  const namespace = pnpm ? PNPM_VERIFIED_NAMESPACE : undefined;
+
+  // Pointer read and claim happen together under the scope's own lock, and the claim lives until
+  // the caller releases it after the mount — so a sweep can never run between choosing a
+  // generation and protecting it (docs/276 section 5, "Ordering and cleanup").
+  const claimToken = opts.claimToken;
+  const selected = new Map<string, number>();
+  const published = new Set<string>();
+  for (const depDir of valid) {
+    const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir, namespace);
+    await withScopeLock(scopeHash, async () => {
+      const generation = stateDir ? selectGeneration(stateDir, scopeHash) : 0;
+      selected.set(scopeHash, generation);
+      if (stateDir && readBasePointerByHash(stateDir, scopeHash)) published.add(scopeHash);
+      if (claimToken !== undefined) claimOverlayBaseGeneration(scopeHash, generation, claimToken);
+    });
+  }
+
   const specs = buildOverlaySpecs({
     sessionId: opts.sessionId,
     scope,
     depDirs: valid,
     volumeMountpoint,
     stateRoot: stateDir,
-    ...(pnpm ? { namespace: PNPM_VERIFIED_NAMESPACE } : {}),
-    generationForScope: stateDir
-      ? (scopeHash) => readBasePointerByHash(stateDir, scopeHash)?.generation ?? 0
-      : undefined,
+    ...(namespace !== undefined ? { namespace } : {}),
+    generationForScope: (scopeHash) => selected.get(scopeHash) ?? 0,
   });
   // A pnpm session mounts ONLY a base the orchestrator's verifying builder published, and never
   // falls back to an unverified one (docs/276 section 5) — so the gate reads the pointer of the
@@ -108,14 +137,11 @@ export async function prepareOverlaySpecs(
   // All-or-nothing: a partly-mounted set would leave one declared dep dir on the verified base
   // and the next on a private install, with no single answer to what the session is running.
   // Until every one has a published generation the session installs privately, as it does today.
-  if (pnpm && !specs.every((s) => stateDir && readBasePointerByHash(stateDir, s.scopeHash))) {
+  if (pnpm && !specs.every((s) => published.has(s.scopeHash))) {
+    if (claimToken !== undefined) releaseOverlayBaseClaims(claimToken);
     return [];
   }
-  if (!opts.requireProvisioned) {
-    // Pin at selection: until the container exists, Docker cannot show the janitor that this base is needed.
-    for (const spec of specs) claimOverlayBaseGeneration(spec.scopeHash, spec.generation);
-    return specs;
-  }
+  if (!opts.requireProvisioned) return specs;
   const provisioned: DepDirOverlaySpec[] = [];
   for (const spec of specs) {
     if (await volumeExists(deps.docker, spec.volumeName)) {
@@ -128,6 +154,23 @@ export async function prepareOverlaySpecs(
     }
   }
   return provisioned;
+}
+
+/**
+ * Generation 0 is the empty cold base every session may create. A generation the pointer names is
+ * NOT: if its directory is gone, the session installs over generation 0 rather than having the
+ * missing lowerdir recreated empty — an empty directory at a published generation's path reads as
+ * a base hit and would let the session skip the install that fills it (docs/276 section 5).
+ */
+function selectGeneration(stateDir: string, scopeHash: string): number {
+  const generation = readBasePointerByHash(stateDir, scopeHash)?.generation ?? 0;
+  if (generation === 0) return 0;
+  if (fs.existsSync(overlayBaseGenDir(stateDir, scopeHash, generation))) return generation;
+  console.warn(
+    `[overlay] published generation g${generation} of scope ${scopeHash} is missing on disk — ` +
+    "selecting the empty generation 0 and installing instead of recreating it",
+  );
+  return 0;
 }
 
 // Prefer recorded mounts: workspace config may change while the agent still uses its original overlays.

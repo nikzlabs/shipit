@@ -581,7 +581,7 @@ export function setupServiceManager(
   if (runner instanceof ContainerSessionRunner) {
     runner.setDepReinstallInputs(
       installCommands,
-      resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs) ?? [],
+      resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs, workspaceDir) ?? [],
     );
     reportContentKeyState(runner.sessionId, workspaceDir, shipitConfig.agent);
   }
@@ -908,7 +908,7 @@ export function applyShipitConfigChange(
       );
       runner.setDepReinstallInputs(
         nextCommands,
-        resolveDepsHashInputs(nextCommands, shipitConfig.agent.installInputs) ?? [],
+        resolveDepsHashInputs(nextCommands, shipitConfig.agent.installInputs, workspaceDir) ?? [],
       );
       runner.requestDepReinstall();
     }

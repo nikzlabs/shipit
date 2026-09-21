@@ -876,7 +876,9 @@ describe("SessionContainerManager", () => {
       await ovlManager.dispose();
     });
 
-    async function ws(opts: { gitignore?: string; shipitYaml?: string; dirs?: string[] } = {}): Promise<string> {
+    async function ws(
+      opts: { gitignore?: string; shipitYaml?: string; dirs?: string[]; pnpmLock?: boolean } = {},
+    ): Promise<string> {
       const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
       tmpDirs.push(sessionDir);
       const dir = path.join(sessionDir, "workspace");
@@ -886,6 +888,9 @@ describe("SessionContainerManager", () => {
       if (opts.gitignore !== undefined) fs.writeFileSync(path.join(dir, ".gitignore"), opts.gitignore);
       if (opts.shipitYaml !== undefined) fs.writeFileSync(path.join(dir, "shipit.yaml"), opts.shipitYaml);
       for (const d of opts.dirs ?? []) fs.mkdirSync(path.join(dir, d), { recursive: true });
+      // A pnpm checkout with no lockfile gets no base at all (docs/276 section 5), so a fixture
+      // meant to exercise anything downstream of that gate has to carry one.
+      if (opts.pnpmLock) fs.writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
       return dir;
     }
     const eligible = { remoteUrl: "https://github.com/acme/repo.git", kind: undefined } as const;
@@ -1061,7 +1066,7 @@ describe("SessionContainerManager", () => {
     // Nothing publishes into that namespace yet, so it still installs privately.
     it("returns [] for a pnpm repo with no verified base published", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
-      const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
+      const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML, pnpmLock: true });
       expect(await ovlManager.prepareOverlaySpecs({ sessionId: "pnpm-1", workspaceDir: dir, session: eligible }))
         .toEqual([]);
     });
@@ -1089,7 +1094,7 @@ describe("SessionContainerManager", () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const { mgr, stateDir } = managerWithState();
       try {
-        const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
+        const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML, pnpmLock: true });
         const runtimeKey = overlayRuntimeKey() + overlayPinSegment(dir);
         const unverified = overlayScopeHash(eligible.remoteUrl, runtimeKey, "node_modules");
         const verified = overlayScopeHash(
@@ -1098,9 +1103,12 @@ describe("SessionContainerManager", () => {
         const writePointer = (hash: string): void => {
           const metaDir = path.join(stateDir, OVERLAY_POINTER_SUBDIR);
           fs.mkdirSync(metaDir, { recursive: true });
+          // Selection refuses a published generation whose directory is gone, so materialize it.
+          const baseDir = path.join(stateDir, "overlay-base", hash, "g3");
+          fs.mkdirSync(baseDir, { recursive: true });
           fs.writeFileSync(path.join(metaDir, `${hash}.json`), JSON.stringify({
             scopeHash: hash, commit: "c".repeat(40), depth: 0, generation: 3,
-            baseDir: "unused", updatedAt: new Date().toISOString(),
+            baseDir, updatedAt: new Date().toISOString(),
           }));
         };
 
@@ -1195,7 +1203,7 @@ describe("SessionContainerManager", () => {
       process.env.SHIPIT_SESSION_WORKER_UID = String(process.getuid?.() ?? 0);
       const { mgr } = managerWithState();
       try {
-        const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
+        const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML, pnpmLock: true });
         const overlaySpecs = await mgr.prepareOverlaySpecs({ sessionId: "pnpm-e2e-1", workspaceDir: dir, session: eligible });
         expect(overlaySpecs).toEqual([]);
         const pnpmStoreDir = mgr.preparePnpmStore({ sessionId: "pnpm-e2e-1", workspaceDir: dir, session: eligible });

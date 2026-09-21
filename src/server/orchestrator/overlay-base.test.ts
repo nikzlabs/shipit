@@ -12,6 +12,7 @@ import {
   publishBase,
   readBasePointer,
   shouldFlattenNext,
+  withScopeLock,
 } from "./overlay-base.js";
 import { overlayBaseDir, overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
 
@@ -891,3 +892,64 @@ it("DEFAULT_DEPTH_CAP is well below the overlay hard limit", () => {
   expect(DEFAULT_DEPTH_CAP).toBeGreaterThanOrEqual(8);
   expect(DEFAULT_DEPTH_CAP).toBeLessThan(128);
 });
+
+/**
+ * `withScopeLock` is the ONE serialization point for publish, selection and the janitor sweep
+ * (docs/276-shared-package-cache-integrity section 5). It had a real defect: the exit path read its
+ * queue link back off the map after awaiting, so two callers that enqueued in the same tick both
+ * ended up holding the SECOND one's link — the first deleted it on exit and a third caller found an
+ * empty map and entered while the second was still running (review, 2026-09-21).
+ */
+describe("overlay-base: withScopeLock mutual exclusion", () => {
+  it("admits exactly one holder at a time, including a caller that arrives mid-queue", async () => {
+    const order: string[] = [];
+    const gates = new Map<string, () => void>();
+    const run = (name: string): Promise<void> =>
+      withScopeLock("scope-a", async () => {
+        order.push(`${name}-in`);
+        await new Promise<void>((r) => gates.set(name, r));
+        order.push(`${name}-out`);
+      });
+
+    // A and B enqueue in the same tick: that is the shape that produced the shared link.
+    const a = run("A");
+    const b = run("B");
+    await waitFor(() => gates.has("A"));
+    gates.get("A")!();
+    await a;
+
+    await waitFor(() => gates.has("B"));
+    // C arrives while B holds the lock and must wait for it.
+    const c = run("C");
+    await drainMicrotasks();
+    expect(order).toEqual(["A-in", "A-out", "B-in"]);
+
+    gates.get("B")!();
+    await b;
+    await waitFor(() => gates.has("C"));
+    gates.get("C")!();
+    await c;
+    expect(order).toEqual(["A-in", "A-out", "B-in", "B-out", "C-in", "C-out"]);
+  });
+
+  it("does not let one caller's failure block or overlap the next", async () => {
+    const order: string[] = [];
+    const failing = withScopeLock("scope-b", async () => {
+      order.push("first");
+      throw new Error("boom");
+    });
+    const next = withScopeLock("scope-b", async () => { order.push("second"); });
+    await expect(failing).rejects.toThrow("boom");
+    await next;
+    expect(order).toEqual(["first", "second"]);
+  });
+});
+
+async function drainMicrotasks(): Promise<void> {
+  for (let i = 0; i < 100; i++) await Promise.resolve();
+}
+
+async function waitFor(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  if (!cond()) throw new Error("condition never became true");
+}

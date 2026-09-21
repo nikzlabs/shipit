@@ -20,6 +20,7 @@ import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
 import { workerGet } from "./worker-http.js";
 import { isOverlayEnabled } from "./overlay-session.js";
+import { newOverlayClaimToken, releaseOverlayBaseClaims } from "./overlay-base-claims.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
@@ -375,6 +376,10 @@ async function attemptContainerCreate(
   opts: CreateContainerForRunnerOpts & { destroyFirst: boolean },
 ): Promise<unknown> {
   const { mgr, runner, sessionId } = opts;
+  // One token per ATTEMPT, not per session: a standby create the runner stopped waiting for can
+  // still be mounting while this cold-create fallback runs, and a session-keyed release would drop
+  // the other attempt's protection.
+  const claimToken = newOverlayClaimToken();
   try {
     if (opts.destroyFirst) await mgr.destroy(sessionId, { replacementFollows: true });
     // Exclude our own teardown, but detect cancellations during preflight awaits.
@@ -388,7 +393,9 @@ async function attemptContainerCreate(
       );
     }
     const overlaySpecs = opts.session
-      ? await mgr.prepareOverlaySpecs({ sessionId, workspaceDir: opts.workspaceDir, session: opts.session })
+      ? await mgr.prepareOverlaySpecs({
+        sessionId, workspaceDir: opts.workspaceDir, session: opts.session, claimToken,
+      })
       : [];
     const pnpmStoreDir = opts.session
       ? mgr.preparePnpmStore({ sessionId, workspaceDir: opts.workspaceDir, session: opts.session })
@@ -429,6 +436,10 @@ async function attemptContainerCreate(
     return null;
   } catch (err) {
     return err ?? new Error("Container creation failed");
+  } finally {
+    // The base-generation claim covers select→mount; from here Docker shows the mount, and a throw
+    // anywhere in between must not leave a generation pinned for the life of the process.
+    releaseOverlayBaseClaims(claimToken);
   }
 }
 

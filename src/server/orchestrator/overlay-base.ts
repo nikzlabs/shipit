@@ -97,32 +97,42 @@ function scopeHashOf(scope: OverlayScope): string {
   return overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir, scope.namespace);
 }
 
-// One orchestrator owns all publishes; serialize each scope through materialization and pointer swap.
+/**
+ * One orchestrator owns every operation on a scope, so ONE lock per scope serializes all three:
+ * materialization + pointer swap (publish), pointer read + claim (selection) and the sweep
+ * (docs/276-shared-package-cache-integrity section 5). Pointer-last ordering is necessary but not
+ * sufficient — a sweep that samples claims and the pointer separately, then awaits before deleting,
+ * can delete the generation a selection just chose.
+ */
 const scopeLocks = new Map<string, Promise<void>>();
 
-async function withScopeLock<T>(scopeHash: string, fn: () => Promise<T>): Promise<T> {
+export async function withScopeLock<T>(scopeHash: string, fn: () => Promise<T>): Promise<T> {
   const prev = scopeLocks.get(scopeHash) ?? Promise.resolve();
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
-  scopeLocks.set(scopeHash, (async () => {
+  // `entry` is THIS invocation's queue link, captured synchronously. Reading it back off the map
+  // after `await prev` was a real defect: two callers that enqueue in the same tick both resume
+  // holding the *second* one's link, so the first deletes it on exit and a third caller finds an
+  // empty map and enters while the second is still running (measured 2026-09-21).
+  const entry = (async () => {
     try {
       await prev;
     } catch {
       /* A prior holder's failure must not poison the queue. */
     }
     await gate;
-  })());
+  })();
+  scopeLocks.set(scopeHash, entry);
   try {
     await prev;
   } catch {
     // A prior holder's failure must not block this publish.
   }
-  const tail = scopeLocks.get(scopeHash);
   try {
     return await fn();
   } finally {
     release();
-    if (scopeLocks.get(scopeHash) === tail) scopeLocks.delete(scopeHash);
+    if (scopeLocks.get(scopeHash) === entry) scopeLocks.delete(scopeHash);
   }
 }
 

@@ -161,16 +161,23 @@ recorded in [requirements.md](./requirements.md); none is open.
       binary is NOT enough — a repo's `packageManager` reaches the builder by three
       routes and the pinned binary self-switches, so all three switches are set
       (FINDINGS.md).
-- [ ] No-lockfile consumer gate (R3 P1, narrowed R4): where `prepareOverlaySpecs`
-      selects specs (`container-overlay-provisioner.ts:65`), a checkout with no
-      `pnpm-lock.yaml` (committed or not) gets no base lowerdir. One-shot at
-      mount; no live watcher — a later deletion inherits the default-branch
-      graph the orchestrator built, the repo's own trust boundary.
-- [ ] Worker install marker (R3): `markerMatches` returns `commit || depsHash`
-      (`install-marker.ts:52`), so a same-commit approval change skips the
-      install and the build never runs. For pnpm require the content hash, and
-      always include `pnpm-workspace.yaml` in it — the default input list does
-      (`deps-hash.ts:21`) but a custom `installInputs` replaces the list (`:89`).
+- [x] No-lockfile consumer gate (R3 P1, narrowed R4): where `prepareOverlaySpecs`
+      selects specs, a pnpm checkout with no `pnpm-lock.yaml` (committed or not) gets no
+      base lowerdir. One-shot at mount; no live watcher — a later deletion inherits the
+      default-branch graph the orchestrator built, the repo's own trust boundary. The
+      presence read is `hasPnpmLockfile` (`src/server/shared/pnpm-repo.ts`), beside the
+      package-manager detection it is the narrower question of.
+- [x] Worker install marker (R3): `markerMatches` took `commit || depsHash`, so a
+      same-commit approval change skipped the install and the build never ran. It now
+      takes `requireDepsHash`, which `install-controller.ts` sets for a pnpm checkout, and
+      `resolveDepsHashInputs` appends `pnpm-workspace.yaml` to a custom `installInputs`
+      list for a pnpm repo (the default list already carries it). **Consequence, stated
+      rather than engineered around:** a pnpm repo whose install commands yield no content
+      hash re-installs on every container start. That is the safe direction, and declaring
+      `install-inputs` restores the skip; recorded in `shipit-docs/environment.md`.
+- [x] `isPnpmRepo` moved to `src/server/shared/pnpm-repo.ts` (re-exported from
+      `overlay-session.ts`). The worker needs the same answer from the same inputs and
+      may not import from `orchestrator/` (eslint boundary).
 - [x] Input contract (R3 P2, narrowed R4), one eligibility decision over the
       staged input set (`decidePnpmBaseEligibility`), every clause asserted in
       `pnpm-base-inputs.test.ts`: verify `optionalDependencies` like the rest; trust
@@ -287,17 +294,31 @@ recorded in [requirements.md](./requirements.md); none is open.
       alone while creation adds `overlayPinSegment` — is the pre-existing mismatch the
       concurrency item below already owns; it cannot bite yet, since nothing publishes
       into the verified namespace.
-- [ ] Concurrency (R2/R3, simplified R4): no runner-bound cancellation — a
-      build that outlives its trigger finishes. Serialize claim-taking, publish
-      and sweep on one per-scope lock (`withScopeLock`, `overlay-base.ts:101`,
-      today publisher-only) and make a claim live for the whole select→mount;
-      `claimOverlayBaseGeneration`'s 10-min expiry and the sweeps' separate
-      sampling are what this replaces. A missing published generation selects
-      generation 0 (`overlay-session.ts:119`) and installs; never `mkdirSync`
-      the pointer's lowerdir (`container-lifecycle.ts:459`). Compute liveness
-      with the same scope function creation uses (`resolveOverlayScope` keys on
-      runtime key + `overlayPinSegment`; `liveOverlayScopeHashes` uses runtime
-      key alone — `overlay-session.ts:61` vs `:189`).
+- [x] Concurrency (R2/R3, simplified R4). `withScopeLock` is exported and now serializes
+      claim-taking, publish and sweep; `claimOverlayBaseGeneration` takes the claiming
+      session id and lives until `releaseOverlayBaseClaims` — the 10-minute expiry is
+      gone, released in a `finally` around select→mount at both creation paths
+      (`app-lifecycle.ts`, `warm-pool-manager.ts`). A published generation whose directory
+      is gone selects generation 0 and installs (`selectGeneration`), and
+      `prepareOverlayDirs` creates ONLY generation 0's lowerdir. `liveOverlayScopeHashes`
+      claims the pinned address as well as the unpinned one (creation keys on runtime key
+      + `overlayPinSegment`), a superset because the pin is read from the mutable checkout.
+      Two defects the design did not name, both found by the independent review, both
+      reproduced and fixed: `withScopeLock` itself **admitted concurrent holders** (it read its
+      queue link back off the map after awaiting, so two same-tick callers shared one link and a
+      third could enter mid-hold), and a claim's whole lifetime could fall **between** the
+      pass-wide Docker sample and the per-scope claim read — the sweep now re-checks Docker
+      inside the scope lock, after that scope's claim read, and only for a scope that would
+      actually delete something. Both have guards that go red on the old code.
+- [x] Independent review of this slice (2026-09-21, reviewer role, given the design cold). Four
+      findings, all confirmed by reading the code and all fixed: the lock's shared queue link; the
+      claim lifetime falling between the sweep's two readings; a session-keyed claim letting one
+      creation attempt release another attempt's protection (claims are keyed by an opaque
+      per-operation token now); and `install-inputs: []` — the explicit content-keying opt-out —
+      becoming an approvals-only hash that could skip a needed install. It also named four test
+      blind spots, each now covered: a third lock entrant, a claim taken after the sweep started,
+      an empty override with a workspace dir, and the pnpm fixtures that had no lockfile and so
+      passed the mount gate for the wrong reason.
 - [x] Dependency: section 1 (H1) landed first — `npm_config_cache` is now the
       session's own cache, pnpm repos included, so a pnpm repo whose agent runs
       npm is no longer exposed to H1.

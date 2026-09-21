@@ -481,7 +481,18 @@ export function prepareOverlayDirs(
   if (opts.workspaceDir) ensureDepDirMountParents(specs, opts.workspaceDir);
   for (const spec of specs) {
     if (!spec.orchDirs) continue;
-    fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
+    // Create ONLY the empty cold base. A published generation's lowerdir is the builder's or the
+    // publisher's to write: recreating a swept one here would hand the session an empty tree that
+    // reads as a base hit, so selection falls back to generation 0 instead (docs/276 section 5).
+    if (spec.generation === 0) fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
+    else if (!fs.existsSync(spec.orchDirs.lowerdir)) {
+      // Selection claimed this generation under the scope lock, so it should be unreachable. Let
+      // the overlay mount refuse the missing lowerdir rather than papering over it here.
+      console.error(
+        `${tag} base generation g${spec.generation} for ${spec.depDir} is missing on disk — ` +
+        "the overlay mount will fail; it is not being recreated empty",
+      );
+    }
     fs.mkdirSync(spec.orchDirs.upperdir, { recursive: true });
     fs.mkdirSync(spec.orchDirs.workdir, { recursive: true });
     // Copy-up preserves ownership and mode. Repair old bases once, with the marker outside the mounted tree.
