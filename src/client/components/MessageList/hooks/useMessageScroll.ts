@@ -155,7 +155,8 @@ export function useMessageScroll(
    * `Infinity` from a displayed-session change and from mount, since the
    * loading gap lasts as long as the history does; `OPENING_HOLD_MS` past the
    * commit that first puts a conversation on screen; `-Infinity` once the
-   * reader has taken the scroll.
+   * reader has taken the scroll — with the one exception that the commit which
+   * first puts the conversation on screen RE-ARMS it (`conversationShownRef`).
    *
    * An open needs its own state because landing at the end is not one act: the
    * layout effect's pin measures a `content-visibility` ESTIMATE of a
@@ -168,10 +169,11 @@ export function useMessageScroll(
    *
    * **One rule ends it: the view is at a position this hook did not write**
    * (`pinnedTopRef`) — so a scrollbar drag, a PageDown, a wheel and a touch
-   * drag all reach it through the same test, the loading gap included, where a
-   * card taller than the viewport is worth scrolling. A gesture that moves
-   * nothing is not the reader taking the view, which is why the position
-   * decides and the gesture does not.
+   * drag all reach it through the same test. A gesture that moves nothing is
+   * not the reader taking the view, which is why the position decides and the
+   * gesture does not. A position taken in the loading GAP reaches it too and
+   * ends the open there and then; what it does not do is survive the
+   * conversation arriving, which re-arms (`conversationShownRef`).
    *
    * A text SELECTION is neither suspended nor cleared here: it stands every
    * pinning path down during an open as at any other moment. Only the session
@@ -179,6 +181,30 @@ export function useMessageScroll(
    */
   const openUntilRef = useRef(Infinity);
   const isOpening = () => now() < openUntilRef.current;
+
+  /**
+   * planning#595, third report — has this open's conversation been on screen?
+   *
+   * Until it has, the container holds the status card and nothing else, so a
+   * scroll there cannot be the reader choosing where in a conversation to be:
+   * there is no conversation to choose a position in. The commit that first
+   * renders the rows therefore RE-ARMS the open rather than merely starting its
+   * deadline, discarding a gap scroll and the gesture state and follow flag it
+   * left. The gap is not EXEMPT from the scroll rule — a session that never
+   * gets a conversation would then be pinned to its card's end for as long as
+   * it is displayed, with no arrival to discard the hold. Reasoning and the
+   * measurements: docs/303-session-status-card/plan.md.
+   */
+  const conversationShownRef = useRef(false);
+
+  /**
+   * Did the PREVIOUS commit have rows in it? Not `previousMessageCountRef`,
+   * which the switch resets to 0 — so a commit carrying the new session's id
+   * while the OUTGOING transcript is still rendered reads as an arrival there,
+   * and re-arming on it would latch the open before the gap began. Never reset,
+   * so only a genuine none-to-some transition satisfies it.
+   */
+  const renderedCountRef = useRef(0);
 
   /**
    * The scroll position this hook itself last wrote, so a `scroll` event can be
@@ -212,10 +238,19 @@ export function useMessageScroll(
       // reading it back says "scrolled away" about a conversation nobody has
       // touched — and recording that stands down every path that closes the
       // gap. A position we did not write is the reader's, wherever it came
-      // from, and it ends the open. This is the only place the open ends.
+      // from, and it ends the open. This is the only place the open ends; the
+      // commit that first renders the conversation is the only place it comes
+      // back (`conversationShownRef`).
       if (isOpening()) {
         if (container.scrollTop === pinnedTopRef.current) return;
         openUntilRef.current = -Infinity;
+        // Taking a position while a conversation IS on screen is the reader
+        // choosing where in it to be, which no later arrival may discard. That
+        // is what `conversationShownRef` names, so record it here as well as at
+        // the arrival: a switch whose commits never leave the transcript empty
+        // reaches no arrival to record it, and the position would then be
+        // discarded by the next clear-and-repopulate.
+        if (renderedCountRef.current > 0) conversationShownRef.current = true;
       }
       const near = isNearBottom(container);
       autoScrollRef.current = near;
@@ -314,6 +349,7 @@ export function useMessageScroll(
       // The open begins here, on the gap's ceiling until the conversation is on
       // screen to start the real hold.
       openUntilRef.current = Infinity;
+      conversationShownRef.current = false;
       autoScrollRef.current = true;
       touchDraggingRef.current = false;
       lastGestureAtRef.current = -Infinity;
@@ -346,11 +382,27 @@ export function useMessageScroll(
       && messages.length > previousMessageCount
       && latestMessage?.role === "user";
 
+    const hadRowsLastCommit = renderedCountRef.current > 0;
+    renderedCountRef.current = messages.length;
+
     // The open's deadline starts at the commit that first puts a conversation
     // on screen — not at the switch, since the loading gap lasts as long as the
     // history takes and none of it is time the reader has had the conversation.
     if (isOpening() && previousMessageCount === 0 && messages.length > 0) {
       openUntilRef.current = now() + OPENING_HOLD_MS;
+    }
+
+    // And the open RE-ARMS at the commit that ends the loading gap: everything
+    // the reader did before it was done to a view with no conversation in it,
+    // so a scroll that ended the open, the follow flag it cleared and a gesture
+    // still inside its grace window are all discarded here. Opening a session
+    // lands at the end; a position taken from here on stands.
+    if (!hadRowsLastCommit && messages.length > 0 && !conversationShownRef.current) {
+      conversationShownRef.current = true;
+      openUntilRef.current = now() + OPENING_HOLD_MS;
+      autoScrollRef.current = true;
+      touchDraggingRef.current = false;
+      lastGestureAtRef.current = -Infinity;
     }
 
     // No `opening` term here on purpose: an open begins with `autoScrollRef`
