@@ -44,6 +44,8 @@ export type PublishOutcome =
   | "lineage-advanced"
   | "flattened"
   | "reset"
+  // Same commit as the pointer, but its generation directory is gone: materialize it again.
+  | "repaired"
   | "skipped-equal"
   | "skipped-not-forward"
   | "skipped-ineligible";
@@ -322,7 +324,21 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
     }
 
     if (current.commit === candidate.commit) {
-      return { outcome: "skipped-equal", pointer: current };
+      // …unless the generation the pointer names is gone. The whole-scope sweep removes a scope's
+      // base directory and leaves its pointer, which lives outside the swept tree
+      // (`steady-state-reclaim.ts`, `wholeScopeCandidate`) — so without this the scope never gets a
+      // base again until the default branch moves, while `selectGeneration` keeps falling back to
+      // the empty generation 0. `plugin-dep-store.ts` hit the same thing and works around it by
+      // deleting the pointer first, which still runs and still wins there.
+      if (fsSync.existsSync(current.baseDir)) {
+        return { outcome: "skipped-equal", pointer: current };
+      }
+      // Depth 1, as for every other whole-tree materialization: nothing was layered on.
+      return finalize(stateDir, materialize, chownBaseDir, candidate, scopeHash, {
+        outcome: "repaired",
+        depth: 1,
+        generation: current.generation + 1,
+      });
     }
 
     if (await isAncestor(current.commit, candidate.commit)) {

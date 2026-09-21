@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
@@ -7,7 +8,7 @@ import { sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
 import { stackLabel, stackLabelFilters } from "./stack-label.js";
 import { publishBase, type PublishOutcome, type OverlayScope } from "./overlay-base.js";
 import { overlayScopeHash } from "./overlay-volume.js";
-import { CONTAINER_WORKSPACE_PATH } from "./overlay-session.js";
+import { CONTAINER_WORKSPACE_PATH, PNPM_BASE_DEP_DIR } from "./overlay-session.js";
 import { PNPM_STORE_CONTAINER_PATH } from "./container-lifecycle.js";
 import {
   decidePnpmBaseEligibility,
@@ -37,6 +38,16 @@ import {
 
 export const PNPM_BUILDER_LABEL = "shipit-pnpm-base-build";
 export const PNPM_BUILDER_SUBDIR = "pnpm-base-build";
+
+/**
+ * This orchestrator PROCESS, on the container and on the work dir it nests every run under. It is
+ * what lets the boot reaper tell a previous process's leftovers from a build THIS process has
+ * already started: the reaper is launched un-awaited (`startup-monitors.ts`) and does its pnpm
+ * sweep after paced plugin cleanup, so a restored session can finish its install and be building by
+ * the time it runs. Random rather than the pid, which a restarted orchestrator container reuses.
+ */
+export const PNPM_BUILDER_RUN_LABEL = "shipit-pnpm-base-build-run";
+const BUILDER_RUN_ID = crypto.randomUUID();
 
 /**
  * The builder's project and store paths are the SESSION's own container paths, not paths of
@@ -112,7 +123,22 @@ export type PnpmBaseBuildOutcome =
   | { status: "ineligible"; detail: string; reason: PnpmIneligible }
   | { status: "verification-failed"; failedPackage: string; detail: string }
   | { status: "build-failed"; detail: string }
+  | { status: "skipped-building"; detail: string }
   | { status: "published"; outcome: PublishOutcome; generation: number | null };
+
+/**
+ * A build runs for minutes and every session's install can trigger one, so admission is decided
+ * here rather than at a call site: one build per scope, and a ceiling across scopes because each
+ * builder container is memory-capped at `BUILD_MEMORY_BYTES` and several at once is what the host
+ * feels. Over either bound the trigger SKIPS rather than queues — the next session's install
+ * triggers again, so a skipped commit is built shortly after rather than never, while a queue
+ * would hold work for a commit that has since moved on.
+ *
+ * One orchestrator owns every operation on a scope (`overlay-base.ts`, `withScopeLock`), so an
+ * in-process set is the whole boundary.
+ */
+const buildsInFlight = new Set<string>();
+export const MAX_CONCURRENT_PNPM_BASE_BUILDS = 2;
 
 /**
  * The loopback registry the fetch phase reads. It is a static file server over the tarballs
@@ -241,7 +267,7 @@ export function builderEnv(homeDir: string = BUILD_HOME_DIR): string[] {
 }
 
 export function pnpmBuildRootDir(stateDir: string, scopeHash: string): string {
-  return path.join(stateDir, PNPM_BUILDER_SUBDIR, scopeHash);
+  return path.join(stateDir, PNPM_BUILDER_SUBDIR, BUILDER_RUN_ID, scopeHash);
 }
 
 export async function buildVerifiedPnpmBase(
@@ -254,21 +280,38 @@ export async function buildVerifiedPnpmBase(
     req.scope.depDir,
     req.scope.namespace,
   );
-  // One directory per invocation, not per scope: two builds of the same scope must not clear
-  // each other's inputs mid-run, whatever serialization the caller does or does not hold.
-  const scopeDir = pnpmBuildRootDir(deps.stateDir, scopeHash);
-  fs.mkdirSync(scopeDir, { recursive: true });
-  const root = fs.mkdtempSync(path.join(scopeDir, "run-"));
-  const projectDir = path.join(root, "project");
-  const registryDir = path.join(root, "registry");
-  const storeDir = path.join(root, "store");
-  const homeDir = path.join(root, "home");
-
-  for (const dir of [projectDir, registryDir, storeDir, homeDir]) {
-    fs.mkdirSync(dir, { recursive: true });
+  // Claimed synchronously, before the first await: a check that yields first lets a rival trigger
+  // through the same gap it was meant to close.
+  if (buildsInFlight.has(scopeHash)) {
+    return { status: "skipped-building", detail: "a build of this base is already running" };
   }
+  if (buildsInFlight.size >= MAX_CONCURRENT_PNPM_BASE_BUILDS) {
+    return {
+      status: "skipped-building",
+      detail: `${buildsInFlight.size} base builds are already running`,
+    };
+  }
+  buildsInFlight.add(scopeHash);
 
+  // The `finally` opens HERE, not after the staging below: an ENOSPC or a permission error while
+  // creating those directories would otherwise hold the scope's slot for the orchestrator's whole
+  // life, and two such failures would hold the global one.
+  let root: string | null = null;
   try {
+    // One directory per invocation, not per scope: two builds of the same scope must not clear
+    // each other's inputs mid-run, whatever serialization the caller does or does not hold.
+    const scopeDir = pnpmBuildRootDir(deps.stateDir, scopeHash);
+    fs.mkdirSync(scopeDir, { recursive: true });
+    root = fs.mkdtempSync(path.join(scopeDir, "run-"));
+    const projectDir = path.join(root, "project");
+    const registryDir = path.join(root, "registry");
+    const storeDir = path.join(root, "store");
+    const homeDir = path.join(root, "home");
+
+    for (const dir of [projectDir, registryDir, storeDir, homeDir]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
     const staged = await stagePnpmInputs({
       repoDir: req.repoDir,
       commit: req.defaultBranchCommit,
@@ -318,7 +361,7 @@ export async function buildVerifiedPnpmBase(
     });
     if (run.failure) return { status: "build-failed", detail: run.failure };
 
-    const snapshotDir = path.join(projectDir, "node_modules");
+    const snapshotDir = path.join(projectDir, PNPM_BASE_DEP_DIR);
     if (!fs.existsSync(snapshotDir) || fs.readdirSync(snapshotDir).length === 0) {
       return { status: "build-failed", detail: "the build produced no node_modules" };
     }
@@ -347,7 +390,8 @@ export async function buildVerifiedPnpmBase(
       generation: result.pointer?.generation ?? null,
     };
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    buildsInFlight.delete(scopeHash);
+    if (root) fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -368,7 +412,9 @@ export async function reapOrphanPnpmBaseBuilds(
       all: true,
       filters: { label: [PNPM_BUILDER_LABEL, ...stackLabelFilters(opts.stackName)] },
     });
-    for (const { Id } of containers) {
+    for (const { Id, Labels } of containers) {
+      // Never this process's own: the reaper is not awaited before builds are admitted.
+      if (Labels?.[PNPM_BUILDER_RUN_LABEL] === BUILDER_RUN_ID) continue;
       try {
         await docker.getContainer(Id).remove({ force: true });
         removed++;
@@ -380,11 +426,18 @@ export async function reapOrphanPnpmBaseBuilds(
     console.warn("[pnpm-base] could not list builder containers:", message(err));
   }
 
-  // Remove the work dirs after the containers, which still hold their mounts.
+  // Remove the work dirs after the containers, which still hold their mounts. Every run nests under
+  // its process's id, so this process's in-flight staging is never one of them.
+  const root = path.join(stateDir, PNPM_BUILDER_SUBDIR);
   try {
-    fs.rmSync(path.join(stateDir, PNPM_BUILDER_SUBDIR), { recursive: true, force: true });
+    for (const entry of fs.readdirSync(root)) {
+      if (entry === BUILDER_RUN_ID) continue;
+      fs.rmSync(path.join(root, entry), { recursive: true, force: true });
+    }
   } catch (err) {
-    console.warn("[pnpm-base] could not clear stranded builder work dirs:", message(err));
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn("[pnpm-base] could not clear stranded builder work dirs:", message(err));
+    }
   }
   if (removed > 0) console.log(`[pnpm-base] removed ${removed} orphan builder container(s)`);
   return removed;
@@ -409,7 +462,11 @@ async function runBuilderContainer(
 
   const container = await deps.docker.createContainer({
     Image: deps.image,
-    Labels: { [PNPM_BUILDER_LABEL]: dirs.commit, ...stackLabel(deps.stackName) },
+    Labels: {
+      [PNPM_BUILDER_LABEL]: dirs.commit,
+      [PNPM_BUILDER_RUN_LABEL]: BUILDER_RUN_ID,
+      ...stackLabel(deps.stackName),
+    },
     Entrypoint: ["/bin/sh", "-c"],
     Cmd: [builderScript()],
     WorkingDir: BUILD_PROJECT_DIR,

@@ -185,6 +185,30 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(res.pointer).toMatchObject({ commit: c1, depth: 1 });
   });
 
+  // The whole-scope sweep removes a scope's base directory and leaves its pointer, which lives
+  // outside the swept tree (`steady-state-reclaim.ts`, `wholeScopeCandidate`). Without the repair
+  // the scope never gets a base again until the default branch moves: selection falls back to the
+  // empty generation 0 and every publish answers `skipped-equal` about a directory that is gone.
+  it("rebuilds an equal-commit base whose generation the sweep reclaimed", async () => {
+    const c1 = commit("c1");
+    const first = await publishBase({
+      stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor,
+    });
+    const scopeHash = overlayScopeHash(SCOPE.repoUrl, SCOPE.runtimeKey);
+    fs.rmSync(overlayBaseDir(stateDir, scopeHash), { recursive: true, force: true });
+    expect(fs.existsSync(first.pointer!.baseDir)).toBe(false);
+
+    const res = await publishBase({
+      stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor,
+    });
+    expect(res.outcome).toBe("repaired");
+    expect(res.pointer).toMatchObject({ commit: c1, generation: 2, depth: 1 });
+    expect(fs.existsSync(path.join(res.pointer!.baseDir, "node_modules.marker"))).toBe(true);
+    // The pointer must name what was just written, or selection keeps falling back to generation 0.
+    expect(res.pointer?.baseDir).toBe(overlayBaseGenDir(stateDir, scopeHash, 2));
+    expect(readBasePointer(stateDir, SCOPE)?.baseDir).toBe(res.pointer?.baseDir);
+  });
+
   it("declines a behind publish — ordering is ancestry, not wall-clock", async () => {
     const c1 = commit("c1");
     const c2 = commit("c2");

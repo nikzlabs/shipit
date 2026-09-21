@@ -12,9 +12,18 @@ import {
   resolveOverlayScope,
   depDirsForSession,
   classifyDepDirsForOverlay,
+  PNPM_VERIFIED_NAMESPACE,
+  PNPM_BASE_DEP_DIR,
   type DepDirDropReason,
 } from "./overlay-session.js";
-import { publishBase, type PublishOutcome } from "./overlay-base.js";
+import {
+  publishBase,
+  readBasePointerByHash,
+  type OverlayScope,
+  type PublishOutcome,
+} from "./overlay-base.js";
+import { overlayScopeHash } from "./overlay-volume.js";
+import type { PnpmBaseBuildOutcome, PnpmBaseBuildRequest } from "./pnpm-base-builder.js";
 import {
   extractTarStream,
   fetchDepSnapshotStream,
@@ -34,6 +43,11 @@ export interface OverlayPublishDeps {
   fetchHeadInfo?: (workerUrl: string, signal?: AbortSignal) => Promise<WorkspaceHeadInfo | null>;
   extract?: (stream: Readable, destDir: string) => Promise<void>;
   tmpRoot?: string;
+  /**
+   * Builds and publishes the verified pnpm base (`buildVerifiedPnpmBase`). Absent — no Docker —
+   * means a pnpm repo gets no base and installs privately, exactly as it did before the trigger.
+   */
+  buildPnpmBase?: (req: PnpmBaseBuildRequest) => Promise<PnpmBaseBuildOutcome>;
 }
 
 export interface OverlayPublishArgs {
@@ -46,8 +60,21 @@ export interface OverlayPublishArgs {
 
 export interface DepDirPublishOutcome {
   depDir: string;
-  outcome: PublishOutcome | "error" | "skipped-empty" | "dropped";
+  outcome:
+    | PublishOutcome
+    | "error"
+    | "skipped-empty"
+    | "dropped"
+    // The verified pnpm base: a candidate that failed registry verification, a build that did not
+    // finish, and a trigger that found one already running. None fails the session's own install.
+    | "skipped-unverified"
+    | "build-failed"
+    | "skipped-building";
   error?: string;
+  // Why a pnpm trigger produced no base. Logged rather than rendered into the measurement line.
+  detail?: string;
+  // Set on "skipped-unverified": the first lockfile package whose digests disagreed.
+  failedPackage?: string;
   depth?: number;
   generation?: number;
   attempts?: number;
@@ -99,8 +126,6 @@ export async function publishDepDirOverlayBases(
   const scope = resolveOverlayScope(args.session, env, workspaceDir);
   if (!scope) return [];
 
-  if (isPnpmRepo(workspaceDir)) return [];
-
   const eligibility = await classifyDepDirsForOverlay(depDirsForSession(args.session), workspaceDir);
   const valid = eligibility.valid;
   // Report drops rather than omitting them: a silently missing dir was only visible by diffing
@@ -110,6 +135,11 @@ export async function publishDepDirOverlayBases(
     outcome: "dropped" as const,
     dropReason: d.reason,
   }));
+
+  if (isPnpmRepo(workspaceDir)) {
+    return [...(await publishVerifiedPnpmBase(args, deps, scope, valid)), ...dropped];
+  }
+
   if (valid.length === 0) return dropped;
 
   if (!args.installOk) {
@@ -210,6 +240,117 @@ export async function publishDepDirOverlayBases(
   return [...outcomes, ...dropped];
 }
 
+/**
+ * The pnpm branch: the base is BUILT by the orchestrator from the default-branch commit's
+ * committed inputs, never pulled from the session's `node_modules`
+ * (docs/276-shared-package-cache-integrity plan.md section 5; reqs 1, 3, 6).
+ *
+ * The trigger is docs/183's, unchanged — a successful declared install on the default branch —
+ * and nothing here can fail that install (req 9): every path that cannot produce a base reports
+ * an outcome and leaves the session with its own private tree.
+ */
+async function publishVerifiedPnpmBase(
+  args: OverlayPublishArgs,
+  deps: OverlayPublishDeps,
+  scope: OverlayScope,
+  valid: string[],
+): Promise<DepDirPublishOutcome[]> {
+  const depDir = PNPM_BASE_DEP_DIR;
+  if (valid.length === 0) return [];
+
+  const unsupported = valid.filter((d) => d !== depDir);
+  if (unsupported.length > 0) {
+    // The builder produces exactly one tree — pnpm's own `node_modules` — and the mount gate is
+    // all-or-nothing across declared dep dirs, so publishing it alone could never be mounted.
+    const detail =
+      `the verified pnpm builder produces only ${depDir}; agent.dep-dirs also declares ${unsupported.join(", ")}`;
+    return valid.map((d) => ({ depDir: d, outcome: "skipped-ineligible" as const, detail }));
+  }
+
+  // No builder wired (no Docker): a pnpm repo installs privately, exactly as it did before.
+  const build = deps.buildPnpmBase;
+  if (!build) return [];
+  if (!args.installOk) return [{ depDir, outcome: "skipped-ineligible" }];
+
+  const fetchHeadInfo = deps.fetchHeadInfo ?? fetchWorkspaceHeadInfo;
+  const headInfo = await fetchHeadInfo(args.workerUrl, args.signal);
+  if (!headInfo) return [{ depDir, outcome: "skipped-ineligible" }];
+
+  const repoDir = deps.getBareCacheDir(scope.repoUrl);
+  const repoGit = deps.createRepoGit(repoDir);
+  const defaultBranchCommit = await repoGit.resolveDefaultBranchCommit();
+  if (!defaultBranchCommit || headInfo.commit !== defaultBranchCommit) {
+    return [{ depDir, outcome: "skipped-ineligible" }];
+  }
+
+  // Every session's install triggers, so read what is already published before spending a builder
+  // container on it: `publishBase` would answer `skipped-equal` for this commit anyway. The read is
+  // an optimization, not the decision — the compare-and-swap inside the publish is.
+  const scopeHash = overlayScopeHash(
+    scope.repoUrl,
+    scope.runtimeKey,
+    depDir,
+    PNPM_VERIFIED_NAMESPACE,
+  );
+  // A pointer whose generation directory the sweep took is NOT a base — `publishBase` repairs that
+  // case, so the shortcut must not run ahead of it or the scope never gets a base again.
+  const current = readBasePointerByHash(deps.stateDir, scopeHash);
+  if (current?.commit === defaultBranchCommit && fs.existsSync(current.baseDir)) {
+    return [{ depDir, outcome: "skipped-equal", generation: current.generation }];
+  }
+
+  // Deliberately no abort signal: the build's inputs are staged out of the bare cache and its
+  // registry is the orchestrator's, so a build that outlives its triggering session simply
+  // finishes and publishes (plan.md section 5, "no runner-bound cancellation").
+  try {
+    const outcome = await build({
+      repoDir,
+      defaultBranchCommit,
+      scope: { ...scope, depDir, namespace: PNPM_VERIFIED_NAMESPACE },
+      isAncestor: repoGit.isAncestor.bind(repoGit),
+    });
+    return [describePnpmBuild(depDir, outcome, scope.repoUrl)];
+  } catch (err) {
+    // Docker, the filesystem and the publish can all throw. Reported like the npm path's failures
+    // rather than left to the caller's catch, which would lose the measurement line with it.
+    return [{ depDir, outcome: "error", error: err instanceof Error ? err.message : String(err) }];
+  }
+}
+
+function describePnpmBuild(
+  depDir: string,
+  outcome: PnpmBaseBuildOutcome,
+  repoUrl: string,
+): DepDirPublishOutcome {
+  switch (outcome.status) {
+    case "published":
+      return {
+        depDir,
+        outcome: outcome.outcome,
+        ...(outcome.generation !== null ? { generation: outcome.generation } : {}),
+      };
+    case "verification-failed":
+      console.warn(
+        `[overlay-publish] verified pnpm base for ${repoUrl} not published — ` +
+        `${outcome.failedPackage} failed verification: ${outcome.detail}`,
+      );
+      return {
+        depDir,
+        outcome: "skipped-unverified",
+        failedPackage: outcome.failedPackage,
+        detail: outcome.detail,
+      };
+    case "build-failed":
+      console.warn(`[overlay-publish] verified pnpm base build for ${repoUrl} failed: ${outcome.detail}`);
+      return { depDir, outcome: "build-failed", detail: outcome.detail };
+    case "skipped-building":
+      return { depDir, outcome: "skipped-building", detail: outcome.detail };
+    case "ineligible":
+      console.log(`[overlay-publish] no verified pnpm base for ${repoUrl}: ${outcome.detail}`);
+      return { depDir, outcome: "skipped-ineligible", detail: outcome.detail };
+  }
+}
+
 export function formatOverlayMeasurement(args: {
   sessionId: string;
   repoUrl: string;
@@ -219,10 +360,16 @@ export function formatOverlayMeasurement(args: {
 }): string {
   const dirs = args.outcomes
     .map((o) => {
-      const depth = o.depth !== undefined ? `:d${o.depth}g${o.generation ?? "?"}` : "";
+      const depth =
+        o.depth !== undefined
+          ? `:d${o.depth}g${o.generation ?? "?"}`
+          // The verified pnpm base carries a generation and no depth: every generation is a whole
+          // tree the orchestrator built, so nothing counts lineage depth for it.
+          : o.generation !== undefined ? `:g${o.generation}` : "";
       const attempts = o.attempts !== undefined && o.attempts > 1 ? `:a${o.attempts}` : "";
       const drop = o.dropReason !== undefined ? `:${o.dropReason}` : "";
-      return `${o.depDir}:${o.outcome}${drop}${depth}${attempts}`;
+      const failed = o.failedPackage !== undefined ? `:${o.failedPackage}` : "";
+      return `${o.depDir}:${o.outcome}${drop}${failed}${depth}${attempts}`;
     })
     .join(",");
   return (

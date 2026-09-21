@@ -3,6 +3,11 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 
 import { safeSimpleGit } from "../shared/git-hooks-guard.js";
+import {
+  declaredPnpmFromManifest,
+  MIN_VERIFIED_BASE_PNPM_MAJOR,
+  type DeclaredPnpm,
+} from "../shared/pnpm-repo.js";
 import { parsePnpmLock, PnpmLockParseError, type ParsedPnpmLock } from "./pnpm-lockfile.js";
 
 /**
@@ -35,6 +40,8 @@ export interface StagedPnpmInputs {
   npmrc: { relPath: string; text: string }[];
   /** The root manifest's `pnpm` field. */
   pnpmField: Record<string, unknown> | null;
+  /** The pnpm the root manifest declares, which is what corepack selects in a consuming session. */
+  declaredPnpm: DeclaredPnpm | null;
   /** Repo-relative paths of staged manifests, root first. */
   manifests: string[];
   /** Repo-relative paths of pnpm hook sources present at the commit. */
@@ -56,7 +63,8 @@ export type PnpmIneligibleCode =
   | "hook-source"
   | "config-dependencies"
   | "unauthorized-registry"
-  | "escaping-layout";
+  | "escaping-layout"
+  | "incompatible-package-manager";
 
 export interface PnpmIneligible {
   eligible: false;
@@ -244,6 +252,7 @@ export async function stagePnpmInputs(args: {
   }
 
   let pnpmField: Record<string, unknown> | null = null;
+  let declaredPnpm: DeclaredPnpm | null = null;
   const rootManifest = staged.find((s) => s.relPath === "package.json");
   if (rootManifest) {
     let parsed: unknown;
@@ -258,6 +267,7 @@ export async function stagePnpmInputs(args: {
     }
     const field = isRecord(parsed) ? parsed.pnpm : undefined;
     pnpmField = isRecord(field) ? field : null;
+    declaredPnpm = declaredPnpmFromManifest(parsed);
   }
 
   return {
@@ -270,6 +280,7 @@ export async function stagePnpmInputs(args: {
       .filter((s) => path.basename(s.relPath) === ".npmrc")
       .map((s) => ({ relPath: s.relPath, text: s.text })),
     pnpmField,
+    declaredPnpm,
     manifests,
     hookFiles,
   };
@@ -319,6 +330,20 @@ export function decidePnpmBaseEligibility(
       eligible: false,
       code: "unsupported-lockfile-version",
       detail: `lockfileVersion ${staged.lock.lockfileVersion} is not one this builder parses`,
+    };
+  }
+
+  // A repo pinning a pnpm older than the builder's store version would not fail on the base — it
+  // would RECREATE the whole tree over it and reinstall privately (measured, see
+  // `MIN_VERIFIED_BASE_PNPM_MAJOR`). Building a base every session of the repo then throws away is
+  // worse than building none, so the decision is taken here, before any fetch.
+  const declared = staged.declaredPnpm;
+  if (declared !== null && declared.major < MIN_VERIFIED_BASE_PNPM_MAJOR) {
+    return {
+      eligible: false,
+      code: "incompatible-package-manager",
+      detail: `package.json declares ${declared.declaration}, whose store version differs from `
+        + `the builder's, so every session would recreate the base tree instead of reading it`,
     };
   }
 

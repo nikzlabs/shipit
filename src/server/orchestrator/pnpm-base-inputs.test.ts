@@ -139,6 +139,49 @@ describe("decidePnpmBaseEligibility", () => {
     });
   });
 
+  /**
+   * Measured 2026-09-21 against the pinned builder (pnpm 12.4.1, store `v11`): a pnpm 10.28.2
+   * consumer prints "Recreating node_modules" and re-downloads, where 11.22.0 and 12.5.1 read the
+   * base with no recreate and no download. pnpm 12 accepts a pnpm-10 `lockfileVersion: '9.0'` under
+   * `--frozen-lockfile`, so nothing else in this decision would have caught such a repo.
+   */
+  it("refuses a repo pinning a pnpm whose store version the base would not match", async () => {
+    // `devEngines.packageManager` is the second route, and it is not optional: measured on corepack
+    // 0.34.6 that it selects pnpm 10.28.2 on its own, with no top-level `packageManager` at all.
+    const pins = [
+      { packageManager: "pnpm@10.28.2" },
+      { devEngines: { packageManager: { name: "pnpm", version: "10.28.2" } } },
+    ];
+    for (const pin of pins) {
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          "package.json": JSON.stringify({ name: "app", ...pin, dependencies: { "left-pad": "1.3.0" } }),
+        }),
+      );
+      expect(decision, JSON.stringify(pin)).toMatchObject({
+        eligible: false,
+        code: "incompatible-package-manager",
+      });
+    }
+  });
+
+  it("admits a repo pinning the builder's own major, and one pinning nothing", async () => {
+    for (const packageManager of ["pnpm@11.22.0", "pnpm@12.5.1", undefined]) {
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          "package.json": JSON.stringify({
+            name: "app",
+            ...(packageManager ? { packageManager } : {}),
+            dependencies: { "left-pad": "1.3.0" },
+          }),
+        }),
+      );
+      expect(decision.eligible, `packageManager=${packageManager ?? "(absent)"}`).toBe(true);
+    }
+  });
+
   it("refuses an entry with no registry digest to verify against", async () => {
     const decision = decide(
       await stage({

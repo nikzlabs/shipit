@@ -69,6 +69,9 @@ export function resolveOverlayScope(
 // never be handed a base another session's install produced (docs/276 section 5).
 export const PNPM_VERIFIED_NAMESPACE = "pnpm-verified-v1";
 
+// The one dep dir the verified builder can fill: pnpm's install output is a single `node_modules`.
+export const PNPM_BASE_DEP_DIR = "node_modules";
+
 export interface DepDirOverlaySpec extends OverlaySpec {
   depDir: string;
   mountPath: string;

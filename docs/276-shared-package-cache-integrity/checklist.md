@@ -240,9 +240,56 @@ recorded in [requirements.md](./requirements.md); none is open.
       tree after the commit and shows the snapshot unchanged. A committed `node_modules`
       is never a build input. The registry is the orchestrator's own; no lockfile URL is
       ever fetched (`pnpm-base-registry.test.ts`).
-- [ ] Trigger: nothing calls `buildVerifiedPnpmBase` yet. It lands with the consumer-side
-      changes that make mounting a verified base safe (no pnpm pre-stamp, the no-lockfile
-      gate, the per-scope lock), because a published pointer opens the mount gate at once.
+- [x] Trigger (2026-09-21, after the consumer-side gates, because a published pointer opens the
+      mount gate at once): `overlay-publish.ts`'s pnpm early-return is now
+      `publishVerifiedPnpmBase`, on docs/183's own condition — a successful declared install whose
+      session sits on the default-branch commit — building from the bare cache at that commit and
+      publishing into the verified namespace. Nothing on this path reads the session's
+      `node_modules`, and build/verification/eligibility failures are publish outcomes, never a
+      failed session install (req 9). Four implementation decisions: a pointer already naming the
+      commit skips the build (every session's install triggers, so without it the common case is a
+      builder container per container start); admission lives in `buildVerifiedPnpmBase` — one
+      build per scope claimed before the first await, plus `MAX_CONCURRENT_PNPM_BASE_BUILDS` across
+      scopes — and **skips** rather than queues, since the next install triggers again; the trigger
+      carries no abort signal, so a build outlives its triggering session (the npm/yarn loop beside
+      it turns an aborted signal into an `error` outcome, so this had to be written not to inherit
+      that); and `node_modules` is the only dep dir the builder can fill, so a pnpm repo declaring
+      another gets no base rather than one its all-or-nothing mount gate could never accept.
+- [x] Independent review of the trigger slice (2026-09-21, reviewer role, given the design cold).
+      Its **P1 reproduced by measurement and is fixed**: pnpm records its resolved `<storeDir>/v<N>`
+      in `.modules.yaml`, so a pnpm 10 consumer (store `v10`) of a tree the pinned pnpm 12 builder
+      wrote (`v11`) prints `Recreating node_modules` and reinstalls — rc=0, so **not** the install
+      failure the review expected, but over an overlay it whiteouts the whole base into the
+      session's upper, inverting reqs 7 and 10. Measured in the same run: pnpm 11.22.0 and 12.5.1
+      (both `v11`, and 12.5.1 is the image's corepack default) hit the base with no recreate and no
+      download, and the review's own pnpm-11 concern was a store-**path** confound; and pnpm 12
+      accepts a pnpm-10 `lockfileVersion: '9.0'` under `--frozen-lockfile`, so nothing else in the
+      decision would have caught such a repo. `MIN_VERIFIED_BASE_PNPM_MAJOR` now gates the publisher
+      (committed `packageManager`) and `prepareOverlaySpecs` (the checkout's). Both P2s confirmed by
+      reading the code and fixed: the build slot was claimed before the `try`, so an ENOSPC while
+      creating the work dir held it for the process's life (two such failures held the global cap —
+      reproduced by the guard); and the whole-scope sweep removes a scope's base directory while its
+      pointer survives outside the swept tree, so `publishBase` answered `skipped-equal` about a
+      directory that was gone and the scope never got a base again — it now materializes
+      (`repaired`), which fixes the npm/yarn publisher too. P3 fixed both halves: a throw out of
+      Docker/fs/publish is reported as an `error` outcome instead of escaping the measurement line,
+      and the agent docs now say "no NEW base is built" rather than promising a private install to a
+      repo that already published one.
+- [x] Second independent review of the trigger slice (2026-09-21, after the first round's fixes
+      materially changed the diff). Both P2s confirmed and fixed. The version gates read
+      `packageManager` only, and **`devEngines.packageManager` selects pnpm on its own** — measured
+      on corepack 0.34.6, which reopened exactly the case the gates were added for; both gates now
+      read either field, and two more measured shapes need no handling (disagreeing fields make
+      corepack refuse any pnpm; a `devEngines` range is refused as "expected a semver version").
+      And the **boot reaper could kill a live build**: it is launched un-awaited and sweeps pnpm
+      after paced plugin cleanup, by which time a restored session can be building — every run now
+      nests under a per-process id that is also a container label, so no start barrier is needed.
+      P3 fixed: `install_ms` was read after the publish, so a 2 s install behind a 5 min build
+      reported ~302 s on the one line req 7 is judged from. Its P1 is planning#601, the
+      already-tracked Docker-proxy TOCTOU: the design records it as inherited from docs/183 and to
+      be closed on its own, and the npm/yarn base has carried the same exposure since — this widens
+      which repos have a shared base rather than adding a class of exposure. Stated in the PR body;
+      still open below.
 - [x] Independent review of the builder slice (2026-09-21, reviewer role, given the design
       cold). Its **P1 reproduced and is fixed**: the FETCH phase omitted `--ignore-pnpmfile`,
       and `globalPnpmfile` was not a rejected key — so a staged `hooks.cjs/package.json` with

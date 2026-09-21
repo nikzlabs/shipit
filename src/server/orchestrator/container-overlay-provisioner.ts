@@ -9,7 +9,11 @@ import {
   classifyDepDirsForOverlay,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
-import { hasPnpmLockfile, isPnpmRepo } from "../shared/pnpm-repo.js";
+import {
+  hasPnpmLockfile,
+  isPnpmRepo,
+  usesVerifiedBaseCompatiblePnpm,
+} from "../shared/pnpm-repo.js";
 import { overlayBaseGenDir, overlayScopeHash, resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
 import { readBasePointerByHash, withScopeLock } from "./overlay-base.js";
 import { claimOverlayBaseGeneration, releaseOverlayBaseClaims } from "./overlay-base-claims.js";
@@ -102,6 +106,11 @@ export async function prepareOverlaySpecs(
   // inputs. One-shot at mount, deliberately not watched — a session that deletes its lockfile
   // afterwards inherits the default-branch commit's graph, the repo's own trust boundary.
   if (pnpm && !hasPnpmLockfile(opts.workspaceDir)) return [];
+  // A checkout whose pnpm resolves a different store version would not fail on the base — it would
+  // RECREATE the whole tree over it (measured, `MIN_VERIFIED_BASE_PNPM_MAJOR`), whiteouting every
+  // base file into this session's upper and reinstalling privately on top. An ordinary private
+  // install is strictly cheaper, so such a session gets no lowerdir.
+  if (pnpm && !usesVerifiedBaseCompatiblePnpm(opts.workspaceDir)) return [];
   const volumeMountpoint = await resolveVolumeMountpoint(deps.docker, deps.workspaceVolume);
   const stateDir = deps.stateDir;
   const namespace = pnpm ? PNPM_VERIFIED_NAMESPACE : undefined;
