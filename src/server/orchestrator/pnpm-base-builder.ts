@@ -23,6 +23,8 @@ import {
   DEFAULT_REGISTRY_URL,
   type FetchLike,
 } from "./pnpm-base-registry.js";
+import { prunePnpmBase } from "./pnpm-base-prune.js";
+import { splitLockKey } from "./pnpm-lockfile.js";
 
 /**
  * Builds the verified pnpm `node_modules` base in a dedicated container
@@ -35,6 +37,11 @@ import {
  * itself then runs `--offline` with no registry reachable at all. pnpm generates the tree,
  * every symlink, every `.bin` shim and the state files, so none of that needs a second
  * implementation and none of it carries anything from a session.
+ *
+ * The whole lockfile is built; the packages carrying an install-time build are then PRUNED out
+ * of the finished tree and out of its carried lockfile (`pnpm-base-prune.ts`), so the session's
+ * own install re-imports and builds exactly those as its own uid. A prune that cannot be
+ * verified fails the build rather than publishing a partly-pruned tree.
  */
 
 export const PNPM_BUILDER_LABEL = "shipit-pnpm-base-build";
@@ -140,6 +147,18 @@ export type PnpmBaseBuildOutcome =
  */
 const buildsInFlight = new Set<string>();
 export const MAX_CONCURRENT_PNPM_BASE_BUILDS = 2;
+
+/**
+ * The one thing the prune cannot rescue: a repo whose every package carries an install-time
+ * build has nothing left to share, and mounting an empty base still costs the consuming session
+ * a bin seed and a dropped install marker.
+ */
+const EVERY_PACKAGE_BUILDS: PnpmIneligible = {
+  eligible: false,
+  code: "install-script",
+  detail: "every package the lockfile pins carries an install-time build, so the pruned base "
+    + "would carry nothing for a session to share",
+};
 
 /**
  * The loopback registry the fetch phase reads. It is a static file server over the tarballs
@@ -345,8 +364,8 @@ export async function buildVerifiedPnpmBase(
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     });
     if (!stagedRegistry.ok) {
-      // The same one decision, taken where the verified package content is readable: a package
-      // with an install-time build gets no base rather than an unverified one (planning#604).
+      // A tarball the scan could not read is the one content verdict that still costs the whole
+      // base: it cannot be shown to carry no install-time build, so it cannot be pruned either.
       if ("ineligible" in stagedRegistry) {
         const reason = stagedRegistry.ineligible;
         return { status: "ineligible", detail: describeIneligible(reason), reason };
@@ -373,7 +392,44 @@ export async function buildVerifiedPnpmBase(
       return { status: "build-failed", detail: "the build produced no node_modules" };
     }
 
-    const pending = readPendingBuilds(snapshotDir, staged.lock.importerDirs);
+    // The prune is applied to the finished tree, not to the build's inputs: every retained
+    // package's links, shims and state files are pnpm's own output over the whole lockfile
+    // (plan.md section 5, "Sharing for ineligible repos"; planning#604).
+    const prune = stagedRegistry.buildTriggers;
+    if (prune.length > 0) {
+      const pruned = prunePnpmBase(snapshotDir, prune);
+      if (!pruned.ok) {
+        // The invariant, stated rather than inferred: a prune that cannot be verified yields NO
+        // base. A half-pruned tree is the one outcome worse than no base at all — it installs
+        // rc=0 and leaves the session running code that was never built.
+        return {
+          status: "build-failed",
+          detail: `the ${prune.length}-package prune could not be verified, so no base was `
+            + `published: ${pruned.detail}`,
+        };
+      }
+      if (pruned.remainingPackages === 0) {
+        return {
+          status: "ineligible",
+          detail: describeIneligible(EVERY_PACKAGE_BUILDS),
+          reason: EVERY_PACKAGE_BUILDS,
+        };
+      }
+      const named = prune.map((p) => `${p.key} (${p.trigger})`).join(", ");
+      console.log(
+        `[pnpm-base] pruned ${pruned.removedDirs.length} build-bearing package(s) from the base `
+        + `for ${req.scope.repoUrl}, ${pruned.remainingPackages} shared: ${named}`,
+      );
+    }
+
+    // Read AFTER the prune, over exactly the tree the publish takes. A pruned package is still
+    // named in `pendingBuilds` — the prune does not rewrite `.modules.yaml` — and that is the
+    // session's own build to run, so it is excluded here rather than left to fail the publish.
+    const pending = readPendingBuilds(
+      snapshotDir,
+      staged.lock.importerDirs,
+      new Set(prune.map((p) => p.key)),
+    );
     if (pending.kind !== "none") {
       return { status: "build-failed", detail: pendingBuildsDetail(pending) };
     }
@@ -411,14 +467,13 @@ export async function buildVerifiedPnpmBase(
  * pnpm's own answer to "does anything in this tree still have to build", read off the tree the
  * publish is about to take.
  *
- * The install-time-build refusal is taken over the staged TARBALLS
- * (`pnpm-base-registry.ts`), and a committed patch is content those tarballs do not carry — a
- * patch can add a `postinstall` to the package it patches, and measured 2026-09-21 the offline
- * `--ignore-scripts` install then exits 0 with the package unbuilt and named in
+ * The install-time-build scan runs over the staged TARBALLS (`pnpm-base-registry.ts`) and its
+ * verdict is pruned out of the tree, so what is left here is what the tarballs did not show: a
+ * committed patch can add a `postinstall` to the package it patches, and measured 2026-09-21
+ * the offline `--ignore-scripts` install then exits 0 with the package unbuilt and named in
  * `pendingBuilds`. Publishing that base hands the consuming session a build it must run against
- * a read-only lowerdir (planning#604). So the rule is re-taken here, over the built tree, for
- * every repo rather than only patched ones: for a repo eligible today it is a no-op, and if it
- * ever is not, that is a package reaching the tree the tarball scan did not see.
+ * a read-only lowerdir (planning#604), so anything pending that the prune did not remove fails
+ * the build.
  *
  * A tree that cannot be shown to have nothing pending must not become one assumed to have
  * nothing pending, so an absent or unreadable `.modules.yaml` fails the build too. The repo's
@@ -429,7 +484,11 @@ type PendingBuilds =
   | { kind: "pending"; packages: string[] }
   | { kind: "unreadable"; detail: string };
 
-export function readPendingBuilds(depDir: string, importerDirs: string[]): PendingBuilds {
+export function readPendingBuilds(
+  depDir: string,
+  importerDirs: string[],
+  pruned: ReadonlySet<string> = new Set(),
+): PendingBuilds {
   const file = path.join(depDir, ".modules.yaml");
   let parsed: unknown;
   try {
@@ -450,7 +509,16 @@ export function readPendingBuilds(depDir: string, importerDirs: string[]): Pendi
   // them would take a base off a repo that is eligible today. A dependency id is always
   // `name@version`, never a bare directory, so the importer list separates the two exactly.
   const importers = new Set(importerDirs);
-  const packages = pending.map((p) => String(p)).filter((p) => !importers.has(p));
+  // A pruned package is no longer IN the tree, so its entry here describes a build the session
+  // will run over its own copy. The key is canonicalized because pnpm records a peer-qualified
+  // id, while the prune set is `name@version`.
+  const packages = pending
+    .map((p) => String(p))
+    .filter((p) => !importers.has(p))
+    .filter((p) => {
+      const split = splitLockKey(p.replace(/^\//, ""));
+      return !split || !pruned.has(`${split.name}@${split.version}`);
+    });
   return packages.length === 0 ? { kind: "none" } : { kind: "pending", packages };
 }
 

@@ -302,9 +302,10 @@ describe("stageVerifiedRegistry", () => {
     expect(result).toMatchObject({ ok: false, failedPackage: "left-pad@1.3.0" });
   });
 
-  it("gives a package with an install-time script no base, naming it", async () => {
-    // planning#604: the builder installs with `--ignore-scripts`, and the session's own install
-    // over the resulting base then reports nothing pending, so an approved build runs nowhere.
+  it("names a package with an install-time script as the prune set, and stages it anyway", async () => {
+    // planning#604: such a package used to cost the whole candidate its base. It is now staged
+    // and built like any other — the builder prunes it out of the finished tree, so the retained
+    // packages' links are still generated against the whole lockfile.
     const reg = fakeRegistry([LEFT_PAD, SCOPED]);
     publishTarball(
       "@types/node@20.11.0",
@@ -320,16 +321,20 @@ describe("stageVerifiedRegistry", () => {
       fetchImpl: reg.fetchImpl,
     });
     expect(result).toMatchObject({
-      ok: false,
-      ineligible: { eligible: false, code: "install-script" },
+      ok: true,
+      buildTriggers: [
+        { key: "@types/node@20.11.0", name: "@types/node", version: "20.11.0" },
+      ],
     });
-    expect("ineligible" in result ? result.ineligible.detail : "").toContain(
-      "@types/node@20.11.0",
+    expect("buildTriggers" in result ? result.buildTriggers[0].trigger : "").toContain(
+      "postinstall",
     );
-    expect(fs.existsSync(path.join(destDir, "index.json"))).toBe(false);
+    // Staged, not skipped: the build installs the whole lockfile before anything is removed.
+    expect(fs.existsSync(path.join(destDir, "index.json"))).toBe(true);
+    expect(fs.readdirSync(path.join(destDir, "tarballs")).length).toBe(2);
   });
 
-  it("gives a package carrying only a binding.gyp no base either", async () => {
+  it("names a package carrying only a binding.gyp too", async () => {
     const reg = fakeRegistry([LEFT_PAD]);
     publishTarball(
       "left-pad@1.3.0",
@@ -345,7 +350,19 @@ describe("stageVerifiedRegistry", () => {
       builderRegistryUrl: BUILDER,
       fetchImpl: reg.fetchImpl,
     });
-    expect(result).toMatchObject({ ok: false, ineligible: { code: "install-script" } });
+    expect(result).toMatchObject({ ok: true, buildTriggers: [{ key: "left-pad@1.3.0" }] });
+  });
+
+  it("names no prune set when every tarball is scriptless", async () => {
+    const reg = fakeRegistry([LEFT_PAD, SCOPED]);
+    const result = await stageVerifiedRegistry({
+      packages: [requestFor(LEFT_PAD), requestFor(SCOPED)],
+      destDir,
+      registryUrl: REGISTRY,
+      builderRegistryUrl: BUILDER,
+      fetchImpl: reg.fetchImpl,
+    });
+    expect(result).toMatchObject({ ok: true, buildTriggers: [] });
   });
 
   it("gives a tarball it cannot read no base, rather than assuming it scriptless", async () => {

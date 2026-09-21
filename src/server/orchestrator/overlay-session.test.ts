@@ -216,22 +216,24 @@ describe("liveOverlayScopeHashes", () => {
   });
 
   /**
-   * planning#604: the eligibility contract changed, and a base decided under the old one is
-   * still on disk with a live pointer. Nothing invalidates a published pointer per se, so the
-   * NAMESPACE is the version boundary — a session must not be able to address a `v1` base, and
-   * the janitor then reclaims those scopes because no session claims them any more.
+   * The contract has changed twice — what a base is DECIDED BY (planning#414's local links) and
+   * what it CONTAINS (planning#604's prune) — and a base built under an older one is still on
+   * disk with a live pointer. Nothing invalidates a published pointer per se, so the NAMESPACE is
+   * the version boundary: a session must not be able to address a `v1` (pre-refusal) or `v2`
+   * (whole-tree, link-blind) base, and the janitor then reclaims those scopes because no session
+   * claims them any more. EVERY retired suffix, not just the newest — a base decided under any of
+   * them has to stop being addressed.
    */
-  it("does not address a base published under the previous eligibility contract", () => {
-    const rt = overlayRuntimeKey(ON);
-    const repo = "https://github.com/acme/repo.git";
-    const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
-    // Every retired suffix, not just the first: each bump is a contract change, and a base
-    // decided under ANY of them must stop being addressed rather than only the oldest.
-    for (const retired of ["pnpm-verified-v1", "pnpm-verified-v2"]) {
+  it.each(["pnpm-verified-v1", "pnpm-verified-v2"])(
+    "does not address a base published under the %s contract",
+    (retired) => {
+      const rt = overlayRuntimeKey(ON);
+      const repo = "https://github.com/acme/repo.git";
+      const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
       expect(PNPM_VERIFIED_NAMESPACE).not.toBe(retired);
       expect(live).not.toContain(overlayScopeHash(repo, rt, "node_modules", retired));
-    }
-  });
+    },
+  );
 
   it("uses the per-dep-dir hash, not the legacy (repo, runtime) hash", () => {
     const rt = overlayRuntimeKey(ON);

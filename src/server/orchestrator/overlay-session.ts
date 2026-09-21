@@ -69,14 +69,20 @@ export function resolveOverlayScope(
  * Only the orchestrator's verifying builder publishes into this namespace, so a pnpm session can
  * never be handed a base another session's install produced (docs/276 section 5).
  *
- * The suffix is the eligibility contract's version, and bumping it is what retires every base
- * decided under the old one: the scope hash changes, so no session resolves a `v<N-1>` pointer
- * and the disk janitor reclaims those scopes as unreferenced. `v2` retired the bases published
- * before install-time builds became ineligible — without it the repos planning#604 is about keep
- * mounting the unbuilt base they already have, and the fix reaches only repos with no base yet.
- * `v3` retires those decided before local links were classified (planning#414): admitting
- * in-repo `workspace:`/`link:` also NARROWED the contract, and a repo whose lockfile sets
- * `excludeLinksFromLockfile` already has a `v2` base carrying a link edge the decision never saw.
+ * The suffix is the version of the contract for what a base is DECIDED BY and what it CONTAINS,
+ * and bumping it is what retires every base published under the old one: the scope hash changes,
+ * so no session resolves a `v<N-1>` pointer and the disk janitor reclaims those scopes as
+ * unreferenced. A pointer is never invalidated in place. `v2` retired the bases published before
+ * install-time builds became ineligible — without it the repos planning#604 is about keep mounting
+ * the unbuilt base they already have, and the fix reaches only repos with no base yet.
+ *
+ * `v3` retires two contracts at once, because both changed in the same release.
+ * Such packages are now PRUNED out of a base rather than costing the candidate one
+ * (planning#604), so a `v2` base is a whole tree and a `v3` base deliberately is not — a session
+ * reading one as the other would install over a tree whose holes it was never shown. And local
+ * links were classified (planning#414): admitting in-repo `workspace:`/`link:` also NARROWED the
+ * contract, and a repo whose lockfile sets `excludeLinksFromLockfile` already has a `v2` base
+ * carrying a link edge the decision never saw.
  */
 export const PNPM_VERIFIED_NAMESPACE = "pnpm-verified-v3";
 

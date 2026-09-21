@@ -14,9 +14,12 @@ import { scanTarballForBuildTriggers } from "./pnpm-install-scripts.js";
  * the lockfile's `resolution.integrity`, the packument's `dist.integrity`, and the sha512 of
  * the bytes actually downloaded. A disagreement between the first two is the H1 shape.
  *
- * This is also where the ONE eligibility decision sees package CONTENT: a package carrying an
- * install-time build makes the candidate ineligible (planning#604), and the verified bytes here
- * are the only place lockfile v9 leaves that readable.
+ * This is also where the ONE decision that sees package CONTENT is taken: which packages carry
+ * an install-time build. The verified bytes here are the only place lockfile v9 leaves that
+ * readable. The verdict NAMES those packages (planning#604) — the builder prunes them from the
+ * published tree (`pnpm-base-prune.ts`) so the session's own install re-imports and builds them
+ * as its own uid. A tarball the scan cannot read is still ineligible: one that cannot be shown
+ * to have no build must not become one assumed to have none.
  */
 
 export const DEFAULT_REGISTRY_URL = "https://registry.npmjs.org/";
@@ -39,11 +42,21 @@ export interface VerifiedPackageRequest {
   integrity: string;
 }
 
+export interface BuildTriggerPackage {
+  key: string;
+  name: string;
+  version: string;
+  /** What the scan found, for the log line that explains why the base is missing a package. */
+  trigger: string;
+}
+
 export interface StagedRegistry {
   /** Directory holding `tarballs/`, `index.json` and `tarballs.json`. */
   dir: string;
   packageCount: number;
   totalBytes: number;
+  /** The prune set: packages the published base must not carry, in lockfile order. */
+  buildTriggers: BuildTriggerPackage[];
 }
 
 export interface VerificationFailure {
@@ -162,6 +175,7 @@ export async function stageVerifiedRegistry(args: {
   const index: Record<string, unknown> = {};
   const routes: Record<string, string> = {};
   const packuments = new Map<string, Record<string, PackumentVersion>>();
+  const buildTriggers: BuildTriggerPackage[] = [];
   let totalBytes = 0;
 
   for (const pkg of args.packages) {
@@ -265,15 +279,15 @@ export async function stageVerifiedRegistry(args: {
     // published rather than over whatever the download happened to return.
     const scan = await scanTarballForBuildTriggers(bytes);
     if (scan.kind === "requires-build") {
-      return {
-        ok: false,
-        ineligible: {
-          eligible: false,
-          code: "install-script",
-          detail: `${pkg.key} carries ${scan.trigger}, which the builder does not run and a `
-            + "session installing over a mounted base does not run either (planning#604)",
-        },
-      };
+      // Still staged and still installed by the builder: the tree it produces is what every
+      // retained package's links are generated against, and the prune happens afterwards over
+      // the finished tree (`pnpm-base-prune.ts`).
+      buildTriggers.push({
+        key: pkg.key,
+        name: pkg.name,
+        version: pkg.version,
+        trigger: scan.trigger,
+      });
     }
     if (scan.kind === "unreadable") {
       return {
@@ -318,7 +332,13 @@ export async function stageVerifiedRegistry(args: {
   fs.writeFileSync(path.join(args.destDir, "index.json"), JSON.stringify(index));
   fs.writeFileSync(path.join(args.destDir, "tarballs.json"), JSON.stringify(routes));
 
-  return { ok: true, dir: args.destDir, packageCount: args.packages.length, totalBytes };
+  return {
+    ok: true,
+    dir: args.destDir,
+    packageCount: args.packages.length,
+    totalBytes,
+    buildTriggers,
+  };
 }
 
 function message(err: unknown): string {

@@ -358,7 +358,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       Retiring the bases ALREADY published under the old rule is part of the same
       fix: a pointer is never invalidated in place, so the verified namespace
       went `pnpm-verified-v1` → `v2`.
-- [ ] **planning#606: mounting gated off until the bin-target pre-seed lands.**
+- [x] **planning#606: mounting was gated off until the bin-target pre-seed landed.**
+      Repaired and the gate is back on — `MOUNT_VERIFIED_PNPM_BASE` is gone, see
+      the prerequisite item below.
       `pnpm add` relinks `.bin` and `chmod`s every bin target unconditionally, and
       those targets are base files owned by the publishing uid — so the add fails
       `EPERM` for the session uid and req 9 is broken in production for every
@@ -483,34 +485,81 @@ recorded in [requirements.md](./requirements.md); none is open.
       shim-comparison cell in `pnpm-store-isolation.test.ts`, and
       `bin-seed-host-spike.sh` for the kernel/uid half.
 
-- [ ] **Pruned base for build-bearing repos** (the planning#604 class, the large
-      one). At publish, remove each package carrying an install-time trigger from
-      the built tree **and from the carried `node_modules/.pnpm/lock.yaml`**. The
-      detection already exists and is verified — `scanTarballForBuildTriggers`
-      (`pnpm-install-scripts.ts`), called from the fetch phase at
-      `pnpm-base-registry.ts:266`, using pnpm's own `pkgRequiresBuild` set. It is
-      **repurposed, not removed**: today its verdict refuses the candidate, and
-      here the same verdict names the prune set, so those repos become eligible
-      again with no new detector. Pruning the carried lockfile is load-bearing,
-      not tidying: a hole in the tree alone is repaired only under
-      `--frozen-lockfile`, and a bare `pnpm install` short-circuits on "Already
-      up to date" and leaves a silently broken tree. ShipIt cannot assume the
-      flag: `agent.install` is repo-authored with no default and `tuneNpmInstall`
-      rewrites npm commands only. So the prune must be
-      **verified after it is applied**, and a prune that cannot be verified yields
-      no base rather than a pruned one — and that invariant has to be **stated**,
-      not inferred: measured for a top-level package and for a retained dependent
-      (`vite` retained, `esbuild` pruned, 47 incoming edges left, relinked and
-      loading), but NOT for peer-qualified duplicates, `npm:` aliases,
-      optional/platform-skipped packages, or a consumer lockfile differing from
-      the publisher's commit. The prune also leaves `.modules.yaml` naming the
-      removed package in `pendingBuilds`; harmless in both shapes, not
-      established as harmless. Bump the verified namespace (`v2` → `v3`): the
-      contract for what a base *contains* changes, and a pointer is never
-      invalidated in place. Measured: rc=0, re-imported, built, addon loads,
-      12 MiB upper + 12 MiB private store against a base hit's 8 KiB + 4 KiB,
-      base byte-unchanged, second session inherits nothing. Depends on the seed
-      above.
+- [x] **Pruned base for build-bearing repos** (the planning#604 class, the large
+      one). At publish, each package carrying an install-time trigger is removed
+      from the built tree **and from the carried `node_modules/.pnpm/lock.yaml`**.
+      The detection was **repurposed, not removed**: `scanTarballForBuildTriggers`
+      (`pnpm-install-scripts.ts`, called from the fetch phase) used to refuse the
+      candidate and now names the prune set, so those repos are eligible again
+      with no new detector. `pnpm-base-prune.ts` applies it between the build and
+      the publish, identifying each package from its **own manifest** rather than
+      from pnpm's mangled virtual-store directory name. A repo whose *every*
+      package builds is still refused — a base with nothing to share costs a seed
+      and a dropped install marker for nothing. Namespace bumped `v2` → `v3`; a
+      pointer is never invalidated in place, and a `v2` base is a whole tree while
+      a `v3` base deliberately is not.
+      **Three things hide a prune, not two.** The carried lockfile was the
+      designed half. Measurement found the other: pnpm consults
+      `node_modules/.pnpm-workspace-state-v1.json` **before** the carried
+      lockfile and short-circuits on its `lastValidatedTimestamp` against the
+      project files' mtimes, so a base carrying the BUILDER's clock leaves the
+      hole in any session whose checkout predates the build — "Already up to
+      date" in 1 ms, nothing repaired. Measured both ways with a control
+      (FINDINGS.md), and the prune drops it. `BUILD_PROJECT_DIR ===
+      CONTAINER_WORKSPACE_PATH` is what makes that file apply to the consuming
+      session, so the mechanism that keeps `storeDir` matching is the one that
+      opens this route.
+      **The invariant is stated, not inferred**: `verifyPrune` re-reads the tree
+      and the carried lockfile from disk after the rewrite, and a prune it cannot
+      verify yields **no base** (`build-failed`) rather than a pruned one — a
+      half-pruned tree installs rc=0 and runs code that was never built.
+      Every case the design left unmeasured is now measured, in
+      `pruned-base-spike.sh` (in-container, PASS=45) and
+      `pruned-base-host-spike.sh` (services host, real overlay, distinct uids,
+      PASS=22), **both driving the shipped module** rather than a restatement:
+      peer-qualified duplicates, `npm:` aliases, optional platform-skipped
+      packages, a consumer lockfile differing from the publisher's commit, and
+      `.modules.yaml` naming a pruned package in `pendingBuilds` — harmless on
+      the bare and the frozen install alike, which is why the prune leaves that
+      file alone and the publish gate excludes the prune set from it instead. The
+      harness also found a second defect review had not: a workspace importer
+      directory containing a slash, which a reference carried as one joined string
+      took apart at the wrong place. Host numbers: pruned base 12 188 KiB upper +
+      12 896 KiB store against a no-base install's 25 484 KiB + 24 732 KiB, addon
+      built and loading as the session's own uid, `pnpm add` and `pnpm rebuild`
+      succeeding, base byte-unchanged, a second session inheriting nothing. A true
+      base hit is 160 KiB + 4 KiB — the design's 8 KiB figure predates the bin
+      seed. Wall time is a wash against no base (3 % slower on one run of the
+      harness, 4 % faster on another): where a native build dominates, this buys
+      disk and sharing, not time, and req 7 is met because "today" for this class
+      IS the no-base arm. Depends on the seed
+      above. Guards: `pnpm-base-prune.test.ts`, the prune cells in
+      `pnpm-base-builder.test.ts` and `pnpm-base-registry.test.ts`, and a
+      real-pnpm end-to-end cell in
+      `integration_tests/pnpm-verified-base-build.test.ts` whose control shows the
+      short-circuit surviving when the state file is put back.
+- [x] Independent review of the pruned base (2026-09-21, reviewer role, asked
+      whether a pruned base can leave a session at rc=0 with something missing or
+      unbuilt). It found a **third route** and a **second identity**, both fixed
+      and both with measurements. (1) A repo-authored `test -d node_modules ||
+      pnpm install` never runs pnpm over the mounted base, so the pruned packages
+      are never installed and every existing post-install check misses it;
+      `unreconciledPnpmDepDirs` now fails such an install, keyed on pnpm's own
+      state file rather than on a package-set comparison, which a legitimate
+      `--prod` install would trip. (2) A `patchedDependencies` patch can rewrite
+      an installed manifest's name or version, so the manifest and the directory
+      name disagree: the prune dropped the lockfile entries and KEPT the
+      directory unbuilt, and the verification agreed because both used the same
+      parser — the two signals are a union now, with a cell run red against the
+      old rule reproducing the reviewer's exact output. It also found two
+      harnesses whose consumer used a store path the base does not record, so a
+      full reinstall passed as selective repair (both now install against the
+      recorded path, emptied, and compare the retained package's inode), and a
+      shell heredoc that expanded the JavaScript template literals inside it,
+      leaving two lockfile assertions inspecting an empty result. Several
+      `existsSync` link assertions were blind for the same class of reason —
+      `existsSync` follows a symlink, so a surviving dangling link read as
+      removed — and are `lstat`-based now.
 
 - [x] **Admit `.pnpmfile.mjs`.** `--ignore-pnpmfile` suppresses both the module
       body and `readPackage` — measured twice — and a `.pnpmfile` is never
@@ -601,7 +650,7 @@ recorded in [requirements.md](./requirements.md); none is open.
       **version-parameterized** builder rather than a second build path; price
       that before treating the row as closed.
 
-- [ ] **shipit-docs (`environment.md`)**: what an agent sees on a pruned base —
+- [x] **shipit-docs (`environment.md`)**: what an agent sees on a pruned base —
       the packages that build are imported into the session's private store on
       first install and built as the session's own uid, so the first install after
       a container start is slower than a base hit and the rest of the tree is
