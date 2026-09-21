@@ -174,6 +174,9 @@ export function MessageList({
   const sessionStatus = useSessionStore((s) =>
     s.sessions.find((session) => session.id === s.sessionId)?.sessionStatus,
   );
+  // The session the card was read from, so its collapsed state (docs/303
+  // req 42) is keyed on the same session and never on a neighbouring id.
+  const statusSessionId = useSessionStore((s) => s.sessionId);
 
   // docs/303 req 30 — the card keeps the place it had when the turn started, so
   // the turn's output renders below it. Frozen on the first render of a turn,
@@ -447,6 +450,7 @@ export function MessageList({
       <SessionStatusCard
         key="session-status-card"
         status={sessionStatus}
+        {...(statusSessionId ? { sessionId: statusSessionId } : {})}
         onSubmit={onSendFollowUp}
       />
     )

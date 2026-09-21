@@ -1,6 +1,8 @@
 // eslint-disable-next-line no-restricted-imports -- timer cleanup on unmount
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  CaretDownIcon,
+  CaretUpIcon,
   ChatCircleDotsIcon,
   ClipboardTextIcon,
   ClockCounterClockwiseIcon,
@@ -11,6 +13,10 @@ import {
 } from "@phosphor-icons/react";
 import type { SessionStatus } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import {
+  getSavedStatusCardCollapsed,
+  saveStatusCardCollapsed,
+} from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { Button } from "./ui/button.js";
@@ -144,6 +150,12 @@ function Capped({
 
 export interface SessionStatusCardProps {
   status: SessionStatus;
+  /**
+   * The session the card belongs to, so the collapsed state is that session's
+   * and survives a reload and a switch (req 42). Absent only where there is no
+   * session to key on, and the collapse is then per-mount.
+   */
+  sessionId?: string;
   /** Returns whether the message was accepted for delivery. */
   onSubmit?: (
     text: string,
@@ -152,10 +164,47 @@ export interface SessionStatusCardProps {
 }
 
 /**
+ * req 42 — collapsed is the user's own per-session choice: manual in both
+ * directions, remembered for that session until they open it again, and never
+ * decided by the card's contents.
+ */
+function useCollapsed(sessionId: string | undefined): [boolean, (next: boolean) => void] {
+  const [collapsed, setCollapsed] = useState(() =>
+    sessionId ? getSavedStatusCardCollapsed(sessionId) : false,
+  );
+  // Read again when the card is handed another session without remounting;
+  // a render-phase update is React's documented way to reset state on a prop.
+  const shown = useRef(sessionId);
+  if (shown.current !== sessionId) {
+    shown.current = sessionId;
+    setCollapsed(sessionId ? getSavedStatusCardCollapsed(sessionId) : false);
+  }
+  const set = useCallback(
+    (next: boolean) => {
+      setCollapsed(next);
+      if (sessionId) saveStatusCardCollapsed(sessionId, next);
+    },
+    [sessionId],
+  );
+  return [collapsed, set];
+}
+
+/** One count on the collapsed pill: what is still outstanding, and its name. */
+function CollapsedCount({ icon, count }: { icon: ReactNode; count: number }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-(--color-text-secondary)">
+      <span className="shrink-0 text-(--color-accent)">{icon}</span>
+      {count}
+    </span>
+  );
+}
+
+/**
  * docs/303-session-status-card — the agent's card at the end of the
  * conversation. Not a transcript row: it is read from the session record.
  */
-export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) {
+export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatusCardProps) {
+  const [collapsed, setCollapsed] = useCollapsed(sessionId);
   /**
    * req 17 — an offer reads as sent the moment its message goes, without waiting
    * for the server's `takenAt`, which is a round trip behind. It stays tickable:
@@ -335,6 +384,57 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
   const needsYou = status.needsYou ?? [];
   const hasNextSteps = hasOffers || needsYou.length > 0;
 
+  /**
+   * req 42 — what the collapsed pill has to carry. Collapsing hides the card's
+   * words, never the fact that something is waiting: a step the user has not
+   * reported and an offer they have not sent are both counted here, by the same
+   * `taken` the rows grey themselves on, so the pill and the rows can never
+   * disagree. Nothing else is added when a step or an offer arrives — the count
+   * going from none to one IS the signal, and a "new" dot would need a
+   * seen/unseen lifetime of its own to clear.
+   */
+  const openSteps = stepItems.filter((item) => !item.taken).length;
+  const openOffers = items.filter((item) => !item.taken).length;
+
+  if (collapsed) {
+    const parts = [
+      openSteps > 0 ? `${openSteps} manual step${openSteps === 1 ? "" : "s"}` : null,
+      openOffers > 0 ? `${openOffers} follow-up${openOffers === 1 ? "" : "s"}` : null,
+      stale ? "may be behind" : null,
+    ].filter((part): part is string => part !== null);
+    return (
+      <div data-testid="session-status-card" className="flex text-xs">
+        <button
+          type="button"
+          data-testid="session-status-collapsed"
+          onClick={() => setCollapsed(false)}
+          aria-expanded={false}
+          title="Show session status"
+          aria-label={`Show session status${parts.length > 0 ? ` — ${parts.join(", ")}` : ""}`}
+          className="inline-flex items-center gap-2 rounded-lg border border-(--color-accent)/45 bg-(--color-accent-subtle) px-2.5 py-1 font-semibold text-(--color-text-primary) hover:bg-(--color-accent)/15"
+        >
+          <span className="shrink-0 text-(--color-accent)">
+            <GaugeIcon size={ICON_SIZE.SM} />
+          </span>
+          <span>Session status</span>
+          {openSteps > 0 && (
+            <CollapsedCount icon={<ClipboardTextIcon size={ICON_SIZE.XS} />} count={openSteps} />
+          )}
+          {openOffers > 0 && (
+            <CollapsedCount icon={<ListChecksIcon size={ICON_SIZE.XS} />} count={openOffers} />
+          )}
+          {/* req 14 — the card always says whether it is current, collapsed included. */}
+          {stale && <span className="text-[11px] text-(--color-accent)">Stale</span>}
+          <CaretDownIcon
+            size={ICON_SIZE.XS}
+            weight="bold"
+            className="text-(--color-text-secondary)"
+          />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div data-testid="session-status-card" className="flex flex-col gap-2 text-xs">
       {/* req 33 — the session's own state comes first: it is what the user
@@ -343,18 +443,30 @@ export function SessionStatusCard({ status, onSubmit }: SessionStatusCardProps) 
         icon={<GaugeIcon size={ICON_SIZE.SM} />}
         title="Status"
         tone="soft"
-        {...(stale
-          ? {
-              // req 14 — one mark for the whole stack, on the first cap, since
-              // the stack has no single bottom-right corner any more. Full
-              // strength, never faded: it is the smallest text on the cap.
-              trailing: (
-                <span className="ml-auto text-[11px] font-semibold text-(--color-accent)">
-                  Stale
-                </span>
-              ),
-            }
-          : {})}
+        trailing={
+          <span className="ml-auto flex items-center gap-2">
+            {/* req 14 — one mark for the whole stack, on the first cap, since
+                the stack has no single bottom-right corner any more. Full
+                strength, never faded: it is the smallest text on the cap. */}
+            {stale && (
+              <span className="text-[11px] font-semibold text-(--color-accent)">Stale</span>
+            )}
+            {/* req 42 — the one control that collapses the whole stack. It sits
+                on the first cap because that cap is always drawn: the last-turn
+                and next-steps cards each come and go. */}
+            <button
+              type="button"
+              data-testid="session-status-collapse"
+              onClick={() => setCollapsed(true)}
+              aria-expanded
+              title="Collapse session status"
+              aria-label="Collapse session status"
+              className="-mr-1 shrink-0 rounded-md p-0.5 text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+            >
+              <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
+            </button>
+          </span>
+        }
       >
         <div className={`text-(--color-text-primary) ${COMPACT_MARKDOWN}`}>
           <MarkdownContent text={status.status} shipitLinks />

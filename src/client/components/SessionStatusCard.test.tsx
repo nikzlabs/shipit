@@ -669,4 +669,129 @@ describe("SessionStatusCard", () => {
       expect(screen.getByText("#212").tagName).toBe("STRONG");
     });
   });
+
+  describe("collapsing the card (req 42)", () => {
+    afterEach(() => localStorage.clear());
+
+    const full = () =>
+      card({
+        lastTurn: "Wired the webhook route.",
+        needsYou: ["Add the Stripe test key."],
+        actions: [offer({ offerId: "o1" })],
+      });
+
+    it("opens expanded and collapses to a single control on the user's press", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByText("Next steps")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+
+      expect(screen.queryByText("Next steps")).not.toBeInTheDocument();
+      expect(screen.queryByText(/routes and tests done/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Wired the webhook route.")).not.toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+    });
+
+    it("reopens from the collapsed control", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      fireEvent.click(screen.getByTestId("session-status-collapsed"));
+      expect(screen.getByText("Next steps")).toBeInTheDocument();
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+    });
+
+    it("stays collapsed for that session across a remount, and only that session", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      cleanup();
+
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      cleanup();
+
+      render(<SessionStatusCard status={full()} sessionId="s2" />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+    });
+
+    it("reads the new session's own state when handed one without remounting", () => {
+      const { rerender } = render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+
+      rerender(<SessionStatusCard status={full()} sessionId="s2" />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+
+      rerender(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+    });
+
+    it("never collapses itself when a manual step or an offer arrives", () => {
+      const { rerender } = render(<SessionStatusCard status={card()} sessionId="s1" />);
+      rerender(<SessionStatusCard status={full()} sessionId="s1" />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+      expect(screen.getByText("Next steps")).toBeInTheDocument();
+    });
+
+    it("stays collapsed when a manual step or an offer arrives, and counts it", () => {
+      const { rerender } = render(
+        <SessionStatusCard status={card({ needsYou: ["Add the key."] })} sessionId="s1" />,
+      );
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 manual step",
+      );
+
+      rerender(
+        <SessionStatusCard
+          status={card({ needsYou: ["Add the key.", "Merge #212."], actions: [offer({ offerId: "o1" })] })}
+          sessionId="s1"
+        />,
+      );
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 2 manual steps, 1 follow-up",
+      );
+    });
+
+    it("counts only what is still outstanding", () => {
+      render(
+        <SessionStatusCard
+          status={card({
+            actions: [offer({ offerId: "o1" }), offer({ offerId: "o2", takenAt: "2026-09-21T10:00:00.000Z" })],
+          })}
+          sessionId="s1"
+        />,
+      );
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — 1 follow-up",
+      );
+    });
+
+    it("says nothing is waiting when nothing is", () => {
+      render(<SessionStatusCard status={card()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status",
+      );
+    });
+
+    it("still shows the stale mark while collapsed (req 14)", () => {
+      render(<SessionStatusCard status={card({ fresh: false })} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByText("Stale")).toBeInTheDocument();
+      expect(screen.getByTestId("session-status-collapsed")).toHaveAccessibleName(
+        "Show session status — may be behind",
+      );
+    });
+
+    it("collapses per mount when there is no session to key on", () => {
+      render(<SessionStatusCard status={full()} />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
+      cleanup();
+
+      render(<SessionStatusCard status={full()} />);
+      expect(screen.queryByTestId("session-status-collapsed")).not.toBeInTheDocument();
+    });
+  });
 });
