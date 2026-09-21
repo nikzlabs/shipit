@@ -92,6 +92,9 @@ const FREE_FORM_KEY_MAPS = new Set([
   // IPAM.Config[].AuxiliaryAddresses is keyed by host name.
   "AuxiliaryAddresses",
   "AuxAddress",
+  // A cluster volume's topology segments are keyed by the driver's own terms, and
+  // `docker volume create --topology-required type=fast` really does send one called `type`.
+  "Segments",
   "ExposedPorts",
   "PortBindings",
   "Volumes",

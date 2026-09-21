@@ -73,6 +73,18 @@ describe("findAmbiguousFieldCasing", () => {
     })).toBeUndefined();
   });
 
+  it("accepts a cluster volume's topology segments", () => {
+    // `docker volume create --driver csi --topology-required type=fast` sends a segment named
+    // `type`. The volume driver is refused elsewhere; the casing guard must not be what refuses it.
+    expect(findAmbiguousFieldCasing({
+      Name: "v",
+      Driver: "csi",
+      ClusterVolumeSpec: {
+        AccessibilityRequirements: { Requisite: [{ Segments: { type: "fast", zone: "a" } }] },
+      },
+    })).toBeUndefined();
+  });
+
   it("still checks the values below a map key", () => {
     const body = { NetworkingConfig: { EndpointsConfig: { "my-net": { ipamconfig: {} } } } };
 
