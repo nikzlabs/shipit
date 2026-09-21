@@ -952,7 +952,9 @@ each child is addressed as `/proc/self/fd/<dirfd>/<name>` (Linux's stand-in for 
 Node does not bind), and the mode and owner are set on the descriptor with `fchmod`/`fchown` rather
 than by name. That is the docs/272 lesson, in a place docs/272 does not reach. `ineligible-sharing-host-spike.sh` deletes each upper
 before seeding, so it measures the mechanism and not this rule;
-[`bin-seed-host-spike.sh`](./bin-seed-host-spike.sh) measures the rule, cell 5.
+[`bin-seed-host-spike.sh`](./bin-seed-host-spike.sh) measures the rule, cell 5 — and measures it
+both ways: the restart skips on the marker, and with the marker deleted the seed runs and still
+refuses to replace (PASS=16 FAIL=0, services host, distinct uids).
 
 **A seed that runs also drops the install marker.** The verified base is published unbuilt and gets
 no pre-stamp, so the session's own `agent.install` has to run over it — and a session that GAINS

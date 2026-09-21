@@ -468,7 +468,13 @@ recorded in [requirements.md](./requirements.md); none is open.
       upper while the seed runs — the docs/272 lesson where docs/272 does not
       reach. A seed that runs also drops the install marker, scoped to the
       verified pnpm namespace, so a session that gains the overlay re-runs its own
-      install over the unbuilt base. Guards: `overlay-bin-seed.test.ts`, the
+      install over the unbuilt base. Confirmed end to end on the services host
+      under distinct uids (`bin-seed-host-spike.sh`, PASS=16 FAIL=0): unseeded
+      `pnpm add` still EPERMs, seeded it succeeds along with `pnpm rebuild`, a
+      base hit and an in-package edit; a second start over the same upper skips
+      on its marker and keeps both edits; and with the marker deleted the seed
+      still refuses to replace. 4 files / 26 KiB on that tree. Guards:
+      `overlay-bin-seed.test.ts`, the
       `prepareOverlayDirs` seed cells in `container-lifecycle.test.ts`, the
       shim-comparison cell in `pnpm-store-isolation.test.ts`, and
       `bin-seed-host-spike.sh` for the kernel/uid half.

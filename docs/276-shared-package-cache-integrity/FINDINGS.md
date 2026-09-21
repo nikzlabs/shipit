@@ -716,6 +716,39 @@ once. The cells assert every shim carries a trailer, which is what would fail fi
 changed. The chmod traces of `ineligible-sharing-spike.sh` remain the only direct evidence about
 files pnpm chmods but does not link.
 
+## Result: the seed repairs it on a real overlay under distinct uids
+
+Measured 2026-09-21 on the services host
+([`bin-seed-host-spike.sh`](./bin-seed-host-spike.sh), **PASS=16 FAIL=0**, exit 0). Docker 29.7.2,
+Ubuntu 24.04.4, kernel 6.8.0-124, ext4; builder pnpm 12.4.1 / consumer 12.5.1; a 41-package base
+owned by uid 0 group 2000 with group write (`shareOne`), consumed as uids 2001 and 2002.
+
+`ineligible-sharing-host-spike.sh` deletes each upper before seeding, so it measures the mechanism.
+This one measures the **rule the implementation states** — seed once at upper creation, never
+replace an entry that already exists, marker beside the upper — which is what a container restart
+actually exercises.
+
+| Cell | Result |
+|---|---|
+| **CONTROL**, unseeded `pnpm add` | **rc=1**, `ERR_PNPM_CMD_SHIM_CHMOD` on `rimraf@5.0.10`'s bin — the defect reproduces, so nothing below is vacuous |
+| seeded base hit | rc=0 as a non-owner uid, upper 160 KiB |
+| seeded edit inside a base package, then install | rc=0, the edit survives (req 11) |
+| seeded **`pnpm add`** | **rc=0**, package present, upper 424 KiB |
+| seeded **`pnpm rebuild`** | **rc=0** |
+| either log | **not one** "Operation not permitted" |
+| second container start, same upper | seed **skipped on its marker**; the agent's edit to a SEEDED bin target survives, so does its in-package edit and its added package |
+| same, with the marker deleted | seed runs, reports `PRESENT=4 FAILED=0` — the never-replace rule holds on its own, with no marker to rely on |
+| isolation | the base is byte-unchanged after both sessions; session 2 inherits neither the add nor either edit |
+
+**Cost on this tree: 4 files / 26 KiB per session**, against a base of 1 691 files / 11 MiB.
+
+Two observations the cells report without asserting. The unseeded control ends with the package
+directory *present* despite rc=1 — pnpm writes the package and then dies on the shim chmod, so the
+failure is partway through rather than clean; the cell keys on rc and the EPERM, not on absence.
+And the last cell is the one worth keeping: **deleting the marker does not re-seed over an edit**,
+because the publish is `link()`-based and refuses an existing entry. The marker is the cheap gate;
+the never-replace rule is the guarantee.
+
 ## Finding: three refused classes behave under the builder's own flags
 
 Measured in-container ([`ineligible-sharing-spike.sh`](./ineligible-sharing-spike.sh), cells G–I,
@@ -791,7 +824,7 @@ scp docs/276-shared-package-cache-integrity/ineligible-sharing-host-spike.sh <do
 ssh <docker-host> bash /tmp/ineligible-sharing-host-spike.sh   # PASS=13 FAIL=0, exit 0
 
 scp docs/276-shared-package-cache-integrity/bin-seed-host-spike.sh <docker-host>:/tmp/
-ssh <docker-host> bash /tmp/bin-seed-host-spike.sh
+ssh <docker-host> bash /tmp/bin-seed-host-spike.sh   # PASS=16 FAIL=0, exit 0
 ```
 
 Both need only Docker on the host; the node + python toolchain comes from a baked

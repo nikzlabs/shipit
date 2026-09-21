@@ -95,8 +95,10 @@ mp "cat > /mp/seed.js <<'EOF'
 const fs=require('fs'), path=require('path');
 const [lower, upper, marker] = process.argv.slice(2);
 const within=(root,p)=>{const r=path.relative(root,p); return r!=='' && !r.startsWith('..') && !path.isAbsolute(r);};
-// The union of `bin` and every file under `directories.bin`, RECURSIVELY. pnpm shims a
-// `directories.bin` file four levels down (measured), so a non-recursive walk under-seeds.
+// The union of bin and every file under directories.bin, RECURSIVELY. pnpm shims a
+// directories.bin file four levels down (measured), so a non-recursive walk under-seeds.
+// (No backticks in here: this heredoc sits inside a double-quoted argument, so the OUTER
+// shell would command-substitute them before the file is written.)
 function filesUnder(d,depth){ if(depth>16) return [];
   let out=[]; let es; try{ es=fs.readdirSync(d,{withFileTypes:true}); }catch{ return []; }
   for(const e of es){ const p=path.join(d,e.name);
