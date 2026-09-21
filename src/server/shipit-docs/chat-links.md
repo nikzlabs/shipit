@@ -53,6 +53,68 @@ the page is already at that URL, so ShipIt does not navigate (reloading would
 throw away whatever state the app holds) and the page sees no second event. A
 page that must respond to every click should key off something that varies.
 
+#### Embedding a service instead of linking to it
+
+The same address works as an **`<iframe src>`**. The service then renders *inside*
+the page rather than taking the reader to it — a style guide holding a live
+component, a requirements sheet holding the viewer that produced its images.
+
+```html
+<iframe src="shipit-preview://assetgen/embed.html?id=char%2Fminer%231&angle=front"></iframe>
+```
+
+This works in **a page one of the project's own Compose services serves** — the
+app in the Preview. It is not available inside a presented artifact: an artifact
+is rendered in a sandboxed frame, and anything framed inside one inherits that
+sandbox, so it would lose its origin, its storage, and `fetch` to its own server.
+
+- **Only the service name.** ShipIt resolves the port and the origin. A
+  hard-coded `host:port` is an address the user's browser usually cannot open,
+  and it changes per session.
+- **Static markup and dynamic elements are the same.** ShipIt resolves `src` in
+  the live DOM, so an iframe your framework creates later is resolved exactly as
+  a literal tag is. You need no JavaScript of your own.
+- **A stopped service is started** the first time the embed is scrolled into
+  view, and the frame shows ShipIt's connecting page until it answers. Nothing
+  starts while the Preview is behind another tab.
+- **An unknown service name is left unresolved** and explained in the page's own
+  console. Nothing is toasted — the embed had no click behind it.
+- **The embedded page is an ordinary cross-origin document**: its own origin, its
+  own storage, `fetch` to its own server. If your app sends `X-Frame-Options` or
+  a CSP with `frame-ancestors`/`frame-src`, it refuses to be framed; ShipIt does
+  not rewrite your headers.
+- **`window.shipit` is not available to the embedded page.** Only the top-level
+  previewed page can reach the agent, so put an SDK call in the embedder, never
+  in the embed.
+- `shipit-render` selects how a *pointer* looks and means nothing here.
+
+A chat pointer never targets an embed. It names a service, so ShipIt opens that
+service's **own** Preview, replacing what is on screen.
+
+#### A framed document must subscribe to its own address
+
+This is the trap worth stating once, plainly. A pointer at a place inside the
+page the Preview is already on does **not** reload it: the fragment changes in
+place, and a changed query string is `pushState` plus a `popstate`. So a document
+that reads `location.search` once at load keeps showing its old view under the
+new address, **silently** — and every address of a single-path viewer is that
+case, so the second pointer and every one after it appear dead.
+
+A document built to be framed subscribes:
+
+```js
+function render() {
+  const params = new URLSearchParams(location.search);
+  // …draw the view this address asks for
+}
+addEventListener("popstate", render);
+addEventListener("hashchange", render);
+render();
+```
+
+To move an embed's address from the embedding page, set the iframe's `src` — that
+is a full load — or have your two pages agree on a `postMessage` of your own.
+
 ### `shipit-present:<file path>#<fragment>` — a place in a presented artifact
 
 The file path is the one you passed to the `present` tool; the artifact must

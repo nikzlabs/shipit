@@ -72,6 +72,14 @@ interface PreviewFrameProps {
   onSendComposeHintToAgent?: () => void;
   onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
   /**
+   * A previewed page asking ShipIt to start the service one of its embeds names
+   * (docs/313-embedded-preview-services req 5). The page cannot start anything
+   * itself — `start_service` is a WebSocket message — and it deliberately holds
+   * no service status, so it says what it wants and every check is applied here
+   * and in `App`.
+   */
+  onEmbedStartService?: (name: string) => void;
+  /**
    * Whether this pane is actually ON SCREEN, as opposed to merely mounted.
    *
    * The pane is deliberately kept mounted behind the other right-panel tabs and
@@ -101,6 +109,7 @@ export function PreviewFrame({
   onSendCrashToAgent,
   onSendComposeHintToAgent,
   onAgentInterfaceMessage,
+  onEmbedStartService,
   paneVisible = true,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
@@ -304,6 +313,22 @@ export function PreviewFrame({
           dispatch: onAgentInterfaceMessage,
         });
       }
+      return;
+    }
+    if (data.type === "embed_start_service") {
+      // Four gates, and the last is not redundant with the third: the pane is
+      // hidden with `visibility: hidden`, which is invisible to geometry, so the
+      // page's own IntersectionObserver reports an embed as on screen while the
+      // user is looking at the Files tree. Without this, a hidden tab would
+      // still boot containers.
+      const name = (data as { name?: unknown }).name;
+      if (!event.source || typeof name !== "string" || !onEmbedStartService) return;
+      const key = slotKeyForWindow(event.source);
+      if (!key || key !== activeSlotKeyRef.current || hideIframe) return;
+      const slot = slots.get(key);
+      const expectedOrigin = slot ? previewOrigin(slot.url) : null;
+      if (!expectedOrigin || event.origin !== expectedOrigin) return;
+      onEmbedStartService(name);
       return;
     }
     if (data.type === "ready" && event.source) {

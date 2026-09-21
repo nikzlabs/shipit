@@ -35,6 +35,7 @@ Use visibility to pause audio, media, animation, polling, and expensive timers. 
 - Empty messages and messages over 50,000 characters are rejected.
 - Repository-backed sessions require **Trust this repository**; the server enforces it.
 - Only the active Preview or rendered Present HTML frame can send. Background and ordinary file/gallery/diff frames are rejected.
+- A service **embedded inside another page** (`<iframe src="shipit-preview://…">`, see `chat-links.md`) is not that frame. Its handshake never completes, so `ready` rejects and `sendMessage` throws. Put the call in the embedding page.
 
 ## Form example
 

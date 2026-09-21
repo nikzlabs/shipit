@@ -106,6 +106,10 @@ import { deriveEffectivePreviewStatus } from "./utils/preview-status.js";
 // Zustand selectors need a stable fallback reference.
 const EMPTY_TURN_USAGE: TurnUsage[] = [];
 
+// Long enough to swallow a burst from one document, short enough that a service
+// the user later stops can be started again by revisiting the page.
+const EMBED_START_COOLDOWN_MS = 10_000;
+
 const DiffPanel = lazy(() => {
   // eslint-disable-next-line no-restricted-syntax -- React.lazy requires a promise transform
   return import("./components/DiffPanel.js").then((m) => ({ default: m.DiffPanel }));
@@ -503,6 +507,27 @@ export default function App() {
       agentInterface: provenance,
     });
   }, [apiPost]);
+
+  /**
+   * Start the service a previewed page's embed names
+   * (docs/313-embedded-preview-services req 5). `PreviewFrame` has already
+   * established that the request came from the active, visible slot's own
+   * window; what is left is the checks that need state the page does not hold.
+   *
+   * The cooldown is what makes two embeds of one stopped service in a single
+   * document send one start: both see `stopped` in the same tick, because the
+   * server cannot have answered in between.
+   */
+  const embedStartsRef = useRef<Map<string, number>>(new Map());
+  const handleEmbedStartService = useCallback((name: string) => {
+    const service = usePreviewStore.getState().services.find((s) => s.name === name);
+    if (!service || service.status === "running" || service.status === "starting") return;
+    const now = Date.now();
+    const last = embedStartsRef.current.get(name) ?? 0;
+    if (now - last < EMBED_START_COOLDOWN_MS) return;
+    embedStartsRef.current.set(name, now);
+    send({ type: "start_service", name });
+  }, [send]);
 
   const handleSendErrors = useCallback(
     (errors: PreviewError[]) => {
@@ -1334,6 +1359,7 @@ export default function App() {
               onSendCrashToAgent={handleSendComposeErrorToAgent}
               onSendComposeHintToAgent={handleSendComposeHintToAgent}
               onAgentInterfaceMessage={handleAgentInterfaceMessage}
+              onEmbedStartService={handleEmbedStartService}
             />
             <RepoTrustBanner key={currentRepoUrl} repoUrl={currentRepoUrl} />
           </div>

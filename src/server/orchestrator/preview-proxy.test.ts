@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import vm from "node:vm";
+import { createHash } from "node:crypto";
 import { AGENT_INTERFACE_SDK_MARKER } from "../shared/agent-interface-sdk/bootstrap.js";
+import { EMBED_RESOLVER_MARKER, buildEmbedResolverScript } from "../shared/preview-embed/bootstrap.js";
 import { allowPreviewBootstrapInCsp, buildUpstreamHeaders, injectPreviewBootstrap, withOriginIsolation } from "./preview-proxy.js";
 
 describe("buildUpstreamHeaders", () => {
@@ -102,6 +104,23 @@ describe("injectPreviewBootstrap", () => {
     const once = injectPreviewBootstrap("<html><head></head></html>");
     const twice = injectPreviewBootstrap(once);
     expect(twice.split(AGENT_INTERFACE_SDK_MARKER)).toHaveLength(2);
+  });
+
+  it("injects the embed resolver with the session's declared service map", () => {
+    const html = injectPreviewBootstrap("<html><head></head></html>", { assetgen: 5173 });
+    expect(html).toContain(`${EMBED_RESOLVER_MARKER}="{&quot;assetgen&quot;:5173}"`);
+  });
+
+  it("omits the embed resolver when there is nothing to resolve against", () => {
+    expect(injectPreviewBootstrap("<html><head></head></html>")).not.toContain(EMBED_RESOLVER_MARKER);
+    expect(injectPreviewBootstrap("<html><head></head></html>", {})).not.toContain(EMBED_RESOLVER_MARKER);
+  });
+
+  it("does not inject a second embed resolver into an already-instrumented document", () => {
+    const once = injectPreviewBootstrap("<html><head></head></html>", { web: 3000 });
+    const twice = injectPreviewBootstrap(once, { web: 3000 });
+    // The marker also appears inside the script body, so count the attribute.
+    expect(twice.split(`${EMBED_RESOLVER_MARKER}="`)).toHaveLength(2);
   });
 
   it("keeps the hand-written script ASCII, since we don't control the charset", () => {
@@ -761,11 +780,26 @@ describe("allowPreviewBootstrapInCsp", () => {
   it("replaces script-src none with exact injected-script hashes", () => {
     const result = allowPreviewBootstrapInCsp("default-src 'self'; script-src 'none'; connect-src 'self'");
     expect(result).not.toContain("script-src 'none'");
-    expect(result.match(/'sha256-[^']+'/g)).toHaveLength(2);
+    expect(result.match(/'sha256-[^']+'/g)).toHaveLength(3);
     expect(result).toContain("connect-src 'self'");
   });
 
   it("adds a script directive when only default-src exists", () => {
     expect(allowPreviewBootstrapInCsp("default-src 'none'")).toMatch(/script-src 'sha256-/);
+  });
+
+  // The embed resolver's map rides as an attribute precisely so the hashed body
+  // stays constant; a map baked into the body would invalidate this hash on
+  // every response and silently disable the script on any page with a CSP.
+  it("covers the embed resolver whatever session map it carries", () => {
+    const result = allowPreviewBootstrapInCsp("script-src 'none'");
+    const maps: Record<string, number>[] = [{ web: 3000 }, { a: 1, b: 2 }];
+    for (const ports of maps) {
+      const body = buildEmbedResolverScript(ports)
+        .replace(/^<script[^>]*>/, "")
+        .replace(/<\/script>$/, "");
+      const hash = createHash("sha256").update(body).digest("base64");
+      expect(result).toContain(`'sha256-${hash}'`);
+    }
   });
 });

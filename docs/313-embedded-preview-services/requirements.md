@@ -41,8 +41,8 @@ the scheme already resolves.
    same project, resolved by name within that session.
 4. The author writes only the **service name**. No host, no port, no session id,
    no origin — the same address discipline a link already has.
-5. An embed whose service is **not running** has a defined, documented
-   behaviour. An iframe cannot wait for a click the way a link can.
+5. An embed whose service is **not running** starts it, the first time that
+   embed is on screen, and shows it booting until it answers.
 6. ShipIt does not block a page from framing one of the project's own services.
 7. An **embedded** document is not the active Preview or Present surface.
    `window.shipit` inside it does not report itself as embedded in ShipIt, and
@@ -51,19 +51,28 @@ the scheme already resolves.
    expected to do when a pointer moves its address, so an author does not write
    a document that reads its address once at load and then shows stale content
    under a new one.
+9. The address works written **directly in markup**, with no JavaScript of the
+   author's — including in an iframe the page's own framework creates later.
 
 ## Open questions
 
-- **What does an embed of a stopped service do (requirement 5)?** Start it and
-  show the boot, show a placeholder until someone starts it, or state plainly
-  that it is stopped and stay inert?
-- **Must a page with no JavaScript be able to embed (requirements 1, 3)?** A
-  browser cannot resolve an unregistered scheme in `src` on its own, so either
-  ShipIt rewrites the address before the browser sees it, or the page resolves
-  it in script and assigns `src` itself. The second is simpler and covers only
-  pages that run JavaScript.
+_None._
 
 ## Resolved questions
+
+- **2026-09-21 — Must a page with no JavaScript of its own be able to embed?**
+  A browser cannot resolve an unregistered scheme in `src`, so either ShipIt
+  resolves it inside the page or the page resolves it in script and assigns
+  `src` itself. Offered both, and both together. Answer: **ShipIt resolves it in
+  the page** — the requester's literal example is a static `<iframe src>` tag,
+  and a resolver-only surface would make every embed JavaScript-driven.
+  Recorded as req 9.
+
+- **2026-09-21 — What does an embed of a stopped service do?** Offered starting
+  it when the embed is on screen, starting it whenever the embedding page loads,
+  and staying inert with a note. Answer: **start it when visible** — so a page
+  listing many services does not boot all of them on open, and an embed scrolled
+  off screen starts nothing. Recorded as req 5.
 
 - **2026-09-21 — Is a presented artifact one of the embedding surfaces?** The
   first draft read the brief as two surfaces and made the presented artifact
