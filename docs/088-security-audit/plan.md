@@ -14,11 +14,12 @@ Comprehensive security review of the ShipIt codebase covering injection vulnerab
 
 ### 2. TOCTOU Race in Docker Bind-Mount Validation
 
-- **Location**: `src/server/orchestrator/docker-proxy-auth.ts:109-125`
-- **Issue**: The code validates that bind-mount source paths resolve inside the workspace, but a container process could swap a symlink between validation and the Docker mount syscall. The developers have documented this race condition in code comments.
-- **Mitigation in place**: Containers run with `CapDrop: ALL`, limiting blast radius. The race requires precise timing and a pre-existing symlink inside the workspace.
-- **Recommendation**: Document this as an accepted risk. Consider enforcing `nosymfollow` mount options or inode-based checks if the threat model changes.
-- **Status (2026-05-20): ACCEPTED RISK.** The race is documented in the code comments at `docker-proxy-auth.ts` and accepted: the attacker needs a process already running inside the sandbox, a pre-planted symlink in the workspace, and precise timing against the Docker mount syscall — and even then `CapDrop: ALL` plus the read-only nature of the validated bind contains the blast radius. Re-evaluate (and add `nosymfollow`/inode checks) only if the threat model adds a stronger in-sandbox adversary or the bind-mount surface widens.
+- **Location**: `src/server/orchestrator/docker-proxy-auth.ts`, `docker-proxy-sanitize.ts`
+- **Issue**: The code validates that bind-mount source paths resolve inside the workspace, but Docker was then handed the *original* string and resolved it again when it mounted. A session could point a workspace symlink at a benign target, pass the check, and repoint it before the mount.
+- **Why the accepted-risk framing was wrong**: it read the gap as a timing race. It was not — the session chooses when to start the container, so the swap could happen at leisure between create and start. And docs/183's overlay dep base is group-writable to the shared session gid by design, so the swap had a target whose compromise executes in every later session of that repo (planning#414, planning#601).
+- **Status (2026-09-21): FIXED (planning#601).** The sanitizer rewrites every bind source — `HostConfig.Binds` and `Mounts[].Source` — to its realpath, so Docker mounts the object the check approved rather than a string it re-resolves. `/containers/{id}/start` re-checks the stored sources, because pinning the string does not pin the directories it walks. And because a mount must be preceded by a check that nothing can stall: a container carrying a host bind may not have a `RestartPolicy` (Docker's own restart never reaches the proxy) and may not be restarted through `/restart` (Docker mounts only after a stop the container itself can hold open); stop and start instead. A `local` volume with `o=bind,device=…` declared inline in `Mounts[].VolumeOptions.DriverConfig` — a host bind under another name, and the escape `POST /volumes/create` already refused — is refused too.
+- **Residual**: a swap landing between the start-time check and the kernel's mount. That is a true race the session cannot hold open, needing a directory rename rather than a symlink flip. Closing it needs the mount to name an inode rather than a path — a pinned fd, or a bind the orchestrator materializes somewhere the session cannot rename — which this layer cannot do on its own; not attempted here.
+- **Not closed, and larger than this finding: planning#607.** Every check in the sanitizer reads exact JavaScript property names while Docker decodes JSON into Go structs case-insensitively, so `HostConfig: {"binds": …, "privileged": true}` passes untouched; and the exec route forwards `Privileged` unchecked. Until that is fixed, "the mount path is confined" holds only for canonically-spelled requests.
 
 ## Low Severity
 
@@ -136,7 +137,7 @@ The audit identified several well-implemented security controls:
 | HTTP routes | `api-routes-*.ts` | Secure |
 | WebSocket handlers | `ws-handlers/*.ts` | Secure |
 | File uploads/downloads | `services/files.ts`, `validation.ts` | Secure |
-| Docker proxy | `docker-proxy-auth.ts`, `docker-proxy-sanitize.ts` | Medium (TOCTOU) |
+| Docker proxy | `docker-proxy-auth.ts`, `docker-proxy-sanitize.ts` | **Fixed** (#2 — bind sources pinned to their realpath and re-checked at start); **High** — field-casing aliases bypass every check (planning#607) |
 | Child process spawning | `install-runner.ts` | Low (by design) |
 | Terminal management | `terminal.ts`, `session-worker.ts` | Secure |
 | Agent spawning | `claude.ts`, `codex-adapter.ts` | Secure |
@@ -156,5 +157,6 @@ The audit identified several well-implemented security controls:
 - [x] Document findings
 - [x] Review architecture against Anthropic managed-agents threat model (credential reachability + egress)
 - [x] Add accepted-risk documentation for TOCTOU race (issue #2)
+- [x] **Fix the bind-mount TOCTOU (issue #2)** — the accepted-risk framing was retired once docs/183 gave the swap a group-writable target: bind sources are rewritten to their realpath before forwarding and re-checked at `start`, and a container carrying one may take neither a `RestartPolicy` nor an explicit `/restart` (planning#601)
 - [x] **Fix GitHub PAT reachability from sandbox (issue #5)** — replaced the in-container inline-token credential helper with a brokering helper (`shipit-git-credential`) that proxies to the worker, mirroring the `gh` shim; the token-bearing `.gitconfig` is no longer copied into the container (a token-free one is generated instead)
 - [x] **Add egress controls for agent containers (issue #6)** — documented as accepted risk; `agent: true` secrets are now clearly labeled exfiltratable in `secrets.md`. Orchestrator forward proxy with host allowlist (GitHub + Anthropic/agent endpoints + configured MCP hosts) remains a follow-up.

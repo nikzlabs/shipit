@@ -20,7 +20,11 @@ import {
   volumeBelongsToSession,
   getExecParentContainerId,
 } from "./docker-proxy-auth.js";
-import { sanitizeBuildRequest, sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
+import {
+  sanitizeBuildRequest,
+  sanitizeContainerCreate,
+  verifyContainerMountPaths,
+} from "./docker-proxy-sanitize.js";
 
 export {
   respond,
@@ -45,9 +49,14 @@ export {
   networkBelongsToSession,
   volumeBelongsToSession,
   getExecParentContainerId,
-  isPathUnderWorkspace,
+  resolveUnderWorkspace,
 } from "./docker-proxy-auth.js";
-export { sanitizeBuildRequest, sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
+export {
+  sanitizeBuildRequest,
+  sanitizeContainerCreate,
+  pinMountPaths,
+  verifyContainerMountPaths,
+} from "./docker-proxy-sanitize.js";
 
 function buildRoutes(): Route[] {
   const routes: Route[] = [];
@@ -105,11 +114,19 @@ function buildRoutes(): Route[] {
   });
 
   // Hold API trust refresh across starts. Creates have no IP; removals leave safe stale denials.
-  const containerLabelOps: { method: string; suffix: string; topologyChanging?: boolean }[] = [
+  // `mounting` ops are the ones where Docker resolves the stored bind sources again (planning#601).
+  const containerLabelOps: {
+    method: string;
+    suffix: string;
+    topologyChanging?: boolean;
+    mounting?: boolean;
+    /** Docker stops the container first, and the session decides how long that takes. */
+    mountsAfterStopping?: boolean;
+  }[] = [
     { method: "GET", suffix: "/json" },
-    { method: "POST", suffix: "/start", topologyChanging: true },
+    { method: "POST", suffix: "/start", topologyChanging: true, mounting: true },
     { method: "POST", suffix: "/stop" },
-    { method: "POST", suffix: "/restart", topologyChanging: true },
+    { method: "POST", suffix: "/restart", topologyChanging: true, mounting: true, mountsAfterStopping: true },
     { method: "POST", suffix: "/kill" },
     { method: "DELETE", suffix: "" },
     { method: "POST", suffix: "/wait" },
@@ -124,6 +141,20 @@ function buildRoutes(): Route[] {
       const containerId = match[1];
       if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
         forbidden(ctx.res, "Container does not belong to this session"); return;
+      }
+      if (op.mounting) {
+        const mountCheck = await verifyContainerMountPaths(ctx.socketPath, containerId, ctx.session);
+        if (mountCheck.error) { forbidden(ctx.res, mountCheck.error); return; }
+        // A restart mounts only once the container has exited, and a container that traps its stop
+        // signal holds that open for as long as it likes — long enough to swap a directory on the
+        // path this check just cleared. Stop and start instead: a start mounts straight away.
+        if (op.mountsAfterStopping && mountCheck.hasHostBind) {
+          forbidden(
+            ctx.res,
+            "Restarting a container with a host bind mount is not supported; stop it and start it instead",
+          );
+          return;
+        }
       }
       const endTopologyChange = op.topologyChanging ? ctx.beginTopologyChange?.() : undefined;
       try {
