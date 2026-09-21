@@ -157,6 +157,6 @@ The audit identified several well-implemented security controls:
 - [x] Document findings
 - [x] Review architecture against Anthropic managed-agents threat model (credential reachability + egress)
 - [x] Add accepted-risk documentation for TOCTOU race (issue #2)
-- [x] **Fix the bind-mount TOCTOU (issue #2)** — the accepted-risk framing was retired once docs/183 gave the swap a group-writable target: bind sources are rewritten to their realpath before forwarding, and re-checked on `start`/`restart` (planning#601)
+- [x] **Fix the bind-mount TOCTOU (issue #2)** — the accepted-risk framing was retired once docs/183 gave the swap a group-writable target: bind sources are rewritten to their realpath before forwarding and re-checked at `start`, and a container carrying one may take neither a `RestartPolicy` nor an explicit `/restart` (planning#601)
 - [x] **Fix GitHub PAT reachability from sandbox (issue #5)** — replaced the in-container inline-token credential helper with a brokering helper (`shipit-git-credential`) that proxies to the worker, mirroring the `gh` shim; the token-bearing `.gitconfig` is no longer copied into the container (a token-free one is generated instead)
 - [x] **Add egress controls for agent containers (issue #6)** — documented as accepted risk; `agent: true` secrets are now clearly labeled exfiltratable in `secrets.md`. Orchestrator forward proxy with host allowlist (GitHub + Anthropic/agent endpoints + configured MCP hosts) remains a follow-up.
