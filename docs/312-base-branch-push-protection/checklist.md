@@ -1,0 +1,18 @@
+# Base-branch push protection — checklist
+
+- [x] Reproduce the incident's shape in a test (stale clone → force-push → base branch rewinds)
+- [x] Refuse a rewinding force-push in `GitManager.forcePushWithLease`
+- [x] Fetch the remote tip when it is not a local object, and refuse if it stays unreadable
+- [x] Add `findSharedBranchRefusal` and wire it into `quickCreatePr` / `agentCreatePr`
+- [x] Close the `session.branch &&` hole in `checkResetPreconditions` with a shared-branch check
+- [x] Give `tryForcePush` the base-branch refusal `pushIfAheadOfRemote` already had
+- [x] Correct the stale detached-HEAD comment in `pushIfAheadOfRemote`
+- [x] Block `git checkout <branch>` alongside `git switch <branch>` in the hook
+- [x] Catch `git push origin +<ref>` under the destructive guard
+- [x] Guard tests for all of the above
+- [x] Refuse a refspec (`+main:main`) reaching the ordinary push method
+- [x] Make the rebase refusal consume the pending auto-push (`pushProhibited`)
+- [x] Let the reset paths authorise their own rewind, after verifying ownership
+- [x] Check the release head before the force-push, not after it
+- [x] Fix the hook's quoting and `-p` false refusals found by review
+- [x] Independent review, and its confirmed findings fixed

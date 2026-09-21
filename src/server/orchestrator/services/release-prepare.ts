@@ -8,6 +8,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ReleaseBumpType } from "../../shared/types/release-types.js";
 import { ServiceError } from "./types.js";
 import { agentCreatePr, findBranchPullRequest } from "./github.js";
+import { findSharedBranchRefusal } from "./push-target-guard.js";
 import { workflowPublishesAuthoredNotes } from "../release-autopublish-check.js";
 import {
   NOTES_DIR,
@@ -428,6 +429,11 @@ async function prepareFinalRelease(
   if (!commitHash) {
     throw new ServiceError(500, "Version bump produced no commit (the version may already be set).");
   }
+
+  // Check before publishing, not inside `agentCreatePr` below: by then the
+  // force-push has already landed.
+  const sharedHead = await findSharedBranchRefusal(git, headBranch, releaseBranch);
+  if (sharedHead) throw new ServiceError(409, sharedHead.message);
 
   await git.forcePush("origin", headBranch);
 

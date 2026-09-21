@@ -2472,6 +2472,59 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
     expect(notice?.text).toContain("checked out on `main`");
   });
 
+  // The up-to-date path refuses via `pushIfAheadOfRemote`; this is the REBASED
+  // path beside it, which refuses inside `tryForcePush`. Both must consume the
+  // pending push: falling through to the ordinary auto-push would fast-forward
+  // the base branch with the saved commit, under no pull request at all.
+  it("never publishes the pre-sync commit when a rebase ON the base branch succeeds", async () => {
+    const { bareDir, workDir, git } = setupRepoWithRemote(tmpDir);
+    const runner = makeRunner(workDir);
+    const captured: { role: string; text: string }[] = [];
+
+    // Advance remote `main` so the local `main` is genuinely behind and the
+    // flow rebases rather than reporting up-to-date.
+    const tempClone = path.join(path.dirname(workDir), "temp-clone-base");
+    fs.mkdirSync(tempClone, { recursive: true });
+    execSync(`git clone ${bareDir} .`, { cwd: tempClone, stdio: "pipe" });
+    fs.writeFileSync(path.join(tempClone, "upstream.txt"), "upstream\n");
+    execSync("git add -A && git commit -m 'Upstream change'", { cwd: tempClone, stdio: "pipe" });
+    execSync("git push", { cwd: tempClone, stdio: "pipe" });
+    fs.rmSync(tempClone, { recursive: true, force: true });
+
+    const remoteTipBefore = execSync("git rev-parse refs/heads/main", { cwd: bareDir })
+      .toString().trim();
+
+    fs.writeFileSync(path.join(workDir, "dirty-on-main.txt"), "local\n");
+    const armPush = vi.fn();
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+      commitPendingWork: async (deferPushArm: (arm: () => void) => void) => {
+        execSync("git add -A && git commit -m 'Save work before syncing with main'", {
+          cwd: workDir,
+          stdio: "pipe",
+        });
+        deferPushArm(armPush);
+        return { commitHash: execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim() };
+      },
+    }, "main");
+
+    expect(result.status).toBe("rebased");
+    expect(result).toHaveProperty("forcePushed", false);
+    expect(armPush).not.toHaveBeenCalled();
+    expect(execSync("git rev-parse refs/heads/main", { cwd: bareDir }).toString().trim())
+      .toBe(remoteTipBefore);
+    expect(captured.find((m) => m.text.includes("NOT pushed"))?.text).toContain("`main`");
+  });
+
   it("still arms the pre-sync commit's push when preparation throws after the save", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);

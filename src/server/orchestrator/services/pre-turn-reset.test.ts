@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { computeResetEligible, computeResetBlocker, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, announceResetStateOnMerge, clearResetSkipEpisode, mergeContinueAnchor, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps, type MergeNoticeRunner } from "./pre-turn-reset.js";
+import { computeResetEligible, computeResetBlocker, checkResetPreconditions, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, announceResetStateOnMerge, clearResetSkipEpisode, mergeContinueAnchor, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps, type MergeNoticeRunner } from "./pre-turn-reset.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 vi.mock("../session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }));
@@ -76,6 +76,46 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
 }
 
 beforeEach(() => { clearResetSkipEpisode("s1"); });
+
+// The reset ends in a force-push of whatever is checked out, and that push is
+// allowed to rewind — so ownership of the target must be established first.
+describe("checkResetPreconditions — the branch must be the session's own", () => {
+  it("refuses when the checkout is on the repository's default branch", async () => {
+    const git = makeGit({
+      currentBranchOrNull: vi.fn().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
+    const skip = await checkResetPreconditions(makeSession({ branch: "main" }), git);
+    expect(skip?.clause).toBe("wrong-branch");
+    expect(skip?.detail).toContain("default branch");
+  });
+
+  // The `session.branch &&` guard let an unrecorded branch pass on ANY branch.
+  // Ownership is unknown here, so the shared-branch check has to stand alone.
+  it("refuses the default branch even when no session branch is recorded", async () => {
+    const session = makeSession();
+    delete session.branch;
+    const git = makeGit({
+      currentBranchOrNull: vi.fn().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
+    const skip = await checkResetPreconditions(session, git);
+    expect(skip?.clause).toBe("wrong-branch");
+    expect(skip?.detail).toContain("default branch");
+  });
+
+  it("still allows an unrecorded branch that is not shared", async () => {
+    const session = makeSession();
+    delete session.branch;
+    const git = makeGit({ getDefaultBranch: vi.fn().mockResolvedValue("main") });
+    expect(await checkResetPreconditions(session, git)).toBeNull();
+  });
+
+  it("allows the ordinary case: a session branch that is not shared", async () => {
+    const git = makeGit({ getDefaultBranch: vi.fn().mockResolvedValue("main") });
+    expect(await checkResetPreconditions(makeSession(), git)).toBeNull();
+  });
+});
 
 describe("computeResetEligible (safety-only gate)", () => {
   it("is true for a merged, untouched, clean branch on its own ref", async () => {
@@ -235,7 +275,7 @@ describe("autoResetMergedBranchOnContinue", () => {
     const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
     expect(git.fetch).toHaveBeenCalledWith("origin");
     expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
-    expect(git.forcePush).toHaveBeenCalledWith("origin");
+    expect(git.forcePush).toHaveBeenCalledWith("origin", undefined, { allowRewind: true });
     expect(out).toMatchObject({
       moved: true,
       base: "main",
@@ -335,7 +375,7 @@ describe("autoResetMergedBranchOnContinue", () => {
     const git = makeGit({ forcePush: vi.fn().mockRejectedValue(new Error("(stale info)")) });
     const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
     expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
-    expect(git.forcePush).toHaveBeenCalledWith("origin");
+    expect(git.forcePush).toHaveBeenCalledWith("origin", undefined, { allowRewind: true });
     expect(out.moved).toBe(true);
   });
 

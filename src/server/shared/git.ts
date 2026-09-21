@@ -134,6 +134,43 @@ export type UnreadableWorkspace =
   | { kind: "omitted"; detail: string }
   | { kind: "blocked"; detail: string };
 
+/**
+ * Every push here names ONE branch, never a refspec — and a refspec reaching
+ * `git push` is a force with no flag to find: `+main:main` does everything
+ * `--force` does, through the ordinary push method, past every guard that
+ * inspects only the force-pushing path. `POST /api/sessions/:id/git/push`
+ * forwards a caller-supplied `branch` straight through, so this is reachable
+ * from outside and is checked at the primitive rather than at that one route.
+ */
+export interface ForcePushOptions {
+  /**
+   * Publish a branch that is moving strictly backwards. Only a caller that has
+   * verified the target is the session's OWN branch may set it — a reset onto
+   * the base legitimately drops commits above that base, and that is the one
+   * rewind ShipIt performs on purpose. It does not relax `assertPlainBranchName`.
+   */
+  allowRewind?: boolean;
+}
+
+export function assertPlainBranchName(branch: string): void {
+  const bad =
+    !branch?.trim()
+    || branch !== branch.trim()
+    || branch.startsWith("+")
+    || branch.startsWith("-")
+    || /[:\s~^?*[\\]/.test(branch)
+    || branch.includes("..")
+    || branch.endsWith("/")
+    || branch.endsWith(".lock");
+  if (bad) {
+    throw new Error(
+      `Refusing to push '${branch}': a push target must be a plain branch name, not a refspec `
+      + "or pattern. A refspec would let the push force, retarget, or delete a ref that is not "
+      + "this session's branch.",
+    );
+  }
+}
+
 /** What a working tree looks like without changing it. `git status` answers all three. */
 export interface WorkingTreeState {
   clean: boolean;
@@ -407,6 +444,7 @@ export class GitManager {
 
   async push(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
+    assertPlainBranchName(currentBranch);
     const git = await this.remoteGit(remote);
     await this.uploadLfsObjects(git, remote, currentBranch);
     await git.push(remote, currentBranch, ["--set-upstream"]);
@@ -829,10 +867,78 @@ export class GitManager {
   }
 
   // Lease against the live tip: local tracking refs can outlive deleted branches.
-  async forcePush(remote = "origin", branch?: string): Promise<string> {
+  async forcePush(remote = "origin", branch?: string, opts?: ForcePushOptions): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
     const expected = await this.remoteBranchSha(remote, currentBranch);
-    return this.forcePushWithLease(remote, currentBranch, expected);
+    return this.forcePushWithLease(remote, currentBranch, expected, opts);
+  }
+
+  /**
+   * A force-push that only DISCARDS remote commits — the pushed commit is a
+   * proper ancestor of the remote tip, so the ref moves strictly backwards and
+   * nothing replaces what it drops.
+   *
+   * No caller intends this. Every legitimate force-push here republishes a
+   * rewritten branch (rebase, reset-onto-base, release prepare), which leaves
+   * the old remote tip on a diverged history rather than ahead of the new one;
+   * a fast-forward is not a force at all. A pure rewind is what a *stale* local
+   * ref produces, and the lease cannot catch it: `forcePush` reads its expected
+   * SHA from the live remote seconds earlier, so the lease is satisfied by
+   * construction and the push lands silently.
+   *
+   * That is not hypothetical. A session clone's local `main` is frozen at clone
+   * time and no fetch advances it, so any path that resolves a force-push
+   * target to `main` publishes a base branch as it stood hours ago, deleting
+   * every merge since — while GitHub still reports those pull requests merged,
+   * because it records the merge on the PR and not from the branch's contents.
+   */
+  private async refuseRewindingForcePush(
+    remote: string,
+    branch: string,
+    expectedRemoteSha: string,
+  ): Promise<void> {
+    const local = await this.getRefHash(branch);
+    if (!local || local === expectedRemoteSha) return;
+
+    // The tip is read with `ls-remote`, which transfers no objects — so on a
+    // stale checkout the very commit at risk is the one this repository has
+    // never seen, and an ancestry test would quietly answer "unrelated" for the
+    // exact case this exists to catch. Fetch it before deciding.
+    if (!(await this.hasCommit(expectedRemoteSha))) {
+      try {
+        await this.fetchBranch(remote, branch);
+      } catch {
+        // Reported below: an unreadable remote is not a cleared one.
+      }
+    }
+    if (!(await this.hasCommit(expectedRemoteSha))) {
+      throw new Error(
+        `Refusing to force-push ${remote}/${branch}: its remote tip is `
+        + `${expectedRemoteSha.slice(0, 8)}, a commit this checkout does not have and could not `
+        + `fetch, so ShipIt cannot tell whether overwriting it would discard work. Fetch the `
+        + `branch and retry.`,
+      );
+    }
+    if (!(await this.isAncestor(local, expectedRemoteSha))) return;
+
+    const discarded = await this.countCommitsAhead(branch, expectedRemoteSha);
+    throw new Error(
+      `Refusing to force-push ${remote}/${branch}: it would move the branch BACKWARDS from `
+      + `${expectedRemoteSha.slice(0, 8)} to ${local.slice(0, 8)}, discarding `
+      + `${discarded} commit(s) the remote has and this checkout does not — and replacing them `
+      + `with nothing. The local ref is stale; fetch and reconcile before publishing it. `
+      + `(A rewritten branch is never a strict ancestor of its own old tip, so a deliberate `
+      + `rewrite is unaffected by this check.)`,
+    );
+  }
+
+  private async hasCommit(sha: string): Promise<boolean> {
+    try {
+      await this.git.raw(["cat-file", "-e", `${sha}^{commit}`]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // Null expects an absent remote branch and uses a plain push, without a lease.
@@ -840,7 +946,12 @@ export class GitManager {
     remote: string,
     branch: string,
     expectedRemoteSha: string | null,
+    opts?: ForcePushOptions,
   ): Promise<string> {
+    assertPlainBranchName(branch);
+    if (expectedRemoteSha && !opts?.allowRewind) {
+      await this.refuseRewindingForcePush(remote, branch, expectedRemoteSha);
+    }
     const args = expectedRemoteSha
       ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
       : ["--set-upstream"];
