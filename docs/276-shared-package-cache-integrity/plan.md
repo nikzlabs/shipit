@@ -884,13 +884,16 @@ the trace names, four are `.bin` shims pnpm rewrites — those whiteout into the
 and four are package files it does not. A tree with no executables is not shown to fail. It escaped
 the tree spikes because they run as root.
 
-**The repair: seed the tree's executable targets into the session's upper, owned by the session.**
-Before the container starts, `prepareOverlayDirs` copies each one into the upper and chowns it to the
-session uid; pnpm's unconditional chmod then lands on a file the session owns. Measured: seeded,
-`pnpm add` succeeds and so does every shape below; unseeded, both fail on the same chmod. The
-alternatives are closed rather than untried — matching the modes cannot work because the chmod is
-unconditional, shared ownership cannot exist under per-session uids (docs/270), and a session
-container does not get `CAP_FOWNER`.
+**The repair, and it has shipped: seed the tree's executable targets into the session's upper, owned
+by the session.** Before the container starts, `prepareOverlayDirs` copies each one into the upper
+byte-identically, with the base's mode, and chowns it to the session uid
+(`overlay-bin-seed.ts`); pnpm's unconditional chmod then lands on a file the session owns.
+Measured: seeded, `pnpm add` succeeds and so does every shape below; unseeded, both fail on the same
+chmod. The alternatives are closed rather than untried — matching the modes cannot work because the
+chmod is unconditional, shared ownership cannot exist under per-session uids (docs/270), and a
+session container does not get `CAP_FOWNER`. The seed is what re-opens the consumer-side mount gate:
+an eligible pnpm session mounts its verified base again, and the other gates (no lockfile, pnpm ≤ 10,
+no published pointer in the verified namespace, all-or-nothing across dep dirs) are unchanged.
 
 **The set is defined by pnpm's linking rule, not by the manifest field that is usually there.** An
 independent review found the gap and it reproduces: pnpm links executables from `package.json#bin`,
@@ -900,15 +903,66 @@ independent review found the gap and it reproduces: pnpm links executables from 
 set is small either way: 6 files / 28 KiB on the harness base, **28 files / 204 KiB on ShipIt's own
 609-package tree**, so it is not a req 10 cost.
 
+**And the rule is now read off pnpm rather than off the manifest spec, because the spec's reading
+under-seeds.** pnpm's shim writer leaves the absolute target in a `# cmd-shim-target=` trailer in
+every `.bin` entry it writes, so what it linked is readable from the finished tree — and what that
+shows is that **`directories.bin` is enumerated RECURSIVELY** (a file four levels down gets its own
+shim). The first implementation took only the directory's own files, which leaves every deeper one
+in the foreign-owned lower; an independent review found it and the shims confirm it. Also read off:
+an empty-string `bin` falls through to `directories.bin`, an empty-object `bin` does not, a
+non-empty `bin` takes precedence, and `bin: {"x": ""}` fails the install closed so it can never be
+in a base.
+
+**The implementation takes the union of `bin` and a recursive `directories.bin`, and encodes none of
+those precedence rules.** The two mistakes are different sizes: a target pnpm links and the seed
+misses is the defect returning, while a file the seed copies and pnpm never touches is one
+byte-identical copy of a script. Measured over-seed: one file on each of the two trees that contain
+such a package, none on either real dependency tree. So the test asserts **containment**, not
+equality — the seed set contains every target pnpm's shims name, on five trees, with nothing
+missed. It is a cell of `integration_tests/pnpm-store-isolation.test.ts` against real pnpm and cell
+2 of [`bin-seed-host-spike.sh`](./bin-seed-host-spike.sh) against the base the builder produces, so
+a pnpm release that starts linking something else fails a test rather than a session.
+
+**File modes are not a signal here, and reading them as one produced two wrong answers.** In a tree
+imported with `package-import-method=copy` every file comes out `775` — a README as much as a bin —
+so "the mode changed after install" says nothing about whether pnpm chmodded it. The shim set, and
+the chmod interposer of `ineligible-sharing-spike.sh`, are the two signals that mean anything.
+
 **When the seed runs is part of the design, not an implementation detail.** `prepareOverlayDirs`
 resets an upper only when the base **generation is superseded** (`container-lifecycle.ts`,
 `supersededSessionOverlayLayers`); within a generation the upper is **reused across container
 restarts**. So seeding on every start would overwrite an agent's own edits to its dependencies,
 which is req 11 inverted. The rule: seed **once, when the upper is created or reset**, never
 overwriting an entry that already exists; a seed that partially completed is re-run against the
-missing entries only. And because an existing upper is session-controlled, the copy must resolve
-inside it without following symlinks — the docs/272 lesson, in a place docs/272 does not reach. The
-host harness deletes each upper before seeding, so it measures the mechanism and not this rule.
+missing entries only. Two mechanisms carry it, and they are deliberately not one: a `bin-seed.json`
+marker **beside** the upper (outside the mounted tree, the way `shareTreeOnce` keeps its own)
+decides whether the seed runs at all, and each file is staged under a temporary name and published
+with `link()`, which fails rather than replacing — so even a seed that does run cannot overwrite an
+entry the upper has, and a write that dies part-way leaves no half-file for a later run to mistake
+for a finished one.
+
+**And the upper is not quiescent while this runs.** `prepareOverlayDirs` is called before the
+volume holders are released, and `createOverlayVolume` returns early when the options already
+match, so a Compose service preserved across an agent-container restart can be writing into the
+same upper. An `lstat`-then-`mkdir`-then-`open` walk by pathname is therefore a real TOCTOU: a
+directory swapped for a symlink between two calls redirects an **orchestrator-privileged** create —
+and a path-based `chmod` after the fact would let it chmod a file anywhere. So every path inside
+the upper is resolved through a **directory descriptor**: each component is opened `O_NOFOLLOW`,
+each child is addressed as `/proc/self/fd/<dirfd>/<name>` (Linux's stand-in for the `openat` family
+Node does not bind), and the mode and owner are set on the descriptor with `fchmod`/`fchown` rather
+than by name. That is the docs/272 lesson, in a place docs/272 does not reach. `ineligible-sharing-host-spike.sh` deletes each upper
+before seeding, so it measures the mechanism and not this rule;
+[`bin-seed-host-spike.sh`](./bin-seed-host-spike.sh) measures the rule, cell 5.
+
+**A seed that runs also drops the install marker.** The verified base is published unbuilt and gets
+no pre-stamp, so the session's own `agent.install` has to run over it — and a session that GAINS
+this overlay (the shape every pnpm session was in while the mount was gated off, having installed
+privately and stamped a marker for that tree) would otherwise skip the install and run a tree whose
+builds never ran. The signal is the seed rather than a fresh upper, because the two are not the
+same set: a session whose layers were held by a Compose service through the gated window comes back
+to its OLD upper, which is not fresh and has no seed marker either. Rotation already drops the
+marker, so this covers only what rotation does not. The drop is scoped to the verified pnpm
+namespace: an npm base's marker drives the pre-stamp flow and must not be touched.
 
 **The one new mechanism is a pruned base**, and it covers the large class. The builder builds the
 whole tree exactly as it does now, with `--ignore-scripts`; the packages that would need a build are
@@ -1004,8 +1058,14 @@ guarantees is which packages pay, not how much. For a class that stays private, 
 today — a cold private install, never a failed one (req 9).
 
 **Failure modes, and which are fail-safe.** A seed that does not run leaves the session unable to
-`pnpm add` — the defect above, so the seed is a correctness dependency and not an optimization, and
-a base must not be mounted without it. A pruned lockfile that still names a pruned package leaves
+`pnpm add` — the defect above, so the seed is a correctness dependency and not an optimization. It
+runs in `prepareOverlayDirs`, which is *after* the mount specs are fixed, so a seed that fails
+cannot withdraw the mount: it logs an error, writes no marker, and the next container start retries
+the entries still missing. That is deliberate rather than overlooked. The failure is an fs error in
+the orchestrator's own state directory, its consequence is exactly the pre-repair behaviour
+(`pnpm add` fails, loudly, naming the chmod) rather than a silent or destructive one, and
+withdrawing the mount there would mean unwinding mounts, binds and the session-container record
+that `createContainer` has already computed. A pruned lockfile that still names a pruned package leaves
 the session with "Already up to date" over a hole, which is a *silent* broken tree — so the prune
 must be verified after it is applied, at publish time, and a prune that cannot be verified must
 yield no base rather than a pruned one. A package that is pruned but whose build the session does
@@ -1288,15 +1348,16 @@ For anyone re-running or extending the harnesses:
 | `src/server/orchestrator/pnpm-base-registry.ts` | `stageVerifiedRegistry` — resolves `<name>@<version>` against the orchestrator's own registry, admits only when the lockfile digest, the packument's `dist.integrity` and the downloaded bytes' sha512 all agree, and names the first failing package. |
 | `src/server/orchestrator/pnpm-base-builder.ts` | `builderScript` (the two phases), `builderEnv` (the three `packageManager` switches and the emptied config), and `buildVerifiedPnpmBase`, which owns build admission (one per scope, `MAX_CONCURRENT_PNPM_BASE_BUILDS` across scopes) and publishes through `copySnapshotToBase` + `publishBase`. |
 | `src/server/shared/deps-hash.ts:21`, `:102` | pnpm's default hash inputs include `pnpm-workspace.yaml`; a custom `installInputs` replaces the list, so `resolveDepsHashInputs` adds it back for a pnpm repo when given the workspace dir. |
+| `src/server/orchestrator/overlay-bin-seed.ts` | planning#606's repair. `resolvePnpmBinSeedSet` walks `<base>/.pnpm/*/node_modules/**` and takes the union of `bin` and a **recursive** `directories.bin`; `seedBinTargetsIntoUpper` copies each target into the upper byte-identically, staged under a temporary name and published with `link()` so it can never replace an entry the agent put there, with every path resolved through a directory descriptor because a Compose service may be writing the same upper; `seedOverlayBinTargetsOnce` gates on the `bin-seed.json` marker beside the upper. |
 | `src/server/orchestrator/overlay-session.ts` | `PNPM_VERIFIED_NAMESPACE`; `sessionPnpmStoreDir` — the per-session private store; `retiredSharedPnpmStoreRoot` — the tree the janitor ages out. |
-| `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `npm_config_cache` (section 1), and the import method — the pre-11 spelling always, the pnpm ≥ 11 one only when `config.overlaySpecs` carries the verified namespace, because a mounted base is the one shape where the copy is both needed and free; `prepareOverlayDirs` (`:487`) creates only generation 0's lowerdir; `createContainer` retires the shared npm index. |
+| `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `npm_config_cache` (section 1), and the import method — the pre-11 spelling always, the pnpm ≥ 11 one only when `config.overlaySpecs` carries the verified namespace, because a mounted base is the one shape where the copy is both needed and free; `prepareOverlayDirs` creates only generation 0's lowerdir, seeds a fresh upper's bin targets, and drops the install marker when a verified pnpm spec gains one; `createContainer` retires the shared npm index. |
 | `src/server/session/dep-snapshot.ts`, `src/server/orchestrator/overlay-snapshot.ts` | The merged-tree tar and its pull — unchanged; untrusted, and admission no longer depends on it. |
 | `src/server/orchestrator/session-worker-uid.ts:124` | `shareOne` — group write on the shared surfaces (docs/270 req 9). |
 | `src/server/orchestrator/session-dir-factory.ts:58` | `createDepCacheDirHelper` — `/dep-cache` keyed per repo; the verifier's self-verifying tarball source. |
 | `src/server/shared/npm-cache.ts` | Section 1's whole mechanism: the per-session cache path, the `content-v2` link, and the retirement of the shared index. |
 | `src/server/session/session-worker.ts` | Calls `linkSessionNpmCache` before the listener opens, so no install, terminal or service can reach npm through an unlinked cache. |
 | `src/server/orchestrator/integration_tests/npm-cache-poisoning.test.ts` | The H1 attack and its control, against real npm and a local registry. |
-| `src/server/orchestrator/integration_tests/pnpm-store-isolation.test.ts` | H4 against real pnpm >= 11: the index key rename that survives `strictStorePkgContentCheck`, fired through a shared store (the control) and refused by two `sessionPnpmStoreDir` paths (the fix). Plus the base's mount shape — one shared lowerdir, per-session upper and work dirs, and no bind that exposes the base tree. |
+| `src/server/orchestrator/integration_tests/pnpm-store-isolation.test.ts` | The bin seed's set compared against the targets pnpm's own `.bin` shims name, on a tree real pnpm built. Plus H4 against real pnpm >= 11: the index key rename that survives `strictStorePkgContentCheck`, fired through a shared store (the control) and refused by two `sessionPnpmStoreDir` paths (the fix). Plus the base's mount shape — one shared lowerdir, per-session upper and work dirs, and no bind that exposes the base tree. |
 | `src/server/session/install-controller.ts` | The install path; also serves `GET /workspace/dep-snapshot`. |
 
 ## Related

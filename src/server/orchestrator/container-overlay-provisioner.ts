@@ -3,9 +3,6 @@ import type Docker from "dockerode";
 import {
   buildOverlaySpecs,
   depDirsForSession,
-  discardOverlayScopeDirs,
-  removeInstallMarkerForOverlayReset,
-  sessionOverlayScopeDirs,
   sessionPnpmStoreDir,
   PNPM_VERIFIED_NAMESPACE,
   resolveOverlayScope,
@@ -20,7 +17,6 @@ import {
 import {
   overlayBaseGenDir,
   overlayScopeHash,
-  overlayVolumeName,
   resolveVolumeMountpoint,
   volumeExists,
 } from "./overlay-volume.js";
@@ -33,17 +29,6 @@ export interface OverlayProvisionerDeps {
   workspaceVolume?: string;
   stateDir?: string;
 }
-
-/**
- * Whether a pnpm session may mount a verified base at all. **False while planning#606 is open:**
- * `pnpm add` relinks `.bin` and `chmod`s every bin target unconditionally, those targets are base
- * files owned by the publishing uid, and a session cannot chmod a file it does not own — so the add
- * fails `EPERM` and breaks docs/276 req 9 (measured, `build-cost-spike.sh` /
- * `ineligible-sharing-spike.sh`). Flipping this constant back is the whole consumer-side change
- * once the repair (pre-seeding the tree's bin targets into the session's upper) lands; publishing
- * continues meanwhile, so the bases are already there.
- */
-export const MOUNT_VERIFIED_PNPM_BASE = false;
 
 export async function resolveWorkerImageId(docker: Docker, imageName: string): Promise<string> {
   try {
@@ -120,19 +105,6 @@ export async function prepareOverlaySpecs(
     );
   }
   if (valid.length === 0) return [];
-  // planning#606: no pnpm session mounts a verified base while `pnpm add` fails EPERM over one.
-  if (pnpm && !MOUNT_VERIFIED_PNPM_BASE) {
-    // Only on a select→mount operation (the claim token): a read-back path runs while a container
-    // created before the gate still has these layers mounted.
-    if (deps.stateDir && opts.claimToken !== undefined) {
-      await resetOverlayStateForGatedSession(deps.docker, {
-        stateRoot: deps.stateDir,
-        sessionId: opts.sessionId,
-        workspaceDir: opts.workspaceDir,
-      });
-    }
-    return [];
-  }
   // A pnpm session whose checkout has no lockfile gets NO base lowerdir (docs/276 section 5,
   // "Per-session install"): pnpm would synthesize the wanted graph from the base's carried
   // `.pnpm/lock.yaml`, so mounting one would introduce a graph choice absent from the session's own
@@ -196,67 +168,6 @@ export async function prepareOverlaySpecs(
     }
   }
   return provisioned;
-}
-
-/**
- * A session that mounted a verified base before the gate existed must not keep the state that base
- * left behind. Two things, and only the first is a correctness matter: the install marker was
- * stamped over the MERGED view, so leaving it makes this start skip `agent.install` into a
- * `node_modules` that no longer has a base under it; and the session's upper layers would be
- * re-adopted the day mounting returns, hiding everything installed privately meanwhile.
- *
- * The layers go only when nothing still mounts them. A Compose service preserved across an
- * agent-container restart (`preserveComposeOnDispose`) keeps its overlay volume, and deleting the
- * upper under a live mount would empty a running preview's `node_modules`; an AUTOMATIC service is
- * recreated onto the plain directories by the reconcile that follows the new agent recording no
- * overlay (`applyOverlayDepDirsForSession`), so the next container start discards the layers. A
- * MANUAL service is not — `start()` ups only automatic ones — so it holds the old mount, and its
- * layers, until someone restarts it. The marker is dropped either way, which is the half that
- * decides whether the agent's own install runs.
- */
-async function resetOverlayStateForGatedSession(
-  docker: Docker,
-  opts: { stateRoot: string; sessionId: string; workspaceDir: string },
-): Promise<void> {
-  const stale = sessionOverlayScopeDirs(opts.stateRoot, opts.sessionId);
-  if (stale.length === 0) return;
-  removeInstallMarkerForOverlayReset(opts.workspaceDir);
-  const holders = await overlayVolumeHolders(docker, opts.sessionId);
-  if (holders.length > 0) {
-    console.log(
-      `[overlay:${opts.sessionId}] verified pnpm base mounting is gated off (planning#606) — ` +
-      `dropped the install marker so agent.install refills node_modules privately, and kept ` +
-      `${stale.length} superseded overlay layer(s) that ${holders.join(", ")} still mounts; ` +
-      "they are discarded on the first start after that service is recreated",
-    );
-    return;
-  }
-  const discarded = discardOverlayScopeDirs(stale);
-  console.log(
-    `[overlay:${opts.sessionId}] verified pnpm base mounting is gated off (planning#606) — ` +
-    `discarded ${discarded.length} superseded overlay layer(s) and dropped the install marker ` +
-    "so agent.install refills node_modules privately",
-  );
-}
-
-/** Containers still mounting any of this session's overlay volumes. Unreadable counts as held. */
-async function overlayVolumeHolders(docker: Docker, sessionId: string): Promise<string[]> {
-  try {
-    // Docker's volume-name filter matches on substring, so the session's overlay prefix selects
-    // exactly its own volumes whatever dep dirs the previous container had.
-    const listed = await docker.listVolumes({ filters: { name: [overlayVolumeName(sessionId)] } });
-    const names = (listed?.Volumes ?? []).map((v) => v.Name).filter((n): n is string => !!n);
-    if (names.length === 0) return [];
-    const holders = await docker.listContainers({ all: true, filters: { volume: names } });
-    return holders.map((h) => h.Names?.[0] ?? h.Id);
-  } catch (err) {
-    console.warn(
-      `[overlay:${sessionId}] could not tell whether anything still mounts the session's overlay ` +
-      "volumes, so its superseded layers are being kept:",
-      err instanceof Error ? err.message : String(err),
-    );
-    return ["(unknown)"];
-  }
 }
 
 /**

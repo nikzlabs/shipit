@@ -659,6 +659,63 @@ optional dependency, which makes it useless as a *build* probe.
 Isolation is unaffected and re-asserted under distinct uids: both bases stayed byte-unchanged, and
 a second session inherited neither the add nor the build.
 
+## Finding: what pnpm links as an executable, read off its own shims
+
+Measured 2026-09-21 in a session container, pnpm 12.5.1, no Docker needed. The seed set was
+previously derived from the manifest rule — `bin`, plus `directories.bin` when `bin` is absent —
+and matched against the chmod calls observed on two trees. It can be read off pnpm directly:
+**pnpm's shim writer leaves the absolute target in a `# cmd-shim-target=` trailer** in every `.bin`
+entry it writes, so the set it linked is readable from the finished tree.
+
+**Read it off the shims, not off the file modes.** Modes are not a signal at all here: in a tree
+imported with `package-import-method=copy`, **every** file comes out `775` — a package's README as
+much as its bin — so "the mode changed" says nothing about whether pnpm chmodded a file. That
+mistake produced two wrong readings before the shim set settled it.
+
+| Manifest shape | Does pnpm link it? |
+|---|---|
+| `directories: {bin: "t"}` with `t/a/b/c/l3.js` | **Yes — the walk is RECURSIVE.** Shims for all four of `t/l0.js`, `t/a/l1.js`, `t/a/b/l2.js`, `t/a/b/c/l3.js` |
+| `bin: ""` plus `directories: {bin: "t"}` | **Yes**, the empty string falls through to `directories.bin` |
+| `bin: {}` plus `directories: {bin: "t"}` | **No** — an empty map is zero bins, and nothing under `t` is linked |
+| `bin: "cli.js"` plus `directories: {bin: "t"}` | **Only `cli.js`** — a non-empty `bin` takes precedence |
+| `bin: {"x": ""}` | The install **fails closed**, `ERR_PNPM_CMD_SHIM_PROBE_SHIM_SOURCE` … `Is a directory`, so this shape can never be in a working base |
+
+**The recursion is the one that mattered**, and it was found by an independent review of the first
+implementation: a non-recursive walk leaves every deeper file in the foreign-owned lower, and the
+EPERM comes back for exactly those packages.
+
+**The implementation takes the UNION anyway** — `bin` and every file under `directories.bin`,
+always — rather than encoding the three precedence rules above. The two mistakes are not the same
+size: a target pnpm links and the seed misses is the defect returning, while a file the seed copies
+and pnpm never touches is one byte-identical copy of a script. Measured over-seed: **1 file** on
+each of the two trees that contain such a package, **0** on the two real dependency trees.
+
+| Tree | `.bin` dirs | pnpm linked | seed set | linked but missed |
+|---|---|---|---|---|
+| 3 synthetic packages (recursive `directories.bin`, `bin: ""`, bin-less) | 3 | 3 | 3 | **0** |
+| 3 synthetic packages (4-level `directories.bin`, `bin: {}`) | 2 | 4 | 5 | **0** |
+| 1 synthetic package (`bin` + `directories.bin`) | 2 | 1 | 2 | **0** |
+| 6 real dependencies (rimraf, semver, typescript, vitest, which, eslint) | 22 | 17 | 17 | **0** |
+| 12 real dependencies (webpack, jest, express, lerna, mocha, nodemon, tsx, …) | 103 | 77 | 77 | **0** |
+| the synthetic shapes under pnpm **12.4.1**, in the integration test | — | ≥1 | ⊇ | **0** |
+
+Nested `.bin` directories are covered by this: the 103-directory tree is mostly the per-package
+`.bin` farms a virtual-store entry gets for its own dependencies' executables, and every one of
+their targets is in the seed set.
+
+This is now a **test**, not a one-off: the last cell of
+`integration_tests/pnpm-store-isolation.test.ts` builds the synthetic shapes with real pnpm — as
+`file:` tarballs, so it needs no registry entry — and asserts containment, and
+[`bin-seed-host-spike.sh`](./bin-seed-host-spike.sh) cell 2 asserts the same against the tree the
+builder actually produces. The same cell asserts the copy itself: byte-identical, same mode, and an
+entry the upper already holds left exactly as it is.
+
+**What this does not establish.** The trailer is written by pnpm's shim writer, so a layout where
+pnpm chmods an executable WITHOUT writing a shim is invisible to both sides of the comparison at
+once. The cells assert every shim carries a trailer, which is what would fail first if that writer
+changed. The chmod traces of `ineligible-sharing-spike.sh` remain the only direct evidence about
+files pnpm chmods but does not link.
+
 ## Finding: three refused classes behave under the builder's own flags
 
 Measured in-container ([`ineligible-sharing-spike.sh`](./ineligible-sharing-spike.sh), cells G–I,
@@ -674,11 +731,10 @@ exactly that ground.
 
 ## Faithfulness and limits
 
-- **The executable-target list is derived from `bin` plus `directories.bin`, and matched against the
-  chmod set observed for two tree shapes.** It covered every package file pnpm chmodded there, and
-  the seeded cells pass, which is the end-to-end check. It is not a proof that pnpm chmods nothing
-  else on a tree neither harness built — the first cut of this list missed `directories.bin`, which
-  is the reason to state the bound rather than assume it.
+- **The executable-target list is the union of `bin` and a recursive `directories.bin`, and it
+  CONTAINS every target pnpm's own `.bin` shims name on five trees** (the section above). What that
+  bounds is which files pnpm LINKS; the claim that pnpm chmods no file it does not link still rests
+  on the chmod traces of two tree shapes, and on the seeded cells passing end to end.
 - **The host harness deletes each upper before seeding**, so it measures the seeding mechanism and
   not the rule the design states for an upper that already exists (seed once at creation, never
   overwrite an existing entry, resolve inside the upper without following symlinks). That rule is
@@ -733,6 +789,9 @@ ssh <docker-host> bash /tmp/store-overlay-spike.sh   # PASS=14 FAIL=0, exit 0
 
 scp docs/276-shared-package-cache-integrity/ineligible-sharing-host-spike.sh <docker-host>:/tmp/
 ssh <docker-host> bash /tmp/ineligible-sharing-host-spike.sh   # PASS=13 FAIL=0, exit 0
+
+scp docs/276-shared-package-cache-integrity/bin-seed-host-spike.sh <docker-host>:/tmp/
+ssh <docker-host> bash /tmp/bin-seed-host-spike.sh
 ```
 
 Both need only Docker on the host; the node + python toolchain comes from a baked

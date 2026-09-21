@@ -714,9 +714,9 @@ describe("joinSessionNetworkEndpoints", () => {
   });
 });
 
-// planning#606 turns a session that had a verified base into one with no overlay at all, which is
-// where clearing the set stopped being reported: a Compose service preserved across the restart
-// kept mounting an overlay the new agent does not have.
+// A session that had a verified base can become one with no overlay at all — a selection gate
+// stops choosing its scope. That is where clearing the set stopped being reported: a Compose
+// service preserved across the restart kept mounting an overlay the new agent does not have.
 describe("applyOverlayDepDirsForSession — clearing a set the services still hold", () => {
   function deps(provisioned: { depDir: string; volumeName: string }[] | null) {
     return {

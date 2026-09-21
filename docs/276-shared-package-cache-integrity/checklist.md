@@ -443,26 +443,35 @@ recorded in [requirements.md](./requirements.md); none is open.
       pass — the removed set must be uniform, so pruning at publish is the same
       effect with no per-session machinery.
 
-- [ ] **Prerequisite, and a live req 9 defect: `pnpm add` over a verified base
-      fails as the session's own uid.** pnpm chmods every executable target
-      unconditionally (10 no-op calls measured); overlay copy-up keeps the
-      lower's owner and group write does not grant `chmod`, so it EPERMs —
-      `ERR_PNPM_CMD_SHIM_CHMOD`, confirmed on a real overlay. A base hit and an
-      in-package edit make zero chmod calls, which is why production looks
-      healthy. Fix: `prepareOverlayDirs` seeds the base's executable targets into
-      the session's **upper**, chowned to the session uid. The set is `bin` **plus
-      `directories.bin` when `bin` is absent** — measured (cell J), and a
-      `bin`-only list silently misses the second form. 28 files / 204 KiB on
-      ShipIt's own tree. Seed **once, at upper creation or reset**, never
-      overwriting an existing entry: `prepareOverlayDirs` resets an upper only on
-      generation supersession, so within a generation it is reused across
-      restarts and re-seeding would overwrite the agent's own dependency edits
-      (req 11). Resolve inside the upper without following symlinks — it is
-      session-controlled (the docs/272 lesson, where docs/272 does not reach).
-      Measured to fix both `pnpm add` and the pruned base; unseeded both fail.
-      Guard: `pnpm add` as a non-owner uid over a base, red without the seed,
-      plus a cell for a `directories.bin` package and one for an upper that
-      already holds an edited file.
+- [x] **Prerequisite, and a live req 9 defect: `pnpm add` over a verified base
+      failed as the session's own uid — repaired by seeding, and the mount gate
+      is back on.** pnpm chmods every executable target unconditionally (10 no-op
+      calls measured); overlay copy-up keeps the lower's owner and group write
+      does not grant `chmod`, so it EPERMed — `ERR_PNPM_CMD_SHIM_CHMOD`, confirmed
+      on a real overlay. A base hit and an in-package edit make zero chmod calls,
+      which is why production looked healthy. `prepareOverlayDirs` now seeds the
+      base's executable targets into the session's **upper**, chowned to the
+      session uid (`overlay-bin-seed.ts`), and `MOUNT_VERIFIED_PNPM_BASE` is gone.
+      The set is the union of `bin` and a **recursive** `directories.bin` — the
+      recursion found by an independent review and confirmed off pnpm's own shims
+      (it shims a file four levels down), and the union taken rather than pnpm's
+      precedence rules encoded, because a missed target is the defect returning
+      and an extra one is a byte-identical copy of a script. Checked by
+      containment against the shim set on five trees, nothing missed. 28 files /
+      204 KiB on ShipIt's own tree. Seeded **once, at upper creation**, gated on a
+      `bin-seed.json` marker beside the upper and, independently, on a
+      stage-then-`link()` publish that never replaces, so neither a restart, a
+      re-run, nor a write that dies part-way can touch the agent's own dependency
+      edit (req 11). Every path inside the session-controlled upper is resolved
+      through a directory descriptor (`O_NOFOLLOW` + `/proc/self/fd`, `fchmod`
+      and `fchown`), because a preserved Compose service can be writing the same
+      upper while the seed runs — the docs/272 lesson where docs/272 does not
+      reach. A seed that runs also drops the install marker, scoped to the
+      verified pnpm namespace, so a session that gains the overlay re-runs its own
+      install over the unbuilt base. Guards: `overlay-bin-seed.test.ts`, the
+      `prepareOverlayDirs` seed cells in `container-lifecycle.test.ts`, the
+      shim-comparison cell in `pnpm-store-isolation.test.ts`, and
+      `bin-seed-host-spike.sh` for the kernel/uid half.
 
 - [ ] **Pruned base for build-bearing repos** (the planning#604 class, the large
       one). At publish, remove each package carrying an install-time trigger from

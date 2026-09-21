@@ -129,62 +129,28 @@ export function supersededSessionOverlayLayers(
 /**
  * Drop the install marker so `agent.install` re-validates against whatever the session now has.
  * Shared by the two paths that discard an overlay layer the session was installed over: a base
- * generation rotation (`prepareOverlayDirs`) and a scope the mount gate has stopped selecting.
+ * generation rotation (`prepareOverlayDirs`) and a session that gains a fresh upper over a base it
+ * was not installed over.
+ *
+ * Returns whether a marker was actually there, so a caller can stay quiet when there was nothing
+ * to invalidate.
  */
-export function removeInstallMarkerForOverlayReset(workspaceDir: string): void {
+export function removeInstallMarkerForOverlayReset(workspaceDir: string): boolean {
   try {
     const markerFile = path.join(
       sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
       INSTALL_MARKER_FILE,
     );
+    const existed = fs.existsSync(markerFile);
     fs.rmSync(markerFile, { force: true });
+    return existed;
   } catch (err) {
     console.warn(
       "[overlay] could not drop the install marker after discarding an overlay layer:",
       err instanceof Error ? err.message : String(err),
     );
+    return false;
   }
-}
-
-/**
- * Every scope a session has overlay layers for on disk, whatever scope hash they were selected
- * under — an older namespace or runtime key names a directory the current hash cannot reconstruct.
- * The private pnpm store shares the directory and is not a layer.
- */
-export function sessionOverlayScopeDirs(stateRoot: string, sessionId: string): string[] {
-  const root = path.join(stateRoot, "sessions", sessionId, OVERLAY_SESSION_SUBDIR);
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((e) => e.isDirectory() && e.name !== PNPM_STORE_SUBDIR)
-    .map((e) => path.join(root, e.name));
-}
-
-/**
- * Discard overlay layers a session will NOT mount, the way a base generation rotation discards a
- * superseded upper: an upper whose lower is no longer mounted under it is half a merged view, and
- * re-adopting it later would hide everything the session installed meanwhile.
- *
- * Call only when nothing has these layers mounted; the caller checks.
- */
-export function discardOverlayScopeDirs(scopeDirs: string[]): string[] {
-  const removed: string[] = [];
-  for (const scopeDir of scopeDirs) {
-    try {
-      fs.rmSync(scopeDir, { recursive: true, force: true });
-      removed.push(scopeDir);
-    } catch (err) {
-      console.warn(
-        `[overlay] could not discard the session overlay layer ${scopeDir}:`,
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  }
-  return removed;
 }
 
 export const CONTAINER_WORKSPACE_PATH = "/workspace";
