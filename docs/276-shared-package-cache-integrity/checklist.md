@@ -342,8 +342,8 @@ recorded in [requirements.md](./requirements.md); none is open.
       step is skipped" — and the two repairs fail under the session's own uid
       with `Operation not permitted`, because copy-up keeps the lower's owner and
       a session may rewrite a base file but not `chmod` it (`shareOne`,
-      `session-worker-uid.ts:124`). The repo works from its first private install
-      and breaks from the next container start. plan.md section 5's "that install
+      `session-worker-uid.ts:124`). The repo worked from its first private install
+      and broke from the next container start. plan.md section 5's "that install
       is where builds run" is corrected there. Of the three candidates, the
       **fail-safe** shipped: a candidate whose packages carry an install-time
       script is INELIGIBLE (`pnpm-install-scripts.ts`, pnpm's own
