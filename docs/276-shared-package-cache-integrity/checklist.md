@@ -155,8 +155,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       states the whole configuration — HOME inside the sandbox, `npm_config_userconfig`
       and `npm_config_globalconfig` at `/dev/null`, no credentials, `--store-dir` and
       `--registry` on the COMMAND LINE so a staged `.npmrc` cannot outrank them.
-      `.pnpmfile.cjs` is admitted and `.pnpmfile.mjs`/`configDependencies` stay
-      ineligible; stronger than designed, a `.pnpmfile` is never staged at all, so
+      `.pnpmfile.cjs` is admitted and `configDependencies` stays ineligible
+      (`.pnpmfile.mjs` was refused here and admitted later, see below); stronger
+      than designed, a `.pnpmfile` is never staged at all, so
       `--ignore-pnpmfile` is defence in depth. **Deviation, measured:** a baked pinned
       binary is NOT enough — a repo's `packageManager` reaches the builder by three
       routes and the pinned binary self-switches, so all three switches are set
@@ -492,15 +493,21 @@ recorded in [requirements.md](./requirements.md); none is open.
       base byte-unchanged, second session inherits nothing. Depends on the seed
       above.
 
-- [ ] **Admit `.pnpmfile.mjs`.** `--ignore-pnpmfile` suppresses both the module
-      body and `readPackage` — measured twice now, and the refusal at
-      `pnpm-base-inputs.ts:354` still says "unmeasured" in its own comment.
-      Delete the `.mjs` clause; keep the builder's refusal of the
-      `pnpmfile`/`globalPnpmfile`/`global-pnpmfile` keys as the second layer.
-      `configDependencies` stays ineligible on purpose — its hook IS suppressed
-      (measured, with a positive control), so the reason is that admitting it
-      makes the builder **fetch and stage plugin packages** it otherwise would
-      not, which widens the input surface.
+- [x] **Admit `.pnpmfile.mjs`.** `--ignore-pnpmfile` suppresses both the module
+      body and `readPackage` — measured twice — and a `.pnpmfile` is never
+      staged, so the presence clause cost a base and bought nothing. The `.mjs`
+      clause is gone, and with it `StagedPnpmInputs.hookFiles`, which had no
+      other reader; the builder's refusal of the
+      `pnpmfile`/`globalPnpmfile`/`global-pnpmfile` keys stays as the second
+      layer. `configDependencies` stays ineligible on purpose — its hook IS
+      suppressed (measured, with a positive control), so the reason is that
+      admitting it makes the builder **fetch plugin packages** through a path it
+      neither parses (`pnpm-lockfile.ts` reads one lockfile document) nor stages
+      (the builder stages `decision.packages` alone). Its refusal detail said
+      "load plugin code into the builder", which the measurement refutes, and
+      now names the real reason. The independent review corrected a first draft
+      of that reason which claimed a config dependency carries no digest: it
+      does — what is missing is ShipIt's support for verifying and staging it.
 
 - [ ] **Settle `workspace:` / `link:` / `file:` — a candidate, not yet an
       admission** (downgraded on review). What holds: a frozen, offline install

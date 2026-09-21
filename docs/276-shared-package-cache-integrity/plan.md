@@ -576,9 +576,11 @@ fetch phase, at the first offending package. Not eligible in the first cut: `git
 no source handling); `file:`, `link:`, `workspace:` entries and
 `patchedDependencies` — verifiable in principle, since the linked content and
 the patch bytes are in the immutable snapshot, but their reconciliation under
-the frozen builder is unmeasured; `.pnpmfile.mjs` and `configDependencies`,
-whose suppression by `--ignore-pnpmfile` is unmeasured (only `.cjs` was
-measured); a scoped registry with no orchestrator-authorized scope→registry
+the frozen builder is unmeasured; `configDependencies`, not because its hook
+can run — `--ignore-pnpmfile` suppresses that too, measured — but because a
+config dependency, digest and all, is resolved by pnpm through a path this
+builder neither parses nor stages, so admitting it would put packages in the
+tree off the footing every other package is verified on; a scoped registry with no orchestrator-authorized scope→registry
 mapping; an output layout that escapes one self-contained `node_modules`
 (`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`); and **any
 dependency that builds at install time** — the fail-safe above. That last one is
@@ -592,8 +594,11 @@ repo re-downloading its whole tree on every trigger. The root project's own
 scripts are irrelevant — the builder never runs them and the session runs them
 itself. A tarball the scan cannot read is refused the same way: one it cannot
 prove has no build must not become one it assumed had none. Admitted: an
-`npm:` alias (the resolved target's digest is what is verified); a `.pnpmfile.cjs`
-(its hook is suppressed, measured — if the frozen install then fails to
+`npm:` alias (the resolved target's digest is what is verified); a committed
+`.pnpmfile.cjs` or `.pnpmfile.mjs` (neither is ever staged, so neither reaches
+the builder; `--ignore-pnpmfile` suppresses the module body and `readPackage`
+of both, measured on an install with a positive control, and the flag is on
+both phases in code — if the frozen install then fails to
 reconcile, the build yields no base, decided by the build rather than by a
 presence rule); a relocated global store (overridden to the fixed builder
 path); `optionalDependencies`, verified like the rest; `bundledDependencies`,
@@ -941,14 +946,15 @@ inferred from these two shapes: a removed package present in several peer-qualif
 the publisher's commit. The prune also leaves `.modules.yaml` naming the removed package in
 `pendingBuilds`; that was harmless here and is not established as harmless.
 
-**Two classes need no shape, because the builder already handles them** — they are refusals that
-outlived their reason, and admitting them is a change to `decidePnpmBaseEligibility`, not new
+**These classes need no shape, because the builder already handles them** — they are refusals that
+outlived their reason, and admitting one is a change to `decidePnpmBaseEligibility`, not new
 machinery.
 
-- **`.pnpmfile.mjs`.** `--ignore-pnpmfile` suppresses both the module body and `readPackage`,
-  with a positive control showing both run without it. The refusal (`pnpm-base-inputs.ts:354`) says
-  in its own comment that `.mjs` is "not measured"; it has been measured since 2026-09-21. Admit it,
-  and the builder's refusal of the `pnpmfile`/`globalPnpmfile` keys stays as the second layer.
+- **`.pnpmfile.mjs` — admitted 2026-09-21.** `--ignore-pnpmfile` suppresses both the module body
+  and `readPackage`, with a positive control showing both run without it, and a `.pnpmfile` is
+  never staged in the first place. The presence refusal is gone; the builder's refusal of the
+  `pnpmfile`/`globalPnpmfile`/`global-pnpmfile` keys stays as the second layer, because those name
+  a path the snapshot stages for another reason.
 - **`patchedDependencies`.** The patch bytes are in the immutable snapshot and the tarball is
   digest-verified, so the output is verifiable by construction. pnpm applies the patch under
   `--ignore-scripts --ignore-pnpmfile`, and an unparseable patch fails the install closed rather
