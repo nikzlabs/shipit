@@ -882,6 +882,14 @@ finished at 0 of 67,348 — the reported failure exactly; after, the pin landed 
 45,455, while a scroll made *after* the rows were up held at 12,000 as the
 content grew past 83,000.
 
+**The card scrolling inside itself was the other candidate, and it does not
+exist.** Measured on the rendered element rather than assumed: `overflow-y:
+visible`, `scrollHeight === clientHeight`, its content laid out inline inside the
+transcript's own scroller. A wheel over the card *is* a wheel over the
+transcript, so there is nothing to tell apart, and no signal there to use.
+Elapsed time was ruled out for a different reason: the gap's length is the
+history's length.
+
 What re-arms is the **arrival**, not the absence of rows — the gap is not
 exempted from the scroll rule. That distinction is the bound on the whole thing:
 exempting it would pin an **empty** session's card to its end for as long as the
@@ -949,35 +957,6 @@ ref turned one of its cases red. The observer's opening branch now covers for
 those removals a frame later, so only the selection clearing still fails a case
 there on its own. The resets stay because the open's invariant rests on them: it
 holds only while the follow flag is true across a switch.
-
-#### The gap scroll is discarded at the arrival (planning#595, third report)
-
-The open above ends on **one rule: the view is at a position the hook did not
-write** — and the loading gap was deliberately inside it, so that a reader
-scrolling a card taller than the viewport was not fought. The report came back a
-third time on exactly that choice: *"when status cards are long and require
-scrolling themselves, if I scroll before the conversation is loaded, it is
-scrolled to the top."*
-
-Scrolling the card is not taking the view, because there is no conversation on
-screen to take a position **in**. So the commit that first renders the rows
-**re-arms** the open and discards what the gap left. The gap scroll still ends
-the open exactly as before; it is discarded at the arrival rather than exempted,
-which is the cut that fought the reader when it was tried the other way round.
-
-Two of the three candidate signals were ruled out by measurement:
-
-- **Not elapsed time.** The gap's length is the history's length.
-- **Not "the gesture landed in the card".** Measured on the rendered element:
-  the card has no scroll container of its own — `overflow-y: visible`,
-  `scrollHeight === clientHeight` — so a wheel over it *is* a wheel over the
-  transcript, and there is nothing to tell apart.
-
-What ships is **has the conversation been on screen yet**, which the hook
-already commits. Reproduced in Chrome first, against `main`: with a 1,476px card
-and a 317-message transcript, the open landed at 0 of 67,348 — 66,723px from the
-end — and lands at the end after. A reader who scrolls once the rows are up is
-still held. PR #2942.
 
 ### A card that waits for an answer goes last (req 32)
 
