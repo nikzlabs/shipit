@@ -241,9 +241,10 @@ The `configDependencies` cell installs a config package from a local registry by
 unpacks; `--ignore-pnpmfile` stops the hook from loading even though the config
 dependency itself is still resolved. Two consequences, and neither changes this PR.
 `--ignore-pnpmfile` is now measured to cover **every** hook source the eligibility rule
-names, so `.pnpmfile.mjs` and `configDependencies` **could** be admitted — a follow-up,
-deliberately not taken here, because admitting them widens what the builder runs on and
-that deserves its own change. And the builder's belt-and-braces refusal of the
+names. `.pnpmfile.mjs` was admitted on that basis (2026-09-21, `decidePnpmBaseEligibility`);
+`configDependencies` was not, because its reason survives the measurement — admitting it makes
+the builder fetch and stage plugin packages the lockfile carries no digest for, and it is the
+input surface rather than the execution that is still open. And the builder's belt-and-braces refusal of the
 `pnpmfile`/`globalPnpmfile` keys closes the `configDependencies` route a second time: the
 hook needs that key to be loaded at all, and the builder rejects the input set that
 carries it.

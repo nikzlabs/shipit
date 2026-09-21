@@ -44,8 +44,6 @@ export interface StagedPnpmInputs {
   declaredPnpm: DeclaredPnpm | null;
   /** Repo-relative paths of staged manifests, root first. */
   manifests: string[];
-  /** Repo-relative paths of pnpm hook sources present at the commit. */
-  hookFiles: string[];
 }
 
 export type PnpmIneligibleCode =
@@ -204,13 +202,12 @@ export async function stagePnpmInputs(args: {
     };
   }
 
-  // pnpm reads the workspace root's `.npmrc` and `.pnpmfile`, not a nested one, so a nested
-  // copy neither reaches the builder nor should cost the repo its base.
+  // pnpm reads the workspace root's `.npmrc`, not a nested one, so a nested copy neither
+  // reaches the builder nor should cost the repo its base.
   const npmrcPaths = tree.filter((p) => p === ".npmrc");
   const workspaceText = tree.includes(PNPM_WORKSPACE_YAML)
     ? await git.show(args.commit, PNPM_WORKSPACE_YAML)
     : null;
-  const hookFiles = tree.filter((p) => p === ".pnpmfile.cjs" || p === ".pnpmfile.mjs");
 
   const staged: { relPath: string; text: string }[] = [
     { relPath: PNPM_LOCKFILE, text: lockText },
@@ -283,7 +280,6 @@ export async function stagePnpmInputs(args: {
     pnpmField,
     declaredPnpm,
     manifests,
-    hookFiles,
   };
 }
 
@@ -348,22 +344,20 @@ export function decidePnpmBaseEligibility(
     };
   }
 
-  // A `.pnpmfile.cjs` hook is suppressed by `--ignore-pnpmfile` (measured, FINDINGS.md); `.mjs`
-  // is not measured, so it stays out until it is. A hook that runs in the builder can rewrite
-  // the output the orchestrator then publishes.
-  const mjsHook = staged.hookFiles.find((p) => p.endsWith(".mjs"));
-  if (mjsHook) {
-    return {
-      eligible: false,
-      code: "hook-source",
-      detail: `${mjsHook} is a pnpm hook whose suppression by --ignore-pnpmfile is unmeasured`,
-    };
-  }
+  // A committed `.pnpmfile.cjs`/`.mjs` costs the repo nothing: neither is ever staged, and
+  // `--ignore-pnpmfile` suppresses both the module body and `readPackage` on both builder
+  // phases (measured with a positive control, FINDINGS.md). The `pnpmfile` config keys below
+  // stay refused — they name a path the snapshot stages for another reason.
+  //
+  // `configDependencies` stays out for a different reason, so the measurement does not admit
+  // it: the builder would have to FETCH AND STAGE plugin packages that are not in the
+  // lockfile, and so are not verified on the footing every other package is.
   if (staged.workspaceYaml && "configDependencies" in staged.workspaceYaml) {
     return {
       eligible: false,
       code: "config-dependencies",
-      detail: `${PNPM_WORKSPACE_YAML} declares configDependencies, which load plugin code into the builder`,
+      detail: `${PNPM_WORKSPACE_YAML} declares configDependencies, whose plugin packages the `
+        + "builder would fetch and stage without a lockfile digest to verify them against",
     };
   }
 

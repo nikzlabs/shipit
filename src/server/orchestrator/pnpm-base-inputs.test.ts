@@ -273,15 +273,16 @@ patchedDependencies:
     expect(fromManifest).toMatchObject({ eligible: false, code: "patched-dependency" });
   });
 
-  it("admits a .pnpmfile.cjs, whose hook --ignore-pnpmfile suppresses, but not a .mjs", async () => {
-    const cjs = decide(await stage({ ...BASE_FILES, ".pnpmfile.cjs": "module.exports = {};" }));
-    expect(cjs.eligible).toBe(true);
-
-    const mjs = decide(await stage({ ...BASE_FILES, ".pnpmfile.mjs": "export default {};" }));
-    expect(mjs).toMatchObject({ eligible: false, code: "hook-source" });
+  it.each([
+    [".pnpmfile.cjs", "module.exports = {};"],
+    [".pnpmfile.mjs", "export default {};"],
+  ])("admits a committed %s, whose hooks --ignore-pnpmfile suppresses", async (file, text) => {
+    // Neither is staged, so neither reaches the builder at all; the flag on both phases is the
+    // layer behind that. Refusing them on presence cost a base for no gain.
+    expect(decide(await stage({ ...BASE_FILES, [file]: text })).eligible).toBe(true);
   });
 
-  it("refuses configDependencies, which load plugin code into the builder", async () => {
+  it("refuses configDependencies, whose plugin packages no lockfile digest covers", async () => {
     const decision = decide(
       await stage({
         ...BASE_FILES,
