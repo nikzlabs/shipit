@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
+import { parse as parseYaml } from "yaml";
 
 import { waitForContainerExit } from "./plugin-container.js";
 import { sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
@@ -372,6 +373,11 @@ export async function buildVerifiedPnpmBase(
       return { status: "build-failed", detail: "the build produced no node_modules" };
     }
 
+    const pending = readPendingBuilds(snapshotDir, staged.lock.importerDirs);
+    if (pending.kind !== "none") {
+      return { status: "build-failed", detail: pendingBuildsDetail(pending) };
+    }
+
     const publish = deps.publish ?? publishBase;
     const result = await publish({
       stateDir: deps.stateDir,
@@ -399,6 +405,60 @@ export async function buildVerifiedPnpmBase(
     buildsInFlight.delete(scopeHash);
     if (root) fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+/**
+ * pnpm's own answer to "does anything in this tree still have to build", read off the tree the
+ * publish is about to take.
+ *
+ * The install-time-build refusal is taken over the staged TARBALLS
+ * (`pnpm-base-registry.ts`), and a committed patch is content those tarballs do not carry — a
+ * patch can add a `postinstall` to the package it patches, and measured 2026-09-21 the offline
+ * `--ignore-scripts` install then exits 0 with the package unbuilt and named in
+ * `pendingBuilds`. Publishing that base hands the consuming session a build it must run against
+ * a read-only lowerdir (planning#604). So the rule is re-taken here, over the built tree, for
+ * every repo rather than only patched ones: for a repo eligible today it is a no-op, and if it
+ * ever is not, that is a package reaching the tree the tarball scan did not see.
+ *
+ * A tree that cannot be shown to have nothing pending must not become one assumed to have
+ * nothing pending, so an absent or unreadable `.modules.yaml` fails the build too. The repo's
+ * OWN lifecycle scripts are not the builder's business and are filtered; see below.
+ */
+type PendingBuilds =
+  | { kind: "none" }
+  | { kind: "pending"; packages: string[] }
+  | { kind: "unreadable"; detail: string };
+
+export function readPendingBuilds(depDir: string, importerDirs: string[]): PendingBuilds {
+  const file = path.join(depDir, ".modules.yaml");
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(fs.readFileSync(file, "utf-8"));
+  } catch (err) {
+    return { kind: "unreadable", detail: message(err) };
+  }
+  const pending =
+    typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>).pendingBuilds
+      : undefined;
+  if (!Array.isArray(pending)) {
+    return { kind: "unreadable", detail: ".modules.yaml records no pendingBuilds list" };
+  }
+  // pnpm defers the PROJECT's own lifecycle scripts here too, as bare importer ids — measured
+  // 2026-09-21: a repo with scriptless dependencies and a root `postinstall` records `["."]`.
+  // Those are the session's to run and the builder's to ignore (plan.md section 5), so counting
+  // them would take a base off a repo that is eligible today. A dependency id is always
+  // `name@version`, never a bare directory, so the importer list separates the two exactly.
+  const importers = new Set(importerDirs);
+  const packages = pending.map((p) => String(p)).filter((p) => !importers.has(p));
+  return packages.length === 0 ? { kind: "none" } : { kind: "pending", packages };
+}
+
+function pendingBuildsDetail(pending: Exclude<PendingBuilds, { kind: "none" }>): string {
+  return pending.kind === "pending"
+    ? `the built tree still has to build ${pending.packages.join(", ")}, which the session `
+      + "cannot do over a read-only base (planning#604)"
+    : `the built tree could not be shown to have nothing left to build: ${pending.detail}`;
 }
 
 /**

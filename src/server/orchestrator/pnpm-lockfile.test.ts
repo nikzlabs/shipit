@@ -126,18 +126,26 @@ snapshots:
   });
 
   it("records patchedDependencies and every importer directory", () => {
+    // Both shapes: pnpm 12 records the patch hash alone, pnpm <= 11 records `{hash, path}`, and
+    // both write `lockfileVersion: '9.0'` — so the hash has to be read out of either.
     const lock = parsePnpmLock(`lockfileVersion: '9.0'
 patchedDependencies:
-  left-pad@1.3.0:
-    hash: abc
-    path: patches/left-pad.patch
+  left-pad@1.3.0: abc
+  right-pad@1.0.0:
+    hash: def
+    path: patches/right-pad.patch
+  no-hash@1.0.0: {}
 importers:
   .:
     dependencies: {}
   packages/api:
     dependencies: {}
 `);
-    expect(lock.patchedDependencies).toEqual(["left-pad@1.3.0"]);
+    expect(lock.patchedDependencies).toEqual([
+      { key: "left-pad@1.3.0", hash: "abc" },
+      { key: "right-pad@1.0.0", hash: "def" },
+      { key: "no-hash@1.0.0", hash: null },
+    ]);
     expect(lock.importerDirs).toEqual([".", "packages/api"]);
   });
 

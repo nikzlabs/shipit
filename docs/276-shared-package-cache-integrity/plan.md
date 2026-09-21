@@ -563,8 +563,11 @@ manager needs the `package.json`(s), not the lockfile alone
 with no manifest pnpm uses an empty one and a populated importer will not
 match). All build inputs are captured from **one immutable staged snapshot** of
 that commit: the manifests, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, the
-applicable `.npmrc`, and `package.json#pnpm` (`overrides`,
-`patchedDependencies`, `onlyBuiltDependencies`). For every registry package the
+applicable `.npmrc`, and every patch file `pnpm-workspace.yaml`'s
+`patchedDependencies` names. (`package.json#pnpm` is staged only as part of the
+manifest, and read for nothing: pnpm 12 does not read that field at all —
+measured 2026-09-21 on 12.4.1 and 12.5.1, which warn that the keys were ignored
+and install unpatched.) For every registry package the
 orchestrator resolves `<name>@<version>` against **its own** configured registry
 (never a URL taken from the lockfile) and requires that packument's
 `dist.integrity` to equal the lockfile's `resolution.integrity`; a mismatch is
@@ -573,10 +576,9 @@ set**; an ineligible repo gets no base and a plain private install. Most of it
 is taken before any fetch, over the staged config alone; the install-time-build
 rule below is the one part that needs package CONTENT, so it is taken in the
 fetch phase, at the first offending package. Not eligible in the first cut: `git` entries (the builder has
-no source handling); `file:`, `link:`, `workspace:` entries and
-`patchedDependencies` — verifiable in principle, since the linked content and
-the patch bytes are in the immutable snapshot, but their reconciliation under
-the frozen builder is unmeasured; `configDependencies`, not because its hook
+no source handling); `file:`, `link:`, `workspace:` entries — verifiable in
+principle, since the linked content is in the immutable snapshot, but their
+reconciliation under the frozen builder is unmeasured; `configDependencies`, not because its hook
 can run — `--ignore-pnpmfile` suppresses that too, measured — but because a
 config dependency, digest and all, is resolved by pnpm through a path this
 builder neither parses nor stages, so admitting it would put packages in the
@@ -594,7 +596,20 @@ repo re-downloading its whole tree on every trigger. The root project's own
 scripts are irrelevant — the builder never runs them and the session runs them
 itself. A tarball the scan cannot read is refused the same way: one it cannot
 prove has no build must not become one it assumed had none. Admitted: an
-`npm:` alias (the resolved target's digest is what is verified); a committed
+`npm:` alias (the resolved target's digest is what is verified);
+`patchedDependencies`, verified as **tarball digest plus patch hash** — pnpm
+records the patch's sha256 (over its text with CRLF normalized to LF) in the
+lockfile and appends it to the package key as
+`(patch_hash=…)`, so the committed patch is checked against the lockfile the
+same way the tarball is checked against the packument, and a disagreement of
+any kind (no declared path, a file the commit does not carry, a hash mismatch,
+a workspace declaration the lockfile does not pin) is ineligible naming the
+package. Each of those is a failure the repo's own frozen install hits too, so
+refusing costs it only a base it could not have used. pnpm applies the patch
+in-process — the same install with `PATH=/nonexistent` still patches, so no
+`git apply`/`patch(1)` is spawned — under both suppression flags, and a patch
+that does not apply fails the build and yields no base rather than failing a
+session's install; a committed
 `.pnpmfile.cjs` or `.pnpmfile.mjs` (neither is ever staged, so neither reaches
 the builder; `--ignore-pnpmfile` suppresses the module body and `readPackage`
 of both, measured on an install with a positive control, and the flag is on
@@ -689,6 +704,18 @@ because they change what a later reader has to check.
 - **`--store-dir`/`--registry` are passed on the command line**, which outranks any `.npmrc`
   the snapshot carries — that is what makes "override a relocated global store" a real
   override rather than a hope.
+- **The install-time-build rule is re-taken over the BUILT TREE, not only over the tarballs.**
+  `readPendingBuilds` reads `node_modules/.modules.yaml`'s `pendingBuilds` — pnpm's own record
+  of what still has to build — and publishes nothing when it is non-empty or unreadable. It
+  became necessary when `patchedDependencies` was admitted: a patch is content the staged
+  tarballs do not carry, so a patch adding a `postinstall` to the package it patches escapes
+  `pnpm-base-registry.ts`'s scan, and measured 2026-09-21 the offline `--ignore-scripts`
+  install then exits **0** with the package unbuilt and named in `pendingBuilds`. Publishing
+  that base would hand the consuming session a build it cannot run over a read-only lowerdir
+  (planning#604). The gate is universal rather than patch-only: for a repo eligible today it is
+  a no-op, and if it ever is not, that is a package in the tree the tarball scan did not see.
+  It reads `pendingBuilds` minus the lockfile's importer directories, because pnpm defers the
+  repo's OWN lifecycle scripts there too, as bare importer ids — those are the session's to run.
 
 *Scope and store.* pnpm's dep dir is `node_modules`; the pnpm early-returns
 (`container-overlay-provisioner.ts`, `overlay-publish.ts`) go. The store becomes
@@ -1011,10 +1038,16 @@ machinery.
   never staged in the first place. The presence refusal is gone; the builder's refusal of the
   `pnpmfile`/`globalPnpmfile`/`global-pnpmfile` keys stays as the second layer, because those name
   a path the snapshot stages for another reason.
-- **`patchedDependencies`.** The patch bytes are in the immutable snapshot and the tarball is
-  digest-verified, so the output is verifiable by construction. pnpm applies the patch under
-  `--ignore-scripts --ignore-pnpmfile`, and an unparseable patch fails the install closed rather
-  than installing the package unpatched.
+- **`patchedDependencies` — admitted 2026-09-21.** The patch bytes are in the immutable
+  snapshot and the tarball is digest-verified, so the output is verifiable by construction:
+  tarball digest plus the patch's sha256, which is what pnpm itself pins in the lockfile and
+  appends to the package key as `(patch_hash=…)`. Re-measured on the real pipeline — pinned
+  pnpm 12.4.1, verified tarballs, the loopback fetch phase, a frozen offline install — rather
+  than on the 12.5.1 online cell that first suggested it. pnpm applies the patch in-process
+  under `--ignore-scripts --ignore-pnpmfile` (the same install with `PATH=/nonexistent` still
+  patches, so nothing is spawned), and every disagreement between the lockfile, the declared
+  path and the committed bytes fails the repo's own frozen install too. Patch paths come from
+  `pnpm-workspace.yaml` alone: pnpm 12 does not read `package.json#pnpm`.
 
 **`workspace:` and `link:` are a candidate, not an admission.** The measurement that looked
 decisive does not reach far enough, which an independent review caught. A frozen, offline install

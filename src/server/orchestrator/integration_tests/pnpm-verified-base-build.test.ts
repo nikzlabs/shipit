@@ -27,10 +27,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, execFileSync, spawn } from "node:child_process";
+import crypto from "node:crypto";
 import net from "node:net";
 import { promisify } from "node:util";
 
-import { BUILD_REGISTRY_SERVER, builderEnv, builderScript } from "../pnpm-base-builder.js";
+import {
+  BUILD_REGISTRY_SERVER,
+  builderEnv,
+  builderScript,
+  readPendingBuilds,
+} from "../pnpm-base-builder.js";
 import {
   conventionalTarballPath,
   sha512Integrity,
@@ -240,9 +246,11 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
   const tarballs = new Map<string, Buffer>();
   /** The same package with the build script back on; only the two script cells use it. */
   let scriptedRoot: Buffer;
+  /** The patched cells diff against this, so their patch matches the tarball's own manifest. */
+  let rootManifest: Record<string, unknown>;
 
   beforeAll(async () => {
-    for (let i = 0; i < 5; i++) ports.push(await freePort());
+    for (let i = 0; i < 8; i++) ports.push(await freePort());
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-vb-"));
     registryDir = path.join(tmp, "registry");
     projectDir = path.join(tmp, "project");
@@ -258,7 +266,7 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
         "index.js": "module.exports = 'leaf';\n",
       }),
     );
-    const rootManifest = {
+    rootManifest = {
       name: ROOT,
       version: VERSION,
       main: "index.js",
@@ -344,6 +352,55 @@ packages:
 snapshots:
 
   ${ROOT}@${VERSION}:
+    dependencies:
+      ${LEAF}: ${VERSION}
+
+  ${LEAF}@${VERSION}: {}
+`,
+    );
+  }
+
+  /**
+   * The committed inputs of a repo that patches its one dependency, in the key shape pnpm
+   * writes: the `packages:` entry stays the plain published version, and the patch hash rides
+   * on the importer and snapshot keys as `(patch_hash=…)`.
+   */
+  function writePatchedProject(dir: string, patchHash: string): void {
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: "app", version: "1.0.0", dependencies: { [ROOT]: VERSION } }),
+    );
+    fs.writeFileSync(
+      path.join(dir, "pnpm-workspace.yaml"),
+      `patchedDependencies:\n  "${ROOT}@${VERSION}": patches/${ROOT}.patch\n`,
+    );
+    fs.writeFileSync(
+      path.join(dir, "pnpm-lock.yaml"),
+      `lockfileVersion: '9.0'
+
+patchedDependencies:
+  ${ROOT}@${VERSION}: ${patchHash}
+
+importers:
+
+  .:
+    dependencies:
+      ${ROOT}:
+        specifier: ${VERSION}
+        version: ${VERSION}(patch_hash=${patchHash})
+
+packages:
+
+  ${ROOT}@${VERSION}:
+    resolution: {integrity: ${sha512Integrity(tarballs.get(`${ROOT}@${VERSION}`)!)}}
+    hasBin: true
+
+  ${LEAF}@${VERSION}:
+    resolution: {integrity: ${sha512Integrity(tarballs.get(`${LEAF}@${VERSION}`)!)}}
+
+snapshots:
+
+  ${ROOT}@${VERSION}(patch_hash=${patchHash}):
     dependencies:
       ${LEAF}: ${VERSION}
 
@@ -579,5 +636,111 @@ snapshots:
     );
     await runBuild(withScripts, path.join(scratch, "home"));
     expect(fs.existsSync(marker)).toBe(true);
+  }, PNPM_TIMEOUT_MS);
+  it("applies a committed patch under the builder's own flags", async () => {
+    // The whole admission, on the real pipeline rather than on a model of it: verified tarballs,
+    // the loopback fetch phase, then a FROZEN OFFLINE install under `--ignore-scripts
+    // --ignore-pnpmfile`. The unit tests decide eligibility; only this shows pnpm actually
+    // applying the patch under the builder's own flags.
+    const scratch = fs.mkdtempSync(path.join(tmp, "patched-"));
+    const project = path.join(scratch, "project");
+    fs.mkdirSync(path.join(project, "patches"), { recursive: true });
+    const patch = `diff --git a/index.js b/index.js
+--- a/index.js
++++ b/index.js
+@@ -1 +1 @@
+-module.exports = 'root';
++module.exports = 'root-patched';
+`;
+    fs.writeFileSync(path.join(project, "patches", `${ROOT}.patch`), patch);
+    writePatchedProject(project, crypto.createHash("sha256").update(patch).digest("hex"));
+
+    await runBuild(
+      builderScript({
+        pnpmBin: pnpmCmd!,
+        projectDir: project,
+        registryDir,
+        storeDir: path.join(scratch, "store"),
+        registryUrl: `http://127.0.0.1:${ports[5]}/`,
+        readyFile: path.join(scratch, "registry.ready"),
+      }),
+      path.join(scratch, "home"),
+    );
+
+    const installed = path.join(project, "node_modules", ROOT, "index.js");
+    expect(fs.readFileSync(installed, "utf-8")).toContain("root-patched");
+    // Nothing is left for the consuming session to do.
+    expect(readPendingBuilds(path.join(project, "node_modules"), ["."])).toEqual({ kind: "none" });
+  }, PNPM_TIMEOUT_MS);
+
+  it("records a patch-added build script as pending, which the tarball scan cannot see", async () => {
+    // The premise of the publication gate, measured against pnpm rather than asserted: the
+    // install-time-build refusal reads the staged TARBALLS, so a `postinstall` a patch ADDS is
+    // invisible to it. Here the builder's own offline `--ignore-scripts` install exits 0 and
+    // leaves the package unbuilt — and `readPendingBuilds` is what notices, so this cell turns
+    // red if pnpm ever stops recording it, which an invented `.modules.yaml` never could.
+    const scratch = fs.mkdtempSync(path.join(tmp, "patch-build-"));
+    const project = path.join(scratch, "project");
+    fs.mkdirSync(path.join(project, "patches"), { recursive: true });
+    const patch = `diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -1 +1 @@
+-${JSON.stringify(rootManifest)}
++${JSON.stringify({ ...rootManifest, scripts: { postinstall: "node -e \"1\"" } })}
+`;
+    fs.writeFileSync(path.join(project, "patches", `${ROOT}.patch`), patch);
+    writePatchedProject(project, crypto.createHash("sha256").update(patch).digest("hex"));
+
+    await runBuild(
+      builderScript({
+        pnpmBin: pnpmCmd!,
+        projectDir: project,
+        registryDir,
+        storeDir: path.join(scratch, "store"),
+        registryUrl: `http://127.0.0.1:${ports[6]}/`,
+        readyFile: path.join(scratch, "registry.ready"),
+      }),
+      path.join(scratch, "home"),
+    );
+
+    const pending = readPendingBuilds(path.join(project, "node_modules"), ["."]);
+    expect(pending.kind).toBe("pending");
+    expect((pending as { packages: string[] }).packages.join(" ")).toContain(ROOT);
+  }, PNPM_TIMEOUT_MS);
+
+  it("does not count the repo's OWN deferred lifecycle script as a pending build", async () => {
+    // Measured 2026-09-21: pnpm records deferred PROJECT scripts in `pendingBuilds` as bare
+    // importer ids. The builder never runs them and the session does (plan.md section 5), so
+    // counting them would take a base off a repo eligible today.
+    const scratch = fs.mkdtempSync(path.join(tmp, "root-script-"));
+    const project = path.join(scratch, "project");
+    writeProject(project);
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(project, "package.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    fs.writeFileSync(
+      path.join(project, "package.json"),
+      JSON.stringify({ ...manifest, scripts: { postinstall: 'node -e "1"' } }),
+    );
+
+    await runBuild(
+      builderScript({
+        pnpmBin: pnpmCmd!,
+        projectDir: project,
+        registryDir,
+        storeDir: path.join(scratch, "store"),
+        registryUrl: `http://127.0.0.1:${ports[7]}/`,
+        readyFile: path.join(scratch, "registry.ready"),
+      }),
+      path.join(scratch, "home"),
+    );
+
+    const modules = path.join(project, "node_modules");
+    // The positive control: pnpm really did defer it, so the filter is doing work.
+    const raw = JSON.parse(fs.readFileSync(path.join(modules, ".modules.yaml"), "utf-8")) as
+      { pendingBuilds: string[] };
+    expect(raw.pendingBuilds).toContain(".");
+    expect(readPendingBuilds(modules, ["."])).toEqual({ kind: "none" });
   }, PNPM_TIMEOUT_MS);
 });

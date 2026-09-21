@@ -123,7 +123,8 @@ recorded in [requirements.md](./requirements.md); none is open.
       (**no pnpm pre-stamp**), so builds run and the session's graph reconciles
       in its upper; the session snapshot pull is dropped for pnpm. All-or-nothing
       admission; git/`file:`/`link:`/`workspace:`/`patchedDependencies`/pnpmfile
-      repos get no base.
+      repos get no base. (Superseded twice since: a committed `.pnpmfile` and
+      `patchedDependencies` are both admitted.)
 - [x] Spike `.bin/` shims and carried state (`tree-state-spike.sh`, PASS=9,
       FINDINGS.md): shims NOT regenerated on a genuine no-op; an inconsistent
       carried lock.yaml self-heals on an install; a carried
@@ -539,15 +540,20 @@ recorded in [requirements.md](./requirements.md); none is open.
       out-of-repo `link:` still refused and one showing an injected member
       refused.
 
-- [ ] **Admit `patchedDependencies`.** Patch bytes are in the immutable snapshot
+- [x] **Admit `patchedDependencies`.** Patch bytes are in the immutable snapshot
       and the tarball is digest-verified, so the output is verifiable by
       construction; pnpm applies the patch under the builder's own flags, and an
-      unparseable patch fails the install closed naming the patch. Stage the
-      patch paths the manifest actually references, not a conventional
-      `patches/` directory. The cell measured 12.5.1 online with
-      `--no-frozen-lockfile`, so the slice must re-check it on the real pipeline
-      — pinned 12.4.1, verified tarballs, the fetch phase, a frozen offline
-      install — and add a consumption cell with a changed patch.
+      unparseable patch fails the install closed naming the patch. Patch paths
+      come from `pnpm-workspace.yaml`, which is the only source pnpm 12 reads —
+      `package.json#pnpm` is ignored outright (measured on 12.4.1 and 12.5.1).
+      Re-checked on the real pipeline: the integration cell builds a patched
+      package with the pinned 12.4.1 over verified tarballs through the fetch
+      phase and a frozen offline install, and asserts the published tree carries
+      the patched bytes. A changed patch is refused at eligibility instead, by
+      the lockfile's sha256 — pnpm's own `patch_hash`. One thing the admission
+      forced: a patch can add a build script the tarball scan cannot see, so the
+      builder now refuses to publish a tree whose `.modules.yaml` still lists
+      `pendingBuilds`.
 
 - [ ] **The classes that stay private keep reqs 2 / 10 / 13 OPEN.** They are not
       exempt: no requirement has been waived, and only the requester can decide a
