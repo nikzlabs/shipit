@@ -39,7 +39,7 @@ import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-rout
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 import { takeRoleStandingInstructions } from "../services/session-role.js";
 import { dependencyGapAgentPrefix } from "../dependency-staleness.js";
-import { sessionStatusTurnContext } from "../services/session-status.js";
+import { locateStatusContext, sessionStatusTurnContext } from "../services/session-status.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
 export { selectAgentEnvForPush };
@@ -476,6 +476,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   ]
     .filter(Boolean)
     .join("\n\n");
+  // docs/303 req 35 — where a retry of this turn swaps its own rendering in. The prefix
+  // heads the prompt, so its offset is the prompt's.
+  const insertedStatusContext = locateStatusContext(agentPrefix, statusContext);
   // takeRoleStandingInstructions is a take: reading it on a verbatim turn, which
   // cannot carry it, would destroy the role's brief for good.
   const roleContext = capturedSessionId && !ridesTurnAsCommand
@@ -702,8 +705,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       agentId,
       sessionId,
       prompt,
-      // docs/303 req 35 — what a retry of this turn swaps its own rendering in for.
-      ...(statusContext ? { statusContext } : {}),
+      ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
       ...(opts.systemTurn ? { systemTurn: true } : {}),

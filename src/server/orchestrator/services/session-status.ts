@@ -433,6 +433,30 @@ export function formatSessionStatusContext(card: SessionStatus | undefined): str
 }
 
 /**
+ * Where a composition site put the block into the turn's prompt: the text it inserted and
+ * the offset it inserted it at. Both are needed — see `refreshStatusContextInPrompt`.
+ */
+export interface InsertedStatusContext {
+  text: string;
+  at: number;
+}
+
+/**
+ * The position of the block in a composed prompt. The block is the LAST entry of the
+ * agent prefix, so `lastIndexOf` over the prefix names it even when an earlier notice
+ * carries the same text — which a parked rebase follow-up, whose body is arbitrary agent
+ * prose, can (`services/rebase-followup.ts`). Returns undefined when nothing was inserted.
+ */
+export function locateStatusContext(
+  agentPrefix: string,
+  statusContext: string,
+): InsertedStatusContext | undefined {
+  if (!statusContext) return undefined;
+  const at = agentPrefix.lastIndexOf(statusContext);
+  return at === -1 ? undefined : { text: statusContext, at };
+}
+
+/**
  * docs/303 req 35 — the block is a snapshot of standing state, and a TURN IS SUBMITTED
  * MORE THAN ONCE: a quota failover, an auth heal and the lost-conversation recovery all
  * re-enter `executeAgentTurn` with the prompt composed for the first attempt. Frozen, that
@@ -441,23 +465,27 @@ export function formatSessionStatusContext(card: SessionStatus | undefined): str
  * the user's submit already took reads as still outstanding, payload and all, so the agent
  * does it again. So each attempt swaps its own rendering in.
  *
- * `previous` is the exact text the composition site inserted, and the swap is an exact
- * string replacement of it: a prompt composed WITHOUT a block (a compaction, a verbatim
- * command, a driver-owned turn) must not be given one, and no search for the tags can be
- * confused by a user message that happens to contain them.
+ * `inserted` is the text AND the offset the composition site used, and the swap happens
+ * only where the text still sits at that offset. Neither half alone is enough: without the
+ * text a prompt composed WITHOUT a block (a compaction, a verbatim command, a driver-owned
+ * turn) could be given one, and without the offset a search would rewrite the FIRST copy
+ * of that text in the prompt — which a notice quoting an earlier block, or a user message
+ * doing the same, can be.
  *
  * An empty `current` — the setting turned off mid-turn — leaves the prompt alone: with the
  * card off it is not ShipIt's to edit (req 21).
  */
 export function refreshStatusContextInPrompt(
   prompt: string,
-  previous: string | undefined,
+  inserted: InsertedStatusContext | undefined,
   current: string,
 ): string {
-  if (!previous || !current || current === previous) return prompt;
-  const at = prompt.indexOf(previous);
-  if (at === -1) return prompt;
-  return prompt.slice(0, at) + current + prompt.slice(at + previous.length);
+  if (!inserted || !current || current === inserted.text) return prompt;
+  // A prompt whose block has moved is not one this can edit: nothing rewrites a composed
+  // prompt today, and guessing where the block went would be how that changes silently.
+  if (!prompt.startsWith(inserted.text, inserted.at)) return prompt;
+  const after = inserted.at + inserted.text.length;
+  return prompt.slice(0, inserted.at) + current + prompt.slice(after);
 }
 
 export interface StatusContextDeps {

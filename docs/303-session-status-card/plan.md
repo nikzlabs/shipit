@@ -1361,18 +1361,26 @@ still outstanding, payload and all. Reported from a session where the agent then
 finished investigation and told the user about it twice.
 
 The stored card was never wrong — `sessions.session_status` held the newer write and the
-`takenAt` throughout, and every write goes through `runStatusExclusive` against a row it
-reads under the lock. Only what reached the agent had rewound. So the durability the tool
-promises is not a property of the store alone: it is a property of what the *next
-submission* shows, and a frozen prompt breaks it without touching a byte of the record.
+`takenAt` throughout. Every write that *merges* anything runs inside `runStatusExclusive`
+against a row it reads under the lock, with no await between the read and the write; the
+two writes outside that chain lose nothing — `clearAgentSessionId` reads the row itself to
+flip one flag, and the fork copy writes the **new** session's row. Only what reached the
+agent had rewound. So the durability the tool promises is not a property of the store
+alone: it is a property of what the *next submission* shows, and a frozen prompt breaks it
+without touching a byte of the record.
 
-So the composition site now hands the executor the block it inserted
-(`TurnInput.statusContext`), and `executeAgentTurn` swaps its own rendering in for it on
-entry — once per attempt, before the closures that capture the prompt, so the echo check
-that identifies a CLI replay still compares what was submitted. Two properties make the
-swap an exact string replacement of what the site inserted rather than a search for the
-tags: a prompt composed **without** a block must not be given one, and a user message
-that quotes the block must not be rewritten under the user. An empty current rendering —
+So the composition site now hands the executor the block it inserted **and the offset it
+put it at** (`TurnInput.statusContext`), and `executeAgentTurn` swaps its own rendering in
+for it on entry — once per attempt, before the closures that capture the prompt, so the
+echo check that identifies a CLI replay still compares what was submitted. Both halves are
+load-bearing, and review found the second. Without the text, a prompt composed **without**
+a block — a compaction, a verbatim command, a driver-owned turn — could be given one.
+Without the offset, a search would rewrite the FIRST copy of that text in the prompt, and
+the prompt can hold more than one: a parked rebase follow-up carries arbitrary agent prose
+ahead of the block (`services/rebase-followup.ts`), and the user's own message follows it.
+The offset comes from `locateStatusContext`, which takes the *last* occurrence in the agent
+prefix — the block is that prefix's last entry, and the prefix heads the prompt — and the
+swap happens only where that text still sits at that offset. An empty current rendering —
 the setting turned off mid-turn — leaves the prompt alone, since with the card off it is
 not ShipIt's to edit (req 21).
 
@@ -1432,13 +1440,19 @@ built file is named in brackets. Every one of them exists.
   shapes, each the reproduction of a gate that used to drop the miss silently: a
   turn that used **no tool at all**, a **steered** turn, and one whose resident
   agent holds **background work**.
-- `turn-retry-status-context.test.ts` — the reproduction of the frozen prompt: an
-  attempt that takes the user's offer and writes the card, then a quota refusal, and the
-  retried attempt reading the write and the taken offer rather than the card from before
-  them. Beside it, the two shapes the swap must not change — a prompt composed without a
-  block stays without one however often it is retried, and the setting going off mid-turn
-  leaves the prompt byte for byte — and the helper's own unit cases, including a user
-  message that quotes the block.
+- `turn-retry-status-context.test.ts` — the reproduction of the frozen prompt on a
+  dispatched turn: an attempt that takes the user's offer and writes the card, then a
+  quota refusal, and the retried attempt reading the write and the taken offer rather than
+  the card from before them. Beside it, the two shapes the swap must not change — a prompt
+  composed without a block stays without one however often it is retried, and the setting
+  going off mid-turn leaves the prompt byte for byte — and the helper's own unit cases,
+  which cover the same text appearing in a notice BEFORE the block and in the user's
+  message AFTER it, and a prompt whose block has moved.
+- `integration_tests/session-status-retry-prompt.test.ts` — the same guard on the OTHER
+  composition site, through `buildApp`: an ordinary composer message carrying an offer
+  submission, a `session_status` call, a quota refusal, and the retried attempt's prompt.
+  The unit-level guard drives the runner's dispatch and so cannot see this path — found by
+  review, after dropping the interactive site's handoff left it green.
 - `sessions.test.ts` — `lastTurn` through the column and back, and a card
   stored before the field existed read as one with no line (req 31);
   `integration_tests/rewind-fork.test.ts`,

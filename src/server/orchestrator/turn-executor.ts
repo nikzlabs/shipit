@@ -43,6 +43,7 @@ import {
   refreshStatusContextInPrompt,
   settleSessionStatusCard,
   shouldCarryStatusNudge,
+  type InsertedStatusContext,
   type SessionStatusDeps,
   type TurnStatusFacts,
 } from "./services/session-status.js";
@@ -63,11 +64,11 @@ export interface TurnInput {
   prompt: string;
   /**
    * docs/303 req 35 — the `<session_status_card>` block as the composition site put it
-   * into `prompt`. Every attempt of this turn swaps its own rendering in for it, so a
-   * retry reads the card as it stands rather than as it stood before the attempt that
-   * failed. Absent on a prompt composed without a block, which stays without one.
+   * into `prompt`, and where. Every attempt of this turn swaps its own rendering in for
+   * it, so a retry reads the card as it stands rather than as it stood before the attempt
+   * that failed. Absent on a prompt composed without a block, which stays without one.
    */
-  statusContext?: string;
+  statusContext?: InsertedStatusContext;
   userText: string;
   agentInterface?: AgentInterfaceProvenance;
   messageOrigin?: SessionMessageOrigin;

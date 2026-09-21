@@ -5,6 +5,7 @@ import type { SystemTurnDeps } from "./session-runner.js";
 import type { AgentId, SessionStatus } from "../shared/types.js";
 import {
   formatSessionStatusContext,
+  locateStatusContext,
   recordSessionStatus,
   refreshStatusContextInPrompt,
   takeOfferedActions,
@@ -266,32 +267,66 @@ describe("a retried attempt reads the card as it stands (docs/303 req 35)", () =
   });
 });
 
-describe("refreshStatusContextInPrompt", () => {
+describe("locateStatusContext / refreshStatusContextInPrompt", () => {
   const PREVIOUS = "<session_status_card>\nold\n</session_status_card>";
   const CURRENT = "<session_status_card>\nnew\n</session_status_card>";
 
+  /** What both composition sites build: a prefix of notices, the block last, then the body. */
+  const compose = (notices: string[], block: string, body: string) => {
+    const agentPrefix = [...notices, block].filter(Boolean).join("\n\n");
+    return {
+      prompt: (agentPrefix ? `${agentPrefix}\n\n` : "") + body,
+      inserted: locateStatusContext(agentPrefix, block),
+    };
+  };
+
   it("swaps the composition site's own rendering in place", () => {
-    const prompt = `A notice.\n\n${PREVIOUS}\n\nDo the thing.`;
-    expect(refreshStatusContextInPrompt(prompt, PREVIOUS, CURRENT))
+    const { prompt, inserted } = compose(["A notice."], PREVIOUS, "Do the thing.");
+    expect(refreshStatusContextInPrompt(prompt, inserted, CURRENT))
       .toBe(`A notice.\n\n${CURRENT}\n\nDo the thing.`);
   });
 
   it("leaves a prompt that carries no block alone", () => {
-    const prompt = "Summarise the conversation.";
-    expect(refreshStatusContextInPrompt(prompt, undefined, CURRENT)).toBe(prompt);
+    const { prompt, inserted } = compose([], "", "Summarise the conversation.");
+    expect(inserted).toBeUndefined();
+    expect(refreshStatusContextInPrompt(prompt, inserted, CURRENT)).toBe(prompt);
   });
 
   it("leaves the prompt alone when there is no current rendering", () => {
-    const prompt = `${PREVIOUS}\n\nDo the thing.`;
-    expect(refreshStatusContextInPrompt(prompt, PREVIOUS, "")).toBe(prompt);
+    const { prompt, inserted } = compose([], PREVIOUS, "Do the thing.");
+    expect(refreshStatusContextInPrompt(prompt, inserted, "")).toBe(prompt);
   });
 
   /**
-   * The swap is an exact replacement of what the composition site inserted, never a search
-   * for the tags: a user message quoting the block must not be rewritten under the user.
+   * Both halves of `inserted` are load-bearing. A parked rebase follow-up carries arbitrary
+   * agent prose (`services/rebase-followup.ts`), and a user message is arbitrary too — so
+   * the same text can appear BEFORE and AFTER the block ShipIt inserted. A search for the
+   * text would rewrite the wrong copy and leave the real block stale.
    */
+  it("rewrites the block it inserted, not an earlier notice that quotes it", () => {
+    const { prompt, inserted } = compose(
+      [`Picking up where the rebase left off. The card then said:\n${PREVIOUS}`],
+      PREVIOUS,
+      "Do the thing.",
+    );
+    const refreshed = refreshStatusContextInPrompt(prompt, inserted, CURRENT);
+    expect(refreshed).toBe(
+      `Picking up where the rebase left off. The card then said:\n${PREVIOUS}\n\n${CURRENT}\n\nDo the thing.`,
+    );
+    // The notice's copy is untouched, and the real block is the one that moved.
+    expect(refreshed.indexOf(PREVIOUS)).toBeLessThan(refreshed.indexOf(CURRENT));
+    expect(refreshed.endsWith(`${CURRENT}\n\nDo the thing.`)).toBe(true);
+  });
+
   it("does not touch a quoted block in the user's own message", () => {
-    const prompt = `Why does ${PREVIOUS} say that?`;
-    expect(refreshStatusContextInPrompt(prompt, undefined, CURRENT)).toBe(prompt);
+    const { prompt, inserted } = compose([], PREVIOUS, `Why does ${PREVIOUS} say that?`);
+    expect(refreshStatusContextInPrompt(prompt, inserted, CURRENT))
+      .toBe(`${CURRENT}\n\nWhy does ${PREVIOUS} say that?`);
+  });
+
+  it("leaves a prompt whose block is no longer where it was put alone", () => {
+    const { inserted } = compose([], PREVIOUS, "Do the thing.");
+    const rewritten = `Something else entirely.\n\n${PREVIOUS}\n\nDo the thing.`;
+    expect(refreshStatusContextInPrompt(rewritten, inserted, CURRENT)).toBe(rewritten);
   });
 });

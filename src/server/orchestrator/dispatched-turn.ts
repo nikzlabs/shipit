@@ -7,6 +7,7 @@ import { resolveFileAttachments, resolveUploadRefs, formatFileContext, imageAtta
 import { modelSelectionOf } from "./session-agent-env.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
 import { buildBugOutcomeNotice } from "./services/bug-report.js";
+import { locateStatusContext } from "./services/session-status.js";
 import type {
   SessionRunnerInterface,
   SystemTurnDeps,
@@ -255,6 +256,9 @@ async function runDispatchedTurnInner(
   ]
     .filter(Boolean)
     .join("\n\n");
+  // docs/303 req 35 — where a retry of this turn swaps its own rendering in. The prefix
+  // heads the prompt, so its offset is the prompt's.
+  const insertedStatusContext = locateStatusContext(agentPrefix, statusContext);
   const roleContext = deps.takeRoleInstructions?.(runner.sessionId) ?? "";
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +
@@ -351,8 +355,7 @@ async function runDispatchedTurnInner(
       agentId,
       sessionId: runner.sessionId,
       prompt,
-      // docs/303 req 35 — what a retry of this turn swaps its own rendering in for.
-      ...(statusContext ? { statusContext } : {}),
+      ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
       userText: text,
       ...(activity !== undefined ? { activity } : {}),
       ...(turnStreams ? { useStreaming: true } : {}),
