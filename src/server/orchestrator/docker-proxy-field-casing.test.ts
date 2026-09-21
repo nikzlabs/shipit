@@ -39,7 +39,8 @@ describe("findAmbiguousFieldCasing", () => {
 
   it("catches the two non-ASCII runes Go folds onto an ASCII letter", () => {
     // Go compares with bytes.EqualFold, so "Bindſ" reaches Binds and "NetworkMode" spelled with a
-    // Kelvin sign reaches NetworkMode; plain lowercasing leaves both unchanged.
+    // Kelvin sign reaches NetworkMode; plain lowercasing leaves both unchanged. Both were sent to
+    // a real daemon (Docker 29.7.2) and inspected back as Binds and NetworkMode.
     expect(findAmbiguousFieldCasing({ HostConfig: { "Bindſ": ["/:/host"] } })).toBeDefined();
     expect(findAmbiguousFieldCasing({ HostConfig: { "NetworKMode": "host" } })).toBeDefined();
   });

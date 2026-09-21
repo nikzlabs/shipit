@@ -105,6 +105,10 @@ const FREE_FORM_KEY_MAPS = new Set([
  * lowercasing: U+212A KELVIN SIGN folds to `k` and U+017F LATIN SMALL LETTER LONG S to `s`, which
  * are the only two non-ASCII runes that fold onto an ASCII letter. `toLowerCase` alone leaves both
  * unchanged, so `Bindſ` would walk past an ASCII-only comparison and still reach `Binds`.
+ *
+ * Measured against Docker 29.7.2 rather than inferred: a create body carrying `Bindſ` was
+ * inspected back as `Binds: ["/:/host"]`, and one carrying `NetworKMode` as
+ * `NetworkMode: "host"`.
  */
 function goFold(name: string): string {
   return name.replace(/K/g, "k").replace(/ſ/g, "s").normalize("NFKC").toLowerCase();
