@@ -31,6 +31,7 @@ import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../services/pr-rearm.js";
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
+import { createPromptRepark, type PromptRepark } from "../turn-settlement.js";
 import {
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
@@ -423,6 +424,14 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? ctx.sessionManager.consumePendingAgentNotice(capturedSessionId) ?? ""
       : "";
+  // Consumption clears the notice; a turn that never reaches an agent must put it back
+  // (planning#609). Appended, so a notice recorded while this turn ran keeps its place.
+  const noticeRepark = capturedSessionId && pendingAgentNotice
+    ? createPromptRepark(
+        `the pending agent notice for ${capturedSessionId}`,
+        () => { ctx.sessionManager.appendPendingAgentNotice(capturedSessionId, pendingAgentNotice); },
+      )
+    : undefined;
 
   const bugOutcomeNotice =
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
@@ -481,12 +490,17 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const insertedStatusContext = locateStatusContext(agentPrefix, statusContext);
   // takeRoleStandingInstructions is a take: reading it on a verbatim turn, which
   // cannot carry it, would destroy the role's brief for good.
-  const roleContext = capturedSessionId && !ridesTurnAsCommand
+  const role = capturedSessionId && !ridesTurnAsCommand
     ? takeRoleStandingInstructions(capturedSessionId, {
         sessionManager: ctx.sessionManager,
         credentialStore: ctx.credentialStore,
       })
-    : "";
+    : { instructions: "" };
+  const roleContext = role.instructions;
+  // The takes this prompt carries, handed back if no agent ever reads it (planning#609).
+  const promptReparks = [noticeRepark, resetHook.repark, role.repark].filter(
+    (repark): repark is PromptRepark => repark !== undefined,
+  );
   const prompt = ridesTurnAsCommand
     ? userText.trim()
     : (agentPrefix ? `${agentPrefix}\n\n` : "") +
@@ -729,6 +743,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       emitErrorOnNoResult: true,
       onInterruptedTurn,
       ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
+      ...(promptReparks.length > 0 ? { promptReparks } : {}),
     });
   } finally {
     if (sessionId) resetHook.ensureRecorded?.(sessionId);

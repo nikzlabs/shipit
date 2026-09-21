@@ -70,6 +70,7 @@ interface Harness {
   runner: PreTurnResetRunner;
   emitted: WsServerMessage[];
   appended: PersistedMessage[];
+  parkedNotices: string[];
 }
 
 function makeHarness(over: {
@@ -81,6 +82,7 @@ function makeHarness(over: {
 } = {}): Harness {
   const emitted: WsServerMessage[] = [];
   const appended: PersistedMessage[] = [];
+  const parkedNotices: string[] = [];
   const session = "session" in over ? over.session : makeSession();
   const prStatus = "prStatus" in over ? over.prStatus : makePrStatus();
 
@@ -102,6 +104,7 @@ function makeHarness(over: {
       getPrStatus: () => prStatus ?? null,
       clearMerged: vi.fn(),
       setMergeContinueDeclined: vi.fn(),
+      appendPendingAgentNotice: (_sid: string, notice: string) => { parkedNotices.push(notice); },
     },
     prStatusPoller: { getStatus: () => prStatus ?? null, reArm: vi.fn() },
     createGitManager: () => over.git ?? makeGit(),
@@ -113,7 +116,7 @@ function makeHarness(over: {
     getAutoResetMergedBranch: () => over.setting ?? true,
   } as unknown as PreTurnResetHookDeps;
 
-  return { deps, runner, emitted, appended };
+  return { deps, runner, emitted, appended, parkedNotices };
 }
 
 const run = (h: Harness, intent?: boolean) =>
@@ -141,6 +144,21 @@ describe("applyPreTurnReset — the branch moved", () => {
       branchAutoReset: { base: "main", prNumber: 482, fromSha: MERGED_SHA, toSha: BASE_TIP },
     });
     expect(h.emitted.some((m) => m.type === "branch_auto_reset_card")).toBe(true);
+  });
+
+  it("parks the prefix for the next turn when this one never reaches an agent (planning#609)", async () => {
+    const h = makeHarness();
+    const result = await run(h);
+
+    // The branch has already moved, so the resend's own `applyPreTurnReset` finds nothing
+    // to reset and produces no prefix. Nothing else would ever regenerate it.
+    expect(h.parkedNotices).toEqual([]);
+    result.repark!.repark();
+    expect(h.parkedNotices).toEqual([result.agentPrefix]);
+
+    // Idempotent: the executor and a caller's finally can both reach it.
+    result.repark!.repark();
+    expect(h.parkedNotices).toHaveLength(1);
   });
 
   it("hides the composer control immediately (reset_eligible: false)", async () => {
@@ -254,6 +272,16 @@ describe("applyPreTurnReset — the branch did not move", () => {
     expect(notice?.noticeLevel).toBe("warn");
     expect(h.emitted.some((m) => m.type === "reset_eligible")).toBe(false);
     expect(h.runner.notifyWorkspaceRewritten).not.toHaveBeenCalled();
+  });
+
+  it("offers no repark, because the skip is re-evaluated on the next turn (planning#609)", async () => {
+    const h = makeHarness({ git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) });
+    const result = await run(h);
+
+    expect(result.agentPrefix).toContain("NOT reset");
+    // Unlike a completed move, nothing here is unrepeatable: parking this prefix would
+    // hand the next turn a second copy of a refusal it computes for itself.
+    expect(result.repark).toBeUndefined();
   });
 
   it("drops the repeat of a refusal the user was already shown", async () => {

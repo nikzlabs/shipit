@@ -843,6 +843,14 @@ export class SessionManager {
     ).run(originRoleName, id);
   }
 
+  // The marker is what makes the role's brief a one-shot take; clearing it hands the take
+  // back to a turn that never delivered the brief (planning#609).
+  clearOriginRoleName(id: string, expected: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET origin_role_name = NULL WHERE id = ? AND origin_role_name = ?",
+    ).run(id, expected);
+  }
+
   setRoleName(id: string, roleName: string | null): void {
     this.db.prepare("UPDATE sessions SET role_name = ? WHERE id = ?").run(roleName, id);
   }

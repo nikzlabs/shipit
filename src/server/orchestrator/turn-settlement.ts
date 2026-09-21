@@ -70,6 +70,41 @@ export interface NoticeDelivery {
 }
 
 /**
+ * One-shot state a prompt TOOK at composition, put back when no attempt of the turn ever
+ * submitted that prompt (planning#609).
+ *
+ * The mirror of {@link NoticeDelivery}, and needed for the same reason: a take spent at
+ * composition belongs to the agent that reads it, not to the turn that asked. Where a
+ * notice delivery writes a take off once the agent answered, a repark restores one the
+ * agent was never asked about — and a turn ends that way routinely, because
+ * `prepareAgentEnv` refuses a spent account before the prompt is submitted and the error
+ * tells the user to send the message again.
+ */
+export interface PromptRepark {
+  /** Idempotent: a turn can reach this point from more than one path. */
+  repark(): void;
+}
+
+/**
+ * A repark that runs once and never throws. It is called from a turn's terminal sequence,
+ * where a throw would abandon the steps behind it (CLAUDE.md invariant 3).
+ */
+export function createPromptRepark(label: string, restore: () => void): PromptRepark {
+  let reparked = false;
+  return {
+    repark(): void {
+      if (reparked) return;
+      reparked = true;
+      try {
+        restore();
+      } catch (err) {
+        console.error(`[turn] re-parking ${label} failed:`, err);
+      }
+    },
+  };
+}
+
+/**
  * Whether a turn result is the agent's own work rather than a report that its
  * prompt did not run. No shipped adapter sets `error` on a non-`error` status,
  * so the first clause is a guard against one that does: the cost of being wrong

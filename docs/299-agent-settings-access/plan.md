@@ -1795,6 +1795,53 @@ re-dispatches the same prompt carrying the same receipt, so only the attempt tha
 actually ran acknowledges. Every other path — a crash, an interruption, the
 all-refused report, a turn that never spawned — simply never calls it.
 
+### The same lifecycle, read the other way: putting a take back (planning#609)
+
+Req 8 made the settings outcome a **read plus a receipt** so a turn that never
+reached an agent would keep it. The rest of the prefix was not converted, and
+three of its entries are one-shot **takes** performed at composition, spent before
+the prompt is submitted: the pending agent notice
+(`sessionManager.consumePendingAgentNotice`), the pre-turn reset prefix
+(`applyPreTurnReset`), and a role's standing brief
+(`takeRoleStandingInstructions`, marked by `setOriginRoleName`, which nothing
+cleared). A turn ending before submission destroyed all three — and ShipIt's own
+error for that case says *"send this message again"*, so the user walked straight
+back into the hole. The worst of them is the reset prefix: the branch has already
+moved, so the resend's `applyPreTurnReset` finds nothing to reset and no later
+turn regenerates it.
+
+`PromptRepark` (`turn-settlement.ts`) is the mirror of `NoticeDelivery`, and it
+reads the **same** `ownTurn` lifecycle: `"unsubmitted"` is the state no
+submission ever left, so the takes were read by nobody.
+`TurnInput.promptReparks` carries them, and `settleTurn` runs them. Both
+composition sites build the list — the interactive one
+(`ws-handlers/agent-execution.ts`) had no repark at all, and
+`dispatched-turn.ts`'s `reparkNoticeIfUndelivered` latched "delivered" one line
+*before* `executeAgentTurn`, so it covered only a failure in the pre-executor
+setup. That latch stays where it is; past it the executor owns the question,
+because it is the only thing that knows whether the prompt was submitted.
+
+Settlement is the right moment for the same reason it is the wrong moment for a
+delivery: every retry path stands this executor's terminal sequence down before
+re-entering with the same reparks, so a settled turn is one no successor will
+submit. A proxied submission landing after settlement is the one inexact case,
+and it reparks a take the agent did read — at-least-once, the safe direction
+here, since both stores it writes to hold prose the agent reads twice rather than
+state it corrupts.
+
+Two scopes are deliberate. Only a reset that **moved** the branch reparks; a skip
+is re-evaluated every turn and needs no help. And the notice is `append`ed rather
+than `set`, because a notice recorded *while* the failed turn ran describes a
+later branch move that must not be overwritten by the older one.
+
+Out of scope, both by earlier decision: the bug-outcome notice is at-most-once
+(docs/164), and the dependency-gap prefix is not a take — the gap persists until
+an install succeeds, so it rides the next turn correctly.
+
+Guards: `integration_tests/turn-prefix-repark.test.ts` (the interactive site,
+end to end), `dispatched-turn-pre-turn-reset.test.ts` (the executor window on the
+dispatched site), `pre-turn-reset-hook.test.ts` and `services/session-role.test.ts`.
+
 **The notice carries no values, and that is a trust decision rather than
 brevity.** `from`/`to` are formatted values and a `user_text` projection keeps
 what the user or the agent supplied; `outcome` and `outcomeDetail` can
@@ -2031,9 +2078,12 @@ Changed: `credential-store.ts`, `global-system-prompt.ts`, `git-config.ts`,
 `services/mcp.ts` (the narrow `setMcpServerEnabled`), `services/settings.ts`, `services/settings-derivation.ts`, `services/types.ts`,
 `api-routes-bootstrap.ts`, `api-routes-egress.ts`, `api-routes-mcp.ts`,
 `api-routes-updates.ts`, `api-routes-session-repos.ts`,
-`ws-handlers/egress-handlers.ts`, `turn-settlement.ts` (`NoticeDelivery`),
-`turn-executor.ts` (`noticeDeliveries`, acknowledged from the `agent_result`
-handler), `dispatched-turn.ts`, `session-runner.ts`,
+`ws-handlers/egress-handlers.ts`, `turn-settlement.ts` (`NoticeDelivery`, and its
+mirror `PromptRepark`), `turn-executor.ts` (`noticeDeliveries`, acknowledged from
+the `agent_result` handler; `promptReparks`, run from `settleTurn`),
+`dispatched-turn.ts`, `ws-handlers/agent-execution.ts`,
+`pre-turn-reset-hook.ts` and `services/session-role.ts` (each take hands back a
+repark), `sessions.ts` (`clearOriginRoleName`), `session-runner.ts`,
 `runner-registry-factory.ts`, `bootstrap-managers.ts`,
 `client/utils/session-data.ts`
 (`refreshGlobalSettings`), the settings tab components and the bespoke

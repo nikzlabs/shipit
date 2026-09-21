@@ -10,6 +10,7 @@ import type { DependencyGap } from "./dependency-staleness.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { SettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
+import type { RoleStandingInstructions } from "./services/session-role.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
@@ -409,8 +410,11 @@ export interface SystemTurnDeps {
    * prompt assembly. `null` when nothing is owed.
    */
   settingsOutcomeNotice?: (sessionId: string) => SettingsOutcomeNotice | null;
-  /** Consumes the role's first-turn instructions; subsequent calls return an empty string. */
-  takeRoleInstructions?: (sessionId: string) => string;
+  /**
+   * Consumes the role's first-turn instructions; subsequent calls return an empty string.
+   * The returned `repark` hands the take back when the turn never reaches an agent.
+   */
+  takeRoleInstructions?: (sessionId: string) => RoleStandingInstructions;
   finalizeAgentEnv?: (
     sessionId: string,
     agentId: AgentId,

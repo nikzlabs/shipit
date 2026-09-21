@@ -55,7 +55,7 @@ import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
-import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -116,6 +116,12 @@ export interface TurnInput {
    * actually ran acknowledges.
    */
   noticeDeliveries?: readonly NoticeDelivery[];
+  /**
+   * The mirror of `noticeDeliveries` (planning#609): one-shot state this prompt took at
+   * composition, restored when the turn settles without the prompt having been submitted.
+   * A retry carries them onto its successor, so only the attempt that never ran reparks.
+   */
+  promptReparks?: readonly PromptRepark[];
   deliveryId?: string;
   adopt?: boolean;
   compact?: boolean;
@@ -310,9 +316,26 @@ export async function executeAgentTurn(
     }
   };
 
+  /**
+   * The mirror of `notePromptDelivered`, run where the turn is known to be over
+   * (planning#609). `ownTurn` is the same reading both use: "unsubmitted" is the state no
+   * submission ever left, so the takes this prompt carries were never read by any agent.
+   *
+   * Every retry path stands this executor's terminal sequence down before re-entering with
+   * the same reparks, so a settled turn is one no successor will submit. A proxied
+   * submission that lands after settlement is the one inexact case, and it reparks a take
+   * the agent did read — the at-least-once direction, which repeats a notice rather than
+   * losing it.
+   */
+  const reparkUnsubmittedPrompt = (): void => {
+    if (ownTurn !== "unsubmitted") return;
+    for (const repark of input.promptReparks ?? []) repark.repark();
+  };
+
   const settleTurn = (outcome: TurnOutcome): void => {
     if (turnCompleteFired) return;
     turnCompleteFired = true;
+    reparkUnsubmittedPrompt();
     // Clear before notifying the supervisor, but never clear a successor or live retry.
     if (
       runner &&

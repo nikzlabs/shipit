@@ -14,6 +14,7 @@ import {
   type InProgressPersister,
 } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+import { createPromptRepark, type PromptRepark } from "./turn-settlement.js";
 import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
 export interface PreTurnResetHookDeps extends ReArmDeps {
@@ -39,6 +40,14 @@ export interface PreTurnResetHookResult {
   afterUserMessagePersisted?: (sessionId: string) => void;
   // Call in the turn's finally: an early failure must not erase the reset's record.
   ensureRecorded?: (sessionId: string) => void;
+  /**
+   * Put the prefix back for the next turn when this one never reached an agent
+   * (planning#609). Only for a reset that MOVED the branch, which is the unrepeatable
+   * case: the next turn's `applyPreTurnReset` finds nothing left to reset and returns
+   * `NO_RESET`, so nothing would regenerate the prefix. A skip re-evaluates every turn
+   * and needs no help.
+   */
+  repark?: PromptRepark;
 }
 
 const NO_RESET: PreTurnResetHookResult = { agentPrefix: "" };
@@ -187,9 +196,23 @@ export async function applyPreTurnReset(args: {
     }
   };
 
+  const agentPrefix = reset.agentPrefix ?? "";
+  // Parked as a pending agent notice, which is the store the manual reset and the rebase
+  // driver already use for "your branch moved under you" — so the next turn's composition
+  // puts it back at the head of the prefix with no new plumbing. Appended rather than
+  // set: a notice recorded while this turn ran describes a LATER branch move, and must
+  // not be overwritten by this one.
+  const repark = reset.moved && agentPrefix
+    ? createPromptRepark(
+        `the pre-turn branch reset prefix for ${sessionId}`,
+        () => { deps.sessionManager.appendPendingAgentNotice(sessionId, agentPrefix); },
+      )
+    : undefined;
+
   return {
-    agentPrefix: reset.agentPrefix ?? "",
+    agentPrefix,
     afterUserMessagePersisted: (sid) => { record(sid, true); },
     ensureRecorded: (sid) => { record(sid, false); },
+    ...(repark ? { repark } : {}),
   };
 }
