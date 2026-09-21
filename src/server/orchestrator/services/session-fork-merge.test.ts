@@ -261,6 +261,25 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     expect(fs.existsSync(sessionsRoot) && fs.readdirSync(sessionsRoot).length > 0).toBe(false);
   });
 
+  /**
+   * An older fork's own `origin/HEAD` can point at its parent's feature branch —
+   * the reason `inheritOriginHead` prefers the bare cache. The guard must read the
+   * same authoritative source, or a fork named `main` slips past a check that the
+   * very next step then corrects.
+   */
+  it("refuses the default branch even when the parent's own origin/HEAD is wrong", async () => {
+    const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
+    execSync("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/shipit/parent-desc", {
+      cwd: parentDir, stdio: "pipe",
+    });
+    expect(await new GitManager(parentDir).getDefaultBranch()).toBe("shipit/parent-desc");
+
+    await expect(fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir,
+    }, bareDir, "main")).rejects.toThrow(/default branch/);
+  });
+
   it("targets the repo's default branch, not the parent session's branch", async () => {
     const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
     const { result } = await fork(parentDir, {

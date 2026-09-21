@@ -93,7 +93,7 @@ export async function guardMergeSync(
   // `pushed: false` leaves any armed auto-push in place on purpose — it refuses the
   // same branch for the same reason, so nothing publishes it by another route
   // (docs/312-base-branch-push-protection req 7).
-  const refusal = await findSharedBranchRefusal(git, branch);
+  const refusal = await findSharedBranchRefusal(git, branch, undefined, { requireVerifiedDefault: true });
   if (refusal) return { action: "hold", pushed: false, message: refusal.message };
 
   const commits = `${sync.ahead} commit${sync.ahead === 1 ? "" : "s"}`;

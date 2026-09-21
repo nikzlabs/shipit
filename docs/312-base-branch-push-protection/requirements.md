@@ -28,10 +28,12 @@ ShipIt.
    commands that move a session's checkout onto a shared branch, and the
    commands that force-push, are judged the same way whichever spelling is used.
 7. An ORDINARY (fast-forward) push is refused on a shared branch too. A
-   session's commit reaches the repository's default branch, or a pull request's
-   base, only through a pull request.
+   session's commit reaches the repository's default branch only through a pull
+   request, whether the push target came from the checkout or from the caller.
 8. A session cannot be STARTED on a shared branch. The one path that takes a
    branch name from its caller — forking — refuses one.
+9. A repository that has never been published is not a shared branch. A new
+   project can push its first branch to the empty remote it was just pointed at.
 
 ## Open questions
 
@@ -43,11 +45,14 @@ _None._
   branch? Yes, everywhere ShipIt pushes: the auto-push, the durability push that
   precedes deleting a checkout, and the pre-merge sync. A fork may not be
   created on one either. Asked because guarding it would stop auto-push for a
-  session working on the default branch — but no production path puts a session
-  there: every branch is `shipit/<slug>`, `shipit/install-…`, an issue-seeded
-  `<id>-<slug>`, `<parent>-<slug>`, or `release/<version>`. The fixtures that
-  suggested otherwise build their session through `/api/_test/sessions`, a route
-  registered only in test mode.
+  session working on the default branch. Every *repo-backed* session gets a
+  branch of its own — `shipit/<slug>`, `shipit/install-…`, an issue-seeded
+  `<id>-<slug>`, `<parent>-<slug>`, or `release/<version>` — and the fixtures
+  that suggested otherwise build their session through `/api/_test/sessions`, a
+  route registered only in test mode. A session created from a TEMPLATE is the
+  exception: `GitManager.init()` starts it on a local `main` and records no
+  branch, so requirement 9 carves out the case that matters — an origin with no
+  branch of that name is not a shared branch.
 
 - 2026-09-21 — Should ShipIt fail closed when it cannot read the remote tip it
   is about to overwrite? Yes, for a **force**-push only. The loss it guards

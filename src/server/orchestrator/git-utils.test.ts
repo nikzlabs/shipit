@@ -482,6 +482,31 @@ describe("pushToOrigin", () => {
     expect(git(remoteDir, "rev-parse refs/heads/shipit/work")).toBe(git(workDir, "rev-parse HEAD"));
   });
 
+  /**
+   * A template session starts on a local `main` with no recorded branch, and the
+   * user points it at an empty repository. `getDefaultBranch()` answers "main"
+   * from its own fallback there, so refusing on that guess alone would stop a new
+   * project ever publishing. Nothing on that remote can be lost: nothing is on it.
+   */
+  it("pushes a local `main` when origin has no such branch to be the default", async () => {
+    const emptyRemote = path.join(tmpDir, "empty.git");
+    const fresh = path.join(tmpDir, "fresh");
+    fs.mkdirSync(fresh, { recursive: true });
+    git(tmpDir, `init --bare -b main "${emptyRemote}"`);
+    git(fresh, "init -b main");
+    git(fresh, "config user.email test@test");
+    git(fresh, "config user.name test");
+    git(fresh, `remote add origin "${emptyRemote}"`);
+    commitFile(fresh, "README.md", "# new project\n", "initial");
+
+    const skips: PushSkip[] = [];
+    const branch = await pushToOrigin(new GitManager(fresh), (s) => skips.push(s));
+
+    expect(skips).toEqual([]);
+    expect(branch).toBe("main");
+    expect(git(emptyRemote, "rev-parse refs/heads/main")).toBe(git(fresh, "rev-parse HEAD"));
+  });
+
   it("refuses the default branch, reports it, and leaves the remote where it was", async () => {
     const before = git(remoteDir, "rev-parse refs/heads/main");
     commitFile(workDir, "a.txt", "a\n", "a");

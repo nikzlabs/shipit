@@ -17,6 +17,27 @@
  */
 export interface PushTargetGit {
   getDefaultBranch(): Promise<string>;
+  getRefHash?(ref: string): Promise<string | null>;
+}
+
+export interface SharedBranchOptions {
+  /**
+   * Refuse only a default branch a remote-tracking ref proves.
+   *
+   * `getDefaultBranch()` returns the literal "main" when it can read nothing, so
+   * a repository whose origin holds no refs yet reports a default it has never
+   * had. For a FORCE-push that guess is the right way to fail — an unreadable
+   * remote is not a cleared one. For an ORDINARY push it is wrong: a session
+   * created from a template starts on a local `main` with no recorded branch,
+   * and refusing there would stop a new project publishing its first branch
+   * onto the empty repository the user just pointed it at. Nothing on that
+   * remote can be destroyed, because nothing is on it.
+   */
+  requireVerifiedDefault?: boolean;
+}
+
+export function sharedBranchMessage(branch: string, role: PushTargetRefusal["role"]): string {
+  return refusal(branch, role).message;
 }
 
 export interface PushTargetRefusal {
@@ -35,6 +56,7 @@ export async function findSharedBranchRefusal(
   git: PushTargetGit,
   branch: string,
   baseBranch?: string,
+  opts: SharedBranchOptions = {},
 ): Promise<PushTargetRefusal | null> {
   const trimmed = branch.trim();
   if (!trimmed) return null;
@@ -49,8 +71,19 @@ export async function findSharedBranchRefusal(
   } catch {
     return null;
   }
-  if (repoDefault && trimmed === repoDefault) return refusal(trimmed, "repository-default");
-  return null;
+  if (!repoDefault || trimmed !== repoDefault) return null;
+  if (opts.requireVerifiedDefault && !(await originHasBranch(git, repoDefault))) return null;
+  return refusal(trimmed, "repository-default");
+}
+
+// A tracking ref is the proof: it exists only because origin reported that branch.
+async function originHasBranch(git: PushTargetGit, branch: string): Promise<boolean> {
+  if (!git.getRefHash) return true;
+  try {
+    return Boolean(await git.getRefHash(`refs/remotes/origin/${branch}`));
+  } catch {
+    return true;
+  }
 }
 
 function refusal(branch: string, role: PushTargetRefusal["role"]): PushTargetRefusal {

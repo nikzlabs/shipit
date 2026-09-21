@@ -142,7 +142,7 @@ export async function pushToOrigin(
   // push cannot rewind — git declines a non-fast-forward — but it would put this
   // turn's commit on the base under no pull request, so it is refused too
   // (docs/312-base-branch-push-protection req 7).
-  const refusal = await findSharedBranchRefusal(git, branch);
+  const refusal = await findSharedBranchRefusal(git, branch, undefined, { requireVerifiedDefault: true });
   if (refusal) {
     onSkip?.({ reason: "shared-branch", message: refusal.message });
     return null;

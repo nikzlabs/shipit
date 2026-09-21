@@ -107,7 +107,7 @@ async function ensureBranchTipOnOrigin(git: GitManager): Promise<CheckoutDurabil
     // checkout instead of deleting it, so the commits survive locally rather than
     // being published onto a shared branch (docs/312-base-branch-push-protection
     // req 7).
-    const refusal = await findSharedBranchRefusal(git, branch);
+    const refusal = await findSharedBranchRefusal(git, branch, undefined, { requireVerifiedDefault: true });
     if (refusal) return { state: "blocked-by-push", cause: "shared-branch", message: refusal.message };
     try {
       await git.push("origin", branch);

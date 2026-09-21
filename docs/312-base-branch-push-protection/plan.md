@@ -212,15 +212,51 @@ runs before the clone, and only for a session that has a remote — without one
 `getDefaultBranch()` answers `"main"` from its own fallback, which is no
 evidence of a shared branch.
 
-**Why this was safe to do.** The question was open because guarding an ordinary
-push would stop auto-push for a session working on the default branch. Reading
-the code settled it: no production path puts a session there (the enumeration is
-in `requirements.md`'s resolved question). The fixtures that appeared to show
-one — `auto-push-success.test.ts`, `checkout-durability.test.ts` — build their
-session through `/api/_test/sessions`, a test-mode-only route, and were rewritten
-onto a `shipit/*` branch so they test the shape sessions actually have.
+Two more paths reach a shared branch without the checkout ever being on one, and
+both are covered: **`gitPush`** (`services/git.ts`), behind
+`POST /api/sessions/:id/git/push`, takes its branch from the caller — the
+`assertPlainBranchName` added earlier stops `+main:main`, but a plain `main` was
+still accepted; and **`mergeSession`**'s push of the source session's recorded
+branch, where refusing costs nothing because the fallback beside it fetches the
+same commits straight from the source checkout.
+
+**A verified default, for ordinary pushes only** (req 9). `getDefaultBranch()`
+returns the literal `"main"` when it can read nothing, so a repository whose
+origin holds no refs reports a default it has never had. For a force-push that
+guess is the right way to fail — an unreadable remote is not a cleared one. For
+an ordinary push it is wrong, and the case is real: a session created from a
+TEMPLATE starts on a local `main` (`GitManager.init()` passes
+`--initial-branch=main`) and records no branch, so refusing would stop a new
+project publishing its first branch to the empty repository the user just
+pointed it at. Nothing there can be lost, because nothing is on it. So the
+ordinary-push sites pass `requireVerifiedDefault`, which demands a
+`refs/remotes/origin/<default>` tracking ref as proof.
+
+**The fork reads the authoritative default, not `getDefaultBranch()`.** An older
+parent's own `origin/HEAD` can point at *its* parent's feature branch — the
+reason `inheritOriginHead` prefers the bare cache. The guard uses the same
+`resolveForkOriginHead`, or a fork named `main` would pass a check that the very
+next step then corrects.
+
+**What the premise turned out to be.** The question was open because guarding an
+ordinary push would stop auto-push for a session working on the default branch.
+Every *repo-backed* session gets a branch of its own (the enumeration is in
+`requirements.md`'s resolved question), and the fixtures that appeared to show
+otherwise — `auto-push-success.test.ts`, `checkout-durability.test.ts` — build
+their session through `/api/_test/sessions`, a test-mode-only route, and were
+rewritten onto a `shipit/*` branch. The template session is the one genuine
+exception, and req 9 is what handles it.
 
 ## Known gaps, deliberately not closed here
+
+- **A non-default PR base is not refused at the ordinary-push sites.** On a repo
+  whose pull requests target `stable` while the default is `main`,
+  `findSharedBranchRefusal`'s `baseBranch` argument would catch it — but
+  `pushToOrigin`, `ensureBranchTipOnOrigin` and `guardMergeSync` have no session
+  context to read it from, and the session row stores `pr_number` /
+  `pr_repo_id` but not the base. The force-push sites do pass it, because the
+  pull-request flow has the record in hand. Closing this means either a new
+  column or threading session state into these helpers.
 
 - **The hook is Claude-only.** It is a Claude Code `PreToolUse` hook, armed in
   `session/agents/claude/process.ts`. Codex, opencode and grok sessions get no
@@ -265,7 +301,9 @@ onto a `shipit/*` branch so they test the shape sessions actually have.
 - `src/server/orchestrator/git-utils.ts` — `pushToOrigin`, `PushSkip`
 - `src/server/orchestrator/checkout-durability.ts` — `ensureBranchTipOnOrigin`
 - `src/server/orchestrator/services/branch-sync.ts` — `guardMergeSync`
-- `src/server/orchestrator/services/session-fork-merge.ts` — `forkSession`
+- `src/server/orchestrator/services/session-fork-merge.ts` — `forkSession`,
+  `mergeSession`
+- `src/server/orchestrator/services/git.ts` — `gitPush`
 - `src/server/orchestrator/git-utils.ts` — `syncLocalDefaultBranchToOrigin`,
   `localDefaultIsSafeToMove`
 - `src/server/orchestrator/services/session.ts` — `restoreSessionWorkspaceImpl`,
