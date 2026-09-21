@@ -21,7 +21,7 @@ describe("classifySpawnFailure", () => {
 
   it("maps 429 to quota_per_parent otherwise", () => {
     expect(
-      classifySpawnFailure(429, "This session already has 16 spawned children (max 16)."),
+      classifySpawnFailure(429, "This session already has 16 unfinished spawned children (max 16)."),
     ).toBe("quota_per_parent");
   });
 

@@ -660,10 +660,15 @@ own PR, when it opens one). In both cases the parent **cannot**:
 Spawn limits are enforced fail-closed:
 
 - **Per-turn cap** — default 6 new spawns per turn. Counted via `--turn`.
-- **Per-parent cap on active children** — default 16 non-archived spawned
-  children per parent. Hitting this cap is not something you clear yourself:
-  archiving is the user's action in the UI (see *You do not archive a child*).
-  Tell them the cap is full and which children look finished to you.
+- **Per-parent cap on unfinished children** — default 16 per parent. A child
+  **stops counting** once its pull request merges or closes, so shipping work
+  frees slots on its own and a long-running orchestration does not run itself
+  out of room. A child still counts while it is running, while it has unfinished
+  children of its own, while it is pinned, and when it never opened a PR at all —
+  work that never shipped is not finished work. Hitting the cap with every child
+  genuinely live is not something you clear yourself: archiving is the user's
+  action in the sidebar (see *You do not archive a child*). Tell them the cap is
+  full and which children look finished to you.
 
 When a quota is hit, the orchestrator returns HTTP 429 and the shim prints
 a helpful error pointing back here.
