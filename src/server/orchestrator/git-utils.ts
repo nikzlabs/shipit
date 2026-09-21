@@ -200,6 +200,20 @@ export async function fetchAndResolveDefaultBranch(
   return { resetTarget, fetched, fetchDurationMs: Date.now() - t0, authError };
 }
 
+// `branch -f` discards whatever the local ref has that the remote does not, so it is
+// only safe where that set is empty. A cache snapshot never has commits of its own; a
+// checkout ShipIt inherits on restore can, and that path exists to preserve them.
+async function localDefaultIsSafeToMove(sg: SimpleGit, branch: string): Promise<boolean> {
+  try {
+    await sg.raw(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  } catch {
+    // Nothing to discard: `branch -f` creates it.
+    return true;
+  }
+  const ahead = (await sg.raw(["rev-list", "--count", `origin/${branch}..${branch}`])).trim();
+  return ahead === "0";
+}
+
 // Realign the cache snapshot's local branch so main..HEAD reflects the PR diff.
 export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Promise<void> {
   const sg = safeSimpleGit(workspaceDir);
@@ -221,7 +235,18 @@ export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Prom
   if (!branch) return;
   try {
     const current = (await sg.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    // Moving the checked-out branch would have to move the working tree with it, and
+    // on the restore callers that tree can hold the session's uncommitted work. So a
+    // session sitting ON the default branch keeps its stale ref; the push-side
+    // refusals (docs/312-base-branch-push-protection) are what cover that case.
     if (current === branch) return;
+    if (!(await localDefaultIsSafeToMove(sg, branch))) {
+      console.warn(
+        `[git] syncLocalDefaultBranchToOrigin: ${branch} has commits origin/${branch} does not ` +
+          `in ${workspaceDir}; leaving it where it is rather than discarding them`,
+      );
+      return;
+    }
     await sg.raw(["branch", "-f", branch, `origin/${branch}`]);
   } catch (err) {
     console.warn(

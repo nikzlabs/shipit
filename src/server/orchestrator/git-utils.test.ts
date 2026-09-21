@@ -370,6 +370,22 @@ describe("syncLocalDefaultBranchToOrigin", () => {
     expect(git(workspaceDir, "rev-parse main")).toBe(c1);
   });
 
+  it("leaves the local default branch alone when it holds commits origin does not", async () => {
+    commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone "${remoteDir}" "${workspaceDir}"`);
+    git(workspaceDir, "config user.email test@test");
+    git(workspaceDir, "config user.name test");
+    const localOnly = commitFile(workspaceDir, "local.txt", "reached no remote\n", "local");
+    git(workspaceDir, "checkout -q -b shipit/test");
+
+    commitFile(remoteDir, "README.md", "# c2\n", "c2");
+    git(workspaceDir, "fetch origin");
+
+    await syncLocalDefaultBranchToOrigin(workspaceDir);
+
+    expect(git(workspaceDir, "rev-parse main")).toBe(localOnly);
+  });
+
   it("is a no-op when there is no origin default branch to resolve", async () => {
     commitFile(remoteDir, "README.md", "# c1\n", "c1");
     git(tmpDir, `init "${workspaceDir}"`);

@@ -125,6 +125,37 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     expect(sessionManager.get(id)?.diskTier).toBe("hot");
   });
 
+  // docs/312-base-branch-push-protection: a fetch advances origin/* and never a local
+  // branch, so a checkout ShipIt hands back to a session can be holding a `main` from
+  // hours ago. Publishing that ref is what rewound a user's base branch.
+  it("heals a local default branch frozen at clone time when the checkout is reused", async () => {
+    const id = "sess-stale-default";
+    const workspaceDir = path.join(tmpDir, "workspace-stale");
+    await createRepoGit(cacheDir).cloneFromCache(workspaceDir, remoteUrl);
+    execSync("git checkout -q -b shipit/stale", { cwd: workspaceDir, stdio: "ignore" });
+
+    fs.writeFileSync(path.join(seedDir, "README.md"), "# base moved on\n");
+    execSync("git add . && git commit -m advance --no-gpg-sign", { cwd: seedDir, stdio: "ignore" });
+    execSync(`git push ${remoteUrl} main:main`, { cwd: seedDir, stdio: "ignore" });
+    execSync("git fetch origin", { cwd: workspaceDir, stdio: "ignore" });
+    const rev = (ref: string): string =>
+      execSync(`git rev-parse ${ref}`, { cwd: workspaceDir }).toString().trim();
+    expect(rev("main")).not.toBe(rev("origin/main"));
+
+    sessionManager.track(id, "Stale default", workspaceDir);
+    sessionManager.setRemoteUrl(id, remoteUrl);
+    sessionManager.setBranch(id, "shipit/stale");
+
+    const restored = await restoreSessionWorkspace(
+      sessionManager, createRepoGit, () => cacheDir, githubAuthManager, repoStore, id,
+    );
+
+    expect(restored).toBe(false);
+    expect(rev("main")).toBe(rev("origin/main"));
+    expect(execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceDir }).toString().trim())
+      .toBe("shipit/stale");
+  });
+
   it("is a no-op when the workspace is present and the session is not evicted", async () => {
     const id = "sess-3";
     const workspaceDir = path.join(tmpDir, "workspace3");

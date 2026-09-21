@@ -119,6 +119,39 @@ describe("unarchiveSession with a checkout that is on no remote", () => {
     expect(fs.existsSync(path.join(workspaceDir, "clash.txt"))).toBe(true);
   });
 
+  // docs/312-base-branch-push-protection: the kept checkout is the stalest one ShipIt
+  // has, so its local default branch is the one most worth moving forward.
+  it("moves the stale local default branch up to origin without disturbing the work", async () => {
+    const seed = path.join(tmpDir, "seed");
+    fs.writeFileSync(path.join(seed, "README.md"), "base moved on");
+    execSync("git add -A && git commit -m advance --no-gpg-sign", { cwd: seed, stdio: "ignore" });
+    execSync(`git push ${remoteDir} main:main`, { cwd: seed, stdio: "ignore" });
+    execSync("git fetch origin", { cwd: workspaceDir, stdio: "ignore" });
+    const rev = (ref: string): string =>
+      execSync(`git rev-parse ${ref}`, { cwd: workspaceDir }).toString().trim();
+    expect(rev("main")).not.toBe(rev("origin/main"));
+
+    fs.writeFileSync(path.join(workspaceDir, "work.txt"), "only here");
+    execSync("git add -A && git commit -m local --no-gpg-sign", { cwd: workspaceDir, stdio: "ignore" });
+    const kept = rev("HEAD");
+    fs.rmSync(remoteDir, { recursive: true, force: true });
+
+    const id = "sess-stale-kept";
+    sessionManager.track(id, "Kept with a stale main", workspaceDir);
+    sessionManager.setRemoteUrl(id, remoteDir);
+    sessionManager.setBranch(id, "shipit/kept");
+    sessionManager.archive(id, { keepCheckout: true });
+
+    await unarchiveSession(
+      sessionManager, createRepoGit, () => path.join(tmpDir, "cache"),
+      githubAuthManager, repoStore, id, undefined, createGitManager,
+    );
+
+    expect(rev("main")).toBe(rev("origin/main"));
+    expect(rev("HEAD")).toBe(kept);
+    expect(fs.existsSync(path.join(workspaceDir, "work.txt"))).toBe(true);
+  });
+
   it("still re-clones when everything is on the remote", async () => {
     const id = "sess-fresh";
     sessionManager.track(id, "Fresh", workspaceDir);
