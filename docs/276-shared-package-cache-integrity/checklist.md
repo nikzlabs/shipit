@@ -150,13 +150,17 @@ recorded in [requirements.md](./requirements.md); none is open.
       discriminator, claims to one per-scope lock, a missing generation to
       generation 0. Rejected: a gate over the existing snapshot publisher (it
       authenticates nothing). Folded into plan.md section 5.
-- [ ] Builder configuration (R3 P1, narrowed R4): run `pnpm install --offline
-      --frozen-lockfile --ignore-scripts --ignore-pnpmfile` with an explicit
-      known config — no inherited global `.npmrc`/`pnpm-workspace.yaml`, no
-      credentials, `packageManager` version-switching disabled (a repo pin can
-      switch the baked pnpm). `.pnpmfile.cjs` is admitted (hook suppressed,
-      measured); `.pnpmfile.mjs` and `configDependencies` are ineligible until
-      their suppression is measured.
+- [x] Builder configuration (R3 P1, narrowed R4): `builderScript` runs `pnpm install
+      --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile` and `builderEnv`
+      states the whole configuration — HOME inside the sandbox, `npm_config_userconfig`
+      and `npm_config_globalconfig` at `/dev/null`, no credentials, `--store-dir` and
+      `--registry` on the COMMAND LINE so a staged `.npmrc` cannot outrank them.
+      `.pnpmfile.cjs` is admitted and `.pnpmfile.mjs`/`configDependencies` stay
+      ineligible; stronger than designed, a `.pnpmfile` is never staged at all, so
+      `--ignore-pnpmfile` is defence in depth. **Deviation, measured:** a baked pinned
+      binary is NOT enough — a repo's `packageManager` reaches the builder by three
+      routes and the pinned binary self-switches, so all three switches are set
+      (FINDINGS.md).
 - [ ] No-lockfile consumer gate (R3 P1, narrowed R4): where `prepareOverlaySpecs`
       selects specs (`container-overlay-provisioner.ts:65`), a checkout with no
       `pnpm-lock.yaml` (committed or not) gets no base lowerdir. One-shot at
@@ -167,8 +171,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       install and the build never runs. For pnpm require the content hash, and
       always include `pnpm-workspace.yaml` in it — the default input list does
       (`deps-hash.ts:21`) but a custom `installInputs` replaces the list (`:89`).
-- [ ] Input contract (R3 P2, narrowed R4), one eligibility decision over the
-      staged input set: verify `optionalDependencies` like the rest; trust
+- [x] Input contract (R3 P2, narrowed R4), one eligibility decision over the
+      staged input set (`decidePnpmBaseEligibility`), every clause asserted in
+      `pnpm-base-inputs.test.ts`: verify `optionalDependencies` like the rest; trust
       `bundledDependencies` as part of the authenticated outer tarball; for an
       `npm:` alias verify the resolved target's digest; use the
       orchestrator-authorized scope→registry map for a scoped registry (`.npmrc`
@@ -209,16 +214,28 @@ recorded in [requirements.md](./requirements.md); none is open.
       nothing, asserted as the control. `liveOverlayScopeHashes` claims both addresses
       for every session, since package-manager detection reads the mutable checkout and
       must not decide whether a base is reapable. No `admission` pointer fields.
-- [ ] Rebuild-in-container: dedicated builder, no workspace, no network; private
-      store built inside the sandbox by unpacking staged integrity-checked
-      tarballs (not the session's store index); staged manifests + config; then
-      `copySnapshotToBase` + `publishBase` (reusing `withScopeLock` and
-      `finalize`). Resource-limit the builder container (disk, time); the
-      archive-to-manifest derivation was verified interactively, not by a
-      committed harness, so script it.
-- [ ] Immutable input snapshot: stage the manifests, lockfile and config from
-      one snapshot of the default-branch commit; resolve the registry the
-      orchestrator selects, never a lockfile URL.
+- [x] Rebuild-in-container (`pnpm-base-builder.ts`): dedicated builder, `NetworkMode:
+      none`, `CapDrop: ALL`, memory/pids/time limits, no workspace; publishes through
+      `publishBase` → `copySnapshotToBase`, reusing `withScopeLock` and `finalize`
+      unchanged. **Deviation, measured:** the sandbox store is populated by `pnpm fetch`
+      through a LOOPBACK registry over the staged verified tarballs, not by ShipIt writing
+      pnpm's store — `v11/index.db` is SQLite, so hand-writing it is a second
+      implementation of pnpm's store. The loopback server is up for the fetch phase only;
+      the phase that produces the published tree runs `--offline` against a dead port.
+      The archive-to-manifest derivation is off the path with the store-entry shape it
+      served; what is still leaned on (tarball sha512 == lockfile integrity == packument
+      `dist.integrity`) is scripted in `pnpm-base-registry.test.ts` and
+      `integration_tests/pnpm-verified-base-build.test.ts`. Version pinned **12.4.1**, not
+      plan.md's 12.4.2, which was 6 days old and inside the dependency-policy window.
+- [x] Immutable input snapshot (`stagePnpmInputs`): the manifests, lockfile,
+      `pnpm-workspace.yaml` and applicable `.npmrc` are read out of ONE commit through
+      git, never out of the session's checkout — asserted by a cell that edits the working
+      tree after the commit and shows the snapshot unchanged. A committed `node_modules`
+      is never a build input. The registry is the orchestrator's own; no lockfile URL is
+      ever fetched (`pnpm-base-registry.test.ts`).
+- [ ] Trigger: nothing calls `buildVerifiedPnpmBase` yet. It lands with the consumer-side
+      changes that make mounting a verified base safe (no pnpm pre-stamp, the no-lockfile
+      gate, the per-scope lock), because a published pointer opens the mount gate at once.
 - [ ] Measure the build-inclusive base-hit install cost (approved registry dep +
       `--ignore-scripts` base + empty private store): warm-install time and the
       marginal build-output disk in the upper. The 8 KB result used scriptless

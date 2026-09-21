@@ -39,6 +39,12 @@ RUN mkdir -p /home/shipit/.npm-global /home/shipit/.npm \
 
 RUN corepack enable
 
+# The verified-base builder must run a pnpm ShipIt pins, not one a repo's `packageManager`
+# field chooses (docs/276 section 5). Baked at an exact version, outside corepack's shim, at a
+# path only the builder names — sessions keep resolving their own pnpm through corepack.
+ARG BUILDER_PNPM_VERSION=12.4.1
+RUN npm install -g --prefix /opt/pnpm pnpm@${BUILDER_PNPM_VERSION}
+
 COPY --from=ghcr.io/astral-sh/uv:0.12.16@sha256:adc68cd785ca65ea25c0611043b0a00b4ea3a22e1b54102fc084406d888082ee /uv /uvx /usr/local/bin/
 
 ARG SHIPIT_HARNESSES=

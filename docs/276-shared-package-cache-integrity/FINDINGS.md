@@ -250,6 +250,61 @@ survive a restart. pnpm <= 10 is unaffected either way: its recorded `storeDir` 
 The `ERR_PNPM_UNEXPECTED_STORE` seen in the tree spike came from a lowerdir base built at a
 different container path, which is why the private store must keep that path.
 
+## Finding: how the builder's sandbox store gets built, and that `--offline` then holds
+
+Measured 2026-09-21 **in a session container** (no Docker host needed: the sandbox the cells
+exercise is process-level, not the production container). pnpm 12.4.1 and 12.5.1, ext4.
+
+The design says the builder's private store is built "inside the sandbox by unpacking the
+staged, integrity-checked tarballs". Writing pnpm's store by hand is not a viable reading of
+that: `v11/index.db` is a **SQLite** database (`SQLite format 3` header, measured), so
+producing one is a second implementation of pnpm's store, coupled to a store version, and it
+is exactly the "canonical by construction" principle the same section rejects elsewhere. What
+works instead — and keeps pnpm the only writer of its own store:
+
+| Cell | Result |
+|---|---|
+| `pnpm fetch --ignore-scripts --store-dir <sandbox> --registry <loopback>` over the verified tarballs | rc=0; store populated; 3/3 packages |
+| then `rm -rf node_modules`, `pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile --registry http://127.0.0.1:1/` (no registry reachable) | rc=0; full tree including the transitive |
+| the same fetch with one tarball's bytes corrupted (a trailing byte appended) | rc=1, `ERR_PNPM_TARBALL_INTEGRITY`, naming expected vs actual sha512 |
+| the staged tarball's sha512 vs the lockfile's `resolution.integrity` for 3 real packages | identical, all three |
+
+So the loopback registry exists only for the fetch phase; the phase that produces the
+published tree runs with `--offline` against a dead port, which is what makes an accidental
+network dependency fail loudly rather than pass quietly. pnpm re-verifies each tarball against
+the lockfile as it imports, which is a second, independent check on top of the orchestrator's
+own. The committed harness is
+`src/server/orchestrator/integration_tests/pnpm-verified-base-build.test.ts`; its control
+drops the transitive from the staged set and asserts the build then fails.
+
+**Consequence for the archive-to-manifest derivation.** It is no longer on the path. It
+existed to let the orchestrator admit *store entries*, which the ext4 redesign replaced with a
+tree the orchestrator has pnpm build. What is still load-bearing is the half above — tarball
+sha512 == lockfile integrity == packument `dist.integrity` — and that is scripted, in
+`pnpm-base-registry.test.ts` and the harness named above.
+
+## Finding: a repo's `packageManager` reaches the builder by three routes
+
+Measured 2026-09-21 with a repo pinning `packageManager: pnpm@10.28.2`, against a pnpm 12
+invoked three ways. Each route needs its own switch, and the first two are easy to mistake for
+the whole answer:
+
+| Invocation | Default | With the switch |
+|---|---|---|
+| corepack's `pnpm` shim | **10.28.2** | `COREPACK_ENABLE_PROJECT_SPEC=0` → 12.5.1 |
+| `corepack pnpm@12.4.1` (explicit spec) | 12.4.1 | unchanged |
+| the pinned binary directly (`/opt/pnpm/bin/pnpm`) | **10.28.2** — it self-switches | `PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS=false` → 12.4.1 |
+
+Baking a pinned pnpm and calling it by path is therefore **not sufficient**: pnpm's own
+version management downgrades it to whatever the repo asks for, which is a repo-controlled
+choice of the binary that produces the published base. `builderEnv()` sets all three switches
+and `pnpm-base-builder.test.ts` pins them.
+
+**Version pinned: 12.4.1, not the 12.4.2 plan.md names.** 12.4.2 was published 2026-09-15 and
+was 6 days old on 2026-09-21, inside the dependency policy's 7-day minimum; 12.4.1
+(2026-09-10) is the newest 12.x outside it. Re-measured: 12.4.1 runs the two phases above with
+the same results.
+
 ## Finding: offline resolution needs metadata separate from the store
 
 pnpm keeps **resolution metadata** (`<name>.jsonl`) in `XDG_CACHE_HOME/pnpm`,
