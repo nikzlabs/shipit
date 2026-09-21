@@ -71,10 +71,12 @@ describe("parsePnpmLock", () => {
     ]);
     expect(lock.packages.every((p) => p.kind === "registry")).toBe(true);
     expect(lock.packages[0].integrity).toBe("sha512-aaa==");
+    // Both halves of the edge: an ordinary specifier can resolve to a local link.
     expect(lock.importers).toContainEqual({
       importer: ".",
       name: "vitest",
       specifier: "^3.0.0",
+      resolved: "3.0.1",
     });
     expect(lock.importerDirs).toEqual(["."]);
   });
@@ -106,6 +108,21 @@ packages:
 `);
     expect(lock.packages).toHaveLength(1);
     expect(lock.packages[0].key).toBe("react-dom@18.2.0");
+  });
+
+  it("records every snapshot dependency edge, where a transitive link shows up", () => {
+    const lock = parsePnpmLock(`lockfileVersion: '9.0'
+snapshots:
+  left-pad@1.3.0:
+    dependencies:
+      helper: link:packages/helper
+    optionalDependencies:
+      fsevents: 2.3.3
+`);
+    expect(lock.snapshotEdges).toEqual([
+      { from: "left-pad@1.3.0", name: "helper", resolved: "link:packages/helper" },
+      { from: "left-pad@1.3.0", name: "fsevents", resolved: "2.3.3" },
+    ]);
   });
 
   it("records patchedDependencies and every importer directory", () => {

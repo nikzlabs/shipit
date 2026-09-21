@@ -112,10 +112,78 @@ describe("stageVerifiedRegistry", () => {
       string,
       string
     >;
-    expect(routes["/@types/node/-/node-20.11.0.tgz"]).toBe(tarballFileName(SCOPED.name, SCOPED.version));
+    expect(routes["/@types/node/-/node-20.11.0.tgz"]).toBe(
+      tarballFileName(sha512Integrity(bytesFor("@types/node@20.11.0"))),
+    );
     expect(
       fs.readFileSync(path.join(destDir, "tarballs", routes["/left-pad/-/left-pad-1.3.0.tgz"])),
     ).toEqual(bytesFor("left-pad@1.3.0"));
+  });
+
+  it("keeps two packages whose readable names collide apart", async () => {
+    // `@foo/bar@1.0.0` and `foo-bar@1.0.0` both flatten to `foo-bar-1.0.0.tgz`. A name-derived
+    // file would have the second overwrite the first while both routes kept serving it.
+    const scoped = { name: "@foo/bar", version: "1.0.0" };
+    const flat = { name: "foo-bar", version: "1.0.0" };
+    const reg = fakeRegistry([scoped, flat]);
+    const result = await stageVerifiedRegistry({
+      packages: [requestFor(scoped), requestFor(flat)],
+      destDir,
+      registryUrl: REGISTRY,
+      builderRegistryUrl: BUILDER,
+      fetchImpl: reg.fetchImpl,
+    });
+    expect(result.ok).toBe(true);
+    const routes = JSON.parse(fs.readFileSync(path.join(destDir, "tarballs.json"), "utf8")) as Record<
+      string,
+      string
+    >;
+    expect(routes["/@foo/bar/-/bar-1.0.0.tgz"]).not.toBe(routes["/foo-bar/-/foo-bar-1.0.0.tgz"]);
+    expect(
+      fs.readFileSync(path.join(destDir, "tarballs", routes["/@foo/bar/-/bar-1.0.0.tgz"])),
+    ).toEqual(bytesFor("@foo/bar@1.0.0"));
+    expect(
+      fs.readFileSync(path.join(destDir, "tarballs", routes["/foo-bar/-/foo-bar-1.0.0.tgz"])),
+    ).toEqual(bytesFor("foo-bar@1.0.0"));
+  });
+
+  it("resolves a scoped package against the registry the operator authorized for its scope", async () => {
+    const acme = { name: "@acme/widget", version: "2.0.0" };
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = (url) => {
+      seen.push(url);
+      if (url.endsWith(".tgz")) {
+        return Promise.resolve(
+          new Response(new Uint8Array(bytesFor("@acme/widget@2.0.0")), { status: 200 }),
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            name: acme.name,
+            versions: {
+              "2.0.0": {
+                dist: {
+                  integrity: sha512Integrity(bytesFor("@acme/widget@2.0.0")),
+                  tarball: "https://npm.acme.test/@acme/widget/-/widget-2.0.0.tgz",
+                },
+              },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    };
+    const result = await stageVerifiedRegistry({
+      packages: [requestFor(acme)],
+      destDir,
+      registryUrl: REGISTRY,
+      builderRegistryUrl: BUILDER,
+      authorizedScopeRegistries: { "@acme": "https://npm.acme.test/" },
+      fetchImpl,
+    });
+    expect(result.ok).toBe(true);
+    expect(seen[0]).toBe("https://npm.acme.test/@acme%2fwidget");
   });
 
   it("resolves against the orchestrator's registry, never a host the caller supplies", async () => {

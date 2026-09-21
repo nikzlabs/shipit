@@ -26,11 +26,16 @@ export interface PnpmLockPackage {
   integrity: string | null;
 }
 
-/** An importer's declared specifier, which carries `link:`/`file:`/`workspace:`/`npm:` forms. */
+/**
+ * One dependency edge. `specifier` is what the manifest asked for and `resolved` is what pnpm
+ * chose — both matter, because an ordinary semver specifier can resolve to a local link, which
+ * is how a local edge escapes a check that only reads specifiers.
+ */
 export interface PnpmImporterSpecifier {
   importer: string;
   name: string;
   specifier: string;
+  resolved: string;
 }
 
 export interface ParsedPnpmLock {
@@ -41,6 +46,8 @@ export interface ParsedPnpmLock {
   patchedDependencies: string[];
   /** Importer directories, so the builder stages every workspace manifest the lockfile names. */
   importerDirs: string[];
+  /** Every `snapshots:` dependency edge target, which is where a transitive link shows up. */
+  snapshotEdges: { from: string; name: string; resolved: string }[];
 }
 
 export class PnpmLockParseError extends Error {}
@@ -132,7 +139,29 @@ export function parsePnpmLock(text: string): ParsedPnpmLock {
         if (!isRecord(deps)) continue;
         for (const [name, entry] of Object.entries(deps)) {
           const specifier = isRecord(entry) ? entry.specifier : undefined;
-          if (typeof specifier === "string") importers.push({ importer: dir, name, specifier });
+          const resolved = isRecord(entry) ? entry.version : undefined;
+          if (typeof specifier === "string") {
+            importers.push({
+              importer: dir,
+              name,
+              specifier,
+              resolved: typeof resolved === "string" ? resolved : "",
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const snapshotEdges: ParsedPnpmLock["snapshotEdges"] = [];
+  if (isRecord(doc.snapshots)) {
+    for (const [from, value] of Object.entries(doc.snapshots)) {
+      if (!isRecord(value)) continue;
+      for (const group of ["dependencies", "optionalDependencies"]) {
+        const deps = value[group];
+        if (!isRecord(deps)) continue;
+        for (const [name, resolved] of Object.entries(deps)) {
+          if (typeof resolved === "string") snapshotEdges.push({ from, name, resolved });
         }
       }
     }
@@ -146,5 +175,6 @@ export function parsePnpmLock(text: string): ParsedPnpmLock {
     importers,
     patchedDependencies: patched,
     importerDirs: importerDirs.length > 0 ? importerDirs : ["."],
+    snapshotEdges,
   };
 }

@@ -78,9 +78,34 @@ const SUPPORTED_LOCKFILE_MAJORS = new Set(["9", "10"]);
 /** Specifier prefixes that resolve outside the staged snapshot. `npm:` aliases are admitted. */
 const LOCAL_SPECIFIER = /^(?:file:|link:|workspace:|git\+|git:|github:|https?:)/;
 
-/** pnpm settings that move output out of one self-contained `node_modules`. */
-const LAYOUT_KEYS_YAML = ["modulesDir", "virtualStoreDir", "nodeLinker"] as const;
-const LAYOUT_KEYS_NPMRC = ["modules-dir", "virtual-store-dir", "node-linker"] as const;
+/**
+ * Layout settings, each with the one value that describes the layout the base IS. Declaring
+ * the default explicitly is common and must not cost a repo its base; any other value moves
+ * output out of one self-contained `node_modules`.
+ */
+const LAYOUT_DEFAULTS: Record<string, string> = {
+  modulesDir: "node_modules",
+  "modules-dir": "node_modules",
+  virtualStoreDir: "node_modules/.pnpm",
+  "virtual-store-dir": "node_modules/.pnpm",
+  nodeLinker: "isolated",
+  "node-linker": "isolated",
+};
+
+/**
+ * Settings that point pnpm at a hook source. A hook is not a script, and one that runs in the
+ * builder can rewrite the output the orchestrator then publishes — including by naming a file
+ * the snapshot stages for another reason. `--ignore-pnpmfile` suppresses them; this refuses
+ * them as well, because the two together are what make "no repo code runs" a fact rather than
+ * a flag that has to stay on every invocation for ever.
+ */
+const HOOK_CONFIG_KEYS = ["pnpmfile", "globalPnpmfile", "global-pnpmfile"];
+
+function layoutViolation(key: string, value: unknown): boolean {
+  const expected = LAYOUT_DEFAULTS[key];
+  if (expected === undefined) return false;
+  return typeof value !== "string" || value.replace(/^\.\//, "").replace(/\/+$/, "") !== expected;
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -333,23 +358,39 @@ export function decidePnpmBaseEligibility(
     };
   }
 
-  for (const key of LAYOUT_KEYS_YAML) {
-    if (staged.workspaceYaml && key in staged.workspaceYaml) {
+  for (const [key, value] of Object.entries(staged.workspaceYaml ?? {})) {
+    if (HOOK_CONFIG_KEYS.includes(key)) {
+      return {
+        eligible: false,
+        code: "hook-source",
+        detail: `${PNPM_WORKSPACE_YAML} sets ${key}, which points pnpm at a hook to execute`,
+      };
+    }
+    if (layoutViolation(key, value)) {
       return {
         eligible: false,
         code: "escaping-layout",
-        detail: `${PNPM_WORKSPACE_YAML} sets ${key}, so the install output is not one self-contained node_modules`,
+        detail: `${PNPM_WORKSPACE_YAML} sets ${key} to ${JSON.stringify(value)}, `
+          + "so the install output is not one self-contained node_modules",
       };
     }
   }
 
   for (const { relPath, text } of staged.npmrc) {
     for (const { key, value } of parseNpmrc(text)) {
-      if ((LAYOUT_KEYS_NPMRC as readonly string[]).includes(key)) {
+      if (HOOK_CONFIG_KEYS.includes(key)) {
+        return {
+          eligible: false,
+          code: "hook-source",
+          detail: `${relPath} sets ${key}, which points pnpm at a hook to execute`,
+        };
+      }
+      if (layoutViolation(key, value)) {
         return {
           eligible: false,
           code: "escaping-layout",
-          detail: `${relPath} sets ${key}, so the install output is not one self-contained node_modules`,
+          detail: `${relPath} sets ${key} to ${JSON.stringify(value)}, `
+            + "so the install output is not one self-contained node_modules",
         };
       }
       if (key === "registry" && !sameRegistry(value, opts.registryUrl)) {
@@ -373,13 +414,26 @@ export function decidePnpmBaseEligibility(
     }
   }
 
-  for (const { importer, name, specifier } of staged.lock.importers) {
-    if (LOCAL_SPECIFIER.test(specifier)) {
+  // Both halves of every edge: an ordinary `^1.0.0` specifier can RESOLVE to `link:packages/x`,
+  // which happens whenever a workspace package satisfies a plain semver range, so a check that
+  // reads specifiers alone lets the local edge the design excludes straight through.
+  for (const { importer, name, specifier, resolved } of staged.lock.importers) {
+    const local = [specifier, resolved].find((v) => LOCAL_SPECIFIER.test(v));
+    if (local !== undefined) {
       return {
         eligible: false,
         code: "local-specifier",
         detail: `${importer === "." ? "the root manifest" : importer} depends on ${name} as `
-          + `${specifier}, whose content is not a published tarball`,
+          + `${local}, whose content is not a published tarball`,
+      };
+    }
+  }
+  for (const { from, name, resolved } of staged.lock.snapshotEdges) {
+    if (LOCAL_SPECIFIER.test(resolved)) {
+      return {
+        eligible: false,
+        code: "local-specifier",
+        detail: `${from} depends on ${name} as ${resolved}, whose content is not a published tarball`,
       };
     }
   }

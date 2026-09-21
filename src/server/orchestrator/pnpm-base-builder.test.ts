@@ -7,14 +7,19 @@ import type Docker from "dockerode";
 
 import {
   BUILD_PROJECT_DIR,
+  BUILD_REGISTRY_DIR,
   BUILD_REGISTRY_URL,
+  BUILD_STORE_DIR,
   BUILDER_PNPM_BIN,
   buildVerifiedPnpmBase,
   builderEnv,
   builderScript,
+  PNPM_BUILDER_LABEL,
+  reapOrphanPnpmBaseBuilds,
   type PnpmBaseBuilderDeps,
 } from "./pnpm-base-builder.js";
-import { PNPM_VERIFIED_NAMESPACE } from "./overlay-session.js";
+import { CONTAINER_WORKSPACE_PATH, PNPM_VERIFIED_NAMESPACE } from "./overlay-session.js";
+import { PNPM_STORE_CONTAINER_PATH } from "./container-lifecycle.js";
 import { sha512Integrity, type FetchLike } from "./pnpm-base-registry.js";
 import type { OverlayScope, PublishBaseArgs, PublishResult } from "./overlay-base.js";
 
@@ -127,7 +132,9 @@ function fakeDocker(opts: { exitCode?: number; onRun?: (cfg: Docker.ContainerCre
 describe("builderScript", () => {
   it("fetches through the loopback registry and then builds with none reachable", () => {
     const script = builderScript();
-    expect(script).toContain(`fetch --ignore-scripts --registry ${BUILD_REGISTRY_URL}`);
+    expect(script).toContain(
+      `fetch --ignore-scripts --ignore-pnpmfile --registry ${BUILD_REGISTRY_URL}`,
+    );
     expect(script).toContain(
       "install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile --registry http://127.0.0.1:1/",
     );
@@ -137,8 +144,26 @@ describe("builderScript", () => {
     expect(wipe).toBeLessThan(script.indexOf("install --offline"));
   });
 
+  it("suppresses hooks on BOTH phases, not only the one that publishes", () => {
+    // A hook is not a script, so `--ignore-scripts` does not stop it, and a hook that runs in
+    // the fetch phase can rewrite what the offline phase then builds from — or the binary it
+    // builds with.
+    const phases = builderScript().split("\n").filter((l) => l.includes(BUILDER_PNPM_BIN));
+    expect(phases).toHaveLength(2);
+    expect(phases.every((l) => l.includes("--ignore-pnpmfile"))).toBe(true);
+    expect(phases.every((l) => l.includes("--ignore-scripts"))).toBe(true);
+  });
+
   it("runs the pinned pnpm by path, never a corepack shim a repo could redirect", () => {
     expect(builderScript()).toContain(`"${BUILDER_PNPM_BIN}"`);
+  });
+
+  it("builds at the paths the consuming SESSION uses, not paths of its own", () => {
+    // pnpm records `storeDir` in `.modules.yaml` and the publish preserves it, so a base built
+    // anywhere else reads to the consumer as a store mismatch (FINDINGS.md).
+    expect(BUILD_PROJECT_DIR).toBe(CONTAINER_WORKSPACE_PATH);
+    expect(BUILD_STORE_DIR).toBe(PNPM_STORE_CONTAINER_PATH);
+    expect(builderScript()).toContain(`--store-dir "${PNPM_STORE_CONTAINER_PATH}"`);
   });
 });
 
@@ -313,9 +338,48 @@ describe("buildVerifiedPnpmBase", () => {
     expect(fake.created[0].HostConfig?.NetworkMode).toBe("none");
     expect(fake.created[0].HostConfig?.CapDrop).toEqual(["ALL"]);
     expect(fake.created[0].HostConfig?.Memory).toBeGreaterThan(0);
+    // The verified tarballs are the one input nothing in the container may edit.
+    const registryMount = (fake.created[0].HostConfig?.Mounts ?? []).find(
+      (m) => (m as { Target?: string }).Target === BUILD_REGISTRY_DIR,
+    ) as { ReadOnly?: boolean } | undefined;
+    expect(registryMount?.ReadOnly).toBe(true);
+    expect(
+      (fake.created[0].HostConfig?.Mounts ?? []).map((m) => (m as { Target?: string }).Target),
+    ).toContain(BUILD_STORE_DIR);
     // Each run gets its own directory under the scope, and takes it with it when it ends.
     const scopeDirs = fs.readdirSync(path.join(stateDir, "pnpm-base-build"));
     expect(scopeDirs).toHaveLength(1);
     expect(fs.readdirSync(path.join(stateDir, "pnpm-base-build", scopeDirs[0]))).toEqual([]);
+  });
+});
+
+describe("reapOrphanPnpmBaseBuilds", () => {
+  it("removes a previous process's builder containers and their work dirs", async () => {
+    // The builder's timeout and its `finally` both live in the orchestrator, so a crash
+    // between creating the container and finishing the build leaves nothing else to reclaim.
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-reap-"));
+    const stranded = path.join(stateDir, "pnpm-base-build", "scope-1", "run-abc");
+    fs.mkdirSync(path.join(stranded, "registry", "tarballs"), { recursive: true });
+
+    const listed: unknown[] = [];
+    const removed: string[] = [];
+    const docker = {
+      listContainers: (opts: { filters: { label: string[] } }) => {
+        listed.push(opts.filters.label);
+        return Promise.resolve([{ Id: "left-over" }]);
+      },
+      getContainer: (id: string) => ({
+        remove: () => {
+          removed.push(id);
+          return Promise.resolve();
+        },
+      }),
+    } as unknown as Docker;
+
+    expect(await reapOrphanPnpmBaseBuilds(docker, stateDir)).toBe(1);
+    expect(listed[0]).toContain(PNPM_BUILDER_LABEL);
+    expect(removed).toEqual(["left-over"]);
+    expect(fs.existsSync(path.join(stateDir, "pnpm-base-build"))).toBe(false);
+    fs.rmSync(stateDir, { recursive: true, force: true });
   });
 });

@@ -23,7 +23,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 import { BUILD_REGISTRY_SERVER, builderEnv, builderScript } from "../pnpm-base-builder.js";
@@ -34,17 +34,27 @@ const PNPM_TIMEOUT_MS = 300_000;
 const LEAF = "shipit-base-leaf";
 const ROOT = "shipit-base-root";
 const VERSION = "1.0.0";
+const SCRIPT_MARKER = "POSTINSTALL_RAN";
 
-/** The builder bakes a pnpm 12; any pnpm 12 shows the behaviour this pins. */
+/**
+ * The builder bakes a pnpm 12 and `builderScript` runs it as ONE executable path. So a
+ * multi-word fallback has to become an executable too, not a string the shell would try to
+ * launch as a single pathname — a shim, written once and named by path.
+ */
 const PNPM_PIN = "12.4.1";
-function resolvePnpm(): string[] | null {
+function resolvePnpm(shimDir: string): string | null {
   for (const cmd of [["pnpm"], ["corepack", `pnpm@${PNPM_PIN}`]]) {
     try {
       const version = execFileSync(cmd[0], [...cmd.slice(1), "--version"], {
         encoding: "utf-8",
         env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" },
       }).trim();
-      if (parseInt(version, 10) >= 12) return cmd;
+      if (parseInt(version, 10) < 12) continue;
+      if (cmd.length === 1) return cmd[0];
+      const shim = path.join(shimDir, "pnpm-shim");
+      fs.mkdirSync(shimDir, { recursive: true });
+      fs.writeFileSync(shim, `#!/bin/sh\nexec ${cmd.join(" ")} "$@"\n`, { mode: 0o755 });
+      return shim;
     } catch {
       /* Try the next candidate. */
     }
@@ -77,7 +87,8 @@ function envFor(homeDir: string): NodeJS.ProcessEnv {
   };
 }
 
-const pnpmCmd = resolvePnpm();
+const SHIM_DIR = path.join(os.tmpdir(), `pnpm-vb-shim-${process.pid}`);
+const pnpmCmd = resolvePnpm(SHIM_DIR);
 
 describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder", () => {
   let tmp: string;
@@ -114,6 +125,9 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
           version: VERSION,
           main: "index.js",
           bin: { [ROOT]: "./cli.js" },
+          // The build script the builder must leave unrun (section 5: packages with build
+          // scripts land unbuilt, and each session builds the ones it approves in its upper).
+          scripts: { postinstall: `node -e "require('fs').writeFileSync('${SCRIPT_MARKER}','')"` },
           dependencies: { [LEAF]: VERSION },
         },
         { "index.js": "module.exports = 'root';\n", "cli.js": "#!/usr/bin/env node\n" },
@@ -185,6 +199,14 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
         dependencies: { [ROOT]: VERSION },
       }),
     );
+    // The repo APPROVES the build, in pnpm 12's own form: `allowBuilds` keyed by package id.
+    // Measured 2026-09-21 that `onlyBuiltDependencies` does NOT approve on 12.4.1 — the
+    // install still fails `ERR_PNPM_IGNORED_BUILDS` — so the control below would measure
+    // nothing without this exact spelling.
+    fs.writeFileSync(
+      path.join(dir, "pnpm-workspace.yaml"),
+      `allowBuilds:\n  "${ROOT}@${VERSION}": true\n`,
+    );
     fs.writeFileSync(
       path.join(dir, "pnpm-lock.yaml"),
       `lockfileVersion: '9.0'
@@ -227,7 +249,7 @@ snapshots:
       [
         "-c",
         builderScript({
-          pnpmBin: pnpmCmd!.join(" "),
+          pnpmBin: pnpmCmd!,
           projectDir,
           registryDir,
           storeDir,
@@ -250,6 +272,88 @@ snapshots:
     expect(fs.readdirSync(storeDir).length).toBeGreaterThan(0);
   }, PNPM_TIMEOUT_MS);
 
+  it("hands a consumer a tree it accepts as up to date against an EMPTY private store", async () => {
+    // The whole point of the base, and the one thing the store path decides: pnpm records
+    // `storeDir` in `node_modules/.modules.yaml`, so a tree built anywhere else is a store
+    // mismatch the consumer reinstalls or refuses. `BUILD_STORE_DIR` is the session's own
+    // container path for exactly this reason; here both sides use one path so the cell
+    // measures the mechanism rather than the constant.
+    const scratch = fs.mkdtempSync(path.join(tmp, "consume-"));
+    const built = path.join(scratch, "built");
+    const sharedStorePath = path.join(scratch, "store");
+    writeProject(built);
+    await run(
+      "/bin/sh",
+      [
+        "-c",
+        builderScript({
+          pnpmBin: pnpmCmd!,
+          projectDir: built,
+          registryDir,
+          storeDir: sharedStorePath,
+          registryUrl: `http://127.0.0.1:${port + 3}/`,
+          readyFile: path.join(scratch, "registry.ready"),
+        }),
+      ],
+      {
+        timeout: PNPM_TIMEOUT_MS,
+        maxBuffer: 16 * 1024 * 1024,
+        env: envFor(path.join(scratch, "home")),
+      },
+    );
+
+    // A second session: the base tree, its own committed inputs, and an EMPTY store at the
+    // path the base records. Emptying it is what makes this a base hit rather than a reinstall.
+    const consumer = path.join(scratch, "consumer");
+    writeProject(consumer);
+    fs.cpSync(path.join(built, "node_modules"), path.join(consumer, "node_modules"), {
+      recursive: true,
+      verbatimSymlinks: true,
+    });
+    expect(
+      fs.readFileSync(path.join(consumer, "node_modules", ".modules.yaml"), "utf-8"),
+    ).toContain(sharedStorePath);
+    fs.rmSync(sharedStorePath, { recursive: true, force: true });
+    fs.mkdirSync(sharedStorePath, { recursive: true });
+
+    // A session's registry is reachable, so this one's is too — and it has to be: pnpm 12
+    // verifies the lockfile against supply-chain policies before anything else, which needs
+    // registry metadata the consumer's cold cache does not have. `--offline` here would fail
+    // on that, not on the tree (FINDINGS.md).
+    const consumerPort = port + 4;
+    const server = spawn(
+      "node",
+      [path.join(registryDir, "server.mjs"), registryDir, String(consumerPort),
+        path.join(scratch, "consumer-registry.ready")],
+      { stdio: "ignore" },
+    );
+    try {
+      for (let i = 0; i < 300 && !fs.existsSync(path.join(scratch, "consumer-registry.ready")); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const result = await run(
+        pnpmCmd!,
+        [
+          "install", "--frozen-lockfile", "--ignore-scripts", "--ignore-pnpmfile",
+          "--store-dir", sharedStorePath, "--registry", `http://127.0.0.1:${consumerPort}/`,
+        ],
+        {
+          cwd: consumer,
+          timeout: PNPM_TIMEOUT_MS,
+          maxBuffer: 16 * 1024 * 1024,
+          env: envFor(path.join(scratch, "consumer-home")),
+        },
+      );
+      expect(result.stdout).toContain("resolution step is skipped");
+    } finally {
+      server.kill();
+    }
+    // Nothing was imported: the consumer read the tree, not a store.
+    expect(fs.readdirSync(sharedStorePath)).toEqual([]);
+    expect(fs.readFileSync(path.join(consumer, "node_modules", ROOT, "index.js"), "utf-8"))
+      .toContain("root");
+  }, PNPM_TIMEOUT_MS);
+
   it("fails rather than reaching the network when a package is missing from the staged set", async () => {
     const scratch = fs.mkdtempSync(path.join(tmp, "missing-"));
     const thinRegistry = path.join(scratch, "registry");
@@ -268,13 +372,14 @@ snapshots:
     const thinProject = path.join(scratch, "project");
     writeProject(thinProject);
 
-    await expect(
-      run(
+    let failure: { stdout?: string; stderr?: string; code?: number } | null = null;
+    try {
+      await run(
         "/bin/sh",
         [
           "-c",
           builderScript({
-            pnpmBin: pnpmCmd!.join(" "),
+            pnpmBin: pnpmCmd!,
             projectDir: thinProject,
             registryDir: thinRegistry,
             storeDir: path.join(scratch, "store"),
@@ -287,8 +392,61 @@ snapshots:
           maxBuffer: 16 * 1024 * 1024,
           env: envFor(path.join(scratch, "home")),
         },
-      ),
-    ).rejects.toThrow();
+      );
+    } catch (err) {
+      failure = err as { stdout?: string; stderr?: string; code?: number };
+    }
+
+    // Name the failure rather than accepting any rejection: a timeout, or a pnpm that could
+    // not launch at all, would otherwise read as this control passing.
+    expect(failure).not.toBeNull();
+    const output = `${failure?.stdout ?? ""}${failure?.stderr ?? ""}`;
+    expect(failure?.code).toBeGreaterThan(0);
+    expect(output).toContain(LEAF);
     expect(fs.existsSync(path.join(thinProject, "node_modules", ROOT))).toBe(false);
+  }, PNPM_TIMEOUT_MS);
+
+  it("leaves an APPROVED build script unrun, with a control that shows it would otherwise run", async () => {
+    // Section 5: "packages with build scripts land unbuilt; each session builds the ones it
+    // approves in its own upper". The fixture approves the build in `pnpm-workspace.yaml`, so
+    // the control is a genuine positive — pnpm 12 refuses an unapproved build either way, and
+    // this cell would then measure nothing.
+    const scratch = fs.mkdtempSync(path.join(tmp, "scripts-"));
+    const scripted = path.join(scratch, "project");
+    writeProject(scripted);
+
+    const paths = {
+      pnpmBin: pnpmCmd!,
+      projectDir: scripted,
+      registryDir,
+      storeDir: path.join(scratch, "store"),
+      registryUrl: `http://127.0.0.1:${port + 2}/`,
+      readyFile: path.join(scratch, "registry.ready"),
+    };
+    const marker = path.join(
+      scripted, "node_modules", ".pnpm", `${ROOT}@${VERSION}`, "node_modules", ROOT, SCRIPT_MARKER,
+    );
+
+    await run("/bin/sh", ["-c", builderScript(paths)], {
+      timeout: PNPM_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      env: envFor(path.join(scratch, "home")),
+    });
+    expect(fs.existsSync(marker)).toBe(false);
+
+    // Control: the same build with the suppression removed from the phase that PUBLISHES.
+    // The fetch phase keeps it — without it pnpm refuses to fetch at all, which would make
+    // this control fail for the wrong reason.
+    fs.rmSync(path.join(scripted, "node_modules"), { recursive: true, force: true });
+    const withScripts = builderScript(paths).replace(
+      "install --offline --frozen-lockfile --ignore-scripts",
+      "install --offline --frozen-lockfile",
+    );
+    await run("/bin/sh", ["-c", withScripts], {
+      timeout: PNPM_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      env: envFor(path.join(scratch, "home")),
+    });
+    expect(fs.existsSync(marker)).toBe(true);
   }, PNPM_TIMEOUT_MS);
 });

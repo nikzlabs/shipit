@@ -4,9 +4,11 @@ import type Docker from "dockerode";
 
 import { waitForContainerExit } from "./plugin-container.js";
 import { sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
-import { stackLabel } from "./stack-label.js";
+import { stackLabel, stackLabelFilters } from "./stack-label.js";
 import { publishBase, type PublishOutcome, type OverlayScope } from "./overlay-base.js";
 import { overlayScopeHash } from "./overlay-volume.js";
+import { CONTAINER_WORKSPACE_PATH } from "./overlay-session.js";
+import { PNPM_STORE_CONTAINER_PATH } from "./container-lifecycle.js";
 import {
   decidePnpmBaseEligibility,
   describeIneligible,
@@ -36,11 +38,18 @@ import {
 export const PNPM_BUILDER_LABEL = "shipit-pnpm-base-build";
 export const PNPM_BUILDER_SUBDIR = "pnpm-base-build";
 
-/** Container paths. `/build` holds nothing the image ships, so no image path is shadowed. */
+/**
+ * The builder's project and store paths are the SESSION's own container paths, not paths of
+ * the builder's choosing. pnpm records `storeDir` in `node_modules/.modules.yaml` and the
+ * publish preserves it, so a base built at any other path is a base the consuming session
+ * reads as a store mismatch — it reinstalls, or refuses, instead of hitting the warm tree
+ * (FINDINGS.md, "the private store must sit at the same container path the base was built
+ * with"). `/build` holds only what the session never sees.
+ */
+export const BUILD_PROJECT_DIR = CONTAINER_WORKSPACE_PATH;
+export const BUILD_STORE_DIR = PNPM_STORE_CONTAINER_PATH;
 export const BUILD_ROOT = "/build";
-export const BUILD_PROJECT_DIR = `${BUILD_ROOT}/project`;
 export const BUILD_REGISTRY_DIR = `${BUILD_ROOT}/registry`;
-export const BUILD_STORE_DIR = `${BUILD_ROOT}/store`;
 export const BUILD_HOME_DIR = `${BUILD_ROOT}/home`;
 
 /** Loopback only; the container runs with `NetworkMode: none`, so nothing else can reach it. */
@@ -69,6 +78,13 @@ export interface PnpmBaseBuilderDeps {
   workspaceVolume?: string;
   stateRoot?: string;
   registryUrl?: string;
+  /**
+   * `@scope` -> registry, for the scopes the operator authorized. One map decides both halves:
+   * whether an `.npmrc` mapping is admitted, and which registry that scope's packages are then
+   * verified against. Empty by default, so a scoped registry gets no base until an operator
+   * says otherwise.
+   */
+  authorizedScopeRegistries?: Record<string, string>;
   timeoutMs?: number;
   stackName?: string;
   fetchImpl?: FetchLike;
@@ -174,7 +190,10 @@ export function builderScript(paths: BuilderScriptPaths = builderScriptPaths()):
   sleep 0.1
 done`,
     `cd "${paths.projectDir}"`,
-    `${pnpm} fetch --ignore-scripts --registry ${paths.registryUrl}`,
+    // `--ignore-pnpmfile` on BOTH phases. A hook is not a script, so `--ignore-scripts` does
+    // not stop it (measured, FINDINGS.md), and a hook that runs in either phase can rewrite
+    // the inputs — or the binary — the other phase then uses to produce the published tree.
+    `${pnpm} fetch --ignore-scripts --ignore-pnpmfile --registry ${paths.registryUrl}`,
     "kill $registry_pid 2>/dev/null || true",
     // The published tree must come from the offline install alone, not from what the fetch
     // phase laid down while the loopback registry was still up.
@@ -251,7 +270,12 @@ export async function buildVerifiedPnpmBase(
     }
 
     const registryUrl = deps.registryUrl ?? DEFAULT_REGISTRY_URL;
-    const decision = decidePnpmBaseEligibility(staged, { registryUrl });
+    const decision = decidePnpmBaseEligibility(staged, {
+      registryUrl,
+      ...(deps.authorizedScopeRegistries
+        ? { authorizedScopeRegistries: deps.authorizedScopeRegistries }
+        : {}),
+    });
     if (!decision.eligible) {
       return { status: "ineligible", detail: describeIneligible(decision), reason: decision };
     }
@@ -261,6 +285,9 @@ export async function buildVerifiedPnpmBase(
       destDir: registryDir,
       registryUrl,
       builderRegistryUrl: BUILD_REGISTRY_URL,
+      ...(deps.authorizedScopeRegistries
+        ? { authorizedScopeRegistries: deps.authorizedScopeRegistries }
+        : {}),
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     });
     if (!stagedRegistry.ok) {
@@ -312,6 +339,45 @@ export async function buildVerifiedPnpmBase(
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+/**
+ * Boot only: these belong to a previous orchestrator process — of THIS stack. The builder's
+ * timeout and its `finally` both live in the orchestrator, so a crash between creating the
+ * container and finishing the build strands both the container and its work dir with nothing
+ * left to reclaim them.
+ */
+export async function reapOrphanPnpmBaseBuilds(
+  docker: Docker,
+  stateDir: string,
+  opts: { stackName?: string } = {},
+): Promise<number> {
+  let removed = 0;
+  try {
+    const containers = await docker.listContainers({
+      all: true,
+      filters: { label: [PNPM_BUILDER_LABEL, ...stackLabelFilters(opts.stackName)] },
+    });
+    for (const { Id } of containers) {
+      try {
+        await docker.getContainer(Id).remove({ force: true });
+        removed++;
+      } catch {
+        /* Best-effort orphan cleanup. */
+      }
+    }
+  } catch (err) {
+    console.warn("[pnpm-base] could not list builder containers:", message(err));
+  }
+
+  // Remove the work dirs after the containers, which still hold their mounts.
+  try {
+    fs.rmSync(path.join(stateDir, PNPM_BUILDER_SUBDIR), { recursive: true, force: true });
+  } catch (err) {
+    console.warn("[pnpm-base] could not clear stranded builder work dirs:", message(err));
+  }
+  if (removed > 0) console.log(`[pnpm-base] removed ${removed} orphan builder container(s)`);
+  return removed;
 }
 
 async function runBuilderContainer(

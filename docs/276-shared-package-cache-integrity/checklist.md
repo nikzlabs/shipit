@@ -236,6 +236,27 @@ recorded in [requirements.md](./requirements.md); none is open.
 - [ ] Trigger: nothing calls `buildVerifiedPnpmBase` yet. It lands with the consumer-side
       changes that make mounting a verified base safe (no pnpm pre-stamp, the no-lockfile
       gate, the per-scope lock), because a published pointer opens the mount gate at once.
+- [x] Independent review of the builder slice (2026-09-21, reviewer role, given the design
+      cold). Its **P1 reproduced and is fixed**: the FETCH phase omitted `--ignore-pnpmfile`,
+      and `globalPnpmfile` was not a rejected key — so a staged `hooks.cjs/package.json` with
+      `main: "../.npmrc"` could have Node execute the staged `.npmrc` inside the builder,
+      before the phase that publishes. Both halves are closed (the flag on both phases, and
+      `pnpmfile`/`globalPnpmfile`/`global-pnpmfile` refused), with a cell naming the chain.
+      Also confirmed and fixed: the base recorded `/build/store` while consumers use
+      `/workspace/.pnpm-store`, which is a store mismatch at every consumer — the builder now
+      uses the session's own constants, and a new cell consumes the built tree against an
+      empty store at the recorded path; a local edge a plain specifier RESOLVED to escaped the
+      decision (both importer `version` and `snapshots` edges are read now); authorized scope
+      registries were accepted by the helper but unreachable through the builder (plumbed, and
+      per-package registry selection added); two packages whose readable names collide shared
+      one staged file (named by digest now); declaring the supported layout explicitly cost a
+      repo its base (only a non-default value is refused); the missing-package control accepted
+      any rejection and its corepack fallback could not launch (named failure; the fallback is
+      a shim); and a crashed orchestrator stranded builder containers and work dirs
+      (`reapOrphanPnpmBaseBuilds`, boot-only, wired into `startup-janitor.ts`). Its request for
+      an executable script-suppression control produced two measurements that changed the
+      fixture: `onlyBuiltDependencies` does not approve a build on 12.4.1, and the FETCH phase
+      needs `--ignore-scripts` too (FINDINGS.md).
 - [ ] Measure the build-inclusive base-hit install cost (approved registry dep +
       `--ignore-scripts` base + empty private store): warm-install time and the
       marginal build-output disk in the upper. The 8 KB result used scriptless

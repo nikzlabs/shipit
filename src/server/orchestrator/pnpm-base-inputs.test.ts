@@ -166,6 +166,34 @@ describe("decidePnpmBaseEligibility", () => {
     expect(decision).toMatchObject({ eligible: false, code: "local-specifier" });
   });
 
+  it("refuses a local edge an ordinary specifier RESOLVED to", async () => {
+    // The shape a specifier-only check misses, and the one that arises naturally whenever a
+    // workspace package satisfies a plain semver range.
+    const decision = decide(
+      await stage({
+        ...BASE_FILES,
+        [PNPM_LOCKFILE]: LOCK.replace("version: 1.3.0", "version: link:packages/local"),
+      }),
+    );
+    expect(decision).toMatchObject({ eligible: false, code: "local-specifier" });
+  });
+
+  it("refuses a local edge a transitive resolved to", async () => {
+    const decision = decide(
+      await stage({
+        ...BASE_FILES,
+        [PNPM_LOCKFILE]: `${LOCK}
+snapshots:
+
+  left-pad@1.3.0:
+    dependencies:
+      helper: link:packages/helper
+`,
+      }),
+    );
+    expect(decision).toMatchObject({ eligible: false, code: "local-specifier" });
+  });
+
   it("admits an npm: alias, whose resolved target is what gets verified", async () => {
     const decision = decide(
       await stage({
@@ -229,9 +257,38 @@ patchedDependencies:
     expect(decision).toMatchObject({ eligible: false, code: "escaping-layout" });
   });
 
+  it.each([
+    [PNPM_WORKSPACE_YAML, "nodeLinker: isolated\n"],
+    [PNPM_WORKSPACE_YAML, "modulesDir: node_modules\n"],
+    [PNPM_WORKSPACE_YAML, "virtualStoreDir: node_modules/.pnpm\n"],
+  ])("admits %s declaring the supported layout explicitly", async (file, text) => {
+    // Rejecting on the key's presence would cost a base to every repo that spells out the
+    // layout the base already has — reqs 2, 10 and 13 for no gain.
+    const decision = decide(await stage({ ...BASE_FILES, [file]: text }));
+    expect(decision.eligible).toBe(true);
+  });
+
   it("refuses an .npmrc that moves the layout", async () => {
     const decision = decide(await stage({ ...BASE_FILES, ".npmrc": "node-linker=hoisted\n" }));
     expect(decision).toMatchObject({ eligible: false, code: "escaping-layout" });
+  });
+
+  it.each([
+    [PNPM_WORKSPACE_YAML, "globalPnpmfile: ./hooks.cjs\n"],
+    [PNPM_WORKSPACE_YAML, "pnpmfile: ./hooks.cjs\n"],
+    [".npmrc", "global-pnpmfile=./hooks.cjs\n"],
+  ])("refuses %s pointing pnpm at a hook to execute", async (file, text) => {
+    // The attack this closes: the named path need not itself be a hook source. Every
+    // package.json in the tree is staged, so `hooks.cjs/package.json` with `main: "../.npmrc"`
+    // has Node resolve the hook to the staged `.npmrc` and execute it inside the builder.
+    const decision = decide(
+      await stage({
+        ...BASE_FILES,
+        [file]: text,
+        "hooks.cjs/package.json": JSON.stringify({ main: "../.npmrc" }),
+      }),
+    );
+    expect(decision).toMatchObject({ eligible: false, code: "hook-source" });
   });
 
   it("refuses an .npmrc that repoints the registry the orchestrator chose", async () => {

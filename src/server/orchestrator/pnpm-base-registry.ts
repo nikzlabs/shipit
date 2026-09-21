@@ -62,9 +62,15 @@ export function conventionalTarballPath(name: string, version: string): string {
   return `/${name}/-/${name.split("/").pop() ?? name}-${version}.tgz`;
 }
 
-/** A file name that cannot escape `tarballs/` whatever the package is called. */
-export function tarballFileName(name: string, version: string): string {
-  return `${name.replace("@", "").replace("/", "-")}-${version}.tgz`;
+/**
+ * Named by the digest, not by the package: two distinct packages can flatten to one readable
+ * name (`@foo/bar@1.0.0` and `foo-bar@1.0.0` both give `foo-bar-1.0.0.tgz`), and the second
+ * would overwrite the first while both routes kept serving it. A digest name cannot collide
+ * without the bytes being identical, and cannot escape `tarballs/` whatever the package is
+ * called.
+ */
+export function tarballFileName(integrity: string): string {
+  return `${Buffer.from(integrity.slice(integrity.indexOf("-") + 1), "base64").toString("hex")}.tgz`;
 }
 
 /**
@@ -110,11 +116,22 @@ export async function stageVerifiedRegistry(args: {
   registryUrl?: string;
   /** Registry the BUILDER reaches the staged tarballs at; only its origin appears in the index. */
   builderRegistryUrl: string;
+  /**
+   * `@scope` -> registry, for the scopes the operator authorized. A scoped package resolves
+   * against its own registry; every other package resolves against `registryUrl`. The map is
+   * the orchestrator's, never the repo's — eligibility already refuses an `.npmrc` that
+   * introduces one of its own.
+   */
+  authorizedScopeRegistries?: Record<string, string>;
   fetchImpl?: FetchLike;
   maxTotalBytes?: number;
   maxTarballBytes?: number;
 }): Promise<StageRegistryResult> {
-  const registryUrl = args.registryUrl ?? DEFAULT_REGISTRY_URL;
+  const defaultRegistry = args.registryUrl ?? DEFAULT_REGISTRY_URL;
+  const registryFor = (name: string): string =>
+    (name.startsWith("@")
+      ? args.authorizedScopeRegistries?.[name.slice(0, name.indexOf("/"))]
+      : undefined) ?? defaultRegistry;
   const doFetch = args.fetchImpl ?? ((url, init) => fetch(url, init));
   const maxTotal = args.maxTotalBytes ?? MAX_TOTAL_TARBALL_BYTES;
   const maxTarball = args.maxTarballBytes ?? MAX_TARBALL_BYTES;
@@ -135,6 +152,7 @@ export async function stageVerifiedRegistry(args: {
         detail: `${pkg.key} is not a name and version the registry could have published`,
       };
     }
+    const registryUrl = registryFor(pkg.name);
     let versions = packuments.get(pkg.name);
     if (!versions) {
       let body: unknown;
@@ -232,7 +250,7 @@ export async function stageVerifiedRegistry(args: {
       };
     }
 
-    const file = tarballFileName(pkg.name, pkg.version);
+    const file = tarballFileName(pkg.integrity);
     fs.writeFileSync(path.join(tarballDir, file), bytes);
 
     const route = conventionalTarballPath(pkg.name, pkg.version);

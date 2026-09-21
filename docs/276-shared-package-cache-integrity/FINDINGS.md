@@ -283,6 +283,54 @@ tree the orchestrator has pnpm build. What is still load-bearing is the half abo
 sha512 == lockfile integrity == packument `dist.integrity` — and that is scripted, in
 `pnpm-base-registry.test.ts` and the harness named above.
 
+## Finding: a base-hit consumer still contacts the registry, for pnpm 12's policy check
+
+Measured 2026-09-21 on pnpm 12.4.1 while writing the consumption cell of
+`integration_tests/pnpm-verified-base-build.test.ts`. A second session handed the builder's
+tree, with its own committed inputs and an **empty** private store at the path the base
+records:
+
+| Cell | Result |
+|---|---|
+| `pnpm install --frozen-lockfile`, registry reachable | **rc=0**, "Lockfile is up to date, resolution step is skipped"; store still **empty**; tree intact |
+| the same install with `--offline` and no registry | rc=1, `ERR_PNPM_NO_OFFLINE_META` — `Failed to resolve <pkg> in package mirror <cache>/pnpm/v11/metadata-full/…` |
+
+The failure is **not** the tree or the store. pnpm 12 runs "Verifying lockfile against
+supply-chain policies" *before* anything else, and that needs registry metadata the consumer's
+cold cache does not have. A session's registry is reachable, so the first row is the production
+shape; the builder is unaffected because its fetch phase warms that cache in the builder's own
+HOME before the offline phase runs.
+
+Two things this settles, and one it opens. It settles that the **store path is load-bearing
+and now correct**: the consumer accepts the tree as up to date only because `.modules.yaml`
+records the path it was given. It settles that a base hit **imports nothing** — the store stays
+empty, which is the req 10 claim. What it opens is for the consumer slice: a base-hit install
+is not free of the network on pnpm 12, so req 7's warm-install measurement must include that
+round trip rather than assume an offline no-op. Related: the metadata cache stays private per
+session (`XDG_CACHE_HOME/pnpm`), which is unchanged — this finding is about a call it makes,
+not about sharing it.
+
+## Finding: `--ignore-scripts` is also what keeps `strictDepBuilds` quiet
+
+Measured 2026-09-21 on pnpm 12.4.1, after an independent review asked for an executable
+control on script suppression. plan.md section 5 says `--ignore-scripts` is required because
+an **unapproved** build exits non-zero under pnpm 12's `strictDepBuilds`; the fuller picture
+is that `--ignore-scripts` is what makes *both* cases pass:
+
+| Approval | `--ignore-scripts` | Result |
+|---|---|---|
+| none | yes | rc=0, script not run |
+| none | no | **rc=1**, `Ignored build scripts` |
+| `allowBuilds: {"<id>": true}` | yes | rc=0, script **not run** — the builder's case |
+| `allowBuilds: {"<id>": true}` | no | rc=0, script **runs** — the positive control |
+
+So a script-bearing repo builds fine either way as long as the flag is on, and an approved
+build is genuinely suppressed rather than merely refused. Two details the harness depends on:
+**`onlyBuiltDependencies` does not approve on 12.4.1** (the install still fails
+`ERR_PNPM_IGNORED_BUILDS`) — pnpm 12's form is `allowBuilds` keyed by package id, as cell C2
+already found; and the **fetch** phase must keep `--ignore-scripts` too, because without it
+pnpm refuses to fetch at all, which would fail a control for the wrong reason.
+
 ## Finding: a repo's `packageManager` reaches the builder by three routes
 
 Measured 2026-09-21 with a repo pinning `packageManager: pnpm@10.28.2`, against a pnpm 12

@@ -606,13 +606,23 @@ pnpm pre-stamp, the no-lockfile gate, the per-scope lock) land with the trigger.
   sets all three switches (`PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS`,
   `COREPACK_ENABLE_PROJECT_SPEC`, `COREPACK_ENABLE_AUTO_PIN`).
 
-Two things the implementation makes stronger than the paragraphs describe, both worth stating
-because they change what a later reader has to check. The staged snapshot carries **only** the
-manifests, lockfile, `pnpm-workspace.yaml` and applicable `.npmrc` — a `.pnpmfile` is never
-staged at all, so `--ignore-pnpmfile` is defence in depth rather than the boundary; and
-`--store-dir`/`--registry` are passed **on the command line**, which outranks any `.npmrc` the
-snapshot carries, which is what makes "override a relocated global store" a real override
-rather than a hope.
+Three things the implementation makes stronger than the paragraphs describe, all worth stating
+because they change what a later reader has to check.
+
+- **`--ignore-pnpmfile` on BOTH phases, and hook-config keys refused outright.** The first cut
+  had it on the offline phase only, which an independent review broke: not staging a
+  `.pnpmfile` is not enough, because `globalPnpmfile: ./hooks.cjs` names a path the snapshot
+  stages for another reason — every `package.json` in the tree is staged, so
+  `hooks.cjs/package.json` with `main: "../.npmrc"` has Node resolve the hook to the staged
+  `.npmrc` and execute it in the fetch phase, before the phase that publishes. So
+  `pnpmfile`/`globalPnpmfile`/`global-pnpmfile` are refused in `.npmrc` and
+  `pnpm-workspace.yaml`, and the flag is on both phases.
+- **The builder builds at the SESSION's container paths**, `/workspace` and
+  `/workspace/.pnpm-store`, not paths of its own. pnpm records `storeDir` in `.modules.yaml`
+  and the publish preserves it, so any other path is a store mismatch at every consumer.
+- **`--store-dir`/`--registry` are passed on the command line**, which outranks any `.npmrc`
+  the snapshot carries — that is what makes "override a relocated global store" a real
+  override rather than a hope.
 
 *Scope and store.* pnpm's dep dir is `node_modules`; the pnpm early-returns
 (`container-overlay-provisioner.ts`, `overlay-publish.ts`) go. The store becomes
