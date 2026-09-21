@@ -24,6 +24,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, execFileSync, spawn } from "node:child_process";
+import net from "node:net";
 import { promisify } from "node:util";
 
 import { BUILD_REGISTRY_SERVER, builderEnv, builderScript } from "../pnpm-base-builder.js";
@@ -37,17 +38,20 @@ const VERSION = "1.0.0";
 const SCRIPT_MARKER = "POSTINSTALL_RAN";
 
 /**
- * The builder bakes a pnpm 12 and `builderScript` runs it as ONE executable path. So a
- * multi-word fallback has to become an executable too, not a string the shell would try to
- * launch as a single pathname — a shim, written once and named by path.
+ * The version the image bakes is tried FIRST, so this measures the pnpm the builder will
+ * actually run rather than whatever pnpm 12 the host happens to have — and so a session
+ * container (which has pnpm on PATH) and the CI runner (which does not) take the same path.
+ *
+ * `builderScript` runs its pnpm as ONE executable path, so a multi-word invocation has to
+ * become an executable too: a shim, written once and named by path.
  */
 const PNPM_PIN = "12.4.1";
 function resolvePnpm(shimDir: string): string | null {
-  for (const cmd of [["pnpm"], ["corepack", `pnpm@${PNPM_PIN}`]]) {
+  for (const cmd of [["corepack", `pnpm@${PNPM_PIN}`], ["pnpm"]]) {
     try {
       const version = execFileSync(cmd[0], [...cmd.slice(1), "--version"], {
         encoding: "utf-8",
-        env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" },
+        env: { ...process.env, ...corepackEnv(), COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" },
       }).trim();
       if (parseInt(version, 10) < 12) continue;
       if (cmd.length === 1) return cmd[0];
@@ -60,6 +64,17 @@ function resolvePnpm(shimDir: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * One corepack cache for the whole file. `builderEnv` gives every run its own HOME — correct
+ * for the builder, whose image bakes pnpm at a fixed path — but here it would make corepack
+ * re-download the pinned pnpm on each of the five invocations, which is five chances for a
+ * network hiccup to fail a cell for a reason it is not testing.
+ */
+const COREPACK_CACHE = path.join(os.tmpdir(), `pnpm-vb-corepack-${process.pid}`);
+function corepackEnv(): NodeJS.ProcessEnv {
+  return { COREPACK_HOME: COREPACK_CACHE };
 }
 
 /** A minimal npm tarball: `package/` at the root, which is what pnpm unpacks. */
@@ -83,8 +98,46 @@ function envFor(homeDir: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     ...Object.fromEntries(builderEnv(homeDir).map((e) => e.split(/=(.*)/s).slice(0, 2))),
+    ...corepackEnv(),
     COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
   };
+}
+
+/**
+ * Report what the build actually said. `execFile` rejects with the whole shell script as its
+ * message and the output in fields the reporter truncates away, which is how a CI failure here
+ * read as "Command failed" and nothing else.
+ */
+async function runBuild(script: string, homeDir: string): Promise<{ stdout: string; stderr: string }> {
+  try {
+    return await run("/bin/sh", ["-c", script], {
+      timeout: PNPM_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      env: envFor(homeDir),
+    });
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; code?: number };
+    throw new Error(
+      `builder exited ${String(e.code)}\n--- stdout ---\n${e.stdout ?? ""}\n--- stderr ---\n${e.stderr ?? ""}`,
+      { cause: err },
+    );
+  }
+}
+
+/**
+ * A port the OS says is free, rather than one derived from the pid. CI runs this file beside
+ * a thousand others in a worker pool, and a port picked by arithmetic is a port something else
+ * may already hold — which fails the build for a reason the cell is not testing.
+ */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address() as net.AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
 }
 
 const SHIM_DIR = path.join(os.tmpdir(), `pnpm-vb-shim-${process.pid}`);
@@ -96,10 +149,12 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
   let projectDir: string;
   let storeDir: string;
   let homeDir: string;
-  const port = 14873 + (process.pid % 1000);
+  /** Allocated in beforeAll; indexes are per cell, so two cells never share one. */
+  const ports: number[] = [];
   const tarballs = new Map<string, Buffer>();
 
   beforeAll(async () => {
+    for (let i = 0; i < 5; i++) ports.push(await freePort());
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-vb-"));
     registryDir = path.join(tmp, "registry");
     projectDir = path.join(tmp, "project");
@@ -178,7 +233,7 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
       })),
       destDir: registryDir,
       registryUrl: "https://fixture.test/",
-      builderRegistryUrl: `http://127.0.0.1:${port}/`,
+      builderRegistryUrl: `http://127.0.0.1:${ports[0]}/`,
       fetchImpl: fixtureFetch,
     });
     expect(staged.ok).toBe(true);
@@ -244,20 +299,16 @@ snapshots:
   });
 
   it("builds the whole tree offline from the store the sandbox fetch phase populated", async () => {
-    const result = await run(
-      "/bin/sh",
-      [
-        "-c",
-        builderScript({
-          pnpmBin: pnpmCmd!,
-          projectDir,
-          registryDir,
-          storeDir,
-          registryUrl: `http://127.0.0.1:${port}/`,
-          readyFile: path.join(tmp, "registry.ready"),
-        }),
-      ],
-      { timeout: PNPM_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: envFor(homeDir) },
+    const result = await runBuild(
+      builderScript({
+        pnpmBin: pnpmCmd!,
+        projectDir,
+        registryDir,
+        storeDir,
+        registryUrl: `http://127.0.0.1:${ports[0]}/`,
+        readyFile: path.join(tmp, "registry.ready"),
+      }),
+      homeDir,
     );
 
     // The repo's `packageManager` pin did not choose the builder's pnpm.
@@ -282,24 +333,16 @@ snapshots:
     const built = path.join(scratch, "built");
     const sharedStorePath = path.join(scratch, "store");
     writeProject(built);
-    await run(
-      "/bin/sh",
-      [
-        "-c",
-        builderScript({
-          pnpmBin: pnpmCmd!,
-          projectDir: built,
-          registryDir,
-          storeDir: sharedStorePath,
-          registryUrl: `http://127.0.0.1:${port + 3}/`,
-          readyFile: path.join(scratch, "registry.ready"),
-        }),
-      ],
-      {
-        timeout: PNPM_TIMEOUT_MS,
-        maxBuffer: 16 * 1024 * 1024,
-        env: envFor(path.join(scratch, "home")),
-      },
+    await runBuild(
+      builderScript({
+        pnpmBin: pnpmCmd!,
+        projectDir: built,
+        registryDir,
+        storeDir: sharedStorePath,
+        registryUrl: `http://127.0.0.1:${ports[3]}/`,
+        readyFile: path.join(scratch, "registry.ready"),
+      }),
+      path.join(scratch, "home"),
     );
 
     // A second session: the base tree, its own committed inputs, and an EMPTY store at the
@@ -320,7 +363,7 @@ snapshots:
     // verifies the lockfile against supply-chain policies before anything else, which needs
     // registry metadata the consumer's cold cache does not have. `--offline` here would fail
     // on that, not on the tree (FINDINGS.md).
-    const consumerPort = port + 4;
+    const consumerPort = ports[4];
     const server = spawn(
       "node",
       [path.join(registryDir, "server.mjs"), registryDir, String(consumerPort),
@@ -383,7 +426,7 @@ snapshots:
             projectDir: thinProject,
             registryDir: thinRegistry,
             storeDir: path.join(scratch, "store"),
-            registryUrl: `http://127.0.0.1:${port + 1}/`,
+            registryUrl: `http://127.0.0.1:${ports[1]}/`,
             readyFile: path.join(scratch, "registry.ready"),
           }),
         ],
@@ -420,18 +463,14 @@ snapshots:
       projectDir: scripted,
       registryDir,
       storeDir: path.join(scratch, "store"),
-      registryUrl: `http://127.0.0.1:${port + 2}/`,
+      registryUrl: `http://127.0.0.1:${ports[2]}/`,
       readyFile: path.join(scratch, "registry.ready"),
     };
     const marker = path.join(
       scripted, "node_modules", ".pnpm", `${ROOT}@${VERSION}`, "node_modules", ROOT, SCRIPT_MARKER,
     );
 
-    await run("/bin/sh", ["-c", builderScript(paths)], {
-      timeout: PNPM_TIMEOUT_MS,
-      maxBuffer: 16 * 1024 * 1024,
-      env: envFor(path.join(scratch, "home")),
-    });
+    await runBuild(builderScript(paths), path.join(scratch, "home"));
     expect(fs.existsSync(marker)).toBe(false);
 
     // Control: the same build with the suppression removed from the phase that PUBLISHES.
@@ -442,11 +481,7 @@ snapshots:
       "install --offline --frozen-lockfile --ignore-scripts",
       "install --offline --frozen-lockfile",
     );
-    await run("/bin/sh", ["-c", withScripts], {
-      timeout: PNPM_TIMEOUT_MS,
-      maxBuffer: 16 * 1024 * 1024,
-      env: envFor(path.join(scratch, "home")),
-    });
+    await runBuild(withScripts, path.join(scratch, "home"));
     expect(fs.existsSync(marker)).toBe(true);
   }, PNPM_TIMEOUT_MS);
 });

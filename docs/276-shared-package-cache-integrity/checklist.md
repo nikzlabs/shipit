@@ -257,6 +257,16 @@ recorded in [requirements.md](./requirements.md); none is open.
       an executable script-suppression control produced two measurements that changed the
       fixture: `onlyBuiltDependencies` does not approve a build on 12.4.1, and the FETCH phase
       needs `--ignore-scripts` too (FINDINGS.md).
+- [x] CI-only failure of the builder harness (2026-09-21), fixed without reproducing it, so
+      the leading explanation is stated rather than claimed. The harness resolved a **host**
+      pnpm first, which a session container has and the CI runner does not — so the path CI ran
+      was the one never exercised locally, and on it `builderEnv`'s per-run HOME made corepack
+      re-download the pinned pnpm on each of five invocations. The pinned spec is tried first
+      now (same path everywhere, and it measures the version the image bakes), one
+      `COREPACK_HOME` serves the file, ports come from the OS rather than `pid % 1000`, and a
+      failed build reports pnpm's own output instead of the shell script. The builder script
+      also notices a loopback registry that exited before it was ready and prints its log —
+      that failure previously said nothing at all.
 - [ ] Measure the build-inclusive base-hit install cost (approved registry dep +
       `--ignore-scripts` base + empty private store): warm-install time and the
       marginal build-output disk in the upper. The 8 KB result used scriptless

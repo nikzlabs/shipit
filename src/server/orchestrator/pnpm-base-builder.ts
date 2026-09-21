@@ -179,14 +179,24 @@ export function builderScript(paths: BuilderScriptPaths = builderScriptPaths()):
   const pnpm = `"${paths.pnpmBin}" --store-dir "${paths.storeDir}"`;
   return [
     "set -e",
-    `rm -f "${paths.readyFile}"`,
-    // Detach its stdio and trap the exit: a failed build must not leave the server holding the
-    // log pipe open, which makes the caller wait on a process the build no longer needs.
-    `node "${paths.registryDir}/server.mjs" "${paths.registryDir}" ${new URL(paths.registryUrl).port} "${paths.readyFile}" >/dev/null 2>&1 &`,
+    `rm -f "${paths.readyFile}" "${paths.readyFile}.log"`,
+    // Its own log file, not the build's pipe: a failed build must not leave the server holding
+    // the pipe open, and a server that cannot bind must still be able to say why.
+    `node "${paths.registryDir}/server.mjs" "${paths.registryDir}" ${new URL(paths.registryUrl).port} "${paths.readyFile}" >"${paths.readyFile}.log" 2>&1 &`,
     "registry_pid=$!",
     `trap 'kill "$registry_pid" 2>/dev/null || true' EXIT`,
     `i=0; while [ ! -f "${paths.readyFile}" ]; do
-  i=$((i+1)); [ "$i" -gt 300 ] && echo "loopback registry did not start" >&2 && exit 1
+  i=$((i+1))
+  if [ "$i" -gt 300 ]; then
+    echo "loopback registry did not start:" >&2
+    cat "${paths.readyFile}.log" >&2 || true
+    exit 1
+  fi
+  if ! kill -0 "$registry_pid" 2>/dev/null; then
+    echo "loopback registry exited before it was ready:" >&2
+    cat "${paths.readyFile}.log" >&2 || true
+    exit 1
+  fi
   sleep 0.1
 done`,
     `cd "${paths.projectDir}"`,
