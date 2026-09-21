@@ -105,6 +105,72 @@ describe("resolveDepsHashInputs — override vs default vs fallback", () => {
   });
 });
 
+/**
+ * docs/276-shared-package-cache-integrity section 5: the pnpm install marker now requires the
+ * content hash, and `pnpm-workspace.yaml` is where the build approvals live — so it has to be IN
+ * that hash. The default list already carries it; a custom `installInputs` replaces the list
+ * wholesale, which is how the approval file could be absent from the hash entirely.
+ */
+describe("resolveDepsHashInputs — pnpm-workspace.yaml is never droppable (docs/276 section 5)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "depshash-pnpm-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function pnpmRepo(): void {
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ packageManager: "pnpm@12.4.1" }));
+  }
+
+  it("adds it to a custom install-inputs list that omitted it", () => {
+    pnpmRepo();
+    expect(resolveDepsHashInputs(["pnpm run setup"], ["package.json"], dir)).toEqual([
+      "package.json",
+      "pnpm-workspace.yaml",
+    ]);
+  });
+
+  it("does not duplicate it when the list already names it", () => {
+    pnpmRepo();
+    const inputs = ["package.json", "pnpm-workspace.yaml"];
+    expect(resolveDepsHashInputs(["pnpm run setup"], inputs, dir)).toEqual(inputs);
+  });
+
+  /**
+   * `install-inputs: []` is the explicit opt-out from content-keying. Adding the approval file to
+   * it would turn keying back ON with that file as the only input — and with the pnpm marker
+   * requiring the content hash, an unchanged approval file would then skip an install that a
+   * lockfile change under a different commit genuinely needed (review, 2026-09-21).
+   */
+  it("respects an explicit empty install-inputs, rather than making it approvals-only", () => {
+    pnpmRepo();
+    fs.writeFileSync(path.join(dir, "pnpm-workspace.yaml"), "onlyBuiltDependencies: []\n");
+    fs.writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+
+    expect(resolveDepsHashInputs(["pnpm run setup"], [], dir)).toEqual([]);
+    // Content-keying stays off, so the marker cannot skip on a hash at all.
+    expect(computeInstallDepsHash(dir, ["pnpm run setup"], [])).toBeNull();
+  });
+
+  it("leaves a non-pnpm repo's custom list untouched", () => {
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ packageManager: "npm@11.0.0" }));
+    expect(resolveDepsHashInputs(["npm run setup"], ["package.json"], dir)).toEqual(["package.json"]);
+  });
+
+  it("changes the install hash when a custom-input pnpm repo edits its build approvals", () => {
+    pnpmRepo();
+    const custom = ["package.json"];
+    fs.writeFileSync(path.join(dir, "pnpm-workspace.yaml"), "onlyBuiltDependencies: []\n");
+    const before = computeInstallDepsHash(dir, ["pnpm run setup"], custom);
+    fs.writeFileSync(path.join(dir, "pnpm-workspace.yaml"), "onlyBuiltDependencies:\n  - esbuild\n");
+    const after = computeInstallDepsHash(dir, ["pnpm run setup"], custom);
+    expect(before).not.toBeNull();
+    expect(after).not.toBe(before);
+  });
+});
+
 describe("computeDepsHash + computeInstallDepsHash", () => {
   let dir: string;
   beforeEach(() => {

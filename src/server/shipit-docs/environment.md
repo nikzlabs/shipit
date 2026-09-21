@@ -135,6 +135,9 @@ ShipIt is building a shared `node_modules` **base** that it verifies against the
 registry itself and mounts read-only under your own writable layer. Until that exists
 for a repo, every pnpm session installs from scratch into its private store; when it
 does, you still run your own `pnpm install` over it, and everything above still holds.
+A repo whose checkout has **no `pnpm-lock.yaml`** never gets that base and always
+installs privately — with no lockfile pnpm would take its version choices from the base
+rather than resolving your own.
 
 ### Write-protected paths
 
@@ -231,6 +234,16 @@ and when a re-install fails: both post a `[System]` note and add a
 `Dependencies:` line to `shipit service list`. Check that line before treating a
 `Failed to resolve import` as a code fault — the service will still report
 `running`, and restarting it will not help.
+
+**pnpm repos re-validate on content, never on the commit alone.** For every other
+package manager a container start skips `agent.install` when the commit it last ran on
+is unchanged. A pnpm session does not: it skips only when the dependency *content* hash
+matches, and `pnpm-workspace.yaml` is always part of that hash — so changing your build
+approvals (`onlyBuiltDependencies`) re-runs the install that performs the build, even on
+the same commit. The consequence to know about: if your `agent.install` is not
+content-keyable (no `install-inputs`, and a command ShipIt cannot map to dependency
+files), a pnpm session re-runs it on every container start. Declaring `install-inputs` in
+`shipit.yaml` restores the skip.
 
 **Compose services**: Project services (dev servers, databases, caches) run as
 Docker Compose containers managed by ShipIt. Define them in

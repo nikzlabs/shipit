@@ -6,7 +6,7 @@ import type { RepoStore } from "./repo-store.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { REPO_MEMORY_SUBDIR } from "./session-credentials.js";
 import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
-import { readBasePointerByHash } from "./overlay-base.js";
+import { readBasePointerByHash, withScopeLock } from "./overlay-base.js";
 import { liveOverlayBaseClaims } from "./overlay-base-claims.js";
 import { retiredSharedPnpmStoreRoot } from "./overlay-session.js";
 import { getMessage, sleep, defaultRunDocker } from "./disk-utils.js";
@@ -314,74 +314,120 @@ async function sweepOrphanedOverlayBases(
     return 0;
   }
 
-  const live = await liveMountedOverlayBaseGenerations(runDocker);
-  if (!live.complete) {
+  // A first, pass-wide reading: enough to decide which scopes have anything deletable at all, and
+  // protective in its own right. It is NOT enough to delete on — see the per-scope recheck below.
+  const firstSample = await liveMountedOverlayBaseGenerations(runDocker);
+  if (!firstSample.complete) {
     // Resumable scopes alone cannot protect superseded generations still mounted by containers.
     console.warn(
       "[disk-janitor] overlay live-mount check incomplete — skipping the overlay-base sweep this pass",
     );
     return 0;
   }
-  // Claims protect generations selected for containers not yet visible in docker ps.
-  const liveGenKeys = live.keys;
-  for (const key of liveOverlayBaseClaims()) liveGenKeys.add(key);
+  const seenGenKeys = new Set([...firstSample.keys, ...liveOverlayBaseClaims()]);
   const liveScopeHashes = new Set(resumableScopeHashes);
-  for (const key of liveGenKeys) liveScopeHashes.add(key.split("/")[0]);
+  for (const key of seenGenKeys) liveScopeHashes.add(key.split("/")[0]);
 
   let removed = 0;
   for (const entry of entries) {
-    if (liveScopeHashes.has(entry)) {
-      removed += await sweepStaleBaseGenerations(
-        stateDir, path.join(dir, entry), entry, liveGenKeys, paceMs,
-      );
-      continue;
-    }
-    const full = path.join(dir, entry);
-    try {
-      const st = await fs.lstat(full);
-      if (!st.isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    try {
-      await sleep(paceMs);
-      await fs.rm(full, { recursive: true, force: true });
-      removed += 1;
-      console.log(`[disk-janitor] removed obsolete overlay base ${full} (no live mount)`);
-    } catch (err) {
-      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-    }
+    const scopeDir = path.join(dir, entry);
+    // Under this scope's own lock no selection can claim and no publish can advance the pointer, so
+    // the two readings taken here cover each other IN THIS ORDER: claims first, then Docker. A
+    // claim is released only once its container exists, so a generation not claimed at the first
+    // reading had a visible container before that, and the sample taken after still sees it.
+    // Reading Docker first loses exactly the container that came up in between — the claim's whole
+    // lifetime can fall between two readings taken that way (review, 2026-09-21).
+    removed += await withScopeLock(entry, async () => {
+      const claims = liveOverlayBaseClaims();
+      const guarded = new Set([...seenGenKeys, ...claims]);
+      const scopeIsLive =
+        liveScopeHashes.has(entry) || claims.some((k) => k.startsWith(`${entry}/`));
+
+      const candidates = scopeIsLive
+        ? await staleGenerationCandidates(stateDir, scopeDir, entry, guarded)
+        : await wholeScopeCandidate(scopeDir, entry);
+      if (candidates.length === 0) return 0;
+
+      const confirm = await liveMountedOverlayBaseGenerations(runDocker);
+      if (!confirm.complete) {
+        console.warn(
+          `[disk-janitor] overlay live-mount recheck incomplete for scope ${entry} — ` +
+          "keeping its generations this pass",
+        );
+        return 0;
+      }
+      let gone = 0;
+      for (const candidate of candidates) {
+        if (candidate.mountedKeysBlock && [...confirm.keys].some((k) => k.startsWith(`${entry}/`))) {
+          continue;
+        }
+        if (candidate.genKey !== null && confirm.keys.has(candidate.genKey)) continue;
+        try {
+          await sleep(paceMs);
+          await fs.rm(candidate.path, { recursive: true, force: true });
+          gone += 1;
+          console.log(`[disk-janitor] removed ${candidate.label} ${candidate.path}`);
+        } catch (err) {
+          console.warn(`[disk-janitor] failed to remove ${candidate.path}:`, getMessage(err));
+        }
+      }
+      return gone;
+    });
   }
   return removed;
 }
 
-async function sweepStaleBaseGenerations(
+interface BaseSweepCandidate {
+  path: string;
+  label: string;
+  /** Null for the whole-scope candidate, which no single generation key describes. */
+  genKey: string | null;
+  /** The whole-scope candidate is withheld if ANY generation of the scope is mounted. */
+  mountedKeysBlock?: boolean;
+}
+
+async function wholeScopeCandidate(scopeDir: string, scopeHash: string): Promise<BaseSweepCandidate[]> {
+  try {
+    if (!(await fs.lstat(scopeDir)).isDirectory()) return [];
+  } catch {
+    return [];
+  }
+  return [{
+    path: scopeDir,
+    label: `obsolete overlay base (no live mount, scope ${scopeHash})`,
+    genKey: null,
+    mountedKeysBlock: true,
+  }];
+}
+
+async function staleGenerationCandidates(
   stateDir: string,
   scopeDir: string,
   scopeHash: string,
-  liveGenKeys: Set<string>,
-  paceMs: number,
-): Promise<number> {
+  guardedGenKeys: Set<string>,
+): Promise<BaseSweepCandidate[]> {
   let children: string[];
   try {
     children = await fs.readdir(scopeDir);
   } catch {
-    return 0;
+    return [];
   }
   const currentGen = readBasePointerByHash(stateDir, scopeHash)?.generation ?? null;
   const tmpCutoffMs = Date.now() - OVERLAY_TMP_GRACE_MS;
 
-  let removed = 0;
+  const candidates: BaseSweepCandidate[] = [];
   for (const child of children) {
     const isTmp = child.startsWith(".tmp-");
     const genMatch = /^g(\d+)$/.exec(child);
     if (!isTmp && !genMatch) continue;
     const full = path.join(scopeDir, child);
+    let genKey: string | null = null;
     if (genMatch) {
       const gen = Number(genMatch[1]);
       if (gen === 0) continue;
       if (currentGen !== null && gen === currentGen) continue;
-      if (liveGenKeys.has(`${scopeHash}/g${gen}`)) continue;
+      genKey = `${scopeHash}/g${gen}`;
+      if (guardedGenKeys.has(genKey)) continue;
     }
     try {
       const st = await fs.lstat(full);
@@ -390,16 +436,9 @@ async function sweepStaleBaseGenerations(
     } catch {
       continue;
     }
-    try {
-      await sleep(paceMs);
-      await fs.rm(full, { recursive: true, force: true });
-      removed += 1;
-      console.log(`[disk-janitor] removed stale overlay base generation ${full}`);
-    } catch (err) {
-      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
-    }
+    candidates.push({ path: full, label: "stale overlay base generation", genKey });
   }
-  return removed;
+  return candidates;
 }
 
 interface LiveOverlayMounts {

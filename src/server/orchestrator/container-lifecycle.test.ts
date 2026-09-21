@@ -1164,6 +1164,30 @@ describe("prepareOverlayDirs (planning#147)", () => {
     expect(fs.existsSync(spec.orchDirs!.workdir)).toBe(true);
   });
 
+  /**
+   * Generation 0 is the empty cold base every session may create; a PUBLISHED generation is the
+   * publisher's to write. Recreating a swept one here would hand the session an empty tree that
+   * reads as a base hit — the install then has a matching marker and a base with nothing in it
+   * (docs/276-shared-package-cache-integrity section 5).
+   */
+  it("creates generation 0's lowerdir but never a published generation's", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-dirs-"));
+
+    const cold = makeSpec(tmpDir, "aaaa9999", 0);
+    prepareOverlayDirs([cold]);
+    expect(fs.existsSync(cold.orchDirs!.lowerdir)).toBe(true);
+
+    const published = makeSpec(tmpDir, "bbbb9999", 4);
+    prepareOverlayDirs([published]);
+    expect(fs.existsSync(published.orchDirs!.lowerdir)).toBe(false);
+    // The session layers are still prepared: the mount is what refuses the missing lowerdir.
+    expect(fs.existsSync(published.orchDirs!.upperdir)).toBe(true);
+    expect(err.mock.calls.flat().join(" ")).toContain("g4");
+    err.mockRestore();
+  });
+
   it("hands the per-session upper/work dirs to the worker uid", () => {
     const myUid = process.getuid?.();
     if (myUid === undefined) return;

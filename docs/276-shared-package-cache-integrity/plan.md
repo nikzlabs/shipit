@@ -580,9 +580,7 @@ still runs (req 9).
 
 **Shipped 2026-09-21** (the builder, the immutable input snapshot and the one eligibility
 decision — `pnpm-base-inputs.ts`, `pnpm-lockfile.ts`, `pnpm-base-registry.ts`,
-`pnpm-base-builder.ts`), with four recorded deviations from the two paragraphs above. Nothing
-calls the builder yet: the consumer-side changes that make mounting a verified base safe (no
-pnpm pre-stamp, the no-lockfile gate, the per-scope lock) land with the trigger.
+`pnpm-base-builder.ts`), with four recorded deviations from the two paragraphs above.
 
 - **The sandbox store is populated by `pnpm fetch` through a loopback registry over the
   staged tarballs, not by unpacking them into a store ShipIt writes.** Measured
@@ -758,9 +756,53 @@ it is never recreated by `mkdirSync` of the pointer's lowerdir
 (`container-lifecycle.ts:459`). And liveness must be
 computed by the **same scope function** creation uses:
 `resolveOverlayScope` keys on `overlayRuntimeKey + overlayPinSegment(workspaceDir)`
-(`overlay-session.ts:61`) while `liveOverlayScopeHashes` uses `overlayRuntimeKey`
-alone (`:189`) — a pre-existing mismatch the verified namespace must not inherit, or a
+while `liveOverlayScopeHashes` used `overlayRuntimeKey`
+alone — a pre-existing mismatch the verified namespace must not inherit, or a
 stopped session's pinned scope is swept despite a current pointer.
+
+**Shipped 2026-09-21** (the consumer-side gates: no pnpm pre-stamp, the no-lockfile
+gate, the per-scope lock and the operation-lifetime claim), landed BEFORE the trigger
+rather than with it. The sequencing is the checklist's own reasoning applied in order: a
+published pointer opens the mount gate at once, so the gates that make mounting safe must
+already be in place when the first pointer appears. Each of them is a no-op for today's
+behaviour — no pointer exists in the verified namespace yet — except the install marker,
+which for pnpm repos re-validates on content instead of on the commit. Two things the
+implementation adds to the paragraph above:
+
+- **The sweep re-checks Docker per scope, after that scope's claim read.** The design said the
+  sweeps "sample claims and the pointer separately". The sharper problem, found by the
+  independent review and reproduced: with an operation-lifetime claim, a claim's WHOLE
+  lifetime — claim, mount, release — can fall between a pass-wide Docker sample and a
+  per-scope claim read, so neither reading holds it and a running container's lowerdir is
+  deleted. The cover is an ordering *inside the scope lock*: read claims, then sample Docker.
+  Under the lock nothing more can be claimed, and a claim is released only once its container
+  exists, so a generation not claimed at the first reading had a visible container before
+  that release and the sample taken next sees it. The pass-wide sample is kept as the cheap
+  "is anything deletable here" filter — protective, never sufficient — so the Docker re-check
+  costs three CLI calls only for a scope that would actually delete something.
+- **The scope lock itself admitted concurrent holders**, which the design took as given. It
+  read its queue link back off the map *after* awaiting, so two callers enqueuing in one tick
+  both held the second one's link; the first deleted it on exit and a third caller found an
+  empty map and entered while the second still ran (reproduced 2026-09-21). Each invocation
+  captures its own link now. Pre-existing, and load-bearing the moment reclamation depends on
+  the lock.
+- **A claim is keyed by the select→mount OPERATION, not by the session.** Two creation attempts
+  for one session overlap in production — a standby create the runner stopped waiting for, plus
+  the cold-create fallback (`app-lifecycle.ts`) — and a session key let the second attempt's
+  release drop the first attempt's protection while it was still mounting. `prepareOverlaySpecs`
+  takes an opaque `claimToken`; passing none is how a read-back path says it claims nothing.
+- **`liveOverlayScopeHashes` claims the pinned AND the unpinned address**, not just the
+  pinned one the mismatch was about. `overlayPinSegment` reads the mutable checkout, so it
+  is the same argument the verified namespace already makes: a sweep must never be what
+  decides a base is reapable, and naming a hash with no directory costs nothing.
+
+Two consequences worth stating because nothing engineers them away. Requiring the content
+hash for pnpm means a pnpm repo whose `agent.install` is **not content-keyable** re-installs
+on every container start; that is the safe direction — the alternative is skipping an install
+whose approved builds never ran — and declaring `install-inputs` restores the skip. And
+`install-inputs: []`, the explicit opt-out, stays an opt-out: `pnpm-workspace.yaml` is added
+to a *non-empty* custom list only, because adding it to an empty one would key on the approval
+file ALONE and then skip an install a lockfile change genuinely needed.
 
 *What this still depends on.* `/dep-cache` stays shared-writable, but the npm
 resolution index no longer lives there (section 1, shipped), so a pnpm repo whose
@@ -855,16 +897,19 @@ For anyone re-running or extending the harnesses:
 | File | Why it matters |
 |---|---|
 | `src/server/orchestrator/overlay-publish.ts` | The pnpm early-return to replace with the builder — the snapshot publisher must never write the verified namespace — and the pull → `publishBase` sequence (section 5, lifecycle). |
-| `src/server/orchestrator/overlay-base.ts` | `publishBase` reused for ordering (CAS authenticates nothing); `withScopeLock` (`:101`) becomes the one per-scope lock for claim, publish and sweep; `copySnapshotToBase` hardlink-dedup is a **disk** optimization, not a verification step. `OverlayScope.namespace` runs through `scopeHashOf`, so pointer reads and publishes address the same namespaced scope. |
+| `src/server/orchestrator/overlay-base.ts` | `publishBase` reused for ordering (CAS authenticates nothing); `withScopeLock` (`:109`, exported) is the one per-scope lock for claim, publish and sweep; `copySnapshotToBase` hardlink-dedup is a **disk** optimization, not a verification step. `OverlayScope.namespace` runs through `scopeHashOf`, so pointer reads and publishes address the same namespaced scope. |
+| `src/server/orchestrator/overlay-base-claims.ts` | The select→mount lease. Keyed by an opaque per-OPERATION token (two creation attempts for one session overlap), held until `releaseOverlayBaseClaims`, no expiry — and the reason the sweep must read claims BEFORE it samples Docker. |
+| `src/server/shared/pnpm-repo.ts` | `isPnpmRepo` (moved out of `overlay-session.ts`, re-exported there) and `hasPnpmLockfile` — the no-lockfile consumer gate's narrower question. In `shared/` because the worker needs the same answer and may not import from `orchestrator/`. |
+| `src/server/shared/install-marker.ts:60` | `markerMatches(marker, stamp, { requireDepsHash })` — pnpm skips on the content hash alone, never on the commit, so a same-commit approval change still runs the install that performs the build. |
 | `src/server/orchestrator/overlay-volume.ts` | `overlayScopeHash` — repo + runtime + dep dir + an optional **namespace**, the verified-base discriminator; omitting it reproduces the pre-namespace hash, so existing npm/yarn bases stay addressable. Also the Docker `overlay` volume (`:196`), now also for pnpm's `node_modules`. |
-| `src/server/orchestrator/container-overlay-provisioner.ts` | `hasVerifiedBaseForEveryDepDir` — the pnpm mount gate; `preparePnpmStore` — the per-session private store. |
+| `src/server/orchestrator/container-overlay-provisioner.ts` | `prepareOverlaySpecs` (`:67`) — the pnpm mount gate, the no-lockfile gate (`:98`) and the claim, all under the scope lock; `selectGeneration` (`:159`) — a published generation whose directory is gone selects 0; `preparePnpmStore` — the per-session private store. |
 | `src/server/orchestrator/pnpm-lockfile.ts` | What the builder reads out of `pnpm-lock.yaml`: which packages it pins, the digest it pins them to, and the entries that are not plain registry downloads. Classifies on the `resolution` SHAPE, so an unfamiliar future form stays ineligible rather than being silently admitted. |
 | `src/server/orchestrator/pnpm-base-inputs.ts` | `stagePnpmInputs` — the immutable snapshot, read out of one commit through git and never out of the session's checkout; `decidePnpmBaseEligibility` — the ONE eligibility decision, taken before any fetch. |
 | `src/server/orchestrator/pnpm-base-registry.ts` | `stageVerifiedRegistry` — resolves `<name>@<version>` against the orchestrator's own registry, admits only when the lockfile digest, the packument's `dist.integrity` and the downloaded bytes' sha512 all agree, and names the first failing package. |
 | `src/server/orchestrator/pnpm-base-builder.ts` | `builderScript` (the two phases), `builderEnv` (the three `packageManager` switches and the emptied config), and `buildVerifiedPnpmBase`, which publishes through `copySnapshotToBase` + `publishBase`. |
-| `src/server/shared/deps-hash.ts:21`, `:89` | pnpm's default hash inputs include `pnpm-workspace.yaml`; a custom `installInputs` replaces the list, so the pnpm marker must add it back. |
+| `src/server/shared/deps-hash.ts:21`, `:102` | pnpm's default hash inputs include `pnpm-workspace.yaml`; a custom `installInputs` replaces the list, so `resolveDepsHashInputs` adds it back for a pnpm repo when given the workspace dir. |
 | `src/server/orchestrator/overlay-session.ts` | `PNPM_VERIFIED_NAMESPACE`; `sessionPnpmStoreDir` — the per-session private store; `retiredSharedPnpmStoreRoot` — the tree the janitor ages out. |
-| `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `package-import-method=copy`, and `npm_config_cache` (section 1); `createContainer` retires the shared npm index. |
+| `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `package-import-method=copy`, and `npm_config_cache` (section 1); `prepareOverlayDirs` (`:487`) creates only generation 0's lowerdir; `createContainer` retires the shared npm index. |
 | `src/server/session/dep-snapshot.ts`, `src/server/orchestrator/overlay-snapshot.ts` | The merged-tree tar and its pull — unchanged; untrusted, and admission no longer depends on it. |
 | `src/server/orchestrator/session-worker-uid.ts:124` | `shareOne` — group write on the shared surfaces (docs/270 req 9). |
 | `src/server/orchestrator/session-dir-factory.ts:58` | `createDepCacheDirHelper` — `/dep-cache` keyed per repo; the verifier's self-verifying tarball source. |
