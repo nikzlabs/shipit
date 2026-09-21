@@ -702,6 +702,8 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       agentId,
       sessionId,
       prompt,
+      // docs/303 req 35 — what a retry of this turn swaps its own rendering in for.
+      ...(statusContext ? { statusContext } : {}),
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
       ...(opts.systemTurn ? { systemTurn: true } : {}),

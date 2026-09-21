@@ -1347,6 +1347,40 @@ manager nor the credential store — is wired at the two sites that already supp
 from the shared `sessionStatusTurnContext` helper, which `runAgentWithMessage`
 calls directly.
 
+### The block belongs to the attempt, not to the turn
+
+A turn is submitted more than once. `executeAgentTurn` is re-entered, with the same
+`TurnInput`, by the quota failover (`retryOnNextAccount`), the auth heal, and the
+lost-conversation recovery (`recoverMissingConversation`) — and the first two can fire
+*after* the attempt has done real work, because the provider refuses on a later request
+in the same turn. The prompt was composed once, at the top of the turn, so the retried
+attempt read the card as it stood before any of that work: the `session_status` write
+whose tool call had answered "The status card above the input field is up to date" was
+gone from the block, and an offer the user's submit had already taken was printed as
+still outstanding, payload and all. Reported from a session where the agent then redid a
+finished investigation and told the user about it twice.
+
+The stored card was never wrong — `sessions.session_status` held the newer write and the
+`takenAt` throughout, and every write goes through `runStatusExclusive` against a row it
+reads under the lock. Only what reached the agent had rewound. So the durability the tool
+promises is not a property of the store alone: it is a property of what the *next
+submission* shows, and a frozen prompt breaks it without touching a byte of the record.
+
+So the composition site now hands the executor the block it inserted
+(`TurnInput.statusContext`), and `executeAgentTurn` swaps its own rendering in for it on
+entry — once per attempt, before the closures that capture the prompt, so the echo check
+that identifies a CLI replay still compares what was submitted. Two properties make the
+swap an exact string replacement of what the site inserted rather than a search for the
+tags: a prompt composed **without** a block must not be given one, and a user message
+that quotes the block must not be rewritten under the user. An empty current rendering —
+the setting turned off mid-turn — leaves the prompt alone, since with the card off it is
+not ShipIt's to edit (req 21).
+
+Re-delivering the user's own message to a retried attempt is intended and unchanged: the
+attempt that failed produced no result, and that message is the turn. What stops the
+agent redoing finished work is the block, which now says the offer was already sent and
+what the last attempt wrote — so the record and the prompt agree again.
+
 ## Tests
 
 Names below are the design's; where the build put a test somewhere else, the
@@ -1398,6 +1432,13 @@ built file is named in brackets. Every one of them exists.
   shapes, each the reproduction of a gate that used to drop the miss silently: a
   turn that used **no tool at all**, a **steered** turn, and one whose resident
   agent holds **background work**.
+- `turn-retry-status-context.test.ts` — the reproduction of the frozen prompt: an
+  attempt that takes the user's offer and writes the card, then a quota refusal, and the
+  retried attempt reading the write and the taken offer rather than the card from before
+  them. Beside it, the two shapes the swap must not change — a prompt composed without a
+  block stays without one however often it is retried, and the setting going off mid-turn
+  leaves the prompt byte for byte — and the helper's own unit cases, including a user
+  message that quotes the block.
 - `sessions.test.ts` — `lastTurn` through the column and back, and a card
   stored before the field existed read as one with no line (req 31);
   `integration_tests/rewind-fork.test.ts`,
@@ -1521,7 +1562,7 @@ tests.
 - `src/server/shared/session-status-validation.ts`, `src/server/shared/propose-actions-validation.ts` — envelope; shared `validateActionItems`.
 - `src/server/orchestrator/services/session-status.ts` — record, settle, take, the block (`formatSessionStatusContext`), `shouldCarryStatusNudge`, the seq bookkeeping behind req 40.
 - `src/server/orchestrator/prompts/status-card-reconcile.md`, `status-card-missed.md`, `status-card-absent.md` — the block's three pieces of prose.
-- `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts` and the one card write it makes; `harnessCommand` on `TurnInput`.
+- `src/server/orchestrator/turn-executor.ts` — `settleTurnFacts` and the one card write it makes; `harnessCommand` and `statusContext` on `TurnInput`, the latter swapped for the current rendering on every attempt.
 - `src/server/orchestrator/turn-accumulator.ts` — `statusUpdated` and `awaitingUserAnswer`; `ws-handlers/agent-listeners.ts` sets the second from the turn's tool blocks.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — acceptance after admission.
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, `src/server/orchestrator/services/session-fork-merge.ts` — stale on rewind, copy-as-stale on fork.

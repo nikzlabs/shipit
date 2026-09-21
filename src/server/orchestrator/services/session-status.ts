@@ -432,6 +432,34 @@ export function formatSessionStatusContext(card: SessionStatus | undefined): str
   return render("id-only", shown);
 }
 
+/**
+ * docs/303 req 35 — the block is a snapshot of standing state, and a TURN IS SUBMITTED
+ * MORE THAN ONCE: a quota failover, an auth heal and the lost-conversation recovery all
+ * re-enter `executeAgentTurn` with the prompt composed for the first attempt. Frozen, that
+ * prompt hands the retried attempt the card as it stood before the failed attempt's work —
+ * the `session_status` write the tool reported as saved reads as discarded, and an offer
+ * the user's submit already took reads as still outstanding, payload and all, so the agent
+ * does it again. So each attempt swaps its own rendering in.
+ *
+ * `previous` is the exact text the composition site inserted, and the swap is an exact
+ * string replacement of it: a prompt composed WITHOUT a block (a compaction, a verbatim
+ * command, a driver-owned turn) must not be given one, and no search for the tags can be
+ * confused by a user message that happens to contain them.
+ *
+ * An empty `current` — the setting turned off mid-turn — leaves the prompt alone: with the
+ * card off it is not ShipIt's to edit (req 21).
+ */
+export function refreshStatusContextInPrompt(
+  prompt: string,
+  previous: string | undefined,
+  current: string,
+): string {
+  if (!previous || !current || current === previous) return prompt;
+  const at = prompt.indexOf(previous);
+  if (at === -1) return prompt;
+  return prompt.slice(0, at) + current + prompt.slice(at + previous.length);
+}
+
 export interface StatusContextDeps {
   sessionManager: Pick<SessionManager, "get">;
   credentialStore: { getSessionStatusCard(): boolean };

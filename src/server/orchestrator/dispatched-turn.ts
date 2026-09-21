@@ -351,6 +351,8 @@ async function runDispatchedTurnInner(
       agentId,
       sessionId: runner.sessionId,
       prompt,
+      // docs/303 req 35 — what a retry of this turn swaps its own rendering in for.
+      ...(statusContext ? { statusContext } : {}),
       userText: text,
       ...(activity !== undefined ? { activity } : {}),
       ...(turnStreams ? { useStreaming: true } : {}),
