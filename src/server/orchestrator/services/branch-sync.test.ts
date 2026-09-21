@@ -125,6 +125,21 @@ describe("branch-sync against a real repository", () => {
       .toBe(run("git rev-parse HEAD", workDir).trim());
   });
 
+  // docs/312-base-branch-push-protection req 7 — the "ahead" branch pushes before
+  // merging, so a session sitting on the default branch would publish it here.
+  it("holds without pushing when the branch ahead of origin is the default branch", async () => {
+    run("git checkout main", workDir);
+    commit(workDir, "on-main", "1\n");
+    const before = run("git rev-parse refs/heads/main", bareDir).trim();
+
+    const verdict = await guardMergeSync(new GitManager(workDir));
+
+    expect(verdict.action).toBe("hold");
+    expect(verdict.action === "hold" && verdict.pushed).toBe(false);
+    expect(verdict.action === "hold" && verdict.message).toContain("default branch");
+    expect(run("git rev-parse refs/heads/main", bareDir).trim()).toBe(before);
+  });
+
   it("declines to answer, and lets the merge proceed, when there is no tracking ref", async () => {
     run("git checkout -b never-pushed", workDir);
     commit(workDir, "f", "1\n");

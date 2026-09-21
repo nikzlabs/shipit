@@ -16,7 +16,10 @@ import {
   repoId,
   repoUrlToHash,
   syncLocalDefaultBranchToOrigin,
+  pushToOrigin,
+  type PushSkip,
 } from "./git-utils.js";
+import { GitManager } from "../shared/git.js";
 
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ["ignore", "pipe", "ignore"] })
@@ -428,6 +431,94 @@ describe("syncLocalDefaultBranchToOrigin", () => {
     commitFile(workspaceDir, "a.txt", "a\n", "a");
 
     await expect(syncLocalDefaultBranchToOrigin(workspaceDir)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * The auto-push target is whatever is checked out. Such a push cannot rewind — git
+ * declines a non-fast-forward — but it would put a turn's commit on the base under
+ * no pull request (docs/312-base-branch-push-protection req 7).
+ */
+describe("pushToOrigin", () => {
+  let tmpDir: string;
+  let remoteDir: string;
+  let workDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-push-origin-"));
+    remoteDir = path.join(tmpDir, "remote.git");
+    workDir = path.join(tmpDir, "work");
+    fs.mkdirSync(remoteDir, { recursive: true });
+    git(tmpDir, `init --bare -b main "${remoteDir}"`);
+
+    const seed = path.join(tmpDir, "seed");
+    fs.mkdirSync(seed, { recursive: true });
+    git(seed, "init -b main");
+    git(seed, "config user.email test@test");
+    git(seed, "config user.name test");
+    commitFile(seed, "README.md", "# seed\n", "seed");
+    git(seed, `push "${remoteDir}" main:main`);
+
+    git(tmpDir, `clone "${remoteDir}" "${workDir}"`);
+    git(workDir, "config user.email test@test");
+    git(workDir, "config user.name test");
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch { /* ignore */ }
+  });
+
+  it("pushes the session's own branch", async () => {
+    git(workDir, "checkout -q -b shipit/work");
+    commitFile(workDir, "a.txt", "a\n", "a");
+
+    const skips: PushSkip[] = [];
+    const branch = await pushToOrigin(new GitManager(workDir), (s) => skips.push(s));
+
+    expect(branch).toBe("shipit/work");
+    expect(skips).toEqual([]);
+    expect(git(remoteDir, "rev-parse refs/heads/shipit/work")).toBe(git(workDir, "rev-parse HEAD"));
+  });
+
+  /**
+   * A template session starts on a local `main` with no recorded branch, and the
+   * user points it at an empty repository. `getDefaultBranch()` answers "main"
+   * from its own fallback there, so refusing on that guess alone would stop a new
+   * project ever publishing. Nothing on that remote can be lost: nothing is on it.
+   */
+  it("pushes a local `main` when origin has no such branch to be the default", async () => {
+    const emptyRemote = path.join(tmpDir, "empty.git");
+    const fresh = path.join(tmpDir, "fresh");
+    fs.mkdirSync(fresh, { recursive: true });
+    git(tmpDir, `init --bare -b main "${emptyRemote}"`);
+    git(fresh, "init -b main");
+    git(fresh, "config user.email test@test");
+    git(fresh, "config user.name test");
+    git(fresh, `remote add origin "${emptyRemote}"`);
+    commitFile(fresh, "README.md", "# new project\n", "initial");
+
+    const skips: PushSkip[] = [];
+    const branch = await pushToOrigin(new GitManager(fresh), (s) => skips.push(s));
+
+    expect(skips).toEqual([]);
+    expect(branch).toBe("main");
+    expect(git(emptyRemote, "rev-parse refs/heads/main")).toBe(git(fresh, "rev-parse HEAD"));
+  });
+
+  it("refuses the default branch, reports it, and leaves the remote where it was", async () => {
+    const before = git(remoteDir, "rev-parse refs/heads/main");
+    commitFile(workDir, "a.txt", "a\n", "a");
+
+    const skips: PushSkip[] = [];
+    const branch = await pushToOrigin(new GitManager(workDir), (s) => skips.push(s));
+
+    expect(branch).toBeNull();
+    expect(skips).toHaveLength(1);
+    expect(skips[0].reason).toBe("shared-branch");
+    expect(skips[0].message).toContain("default branch");
+    expect(git(remoteDir, "rev-parse refs/heads/main")).toBe(before);
   });
 });
 

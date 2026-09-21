@@ -22,3 +22,16 @@
 - [x] Fully qualify every ref in the heal, so a tag cannot stand in for the branch
 - [x] Compare-and-swap the ref write, so a concurrent worker git op cannot slip past the check
 - [x] Second independent review, and its confirmed findings fixed
+- [x] Answer the open question with evidence: enumerate every path that sets a session's branch
+- [x] Refuse a shared branch in `pushToOrigin`, and report it through a single `PushSkip` wording
+- [x] Refuse a shared branch in `ensureBranchTipOnOrigin`, as `blocked-by-push` / `shared-branch`
+- [x] Refuse a shared branch in `guardMergeSync`, holding without pushing
+- [x] Refuse a fork onto a shared branch, before the clone
+- [x] Rewrite the fixtures that ran a session on the default branch onto a `shipit/*` branch
+- [x] Guard tests for all four refusals (verified by reverting each)
+- [x] Refuse a caller-named shared branch in `gitPush`, which no checkout-based guard sees
+- [x] Refuse the source branch in `mergeSession`, whose fallback fetches locally instead
+- [x] Require a VERIFIED default for ordinary pushes, so a template session can publish its first branch
+- [x] Resolve the fork's default from the bare cache, not the parent's own `origin/HEAD`
+- [x] Third independent review, and its confirmed findings fixed
+- [x] Move the one eviction fixture that actually pushes off `branch: "main"`

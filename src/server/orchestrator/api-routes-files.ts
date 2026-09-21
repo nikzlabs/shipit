@@ -63,9 +63,10 @@ async function commitManualEdit(
       }
     }
     if (commitHash && deps.githubAuthManager.authenticated) {
-      void pushToOrigin(git, (reason) => {
-        const why = reason === "no-origin" ? "no `origin` remote" : "no current branch (detached HEAD)";
-        console.warn(`[files] manual-edit auto-push skipped for ${sessionId}: ${why}`);
+      void pushToOrigin(git, (skip) => {
+        console.warn(
+          `[files] manual-edit auto-push skipped for ${sessionId} [${skip.reason}]: ${skip.message}`,
+        );
       }).catch((err: unknown) => {
         console.warn("[files] manual-edit auto-push failed:", getErrorMessage(err));
       });

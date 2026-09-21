@@ -9,6 +9,7 @@ import {
   withPreemptiveAuthFallback,
 } from "../shared/git-remote-credential.js";
 import type { GitManager } from "../shared/git.js";
+import { findSharedBranchRefusal } from "./services/push-target-guard.js";
 
 export function generateBranchSlug(): string {
   return crypto.randomBytes(6).toString("base64url").toLowerCase().slice(0, 6);
@@ -104,28 +105,48 @@ export function repoIdFromOwnerRepo(owner: string, repo: string): string | null 
   return `github:${o.toLowerCase()}/${r.toLowerCase()}`;
 }
 
-export type PushSkipReason = "no-origin" | "no-branch";
+export type PushSkipReason = "no-origin" | "no-branch" | "shared-branch";
+
+/** The wording lives here so every caller reports the same refusal (req 3). */
+export interface PushSkip {
+  reason: PushSkipReason;
+  message: string;
+}
 
 export async function pushToOrigin(
   git: GitManager,
-  onSkip?: (reason: PushSkipReason) => void,
+  onSkip?: (skip: PushSkip) => void,
 ): Promise<string | null> {
   const remotes = await git.getRemotes();
   const origin = remotes.find((r) => r.name === "origin");
   if (!origin) {
-    onSkip?.("no-origin");
+    onSkip?.({
+      reason: "no-origin",
+      message:
+        "Not pushed: this session's workspace has no `origin` remote."
+        + " The commit stays in local history.",
+    });
     return null;
   }
   const branch = await git.getCurrentBranch();
   if (!branch) {
-    onSkip?.("no-branch");
+    onSkip?.({
+      reason: "no-branch",
+      message:
+        "Not pushed: the workspace has no current branch (detached HEAD)."
+        + " The commit stays in local history.",
+    });
     return null;
   }
-  // The target is whatever is checked out, which CAN be the base branch — see
-  // docs/312-base-branch-push-protection, "Known gaps". Deliberately not
-  // refused here: this push cannot rewind (git declines a non-fast-forward), and
-  // a session legitimately working on the default branch would silently stop
-  // publishing. The force-pushing paths, where the loss happens, do refuse.
+  // The target is whatever is checked out, which CAN be a shared branch. Such a
+  // push cannot rewind — git declines a non-fast-forward — but it would put this
+  // turn's commit on the base under no pull request, so it is refused too
+  // (docs/312-base-branch-push-protection req 7).
+  const refusal = await findSharedBranchRefusal(git, branch, undefined, { requireVerifiedDefault: true });
+  if (refusal) {
+    onSkip?.({ reason: "shared-branch", message: refusal.message });
+    return null;
+  }
   await git.push("origin", branch);
   return branch;
 }
