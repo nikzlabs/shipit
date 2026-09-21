@@ -32,13 +32,22 @@ describe("BackgroundTaskTracker", () => {
     expect(t.descriptions(false)).toEqual([]);
   });
 
+  // Fake timers because the assertion is on the boundary MILLISECOND: `set`
+  // stamps its own `Date.now()`, so on a real clock one tick between it and the
+  // read below puts `now + TTL - 1` a millisecond past the window, and the
+  // first expectation fails for the clock rather than for the decay.
   it("decays a stale count so a dropped drain event can't strand a session", () => {
-    const t = new BackgroundTaskTracker();
-    t.set([task("a")]);
-    const now = Date.now();
-    expect(t.count(true, now + BACKGROUND_TASK_TTL_MS - 1)).toBe(1);
-    expect(t.count(true, now + BACKGROUND_TASK_TTL_MS)).toBe(0);
-    expect(t.descriptions(true, now + BACKGROUND_TASK_TTL_MS)).toEqual([]);
+    vi.useFakeTimers();
+    try {
+      const t = new BackgroundTaskTracker();
+      t.set([task("a")]);
+      const now = Date.now();
+      expect(t.count(true, now + BACKGROUND_TASK_TTL_MS - 1)).toBe(1);
+      expect(t.count(true, now + BACKGROUND_TASK_TTL_MS)).toBe(0);
+      expect(t.descriptions(true, now + BACKGROUND_TASK_TTL_MS)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("still trusts the count through a long silent background task", () => {
