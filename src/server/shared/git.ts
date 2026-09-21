@@ -134,6 +134,43 @@ export type UnreadableWorkspace =
   | { kind: "omitted"; detail: string }
   | { kind: "blocked"; detail: string };
 
+/**
+ * Every push here names ONE branch, never a refspec — and a refspec reaching
+ * `git push` is a force with no flag to find: `+main:main` does everything
+ * `--force` does, through the ordinary push method, past every guard that
+ * inspects only the force-pushing path. `POST /api/sessions/:id/git/push`
+ * forwards a caller-supplied `branch` straight through, so this is reachable
+ * from outside and is checked at the primitive rather than at that one route.
+ */
+export interface ForcePushOptions {
+  /**
+   * Publish a branch that is moving strictly backwards. Only a caller that has
+   * verified the target is the session's OWN branch may set it — a reset onto
+   * the base legitimately drops commits above that base, and that is the one
+   * rewind ShipIt performs on purpose. It does not relax `assertPlainBranchName`.
+   */
+  allowRewind?: boolean;
+}
+
+export function assertPlainBranchName(branch: string): void {
+  const bad =
+    !branch?.trim()
+    || branch !== branch.trim()
+    || branch.startsWith("+")
+    || branch.startsWith("-")
+    || /[:\s~^?*[\\]/.test(branch)
+    || branch.includes("..")
+    || branch.endsWith("/")
+    || branch.endsWith(".lock");
+  if (bad) {
+    throw new Error(
+      `Refusing to push '${branch}': a push target must be a plain branch name, not a refspec `
+      + "or pattern. A refspec would let the push force, retarget, or delete a ref that is not "
+      + "this session's branch.",
+    );
+  }
+}
+
 /** What a working tree looks like without changing it. `git status` answers all three. */
 export interface WorkingTreeState {
   clean: boolean;
@@ -407,6 +444,7 @@ export class GitManager {
 
   async push(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
+    assertPlainBranchName(currentBranch);
     const git = await this.remoteGit(remote);
     await this.uploadLfsObjects(git, remote, currentBranch);
     await git.push(remote, currentBranch, ["--set-upstream"]);
@@ -829,10 +867,10 @@ export class GitManager {
   }
 
   // Lease against the live tip: local tracking refs can outlive deleted branches.
-  async forcePush(remote = "origin", branch?: string): Promise<string> {
+  async forcePush(remote = "origin", branch?: string, opts?: ForcePushOptions): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
     const expected = await this.remoteBranchSha(remote, currentBranch);
-    return this.forcePushWithLease(remote, currentBranch, expected);
+    return this.forcePushWithLease(remote, currentBranch, expected, opts);
   }
 
   /**
@@ -908,8 +946,12 @@ export class GitManager {
     remote: string,
     branch: string,
     expectedRemoteSha: string | null,
+    opts?: ForcePushOptions,
   ): Promise<string> {
-    if (expectedRemoteSha) await this.refuseRewindingForcePush(remote, branch, expectedRemoteSha);
+    assertPlainBranchName(branch);
+    if (expectedRemoteSha && !opts?.allowRewind) {
+      await this.refuseRewindingForcePush(remote, branch, expectedRemoteSha);
+    }
     const args = expectedRemoteSha
       ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
       : ["--set-upstream"];

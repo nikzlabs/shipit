@@ -121,6 +121,11 @@ export async function pushToOrigin(
     onSkip?.("no-branch");
     return null;
   }
+  // The target is whatever is checked out, which CAN be the base branch — see
+  // docs/312-base-branch-push-protection, "Known gaps". Deliberately not
+  // refused here: this push cannot rewind (git declines a non-fast-forward), and
+  // a session legitimately working on the default branch would silently stop
+  // publishing. The force-pushing paths, where the loss happens, do refuse.
   await git.push("origin", branch);
   return branch;
 }

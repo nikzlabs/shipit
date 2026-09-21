@@ -29,6 +29,12 @@ function segments(line) {
   return line.split(/\|\||&&|[;\n|]/);
 }
 
+/** Strip one layer of matching shell quotes, which `parseGit` does not remove. */
+function unquote(token) {
+  const m = /^(['"])(.*)\1$/s.exec(token);
+  return m ? m[2] : token;
+}
+
 /** Parse a direct git invocation, or return null. */
 function parseGit(seg) {
   const tokens = seg.trim().split(/\s+/).filter(Boolean);
@@ -66,14 +72,25 @@ function offends(seg) {
     // clone's copy of it is frozen at clone time.
     //
     // Only the unambiguous branch form is judged. A pathspec restore — `git
-    // checkout .`, `-- <path>`, or any operand that could name a file — is
-    // ordinary work, and refusing it would cost more than this catches.
-    if (!rest.includes("--") && positionals.length === 1) {
-      const name = positionals[0];
+    // checkout .`, `-- <path>`, `-p`, or any operand that could name a file —
+    // is ordinary work, and refusing it would cost more than this catches.
+    // `-p` does not switch branches at all, whatever operand follows it.
+    if (
+      !rest.includes("--")
+      && !rest.some((t) => t === "-p" || t === "--patch")
+      && positionals.length === 1
+    ) {
+      // `parseGit` splits on whitespace, so a quoted operand still carries its
+      // quotes; judging those characters as "not a path" refused `git checkout
+      // "LICENSE"` while the bare spelling passed.
+      const name = unquote(positionals[0]);
       // A name carrying a path character, or one that IS a path here, may be a
       // restore. git itself treats that collision as ambiguous; so does this.
-      if (!/[./\\]/.test(name) && !existsSync(name)) {
-        return "`git checkout <branch>` moves off the session branch";
+      if (name && !/[./\\]/.test(name) && !existsSync(name)) {
+        return (
+          "`git checkout <branch>` moves off the session branch. (To restore a file of that "
+          + "name instead, write the pathspec form: `git checkout -- <path>`)"
+        );
       }
     }
     return null;
@@ -165,7 +182,7 @@ function offendsDestructive(seg) {
   }
   // A leading `+` on the refspec is a force, with no flag to find: `git push
   // origin +main` does everything `--force` does and read as an ordinary push.
-  if (sub === "push" && positionals.some((t) => t.startsWith("+"))) {
+  if (sub === "push" && positionals.some((t) => unquote(t).startsWith("+"))) {
     return "`git push origin +<ref>` is a forced refspec and rewrites the remote branch";
   }
   return null;

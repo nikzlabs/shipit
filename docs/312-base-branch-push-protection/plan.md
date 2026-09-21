@@ -70,6 +70,24 @@ thing that would have refused this push. That live read is deliberate and stays
 (`git-force-push-lease.test.ts`) — so the protection is added beside it rather
 than by reverting it.
 
+## Two more ways in, found by review
+
+**A refspec through the ordinary push method.** `POST /api/sessions/:id/git/push`
+forwards a caller-supplied `branch` straight to `GitManager.push`
+(`api-routes-git.ts` → `services/git.ts` → `git.ts`), with no validation. A
+`branch` of `+main:main` is a **force** with no flag to find, and it reaches the
+non-force method — past any guard that inspects only the force-pushing path.
+`assertPlainBranchName` now runs in both `push` and `forcePushWithLease`, at the
+primitive rather than at that one route (req 5).
+
+**The rebase refusal falling through to an ordinary push.** Refusing inside
+`tryForcePush` is not enough on its own: the successful-rebase callers recorded
+only `published = false`, and the `finally` block then armed the pre-sync
+commit's auto-push — which would fast-forward the base branch with that commit,
+under no pull request. The up-to-date path beside it already had the right
+mechanism (`pushProhibited`); `tryForcePush` now returns `"refused"` distinctly
+and both callers consume it.
+
 ## The design: two layers
 
 **Layer 1 — the primitive refuses a rewind** (`shared/git.ts`,
@@ -78,7 +96,13 @@ to the remote tip. If the local ref is a **proper ancestor** of the remote tip,
 the push only discards: it moves the branch backwards and replaces what it drops
 with nothing. Refuse, naming how many commits were at risk.
 
-This is sound because no legitimate ShipIt force-push has that shape. A
+One caller legitimately needs that shape, and only one: `reset-to-base` drops
+the commits above the base on purpose, and with `--force` that is an authorised
+rewind. So the refusal is unconditional and the two reset paths pass
+`{ allowRewind: true }` — after `checkResetPreconditions` has verified the
+target is the session's own branch and not a shared one.
+
+Otherwise no legitimate ShipIt force-push has that shape. A
 republished rewrite (rebase, reset-onto-base, release prepare, PR re-arm) leaves
 the old remote tip on a **diverged** history, never ahead of the new one — after
 a squash merge especially, base and branch are not ancestors of each other. A
@@ -97,8 +121,12 @@ see it — an unreadable remote is not a cleared one.
 is the pull request's base, or the repository's default branch, is refused with
 an explanation. Wired into `quickCreatePr` and `agentCreatePr` before either
 pushes, and mirrored by the `branch === baseBranch` refusal added to
-`tryForcePush`. `checkResetPreconditions` now treats an unrecorded session
-branch as a refusal rather than a pass.
+`tryForcePush`. `checkResetPreconditions` gained the same check: its
+`session.branch && branch !== session.branch` test passed on **any** branch when
+the recorded branch was falsy, and matching a recorded name is not proof of
+ownership either — a headless session takes an explicit branch name and a fork
+takes a caller-supplied one. Asking "is this a shared branch?" directly is both
+narrower and stronger than inferring it from the recorded name.
 
 Layer 2 states intent and produces a good message; layer 1 does not depend on
 any caller having asked the right question. The incident's exact call site is
@@ -124,6 +152,14 @@ to find, and is now caught alongside `--force` under the destructive guard.
   session force-pushing its *own* branch after a rebase is routine — and the
   hook has no way to learn the session branch, so the precise rule ("force-push
   only your own branch") needs an env var it does not have.
+- **An ordinary push to a shared branch is still allowed.** `pushToOrigin`
+  (auto-push), `checkout-durability.ts` and `branch-sync.ts` all push whatever
+  is checked out. None can rewind — git declines a non-fast-forward — but each
+  could fast-forward the base with a commit belonging to no pull request.
+  Guarding `pushToOrigin` was tried and reverted: it stops auto-push for any
+  session legitimately working on the default branch, which is a behaviour
+  change wider than this incident and a call for a human to make. Open question
+  in `requirements.md`.
 - **A stale local `main` is still created.** `syncLocalDefaultBranchToOrigin`
   is not called from the restore and unarchive paths. Healing it there would
   reduce the blast radius but is not the guarantee; refusing the push is.
@@ -140,7 +176,11 @@ to find, and is now caught alongside `--force` under the destructive guard.
   `checkResetPreconditions`
 - `src/server/orchestrator/services/rebase-driver.ts` — `tryForcePush`,
   `pushIfAheadOfRemote`
-- `docker/agent-hooks/block-branch-ops.mjs` — `offends`, `offendsDestructive`
+- `src/server/orchestrator/services/release-prepare.ts` — the head check runs
+  before the force-push, not inside `agentCreatePr` after it
+- `docker/agent-hooks/block-branch-ops.mjs` — `offends`, `offendsDestructive`,
+  `unquote`
 - Guards: `src/server/shared/git-force-push-rewind.test.ts`,
+  `src/server/shared/git-push-refspec.test.ts`,
   `src/server/orchestrator/services/push-target-guard.test.ts`,
   `src/server/session/agent-shim/block-branch-ops.test.ts`

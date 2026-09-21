@@ -76,6 +76,58 @@ describe("quickCreatePr (docs/202 re-arm overrides)", () => {
   });
 });
 
+// The incident this guards: a workspace checked out on the base branch made
+// `head` the base itself, and the re-arm path force-pushed it — publishing a
+// session clone's copy of `main`, frozen at clone time.
+describe("quickCreatePr refuses a shared branch as the PR head", () => {
+  it("refuses, and pushes nothing, when the checkout is on the repository default", async () => {
+    const git = makeGit({ getCurrentBranch: vi.fn(async () => "main") });
+    const github = makeGitHub();
+
+    await expect(
+      quickCreatePr(
+        git, github, chatHistory, generateText,
+        "s1", "Title", "/ws/s1", REMOTE,
+        { baseBranch: "release/v2", forceWithLease: true },
+      ),
+    ).rejects.toThrow(/not a branch of its own/);
+
+    expect(git.forcePush).not.toHaveBeenCalled();
+    expect(git.push).not.toHaveBeenCalled();
+    expect(github.createPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("refuses the base it would target even when that is not the default branch", async () => {
+    const git = makeGit({ getCurrentBranch: vi.fn(async () => "release/v2") });
+
+    await expect(
+      quickCreatePr(
+        git, makeGitHub(), chatHistory, generateText,
+        "s1", "Title", "/ws/s1", REMOTE,
+        { baseBranch: "release/v2", forceWithLease: true },
+      ),
+    ).rejects.toThrow(/not a branch of its own/);
+
+    expect(git.forcePush).not.toHaveBeenCalled();
+  });
+
+  // An open PR already on that branch is reported, not re-pushed, so the
+  // refusal must not fire before that lookup returns.
+  it("still reports an existing PR discovered for the branch", async () => {
+    const git = makeGit({ getCurrentBranch: vi.fn(async () => "main") });
+    const github = makeGitHub();
+    github.findPullRequest = vi.fn(async () => ({
+      number: 7, url: "u", title: "t", body: "b", base: "release/v2",
+    })) as unknown as GitHubAuthManager["findPullRequest"];
+
+    const result = await quickCreatePr(
+      git, github, chatHistory, generateText, "s1", "Title", "/ws/s1", REMOTE,
+    );
+    expect(result.alreadyExisted).toBe(true);
+    expect(git.push).not.toHaveBeenCalled();
+  });
+});
+
 describe("quickCreatePr — created vs discovered (docs/287)", () => {
   it("reports `alreadyExisted: false` and the repository when it creates the PR", async () => {
     const github = makeGitHub();

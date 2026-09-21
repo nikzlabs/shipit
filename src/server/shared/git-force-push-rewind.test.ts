@@ -106,6 +106,16 @@ describe("GitManager refuses a rewinding force-push", () => {
     expect(remoteTip("feature")).toBe(rewritten);
   });
 
+  // A reset onto the base legitimately drops the commits above it. Only a
+  // caller that has verified the branch is the session's own may say so.
+  it("performs the rewind when the caller explicitly allows it", async () => {
+    const { oldTip, newTip } = cloneThenAdvanceMain();
+    expect(remoteTip("main")).toBe(newTip);
+
+    await new GitManager(staleCloneDir).forcePush("origin", "main", { allowRewind: true });
+    expect(remoteTip("main")).toBe(oldTip);
+  });
+
   it("still pushes a branch that is simply ahead of its remote", async () => {
     run(`git clone ${bareDir} .`, staleCloneDir);
     run("git checkout -b feature", staleCloneDir);
