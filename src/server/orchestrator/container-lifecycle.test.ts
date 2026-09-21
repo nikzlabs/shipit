@@ -22,7 +22,12 @@ import {
   OPS_DOCKER_HOST,
 } from "./container-lifecycle.js";
 import type { ContainerConfig, SessionContainer } from "./session-container.js";
-import type { DepDirOverlaySpec } from "./overlay-session.js";
+import {
+  buildOverlaySpecs,
+  PNPM_BASE_DEP_DIR,
+  PNPM_VERIFIED_NAMESPACE,
+  type DepDirOverlaySpec,
+} from "./overlay-session.js";
 import {
   INSTALL_MARKER_FILE,
   sessionSharedStateDir,
@@ -46,6 +51,18 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
     pidsLimit: 256,
     ...overrides,
   };
+}
+
+/** A real spec from the real builder, so the namespace the env keys on cannot drift from the
+ *  one `prepareOverlaySpecs` mounts. */
+function pnpmVerifiedSpec(): DepDirOverlaySpec {
+  return buildOverlaySpecs({
+    sessionId: "sess-1",
+    scope: { repoUrl: "git@github.com:acme/app.git", runtimeKey: "node24" },
+    depDirs: [PNPM_BASE_DEP_DIR],
+    volumeMountpoint: "/var/lib/docker/volumes/shipit-ws/_data",
+    namespace: PNPM_VERIFIED_NAMESPACE,
+  })[0];
 }
 
 describe("buildMounts", () => {
@@ -421,13 +438,43 @@ describe("buildEnv", () => {
     expect(env.filter((e) => /^(npm_config_store_dir|PNPM_CONFIG_STORE_DIR)=/.test(e))).toHaveLength(0);
   });
 
-  // docs/276 H3. The pre-11 spelling only, still: pnpm >= 11 is on hardlinks into its own store
-  // until the verified base lands (plan.md section 5 step 8), where the import must cross the
-  // overlay boundary anyway. Copying there today would cost ~1.8x the disk on ext4 for nothing.
+  // docs/276 H3. The pre-11 spelling is unconditional, as shipped; pnpm 10 ignores the other one.
   it("imports pnpm store files by copy when pnpmStoreDir is set", () => {
     const config = baseConfig({ pnpmStoreDir: "/workspace/sessions/s1/overlay/pnpm-store" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env).toContain("npm_config_package_import_method=copy");
+  });
+
+  // docs/276 section 5. pnpm >= 11 reads only PNPM_CONFIG_*, and gets the copy where a verified
+  // base is mounted — the import crosses into the overlay there.
+  it("imports by copy under the pnpm >= 11 spelling when a verified base is mounted", () => {
+    const config = baseConfig({
+      pnpmStoreDir: "/workspace/sessions/s1/overlay/pnpm-store",
+      overlaySpecs: [pnpmVerifiedSpec()],
+    });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env).toContain("PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy");
+  });
+
+  // Measured 2026-09-21: two non-default layouts can still hardlink into a session's own private
+  // store (a `virtualStoreDir` on the store's mount; a dropped store mount, where pnpm 10 resolves
+  // its default to `/workspace/.pnpm-store`). Neither can ever have a base, and both are
+  // session-private, so forcing a copy there would cost ext4 disk and protect nothing.
+  it("leaves the pnpm >= 11 import method alone when no verified base is mounted", () => {
+    const config = baseConfig({ pnpmStoreDir: "/workspace/sessions/s1/overlay/pnpm-store" });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env.filter((e) => e.startsWith("PNPM_CONFIG_PACKAGE_IMPORT_METHOD="))).toHaveLength(0);
+  });
+
+  // An npm/yarn overlay base is a different publisher in a different scope namespace; only the
+  // pnpm base puts a session's store on the far side of an overlay boundary.
+  it("leaves the pnpm >= 11 import method alone for an un-namespaced (npm/yarn) base", () => {
+    const spec = pnpmVerifiedSpec();
+    const config = baseConfig({
+      pnpmStoreDir: "/workspace/sessions/s1/overlay/pnpm-store",
+      overlaySpecs: [{ ...spec, scope: { ...spec.scope, namespace: undefined } }],
+    });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
     expect(env.filter((e) => e.startsWith("PNPM_CONFIG_PACKAGE_IMPORT_METHOD="))).toHaveLength(0);
   });
 

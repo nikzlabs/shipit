@@ -36,6 +36,7 @@ import {
 import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import {
   missingDepDirParents,
+  PNPM_VERIFIED_NAMESPACE,
   preStampInstallMarker,
   sortOverlayDepDirs,
   supersededSessionOverlayLayers,
@@ -392,10 +393,17 @@ export function buildEnv(
     env.push(`PNPM_CONFIG_STORE_DIR=${PNPM_STORE_CONTAINER_PATH}`);
     env.push(`npm_config_store_dir=${PNPM_STORE_CONTAINER_PATH}`);
     // docs/276 H3: import store files by copy so a store write cannot change an already-installed
-    // file (req 4, req 11). Not `clone` — the strict reflink spelling, ENOTSUP on ext4. pnpm >= 11
-    // stays on hardlinks until the verified base lands, where the import must cross the overlay
-    // boundary anyway and the copy becomes free (plan.md section 5, step 8).
+    // file (req 4, req 11). Not `clone` — the strict reflink spelling, ENOTSUP on ext4.
     env.push("npm_config_package_import_method=copy");
+    // docs/276 section 5 "Scope and store": pnpm >= 11 reads only PNPM_CONFIG_*, and gets copy only
+    // where a verified base is mounted, because the import then crosses into the overlay. In the
+    // standard layout this changes nothing either way — the store is its own mount and `link()`
+    // refuses to cross one — but two non-default layouts CAN still hardlink (measured,
+    // FINDINGS.md), and neither can ever have a base, so gating keeps them off a copy that would
+    // cost ~1.8x the ext4 disk while protecting nothing: their store is already session-private.
+    if (config.overlaySpecs?.some((s) => s.scope.namespace === PNPM_VERIFIED_NAMESPACE)) {
+      env.push("PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy");
+    }
   }
   // Ops must select the read-only proxy even if dockerAccess is also true.
   if (config.opsSession) {

@@ -224,10 +224,29 @@ package supplies — executes code in the builder that can rewrite the "canonica
 output the orchestrator then publishes. The sandbox protects the host but does
 not make the output trustworthy after attacker code has run. The fix is to
 build with `--ignore-pnpmfile` under an explicit known config (no inherited
-global settings, package-manager switching disabled). Only the `.cjs` case was
-measured; whether `--ignore-pnpmfile` also suppresses a `.pnpmfile.mjs` and a
-`configDependencies` plugin is unmeasured, which is why those two stay
-ineligible for a base until it is.
+global settings, package-manager switching disabled).
+
+**The two cases that were left unmeasured are now measured** (2026-09-21, in a
+session container on the builder's pinned **pnpm 12.4.1**, marker-file hooks, a
+fresh project per cell). Both behave exactly as the `.cjs` case:
+
+| Hook source | `--ignore-scripts` alone | `+ --ignore-pnpmfile` |
+|---|---|---|
+| `.pnpmfile.cjs` | ran (module body **and** `readPackage`) | suppressed |
+| `.pnpmfile.mjs` | ran (module body **and** `readPackage`) | suppressed |
+| `configDependencies` package supplying `pnpmfile:` | ran | suppressed |
+
+The `configDependencies` cell installs a config package from a local registry by
+`<version>+<integrity>` and points `pnpm-workspace.yaml`'s `pnpmfile:` at the file it
+unpacks; `--ignore-pnpmfile` stops the hook from loading even though the config
+dependency itself is still resolved. Two consequences, and neither changes this PR.
+`--ignore-pnpmfile` is now measured to cover **every** hook source the eligibility rule
+names, so `.pnpmfile.mjs` and `configDependencies` **could** be admitted — a follow-up,
+deliberately not taken here, because admitting them widens what the builder runs on and
+that deserves its own change. And the builder's belt-and-braces refusal of the
+`pnpmfile`/`globalPnpmfile` keys closes the `configDependencies` route a second time: the
+hook needs that key to be loaded at all, and the builder rejects the input set that
+carries it.
 
 ## Finding: relocating the store does not break an existing `node_modules`
 
@@ -249,6 +268,107 @@ survive a restart. pnpm <= 10 is unaffected either way: its recorded `storeDir` 
 `/workspace/.pnpm-store` string before and after — only the host directory behind it changed.
 The `ERR_PNPM_UNEXPECTED_STORE` seen in the tree spike came from a lowerdir base built at a
 different container path, which is why the private store must keep that path.
+
+## Finding: H4 still fires on pnpm 12.5.1, and how it has to be written now
+
+Measured 2026-09-21 in a session container (no Docker needed — two projects, one local
+registry, one store), because the H4 cells above ran on an older pnpm and the regression
+test that now guards this had to attack the version sessions actually run.
+
+- **A whole-row swap in `index.db` is caught.** Writing package X's manifest row under
+  package Y's key makes pnpm 12.5.1 refuse the entry and name
+  `strictStorePkgContentCheck` — the store entry's own name/version no longer match the
+  key, and pnpm checks exactly that.
+- **A key RENAME is not caught, and installs the attacker's code.** Let pnpm's own writer
+  produce the row for an EVIL tarball of `pkg@1.0.0`, then rename that row's key from the
+  EVIL tarball's integrity to the LEGIT one's. Name and version still match, every blob
+  still hashes to its own digest, and the tarball itself is long gone — so nothing pnpm
+  checks is inconsistent. A second session sharing the store asked the registry for the
+  legitimate package, hit the renamed row and installed `module.exports = 'EVIL!'`, rc=0.
+
+That is the H4 class intact on a current pnpm: the index decides which bytes an integrity
+names, and content verification cannot see a lie about *which* content was asked for. Both
+cells are committed as `integration_tests/pnpm-store-isolation.test.ts` — the second one is
+the control, and the fix cell is the same attack against two per-session store paths taken
+from `sessionPnpmStoreDir`.
+
+## Finding: in the standard container layout pnpm cannot hardlink from its store — with two exceptions
+
+Measured 2026-09-21 **inside a ShipIt session container**, which is what makes it new: every
+earlier import-method measurement put the store and `node_modules` on one mount, and a
+container never does. This container's `/workspace`, `/dep-cache`, `/session-state`,
+`/persist` and `/credentials` are five **separate bind mounts of one ext4 device** (`2049`,
+`/dev/sda1`), which is the same shape as `/workspace` and `/workspace/.pnpm-store`.
+
+| Cell | Result |
+|---|---|
+| `os.link("/dep-cache/f", "/workspace/f")`, same device | **EXDEV** |
+| real pnpm 12.5.1, default `auto` import, store on the `/dep-cache` bind, project on the `/workspace` bind | installed file `nlink=1`, store blob `nlink=1` — **copied** |
+
+`link(2)` compares **mounts**, not superblocks: "Linux permits a filesystem to be mounted at
+multiple points, but `link()` does not work across different mount points, even if the same
+filesystem is mounted on both." So in the layout every ordinary session runs, the store and the
+dep dirs are on different mounts and pnpm's `auto` has already been resolving to **copy**, with
+or without an overlay base. Both `buildMounts` layouts have this shape: binds
+(`/workspace`, `/workspace/.pnpm-store`) and the workspace volume with two different
+`Subpath`s are two mounts either way.
+
+**Two layouts escape it, both found by an independent review and both then measured here.**
+Neither is reachable for a repo that has a base, and in both the store is session-private, so
+neither is a cross-session exposure — what they are is a real ext4 disk cost if a copy is forced.
+
+| Escaping layout | Measured |
+|---|---|
+| `virtualStoreDir` pointed at a directory on the **store's** mount (e.g. `.pnpm-store/virtual` when the store is mounted at `/workspace/.pnpm-store`): the installed package files then sit beside the content store, and `node_modules` reaches them by symlink | pnpm 12.5.1, default `auto`: `nlink=2`. Same install with `PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy`: `nlink=1` — the copy is a real extra cost here |
+| The store mount **dropped** (the `ensurePnpmStoreDir` handoff failure, or a session with no `pnpmStoreDir`): no store env is set, and pnpm does not simply fall back to `HOME` | pnpm 10.28.2 `store path` from a project on the workspace mount, HOME on the container rootfs: **`/workspace/.pnpm-store/v10`** — the workspace's own mount, so hardlinks work |
+
+Three consequences, correcting earlier entries rather than adding to them.
+
+- **`package-import-method=copy` costs nothing in the standard layout**, and costs ~1.8× in the
+  two above. The ext4 figure in plan.md section 2 is copy-vs-hardlink *on one mount*, which is
+  what those two layouts recreate. That is why the pnpm ≥ 11 setting is applied **only where a
+  verified base is mounted**: a base implies the standard layout (the builder refuses a
+  non-default `virtualStoreDir`, and a base needs the store mount), so the copy is free exactly
+  where it is set and the escaping layouts keep their free hardlinks into a private store.
+- **H3's reach inside a ShipIt container was already nil in the standard layout.** H3 needs an
+  installed file to be a hardlink into a *shared* store; the mount layout forbids the hardlink,
+  and in both escaping layouts the store is the session's own. The hole is real in pnpm — the
+  guard tests measure it — but no production session's `node_modules` was linked to a shared one.
+- **There is nothing to migrate.** The stores that were ever *shared* were always separate
+  mounts, so trees installed from them are trees of copies. A tree that IS hardlinked, in an
+  escaping layout, is linked only into that session's own store.
+
+## Finding: the pnpm >= 11 import-method spelling works, and switching it recreates nothing
+
+Measured 2026-09-21 in a session container on **pnpm 11.22.0 and 12.5.1**, one scriptless
+registry dependency, a store on the same filesystem as `node_modules`:
+
+| Cell | 11.22.0 | 12.5.1 |
+|---|---|---|
+| default (`auto`), same filesystem | `nlink` 2 (hardlink) | `nlink` 2 |
+| fresh install with `PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy` | `nlink` 1 | `nlink` 1 |
+| `pnpm config get package-import-method` under `PNPM_CONFIG_*` / `npm_config_*` | `copy` / `undefined` | `copy` / `undefined` |
+| re-run an existing hardlinked tree with the copy setting | "Already up to date", `nlink` stays 2 | same |
+
+Two things follow. The `PNPM_CONFIG_*` spelling is the one that reaches pnpm >= 11, which
+re-confirms the 2026-09-20 split. And **changing the import method does not make pnpm
+recreate `node_modules`** — `packageImportMethod` is not recorded in `.modules.yaml` and is
+not part of what pnpm re-validates, so adding the setting cannot whiteout a mounted base the
+way a store-version mismatch does (`MIN_VERIFIED_BASE_PNPM_MAJOR`). Note these cells put the
+store and the project on ONE mount, which is why `auto` hardlinks here and does not in a
+container (previous finding); what they establish is that the spelling is honoured and that
+the switch is not a recreate.
+
+## Still unmeasured: the build-inclusive base-hit cost
+
+The checklist's remaining H2/H4 measurement — a base built by the real builder shape over an
+approved-build dependency, then a session install over it that approves the build, timed and
+sized — needs a Docker host to mount the overlay. It was **not** run for this PR: the session
+that implemented it had no Docker socket, could not create a user namespace
+(`unshare: Operation not permitted`, so no unprivileged overlay mount either), and had no SSH
+destination granted, so the `services` host in the "Reproduce" section below was unreachable.
+The 8 KB base-hit figure above therefore still stands only for **scriptless** deps measured as
+root, which is what the checklist item says.
 
 ## Finding: how the builder's sandbox store gets built, and that `--offline` then holds
 

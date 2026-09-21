@@ -116,17 +116,17 @@ Consequences for the commands you run:
   `pnpm store prune` and `pnpm store path` affect nothing outside this session.
 - **Downloads are not shared with other sessions.** A cold container installs cold.
 - You can edit a file inside an installed package — a `patch-package`-style fix, or
-  instrumenting a dependency to debug it — and the edit stays in this session, **for any
-  tree installed or re-imported since this arrived**. See the caveat below for older trees.
-- On **pnpm 10 and older** ShipIt also sets `package-import-method=copy`, so the files
-  under `node_modules` are copies rather than hardlinks into the store.
+  instrumenting a dependency to debug it — and the edit stays in this session.
+- The files under `node_modules` are **copies**, not hardlinks into the store
+  (`stat -c %h <file>` reports 1), and this costs you nothing: your store is mounted
+  separately from your workspace, and Linux refuses a hardlink across two mounts even when
+  they sit on one filesystem, so pnpm copies here whatever it is asked to do. ShipIt sets
+  `package-import-method=copy` explicitly on pnpm 10 and older, and on newer pnpm when a
+  shared base is mounted (below), where the import has to cross the overlay as well.
 
-**Caveat for a `node_modules` that predates this.** A pnpm 10 tree installed while the
-store was still shared between sessions is hardlinked into *that* store, and mounting a
-new private store does not detach those inodes — so editing such a file still writes
-through to the old shared store. pnpm will not re-import a tree it considers up to date,
-not even with `--force`. If you are about to patch a dependency, remove `node_modules` and
-install again first; `stat -c %h <file>` reports 1 for a copy and 2 or more for a hardlink.
+That also answers the obvious worry about an **old `node_modules`**: it is a tree of copies
+too, so nothing in it is shared with another session and there is nothing to rebuild. Edit
+inside it freely.
 
 `verify-store-integrity` is a local check on the store this session reads. It is left
 at pnpm's default and is not a cross-session protection — the private store is.
