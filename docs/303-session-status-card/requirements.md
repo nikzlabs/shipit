@@ -148,8 +148,10 @@ taken inside one session, without building an agent that talks to many.
     report by hand what they have done. What they ticked is sent to the agent
     together with the approved actions, in the same message; a step can be
     reported with no action approved. The submit button is labelled "Submit".
-    A reported step behaves as a sent action does: greyed, unticked, and
-    sendable again.
+    A reported step behaves as a sent action does: greyed, unselected, and
+    sendable again. Since req 44 it keeps a tick as a record of what was
+    reported; unselected is about what Submit would send, not about the box
+    being empty.
 
 30. The card is at the bottom only while the agent has stopped. When a turn
     starts, the card keeps the place it already had — the end of the finished
@@ -296,11 +298,42 @@ taken inside one session, without building an agent that talks to many.
     waiting for the user's answer (req 32) sit under it as they do in a long
     conversation.
 
+44. A row the user ticked and sent keeps a tick in its checkbox, so the card goes
+    on showing which rows they ticked rather than only that something was sent.
+    The tick is a record of what went, and is told apart at a glance from a row
+    ticked now and waiting for Submit. A row sent with a note alone, never
+    ticked, carries no tick: what is remembered is whether the row was ticked
+    when it was sent. A recorded row is ticked and sent again exactly as req 17
+    says, and unticking it before Submit cancels only that re-send and leaves the
+    record. A record never makes the collapsed card (req 42) report outstanding
+    work, and never adds a row to what Submit sends.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-21 — Nik: "when a manual step or a follow-up is 'sent' and was checked
+  (manual steps could be sent with comments only), it should be marked as checked
+  in the checkbox". → req 44. Submitting cleared the selection, so a row came
+  back greyed and tagged SENT with an EMPTY box, and the card no longer said
+  which rows he had ticked. His parenthetical is the other half and is what makes
+  the state per row: a manual step can be sent carrying only a note (req 37's
+  ANSWERED path), and such a row was not ticked, so it must not show a tick.
+
+  Decided here and not by him. **The record is a display state, not a second
+  mechanism**: the checkbox is still the selection, and the record is drawn in
+  the muted box rather than the accent, so a re-tick is louder than what it
+  replaces and Submit sends what is selected and nothing more. That keeps req 17
+  whole — a sent row is still tickable, a tick re-sends it, and unticking it
+  cancels only the re-send — where making the record the input's own checked
+  state would have re-sent every previously ticked row on the next Submit. **A
+  re-send rewrites the record rather than accumulating**, so a step ticked once
+  and later answered with a note alone loses the tick: the box says what the last
+  send said about the row. **An offer needs no separate memory** — an offer can
+  only be sent by ticking it, so every sent offer carries the record, including
+  one the server reports taken from an earlier load.
 
 - 2026-09-21 — Nik: "the cards should be visually right on top of the input if
   the conversation is short or didn't load yet. Now the cards are shown at the

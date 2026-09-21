@@ -14,16 +14,6 @@ import { InlineMarkdown } from "./message-markdown.js";
  * renders such a document, and this is not one.
  */
 
-/**
- * A row's text is markdown (docs/303-session-status-card req 41), with ShipIt
- * pointers enabled. Every item here is text the agent composed in a tool call —
- * a status card's offer or manual step, a transcript action card's action — so
- * it sits at the trust level of the agent's own transcript prose, which enables
- * them too. Nothing ingests a repository, tracker or PR document into a row;
- * what the boundary in `shipitLinkComponents` rules out is a surface that
- * renders such a document, and this is not one.
- */
-
 /** What a click on a row's text must leave alone rather than turn into a tick. */
 const INTERACTIVE = "a, button, input, textarea, select, label, [role='button']";
 
@@ -43,6 +33,13 @@ export interface ChecklistItem {
    * (docs/303 req 17).
    */
   taken?: boolean;
+  /**
+   * Was ticked at the moment it was sent, so the box keeps a tick as a RECORD
+   * of what the user reported (docs/303 req 44). Drawn muted, never in the
+   * accent, so it cannot be read as a tick waiting to be submitted; a row sent
+   * with a note alone carries no record.
+   */
+  takenChecked?: boolean;
   /**
    * An extra pill after the label, in the same style as RECOMMENDED. The status
    * card marks a step ANSWERED with it: unticked normally means "nothing will be
@@ -151,6 +148,9 @@ export function ActionChecklist({
       {items.map((item) => {
         const taken = item.taken === true;
         const checked = selected.has(item.key);
+        // req 44 — the record only shows while the row is NOT ticked now: a
+        // fresh tick is the louder of the two states and says the same thing.
+        const record = !checked && item.takenChecked === true;
         const below = renderBelow?.(item);
         return (
           <div
@@ -184,7 +184,12 @@ export function ActionChecklist({
               type="checkbox"
               className="sr-only"
               checked={checked}
-              aria-label={toggleHint ? `${toggleHint}: ${item.label}` : item.label}
+              // The record is not the input's state — the input is the
+              // selection, and a tick drawn over an unchecked box would
+              // otherwise reach assistive technology as nothing at all.
+              aria-label={`${toggleHint ? `${toggleHint}: ` : ""}${item.label}${
+                record ? " (sent as ticked)" : ""
+              }`}
               onChange={() => onToggle(item.key)}
             />
             <span
@@ -192,9 +197,11 @@ export function ActionChecklist({
               className={`shrink-0 mt-px inline-flex items-center justify-center w-4 h-4 rounded border transition-colors ${
                 checked
                   ? "bg-(--color-accent) border-(--color-accent) text-(--color-accent-text)"
-                  // An empty box needs a surface of its own: on the status card's
-                  // accent-tinted body, a borderline alone all but disappears.
-                  : "bg-(--color-bg-primary) border-(--color-border-secondary) text-transparent"
+                  : record
+                    ? "bg-(--color-bg-tertiary) border-(--color-border-secondary) text-(--color-text-tertiary)"
+                    // An empty box needs a surface of its own: on the status card's
+                    // accent-tinted body, a borderline alone all but disappears.
+                    : "bg-(--color-bg-primary) border-(--color-border-secondary) text-transparent"
               }`}
             >
               <CheckIcon size={ICON_SIZE.XS} weight="bold" />

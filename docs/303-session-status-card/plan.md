@@ -599,7 +599,19 @@ shows its description (req 26).
   an untaken one carries "RECOMMENDED", and leaves only when the agent removes
   it (req 17). It stays TICKABLE: an agent can crash or ignore the message, and
   re-sending is a second tick rather than a control of its own — `taken` is
-  presentation, not a lock. Untaken
+  presentation, not a lock. A row that WAS ticked when it went keeps a tick in
+  its box as a record (req 44), carried by `ChecklistItem.takenChecked` beside
+  `taken` and drawn in the muted box rather than the accent: the input's own
+  `checked` stays the selection, so Submit sends what is selected and nothing
+  more, a re-tick is the louder of the two states and hides the record under it,
+  and unticking returns to the record rather than erasing it. The record is not
+  the input's state, so it reaches assistive technology as a suffix on the box's
+  accessible name instead. Every sent offer carries it — an offer can only be
+  sent by ticking it — while a manual step needs its own `checkedSteps` set,
+  because a step can be sent carrying a note alone (req 37) and such a row was
+  never ticked. Each send rewrites the record of the rows IT submitted rather
+  than adding to the set, so a step ticked once and later answered without a
+  tick loses its record while the rows that send did not touch keep theirs. Untaken
   offers stay selectable while the card is stale (req 24); an offer whose
   message has been sent reads as taken at once, without waiting for the
   server's `takenAt`. The card keeps the transcript card's submit button,
@@ -1119,12 +1131,15 @@ collapsed card is legible the first time without one.
   means anything about the row is unsent — never sent, ticked again after a send,
   or carrying a note the agent has not been told — not merely `!taken`, which
   concealed the two cases the user is most likely waiting on: a retry after a
-  crash, and a note written against a step already reported. With nothing
+  crash, and a note written against a step already reported. A recorded tick
+  (req 44) is not one of them: it is the record of a send that happened, so it is
+  counted on the selection and the notes exactly as an empty box is. With nothing
   outstanding on a current card it is the bare gauge icon of req 42, and it grows
   only by what collapsing must not conceal. Nothing marks an arrival beyond the
   count: a "new" dot would need a seen/unseen lifetime of its own to clear.
 - **Session-scoped interaction state.** `owner` holds the session the sent set,
-  reported steps, notes, open notes and step selection belong to, and a
+  reported steps, their recorded ticks (req 44), notes, open notes and step
+  selection belong to, and a
   render-phase reset starts them from nothing when the card is handed another
   session without remounting. It is state rather than a ref precisely because the
   reset is a render-phase update: a ref survives a render React discards while
