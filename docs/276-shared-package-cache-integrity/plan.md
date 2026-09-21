@@ -578,6 +578,52 @@ host `tar -x` is off this path entirely. This is the "trusted install" docs/183
 only asserted (`preUserInstall: true`), done for real; the session's own install
 still runs (req 9).
 
+**Shipped 2026-09-21** (the builder, the immutable input snapshot and the one eligibility
+decision — `pnpm-base-inputs.ts`, `pnpm-lockfile.ts`, `pnpm-base-registry.ts`,
+`pnpm-base-builder.ts`), with four recorded deviations from the two paragraphs above. Nothing
+calls the builder yet: the consumer-side changes that make mounting a verified base safe (no
+pnpm pre-stamp, the no-lockfile gate, the per-scope lock) land with the trigger.
+
+- **The sandbox store is populated by `pnpm fetch` through a loopback registry over the
+  staged tarballs, not by unpacking them into a store ShipIt writes.** Measured
+  2026-09-21 (FINDINGS.md): `v11/index.db` is a **SQLite** database, so hand-writing the
+  store is a second implementation of pnpm's store, pinned to a store version — the thing
+  "canonical by construction" exists to avoid. The loopback server is a static file server
+  over tarballs three digests already agreed on; it authenticates nothing and needs to,
+  because it serves only verified bytes. It is up for the **fetch phase only**: the phase that
+  produces the published tree runs `--offline` with `--registry` pointed at a dead port, so an
+  accidental network dependency fails loudly. The container still has `NetworkMode: none`.
+- **The archive-to-manifest derivation is off the path.** It existed to admit *store entries*,
+  which the ext4 redesign replaced with a tree pnpm builds. What is still leaned on — tarball
+  sha512 == lockfile `resolution.integrity` == packument `dist.integrity` — is scripted and
+  asserted (`pnpm-base-registry.test.ts`, `integration_tests/pnpm-verified-base-build.test.ts`).
+- **Pinned pnpm 12.4.1, not 12.4.2.** 12.4.2 was 6 days old on 2026-09-21, inside the
+  dependency policy's 7-day minimum; 12.4.1 is the newest 12.x outside it, and re-measured
+  identical on both build phases.
+- **A pinned binary is not enough to stop a repo choosing the builder's pnpm.** Measured: the
+  repo's `packageManager` field reaches the builder by three routes, and the pinned binary
+  invoked directly **self-switches** unless pnpm's own version management is off. `builderEnv`
+  sets all three switches (`PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS`,
+  `COREPACK_ENABLE_PROJECT_SPEC`, `COREPACK_ENABLE_AUTO_PIN`).
+
+Three things the implementation makes stronger than the paragraphs describe, all worth stating
+because they change what a later reader has to check.
+
+- **`--ignore-pnpmfile` on BOTH phases, and hook-config keys refused outright.** The first cut
+  had it on the offline phase only, which an independent review broke: not staging a
+  `.pnpmfile` is not enough, because `globalPnpmfile: ./hooks.cjs` names a path the snapshot
+  stages for another reason — every `package.json` in the tree is staged, so
+  `hooks.cjs/package.json` with `main: "../.npmrc"` has Node resolve the hook to the staged
+  `.npmrc` and execute it in the fetch phase, before the phase that publishes. So
+  `pnpmfile`/`globalPnpmfile`/`global-pnpmfile` are refused in `.npmrc` and
+  `pnpm-workspace.yaml`, and the flag is on both phases.
+- **The builder builds at the SESSION's container paths**, `/workspace` and
+  `/workspace/.pnpm-store`, not paths of its own. pnpm records `storeDir` in `.modules.yaml`
+  and the publish preserves it, so any other path is a store mismatch at every consumer.
+- **`--store-dir`/`--registry` are passed on the command line**, which outranks any `.npmrc`
+  the snapshot carries — that is what makes "override a relocated global store" a real
+  override rather than a hope.
+
 *Scope and store.* pnpm's dep dir is `node_modules`; the pnpm early-returns
 (`container-overlay-provisioner.ts`, `overlay-publish.ts`) go. The store becomes
 **private per session** — `preparePnpmStore` resolves `sessionPnpmStoreDir`,
@@ -812,6 +858,10 @@ For anyone re-running or extending the harnesses:
 | `src/server/orchestrator/overlay-base.ts` | `publishBase` reused for ordering (CAS authenticates nothing); `withScopeLock` (`:101`) becomes the one per-scope lock for claim, publish and sweep; `copySnapshotToBase` hardlink-dedup is a **disk** optimization, not a verification step. `OverlayScope.namespace` runs through `scopeHashOf`, so pointer reads and publishes address the same namespaced scope. |
 | `src/server/orchestrator/overlay-volume.ts` | `overlayScopeHash` — repo + runtime + dep dir + an optional **namespace**, the verified-base discriminator; omitting it reproduces the pre-namespace hash, so existing npm/yarn bases stay addressable. Also the Docker `overlay` volume (`:196`), now also for pnpm's `node_modules`. |
 | `src/server/orchestrator/container-overlay-provisioner.ts` | `hasVerifiedBaseForEveryDepDir` — the pnpm mount gate; `preparePnpmStore` — the per-session private store. |
+| `src/server/orchestrator/pnpm-lockfile.ts` | What the builder reads out of `pnpm-lock.yaml`: which packages it pins, the digest it pins them to, and the entries that are not plain registry downloads. Classifies on the `resolution` SHAPE, so an unfamiliar future form stays ineligible rather than being silently admitted. |
+| `src/server/orchestrator/pnpm-base-inputs.ts` | `stagePnpmInputs` — the immutable snapshot, read out of one commit through git and never out of the session's checkout; `decidePnpmBaseEligibility` — the ONE eligibility decision, taken before any fetch. |
+| `src/server/orchestrator/pnpm-base-registry.ts` | `stageVerifiedRegistry` — resolves `<name>@<version>` against the orchestrator's own registry, admits only when the lockfile digest, the packument's `dist.integrity` and the downloaded bytes' sha512 all agree, and names the first failing package. |
+| `src/server/orchestrator/pnpm-base-builder.ts` | `builderScript` (the two phases), `builderEnv` (the three `packageManager` switches and the emptied config), and `buildVerifiedPnpmBase`, which publishes through `copySnapshotToBase` + `publishBase`. |
 | `src/server/shared/deps-hash.ts:21`, `:89` | pnpm's default hash inputs include `pnpm-workspace.yaml`; a custom `installInputs` replaces the list, so the pnpm marker must add it back. |
 | `src/server/orchestrator/overlay-session.ts` | `PNPM_VERIFIED_NAMESPACE`; `sessionPnpmStoreDir` — the per-session private store; `retiredSharedPnpmStoreRoot` — the tree the janitor ages out. |
 | `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `package-import-method=copy`, and `npm_config_cache` (section 1); `createContainer` retires the shared npm index. |
