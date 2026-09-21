@@ -44,26 +44,39 @@ After each auto-commit, the server captures the parent commit hash (HEAD before 
 4. Sends `session_forked` with new session info
 5. Client shows notification in current chat
 
-### The replay belongs to the agent, not to the first attempt
+### A retry re-arms the replay, because the attempt that spent it never ran
 
 A replay is armed whenever the session has no resumable conversation — by a rollback or a
-fork above, and by `armConversationReplay` (`session-agent-env.ts`) when the token sync-in
-finds no thread on disk, which is what a recreated container looks like. It is then read by
-`buildAgentRunParams` and appended to the system prompt.
+fork above, and by `armConversationReplay` (`services/replay.ts`, called from
+`session-agent-env.ts`) when the token sync-in finds no thread on disk, which is what a
+recreated container looks like. `buildAgentRunParams` then **takes** it into the system
+prompt and clears the resume id, so the agent starts a fresh conversation holding the
+transcript.
 
-It is **read there, never taken**. A turn is dispatched once but `executeAgentTurn` is
-re-entered with the same input by `recoverAuth`, `recoverMissingConversation` and
-`retryOnNextAccount`, and each re-entry builds run parameters again. A take would hand the
-whole transcript to whichever attempt built them first — including one that then refused on
-quota and read none of it. The attempt that actually ran would spawn with no resume id and
-no replay: an agent with an empty conversation, answering a message about work it cannot
-see. Re-arming does not cover this, because the arming guard fires only on the transition
-that clears a *stored* id, and the retry finds it already cleared.
+A turn is dispatched once, but `executeAgentTurn` is re-entered for it by `recoverAuth`,
+`recoverMissingConversation` and `retryOnNextAccount`, and each re-entry builds run
+parameters again. So the take lands on whichever attempt got there first — including one
+that then refused on quota and read none of it. That attempt records no conversation of
+its own, which leaves the session threadless *and* replayless, and the attempt that
+actually runs answers the user with an empty conversation. Re-arming at the env-prep site
+cannot cover it: that guard fires on the transition that clears a *stored* id, which by
+then is already clear.
 
-`setAgentSessionId` retires it instead: recording a conversation is the one event that says
-a thread exists to carry the transcript, so the column and the resume id can never both be
-empty while the history is non-empty. Guard:
-`integration_tests/conversation-replay-retry.test.ts`.
+So each of the three paths calls `reseedConversationForRetry` (`turn-executor.ts`) before
+it spawns. It rebuilds from history rather than carrying the spent copy — the failed
+attempt's partial output is finalized into history first, so the retry's agent sees more
+than the one that gave up, not less. Two conditions: there is no thread to resume, so a
+healthy conversation is still left to `--resume`; and the transcript holds a reply, since
+the turn's own user row is already persisted and a session with nothing else would replay
+that one message back and then submit it as the prompt.
+
+Retirement stays in `buildAgentRunParams`, deliberately. Retiring it on the recorded
+conversation id instead looks equivalent and is not: `setAgentSessionId` also records an
+id *recovered from disk* (`session-agent-env.ts`, via `findLatestAgentSessionId`), which
+after a rollback is the pre-rollback conversation — clearing the replay there would resume
+the very turns the rollback excluded.
+
+Guard: `integration_tests/conversation-replay-retry.test.ts`.
 
 `buildConversationReplay` flattens to `role` and `text` alone; what that drops, and why it
 matters, is `docs/144-rewind-fork-ux` U8.
@@ -71,10 +84,11 @@ matters, is `docs/144-rewind-fork-ux` U8.
 ## Key files
 
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts` — Three server-side handlers
-- `src/server/orchestrator/services/replay.ts` — `buildConversationReplay()` utility
-- `src/server/orchestrator/session-agent-run-params.ts` — reads the replay into the system prompt
-- `src/server/orchestrator/session-agent-env.ts` — `armConversationReplay()` on a missing thread
-- `src/server/orchestrator/sessions.ts` — Replay storage on SessionManager; `setAgentSessionId` retires it
+- `src/server/orchestrator/services/replay.ts` — `buildConversationReplay()` and `armConversationReplay()`
+- `src/server/orchestrator/session-agent-run-params.ts` — takes the replay into the system prompt
+- `src/server/orchestrator/session-agent-env.ts` — arms it when the token sync-in finds no thread
+- `src/server/orchestrator/turn-executor.ts` — `reseedConversationForRetry()` before a retry spawns
+- `src/server/orchestrator/sessions.ts` — Replay storage/consumption on SessionManager
 - `src/server/shared/types/ws-server-messages.ts` — `WsCommitLinked`, `WsRollbackComplete`, `WsSessionForked`
 - `src/server/shared/types/ws-client-messages.ts` — `WsRollbackCode`, `WsRollbackCodeAndChat`, `WsForkSessionFromMessage`
 - `src/client/components/RollbackDropdown.tsx` — Dropdown UI component

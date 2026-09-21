@@ -390,17 +390,8 @@ export class SessionManager {
     ).run(now, now, id);
   }
 
-  /**
-   * Recording a conversation retires the replay armed in its place: the replay exists
-   * only because the session had no thread, and this is the one event that says it has
-   * one. Retiring it HERE rather than where the prompt is built is what makes it survive
-   * a turn's later attempts — a turn is dispatched once but can be re-run several times,
-   * and an attempt that never reached the agent must not spend the whole transcript.
-   */
   setAgentSessionId(id: string, agentSessionId: string): void {
-    this.db.prepare(
-      "UPDATE sessions SET agent_session_id = ?, conversation_replay = NULL WHERE id = ?",
-    ).run(agentSessionId, id);
+    this.db.prepare("UPDATE sessions SET agent_session_id = ? WHERE id = ?").run(agentSessionId, id);
   }
 
   /**
@@ -438,16 +429,23 @@ export class SessionManager {
   }
 
   /**
-   * Read, never a take. {@link setAgentSessionId} is what retires it, so every attempt of
-   * a turn seeds its agent with the same transcript; a take here would hand the whole
-   * conversation to whichever attempt built run parameters first, even one that then
-   * refused on quota and never read a word of it.
+   * A take: the replay is spent by the run parameters that carry it into a system prompt.
+   * An attempt that then fails without reaching the agent leaves the session threadless
+   * AND replayless, which is what `reseedConversationForRetry` (`turn-executor.ts`) puts
+   * back before a retry spawns.
    */
-  readConversationReplay(id: string): string | undefined {
-    const row = this.db.prepare(
-      "SELECT conversation_replay FROM sessions WHERE id = ?",
-    ).get(id) as { conversation_replay: string | null } | undefined;
-    return row?.conversation_replay ?? undefined;
+  consumeConversationReplay(id: string): string | undefined {
+    let replay: string | undefined;
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT conversation_replay FROM sessions WHERE id = ?",
+      ).get(id) as { conversation_replay: string | null } | undefined;
+      if (row?.conversation_replay) {
+        this.db.prepare("UPDATE sessions SET conversation_replay = NULL WHERE id = ?").run(id);
+        replay = row.conversation_replay;
+      }
+    })();
+    return replay;
   }
 
   // Branch movement supersedes earlier notices, including appended ones.

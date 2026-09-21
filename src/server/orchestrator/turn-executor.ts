@@ -38,6 +38,7 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
+import { armConversationReplay } from "./services/replay.js";
 import {
   clearConversationThread,
   refreshStatusContextInPrompt,
@@ -135,6 +136,34 @@ function readStatusContext(deps: SystemTurnDeps, sessionId: string): string {
   } catch (err) {
     console.error(`[turn] re-reading the status card for ${sessionId} failed:`, err);
     return "";
+  }
+}
+
+/**
+ * Put the transcript back before a retry spawns an agent for this turn.
+ *
+ * The replay is armed when the session has no resumable conversation and is spent by the
+ * run parameters that carry it into a system prompt. A turn is dispatched once but this
+ * function is re-entered for it by all three recovery paths below — so an attempt that
+ * spent the replay and then failed without recording a conversation of its own leaves the
+ * session threadless AND replayless, and the attempt that actually runs answers the user
+ * with an empty conversation. Re-arming at the env-prep site cannot cover it: that guard
+ * fires on the transition that clears a STORED id, which is already clear by then.
+ *
+ * Only when there is no thread to resume, so a healthy conversation is left to `--resume`,
+ * and only when the transcript holds a reply — see `requireReply`.
+ */
+function reseedConversationForRetry(deps: SystemTurnDeps, input: TurnInput): void {
+  try {
+    const session = deps.listenerDeps.sessionManager.get(input.sessionId);
+    if (!session || session.agentSessionId || session.conversationReplay) return;
+    if (!armConversationReplay(deps.listenerDeps, input.sessionId, { requireReply: true })) return;
+    console.log(
+      `[turn] re-armed the conversation replay for ${input.sessionId}; `
+      + "the retry continues the transcript rather than starting empty",
+    );
+  } catch (err) {
+    console.error(`[turn] re-arming the conversation replay for ${input.sessionId} failed:`, err);
   }
 }
 
@@ -484,6 +513,7 @@ export async function executeAgentTurn(
       console.warn("[turn] 401-recovery token repush failed:", err);
     }
     finalizeAttemptOutput();
+    reseedConversationForRetry(deps, input);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     await executeAgentTurn(runner, deps, freshAgent, {
@@ -523,6 +553,9 @@ export async function executeAgentTurn(
     }
     agent.kill();
     if (runner?.getAgent() === agent) runner.setAgent(null);
+    // The CLI has just told us this conversation is gone; rebuild it from the transcript
+    // rather than letting the recovery start the agent with no history at all.
+    reseedConversationForRetry(deps, input);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     void executeAgentTurn(runner, deps, freshAgent, {
@@ -564,6 +597,7 @@ export async function executeAgentTurn(
     } catch {
       // Already gone.
     }
+    reseedConversationForRetry(deps, input);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) {
       runner.setAgent(freshAgent);
