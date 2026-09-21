@@ -515,11 +515,27 @@ resolve online — pnpm reconstructs the graph from the base's carried
 `.pnpm/lock.yaml` (measured: an offline install knew the transitive versions
 without resolving), so it inherits the publisher's version selection. The
 resolution: the base is a **verified warm tree**, and **every session still runs
-its own install over it** (no pnpm pre-stamp). That install is where builds run
-and the session's own graph reconciles, so nothing carried decides for the
-session. It is a near-no-op for a matching *scriptless* lockfile (8 KB measured);
-a build-bearing repo adds its build-output disk and time to each session's upper,
-which the spikes did not measure — an open measurement, not a settled 8 KB.
+its own install over it** (no pnpm pre-stamp). That install is where the session's
+own graph reconciles, so nothing carried decides for the session. It is a
+near-no-op for a matching *scriptless* lockfile (8 KB measured).
+
+**Measured 2026-09-21, and the "builds run there" half of that claim does NOT
+hold** ([`build-cost-spike.sh`](./build-cost-spike.sh), FINDINGS.md). A session
+that mounts the base and approves a pending build does **not** get it built: its
+install prints "Lockfile is up to date, resolution step is skipped", exits 0 and
+leaves `pendingBuilds` unprocessed — 8 KB upper, 286 ms, silently unbuilt. The
+control is the same project and the same approval file with **no** base, which
+does build. The two repairs also fail as the session's own uid, because copy-up
+preserves the lower's owner and a session may rewrite a base file's contents but
+not `chmod` it: `pnpm rebuild` and `pnpm install --force` both exit 1 with
+`Operation not permitted`. So a repo with an approved native build gets a working
+tree from its first private install — the one that triggers the publish — and a
+silently unbuilt one from every container start after the base exists. The C2/C3
+cells this design leaned on used a base from an **ordinary** install, not the
+builder's `--ignore-scripts` output; FINDINGS.md's own limits section had flagged
+that gap. **Open, and a design decision**: exclude a repo with pending builds from
+eligibility, or have the base carry built output, or give the session a repair
+that works under its own uid.
 
 *Inputs and verification (req 1, 3, 6).* The base is rebuilt from the repo's
 **committed manifests plus lockfile** at the default-branch commit — package
@@ -728,9 +744,11 @@ rather than another publisher's.
 
 *Per-session install — no pnpm pre-stamp (req 9, 10, 11).* Every pnpm session
 runs its own `pnpm install` over the base; pnpm pre-stamping is **cut for pnpm**
-(it stays for npm/yarn). The session's install runs its approved builds into its
-upper (an unbuilt base is completed per session) and reconciles against the
-session's own lockfile. What req 1 asks of the base is narrow and exact:
+(it stays for npm/yarn). The session's install reconciles against the session's
+own lockfile. It was also supposed to run its approved builds into its upper, so
+that an unbuilt base is completed per session; **measured 2026-09-21, it does
+not** — see the paragraph above and FINDINGS.md. What req 1 asks of the base is
+narrow and exact:
 **mounting the base must not introduce a graph choice absent from the consuming
 session's own inputs.** Authentic `overrides`/`catalog:`/peer selections in a
 session's *own* committed lockfile are that session's choice, not a cache

@@ -359,16 +359,61 @@ store and the project on ONE mount, which is why `auto` hardlinks here and does 
 container (previous finding); what they establish is that the spelling is honoured and that
 the switch is not a recreate.
 
-## Still unmeasured: the build-inclusive base-hit cost
+## Result: an approved build does NOT run over a base hit (build-cost-spike.sh)
 
-The checklist's remaining H2/H4 measurement — a base built by the real builder shape over an
-approved-build dependency, then a session install over it that approves the build, timed and
-sized — needs a Docker host to mount the overlay. It was **not** run for this PR: the session
-that implemented it had no Docker socket, could not create a user namespace
-(`unshare: Operation not permitted`, so no unprivileged overlay mount either), and had no SSH
-destination granted, so the `services` host in the "Reproduce" section below was unreachable.
-The 8 KB base-hit figure above therefore still stands only for **scriptless** deps measured as
-root, which is what the checklist item says.
+The checklist's build-inclusive measurement, run on the services host 2026-09-21
+([`build-cost-spike.sh`](./build-cost-spike.sh), PASS=14 FAIL=1 — the failure IS this finding).
+Host: Docker 29.7.2, Ubuntu 24.04, ext4. **Builder pnpm 12.4.1** (the pinned one) building the
+base with the real flags `--frozen-lockfile --ignore-scripts --ignore-pnpmfile`; **consumer pnpm
+12.5.1** (the image's corepack default). Every session container runs as its **own non-root uid**
+over a base owned by another uid with group write — the `shareOne` shape
+(`session-worker-uid.ts:124`) the earlier tree spikes never exercised, because they ran as root.
+
+The project is 6 846 files / 57 MiB: `better-sqlite3@11.5.0`, whose `install` script produces
+`build/Release/better_sqlite3.node`, plus five scriptless packages.
+
+| Arm | upper | time (best of 3) | build ran? |
+|---|---|---|---|
+| base hit, build not approved | 8 192 B | 319 ms | no (expected) |
+| base hit, build **approved** (`allowBuilds: {better-sqlite3@11.5.0: true}`) | 8 192 B | 286 ms | **no — rc=0, silently unbuilt** |
+| **no base**, same project, same approval file | 59 MiB tree + 52 MiB store | 1 043 ms | **yes** |
+
+**So there is no build-inclusive base-hit cost to report: the build never runs.** The session's
+own `pnpm install` prints "Lockfile is up to date, resolution step is skipped", exits 0, and
+leaves `pendingBuilds` unprocessed. The no-base arm is the control that makes this a finding
+rather than a broken fixture: the same project, the same `pnpm-workspace.yaml`, keyed by the id
+pnpm itself recorded in `pendingBuilds`, **does** build when no base is mounted.
+
+Two earlier harness errors are worth recording, because each would have reported a false pass:
+`esbuild` is unusable as the probe (its binary ships in an **optional dependency**, so it runs
+with scripts suppressed), and `better-sqlite3`'s `require()` succeeds with no binding at all —
+the probe has to construct a `Database`. A third, in an ad-hoc run only: `printf %s` does not
+expand `\n`, which silently produced an invalid approval file.
+
+**And the two repairs a user would reach for both fail**, as the session's own uid over the base:
+
+| Command | Result |
+|---|---|
+| `pnpm rebuild` | rc=1, `Failed to chmod ".../semver/bin/semver.js": Operation not permitted` |
+| `pnpm install --force` | rc=1, same EPERM |
+
+That is the ownership shape, not a fluke: overlayfs copy-up preserves the lower's owner, so a
+copied-up base file belongs to the orchestrator's uid, and group write lets a session rewrite
+its **contents** but not `chmod` it. Verified at the source — `shareOne` keeps `stat.uid` and
+only adds the shared gid plus group write.
+
+Isolation is unaffected and was re-asserted here under distinct uids: the base stayed
+byte-unchanged throughout, and a second session inherited nothing of the first's upper.
+
+**What this contradicts.** plan.md section 5 says every session "runs its own install over it
+(**no pnpm pre-stamp**) … That install is where builds run and the session's own graph
+reconciles." The first half holds; the second does not for a script-bearing repo. The C2/C3
+cells that the design leaned on used a base produced by an **ordinary install**, which this
+file's own limits section already flagged — they did not cover the builder's `--ignore-scripts`
+output, and that is exactly the gap. A repo with an approved native build gets a working tree
+from its first, private install (the one that triggers the publish) and a silently unbuilt one
+from every container start after the base is published. Recorded as an open checklist item; the
+fix is a design decision, not part of this slice.
 
 ## Finding: how the builder's sandbox store gets built, and that `--offline` then holds
 

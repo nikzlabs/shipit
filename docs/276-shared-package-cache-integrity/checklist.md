@@ -321,14 +321,32 @@ recorded in [requirements.md](./requirements.md); none is open.
       failed build reports pnpm's own output instead of the shell script. The builder script
       also notices a loopback registry that exited before it was ready and prints its log —
       that failure previously said nothing at all.
-- [ ] Measure the build-inclusive base-hit install cost (approved registry dep +
+- [x] Measure the build-inclusive base-hit install cost (approved registry dep +
       `--ignore-scripts` base + empty private store): warm-install time and the
-      marginal build-output disk in the upper. The 8 KB result used scriptless
-      deps and does not cover this; the tree spikes also ran as root, not as
-      distinct session uids. **Not run 2026-09-21** — it needs a Docker host to
-      mount the overlay, and the implementing session had no Docker socket, no
-      user namespace (`unshare: Operation not permitted`) and no granted SSH
-      destination, so the `services` host was unreachable (FINDINGS.md).
+      marginal build-output disk in the upper. **Measured 2026-09-21**
+      (`build-cost-spike.sh`, services host, PASS=14 FAIL=1 — the failure is the
+      finding), with the base built by the pinned pnpm 12.4.1 and consumed by
+      12.5.1, every session container running as its own non-root uid over a base
+      owned by another uid with group write. **There is no build-inclusive cost to
+      report, because the build does not run**: an approved pending build over a
+      base hit costs 8 192 B and 286 ms and leaves the package silently unbuilt at
+      rc=0, while the same project and approval file with no base builds (59 MiB
+      tree + 52 MiB store, 1 043 ms). Isolation re-asserted under distinct uids:
+      base byte-unchanged, session 2 inherits nothing. Two probe errors caught and
+      recorded rather than shipped as passes (esbuild's binary comes from an
+      optional dep; `require('better-sqlite3')` succeeds with no binding).
+- [ ] **A script-bearing repo gets a silently unbuilt tree once a base exists**
+      (found by the measurement above, 2026-09-21). The session's own install
+      skips `pendingBuilds` — "Lockfile is up to date, resolution step is
+      skipped" — and the two repairs fail under the session's own uid with
+      `Operation not permitted`, because copy-up keeps the lower's owner and a
+      session may rewrite a base file but not `chmod` it (`shareOne`,
+      `session-worker-uid.ts:124`). The repo works from its first private install
+      and breaks from the next container start. plan.md section 5's "that install
+      is where builds run" is corrected there. A design decision, not a fix to
+      slot in here: exclude a repo with pending builds from eligibility, have the
+      base carry built output, or give the session a repair that works as its own
+      uid.
 - [x] The `.pnpmfile.mjs` and `configDependencies` suppression gap measured
       (2026-09-21, pnpm 12.4.1, FINDINGS.md): `--ignore-pnpmfile` suppresses
       **both** — module body and `readPackage` — exactly as it does `.cjs`. So
