@@ -27,17 +27,27 @@ ShipIt.
 6. The agent cannot reach the same outcome by hand from a normal turn: the
    commands that move a session's checkout onto a shared branch, and the
    commands that force-push, are judged the same way whichever spelling is used.
+7. An ORDINARY (fast-forward) push is refused on a shared branch too. A
+   session's commit reaches the repository's default branch, or a pull request's
+   base, only through a pull request.
+8. A session cannot be STARTED on a shared branch. The one path that takes a
+   branch name from its caller — forking — refuses one.
 
 ## Open questions
 
-- Should an ORDINARY (fast-forward) push also refuse a shared branch? It cannot
-  lose data — git declines a non-fast-forward — but it can put a turn's commit
-  straight onto the base with no pull request. Guarding it would stop auto-push
-  for any session legitimately working on the default branch, which is a
-  behaviour change beyond this incident. Left open for a human decision; see
-  plan.md, "Known gaps".
+_None._
 
 ## Resolved questions
+
+- 2026-09-21 — Should an ORDINARY (fast-forward) push also refuse a shared
+  branch? Yes, everywhere ShipIt pushes: the auto-push, the durability push that
+  precedes deleting a checkout, and the pre-merge sync. A fork may not be
+  created on one either. Asked because guarding it would stop auto-push for a
+  session working on the default branch — but no production path puts a session
+  there: every branch is `shipit/<slug>`, `shipit/install-…`, an issue-seeded
+  `<id>-<slug>`, `<parent>-<slug>`, or `release/<version>`. The fixtures that
+  suggested otherwise build their session through `/api/_test/sessions`, a route
+  registered only in test mode.
 
 - 2026-09-21 — Should ShipIt fail closed when it cannot read the remote tip it
   is about to overwrite? Yes, for a **force**-push only. The loss it guards

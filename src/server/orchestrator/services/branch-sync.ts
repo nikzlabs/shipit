@@ -1,11 +1,13 @@
 import type { BranchSyncStatus } from "../../shared/types/github-types.js";
 import { getErrorMessage } from "../validation.js";
+import { findSharedBranchRefusal } from "./push-target-guard.js";
 
 export interface BranchSyncGit {
   currentBranchOrNull(): Promise<string | null>;
   aheadBehind(ref: string): Promise<{ ahead: number; behind: number } | null>;
   fetchBranch(remote: string, branch: string): Promise<void>;
   push(remote?: string, branch?: string): Promise<string>;
+  getDefaultBranch(): Promise<string>;
 }
 
 export function classifyBranchSync(counts: { ahead: number; behind: number }): BranchSyncStatus {
@@ -87,6 +89,12 @@ export async function guardMergeSync(
   }
 
   if (sync.state !== "ahead") return { action: "proceed" };
+
+  // `pushed: false` leaves any armed auto-push in place on purpose — it refuses the
+  // same branch for the same reason, so nothing publishes it by another route
+  // (docs/312-base-branch-push-protection req 7).
+  const refusal = await findSharedBranchRefusal(git, branch);
+  if (refusal) return { action: "hold", pushed: false, message: refusal.message };
 
   const commits = `${sync.ahead} commit${sync.ahead === 1 ? "" : "s"}`;
   try {

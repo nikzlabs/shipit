@@ -2,6 +2,7 @@ import { lstat } from "node:fs/promises";
 import type { GitManager, UnreadableWorkspace, WorkingTreeState } from "../shared/git.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { EvictBlockReason } from "./services/evict-blocked-notice.js";
+import { findSharedBranchRefusal } from "./services/push-target-guard.js";
 
 /**
  * Whether a checkout can be deleted without losing work that exists nowhere else.
@@ -16,6 +17,7 @@ export type CheckoutDurability =
   | { state: "durable" }
   | { state: "blocked-by-dirty"; reason: EvictBlockReason }
   | { state: "blocked-by-push"; cause: "detached-head" }
+  | { state: "blocked-by-push"; cause: "shared-branch"; message: string }
   | { state: "blocked-by-push"; cause: "push-failed"; message: string };
 
 function describeBlock(r: {
@@ -101,6 +103,12 @@ async function ensureBranchTipOnOrigin(git: GitManager): Promise<CheckoutDurabil
   if (!branch) return { state: "blocked-by-push", cause: "detached-head" };
 
   if (!(await tipIsOnOrigin(git, branch))) {
+    // Refusing here is the safe answer, not a lesser one: "not durable" keeps the
+    // checkout instead of deleting it, so the commits survive locally rather than
+    // being published onto a shared branch (docs/312-base-branch-push-protection
+    // req 7).
+    const refusal = await findSharedBranchRefusal(git, branch);
+    if (refusal) return { state: "blocked-by-push", cause: "shared-branch", message: refusal.message };
     try {
       await git.push("origin", branch);
     } catch (pushErr) {

@@ -183,6 +183,43 @@ property the leases above lack. It gives up `git branch -f`'s refusal to move a
 branch checked out in another worktree; ShipIt creates none, the primary
 worktree is covered by the early return, and the move is a fast-forward.
 
+## Layer 4 — the ordinary pushes, and the fork
+
+Layers 1–3 stop the force-push, which is the half that destroys. An ordinary
+push cannot rewind — git declines a non-fast-forward — but it can fast-forward
+the base with a commit that belongs to no pull request, so it is refused too
+(req 7). The same `findSharedBranchRefusal` runs at all three ordinary-push
+sites:
+
+- **`pushToOrigin`** (`git-utils.ts`), the per-turn auto-push. Its `onSkip`
+  now carries a `{ reason, message }` pair rather than a bare reason, so the
+  wording of every refusal lives in one place and both callers report it (req 3).
+- **`ensureBranchTipOnOrigin`** (`checkout-durability.ts`), the push that makes
+  a checkout safe to delete. A new `blocked-by-push` cause, `shared-branch`.
+  Refusing here is the SAFE answer rather than a lesser one: "not durable" keeps
+  the checkout, so the commits survive locally instead of being published onto
+  the base.
+- **`guardMergeSync`** (`services/branch-sync.ts`), the pre-merge catch-up push.
+  Holds with `pushed: false`, which deliberately leaves any armed auto-push in
+  place — it refuses the same branch for the same reason, so nothing reaches the
+  branch by the other route.
+
+**The fork is the only way to start a session on a shared branch**, and it is
+refused as well (req 8). `POST /api/sessions/:id/fork` takes its branch name
+from the caller and validated only characters; the fork's clone carries no local
+copy of the default branch, so `git checkout -b main` would succeed. The check
+runs before the clone, and only for a session that has a remote — without one
+`getDefaultBranch()` answers `"main"` from its own fallback, which is no
+evidence of a shared branch.
+
+**Why this was safe to do.** The question was open because guarding an ordinary
+push would stop auto-push for a session working on the default branch. Reading
+the code settled it: no production path puts a session there (the enumeration is
+in `requirements.md`'s resolved question). The fixtures that appeared to show
+one — `auto-push-success.test.ts`, `checkout-durability.test.ts` — build their
+session through `/api/_test/sessions`, a test-mode-only route, and were rewritten
+onto a `shipit/*` branch so they test the shape sessions actually have.
+
 ## Known gaps, deliberately not closed here
 
 - **The hook is Claude-only.** It is a Claude Code `PreToolUse` hook, armed in
@@ -195,14 +232,6 @@ worktree is covered by the early return, and the move is a fast-forward.
   session force-pushing its *own* branch after a rebase is routine — and the
   hook has no way to learn the session branch, so the precise rule ("force-push
   only your own branch") needs an env var it does not have.
-- **An ordinary push to a shared branch is still allowed.** `pushToOrigin`
-  (auto-push), `checkout-durability.ts` and `branch-sync.ts` all push whatever
-  is checked out. None can rewind — git declines a non-fast-forward — but each
-  could fast-forward the base with a commit belonging to no pull request.
-  Guarding `pushToOrigin` was tried and reverted: it stops auto-push for any
-  session legitimately working on the default branch, which is a behaviour
-  change wider than this incident and a call for a human to make. Open question
-  in `requirements.md`.
 - **A live session's local default branch still drifts.** It is healed when a
   checkout is handed back (above) and never again, so a long-running session
   that fetches many times ends the day holding a stale `main`. Healing on every
@@ -233,6 +262,10 @@ worktree is covered by the early return, and the move is a fast-forward.
   before the force-push, not inside `agentCreatePr` after it
 - `docker/agent-hooks/block-branch-ops.mjs` — `offends`, `offendsDestructive`,
   `unquote`
+- `src/server/orchestrator/git-utils.ts` — `pushToOrigin`, `PushSkip`
+- `src/server/orchestrator/checkout-durability.ts` — `ensureBranchTipOnOrigin`
+- `src/server/orchestrator/services/branch-sync.ts` — `guardMergeSync`
+- `src/server/orchestrator/services/session-fork-merge.ts` — `forkSession`
 - `src/server/orchestrator/git-utils.ts` — `syncLocalDefaultBranchToOrigin`,
   `localDefaultIsSafeToMove`
 - `src/server/orchestrator/services/session.ts` — `restoreSessionWorkspaceImpl`,

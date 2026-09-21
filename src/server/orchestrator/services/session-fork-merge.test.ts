@@ -211,7 +211,12 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     };
   }
 
-  async function fork(parentDir: string, parentRow: StubRow, cacheDir = path.join(tmpDir, "no-such-cache")) {
+  async function fork(
+    parentDir: string,
+    parentRow: StubRow,
+    cacheDir = path.join(tmpDir, "no-such-cache"),
+    branchName = "shipit/forkslug",
+  ) {
     const { rows, manager } = makeForkSessionManager(parentRow);
     const sessionsRoot = path.join(path.dirname(parentDir), "sessions");
     fs.mkdirSync(sessionsRoot, { recursive: true });
@@ -224,7 +229,7 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
       { init: () => {} },
       parentRow.id,
       parentDir,
-      "shipit/forkslug",
+      branchName,
       undefined,
       "Forked",
       {
@@ -237,6 +242,24 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     );
     return { result, rows };
   }
+
+  /**
+   * The fork is the only path that takes its branch name from the caller, and its
+   * clone has no local `main` to collide with — so `checkout -b main` succeeds and
+   * leaves the new session aimed at the base (docs/312-base-branch-push-protection
+   * req 1). Refused before the clone, so no workspace is left behind either.
+   */
+  it("refuses to fork onto the repository's default branch", async () => {
+    const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
+    const sessionsRoot = path.join(path.dirname(parentDir), "sessions");
+
+    await expect(fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir,
+    }, bareDir, "main")).rejects.toThrow(/default branch/);
+
+    expect(fs.existsSync(sessionsRoot) && fs.readdirSync(sessionsRoot).length > 0).toBe(false);
+  });
 
   it("targets the repo's default branch, not the parent session's branch", async () => {
     const { bareDir, parentDir } = setupParentOnFeatureBranch("main");

@@ -246,6 +246,13 @@ async function reclaimToEvicted(
             `[disk-janitor] evict blocked for ${session.id} — HEAD is detached, so its commits `
             + "belong to no branch that could be pushed; keeping at light",
           );
+        } else if (durability.cause === "shared-branch") {
+          console.warn(
+            `[disk-janitor] evict blocked for ${session.id} — its commits sit on a shared branch `
+            + "that ShipIt will not publish, so deleting the checkout would lose them; "
+            + "keeping at light:",
+            durability.message,
+          );
         } else {
           console.warn(
             `[disk-janitor] evict blocked for ${session.id} — the branch tip is not on origin `
