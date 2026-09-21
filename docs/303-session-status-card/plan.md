@@ -882,6 +882,14 @@ finished at 0 of 67,348 — the reported failure exactly; after, the pin landed 
 45,455, while a scroll made *after* the rows were up held at 12,000 as the
 content grew past 83,000.
 
+**The card scrolling inside itself was the other candidate, and it does not
+exist.** Measured on the rendered element rather than assumed: `overflow-y:
+visible`, `scrollHeight === clientHeight`, its content laid out inline inside the
+transcript's own scroller. A wheel over the card *is* a wheel over the
+transcript, so there is nothing to tell apart, and no signal there to use.
+Elapsed time was ruled out for a different reason: the gap's length is the
+history's length.
+
 What re-arms is the **arrival**, not the absence of rows — the gap is not
 exempted from the scroll rule. That distinction is the bound on the whole thing:
 exempting it would pin an **empty** session's card to its end for as long as the
