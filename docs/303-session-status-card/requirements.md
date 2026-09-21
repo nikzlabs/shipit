@@ -288,11 +288,26 @@ taken inside one session, without building an agent that talks to many.
     still says that the user is needed. This is the pinned card at the end of the
     conversation; the transcript's own follow-up action card is unchanged.
 
+43. The card is immediately above the input field whenever the conversation is
+    shorter than the view — a short session, and the gap before the conversation
+    has loaded — and it does not move when the conversation arrives. Where the
+    conversation fills the view, the card goes on scrolling with it (req 6). What
+    is below the card is unchanged: a running turn's output (req 30) and a card
+    waiting for the user's answer (req 32) sit under it as they do in a long
+    conversation.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-21 — Nik: "the cards should be visually right on top of the input if
+  the conversation is short or didn't load yet. Now the cards are shown at the
+  top while conversation is loading, and then they move down". → req 43. Not a
+  question he was asked; the requirement is recorded here because req 6 says the
+  card is the last element of the conversation, which puts it immediately above
+  the input field only once the conversation is tall enough to fill the view.
 
 - 2026-09-21 — Nik: "need a way to collapse the cards into a single icon, in a
   long session the list of steps/followups/status only grows". → req 42. Two

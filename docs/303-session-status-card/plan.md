@@ -958,6 +958,49 @@ those removals a frame later, so only the selection clearing still fails a case
 there on its own. The resets stay because the open's invariant rests on them: it
 holds only while the follow flag is true across a switch.
 
+### Immediately above the composer on a short conversation (req 43)
+
+The card is the last child of the scrolling content, which puts it just above the
+input field only once the content is tall enough to fill the scroller. Below that
+it sits wherever the content ends: high up with empty space beneath it on a short
+session, and — because the card renders from the session record while the
+transcript is empty — at the very TOP of the scroller during the loading gap,
+from where it visibly dropped when the rows arrived.
+
+**Solved in CSS, with no measurement and no effect.** The scroller becomes a flex
+column and the content element takes `mt-auto`: while the content is shorter than
+the viewport the auto margin absorbs the free space and pushes it to the bottom,
+and once it overflows there is no free space, the margin resolves to 0, and the
+scroller is an ordinary top-anchored one. `justify-end` on the container is the
+same idea and is wrong here: with it, overflow above the start edge is
+unreachable, so a long transcript could not be scrolled back to. `mt-auto` on the
+item has no such edge — which is why it, and not the container property, is the
+standard form of this.
+
+The alternative was measuring the content and padding the top of the scroller to
+the difference. It reaches the same place a frame later, needs a ResizeObserver
+of its own beside the one `useMessageScroll` already runs, and its correction
+lands after paint — which is the jump this requirement is about.
+
+Nothing in the scroll path changes. Heights are untouched (a margin is not part
+of a border box), so the observer watching the content element reports growth
+exactly as before, and the content wrapper keeps its automatic content-based
+minimum height, so flex shrinking cannot flatten it to the viewport and hide that
+growth. A short conversation had `scrollHeight === clientHeight` before this
+change as well — what moves is where in that unscrollable box the content sits,
+not whether it scrolls. The turn anchor (req 30) is unaffected: it decides the
+card's place in the keyed list, not where that list sits in the scroller, so a
+running turn's output and a pending answer card are below the card here exactly
+as they are in a long conversation.
+
+**The loading-gap repair (planning#595, PR #2942) is untouched.** A scroll taken
+in the gap is still discarded when the rows first render, and a card taller than
+the viewport still has the same scroll range to take one in. Re-verified by hand
+rather than assumed: traced per frame across a session switch, the card's bottom
+was at the scroller's bottom with no rows and unchanged when 40 rows landed, and
+a scroll to the top made in the gap was discarded, the session opening at the end
+of its conversation.
+
 ### A card that waits for an answer goes last (req 32)
 
 The status card is not moved for this; the **answer card is lifted out of the
