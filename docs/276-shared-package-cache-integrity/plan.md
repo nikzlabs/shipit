@@ -538,10 +538,11 @@ this design leaned on used a base from an **ordinary** install, not the builder'
 script is ineligible** (below) — no base, plain private install, the behaviour
 those repos had before a base existed, which is what restores req 9. The other
 two candidates are rejected: a base carrying built output contradicts the
-builder's no-script posture, and a session-uid repair is the shape the later
-step may take, not something this gate can stand on. So reqs 2, 10 and 13 stay
-unmet for those repos until the H2/H4 "sharing for ineligible repos" item picks
-one (planning#414).
+builder's no-script posture, and a session-uid repair is not something this gate
+can stand on. Reqs 2, 10 and 13 stayed unmet for those repos until "Sharing for
+ineligible repos" below, which picks a **pruned base** — the exclusion here is
+the fail-safe that shape replaces, and the per-session whiteout this paragraph
+once pointed at is measured and rejected there.
 
 **That exclusion is wide, and it is deliberately not narrowed to builds the repo
 APPROVES.** Measured on ShipIt's own tree 2026-09-21: 6 of 686 installed
@@ -821,6 +822,174 @@ cold install per session**, which does **not** meet req 2 / req 10 / req 13 for
 it. Sharing for those repos is **required work, not an optional follow-up** —
 reuse the unbuilt-base / private-build shape above rather than a second build
 path.
+
+#### Sharing for ineligible repos
+
+Designed 2026-09-21 from two harnesses:
+[`ineligible-sharing-spike.sh`](./ineligible-sharing-spike.sh) (in a session container, PASS=26)
+and [`ineligible-sharing-host-spike.sh`](./ineligible-sharing-host-spike.sh) (services host,
+Docker + overlayfs + distinct session uids, PASS=13). Both are committed; every claim below cites
+one of them or a source read.
+
+The set is wide and got wider. Since planning#604, **any dependency with an install-time build**
+is ineligible — on planning#604's own count, 6 of 686 packages in ShipIt's tree carry a
+trigger and `esbuild` is one of them, so anything reaching Vite is excluded alongside
+`better-sqlite3`, `node-pty` and `ssh2`. Most JavaScript repos currently get no base at all, and
+reqs 2, 10 and 13 are unmet for them.
+
+**The prerequisite is not about ineligible repos at all.** Every sharing shape below ends with the
+session's own install doing *work* over a mounted base, and that is exactly what a session cannot
+do. Whenever an install relinks executables, pnpm chmods each one to 0755 **unconditionally** — 10
+calls in the in-container harness set a mode the file already had. Overlay copy-up preserves the
+lower's owner and group write does not grant `chmod`, so a call against a base file EPERMs.
+Measured on a real overlay as the session's own uid: a base hit and an in-package edit make **zero**
+chmod calls and succeed, while **`pnpm add` fails** with `ERR_PNPM_CMD_SHIM_CHMOD` … `Operation not
+permitted`. That is a live **req 9** defect for repos that are *eligible*, shipped with the trigger
+(shipit#2941), and it is the same root cause planning#604 recorded as a property of `pnpm rebuild` /
+`pnpm install --force`. State the condition exactly, because it is narrower than "any install that
+does work": it is an install that **relinks an executable target the base owns**. Of the eight paths
+the trace names, four are `.bin` shims pnpm rewrites — those whiteout into the upper harmlessly —
+and four are package files it does not. A tree with no executables is not shown to fail. It escaped
+the tree spikes because they run as root.
+
+**The repair: seed the tree's executable targets into the session's upper, owned by the session.**
+Before the container starts, `prepareOverlayDirs` copies each one into the upper and chowns it to the
+session uid; pnpm's unconditional chmod then lands on a file the session owns. Measured: seeded,
+`pnpm add` succeeds and so does every shape below; unseeded, both fail on the same chmod. The
+alternatives are closed rather than untried — matching the modes cannot work because the chmod is
+unconditional, shared ownership cannot exist under per-session uids (docs/270), and a session
+container does not get `CAP_FOWNER`.
+
+**The set is defined by pnpm's linking rule, not by the manifest field that is usually there.** An
+independent review found the gap and it reproduces: pnpm links executables from `package.json#bin`,
+**and from `directories.bin` when `bin` is absent** — measured, a package declaring only
+`directories: {bin: "tools"}` gets a shim and has its package file chmodded (cell J). A list keyed on
+`bin` alone would leave exactly those packages unseeded and the failure would return for them. The
+set is small either way: 6 files / 28 KiB on the harness base, **28 files / 204 KiB on ShipIt's own
+609-package tree**, so it is not a req 10 cost.
+
+**When the seed runs is part of the design, not an implementation detail.** `prepareOverlayDirs`
+resets an upper only when the base **generation is superseded** (`container-lifecycle.ts`,
+`supersededSessionOverlayLayers`); within a generation the upper is **reused across container
+restarts**. So seeding on every start would overwrite an agent's own edits to its dependencies,
+which is req 11 inverted. The rule: seed **once, when the upper is created or reset**, never
+overwriting an entry that already exists; a seed that partially completed is re-run against the
+missing entries only. And because an existing upper is session-controlled, the copy must resolve
+inside it without following symlinks — the docs/272 lesson, in a place docs/272 does not reach. The
+host harness deletes each upper before seeding, so it measures the mechanism and not this rule.
+
+**The one new mechanism is a pruned base**, and it covers the large class. The builder builds the
+whole tree exactly as it does now, with `--ignore-scripts`; the packages that would need a build are
+then removed from the published tree **and from its carried `node_modules/.pnpm/lock.yaml`**. Which
+packages those are is not a new question — planning#604's `scanTarballForBuildTriggers`
+(`pnpm-install-scripts.ts`, called from the fetch phase at `pnpm-base-registry.ts:266`) already
+answers it from the digest-verified tarballs, using pnpm's own `pkgRequiresBuild` set. That verdict
+is **repurposed rather than removed**: today it refuses the candidate, here it names the prune set. A
+session mounting it sees a tree that is complete except for those packages, and its own install
+re-imports precisely them into its **private** store and runs their scripts as its **own** uid —
+which is what the builder's no-script posture requires and what a base carrying built output would
+contradict. Pruning the carried lockfile is the load-bearing half, not a tidying step: a hole in the
+tree alone is repaired only under `--frozen-lockfile`, while a bare `pnpm install` short-circuits on
+"Already up to date" and leaves the session a broken tree. ShipIt cannot assume the flag either
+way: `agent.install` is repo-authored with **no default** (`shipit-docs/shipit-yaml.md`), and
+`tuneNpmInstall` (`install-runtime.ts`) rewrites npm commands only, never a pnpm one. So the prune
+has to work for the weaker command, which is what is measured — over a real overlay, seeded, with
+a bare install: rc=0, `better-sqlite3` re-imported and **built**, its addon loads, the base
+byte-unchanged,
+a second session inheriting nothing. Against a base hit's 8 KiB upper + 4 KiB store, the session
+pays **12 MiB of upper + 12 MiB of private store** and shares the 23 MiB scriptless remainder. (The
+private install `build-cost-spike.sh` measured with no base was 59 MiB + 52 MiB, but on a different
+scriptless set — read that as indicative, not as the same workload.)
+
+**A package the base keeps may depend on a package the prune removes, and that case is measured
+separately**, because it is the one most likely to break: `vite` retained, `esbuild` pruned, with
+**47** incoming edges still naming `esbuild` in the carried lockfile. The session's bare install
+re-imported `esbuild`, relinked `vite`'s edge to it, and `require("vite")` loads. So pnpm treats a
+missing `packages`/`snapshots` record as work to do and repairs the incoming edges; the prune does
+not have to be transitively complete. (`esbuild` is the graph probe only — FINDINGS.md records that
+its binary ships in an optional dependency, so it is useless as a *build* probe.) What is **not**
+measured, and what "verify the prune" must therefore be given as a stated invariant rather than
+inferred from these two shapes: a removed package present in several peer-qualified instances, an
+`npm:` alias of one, an optional or platform-skipped one, and a consumer whose lockfile differs from
+the publisher's commit. The prune also leaves `.modules.yaml` naming the removed package in
+`pendingBuilds`; that was harmless here and is not established as harmless.
+
+**Two classes need no shape, because the builder already handles them** — they are refusals that
+outlived their reason, and admitting them is a change to `decidePnpmBaseEligibility`, not new
+machinery.
+
+- **`.pnpmfile.mjs`.** `--ignore-pnpmfile` suppresses both the module body and `readPackage`,
+  with a positive control showing both run without it. The refusal (`pnpm-base-inputs.ts:354`) says
+  in its own comment that `.mjs` is "not measured"; it has been measured since 2026-09-21. Admit it,
+  and the builder's refusal of the `pnpmfile`/`globalPnpmfile` keys stays as the second layer.
+- **`patchedDependencies`.** The patch bytes are in the immutable snapshot and the tarball is
+  digest-verified, so the output is verifiable by construction. pnpm applies the patch under
+  `--ignore-scripts --ignore-pnpmfile`, and an unparseable patch fails the install closed rather
+  than installing the package unpatched.
+
+**`workspace:` and `link:` are a candidate, not an admission.** The measurement that looked
+decisive does not reach far enough, which an independent review caught. A frozen, offline install
+against a dead registry does succeed with **only the manifests staged**, and pnpm writes a
+**relative** link — so member *source* need not be staged and the link resolves against the
+consuming checkout. But the builder publishes `path.join(projectDir, "node_modules")`
+(`pnpm-base-builder.ts`), the **root** tree alone, while a workspace's members each carry their own
+`packages/*/node_modules` symlink farm. Those are not in the base, and no cell here consumes a
+root-only base from a workspace repo. Separately, `injectWorkspacePackages` and
+`dependenciesMeta[].injected` make pnpm **copy member content into the tree** instead of symlinking
+it, which would put unverified in-repo content in a published base — and nothing in
+`decidePnpmBaseEligibility` or `pnpm-lockfile.ts` looks for either today. Both have to be settled
+before this class is admitted; neither is a reason it cannot be.
+
+**And the rest stay private in this step. That is where the work stops, not where the requirement
+does.** Requirements 2, 10 and 13 stay **unmet** for every row below, and each is tracked as open
+work rather than closed by this design. Saying "it stays private" is a statement about this step, not
+an exemption: req 13 is a positive requirement for within-repo sharing, and only the requester can
+decide that a class is permanently outside it. No such decision has been asked for or given, and one
+is not recorded here. Two rows — a `git:`/URL source, and a repo whose own `packageManager` pins
+pnpm ≤ 10 — are the realistic candidates for an eventual exemption, and that question is routed to
+the requester rather than filed under `## Open questions`, because a bullet there would block the
+req 9 fix above, which is a live defect.
+
+| Class | Why it is not closed here | What would close it |
+|---|---|---|
+| `git:` / `github:` / an `https:` tarball | No independent expected content in the snapshot to verify against, and the builder has no source handling. A git dependency also usually carries a `prepare` build | Excluding them from the *inputs* rather than the output, which needs ShipIt to synthesize a reduced manifest + lockfile for the builder; or a rule that distinguishes an independently authenticated source (a pinned commit whose tree hashes) from an unpinned one |
+| A `file:` path, directory or tarball | Same shape as `workspace:`/`link:` above and settled by the same two questions, plus a `file:` **tarball**, whose bytes are committed and so are verifiable on the same argument as a patch | Whatever settles the `workspace:` candidate |
+| `configDependencies` | Admitting it means the builder **fetches and stages plugin packages** it otherwise would not. The execution risk itself is covered — `--ignore-pnpmfile` suppresses the hook, measured with a positive control — so the reason is the widened input surface, not that code runs | Verified staging of those packages on the same footing as any other dependency |
+| An unauthorized scoped registry | An authorization decision, not a technical limit. `authorizedScopeRegistries` is threaded through `pnpm-base-inputs.ts`, `pnpm-base-registry.ts` and `pnpm-base-builder.ts`, but **nothing in `bootstrap-managers.ts` supplies it**, so it is not an operator-accessible lever today — calling it one would be wrong | Wiring it to configuration the operator can set |
+| An escaping layout (`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`) | The base *is* one self-contained `node_modules`; a layout that escapes it has no base to be. These repos lose least — both escaping layouts keep free hardlinks into a store already theirs alone (FINDINGS.md) | Nothing cheap, and the benefit is smallest here |
+| A repo declaring pnpm ≤ 10 | Its store version makes it recreate a `v11` tree instead of reading it (`MIN_VERIFIED_BASE_PNPM_MAJOR`) | A **version-parameterized** builder, which an independent review rightly noted is not the same as a second build path — the pipeline is one, the pinned binary is a parameter. Worth pricing before this row is treated as closed |
+| An unsupported `lockfileVersion`, or a registry entry with no integrity | The parser was written against v9/v10 shapes, and an entry with no digest has nothing to verify against | Extending the parser; the integrity case is req 3 working and should stay |
+| No lockfile, at the publisher or the consumer | Deliberate and load-bearing: a no-lockfile consumer would inherit the base's graph (measured) | Nothing — this is req 1 working, and it is the one row that should stay as it is |
+| No dependencies, too many manifests, an unreadable input, a dep dir that is not `node_modules` | Nothing to share, a cap, a refusal to guess, and the one directory the builder can fill | — |
+
+**What a session sees.** For a pruned base, an install that fetches and builds only the
+build-bearing packages and reads the rest from the base; the agent can `pnpm add`, edit inside its
+dependencies, and rebuild, all as itself. How much longer that install takes than a base hit is
+**not** established as a general figure — the measured 725 ms is one package that obtained a
+prebuilt addon, and a package that genuinely compiles is a different order. What the shape
+guarantees is which packages pay, not how much. For a class that stays private, exactly what it gets
+today — a cold private install, never a failed one (req 9).
+
+**Failure modes, and which are fail-safe.** A seed that does not run leaves the session unable to
+`pnpm add` — the defect above, so the seed is a correctness dependency and not an optimization, and
+a base must not be mounted without it. A pruned lockfile that still names a pruned package leaves
+the session with "Already up to date" over a hole, which is a *silent* broken tree — so the prune
+must be verified after it is applied, at publish time, and a prune that cannot be verified must
+yield no base rather than a pruned one. A package that is pruned but whose build the session does
+not approve behaves exactly as it does with no base: present, unbuilt, and reported by pnpm.
+
+**Subtractive pass.** The seed and the carried-lockfile prune both survive it — remove either and a
+measured cell goes red. The three admission changes are separable from both and from each other, so
+each is its own item rather than part of this shape. What did not survive: a per-session *whiteout*
+of the build-bearing packages, which the brief named as the leading candidate. The removed set must
+be uniform — plan.md already rules that approvals cannot key the base, since a session on another
+commit still mounts it — and once it is uniform, pruning at publish is the same effect with no
+per-session machinery, no `mknod`, and a smaller base. That argument is about the *set* being
+uniform, not about per-session transformation being forbidden in general; the seed above is exactly
+such a transformation and it stays. Also dropped: a "partial base built from the verifiable subset",
+which is this shape approached from the input side and needs ShipIt to synthesize builder inputs;
+and a session-uid repair based on pre-setting the base's modes, which the unconditional chmod
+refutes outright.
 
 *Ordering and cleanup — what the reused machinery does and does not give.*
 Publish runs after a successful declared install (`service-manager-setup.ts`).
