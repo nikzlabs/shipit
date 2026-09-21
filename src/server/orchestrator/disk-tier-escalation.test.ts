@@ -1587,6 +1587,11 @@ describe("escalateDiskTiers", () => {
     await g.add(".");
     await g.commit("init");
     await g.push("origin", "main", ["--set-upstream"]);
+    // The rescue push needs the session's OWN branch: a session never works on the
+    // default branch, and pushing one is refused (docs/312-base-branch-push-protection
+    // req 7). The other fixtures here say `branch: "main"` harmlessly — this is the
+    // only one that reaches a push.
+    await g.checkout(["-b", "shipit/merged-dirty"]);
     fs.writeFileSync(path.join(wsDir, "b.txt"), "uncommitted work");
 
     insertSession({
@@ -1595,7 +1600,7 @@ describe("escalateDiskTiers", () => {
       mergedAt: daysAgo(mergedThresholdDays + 1),
       diskTier: "light",
       workspaceDir: wsDir,
-      branch: "main",
+      branch: "shipit/merged-dirty",
     });
 
     const { registry } = fakeRegistry();
@@ -1607,7 +1612,7 @@ describe("escalateDiskTiers", () => {
     expect(result.toEvicted).toBe(1);
     expect(result.evictBlockedByPush).toBe(0);
     expect(fs.existsSync(wsDir)).toBe(false);
-    const files = (await simpleGit(remoteDir).raw(["ls-tree", "--name-only", "main"]))
+    const files = (await simpleGit(remoteDir).raw(["ls-tree", "--name-only", "shipit/merged-dirty"]))
       .split("\n").filter(Boolean);
     expect(files).toContain("b.txt");
   });

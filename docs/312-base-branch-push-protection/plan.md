@@ -247,6 +247,12 @@ their session through `/api/_test/sessions`, a test-mode-only route, and were
 rewritten onto a `shipit/*` branch. The template session is the one genuine
 exception, and req 9 is what handles it.
 
+About 157 fixtures across the suite set `branch: "main"` on a session row, which
+looks alarming and is not: the field is a DB value, and only a fixture that
+actually PUSHES can notice. Exactly one did — the merged-and-dirty eviction case
+in `disk-tier-escalation.test.ts`, whose rescue push is the whole point of the
+test — and it moved to a `shipit/*` branch. The rest are untouched.
+
 ## Known gaps, deliberately not closed here
 
 - **A non-default PR base is not refused at the ordinary-push sites.** On a repo

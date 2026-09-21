@@ -34,3 +34,4 @@
 - [x] Require a VERIFIED default for ordinary pushes, so a template session can publish its first branch
 - [x] Resolve the fork's default from the bare cache, not the parent's own `origin/HEAD`
 - [x] Third independent review, and its confirmed findings fixed
+- [x] Move the one eviction fixture that actually pushes off `branch: "main"`
