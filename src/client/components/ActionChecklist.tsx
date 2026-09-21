@@ -2,6 +2,30 @@ import { useCallback, useState, type ReactNode } from "react";
 import { ArrowRightIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
+import { InlineMarkdown } from "./message-markdown.js";
+
+/**
+ * A row's text is markdown (docs/303-session-status-card req 41), with ShipIt
+ * pointers enabled. Every item here is text the agent composed in a tool call —
+ * a status card's offer or manual step, a transcript action card's action — so
+ * it sits at the trust level of the agent's own transcript prose, which enables
+ * them too. Nothing ingests a repository, tracker or PR document into a row;
+ * what the boundary in `shipitLinkComponents` rules out is a surface that
+ * renders such a document, and this is not one.
+ */
+
+/**
+ * A row's text is markdown (docs/303-session-status-card req 41), with ShipIt
+ * pointers enabled. Every item here is text the agent composed in a tool call —
+ * a status card's offer or manual step, a transcript action card's action — so
+ * it sits at the trust level of the agent's own transcript prose, which enables
+ * them too. Nothing ingests a repository, tracker or PR document into a row;
+ * what the boundary in `shipitLinkComponents` rules out is a surface that
+ * renders such a document, and this is not one.
+ */
+
+/** What a click on a row's text must leave alone rather than turn into a tick. */
+const INTERACTIVE = "a, button, input, textarea, select, label, [role='button']";
 
 /**
  * One tickable row. `key` is the selection identity and is the caller's to
@@ -144,13 +168,23 @@ export function ActionChecklist({
             // positioned: with no containing block in the row it lands far down
             // the page, and focusing it on click scrolls the chat column out of
             // the window (planning#592).
-            className="relative flex min-w-0 flex-1 items-start gap-2.5 px-2 py-1.5 cursor-pointer"
+            //
+            // It wraps the box ALONE, not the row's text. The text is markdown
+            // (req 41), and the links ShipIt renders for a repo file and for a
+            // ShipIt pointer are anchors with NO href, which the HTML spec does
+            // not count as interactive content — so a label around them
+            // forwards the click to its checkbox and opening a file would tick
+            // the row. Measured in Chromium, where `role`/`tabindex` do not
+            // help; jsdom disagrees, so no test here can see it. The text keeps
+            // its own click handler below, so ticking by clicking the words
+            // survives.
+            className="relative flex shrink-0 items-start pl-2 pr-2.5 py-1.5 cursor-pointer"
           >
             <input
               type="checkbox"
               className="sr-only"
               checked={checked}
-              {...(toggleHint ? { "aria-label": `${toggleHint}: ${item.label}` } : {})}
+              aria-label={toggleHint ? `${toggleHint}: ${item.label}` : item.label}
               onChange={() => onToggle(item.key)}
             />
             <span
@@ -165,12 +199,22 @@ export function ActionChecklist({
             >
               <CheckIcon size={ICON_SIZE.XS} weight="bold" />
             </span>
-            <span className="min-w-0 flex-1">
-              <span
+          </label>
+            <span
+              title={toggleHint}
+              onClick={(e) => {
+                // Anything the user can operate keeps its own click: a link, the
+                // issue badge a reference renders as, a trailing control.
+                if ((e.target as HTMLElement).closest(INTERACTIVE)) return;
+                onToggle(item.key);
+              }}
+              className="min-w-0 flex-1 py-1.5 pr-2 cursor-pointer"
+            >
+              <InlineMarkdown
+                text={item.label}
+                shipitLinks
                 className={`font-medium ${taken ? "text-(--color-text-tertiary)" : "text-(--color-text-primary)"}`}
-              >
-                {item.label}
-              </span>
+              />
               {item.defaultChecked && !taken && (
                 <span className="ml-1.5 align-middle text-[10px] font-semibold tracking-wide text-(--color-text-link) bg-(--color-accent-subtle) rounded-full px-1.5 py-px">
                   RECOMMENDED
@@ -190,15 +234,14 @@ export function ActionChecklist({
                 </span>
               )}
               {item.description && (
-                <span
+                <InlineMarkdown
+                  text={item.description}
+                  shipitLinks
                   className={`block mt-0.5 ${taken ? "text-(--color-text-tertiary)" : "text-(--color-text-secondary)"}`}
-                >
-                  {item.description}
-                </span>
+                />
               )}
             </span>
-          </label>
-          {renderTrailing?.(item)}
+            {renderTrailing?.(item)}
           </div>
           {/* Aligned under the label's text: px-2 + the 16px box + the 10px gap. */}
           {below && <div className="pl-[34px] pr-2 pb-1.5">{below}</div>}
