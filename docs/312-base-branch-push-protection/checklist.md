@@ -16,3 +16,9 @@
 - [x] Check the release head before the force-push, not after it
 - [x] Fix the hook's quoting and `-p` false refusals found by review
 - [x] Independent review, and its confirmed findings fixed
+- [x] Heal the frozen local default branch where a checkout is handed back to a session
+- [x] Stop `syncLocalDefaultBranchToOrigin` discarding local-only commits on that branch
+- [x] Guard tests that fail without the heal (verified by reverting it)
+- [x] Fully qualify every ref in the heal, so a tag cannot stand in for the branch
+- [x] Compare-and-swap the ref write, so a concurrent worker git op cannot slip past the check
+- [x] Second independent review, and its confirmed findings fixed

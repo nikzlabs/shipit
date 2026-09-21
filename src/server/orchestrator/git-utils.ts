@@ -200,6 +200,12 @@ export async function fetchAndResolveDefaultBranch(
   return { resetTarget, fetched, fetchDurationMs: Date.now() - t0, authError };
 }
 
+// `--verify --quiet` RESOLVES to "" for a missing ref instead of failing, so absence is
+// read from the value; a throw is a real read error and belongs to the caller.
+async function resolveRef(sg: SimpleGit, ref: string): Promise<string | null> {
+  return (await sg.raw(["rev-parse", "--verify", "--quiet", ref])).trim() || null;
+}
+
 // Realign the cache snapshot's local branch so main..HEAD reflects the PR diff.
 export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Promise<void> {
   const sg = safeSimpleGit(workspaceDir);
@@ -212,7 +218,7 @@ export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Prom
   if (!branch) {
     for (const candidate of ["main", "master"]) {
       try {
-        await sg.raw(["rev-parse", "--verify", `origin/${candidate}`]);
+        await sg.raw(["rev-parse", "--verify", `refs/remotes/origin/${candidate}`]);
         branch = candidate;
         break;
       } catch { /* try next */ }
@@ -221,8 +227,36 @@ export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Prom
   if (!branch) return;
   try {
     const current = (await sg.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    // Moving the checked-out branch would have to move the working tree with it, and
+    // on the restore callers that tree can hold the session's uncommitted work. So a
+    // session sitting ON the default branch keeps its stale ref; the push-side
+    // refusals (docs/312-base-branch-push-protection) are what cover that case.
     if (current === branch) return;
-    await sg.raw(["branch", "-f", branch, `origin/${branch}`]);
+
+    // Fully qualified throughout: a TAG named `main` outranks the branch in git's
+    // revision lookup, so a bare name can measure one ref and then move another.
+    const target = await resolveRef(sg, `refs/remotes/origin/${branch}`);
+    if (!target) return;
+    const local = await resolveRef(sg, `refs/heads/${branch}`);
+    if (local === target) return;
+
+    // Moving the ref discards whatever it has that the remote does not. A cache
+    // snapshot never has commits of its own; a checkout ShipIt inherits on restore
+    // can, and that path exists to preserve them.
+    if (local && (await sg.raw(["rev-list", "--count", `${target}..${local}`])).trim() !== "0") {
+      console.warn(
+        `[git] syncLocalDefaultBranchToOrigin: ${branch} has commits origin/${branch} does not ` +
+          `in ${workspaceDir}; leaving it where it is rather than discarding them`,
+      );
+      return;
+    }
+    // Compare-and-swap, because a worker git operation can move either ref between the
+    // check above and this write: `update-ref` refuses unless the branch is still where
+    // it was read. It drops `branch -f`'s refusal to move a branch checked out in
+    // another worktree, which ShipIt never creates, and the move is a fast-forward.
+    const update = ["update-ref", "-m", "shipit: realign to origin", `refs/heads/${branch}`, target];
+    if (local) update.push(local);
+    await sg.raw(update);
   } catch (err) {
     console.warn(
       `[git] syncLocalDefaultBranchToOrigin: could not move ${branch} to origin/${branch} ` +

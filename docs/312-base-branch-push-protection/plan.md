@@ -140,6 +140,49 @@ and `git checkout src/index.ts` stay allowed — and so does returning to a
 `shipit/…` branch. Separately, `git push origin +main` is a force with no flag
 to find, and is now caught alongside `--force` under the destructive guard.
 
+## Reducing the blast radius: healing the frozen ref
+
+The refusals above stop the publish. Separately, the stale ref itself is healed
+where ShipIt hands an **existing** checkout back to a session:
+`restoreSessionWorkspaceImpl`'s workspace-present return (the wake path) and
+`restoreInPlace` under `unarchiveSession` both call
+`syncLocalDefaultBranchToOrigin`.
+
+Those two, and not the re-clone beside them, because a clone taken during a
+restore is **not** stale: `cloneFromCache` runs `git clone --local` against a
+bare cache that `fetchCache(0)` just refreshed, so the clone's local default and
+its `origin/<default>` are the same commit — measured, not assumed. The drift
+appears later, inside the container, every time the session fetches. So the
+moment worth healing is the one just before the next turn runs.
+
+Two properties of `syncLocalDefaultBranchToOrigin` matter for these callers:
+
+- **The early return when the default branch is checked out is right, and for a
+  stronger reason here.** Moving the checked-out branch would have to move the
+  working tree with it, and an inherited checkout can hold the session's
+  uncommitted work — `restoreInPlace` exists precisely to preserve it. A session
+  sitting *on* the default branch therefore keeps its stale ref, and the
+  push-side refusals are what cover that case.
+- **It now moves the ref only when that discards nothing.** Moving the ref drops
+  whatever it has and the remote does not; a cache snapshot never has commits of
+  its own, but a checkout ShipIt inherits can. When the local ref has commits
+  `origin/<branch>` lacks, it warns and leaves the ref alone.
+
+  The cost falls on the warm-pool and claim callers in one case: after an
+  **upstream rewrite** of the default branch, the old local commits are "local
+  only" by hash, so the ref is now left stale where it used to be realigned, and
+  a `main..HEAD` diff is wrong until the next clone. Chosen over the other
+  failure, which is deleting a user's commits with no record.
+
+Two smaller decisions inside it. Every ref is **fully qualified**: a *tag* named
+`main` outranks the branch in git's revision lookup, so a bare name can measure
+one ref and then move another. And the write is `update-ref <ref> <new> <old>`,
+a compare-and-swap, because a worker git operation can move either ref between
+the check and the write — the same "believe the ref is where I last saw it"
+property the leases above lack. It gives up `git branch -f`'s refusal to move a
+branch checked out in another worktree; ShipIt creates none, the primary
+worktree is covered by the early return, and the move is a fast-forward.
+
 ## Known gaps, deliberately not closed here
 
 - **The hook is Claude-only.** It is a Claude Code `PreToolUse` hook, armed in
@@ -160,9 +203,19 @@ to find, and is now caught alongside `--force` under the destructive guard.
   session legitimately working on the default branch, which is a behaviour
   change wider than this incident and a call for a human to make. Open question
   in `requirements.md`.
-- **A stale local `main` is still created.** `syncLocalDefaultBranchToOrigin`
-  is not called from the restore and unarchive paths. Healing it there would
-  reduce the blast radius but is not the guarantee; refusing the push is.
+- **A live session's local default branch still drifts.** It is healed when a
+  checkout is handed back (above) and never again, so a long-running session
+  that fetches many times ends the day holding a stale `main`. Healing on every
+  fetch would mean a hook inside the container; refusing the push is the
+  guarantee, and this only narrows the window.
+- **Browser activation of a retained `light` checkout is not healed.**
+  `materializeRunnerSync` (`services/materialize-runner.ts`) promotes a `light`
+  session straight to `hot` and builds its runner without going through
+  `restoreSessionWorkspace`, so the interactive path — the one most turns start
+  on — keeps its stale ref. Closing it means either a contract change on a
+  function that is synchronous on purpose (to preserve WS connect-frame order)
+  or a fire-and-forget git call on every attach, including the many that already
+  have a live runner. Both are wider than this change and are left for a call.
 
 ## Key files
 
@@ -180,6 +233,10 @@ to find, and is now caught alongside `--force` under the destructive guard.
   before the force-push, not inside `agentCreatePr` after it
 - `docker/agent-hooks/block-branch-ops.mjs` — `offends`, `offendsDestructive`,
   `unquote`
+- `src/server/orchestrator/git-utils.ts` — `syncLocalDefaultBranchToOrigin`,
+  `localDefaultIsSafeToMove`
+- `src/server/orchestrator/services/session.ts` — `restoreSessionWorkspaceImpl`,
+  `restoreInPlace`
 - Guards: `src/server/shared/git-force-push-rewind.test.ts`,
   `src/server/shared/git-push-refspec.test.ts`,
   `src/server/orchestrator/services/push-target-guard.test.ts`,
