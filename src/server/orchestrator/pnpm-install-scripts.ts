@@ -11,12 +11,14 @@ import zlib from "node:zlib";
  * `binding.gyp` at the package root, or any file under the package's `.hooks/`. Lockfile v9 no
  * longer records `requiresBuild`, so the tarball is the only place the answer is.
  *
- * A candidate holding one is INELIGIBLE for a verified base. The builder installs with
- * `--ignore-scripts`, so the base carries the package unbuilt; the session's own install then
- * reports the lockfile up to date and nothing pending — the builder's output records no pending
- * build — and exits 0 with the approved build never performed. Neither repair works as the
- * session's uid either: `pnpm rebuild` and `pnpm install --force` both fail to chmod, because
- * overlay copy-up preserves the lower's owner. Measured 2026-09-21, planning#604.
+ * A package holding one is PRUNED from the published base (`pnpm-base-prune.ts`), rather than
+ * costing the whole candidate its base. The builder installs with `--ignore-scripts`, so a base
+ * carrying such a package carries it unbuilt; the session's own install then reports the
+ * lockfile up to date and nothing pending and exits 0 with the approved build never performed,
+ * and neither repair works as the session's uid — `pnpm rebuild` and `pnpm install --force`
+ * both fail to chmod, because overlay copy-up preserves the lower's owner (measured 2026-09-21,
+ * planning#604). Removing the package from the tree and from the tree's carried lockfile makes
+ * the session import and build its own copy instead.
  *
  * A tarball this cannot read is reported as unreadable rather than as scriptless: one it cannot
  * prove has no build must not become one it assumed had none.

@@ -905,6 +905,139 @@ So the paragraph this section's earlier draft argued from first principles is no
 member-tree rebuild does survive the overlay, its writes land in the session's own checkout, and
 the one chmod it makes into the base is on a seeded target. No chmod of a base file that is *not*
 a bin target was observed on this shape.
+## Finding: pnpm's carried install state hides the prune, before the lockfile is read
+
+Found 2026-09-21 by [`pruned-base-spike.sh`](./pruned-base-spike.sh) cell G, pnpm **12.5.1**, and
+reproduced on the pinned **12.4.1** by the integration cell. It is the defect the pruned-base
+design did not name, and it defeats the prune completely.
+
+Pruning the carried `node_modules/.pnpm/lock.yaml` was designed as the load-bearing half, because
+a hole in the tree alone is invisible to a bare `pnpm install` (cell E). But pnpm never reaches
+that lockfile. It writes **`node_modules/.pnpm-workspace-state-v1.json`** beside the tree, holding
+a `lastValidatedTimestamp` and the project paths it applies to, and an install short-circuits on
+that timestamp against the mtimes of `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml`:
+
+| Arm | Same tree, same mtimes | Result |
+|---|---|---|
+| state file present, checkout mtimes OLDER than the build | bare `pnpm install` | **"Already up to date", 1 ms, the hole survives** |
+| state file present, checkout touched | bare `pnpm install` | re-imports and builds |
+| **state file removed** | bare `pnpm install` | **re-imports and builds** |
+
+A base carries the BUILDER's clock, so this is not hypothetical for ShipIt: a session whose
+workspace checkout predates the base build — a container restart within a generation, a session
+that gains the overlay after the fact — is exactly the first row. It matters that
+`BUILD_PROJECT_DIR === CONTAINER_WORKSPACE_PATH` (`/workspace`), chosen so `.modules.yaml`'s
+`storeDir` matches: it makes the state file's `projects` key match the consuming session too, so
+the short-circuit is fully available. A state file naming a *foreign* project path is ignored by
+pnpm, which is how the integration control first passed for the wrong reason — corrected by
+rewriting the key to the consumer's own directory, after which the control reproduces on 12.4.1.
+
+`prunePnpmBase` therefore removes every `.pnpm-workspace-state*` file from the published tree, and
+`findPruneRemnants` refuses a tree that still carries one. Matched by prefix because the name
+already carries a state version pnpm has bumped once.
+
+## Finding: two identity signals for one virtual-store directory, and when they disagree
+
+Found by independent review 2026-09-21 and reproduced against the production module. pnpm names a
+virtual-store directory from the **lockfile key**, while `packageIdentity` reads the **installed
+manifest** — and `patchedDependencies` is admitted, so a committed patch can rewrite that
+manifest's `name` or `version`.
+
+With the manifest as the only signal, a patched build-bearing `esbuild@0.21.5` whose installed
+manifest says `0.21.5-patched` produced:
+
+```
+ok: true   removedDirs: []   removedLockKeys: [packages/esbuild@0.21.5, snapshots/esbuild@0.21.5]
+```
+
+— the lockfile entries gone and the **directory still there, unbuilt**. The verification agreed,
+because removal and verification used the same parser; and the publish gate then exempted
+`esbuild@0.21.5` from `pendingBuilds` on the *requested* prune set rather than on what was actually
+removed. That is planning#604's original defect, published under a prune that reported success.
+
+The fix is a union, not a stricter parser: a directory is pruned when **either** its manifest or its
+name says so (`directoryIdentity`). The name signal is deliberately conservative — anything pnpm
+mangled past clean parsing yields null and the manifest decides alone — and it can only ever match
+inside the prune set, so it never removes more than the set names. A unit cell pins it and was run
+red against the manifest-only rule, reproducing exactly the output above.
+
+## Finding: a repo-authored install command can decline to reconcile the tree
+
+Also from that review, and the third route to "rc=0 with a package missing" after the carried
+lockfile and the carried install state. A repo whose `agent.install` guards itself —
+`test -d node_modules || pnpm install` is the shape — sees the mounted base, finds the directory,
+and never runs pnpm. Before the prune that was harmless, because the base was a whole tree. After
+it, the packages the base deliberately leaves out are never installed, and ShipIt's own post-install
+validation misses it: `classifyEmptyDepDirs` sees a full directory, and `staleDepDirs` reads npm
+lockfiles only.
+
+**Comparing package sets is the wrong instrument**, measured before it was written: on a healthy
+tree the carried lockfile's `packages:` keys match the project lockfile's exactly — 24 = 24,
+including the platform-skipped `@esbuild/*` optionals, so platform skipping is NOT a false-positive
+source — but a legitimate `pnpm install --prod` drops a dev dependency from the carried lockfile
+and would be reported as a failure. `NODE_ENV=production` would do the same invisibly.
+
+**The signal that survives a smaller install is pnpm's own state file.** `--prod` writes
+`.pnpm-workspace-state-v1.json`; a command that skips the install writes nothing. So the session
+check is one existence test: a declared dep dir holding a pnpm virtual store and **no** install
+state is a tree no pnpm install reconciled (`unreconciledPnpmDepDirs`, `dep-tree-staleness.ts`),
+and the install is reported failed rather than stamped. Measured that pnpm **11.22.0, 12.4.1 and
+12.5.1** all write it — the whole range a verified base is mounted for — and the integration cell
+asserts a real install produces one, so a future pnpm that stops would fail a build rather than
+sessions.
+
+## Result: the pruned base, measured against the SHIPPED prune
+
+Two harnesses, both committed, both running `src/server/orchestrator/pnpm-base-prune.ts` itself
+rather than a bash restatement of it — [`pruned-base-spike.sh`](./pruned-base-spike.sh)
+(in-container, calls the module through tsx, **PASS=45 FAIL=0**) and
+[`pruned-base-host-spike.sh`](./pruned-base-host-spike.sh) (services host, real overlayfs, distinct
+session uids, the module bundled by esbuild, **PASS=22 FAIL=0**).
+
+**The cases the design left unmeasured, each of which gated eligibility.** All measured against
+real pnpm 12.5.1:
+
+| Case | Result |
+|---|---|
+| A real 98-package tree classifies end to end | Every virtual-store directory is identified from its own `package.json`; none ambiguous, and a prune of nothing removes nothing |
+| **Peer-qualified duplicates** — one package at one version in two virtual-store directories pnpm mangles (`use-sync-external-store@1.2.2_react@17.0.2` / `_react@18.2.0`) | Both instances removed, both peer-suffixed `snapshots:` keys gone, the retained peers untouched. Reading the *directory name* would have missed one; the prune reads each package's own manifest |
+| **`npm:` aliases** (`"pad": "npm:left-pad@1.3.0"`) | The importer edge names the ALIAS, never the package, so an edge check keyed on the dependency's own name leaves it behind. Removed, and the session's own install restores it under the alias |
+| **Optional, platform-skipped** (`@esbuild/darwin-arm64@0.21.5` on linux) | Pinned by the lockfile, absent from the tree. Its lockfile keys go, nothing is removed from the tree, and that absence is not a failure; a bare install still succeeds |
+| **A consumer lockfile that differs from the publisher's commit** | A branch that adds a dependency installs over the pruned base at rc=0: the pruned package re-imported and built, the added package installed, the shared remainder untouched |
+| **`.modules.yaml` still naming a pruned package in `pendingBuilds`** | Harmless on BOTH the bare and the `--frozen-lockfile` install — rc=0, no diagnostic mentioning it. The prune deliberately does not rewrite that file |
+| **A workspace importer directory containing a slash** (`packages/x`) | Found a real defect in the first implementation: carrying the reference as one joined string took it apart at the wrong slash and rewrote nothing, and the prune then failed its own verification. The fail-safe worked; the base it refused was one it should have produced. References are carried as fields now |
+
+**On a real overlay, under distinct uids** (services host, ext4, kernel 6.8, builder pnpm 12.4.1 /
+session pnpm 12.5.1, base owned by another uid with group write, `better-sqlite3@11.0.0` as the
+build-bearing package and four scriptless packages as the shared remainder):
+
+| Arm | upper / tree | private store | wall |
+|---|---|---|---|
+| **Pruned base** | 12 188 KiB | 12 896 KiB | 1 419 / 1 181 ms |
+| Base hit (a scriptless-only base) | 160 KiB | 4 KiB | 512 / 464 ms |
+| No base at all | 25 484 KiB | 24 728 KiB | 1 376 / 1 233 ms |
+
+(Two runs of the same harness; disk is identical between them, wall time is not.)
+
+Read three things off it. The **disk** prediction in plan.md section 5 holds almost exactly (12 MiB
+upper + 12 MiB store); the **base-hit upper is 160 KiB, not the 8 KiB the design quoted**, because
+that figure predates the bin seed, which writes the base's executable targets into every session's
+upper. And the **wall time is a wash against no base at all** — the pruned arm came out 3 % slower on one
+run and 4 % faster on the other, which is the measurement saying nothing rather than saying they
+are equal: where a native build dominates the install, the pruned base buys disk and the shared
+remainder, not time — req 7 is met because "today" for this class *is* the no-base arm.
+
+The rest of the host harness, each hard-asserted: the base is built whole and the native package
+lands **unbuilt** (the premise); the CONTROL on the same tree **unpruned** — what a `v2` base is —
+exits 0 with the addon still not loading, which is planning#604's defect reproducing so the cells
+below are not vacuous; on the pruned base the session's own **bare** install as its own uid
+re-imports the package, **builds** it and the addon loads, with no `Operation not permitted`
+anywhere; `pnpm add` and `pnpm rebuild` both succeed as that uid and the addon still loads after;
+the base tree is **byte-unchanged** after both sessions; and a second session under a different uid
+inherits nothing the first added and builds its **own** copy, which loads.
+
+The consumer's checkout is deliberately backdated an hour in every overlay arm, so each one also
+re-measures the short-circuit above rather than hiding it.
 
 ## Faithfulness and limits
 
@@ -966,6 +1099,32 @@ a bin target was observed on this shape.
 - **The workspace base is built online by the harness**, `--ignore-scripts --ignore-pnpmfile`,
   not through the loopback fetch phase and the verified tarballs. That path is covered by
   `integration_tests/pnpm-verified-base-build.test.ts`; this harness measures the consumer.
+- **The pruned-base cost row is one workload, single-shot.** `better-sqlite3`
+  plus four scriptless packages is not "an average repo": the upper and store
+  both scale with what the prune removes, so a repo whose build-bearing set is
+  larger pays more and one whose set is smaller pays less. The wall times include
+  container spawn and the registry round-trip.
+- **The pruned-base host harness seeds with a transcription of
+  `overlay-bin-seed.ts`, not the shipped seeder**; `bin-seed-host-spike.sh` is
+  what holds the seeder itself honest. The prune, by contrast, IS the shipped
+  module in both harnesses.
+- **The spike's lockfile assertions were blind until they were fixed**, and the
+  shape is worth remembering: an unquoted shell heredoc expands the JavaScript
+  template literals inside it, so `out.push(`${section}/${key}`)` was written to
+  disk as `out.push()` and cells B and D reported "no surviving reference" over
+  an empty result. The heredocs are quoted now, with the repo path substituted
+  afterwards, and the negative assertions refuse to conclude anything from a
+  helper that produced nothing.
+- **The consumer arms install against the store path the base RECORDS**, emptied.
+  An earlier draft used a different path, which is a store mismatch pnpm recovers
+  from by recreating the whole tree — so the "shared remainder survives"
+  assertions passed on a full reinstall. They compare the retained package's
+  inode across the install now.
+- **`pruned-base-spike.sh` cell B builds a workspace** to get two peer-qualified
+  instances of one package, and measures the PRUNE over that tree — not the
+  workspace admission, which `local-specifier-spike.sh` and the workspace host
+  cells own. The shape is what the prune has to get right; nothing about the cell
+  is evidence for or against the class being eligible.
 
 ## Reproduce
 
@@ -981,6 +1140,20 @@ ssh <docker-host> bash /tmp/bin-seed-host-spike.sh   # PASS=16 FAIL=0, exit 0
 
 scp docs/276-shared-package-cache-integrity/workspace-base-host-spike.sh <docker-host>:/tmp/
 ssh <docker-host> bash /tmp/workspace-base-host-spike.sh   # PASS=21 FAIL=0, exit 0
+# The pruned base runs the SHIPPED prune, so bundle it first (from the repo):
+cat > /tmp/prune-cli.ts <<'TS'
+import { prunePnpmBase } from "/workspace/src/server/orchestrator/pnpm-base-prune.js";
+const [depDir, ...keys] = process.argv.slice(2);
+const r = prunePnpmBase(depDir, keys.map((key) => {
+  const at = key.lastIndexOf("@");
+  return { key, name: key.slice(0, at), version: key.slice(at + 1) };
+}));
+console.log(JSON.stringify(r));
+process.exit(r.ok ? 0 : 1);
+TS
+npx esbuild /tmp/prune-cli.ts --bundle --platform=node --format=cjs --outfile=/tmp/prune-cli.cjs
+scp /tmp/prune-cli.cjs docs/276-shared-package-cache-integrity/pruned-base-host-spike.sh <docker-host>:/tmp/
+ssh <docker-host> bash /tmp/pruned-base-host-spike.sh   # PASS=22 FAIL=0, exit 0
 ```
 
 Both need only Docker on the host; the node + python toolchain comes from a baked
@@ -998,4 +1171,8 @@ The in-container half runs where the agent already is, and needs no Docker — o
 
 ```
 bash docs/276-shared-package-cache-integrity/ineligible-sharing-spike.sh   # PASS=26 FAIL=0
+bash docs/276-shared-package-cache-integrity/pruned-base-spike.sh         # PASS=45 FAIL=0
 ```
+
+`pruned-base-spike.sh` needs no `gcc`; it calls the shipped prune through `npx tsx` from the repo
+checkout (`REPO=/workspace` by default).

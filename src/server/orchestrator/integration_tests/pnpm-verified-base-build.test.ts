@@ -37,11 +37,10 @@ import {
   builderScript,
   readPendingBuilds,
 } from "../pnpm-base-builder.js";
+import { prunePnpmBase } from "../pnpm-base-prune.js";
 import {
-  conventionalTarballPath,
   sha512Integrity,
   stageVerifiedRegistry,
-  tarballFileName,
   type FetchLike,
 } from "../pnpm-base-registry.js";
 
@@ -160,44 +159,6 @@ function fetchFrom(tarballs: Map<string, Buffer>): FetchLike {
       ),
     );
   };
-}
-
-/**
- * The registry layout `stageVerifiedRegistry` produces, written by hand for the ONE input
- * production can no longer stage: since planning#604 a dependency with an install-time script
- * makes the candidate ineligible, so the cell that measures the builder's `--ignore-scripts` —
- * the layer BEHIND that rule, and the reason a script never runs even if one reaches here —
- * has to assemble its own.
- */
-function stageRegistryByHand(
-  destDir: string,
-  entries: { name: string; bytes: Buffer }[],
-  builderRegistryUrl: string,
-): void {
-  fs.mkdirSync(path.join(destDir, "tarballs"), { recursive: true });
-  const index: Record<string, unknown> = {};
-  const routes: Record<string, string> = {};
-  for (const { name, bytes } of entries) {
-    const integrity = sha512Integrity(bytes);
-    const file = tarballFileName(integrity);
-    fs.writeFileSync(path.join(destDir, "tarballs", file), bytes);
-    const route = conventionalTarballPath(name, VERSION);
-    routes[route] = file;
-    index[name] = {
-      name,
-      "dist-tags": { latest: VERSION },
-      versions: {
-        [VERSION]: {
-          name,
-          version: VERSION,
-          dist: { tarball: `${builderRegistryUrl.replace(/\/+$/, "")}${route}`, integrity },
-        },
-      },
-    };
-  }
-  fs.writeFileSync(path.join(destDir, "index.json"), JSON.stringify(index));
-  fs.writeFileSync(path.join(destDir, "tarballs.json"), JSON.stringify(routes));
-  fs.writeFileSync(path.join(destDir, "server.mjs"), BUILD_REGISTRY_SERVER);
 }
 
 function envFor(homeDir: string): NodeJS.ProcessEnv {
@@ -320,6 +281,33 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
 
     writeProject(projectDir);
   }, PNPM_TIMEOUT_MS);
+
+  /**
+   * The staged registry for the build-bearing variant of the fixture, through the production
+   * staging path. That path stages such a package again since the prune (planning#604), so the
+   * two cells that need one no longer assemble a registry by hand.
+   */
+  async function stageScriptedRegistry(
+    destDir: string,
+    builderRegistryUrl: string,
+  ): ReturnType<typeof stageVerifiedRegistry> {
+    const scriptedSet = new Map(tarballs);
+    scriptedSet.set(`${ROOT}@${VERSION}`, scriptedRoot);
+    const staged = await stageVerifiedRegistry({
+      packages: [ROOT, LEAF].map((name) => ({
+        key: `${name}@${VERSION}`,
+        name,
+        version: VERSION,
+        integrity: sha512Integrity(scriptedSet.get(`${name}@${VERSION}`)!),
+      })),
+      destDir,
+      registryUrl: "https://fixture.test/",
+      builderRegistryUrl,
+      fetchImpl: fetchFrom(scriptedSet),
+    });
+    fs.writeFileSync(path.join(destDir, "server.mjs"), BUILD_REGISTRY_SERVER);
+    return staged;
+  }
 
   /** The committed inputs: a repo pin the builder must ignore, and the graph it must follow. */
   function writeProject(dir: string, rootTarball?: Buffer): void {
@@ -578,50 +566,177 @@ snapshots:
     expect(fs.existsSync(path.join(thinProject, "node_modules", ROOT))).toBe(false);
   }, PNPM_TIMEOUT_MS);
 
-  it("gives a dependency with an install-time script no base at all", async () => {
-    // planning#604: the builder installs `--ignore-scripts`, so the base carries the package
-    // unbuilt — and the session's own install over it reports nothing pending and exits 0, while
-    // both repairs fail to chmod as the session's uid. No base is the fail-safe.
-    // The tarball here is GNU tar's own output, so this also holds the scan against a real
-    // archive rather than against the fixture writer the unit tests use.
-    const scriptedSet = new Map(tarballs);
-    scriptedSet.set(`${ROOT}@${VERSION}`, scriptedRoot);
-    const result = await stageVerifiedRegistry({
-      packages: [ROOT, LEAF].map((name) => ({
-        key: `${name}@${VERSION}`,
-        name,
-        version: VERSION,
-        integrity: sha512Integrity(scriptedSet.get(`${name}@${VERSION}`)!),
-      })),
-      destDir: fs.mkdtempSync(path.join(tmp, "scripted-stage-")),
-      registryUrl: "https://fixture.test/",
-      builderRegistryUrl: `http://127.0.0.1:${ports[0]}/`,
-      fetchImpl: fetchFrom(scriptedSet),
+  it("prunes the build-bearing package out of the base, and a bare install restores and BUILDS it", async () => {
+    // planning#604's class, end to end against real pnpm: such a repo used to get no base at
+    // all. The whole lockfile is built, the building package is pruned from the tree AND from
+    // the carried lockfile, and the consuming session's own install — a BARE `pnpm install`,
+    // because `agent.install` is repo-authored and ShipIt cannot assume `--frozen-lockfile` —
+    // re-imports it into a private store and runs its script. That last half is the reviewer's
+    // question: a pruned base must not leave a session at rc=0 with something missing or unbuilt.
+    //
+    // The tarball is GNU tar's own output, so this also holds the scan against a real archive
+    // rather than against the fixture writer the unit tests use.
+    const scratch = fs.mkdtempSync(path.join(tmp, "pruned-"));
+    const scriptedRegistry = path.join(scratch, "registry");
+    const staged = await stageScriptedRegistry(scriptedRegistry, `http://127.0.0.1:${ports[8]}/`);
+    expect(staged).toMatchObject({ ok: true, buildTriggers: [{ key: `${ROOT}@${VERSION}` }] });
+
+    const built = path.join(scratch, "built");
+    writeProject(built, scriptedRoot);
+    const sharedStorePath = path.join(scratch, "store");
+    await runBuild(
+      builderScript({
+        pnpmBin: pnpmCmd!,
+        projectDir: built,
+        registryDir: scriptedRegistry,
+        storeDir: sharedStorePath,
+        registryUrl: `http://127.0.0.1:${ports[8]}/`,
+        readyFile: path.join(scratch, "registry.ready"),
+      }),
+      path.join(scratch, "home"),
+    );
+
+    const modules = path.join(built, "node_modules");
+    // The builder's own output, before the prune: pnpm built the WHOLE lockfile, so the
+    // retained package's links were generated against a complete graph.
+    expect(fs.existsSync(path.join(modules, ".pnpm", `${ROOT}@${VERSION}`))).toBe(true);
+    // And it is unbuilt and pending, which is exactly why it cannot stay.
+    expect(readPendingBuilds(modules, ["."]).kind).toBe("pending");
+
+    const stateFile = fs
+      .readdirSync(modules)
+      .find((n) => n.startsWith(".pnpm-workspace-state"));
+    expect(stateFile).toBeDefined();
+    const stateBytes = fs.readFileSync(path.join(modules, stateFile!));
+
+    const pruned = prunePnpmBase(modules, [
+      { key: `${ROOT}@${VERSION}`, name: ROOT, version: VERSION },
+    ]);
+    expect(pruned).toMatchObject({ ok: true, remainingPackages: 1, removedState: [stateFile] });
+    expect(fs.existsSync(path.join(modules, ".pnpm", `${ROOT}@${VERSION}`))).toBe(false);
+    expect(fs.existsSync(path.join(modules, ".pnpm", `${LEAF}@${VERSION}`))).toBe(true);
+    expect(fs.readFileSync(path.join(modules, ".pnpm", "lock.yaml"), "utf-8")).not.toContain(ROOT);
+    // The prune does not rewrite `.modules.yaml`, so the removed package is still named there;
+    // what is left for the PUBLISH to refuse is everything the prune did not remove.
+    expect(readPendingBuilds(modules, ["."], new Set([`${ROOT}@${VERSION}`]))).toEqual({
+      kind: "none",
     });
 
-    expect(result).toMatchObject({ ok: false, ineligible: { code: "install-script" } });
-    expect("ineligible" in result ? result.ineligible.detail : "").toContain(
-      `${ROOT}@${VERSION}`,
+    // A second session: the pruned base, its own committed inputs, and an EMPTY private store.
+    // Its checkout is backdated, which is the shape that hides the prune: pnpm's carried install
+    // state short-circuits on `lastValidatedTimestamp` versus these mtimes, BEFORE it reads the
+    // carried lockfile. A session whose workspace predates the build is in exactly this shape.
+    const consumer = path.join(scratch, "consumer");
+    writeProject(consumer, scriptedRoot);
+    const stale = new Date(Date.now() - 3_600_000);
+    for (const f of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]) {
+      fs.utimesSync(path.join(consumer, f), stale, stale);
+    }
+    fs.cpSync(modules, path.join(consumer, "node_modules"), {
+      recursive: true,
+      verbatimSymlinks: true,
+    });
+    // The SAME store path the base was built with, emptied — which is what production has:
+    // `BUILD_STORE_DIR === PNPM_STORE_CONTAINER_PATH`, so the consuming session's own private
+    // store sits where `.modules.yaml` says. A different path is a store mismatch pnpm recovers
+    // from by recreating the whole tree, and every assertion below would then pass on a full
+    // reinstall rather than on selective repair (independent review, 2026-09-21).
+    const consumerStore = sharedStorePath;
+    fs.rmSync(consumerStore, { recursive: true, force: true });
+    fs.mkdirSync(consumerStore, { recursive: true });
+    expect(
+      fs.readFileSync(path.join(consumer, "node_modules", ".modules.yaml"), "utf-8"),
+    ).toContain(consumerStore);
+    // What "shared" has to mean: these exact bytes, not a package of the same name.
+    const retained = path.join(
+      consumer, "node_modules", ".pnpm", `${LEAF}@${VERSION}`, "node_modules", LEAF, "index.js",
     );
+    const retainedBefore = fs.statSync(retained);
+
+    const consumerPort = ports[9];
+    const server = spawn(
+      "node",
+      [path.join(scriptedRegistry, "server.mjs"), scriptedRegistry, String(consumerPort),
+        path.join(scratch, "consumer-registry.ready")],
+      { stdio: "ignore" },
+    );
+    try {
+      for (let i = 0; i < 300 && !fs.existsSync(path.join(scratch, "consumer-registry.ready")); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // No `--frozen-lockfile`: the pruned carried lockfile is what makes the hole visible to
+      // the weaker command. With the tree pruned and the lockfile left alone, pnpm reports
+      // "Already up to date" and leaves the hole (measured, `ineligible-sharing-spike.sh` E).
+      const install = (cwd: string): ReturnType<typeof run> =>
+        run(
+          pnpmCmd!,
+          ["install", "--store-dir", consumerStore, "--registry", `http://127.0.0.1:${consumerPort}/`],
+          {
+            cwd,
+            timeout: PNPM_TIMEOUT_MS,
+            maxBuffer: 16 * 1024 * 1024,
+            env: envFor(path.join(scratch, "consumer-home")),
+          },
+        );
+
+      // The control FIRST, on a copy: with the state file put back and nothing else changed,
+      // pnpm short-circuits and the hole survives. Without it this cell would pass on a tree
+      // where the state file simply never mattered.
+      //
+      // Its `projects` key is rewritten to the consumer's own directory, which is what makes the
+      // control faithful rather than generous: in production the builder's project dir IS the
+      // session's (`BUILD_PROJECT_DIR === CONTAINER_WORKSPACE_PATH`, chosen so `.modules.yaml`'s
+      // `storeDir` matches), while this file builds in a temp dir. Leave it and the state file
+      // names a foreign project, pnpm ignores it, and the control passes for the wrong reason —
+      // measured here before it was corrected.
+      const control = path.join(scratch, "control");
+      fs.cpSync(consumer, control, { recursive: true, verbatimSymlinks: true });
+      for (const f of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]) {
+        fs.utimesSync(path.join(control, f), stale, stale);
+      }
+      const state = JSON.parse(stateBytes.toString("utf-8")) as {
+        projects: Record<string, unknown>;
+      };
+      state.projects = { [control]: Object.values(state.projects)[0] };
+      fs.writeFileSync(path.join(control, "node_modules", stateFile!), JSON.stringify(state));
+      const controlRun = await install(control);
+      expect(String(controlRun.stdout) + String(controlRun.stderr)).toContain("Already up to date");
+      expect(
+        fs.existsSync(path.join(control, "node_modules", ".pnpm", `${ROOT}@${VERSION}`)),
+      ).toBe(false);
+
+      const result = await install(consumer);
+      expect(String(result.stdout) + String(result.stderr)).not.toContain("Already up to date");
+    } finally {
+      server.kill();
+    }
+
+    const restored = path.join(consumer, "node_modules", ".pnpm", `${ROOT}@${VERSION}`, "node_modules", ROOT);
+    expect(fs.existsSync(restored)).toBe(true);
+    // Not just restored: BUILT, as the session's own uid, which is the whole point of pruning
+    // it rather than shipping it unbuilt.
+    expect(fs.existsSync(path.join(restored, SCRIPT_MARKER))).toBe(true);
+    // The retained remainder is still the base's, not a reinstall of everything: the same inode,
+    // untouched, against an emptied store at the path the base records.
+    const retainedAfter = fs.statSync(retained);
+    expect(retainedAfter.ino).toBe(retainedBefore.ino);
+    expect(retainedAfter.mtimeMs).toBe(retainedBefore.mtimeMs);
+    // And the store the install filled holds the pruned package alone.
+    expect(fs.readdirSync(consumerStore).length).toBeGreaterThan(0);
+    expect(fs.readFileSync(path.join(consumer, "node_modules", ROOT, "index.js"), "utf-8"))
+      .toContain("root");
   }, PNPM_TIMEOUT_MS);
 
   it("leaves an APPROVED build script unrun, with a control that shows it would otherwise run", async () => {
-    // Section 5: "packages with build scripts land unbuilt". Since planning#604 such a package
-    // never reaches the builder — the cell above refuses it — so this measures the layer
-    // behind that rule: `--ignore-scripts` is what makes "no repo code runs in the builder" a
-    // fact rather than a consequence of the eligibility decision above it. The fixture
+    // Section 5: "packages with build scripts land unbuilt". Such a package reaches the builder
+    // again since the prune (planning#604), and this measures the layer behind that: the
+    // builder's `--ignore-scripts` is what makes "no repo code runs in the builder" a fact,
+    // rather than a consequence of whichever eligibility rule sits above it. The fixture
     // approves the build in `pnpm-workspace.yaml`, so the control is a genuine positive —
     // pnpm 12 refuses an unapproved build either way, and this cell would then measure nothing.
     const scratch = fs.mkdtempSync(path.join(tmp, "scripts-"));
     const scriptedRegistry = path.join(scratch, "registry");
-    stageRegistryByHand(
-      scriptedRegistry,
-      [
-        { name: ROOT, bytes: scriptedRoot },
-        { name: LEAF, bytes: tarballs.get(`${LEAF}@${VERSION}`)! },
-      ],
-      `http://127.0.0.1:${ports[2]}/`,
-    );
+    await stageScriptedRegistry(scriptedRegistry, `http://127.0.0.1:${ports[2]}/`);
     const scripted = path.join(scratch, "project");
     writeProject(scripted, scriptedRoot);
 

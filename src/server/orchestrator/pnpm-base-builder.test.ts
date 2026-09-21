@@ -112,17 +112,122 @@ function fetchFor(tarball: Buffer): FetchLike {
 
 const okFetch: FetchLike = fetchFor(TARBALL);
 
+/** A scriptless second dependency, so a prune can leave something behind to share. */
+const LEAF_TARBALL = makeNpmTarball({ manifest: { name: "rimraf", version: "5.0.10" } });
+
+/** Serves a whole set by name, unlike `fetchFor`, which answers for `left-pad` alone. */
+function fetchForSet(set: Record<string, Buffer>): FetchLike {
+  const entries = Object.entries(set).map(([key, bytes]) => {
+    const at = key.lastIndexOf("@");
+    return { name: key.slice(0, at), version: key.slice(at + 1), bytes };
+  });
+  return (url) => {
+    const tar = entries.find((e) => url.endsWith(`/${e.name}/-/${e.name}-${e.version}.tgz`));
+    if (tar) return Promise.resolve(new Response(new Uint8Array(tar.bytes), { status: 200 }));
+    const pkg = entries.find((e) => url.endsWith(`/${e.name}`));
+    if (!pkg) return Promise.resolve(new Response("{}", { status: 404 }));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          name: pkg.name,
+          versions: {
+            [pkg.version]: {
+              dist: {
+                integrity: sha512Integrity(pkg.bytes),
+                tarball: `https://registry.example.test/${pkg.name}/-/${pkg.name}-${pkg.version}.tgz`,
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+  };
+}
+
+/** One build-bearing dependency and one scriptless one: the shape the prune exists for. */
+function mixedRepo(): { dir: string; commit: string } {
+  return makeRepo({
+    "package.json": JSON.stringify({
+      name: "app",
+      dependencies: { "left-pad": "1.3.0", rimraf: "5.0.10" },
+    }),
+    "pnpm-lock.yaml": `lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    dependencies:
+      left-pad:
+        specifier: 1.3.0
+        version: 1.3.0
+      rimraf:
+        specifier: 5.0.10
+        version: 5.0.10
+
+packages:
+
+  left-pad@1.3.0:
+    resolution: {integrity: ${sha512Integrity(BUILD_BEARING_TARBALL)}}
+
+  rimraf@5.0.10:
+    resolution: {integrity: ${sha512Integrity(LEAF_TARBALL)}}
+`,
+  });
+}
+
+const MIXED_FETCH = fetchForSet({
+  "left-pad@1.3.0": BUILD_BEARING_TARBALL,
+  "rimraf@5.0.10": LEAF_TARBALL,
+});
+
+const MIXED_TREE = [
+  { name: "left-pad", version: "1.3.0" },
+  { name: "rimraf", version: "5.0.10" },
+];
+
 /**
  * What the real container leaves behind: pnpm's tree and the `.modules.yaml` it writes beside
  * it. `pendingBuilds` is pnpm's own record of packages that still have to build, which the
  * builder now reads before publishing.
  */
-function writeBuiltTree(cfg: Docker.ContainerCreateOptions, pendingBuilds: string[] = []): void {
+function writeBuiltTree(
+  cfg: Docker.ContainerCreateOptions,
+  pendingBuilds: string[] = [],
+  packages: { name: string; version: string }[] = [{ name: "left-pad", version: "1.3.0" }],
+): void {
   const mount = (cfg.HostConfig?.Mounts ?? []).find(
     (m) => (m as { Target?: string }).Target === BUILD_PROJECT_DIR,
   ) as { Source?: string } | undefined;
   const modules = path.join(mount?.Source ?? "", "node_modules");
-  fs.mkdirSync(path.join(modules, "left-pad"), { recursive: true });
+  // pnpm's isolated layout, in miniature: the prune reads a package's identity out of its own
+  // manifest inside the virtual store, and removes it from the carried lockfile beside it.
+  fs.mkdirSync(path.join(modules, ".pnpm"), { recursive: true });
+  for (const { name, version } of packages) {
+    const inner = path.join(modules, ".pnpm", `${name}@${version}`, "node_modules", name);
+    fs.mkdirSync(inner, { recursive: true });
+    fs.writeFileSync(path.join(inner, "package.json"), JSON.stringify({ name, version }));
+    fs.symlinkSync(path.join(".pnpm", `${name}@${version}`, "node_modules", name), path.join(modules, name));
+  }
+  fs.writeFileSync(
+    path.join(modules, ".pnpm", "lock.yaml"),
+    [
+      "lockfileVersion: '9.0'",
+      "importers:",
+      "  .:",
+      "    dependencies:",
+      ...packages.flatMap(({ name, version }) => [
+        `      ${name}:`,
+        `        specifier: ${version}`,
+        `        version: ${version}`,
+      ]),
+      "packages:",
+      ...packages.map(({ name, version }) => `  ${name}@${version}: {}`),
+      "snapshots:",
+      ...packages.map(({ name, version }) => `  ${name}@${version}: {}`),
+      "",
+    ].join("\n"),
+  );
   fs.writeFileSync(path.join(modules, ".modules.yaml"), JSON.stringify({ pendingBuilds }));
 }
 
@@ -296,13 +401,43 @@ describe("buildVerifiedPnpmBase", () => {
     expect(fake.created).toHaveLength(0);
   });
 
-  it("gives a repo whose dependency builds at install time no base, and no builder run", async () => {
-    // planning#604: the builder runs `--ignore-scripts`, and the session's own install over the
-    // resulting base reports nothing pending, so the approved build runs nowhere.
+  it("publishes a base for a build-bearing repo, with the building package pruned out", async () => {
+    // planning#604's class, the large one: such a repo used to get no base at all. It is built
+    // whole and then pruned, so the session's own install re-imports and builds exactly the
+    // removed package as its own uid (plan.md section 5, "Sharing for ineligible repos").
+    const repo = mixedRepo();
+    cleanup.push(repo.dir);
+    let snapshot: { pnpm: string[]; lock: string } | null = null;
+    const fake = fakeDocker({ onRun: (cfg) => writeBuiltTree(cfg, [], MIXED_TREE) });
+    const result = await buildVerifiedPnpmBase(
+      deps(fake.docker, {
+        fetchImpl: MIXED_FETCH,
+        publish: (args: PublishBaseArgs) => {
+          const dir = args.candidate.snapshotDir;
+          snapshot = {
+            pnpm: fs.readdirSync(path.join(dir, ".pnpm")).sort(),
+            lock: fs.readFileSync(path.join(dir, ".pnpm", "lock.yaml"), "utf-8"),
+          };
+          return Promise.resolve({ outcome: "created", pointer: null });
+        },
+      }),
+      request(repo),
+    );
+
+    expect(result).toMatchObject({ status: "published" });
+    expect(snapshot).not.toBeNull();
+    // The prune, on the tree the publish actually took: the builder's own output minus the one
+    // package, with the retained one untouched.
+    expect(snapshot!.pnpm).toEqual(["lock.yaml", "rimraf@5.0.10"]);
+    expect(snapshot!.lock).not.toContain("left-pad");
+    expect(snapshot!.lock).toContain("rimraf@5.0.10");
+  });
+
+  it("gives a repo whose EVERY package builds no base, because a pruned one would be empty", async () => {
     const repo = repoFor(BUILD_BEARING_TARBALL);
     cleanup.push(repo.dir);
     let published = 0;
-    const fake = fakeDocker();
+    const fake = fakeDocker({ onRun: (cfg) => writeBuiltTree(cfg) });
     const result = await buildVerifiedPnpmBase(
       deps(fake.docker, {
         fetchImpl: fetchFor(BUILD_BEARING_TARBALL),
@@ -313,13 +448,81 @@ describe("buildVerifiedPnpmBase", () => {
       }),
       request(repo),
     );
-    expect(result).toMatchObject({
-      status: "ineligible",
-      reason: { code: "install-script" },
-    });
-    expect(result.status === "ineligible" ? result.detail : "").toContain("left-pad@1.3.0");
+    expect(result).toMatchObject({ status: "ineligible", reason: { code: "install-script" } });
     expect(published).toBe(0);
-    expect(fake.created).toHaveLength(0);
+  });
+
+  it("publishes no base when the prune cannot be verified", async () => {
+    // The stated invariant: a prune that cannot be shown to have happened yields NO base, never
+    // a partly-pruned one — that tree installs rc=0 and runs code that was never built. Here the
+    // carried lockfile is missing, so nothing can be shown to a session's own install.
+    const repo = mixedRepo();
+    cleanup.push(repo.dir);
+    let published = 0;
+    const fake = fakeDocker({
+      onRun: (cfg) => {
+        writeBuiltTree(cfg, [], MIXED_TREE);
+        const mount = (cfg.HostConfig?.Mounts ?? []).find(
+          (m) => (m as { Target?: string }).Target === BUILD_PROJECT_DIR,
+        ) as { Source?: string } | undefined;
+        fs.rmSync(path.join(mount?.Source ?? "", "node_modules", ".pnpm", "lock.yaml"));
+      },
+    });
+    const result = await buildVerifiedPnpmBase(
+      deps(fake.docker, {
+        fetchImpl: MIXED_FETCH,
+        publish: () => {
+          published++;
+          return Promise.resolve({ outcome: "created", pointer: null });
+        },
+      }),
+      request(repo),
+    );
+    expect(result).toMatchObject({ status: "build-failed" });
+    expect((result as { detail: string }).detail).toContain("could not be verified");
+    expect(published).toBe(0);
+  });
+
+  it("does not count a PRUNED package's pending build against the publish", async () => {
+    // The prune leaves `.modules.yaml` naming the removed package; that build is the session's
+    // to run over its own copy, so counting it would refuse every base this mechanism exists for.
+    const repo = mixedRepo();
+    cleanup.push(repo.dir);
+    const fake = fakeDocker({
+      onRun: (cfg) => writeBuiltTree(cfg, ["left-pad@1.3.0"], MIXED_TREE),
+    });
+    const result = await buildVerifiedPnpmBase(
+      deps(fake.docker, {
+        fetchImpl: MIXED_FETCH,
+        publish: () => Promise.resolve({ outcome: "created", pointer: null }),
+      }),
+      request(repo),
+    );
+    expect(result).toMatchObject({ status: "published" });
+  });
+
+  it("still refuses a pending build the prune did NOT remove", async () => {
+    // A patch can add a `postinstall` the tarball scan cannot see, so the pending-build gate
+    // stays: it now covers exactly what the prune does not.
+    const repo = mixedRepo();
+    cleanup.push(repo.dir);
+    let published = 0;
+    const fake = fakeDocker({
+      onRun: (cfg) => writeBuiltTree(cfg, ["rimraf@5.0.10"], MIXED_TREE),
+    });
+    const result = await buildVerifiedPnpmBase(
+      deps(fake.docker, {
+        fetchImpl: MIXED_FETCH,
+        publish: () => {
+          published++;
+          return Promise.resolve({ outcome: "created", pointer: null });
+        },
+      }),
+      request(repo),
+    );
+    expect(result).toMatchObject({ status: "build-failed" });
+    expect((result as { detail: string }).detail).toContain("rimraf@5.0.10");
+    expect(published).toBe(0);
   });
 
   it("skips the publish naming the first failing package when verification fails", async () => {

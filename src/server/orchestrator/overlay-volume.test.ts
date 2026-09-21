@@ -105,6 +105,7 @@ describe("overlay naming helpers", () => {
     expect(verified).toBe("1b98a18a129396ec");
     expect(verified).not.toBe(overlayScopeHash(repo, rt, "node_modules"));
     expect(verified).not.toBe(overlayScopeHash(repo, rt, "node_modules", "pnpm-verified-v2"));
+    expect(verified).not.toBe(overlayScopeHash(repo, rt, "node_modules", "pnpm-verified-v3"));
     expect(verified).toHaveLength(16);
     // The dep dir and the namespace must not run together into one field.
     expect(overlayScopeHash(repo, rt, "a", "b")).not.toBe(overlayScopeHash(repo, rt, "ab", ""));

@@ -149,6 +149,15 @@ own `agent.install` runs over it and any install-time build runs here, as you. I
 command ever fails with `Operation not permitted` on a file under `node_modules`, that is
 ShipIt's layer and not your repo — say so rather than working around it.
 
+**A base deliberately does not carry every package.** Any dependency with an install-time build —
+a `preinstall`/`install`/`postinstall` script, a `binding.gyp`, a `.hooks/` file — is left out of
+it, because a shared read-only tree cannot carry the result of running one. Your own install
+downloads exactly those into this session's private store and **builds them here, as you**, and the
+rest of the tree is the shared base. So expect the first install after a container start to do
+some real work rather than finish instantly, and expect a native package to be compiled or
+downloaded in this session; that is the design, not a cache miss. Nothing about it needs
+configuring, and every `pnpm` command still behaves normally.
+
 ### Write-protected paths
 
 The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing under `/workspace` and elsewhere is unrestricted, but the file-edit tools (Edit/Write/MultiEdit/NotebookEdit) are **denied** on a few infrastructure paths:
