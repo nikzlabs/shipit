@@ -321,11 +321,39 @@ recorded in [requirements.md](./requirements.md); none is open.
       failed build reports pnpm's own output instead of the shell script. The builder script
       also notices a loopback registry that exited before it was ready and prints its log —
       that failure previously said nothing at all.
-- [ ] Measure the build-inclusive base-hit install cost (approved registry dep +
+- [x] Measure the build-inclusive base-hit install cost (approved registry dep +
       `--ignore-scripts` base + empty private store): warm-install time and the
-      marginal build-output disk in the upper. The 8 KB result used scriptless
-      deps and does not cover this; the tree spikes also ran as root, not as
-      distinct session uids.
+      marginal build-output disk in the upper. **Measured 2026-09-21**
+      (`build-cost-spike.sh`, services host, PASS=14 FAIL=1 — the failure is the
+      finding), with the base built by the pinned pnpm 12.4.1 and consumed by
+      12.5.1, every session container running as its own non-root uid over a base
+      owned by another uid with group write. **There is no build-inclusive cost to
+      report, because the build does not run**: an approved pending build over a
+      base hit costs 8 192 B and 286 ms and leaves the package silently unbuilt at
+      rc=0, while the same project and approval file with no base builds (59 MiB
+      tree + 52 MiB store, 1 043 ms). Isolation re-asserted under distinct uids:
+      base byte-unchanged, session 2 inherits nothing. Two probe errors caught and
+      recorded rather than shipped as passes (esbuild's binary comes from an
+      optional dep; `require('better-sqlite3')` succeeds with no binding).
+- [ ] **A script-bearing repo gets a silently unbuilt tree once a base exists**
+      (found by the measurement above, 2026-09-21). The session's own install
+      skips `pendingBuilds` — "Lockfile is up to date, resolution step is
+      skipped" — and the two repairs fail under the session's own uid with
+      `Operation not permitted`, because copy-up keeps the lower's owner and a
+      session may rewrite a base file but not `chmod` it (`shareOne`,
+      `session-worker-uid.ts:124`). The repo works from its first private install
+      and breaks from the next container start. plan.md section 5's "that install
+      is where builds run" is corrected there. A design decision, not a fix to
+      slot in here: exclude a repo with pending builds from eligibility, have the
+      base carry built output, or give the session a repair that works as its own
+      uid.
+- [x] The `.pnpmfile.mjs` and `configDependencies` suppression gap measured
+      (2026-09-21, pnpm 12.4.1, FINDINGS.md): `--ignore-pnpmfile` suppresses
+      **both** — module body and `readPackage` — exactly as it does `.cjs`. So
+      the eligibility rule **may** admit them in a follow-up; deliberately not
+      changed here, since admitting them widens what the builder runs on. The
+      builder's refusal of the `pnpmfile`/`globalPnpmfile` keys closes the
+      `configDependencies` route a second time.
 - [x] Independent review of the store + namespace slice (2026-09-20, reviewer role). Its
       P1 on the retired-store sweep was confirmed and fixed: ageing on the store ROOT's
       mtime is not an activity signal, because pnpm writes under `v11/files/<xx>/` and
@@ -376,11 +404,30 @@ recorded in [requirements.md](./requirements.md); none is open.
       `.mjs`-hook) — **required, not optional**: no base leaves req 2 / req 10 /
       req 13 unmet for them. Reuse the unbuilt-base / private-build shape; no
       second build path.
-- [ ] Resolution metadata stays private per session (the container's own
-      `XDG_CACHE_HOME/pnpm`); a lockfile carries the resolution for the offline
-      case (FINDINGS.md). No shared or seeded metadata cache.
-- [ ] Regression test: a manifest rewrite in one session's store, or a write to
-      the shared base, must not reach an install in another session.
+- [x] Resolution metadata stays private per session — **verified at the source 2026-09-21**,
+      not inferred: nothing in `src/` sets `XDG_CACHE_HOME` for a session container, so pnpm
+      falls back to `$HOME/.cache/pnpm` under `HOME=/home/shipit` (`buildEnv`,
+      `shared/agent-home.ts:4`), and no bind or volume in `buildMounts` targets any path under
+      it; under `readonlyRootfs` the home is a per-container tmpfs
+      (`container-hardening.ts:readonlyRootfsTmpfs`) and the entrypoint's home links point only
+      into the per-session `/credentials` (`docker/session-worker/entrypoint.sh:174-182`). The
+      two other `XDG_CACHE_HOME` setters are off this path: `session-namer.ts:219`
+      (orchestrator-side opencode run) and `pnpm-base-builder.ts:251` (inside the builder
+      sandbox). No shared or seeded metadata cache; a lockfile carries the resolution for the
+      offline case (FINDINGS.md). Cited in plan.md section 5, "Resolution metadata".
+- [x] Regression test: `integration_tests/pnpm-store-isolation.test.ts`. The store half runs
+      real pnpm >= 11 against a local registry, with the H4 attack re-derived for a current
+      pnpm (FINDINGS.md): a whole-row swap is refused by `strictStorePkgContentCheck`, so the
+      attack is a **key rename** — pnpm's own writer produces the row for the attacker's
+      tarball and the attacker renames it onto the integrity everyone else asks for, leaving
+      manifest, name, version and every blob digest consistent. Its control fires that attack
+      through ONE shared store and asserts the victim installs `EVIL`; the fix runs it against
+      two `sessionPnpmStoreDir` paths, with a non-vacuity cell showing the poisoned index is
+      live for anyone who does share that store. Proven red by making the store path
+      session-independent. The base half asserts the mount shape — one shared lowerdir, each
+      session's own upper and work dir (red if the base is named as `upperdir`), and no bind
+      exposing the base tree; the kernel copy-up half stays with the services-host spikes,
+      which a session container cannot run.
 
 ## H3 — pnpm hardlink (reqs 1, 4, 10, 11)
 
@@ -416,12 +463,23 @@ recorded in [requirements.md](./requirements.md); none is open.
       controls request `hardlink` explicitly rather than pnpm's default, so a
       reflink filesystem or an inherited import method cannot decide what they
       measure.
-- [ ] Req 10 gate: on ext4, `package-import-method=copy` alone regresses disk
-      ~1.8×. Land the overlay (or accept the interim cost deliberately) before
-      calling req 10 met — do not ship copy on ext4 as if it were free.
-      **Still open after the 2026-09-20 ship**: the requester chose to land H3
-      first and accept the interim ext4 cost (plan.md section 2), so this closes
-      only when section 5's tree overlay makes the copy free again.
+- [x] Req 10 gate: on ext4, `package-import-method=copy` alone regresses disk
+      ~1.8×. **Closed 2026-09-21 — the copy is now only applied where it is
+      free.** Two measurements decide it (FINDINGS.md). In the standard container
+      layout there is no hardlink baseline at all: `link()` compares mounts, not
+      superblocks, so a hardlink from `/workspace/.pnpm-store` into a dep dir is
+      **EXDEV** even on one ext4 device — raw `link()` EXDEV, and real pnpm 12.5.1
+      on its default `auto` produced `nlink=1`. An ordinary session has been
+      copying all along; the 1.8× row is copy-vs-hardlink on ONE mount. Two
+      layouts DO recreate one mount (a `virtualStoreDir` on the store's mount,
+      `nlink=2` measured; a dropped store mount, where pnpm 10 resolves its
+      default to `/workspace/.pnpm-store/v10`) — so the pnpm >= 11 setting is
+      applied only where a verified base is mounted, which neither layout can
+      have, and they keep their free hardlinks into a store that is theirs alone.
+      Where it IS set the overlay makes a base hit import nothing (8 KB upper,
+      tree spike), so only an added package is copied. pnpm <= 10 keeps the
+      unconditional pre-11 spelling, as shipped, and it is a no-op for it in the
+      standard layout for the same EXDEV reason.
 - [x] Never `chown -R` through an overlay mount; act on the base or the upper.
       Nothing was added that chowns: verified at the source that the worker
       entrypoint prunes `.pnpm-store` and every `SHIPIT_DEP_DIRS` entry from its
@@ -431,14 +489,26 @@ recorded in [requirements.md](./requirements.md); none is open.
       `environment.md` now describes the copy import, the edit-stays-local
       consequence (req 11) and its ext4 disk cost, and says plainly that the
       store is not yet a boundary and `verify-store-integrity` is a local check.
-- [ ] Migration for trees installed before the setting (independent review,
+- [x] Migration for trees installed before the setting (independent review,
       2026-09-20, confirmed by measurement): `copy` governs an import, so an
       existing `node_modules` keeps its store hardlinks through a plain reinstall
       **and through `pnpm install --force`**; only removing the tree re-imports
-      it. Reqs 4 and 11 hold for such a session from its next cold install. The
-      "GAP" cell in `integration_tests/pnpm-store-import-method.test.ts` pins the
-      behaviour so the caveat can be dropped if pnpm changes. Rebuilding those
-      trees is a destructive step and a requester decision; section 5 moots it.
+      it. The "GAP" cell in `integration_tests/pnpm-store-import-method.test.ts`
+      pins the behaviour so the caveat can be dropped if pnpm changes.
+      **Closed 2026-09-21: no cross-session-linked tree exists.** The first draft
+      of this tick argued the private store makes the links intra-session; an
+      independent review rejected that, correctly — deleting a store does not
+      unlink two trees that hardlink the same inode, so had those links existed,
+      an edit in one session's `node_modules` would still change another's
+      (reqs 1, 4, 11). Measured instead of argued (FINDINGS.md): every store that
+      was ever **shared** is mounted separately from the dep dirs, and `link()`
+      refuses to cross a mount boundary even within one filesystem — raw `link()`
+      EXDEV, and a real pnpm install `nlink=1`. So a tree installed from a shared
+      store is a tree of copies and shares no inode with another session's. A
+      tree that IS hardlinked (the two escaping layouts above) is linked only
+      into its own session's store. Nothing to rebuild either way. The
+      agent-facing caveat in `environment.md` described the one-mount pnpm
+      behaviour and is corrected in the same change.
 - [x] Correct the "integrity-checked on link" claim in
       `docs/198-dep-cache-content-keying-and-pnpm-store/plan.md`.
 

@@ -231,16 +231,30 @@ setting to pnpm ≤ 10, below.
 **Scoped to pnpm ≤ 10, deliberately — pnpm moved its config env prefix at 11**
 (measured 2026-09-20 with `pnpm store path`, which reports the resolved value): pnpm
 10.28.2 reads `npm_config_*` and ignores `PNPM_CONFIG_*`; 11.22.0 and 12.5.1 do the
-reverse. `buildEnv` pushes only `npm_config_package_import_method=copy`, beside the
-store path, which uses the same pre-11 spelling — so copy reaches **exactly the
-versions that share a store**. pnpm ≥ 11 keeps a private in-container store (next
-paragraph), where a copy would buy no cross-session isolation and would still cost
-~1.8× the disk on ext4, so it is left on hardlinks. Requester's decision 2026-09-20,
-on review of the first cut, which had set both spellings; **section 5 owns re-adding
-copy for pnpm ≥ 11**, where the overlay makes it free and the import must cross the
-overlay boundary anyway. The pre-11 spelling costs one `npm warn Unknown env config
-"package-import-method"` per npm command in a pnpm session, next to the one
-`npm_config_store_dir` already emits.
+reverse. The first cut set both spellings; on review 2026-09-20 the requester cut the pnpm ≥ 11
+one, because pnpm ≥ 11 had a private in-container store where a copy would buy no cross-session
+isolation and still cost ~1.8× the disk on ext4. **Section 5 restores it on 2026-09-21, and the
+disk half of that reasoning turns out not to apply in a container at all** — see below. The pre-11
+spelling costs one `npm warn Unknown env config "package-import-method"` per npm command in a pnpm
+session, next to the one `npm_config_store_dir` already emits.
+
+**Correction, measured 2026-09-21 in a session container: in the standard layout there is no
+hardlink baseline to regress from, so `copy` is not a disk trade there** (FINDINGS.md). `link(2)`
+compares **mounts**, not superblocks, and a session's store (`/workspace/.pnpm-store`) is its own
+mount under both bind and volume layouts — so a hardlink into any dep dir is EXDEV even though
+both sit on one ext4 device, measured as a raw `link()` (EXDEV) and as a real pnpm 12.5.1 install
+with the default `auto` import (`nlink=1`, copied). The 1.8× row below is copy-vs-hardlink **on
+one mount**; an ordinary session has been paying the copy already, through pnpm's own fallback.
+So the interim ext4 cost accepted on 2026-09-20 was largely not charged, and **H3's reach inside a
+ShipIt container was already nil** — an installed file could not be a hardlink into a shared
+store. The hole is real in pnpm, which is what the guard tests measure.
+
+**Two layouts escape that, and they are why the pnpm ≥ 11 setting is gated** (both named by an
+independent review, both then measured — FINDINGS.md): a `virtualStoreDir` pointed at the store's
+own mount (`nlink=2` under `auto`, `nlink=1` under `copy` — a real cost), and a dropped store
+mount, where pnpm 10 resolves its default to `/workspace/.pnpm-store/v10`, on the workspace mount.
+Both keep the store session-private, so neither is a cross-session exposure; both are unreachable
+for a repo that has a base. Forcing a copy there would spend ext4 disk to protect nothing.
 
 **The setting governs an import, so it does not detach links that already exist**
 (measured 2026-09-20 on pnpm 12.5.1, and the cell
@@ -501,11 +515,27 @@ resolve online — pnpm reconstructs the graph from the base's carried
 `.pnpm/lock.yaml` (measured: an offline install knew the transitive versions
 without resolving), so it inherits the publisher's version selection. The
 resolution: the base is a **verified warm tree**, and **every session still runs
-its own install over it** (no pnpm pre-stamp). That install is where builds run
-and the session's own graph reconciles, so nothing carried decides for the
-session. It is a near-no-op for a matching *scriptless* lockfile (8 KB measured);
-a build-bearing repo adds its build-output disk and time to each session's upper,
-which the spikes did not measure — an open measurement, not a settled 8 KB.
+its own install over it** (no pnpm pre-stamp). That install is where the session's
+own graph reconciles, so nothing carried decides for the session. It is a
+near-no-op for a matching *scriptless* lockfile (8 KB measured).
+
+**Measured 2026-09-21, and the "builds run there" half of that claim does NOT
+hold** ([`build-cost-spike.sh`](./build-cost-spike.sh), FINDINGS.md). A session
+that mounts the base and approves a pending build does **not** get it built: its
+install prints "Lockfile is up to date, resolution step is skipped", exits 0 and
+leaves `pendingBuilds` unprocessed — 8 KB upper, 286 ms, silently unbuilt. The
+control is the same project and the same approval file with **no** base, which
+does build. The two repairs also fail as the session's own uid, because copy-up
+preserves the lower's owner and a session may rewrite a base file's contents but
+not `chmod` it: `pnpm rebuild` and `pnpm install --force` both exit 1 with
+`Operation not permitted`. So a repo with an approved native build gets a working
+tree from its first private install — the one that triggers the publish — and a
+silently unbuilt one from every container start after the base exists. The C2/C3
+cells this design leaned on used a base from an **ordinary** install, not the
+builder's `--ignore-scripts` output; FINDINGS.md's own limits section had flagged
+that gap. **Open, and a design decision**: exclude a repo with pending builds from
+eligibility, or have the base carry built output, or give the session a repair
+that works under its own uid.
 
 *Inputs and verification (req 1, 3, 6).* The base is rebuilt from the repo's
 **committed manifests plus lockfile** at the default-branch commit — package
@@ -652,6 +682,29 @@ recorded deviations from the sentence above:
 Also removed with it: `PNPM_STORE_DIR` (see the holes table). The per-session store survives a
 container restart, where pnpm ≥ 11's in-container default did not.
 
+**Shipped 2026-09-21** (the pnpm ≥ 11 copy import), with one recorded deviation from the sentence
+above: **`PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy` is set only where a spec in the verified
+namespace is mounted**, not beside the store path. `buildEnv` reads `config.overlaySpecs` and keys
+on `scope.namespace === PNPM_VERIFIED_NAMESPACE`, so an npm/yarn base cannot turn it on.
+
+The design's reason for the setting is that the import must cross the overlay boundary, which is
+true exactly when a base is mounted. Everywhere else it is either a no-op (the standard layout
+already copies, EXDEV) or a cost (the two escaping layouts in section 2 hardlink into a
+session-private store, and a forced copy there buys no isolation for ~1.8× the ext4 disk). Gating
+is what keeps the requester's 2026-09-20 reasoning true in the only cases it still describes —
+and neither escaping layout can have a base, so the gate never withholds the setting from a
+session that needs it.
+
+Three facts this rests on, all measured 2026-09-21 (FINDINGS.md).
+
+- **The setting is honoured**: `PNPM_CONFIG_PACKAGE_IMPORT_METHOD` produces `nlink` 1 on pnpm
+  11.22.0 and 12.5.1, and `npm_config_*` is ignored there — the 2026-09-20 split, re-measured.
+- **It is free where it is set.** A base implies the standard mount layout, where `auto` was
+  already copying; and a base hit imports nothing at all, so only an added package is copied.
+- **It cannot whiteout a base.** pnpm does not record `packageImportMethod` in `.modules.yaml` or
+  re-validate it, so a session whose base appears or disappears between container starts sees
+  "Already up to date" rather than the `Recreating node_modules` a store-version mismatch causes.
+
 Placing it under `sessions/<id>/overlay/` is what makes it reclaimable rather than a new leak:
 that directory is already in `REGENERABLE_SESSION_SUBDIRS` (`disk-utils.ts`), so both disk-tier
 paths — the full reclaim and `reclaimBlockedSessionCaches`, which archive and a blocked evict
@@ -691,9 +744,11 @@ rather than another publisher's.
 
 *Per-session install — no pnpm pre-stamp (req 9, 10, 11).* Every pnpm session
 runs its own `pnpm install` over the base; pnpm pre-stamping is **cut for pnpm**
-(it stays for npm/yarn). The session's install runs its approved builds into its
-upper (an unbuilt base is completed per session) and reconciles against the
-session's own lockfile. What req 1 asks of the base is narrow and exact:
+(it stays for npm/yarn). The session's install reconciles against the session's
+own lockfile. It was also supposed to run its approved builds into its upper, so
+that an unbuilt base is completed per session; **measured 2026-09-21, it does
+not** — see the paragraph above and FINDINGS.md. What req 1 asks of the base is
+narrow and exact:
 **mounting the base must not introduce a graph choice absent from the consuming
 session's own inputs.** Authentic `overrides`/`catalog:`/peer selections in a
 session's *own* committed lockfile are that session's choice, not a cache
@@ -883,6 +938,21 @@ present (measured), which is why such a repo's base comes from the
 orchestrator's own resolution or not at all (above). The container's own cache
 is private and ephemeral (req 5, req 6).
 
+**Verified at the source 2026-09-21.** pnpm keeps its resolution metadata under
+`XDG_CACHE_HOME/pnpm`, and nothing in `src/` sets `XDG_CACHE_HOME` for a session container
+(`buildEnv`, `container-lifecycle.ts`; the only other setter is `session-namer.ts:219`, an
+orchestrator-side opencode run, and `pnpm-base-builder.ts:251`, inside the builder sandbox).
+So it falls back to `$HOME/.cache/pnpm` with `HOME=/home/shipit` (`buildEnv`,
+`shared/agent-home.ts:4`) — a path **no** bind or volume targets: `buildMounts` mounts the
+workspace, `/credentials`, `/uploads`, `/persist`, `/session-state`, the plugin store,
+`/dep-cache`, `/workspace/.pnpm-store` and the overlay dep dirs, and nothing under
+`/home/shipit`. Under `readonlyRootfs` the home is a per-container **tmpfs**
+(`container-hardening.ts:readonlyRootfsTmpfs`), which is if anything more private; the
+entrypoint's only home links point into `/credentials`, itself per-session
+(`docker/session-worker/entrypoint.sh:174-182`), and `.cache` is not among them. So the
+metadata cache is private per session container and ephemeral in both modes, and no shared or
+seeded metadata cache exists.
+
 **A finding outside this issue's scope.** The docs/183 overlay base for
 npm/yarn dep dirs has the same positional-trust gap: it is seeded from a tar of
 an untrusted session's merged tree, `preUserInstall` is asserted by the
@@ -969,13 +1039,14 @@ For anyone re-running or extending the harnesses:
 | `src/server/orchestrator/pnpm-base-builder.ts` | `builderScript` (the two phases), `builderEnv` (the three `packageManager` switches and the emptied config), and `buildVerifiedPnpmBase`, which owns build admission (one per scope, `MAX_CONCURRENT_PNPM_BASE_BUILDS` across scopes) and publishes through `copySnapshotToBase` + `publishBase`. |
 | `src/server/shared/deps-hash.ts:21`, `:102` | pnpm's default hash inputs include `pnpm-workspace.yaml`; a custom `installInputs` replaces the list, so `resolveDepsHashInputs` adds it back for a pnpm repo when given the workspace dir. |
 | `src/server/orchestrator/overlay-session.ts` | `PNPM_VERIFIED_NAMESPACE`; `sessionPnpmStoreDir` — the per-session private store; `retiredSharedPnpmStoreRoot` — the tree the janitor ages out. |
-| `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `package-import-method=copy`, and `npm_config_cache` (section 1); `prepareOverlayDirs` (`:487`) creates only generation 0's lowerdir; `createContainer` retires the shared npm index. |
+| `src/server/orchestrator/container-lifecycle.ts` | `PNPM_STORE_CONTAINER_PATH` — `/workspace/.pnpm-store`, the one path every session's own store maps to; `ensurePnpmStoreDir` seals it 0700 to the session uid; `buildEnv` sets both store-path spellings, `npm_config_cache` (section 1), and the import method — the pre-11 spelling always, the pnpm ≥ 11 one only when `config.overlaySpecs` carries the verified namespace, because a mounted base is the one shape where the copy is both needed and free; `prepareOverlayDirs` (`:487`) creates only generation 0's lowerdir; `createContainer` retires the shared npm index. |
 | `src/server/session/dep-snapshot.ts`, `src/server/orchestrator/overlay-snapshot.ts` | The merged-tree tar and its pull — unchanged; untrusted, and admission no longer depends on it. |
 | `src/server/orchestrator/session-worker-uid.ts:124` | `shareOne` — group write on the shared surfaces (docs/270 req 9). |
 | `src/server/orchestrator/session-dir-factory.ts:58` | `createDepCacheDirHelper` — `/dep-cache` keyed per repo; the verifier's self-verifying tarball source. |
 | `src/server/shared/npm-cache.ts` | Section 1's whole mechanism: the per-session cache path, the `content-v2` link, and the retirement of the shared index. |
 | `src/server/session/session-worker.ts` | Calls `linkSessionNpmCache` before the listener opens, so no install, terminal or service can reach npm through an unlinked cache. |
 | `src/server/orchestrator/integration_tests/npm-cache-poisoning.test.ts` | The H1 attack and its control, against real npm and a local registry. |
+| `src/server/orchestrator/integration_tests/pnpm-store-isolation.test.ts` | H4 against real pnpm >= 11: the index key rename that survives `strictStorePkgContentCheck`, fired through a shared store (the control) and refused by two `sessionPnpmStoreDir` paths (the fix). Plus the base's mount shape — one shared lowerdir, per-session upper and work dirs, and no bind that exposes the base tree. |
 | `src/server/session/install-controller.ts` | The install path; also serves `GET /workspace/dep-snapshot`. |
 
 ## Related

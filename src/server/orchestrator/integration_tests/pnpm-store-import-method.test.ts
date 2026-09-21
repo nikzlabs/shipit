@@ -9,14 +9,19 @@
  * Every fix cell has a control that imports by hardlink and shows the write does propagate,
  * so a cell cannot pass because the attack was a no-op.
  *
- * It runs on **pnpm 10**, because that is the range the shipped setting reaches: pnpm moved
- * its config env prefix at 11 (measured 2026-09-20 — 10.28.2 reads `npm_config_*`, while
- * 11.22.0 and 12.5.1 read only `PNPM_CONFIG_*`), and both the import method and
- * `npm_config_store_dir` use the pre-11 spelling, so pnpm <= 10 is exactly the range that
- * shares a store. pnpm >= 11 keeps a private in-container store and stays on hardlinks until
- * section 5 (plan.md). The import method is taken from `buildEnv` verbatim, so the fix cells
- * fail if that setting is dropped or misspelled; the store is relocated by the harness, which
- * is the one part of the wiring it cannot take from the orchestrator.
+ * It runs on **pnpm 10**, one of the two ranges the shipped setting reaches: pnpm moved its
+ * config env prefix at 11 (measured 2026-09-20 — 10.28.2 reads `npm_config_*`, while 11.22.0
+ * and 12.5.1 read only `PNPM_CONFIG_*`), and `buildEnv` now sets both spellings, so a cell on
+ * either side of that split measures the same shipped setting. The import method is taken from
+ * `buildEnv` verbatim, so the fix cells fail if it is dropped or misspelled; the store is
+ * relocated by the harness, which is the one part of the wiring it cannot take from the
+ * orchestrator.
+ *
+ * Note what this file does NOT establish: that a ShipIt session could ever have been hardlinked
+ * to its store. It puts the store and the project on one mount, where pnpm's default hardlinks;
+ * a session container mounts the store separately, and `link()` refuses to cross a mount
+ * boundary, so the copy already happened there (docs/276 FINDINGS.md). These cells measure the
+ * pnpm behaviour the setting pins, not the container's marginal disk.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
