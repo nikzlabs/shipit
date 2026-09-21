@@ -65,9 +65,17 @@ export function resolveOverlayScope(
   };
 }
 
-// Only the orchestrator's verifying builder publishes into this namespace, so a pnpm session can
-// never be handed a base another session's install produced (docs/276 section 5).
-export const PNPM_VERIFIED_NAMESPACE = "pnpm-verified-v1";
+/**
+ * Only the orchestrator's verifying builder publishes into this namespace, so a pnpm session can
+ * never be handed a base another session's install produced (docs/276 section 5).
+ *
+ * The suffix is the eligibility contract's version, and bumping it is what retires every base
+ * decided under the old one: the scope hash changes, so no session resolves a `v<N-1>` pointer
+ * and the disk janitor reclaims those scopes as unreferenced. `v2` retires the bases published
+ * before install-time builds became ineligible — without it the repos planning#604 is about keep
+ * mounting the unbuilt base they already have, and the fix reaches only repos with no base yet.
+ */
+export const PNPM_VERIFIED_NAMESPACE = "pnpm-verified-v2";
 
 // The one dep dir the verified builder can fill: pnpm's install output is a single `node_modules`.
 export const PNPM_BASE_DEP_DIR = "node_modules";

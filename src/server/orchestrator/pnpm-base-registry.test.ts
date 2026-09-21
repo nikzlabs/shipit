@@ -10,12 +10,29 @@ import {
   tarballFileName,
   type FetchLike,
 } from "./pnpm-base-registry.js";
+import { makeNpmTarball } from "./pnpm-tarball-test-helpers.js";
 
 const REGISTRY = "https://registry.example.test/";
 const BUILDER = "http://127.0.0.1:4873/";
 
-function bytesFor(name: string): Buffer {
-  return Buffer.from(`tarball bytes for ${name}`);
+/**
+ * A real published tarball, not a stand-in: staging reads each package's own `package.json` for
+ * an install-time build, so bytes that are not an archive are correctly ineligible and would
+ * make every case here pass or fail for the wrong reason.
+ */
+const tarballs = new Map<string, Buffer>();
+function bytesFor(key: string): Buffer {
+  const cached = tarballs.get(key);
+  if (cached) return cached;
+  const at = key.lastIndexOf("@");
+  const built = makeNpmTarball({ manifest: { name: key.slice(0, at), version: key.slice(at + 1) } });
+  tarballs.set(key, built);
+  return built;
+}
+
+/** Replaces a package's published tarball, so all three digests still agree on the new bytes. */
+function publishTarball(key: string, tarball: Buffer): void {
+  tarballs.set(key, tarball);
 }
 
 interface FakeRegistry {
@@ -73,6 +90,7 @@ describe("stageVerifiedRegistry", () => {
   let destDir: string;
   beforeEach(() => {
     destDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-reg-"));
+    tarballs.clear();
   });
   afterEach(() => fs.rmSync(destDir, { recursive: true, force: true }));
 
@@ -223,7 +241,7 @@ describe("stageVerifiedRegistry", () => {
       fetchImpl: reg.fetchImpl,
     });
     expect(result).toMatchObject({ ok: false, failedPackage: "left-pad@1.3.0" });
-    expect(result.ok ? "" : result.detail).toContain("not the pinned");
+    expect("detail" in result ? result.detail : "").toContain("not the pinned");
   });
 
   it("names the first failing package and stops, rather than reporting the last", async () => {
@@ -251,7 +269,7 @@ describe("stageVerifiedRegistry", () => {
       maxTarballBytes: 4,
     });
     expect(result).toMatchObject({ ok: false, failedPackage: "left-pad@1.3.0" });
-    expect(result.ok ? "" : result.detail).toContain("per-package cap");
+    expect("detail" in result ? result.detail : "").toContain("per-package cap");
   });
 
   it.each([
@@ -282,6 +300,80 @@ describe("stageVerifiedRegistry", () => {
       maxTotalBytes: 4,
     });
     expect(result).toMatchObject({ ok: false, failedPackage: "left-pad@1.3.0" });
+  });
+
+  it("gives a package with an install-time script no base, naming it", async () => {
+    // planning#604: the builder installs with `--ignore-scripts`, and the session's own install
+    // over the resulting base then reports nothing pending, so an approved build runs nowhere.
+    const reg = fakeRegistry([LEFT_PAD, SCOPED]);
+    publishTarball(
+      "@types/node@20.11.0",
+      makeNpmTarball({
+        manifest: { name: "@types/node", version: "20.11.0", scripts: { postinstall: "node b.js" } },
+      }),
+    );
+    const result = await stageVerifiedRegistry({
+      packages: [requestFor(LEFT_PAD), requestFor(SCOPED)],
+      destDir,
+      registryUrl: REGISTRY,
+      builderRegistryUrl: BUILDER,
+      fetchImpl: reg.fetchImpl,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      ineligible: { eligible: false, code: "install-script" },
+    });
+    expect("ineligible" in result ? result.ineligible.detail : "").toContain(
+      "@types/node@20.11.0",
+    );
+    expect(fs.existsSync(path.join(destDir, "index.json"))).toBe(false);
+  });
+
+  it("gives a package carrying only a binding.gyp no base either", async () => {
+    const reg = fakeRegistry([LEFT_PAD]);
+    publishTarball(
+      "left-pad@1.3.0",
+      makeNpmTarball({
+        manifest: { name: "left-pad", version: "1.3.0" },
+        files: [{ path: "binding.gyp", content: "{}" }],
+      }),
+    );
+    const result = await stageVerifiedRegistry({
+      packages: [requestFor(LEFT_PAD)],
+      destDir,
+      registryUrl: REGISTRY,
+      builderRegistryUrl: BUILDER,
+      fetchImpl: reg.fetchImpl,
+    });
+    expect(result).toMatchObject({ ok: false, ineligible: { code: "install-script" } });
+  });
+
+  it("gives a tarball it cannot read no base, rather than assuming it scriptless", async () => {
+    publishTarball("left-pad@1.3.0", Buffer.from("not an archive"));
+    const reg = fakeRegistry([LEFT_PAD]);
+    const result = await stageVerifiedRegistry({
+      packages: [requestFor(LEFT_PAD)],
+      destDir,
+      registryUrl: REGISTRY,
+      builderRegistryUrl: BUILDER,
+      fetchImpl: reg.fetchImpl,
+    });
+    expect(result).toMatchObject({ ok: false, ineligible: { code: "unreadable-input" } });
+  });
+
+  it("reports a digest mismatch as a verification failure, never as ineligible", async () => {
+    // The two outcomes differ for the user: unverified bytes are a warning, no base is routine.
+    const reg = fakeRegistry([LEFT_PAD]);
+    reg.publishedIntegrity.set("left-pad@1.3.0", sha512Integrity(Buffer.from("other bytes")));
+    const result = await stageVerifiedRegistry({
+      packages: [requestFor(LEFT_PAD)],
+      destDir,
+      registryUrl: REGISTRY,
+      builderRegistryUrl: BUILDER,
+      fetchImpl: reg.fetchImpl,
+    });
+    expect(result).toMatchObject({ ok: false, failedPackage: "left-pad@1.3.0" });
+    expect("ineligible" in result).toBe(false);
   });
 
   it("fetches each package's packument once however many versions it pins", async () => {

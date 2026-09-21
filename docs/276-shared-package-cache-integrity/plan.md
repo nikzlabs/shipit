@@ -519,23 +519,41 @@ its own install over it** (no pnpm pre-stamp). That install is where the session
 own graph reconciles, so nothing carried decides for the session. It is a
 near-no-op for a matching *scriptless* lockfile (8 KB measured).
 
-**Measured 2026-09-21, and the "builds run there" half of that claim does NOT
-hold** ([`build-cost-spike.sh`](./build-cost-spike.sh), FINDINGS.md). A session
-that mounts the base and approves a pending build does **not** get it built: its
-install prints "Lockfile is up to date, resolution step is skipped", exits 0 and
-leaves `pendingBuilds` unprocessed — 8 KB upper, 286 ms, silently unbuilt. The
-control is the same project and the same approval file with **no** base, which
-does build. The two repairs also fail as the session's own uid, because copy-up
-preserves the lower's owner and a session may rewrite a base file's contents but
-not `chmod` it: `pnpm rebuild` and `pnpm install --force` both exit 1 with
-`Operation not permitted`. So a repo with an approved native build gets a working
-tree from its first private install — the one that triggers the publish — and a
-silently unbuilt one from every container start after the base exists. The C2/C3
-cells this design leaned on used a base from an **ordinary** install, not the
-builder's `--ignore-scripts` output; FINDINGS.md's own limits section had flagged
-that gap. **Open, and a design decision**: exclude a repo with pending builds from
-eligibility, or have the base carry built output, or give the session a repair
-that works under its own uid.
+**It is NOT where builds run** ([`build-cost-spike.sh`](./build-cost-spike.sh),
+FINDINGS.md, measured 2026-09-21). A session that mounts the base and approves a
+pending build does **not** get it built: its install prints "Lockfile is up to
+date, resolution step is skipped", exits 0 and leaves `pendingBuilds`
+unprocessed — 8 KB upper, 286 ms, silently unbuilt. The control is the same
+project and the same approval file with **no** base, which does build. The two
+repairs also fail as the session's own uid, because copy-up preserves the lower's
+owner and a session may rewrite a base file's contents but not `chmod` it:
+`pnpm rebuild` and `pnpm install --force` both exit 1 with `Operation not
+permitted`. So a repo with an approved native build got a working tree from its
+first private install — the one that triggers the publish — and a silently
+unbuilt one from every container start after the base existed. The C2/C3 cells
+this design leaned on used a base from an **ordinary** install, not the builder's
+`--ignore-scripts` output; FINDINGS.md's own limits section had flagged that gap.
+
+**Resolved (planning#604): a candidate whose packages carry an install-time
+script is ineligible** (below) — no base, plain private install, the behaviour
+those repos had before a base existed, which is what restores req 9. The other
+two candidates are rejected: a base carrying built output contradicts the
+builder's no-script posture, and a session-uid repair is the shape the later
+step may take, not something this gate can stand on. So reqs 2, 10 and 13 stay
+unmet for those repos until the H2/H4 "sharing for ineligible repos" item picks
+one (planning#414).
+
+**That exclusion is wide, and it is deliberately not narrowed to builds the repo
+APPROVES.** Measured on ShipIt's own tree 2026-09-21: 6 of 686 installed
+packages carry a trigger, and `esbuild` — a `postinstall` — is one of them, so
+anything reaching it through Vite is excluded, alongside `better-sqlite3`,
+`node-pty`, `ssh2`, `cpu-features` and `protobufjs`. Gating on the approval
+instead would keep most of those repos eligible, and would reopen the defect for
+the session that approves a build the default-branch commit did not: approvals
+are a per-commit choice, the base is built from one commit, and a session on
+another commit still mounts it. So the rule reads the package, not the approval.
+This is what makes finishing "sharing for ineligible repos" urgent rather than
+optional — as it stands, most JavaScript repos get no base at all.
 
 *Inputs and verification (req 1, 3, 6).* The base is rebuilt from the repo's
 **committed manifests plus lockfile** at the default-branch commit — package
@@ -550,16 +568,29 @@ orchestrator resolves `<name>@<version>` against **its own** configured registry
 (never a URL taken from the lockfile) and requires that packument's
 `dist.integrity` to equal the lockfile's `resolution.integrity`; a mismatch is
 the H1 shape and fails. **Eligibility is one decision over that staged input
-set**, taken before any fetch; an ineligible repo gets no base and a plain
-private install. Not eligible in the first cut: `git` entries (the builder has
+set**; an ineligible repo gets no base and a plain private install. Most of it
+is taken before any fetch, over the staged config alone; the install-time-build
+rule below is the one part that needs package CONTENT, so it is taken in the
+fetch phase, at the first offending package. Not eligible in the first cut: `git` entries (the builder has
 no source handling); `file:`, `link:`, `workspace:` entries and
 `patchedDependencies` — verifiable in principle, since the linked content and
 the patch bytes are in the immutable snapshot, but their reconciliation under
 the frozen builder is unmeasured; `.pnpmfile.mjs` and `configDependencies`,
 whose suppression by `--ignore-pnpmfile` is unmeasured (only `.cjs` was
 measured); a scoped registry with no orchestrator-authorized scope→registry
-mapping; and an output layout that escapes one self-contained `node_modules`
-(`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`). Admitted: an
+mapping; an output layout that escapes one self-contained `node_modules`
+(`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`); and **any
+dependency that builds at install time** — the fail-safe above. That last one is
+read from the staged, digest-verified tarballs rather than from the lockfile,
+which since v9 no longer records `requiresBuild`, and the trigger set is pnpm's
+own `pkgRequiresBuild`: a truthy `preinstall`/`install`/`postinstall` script, a
+`binding.gyp` at the package root, or a file under the package's `.hooks/`. It
+is taken in the fetch phase, at the first offending package, because that is
+where the verified bytes are and refusing there is what stops a build-bearing
+repo re-downloading its whole tree on every trigger. The root project's own
+scripts are irrelevant — the builder never runs them and the session runs them
+itself. A tarball the scan cannot read is refused the same way: one it cannot
+prove has no build must not become one it assumed had none. Admitted: an
 `npm:` alias (the resolved target's digest is what is verified); a `.pnpmfile.cjs`
 (its hook is suppressed, measured — if the frozen install then fails to
 reconcile, the build yields no base, decided by the build rather than by a
@@ -593,9 +624,10 @@ another version). pnpm then
 generates the tree, every symlink, every `.bin` shim
 and the state files from verified inputs, so the graph, directory ids (pnpm's
 own encoding), links, shims and state need no second implementation and carry
-nothing from the session. Packages with build scripts land **unbuilt**; each
-session builds the ones it approves in its own upper (`pnpm-workspace.yaml`
-`allowBuilds`, keyed by package id — FINDINGS.md cells C2/C3). `storeDir` is the
+nothing from the session. `--ignore-scripts` would leave a package with a build
+script **unbuilt**, and the session cannot build it afterwards (planning#604), so
+no such candidate reaches the builder at all — eligibility refuses it first, and
+the flag is the layer behind that rule rather than the rule itself. `storeDir` is the
 fixed container path, so a session's private store at `/workspace/.pnpm-store`
 matches (FINDINGS.md). The finished tree is materialized as `g<N+1>` through
 `copySnapshotToBase` (whose hardlink dedup against `g<N>` is a **disk**
@@ -725,14 +757,19 @@ session, because package-manager detection reads the mutable checkout and must n
 what decides whether a base is reapable.
 
 *Provenance — a verified namespace.* Verified generations live in their **own
-scope namespace**: one fixed discriminator (`pnpm-verified-v1`) added to
+scope namespace**: one discriminator (`pnpm-verified-v<N>`) added to
 `overlayScopeHash` (`overlay-volume.ts:23`, which today hashes repo, runtime
 and dep dir and carries no publisher identity). Only the verifying publisher
 writes there, and `prepareOverlaySpecs` mounts a pnpm session only from it,
 never falling back to an unverified base. The namespace is load-bearing and
 stays: a per-session install does not authenticate an arbitrary existing tree
 (a no-op leaves a poisoned base's missing shims unrepaired), so provenance is
-needed for correctness as well as security. The pointer carries **no**
+needed for correctness as well as security. **Its version suffix is also the
+eligibility contract's**: a published pointer is never invalidated in place, so
+bumping the suffix is what retires every base decided under an older contract —
+the scope hash changes, no session resolves the old pointer, and the janitor
+reclaims those scopes as unreferenced. `v2` retired the bases published before
+install-time builds became ineligible (planning#604). The pointer carries **no**
 `admission` fields — the discriminator and the source commit already name the
 verifier and the committed inputs. Package-manager detection reads the writable
 checkout (`isPnpmRepo`, `overlay-session.ts:343`: `package.json`
@@ -1033,7 +1070,7 @@ For anyone re-running or extending the harnesses:
 | `src/server/orchestrator/overlay-volume.ts` | `overlayScopeHash` — repo + runtime + dep dir + an optional **namespace**, the verified-base discriminator; omitting it reproduces the pre-namespace hash, so existing npm/yarn bases stay addressable. Also the Docker `overlay` volume (`:196`), now also for pnpm's `node_modules`. |
 | `src/server/orchestrator/container-overlay-provisioner.ts` | `prepareOverlaySpecs` (`:67`) — the pnpm mount gate, the no-lockfile gate (`:98`) and the claim, all under the scope lock; `selectGeneration` (`:159`) — a published generation whose directory is gone selects 0; `preparePnpmStore` — the per-session private store. |
 | `src/server/orchestrator/pnpm-lockfile.ts` | What the builder reads out of `pnpm-lock.yaml`: which packages it pins, the digest it pins them to, and the entries that are not plain registry downloads. Classifies on the `resolution` SHAPE, so an unfamiliar future form stays ineligible rather than being silently admitted. |
-| `src/server/orchestrator/pnpm-base-inputs.ts` | `stagePnpmInputs` — the immutable snapshot, read out of one commit through git and never out of the session's checkout; `decidePnpmBaseEligibility` — the ONE eligibility decision, taken before any fetch, including the committed `packageManager` store-version gate. |
+| `src/server/orchestrator/pnpm-base-inputs.ts` | `stagePnpmInputs` — the immutable snapshot, read out of one commit through git and never out of the session's checkout; `decidePnpmBaseEligibility` — the config half of the ONE eligibility decision, taken before any fetch, including the committed `packageManager` store-version gate. Its content half is the install-time-build rule in `pnpm-install-scripts.ts`, taken in the fetch phase. |
 | `src/server/shared/pnpm-repo.ts` | `MIN_VERIFIED_BASE_PNPM_MAJOR` and the measurement behind it — pnpm records its resolved `<storeDir>/v<N>` in `.modules.yaml`, and a consumer on another `N` recreates the tree instead of reading it. Asked at both ends: the publisher's eligibility and `prepareOverlaySpecs`. |
 | `src/server/orchestrator/pnpm-base-registry.ts` | `stageVerifiedRegistry` — resolves `<name>@<version>` against the orchestrator's own registry, admits only when the lockfile digest, the packument's `dist.integrity` and the downloaded bytes' sha512 all agree, and names the first failing package. |
 | `src/server/orchestrator/pnpm-base-builder.ts` | `builderScript` (the two phases), `builderEnv` (the three `packageManager` switches and the emptied config), and `buildVerifiedPnpmBase`, which owns build admission (one per scope, `MAX_CONCURRENT_PNPM_BASE_BUILDS` across scopes) and publishes through `copySnapshotToBase` + `publishBase`. |
