@@ -39,6 +39,49 @@ function hasVisibleDirectChildren(sessionManager: SessionManager, sessionId: str
   );
 }
 
+/**
+ * Does this child still hold a slot against the per-parent cap?
+ *
+ * `isResolvedForGrouping` decides "finished", the same predicate
+ * `sendChildMessage` refuses on, so the word means one thing across the feature.
+ * Two of its inputs are supplied more conservatively here than the sidebar needs:
+ *
+ * - **Busy, not running.** `agentBusy` (plus a non-empty queue) is what the idle
+ *   enforcer refuses to reclaim on, so a child that costs a container and a child
+ *   that costs a slot are the same child. `running` alone misses background tasks,
+ *   brokered consults and post-turn work.
+ * - **A live brood, not a visible one.** `hasVisibleDirectChildren` counts any
+ *   non-archived descendant, which would pin a merged coordinator open forever on
+ *   its own merged grandchildren — the exact permanent-slot shape this cap is
+ *   being fixed for. The walk recurses on liveness instead.
+ *
+ * The descendant query runs only for a child that is otherwise finished: an
+ * unfinished child holds its slot whatever its brood looks like.
+ */
+function isChildLive(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  child: SessionInfo,
+  seen: Set<string>,
+): boolean {
+  if (seen.has(child.id)) return false;
+  seen.add(child.id);
+  const runner = runnerRegistry.get(child.id);
+  const busy = runner?.agentBusy === true || (runner?.queueLength ?? 0) > 0;
+  if (!isResolvedForGrouping(child, { hasVisibleBrood: false, isRunning: busy })) return true;
+  return sessionManager.findChildren(child.id)
+    .some((grandchild) => isChildLive(sessionManager, runnerRegistry, grandchild, seen));
+}
+
+export function countLiveChildren(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  children: readonly SessionInfo[],
+): number {
+  const seen = new Set<string>();
+  return children.filter((child) => isChildLive(sessionManager, runnerRegistry, child, seen)).length;
+}
+
 function readPositiveIntEnv(name: string): number | undefined {
   const raw = process.env[name];
   if (!raw) return undefined;
@@ -50,6 +93,11 @@ function readPositiveIntEnv(name: string): number | undefined {
   return parsed;
 }
 
+// Bounds an ACCIDENTAL spawn loop across turns, which the per-turn cap cannot see.
+// Not host admission control and not a defence against a determined agent: there is
+// no global container ceiling (`app-lifecycle.ts:createContainerForRunner` gates only
+// on the per-session OOM breaker), detached spawns are exempt, a grandchild gets a
+// fresh allowance, and `gh pr close` lets an agent resolve its own children.
 export const DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS =
   readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_PARENT") ?? 16;
 
@@ -217,10 +265,13 @@ export async function spawnChildSession(
   const existingChildren = sessionManager.findChildren(parentSessionId);
   if (!opts.detached) {
     const maxActive = opts.maxActiveSpawnedSessions ?? DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS;
-    if (existingChildren.length >= maxActive) {
+    const liveChildren = countLiveChildren(sessionManager, runnerRegistry, existingChildren);
+    if (liveChildren >= maxActive) {
       throw new ServiceError(
         429,
-        `This session already has ${existingChildren.length} spawned children (max ${maxActive}). Archive one before spawning another.`,
+        `This session already has ${liveChildren} unfinished spawned children (max ${maxActive}). ` +
+          "A child stops counting once its pull request merges or closes. " +
+          "To free a slot sooner, ask the user to archive a finished child from the sidebar.",
       );
     }
   }

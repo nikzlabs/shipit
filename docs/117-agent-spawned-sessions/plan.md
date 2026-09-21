@@ -19,10 +19,10 @@ Phases 1, 2, and 3 are live as of this revision. What works today:
 - `shipit session list` / `shipit session view <id>` return JSON or plain
   text. The orchestrator denies `view` for sessions the calling parent
   didn't spawn (404, no leakage of "wrong parent" vs "not found").
-- Per-turn (`spawnedByTurn`) and per-parent (active children) quotas are
+- Per-turn (`spawnedByTurn`) and per-parent (unfinished children) quotas are
   enforced fail-closed; both surface as HTTP 429. The defaults
   (`MAX_SPAWNED_SESSIONS_PER_PARENT=16`,
-  `MAX_SPAWNED_SESSIONS_PER_TURN=4`) are overridable via env vars.
+  `MAX_SPAWNED_SESSIONS_PER_TURN=6`) are overridable via env vars.
 - **(Phase 2.)** The running agent gets per-agent guidance on when to reach
   for `shipit session create`: Claude is told to prefer `Task` for in-turn
   fan-out and reserve the shim for user-prompted parallel work; Codex is
@@ -297,7 +297,7 @@ Errors:
 
 - `400` — empty/oversize prompt, parent missing workspace, parent archived, branch checkout failed.
 - `404` — parent not found.
-- `429` — per-turn cap (default 6 when `spawnedByTurn` is set) or per-parent active cap (default 16) exceeded. Both fail-closed.
+- `429` — per-turn cap (default 6 when `spawnedByTurn` is set) or per-parent unfinished-children cap (default 16) exceeded. Both fail-closed.
 - `500` — disk/clone failure, unexpected exception.
 
 #### Rejected subcommands and flags
@@ -435,7 +435,7 @@ reads/mutations.
 
 1. **Validate** the parent — must exist, not archived, must have a workspace, and must be backed by a registered remote URL (`parent.remoteUrl` set, repo in `repoStore`, status `"ready"`). Spawn refuses (HTTP 400) when the parent has no `remoteUrl`; integration tests must register a repo and stamp `setRemoteUrl` on the parent before calling spawn.
 2. **Quota check** — fail-closed with HTTP 429:
-   - Per-parent active children: default `16`, exposed as `DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS` and overridable per-call via `maxActiveSpawnedSessions`.
+   - Per-parent **unfinished** children: default `16`, exposed as `DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS` and overridable per-call via `maxActiveSpawnedSessions`. Counted by `countLiveChildren()`, which drops any child `isResolvedForGrouping()` calls finished — see *Resource caps* below for why the count is scoped that way.
    - Per-turn (only counted when `spawnedByTurn` is supplied): default `4`, exposed as `DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN` and overridable per-call via `maxSpawnedSessionsPerTurn`.
 
    Neither cap reads from `shipit.yaml` today — the constants live in `services/child-sessions.ts`. Self-hosters can patch the constants; a future env-var override (`MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`) is tracked in the checklist.
@@ -494,7 +494,7 @@ The trust boundary that matters: **the worker's `/agent-ops/session/*` allowlist
 | Agent spawns a session against a different user's repo | The orchestrator route requires the parent session to be the same as the worker's bound session ID. Cross-tenant routing is impossible. |
 | Agent reads or writes other sessions' files | Spawned sessions get their own container and workspace. The agent has no path to a sibling's filesystem from within its container. |
 | Agent escalates to the orchestrator's full session API | Worker only exposes `/agent-ops/session/{create,list,view}` today (Phase 3 adds `{message,wait}`). Generic session CRUD is not reachable. |
-| Agent loops creating sessions | Per-turn quota (`maxSpawnedSessionsPerTurn = 6`) + per-parent total cap (`maxActiveSpawnedSessions = 16`). Both fail-closed. **Neither bounds a determined agent** — there is no spawn-depth limit, so nested spawns route around both (see the quota note below). They bound accidental loops, not adversarial ones. |
+| Agent loops creating sessions | Per-turn quota (`maxSpawnedSessionsPerTurn = 6`) + per-parent unfinished-children cap (`maxActiveSpawnedSessions = 16`). Both fail-closed. An *accidental* loop's children are unfinished by construction, so the narrowed count in *Resource caps* costs this row nothing. **Neither bounds a determined agent** — there is no spawn-depth limit, so nested spawns route around both, and `gh pr close` is agent-reachable (`gh.ts` → `api-routes-github.ts` → the poller's `markClosed`), so an agent can resolve its own children and replenish slots across turns. They bound accidental loops, not adversarial ones. |
 | Agent injects credentials into a child session | Children inherit credentials from the orchestrator's `CredentialStore`, not from agent input. The `prompt` field is just a string sent as a user message. |
 | Agent spawns a session and uses it as a backdoor to mutate the parent's repo | Children push to their own branch, never to the parent's. PR creation goes through the same `gh` shim + auth as anything else. |
 | Agent fans out work to many sessions to avoid the parent's plan-mode constraints | If the child's agent supports permission modes (Claude does; Codex doesn't), it inherits the parent's mode by default. A future flag could allow widening; for v1 it's sticky. When the parent is Codex (no permission modes), this row is moot — there's no mode to escape. |
@@ -560,7 +560,18 @@ shipit session view ses_abc123 --json
 
 ### Resource caps
 
-A spawned session is just a regular session — it gets its own container with the same per-session resource limits as the parent. Spawning N children means N additional containers. The per-parent quota (default 16) prevents accidental container blow-up; the values currently live as `DEFAULT_MAX_*` constants in `services/child-sessions.ts`. Self-hosters can patch the constants; surfacing them as env-var overrides (`MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`) is tracked in the Phase 3 checklist.
+A spawned session is just a regular session — it gets its own container with the same per-session resource limits as the parent. Spawning N children means N additional containers. The values live as `DEFAULT_MAX_*` constants in `services/child-sessions.ts`, overridable via `MAX_SPAWNED_SESSIONS_PER_PARENT` / `MAX_SPAWNED_SESSIONS_PER_TURN`.
+
+**What the per-parent cap is for, and what it counts.** It bounds an *accidental* spawn loop **across turns** — the one shape the per-turn cap cannot see. It is deliberately not host admission control, and never was: there is no global container ceiling (verified at `app-lifecycle.ts:createContainerForRunner`, which gates only on the per-session OOM breaker), `--detached` spawns are exempt from it entirely (docs/205), and a grandchild starts with a fresh allowance. Sidebar clutter is not its job either — the sidebar cap keeps only the five most recently resolved sessions per repo.
+
+So it counts **unfinished** children, not every non-archived one: `countLiveChildren()` drops a child that `isResolvedForGrouping()` calls finished, the same predicate `sendChildMessage` refuses on. An accidental loop's children are unfinished by construction, so the safeguard is untouched; a merged child frees its slot by itself. A child still counts while pinned, while its workspace is blocked, and when it never opened a PR — the count fails closed everywhere except genuinely shipped work.
+
+Two of the predicate's inputs are supplied more conservatively than the sidebar needs, and both were found by review:
+
+- **Busy, not running.** The liveness read is `agentBusy || queueLength > 0`, which is what `idle-enforcer.ts` refuses to reclaim on. `running` alone misses background tasks, brokered `shipit agent run` consults and post-turn work, so a merged child could have freed its slot while its container was still unreclaimable.
+- **A live brood, not a visible one.** `hasVisibleDirectChildren` (which `sendChildMessage` uses) counts *any* non-archived descendant. Passing that here would pin a merged coordinator open forever on its own merged grandchildren — the incident again, one level down. `countLiveChildren` recurses on liveness instead, with a visited set against a cyclic parent link, and queries descendants only for a child that is otherwise finished.
+
+Counting every non-archived child was the original shape and it made a finished child a permanent slot cost. An orchestration with all 16 children merged, idle and container-less was refused a 17th, and the parent could not clear it: the agent-facing archive route was removed on purpose (*The parent never archives a child*), so only the user could unblock it from the sidebar.
 
 The existing idle-container cleanup (doc 063) applies normally — spawned sessions that go idle for the configured period get their containers stopped, just like any other session.
 
