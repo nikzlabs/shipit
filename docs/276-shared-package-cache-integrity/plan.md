@@ -576,9 +576,8 @@ set**; an ineligible repo gets no base and a plain private install. Most of it
 is taken before any fetch, over the staged config alone; the install-time-build
 rule below is the one part that needs package CONTENT, so it is taken in the
 fetch phase, at the first offending package. Not eligible in the first cut: `git` entries (the builder has
-no source handling); `file:`, `link:`, `workspace:` entries — verifiable in
-principle, since the linked content is in the immutable snapshot, but their
-reconciliation under the frozen builder is unmeasured; `configDependencies`, not because its hook
+no source handling); a **`file:`** entry, and the `injected` spelling of a `workspace:` one,
+which pnpm resolves as `file:` too — the rule below; `configDependencies`, not because its hook
 can run — `--ignore-pnpmfile` suppresses that too, measured — but because a
 config dependency, digest and all, is resolved by pnpm through a path this
 builder neither parses nor stages, so admitting it would put packages in the
@@ -595,7 +594,44 @@ where the verified bytes are and refusing there is what stops a build-bearing
 repo re-downloading its whole tree on every trigger. The root project's own
 scripts are irrelevant — the builder never runs them and the session runs them
 itself. A tarball the scan cannot read is refused the same way: one it cannot
-prove has no build must not become one it assumed had none. Admitted: an
+prove has no build must not become one it assumed had none.
+
+**Local dependencies split on whether pnpm COPIES the target, not on whether the target is in the
+repo** (planning#414, measured 2026-09-21 — FINDINGS.md, `local-specifier-spike.sh` PASS=31, plus
+a workspace cell on the real pipeline). `workspace:` and `link:` both resolve to `link:<p>` and
+materialize as **one relative symlink**; the builder stages manifests and not source, so nothing
+of the target crosses into the base, and the link is followed in the **consuming session's own
+writable checkout** — which makes an agent's edit inside a workspace package visible at once and
+private to that session (req 11), where a copy would not be. So a `link:` resolution whose path,
+taken against the importer that declares it, stays inside the repository is **admitted**;
+`file:` — which is also what an **injected** `workspace:` dependency resolves to, so the one
+refusal covers both — is not, because the manifests-only builder then publishes a **truncated**
+package at rc=0 with no warning. Three things the admission forces: an escaping or absolute
+target is refused, naming it; every **importer directory** must stay inside the repository, since
+`pnpm-workspace.yaml` may name `packages: ['../sibling/*']` and pnpm accepts it; and a lockfile
+written with **`excludeLinksFromLockfile`** is refused, because it records no trace of its
+`link:` edges while the builder still writes them into the base — the lockfile's own `settings:`
+block is what decides, since a config disagreeing with it fails a frozen install in both
+directions. The `snapshots:` loop takes the same split rather than a blanket refusal, because a
+REGISTRY package can carry a link edge: a workspace member satisfying a registry package's peer
+gives `react-dom@18.2.0(react@packages+react)` a `react: link:packages/react` edge, and refusing
+the form outright would take the base off any monorepo with a member in a peer position. A
+snapshot target is contained against the **project root** — `from` is a package key, not a
+directory — and pnpm keeps it root-relative even when the importer that pulled the package in is
+nested. Containment throughout is LEXICAL: it says what the link resolves to is decided inside a
+tree the consuming session owns, not that the resolution stays on disk inside the checkout, which
+a committed `vendor -> ../outside` defeats — the repo's own trust boundary, reached identically by
+a session's own install with no base. A workspace member's own
+`packages/*/node_modules` is **not** in the base — the builder publishes `projectDir/node_modules`
+alone — and the session's install recreates it in the writable checkout as symlinks into the
+base's virtual store, importing no content; its `.bin` shims chmod targets that resolve back into
+that same virtual store, which `resolvePnpmBinSeedSet` already seeds. That consumer half is
+measured on a real overlay under distinct uids (`workspace-base-host-spike.sh`, PASS=21, with an
+unseeded control that EPERMs): the rebuild lands in the session's own checkout owned by the
+session, `pnpm add` works in the root and in a member, an edit inside a member is visible at once
+and stays per session, and the base is byte-unchanged.
+
+Admitted: an
 `npm:` alias (the resolved target's digest is what is verified);
 `patchedDependencies`, verified as **tarball digest plus patch hash** — pnpm
 records the patch's sha256 (over its text with CRLF normalized to LF) in the
@@ -802,7 +838,10 @@ eligibility contract's**: a published pointer is never invalidated in place, so
 bumping the suffix is what retires every base decided under an older contract —
 the scope hash changes, no session resolves the old pointer, and the janitor
 reclaims those scopes as unreferenced. `v2` retired the bases published before
-install-time builds became ineligible (planning#604). The pointer carries **no**
+install-time builds became ineligible (planning#604); `v3` those decided before
+local links were classified (planning#414) — that admission also NARROWED the
+contract, and a repo setting `excludeLinksFromLockfile` already holds a `v2` base
+carrying a link edge the decision never saw. The pointer carries **no**
 `admission` fields — the discriminator and the source commit already name the
 verifier and the committed inputs. Package-manager detection reads the writable
 checkout (`isPnpmRepo`, `overlay-session.ts:343`: `package.json`

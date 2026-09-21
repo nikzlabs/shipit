@@ -54,6 +54,13 @@ export interface PnpmLockPatch {
 
 export interface ParsedPnpmLock {
   lockfileVersion: string;
+  /**
+   * The `settings:` block, which records the configuration the lockfile was written under. It is
+   * authoritative rather than advisory: a config disagreeing with it fails a `--frozen-lockfile`
+   * install in BOTH directions with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` (measured 2026-09-21 on
+   * 12.5.1), so what it records is what the builder's frozen install will run under.
+   */
+  settings: Record<string, unknown>;
   packages: PnpmLockPackage[];
   importers: PnpmImporterSpecifier[];
   /** `patchedDependencies`, which is what the frozen install reconciles the committed patches against. */
@@ -193,6 +200,7 @@ export function parsePnpmLock(text: string): ParsedPnpmLock {
 
   return {
     lockfileVersion,
+    settings: isRecord(doc.settings) ? doc.settings : {},
     packages,
     importers,
     patchedDependencies: patched,

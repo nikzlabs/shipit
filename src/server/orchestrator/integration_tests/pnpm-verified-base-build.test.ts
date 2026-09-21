@@ -46,6 +46,20 @@ import {
 } from "../pnpm-base-registry.js";
 
 const run = promisify(execFile);
+
+/** Regular files under a directory tree — the store's own empty bucket skeleton is not content. */
+function filesUnder(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, rel: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const next = path.join(rel, entry.name);
+      if (entry.isDirectory()) walk(path.join(dir, entry.name), next);
+      else out.push(next);
+    }
+  };
+  try { walk(root, ""); } catch { /* absent */ }
+  return out;
+}
 const PNPM_TIMEOUT_MS = 300_000;
 const LEAF = "shipit-base-leaf";
 const ROOT = "shipit-base-root";
@@ -250,7 +264,7 @@ describe.skipIf(pnpmCmd === null)("docs/276 section 5 — verified-base builder"
   let rootManifest: Record<string, unknown>;
 
   beforeAll(async () => {
-    for (let i = 0; i < 8; i++) ports.push(await freePort());
+    for (let i = 0; i < 10; i++) ports.push(await freePort());
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-vb-"));
     registryDir = path.join(tmp, "registry");
     projectDir = path.join(tmp, "project");
@@ -742,5 +756,158 @@ snapshots:
       { pendingBuilds: string[] };
     expect(raw.pendingBuilds).toContain(".");
     expect(readPendingBuilds(modules, ["."])).toEqual({ kind: "none" });
+  }, PNPM_TIMEOUT_MS);
+
+  /**
+   * A `workspace:` dependency, end to end on the real pipeline (planning#414).
+   *
+   * Two facts the admission rests on, neither of them assertable off the eligibility decision:
+   * the builder stages MANIFESTS, so a workspace member's source never reaches it, and the
+   * builder publishes `projectDir/node_modules` ALONE, so a member's own `node_modules` is not
+   * in the base. This builds a workspace base from manifests only and then consumes it from a
+   * full checkout with the member trees absent — the shape a real session starts in.
+   */
+  function writeWorkspaceProject(dir: string, opts: { memberSource: boolean }): void {
+    const member = path.join(dir, "packages", "member");
+    fs.mkdirSync(member, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({
+        name: "app",
+        version: "1.0.0",
+        private: true,
+        dependencies: { [ROOT]: VERSION, member: "workspace:*" },
+      }),
+    );
+    fs.writeFileSync(path.join(dir, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    fs.writeFileSync(
+      path.join(member, "package.json"),
+      JSON.stringify({
+        name: "member",
+        version: "1.0.0",
+        main: "index.js",
+        dependencies: { [LEAF]: VERSION },
+      }),
+    );
+    // Only the consumer has it. Its absence from the builder's input is the point: if the base
+    // ever carried member CONTENT, this file would be how the cell noticed.
+    if (opts.memberSource) {
+      fs.writeFileSync(path.join(member, "index.js"), "module.exports = 'member-source';\n");
+    }
+    fs.writeFileSync(
+      path.join(dir, "pnpm-lock.yaml"),
+      `lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    dependencies:
+      ${ROOT}:
+        specifier: ${VERSION}
+        version: ${VERSION}
+      member:
+        specifier: workspace:*
+        version: link:packages/member
+
+  packages/member:
+    dependencies:
+      ${LEAF}:
+        specifier: ${VERSION}
+        version: ${VERSION}
+
+packages:
+
+  ${ROOT}@${VERSION}:
+    resolution: {integrity: ${sha512Integrity(tarballs.get(`${ROOT}@${VERSION}`)!)}}
+    hasBin: true
+
+  ${LEAF}@${VERSION}:
+    resolution: {integrity: ${sha512Integrity(tarballs.get(`${LEAF}@${VERSION}`)!)}}
+
+snapshots:
+
+  ${ROOT}@${VERSION}:
+    dependencies:
+      ${LEAF}: ${VERSION}
+
+  ${LEAF}@${VERSION}: {}
+`,
+    );
+  }
+
+  it("publishes a workspace member as a relative symlink and no content, and a consumer rebuilds its member trees", async () => {
+    const scratch = fs.mkdtempSync(path.join(tmp, "workspace-"));
+    const built = path.join(scratch, "built");
+    const sharedStorePath = path.join(scratch, "store");
+    writeWorkspaceProject(built, { memberSource: false });
+    await runBuild(
+      builderScript({
+        pnpmBin: pnpmCmd!,
+        projectDir: built,
+        registryDir,
+        storeDir: sharedStorePath,
+        registryUrl: `http://127.0.0.1:${ports[8]}/`,
+        readyFile: path.join(scratch, "registry.ready"),
+      }),
+      path.join(scratch, "home"),
+    );
+
+    // What the base carries for the member: one RELATIVE link out of `node_modules`, nothing else.
+    const builtModules = path.join(built, "node_modules");
+    expect(fs.readlinkSync(path.join(builtModules, "member"))).toBe("../packages/member");
+    expect(fs.existsSync(path.join(builtModules, ".pnpm", "member@file+packages+member"))).toBe(false);
+
+    // The member's own tree is NOT part of the published base.
+    expect(fs.existsSync(path.join(built, "packages", "member", "node_modules"))).toBe(true);
+
+    const consumer = path.join(scratch, "consumer");
+    writeWorkspaceProject(consumer, { memberSource: true });
+    fs.cpSync(builtModules, path.join(consumer, "node_modules"), {
+      recursive: true,
+      verbatimSymlinks: true,
+    });
+    fs.rmSync(sharedStorePath, { recursive: true, force: true });
+    fs.mkdirSync(sharedStorePath, { recursive: true });
+
+    const consumerPort = ports[9];
+    const server = spawn(
+      "node",
+      [path.join(registryDir, "server.mjs"), registryDir, String(consumerPort),
+        path.join(scratch, "consumer-registry.ready")],
+      { stdio: "ignore" },
+    );
+    try {
+      for (let i = 0; i < 300 && !fs.existsSync(path.join(scratch, "consumer-registry.ready")); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      await run(
+        pnpmCmd!,
+        [
+          "install", "--frozen-lockfile", "--ignore-scripts", "--ignore-pnpmfile",
+          "--store-dir", sharedStorePath, "--registry", `http://127.0.0.1:${consumerPort}/`,
+        ],
+        {
+          cwd: consumer,
+          timeout: PNPM_TIMEOUT_MS,
+          maxBuffer: 16 * 1024 * 1024,
+          env: envFor(path.join(scratch, "consumer-home")),
+        },
+      );
+    } finally {
+      server.kill();
+    }
+
+    // The member link resolves to the CONSUMER's own source, which the base never saw.
+    expect(
+      fs.readFileSync(path.join(consumer, "node_modules", "member", "index.js"), "utf-8"),
+    ).toContain("member-source");
+    // The member's tree is recreated from the base, in the session's own writable checkout.
+    expect(
+      fs.readlinkSync(path.join(consumer, "packages", "member", "node_modules", LEAF)),
+    ).toContain(path.join("node_modules", ".pnpm", `${LEAF}@${VERSION}`));
+    // No package content was imported. A workspace consumer does touch its store — it creates
+    // the bucket skeleton and an empty `index.db`, which the non-workspace cell above does not —
+    // but the content buckets stay empty, so the member trees were linked out of the base.
+    expect(filesUnder(sharedStorePath).filter((f) => f.includes("files/"))).toEqual([]);
   }, PNPM_TIMEOUT_MS);
 });

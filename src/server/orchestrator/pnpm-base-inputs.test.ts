@@ -204,33 +204,140 @@ describe("decidePnpmBaseEligibility", () => {
     expect(decision).toMatchObject({ eligible: false, code: "unverifiable-entry" });
   });
 
+  describe("in-repo links", () => {
+    /** A lockfile whose root importer keeps its registry dependency and gains one local edge. */
+    function lockWithLocal(
+      edge: { importer: string; specifier: string; version: string },
+      opts: { settings?: string; extraImporters?: string[] } = {},
+    ): string {
+      const localDep = `      local:
+        specifier: ${edge.specifier}
+        version: ${edge.version}`;
+      const root = `  .:
+    dependencies:
+      left-pad:
+        specifier: 1.3.0
+        version: 1.3.0${edge.importer === "." ? `\n${localDep}` : ""}`;
+      const importers = [
+        root,
+        ...(edge.importer === "."
+          ? []
+          : [`  ${edge.importer}:\n    dependencies:\n${localDep}`]),
+        ...(opts.extraImporters ?? []),
+      ];
+      return `lockfileVersion: '9.0'
+${opts.settings ? `\nsettings:\n  ${opts.settings}\n` : ""}
+importers:
+
+${importers.join("\n\n")}
+
+packages:
+
+  left-pad@1.3.0:
+    resolution: {integrity: sha512-XI5MPzVNApjAyhQzphX8Bkm==}
+`;
+    }
+
+    // pnpm materializes `workspace:` and `link:` as one RELATIVE symlink and copies nothing, so an
+    // in-repo target puts no content in the base and is followed in the consuming session's own
+    // checkout. `file:` — which is also what an `injected` workspace dependency resolves to —
+    // copies the target into the virtual store, and the snapshot stages manifests, not source.
+    it.each([
+      ["a workspace member", ".", "workspace:*", "link:packages/local"],
+      ["an explicit link:", ".", "link:./packages/local", "link:packages/local"],
+      ["a link from a nested importer", "packages/app", "workspace:*", "link:../local"],
+      ["a plain semver range a member satisfies", ".", "^1.0.0", "link:packages/local"],
+    ])("admits %s", async (_label, importer, specifier, version) => {
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          [PNPM_LOCKFILE]: lockWithLocal({ importer, specifier, version }),
+        }),
+      );
+      expect(decision.eligible).toBe(true);
+    });
+
+    it.each([
+      ["a target above the repository", ".", "link:../elsewhere"],
+      ["a target above a nested importer", "packages/app", "link:../../../elsewhere"],
+      ["an absolute target", ".", "link:/srv/elsewhere"],
+    ])("refuses %s, naming it", async (_label, importer, version) => {
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          [PNPM_LOCKFILE]: lockWithLocal({ importer, specifier: "workspace:*", version }),
+        }),
+      );
+      expect(decision).toMatchObject({ eligible: false, code: "escaping-local-target" });
+      expect((decision as PnpmIneligible).detail).toContain("elsewhere");
+    });
+
+    it("refuses a workspace project outside the repository", async () => {
+      // `pnpm-workspace.yaml` may name `../sibling/*`; pnpm accepts it and links the member in.
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          [PNPM_LOCKFILE]: lockWithLocal(
+            { importer: ".", specifier: "workspace:*", version: "link:packages/local" },
+            { extraImporters: ["  ../sibling/m: {}"] },
+          ),
+        }),
+      );
+      expect(decision).toMatchObject({ eligible: false, code: "escaping-local-target" });
+      expect((decision as PnpmIneligible).detail).toContain("../sibling/m");
+    });
+
+    it("refuses a lockfile written with excludeLinksFromLockfile, which omits its link edges", async () => {
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          [PNPM_LOCKFILE]: lockWithLocal(
+            { importer: ".", specifier: "workspace:*", version: "link:packages/local" },
+            { settings: "excludeLinksFromLockfile: true" },
+          ),
+        }),
+      );
+      expect(decision).toMatchObject({ eligible: false, code: "excluded-links" });
+    });
+
+    it("refuses a link resolution a git or tarball specifier could not have produced", async () => {
+      // Only `workspace:`, `link:` and a plain range make pnpm write a symlink; an unexpected
+      // pairing is a lockfile this parser does not understand, not one to admit.
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          [PNPM_LOCKFILE]: lockWithLocal({
+            importer: ".",
+            specifier: "https://evil.test/x.tgz",
+            version: "link:packages/local",
+          }),
+        }),
+      );
+      expect(decision).toMatchObject({ eligible: false, code: "local-specifier" });
+    });
+
+    it.each([
+      ["a file: directory dependency", "file:./vendor/x", "local@file:vendor/x"],
+      ["an injected workspace dependency", "workspace:*", "local@file:packages/local"],
+    ])("refuses %s, whose content the snapshot does not stage", async (_label, specifier, version) => {
+      const decision = decide(
+        await stage({
+          ...BASE_FILES,
+          [PNPM_LOCKFILE]: lockWithLocal({ importer: ".", specifier, version }),
+        }),
+      );
+      expect(decision).toMatchObject({ eligible: false, code: "local-specifier" });
+    });
+  });
+
   it.each([
-    ["link:", "link:../local"],
-    ["file:", "file:../local"],
-    ["workspace:", "workspace:*"],
-  ])("refuses a %s specifier, whose content is not a published tarball", async (_label, spec) => {
-    const decision = decide(
-      await stage({
-        ...BASE_FILES,
-        [PNPM_LOCKFILE]: LOCK.replace("specifier: 1.3.0", `specifier: ${spec}`),
-      }),
-    );
-    expect(decision).toMatchObject({ eligible: false, code: "local-specifier" });
-  });
-
-  it("refuses a local edge an ordinary specifier RESOLVED to", async () => {
-    // The shape a specifier-only check misses, and the one that arises naturally whenever a
-    // workspace package satisfies a plain semver range.
-    const decision = decide(
-      await stage({
-        ...BASE_FILES,
-        [PNPM_LOCKFILE]: LOCK.replace("version: 1.3.0", "version: link:packages/local"),
-      }),
-    );
-    expect(decision).toMatchObject({ eligible: false, code: "local-specifier" });
-  });
-
-  it("refuses a local edge a transitive resolved to", async () => {
+    ["admits", "link:packages/helper", true],
+    ["refuses", "link:../helper", false],
+  ])("%s a snapshot link, resolved against the PROJECT ROOT", async (_label, resolved, ok) => {
+    // A registry package whose peer is a workspace member carries one — measured on 12.4.1 and
+    // 12.5.1, `react-dom@18.2.0(react@packages+react)` gets `react: link:packages/react`. The
+    // target is root-relative even when the importer that pulled the package in is nested, so
+    // `from` (a package key, not a directory) is not what it resolves against.
     const decision = decide(
       await stage({
         ...BASE_FILES,
@@ -239,7 +346,26 @@ snapshots:
 
   left-pad@1.3.0:
     dependencies:
-      helper: link:packages/helper
+      helper: ${resolved}
+`,
+      }),
+    );
+    if (ok) expect(decision.eligible).toBe(true);
+    else expect(decision).toMatchObject({ eligible: false, code: "escaping-local-target" });
+  });
+
+  it("refuses a copying local edge a transitive resolved to", async () => {
+    // The edge form, not the key form: measured 2026-09-21, a `file:` package depending on
+    // another records `inner: file:vendor/inner` under `outer@file:vendor/outer`.
+    const decision = decide(
+      await stage({
+        ...BASE_FILES,
+        [PNPM_LOCKFILE]: `${LOCK}
+snapshots:
+
+  left-pad@1.3.0:
+    dependencies:
+      helper: file:packages/helper
 `,
       }),
     );

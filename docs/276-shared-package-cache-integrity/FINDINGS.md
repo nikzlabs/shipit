@@ -791,6 +791,121 @@ gate filters the lockfile's importer directories out — a dependency id is alwa
 never a bare directory. Found by independent review before the gate shipped; without the filter it
 would have taken the base off every repo with a root install script.
 
+## Result: `workspace:`/`link:` link, `file:` copies — and that is the whole rule
+
+Measured 2026-09-21 by [`local-specifier-spike.sh`](./local-specifier-spike.sh) (in this
+container, pnpm 12.5.1, **PASS=31 FAIL=0**) and by the workspace cell in
+`integration_tests/pnpm-verified-base-build.test.ts`, which runs the real builder script with the
+pinned 12.4.1 over verified tarballs. Settles planning#414.
+
+The question is not whether the target is in the repository — it is whether pnpm **copies** it.
+The builder stages the committed manifests, the lockfile, `pnpm-workspace.yaml`, the `.npmrc` and
+the patch files; it never stages package source. So a protocol that copies its target publishes
+whatever the snapshot happened to carry, and a protocol that symlinks publishes a link the
+consuming session follows into its **own** checkout.
+
+| Spelling | Lockfile resolution | What the base gets |
+|---|---|---|
+| `workspace:*` | `link:packages/lib` | one **relative symlink**, `node_modules/lib -> ../packages/lib` |
+| `link:./vendor/x` | `link:vendor/x` | the same; the target's `package.json` is not even read — an install with it unstaged still writes the link |
+| a plain semver range a member satisfies | `link:packages/lib` | the same, which is why the resolution and not the specifier decides |
+| `file:./vendor/x` | `x@file:vendor/x` + a `packages:` entry `{directory: …, type: directory}` | the target's **content**, copied into `node_modules/.pnpm/x@file+vendor+x/` |
+| `workspace:*` with `injected` | `file:packages/lib(…)` | the same copy — pnpm's own changelog calls an injected dependency "a `file:` snapshot" |
+
+**The `file:` case fails silently, which is what rules it out.** Over a manifests-only snapshot the
+builder's own flags (`--offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile`) exit **0**
+with no warning and publish a package containing `package.json` and nothing else — cell B. A base
+carrying that is a tree the consuming session has no reason to repair.
+
+**No separate injected detector is needed, and injection has more than one spelling** (cell C).
+`dependenciesMeta[].injected` alone injects whenever the copy cannot be deduped — an app pinning
+`lodash@4.17.20` against a member resolving `4.17.21` gets `file:packages/lib(lodash@4.17.20)`
+with no global setting at all — and `injectWorkspacePackages` with `dedupeInjectedDeps: false`
+injects even when it could dedupe. An earlier draft of this cell held the peer versions equal and
+concluded that `dependenciesMeta[].injected` does not inject; it measured deduplication, not the
+absence of injection (found by independent review, then re-measured). Every spelling lands at a
+`file:` resolution, which is the point: the `file:` refusal *is* the injected refusal, and reading
+the resolution beats enumerating the settings that produce it.
+
+**A REGISTRY package can carry a `link:` edge, so the `snapshots:` loop cannot refuse the form
+outright** (cell C2, found by independent review). A workspace member satisfying a registry
+package's peer gives `react-dom@18.2.0(react@packages+react)` a `react: link:packages/react`
+edge, and the repo's own frozen install is happy with it — a blanket refusal would take the base
+off any monorepo with a member in a peer position. The snapshot target is resolved against the
+**project root**, and stays root-relative even when the importer that pulled the package in is
+nested (whose own edge reads `link:../react`); the virtual-store link pnpm writes,
+`../../../../packages/react`, resolves to the member. A `file:` snapshot edge is written as
+`inner: file:vendor/inner` — the edge form, not the key form — so it is still refused.
+
+**Containment is LEXICAL, and that is the right claim** (cell D). It says the target path stays
+inside the repository, so what the link resolves to is decided entirely inside a tree the
+consuming session owns and no other session can write. It does **not** say the resolution stays
+on disk inside the checkout: a committed `vendor -> ../outside` makes an admitted `link:vendor`
+reach past it (found by independent review, reproduced on 12.4.1). That is the repo's own trust
+boundary — the one the whole base already rests on — and the session's own install writes the
+identical link with no base at all, so a base neither creates the escape nor is the place to
+check for it; the staged snapshot cannot see those checkout symlinks in any case.
+
+It is still a real check against the lockfile's own paths. An escaping `link:../outside` writes
+`node_modules/rel -> ../../outside`, and a `file:../outside` copies out-of-checkout content into the
+tree. An **absolute** `link:` specifier is normalized to a relative resolution before it is
+written, so one check on the resolved path covers both spellings. Separately,
+`pnpm-workspace.yaml` may name `packages: ['../sibling/*']`: pnpm accepts it, records the importer
+as `../sibling/m` and links the member from outside the checkout — so importer containment is its
+own check.
+
+**`excludeLinksFromLockfile` was a hole in the old blanket refusal** (cell E). A lockfile written
+with it records **no trace** of a `link:` edge — while the builder still writes the symlink into
+the published base — so such a repo was eligible and shipped a link nobody decided on. It does not
+hide a `workspace:` edge. The lockfile's own `settings:` block is what decides: a config
+disagreeing with it fails a frozen install in **both** directions with
+`ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`, so what the lockfile records is what the builder will run
+under, and one check there is sufficient.
+
+**A workspace member's own tree is not in the base, and the consumer rebuilds it.** The builder
+publishes `projectDir/node_modules` alone. The integration cell builds a workspace base from
+manifests only, then consumes it from a full checkout with `packages/*/node_modules` absent: the
+install recreates them, each entry a symlink into the base's virtual store
+(`../../../node_modules/.pnpm/<pkg>/node_modules/<pkg>`), and imports **no package content** — the
+consumer's store gains only its bucket skeleton and an empty `index.db`, which the non-workspace
+consumer cell does not create. The member link resolves to the consumer's **own** source, which
+the base never saw.
+
+**The seed already covers a member's shims** (cell F, plus a source read of
+`resolvePnpmBinSeedSet`, and measured end to end on the host below). A member's `.bin` shim names
+a target under `packages/lib/node_modules/<pkg>/…`, and that path resolves through the member's
+symlink into the **root** virtual store — the tree the base publishes, which the seed walks in
+full. So the planning#606 chmod repair needs no extension for workspace repos.
+
+## Result: a workspace base holds up as a real lowerdir under distinct uids
+
+Measured 2026-09-21 by [`workspace-base-host-spike.sh`](./workspace-base-host-spike.sh) on the
+**services** host (Docker 29.7.2, `overlayfs`, Ubuntu 24.04, ext4, 4 vCPU / 8 GB; builder pnpm
+**12.4.1**, session pnpm **12.5.1**), **PASS=21 FAIL=0**. This is the half the two harnesses above
+cannot reach: they run outside Docker, under one identity, over a writable copy.
+
+The base is built the builder's way from **manifests only** and mounted as a read-only lowerdir at
+`/proj/node_modules`, owned by another uid with the group share `shareOne` applies. The session
+gets the **full checkout** — member source included — and **no** `packages/*/node_modules`, which
+is the state a container start actually leaves, since only `node_modules` is an overlay.
+
+| Cell | Result |
+|---|---|
+| What the base carries for the member | `node_modules/wsmember -> ../packages/wsmember` and **no** `wsmember@file+…` copy: none of the member entered the base |
+| pnpm's 0600 `.pnpm-workspace-state-v1.json` | published **660** by the group share, so a foreign uid can read the file a workspace consumer must read |
+| **CONTROL, unseeded** | the consumer fails `ERR_PNPM_CMD_SHIM_CHMOD` — "Failed to chmod `/proj/node_modules/.pnpm/rimraf@…`", a base path — so the seeded cells are not vacuous |
+| Seeded base hit | rc=0, **no EPERM**, 4 seeded files / 27 KiB, 232 KiB upper |
+| The member-tree rebuild | pnpm reports "Already up to date" and **still** creates `packages/wsmember/node_modules`, owned by the **session** (2001), linking `semver` to `../../../node_modules/.pnpm/semver@7.6.3/…` — the base's virtual store |
+| The member's own `.bin` shim | exists, executes, and its `cmd-shim-target` trailer names `/proj/node_modules/.pnpm/semver@7.6.3/node_modules/semver/bin/semver.js` — **a base file**, which is exactly why the seed has to cover it, and does |
+| req 11 | the base's symlink resolves to the session's **own** member source, which the base never saw; an edit inside the workspace package is visible **at once** and survives an install |
+| req 9 | `pnpm add` succeeds in the **root** and in a **member** (`--filter`), no EPERM in either log |
+| Isolation | the base is byte-unchanged after both sessions, and a second session under uid 2002 inherits neither add nor session 1's edit |
+
+So the paragraph this section's earlier draft argued from first principles is now measured: the
+member-tree rebuild does survive the overlay, its writes land in the session's own checkout, and
+the one chmod it makes into the base is on a seeded target. No chmod of a base file that is *not*
+a bin target was observed on this shape.
+
 ## Faithfulness and limits
 
 - **The executable-target list is the union of `bin` and a recursive `directories.bin`, and it
@@ -841,6 +956,16 @@ would have taken the base off every repo with a root install script.
   perform it.
 - **The tree spikes run as root** (no `--user`), so they do not exercise
   distinct session uids over the group-writable base (docs/270).
+- **The workspace host cells measure ONE workspace shape**: a single member, depending on
+  registry packages only, with no member-to-member edge, no nested workspace, and no member in a
+  peer position (the shape `local-specifier-spike.sh` cell C2 covers, which no host cell mounts).
+  What generalizes is the mechanism — the member tree is a write in the session's own checkout,
+  and the one chmod it makes into the base lands on a seeded target — not a count.
+- **A chmod of a base file that is NOT a bin target would still EPERM.** None was observed on any
+  shape measured; none is asserted.
+- **The workspace base is built online by the harness**, `--ignore-scripts --ignore-pnpmfile`,
+  not through the loopback fetch phase and the verified tarballs. That path is covered by
+  `integration_tests/pnpm-verified-base-build.test.ts`; this harness measures the consumer.
 
 ## Reproduce
 
@@ -853,10 +978,20 @@ ssh <docker-host> bash /tmp/ineligible-sharing-host-spike.sh   # PASS=13 FAIL=0,
 
 scp docs/276-shared-package-cache-integrity/bin-seed-host-spike.sh <docker-host>:/tmp/
 ssh <docker-host> bash /tmp/bin-seed-host-spike.sh   # PASS=16 FAIL=0, exit 0
+
+scp docs/276-shared-package-cache-integrity/workspace-base-host-spike.sh <docker-host>:/tmp/
+ssh <docker-host> bash /tmp/workspace-base-host-spike.sh   # PASS=21 FAIL=0, exit 0
 ```
 
 Both need only Docker on the host; the node + python toolchain comes from a baked
 image. They clean up their volumes on exit.
+
+The local-specifier harness needs neither Docker nor a host — pnpm and a reachable registry are
+enough, so it runs in a session container:
+
+```
+bash docs/276-shared-package-cache-integrity/local-specifier-spike.sh   # PASS=31 FAIL=0, exit 0
+```
 
 The in-container half runs where the agent already is, and needs no Docker — only
 `gcc`, for the chmod interposer:
