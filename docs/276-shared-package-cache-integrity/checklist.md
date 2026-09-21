@@ -557,17 +557,23 @@ recorded in [requirements.md](./requirements.md); none is open.
       repo's own trust boundary and identical with no base. Measured by
       `local-specifier-spike.sh` (PASS=31) and FINDINGS.md.
 
-- [ ] **Run the workspace admission's overlay cells on the services host.** The
-      admission was settled without them and does not rest on them — the base
-      gains one symlink, the member trees are writes in the session's own
-      checkout, and their `.bin` chmod targets are ones `resolvePnpmBinSeedSet`
-      already seeds — but nothing has consumed a workspace base as a real
-      read-only lowerdir under a distinct uid. Cells: base hit; the member-tree
-      rebuild (it rewrites `.modules.yaml` and `.pnpm/lock.yaml`, which copy-up
-      permits and the base's group share reaches); `pnpm add` in the root and in
-      a member; an edit inside a member staying per session. A chmod of a base
-      file that is not a bin target would still EPERM; none was observed and none
-      is asserted. See FINDINGS.md "Faithfulness and limits".
+- [x] **The workspace admission's overlay cells, on the services host**
+      (`workspace-base-host-spike.sh`, PASS=21, FINDINGS.md). A base built from
+      manifests alone, mounted as a real read-only lowerdir owned by another uid
+      with the group share, consumed by a session with the full checkout and no
+      member tree. Measured: the base carries the member as a relative symlink
+      and no copy of it; pnpm's 0600 workspace-state file is published 660, so a
+      foreign uid can read it; **unseeded the consumer EPERMs**
+      (`ERR_PNPM_CMD_SHIM_CHMOD` on a base path), so the rest is not vacuous;
+      seeded, the base hit succeeds and rebuilds `packages/*/node_modules` owned
+      by the session, linking into the base's virtual store; the member's own
+      shim targets a BASE file, which is why the seed must cover it and does;
+      the member link resolves to the session's own source and an edit inside it
+      is visible at once and survives an install (req 11); `pnpm add` works in
+      the root and in a member (req 9); the base is byte-unchanged and a second
+      session inherits nothing. One workspace shape only — a single member with
+      registry dependencies, no member-to-member edge and no member in a peer
+      position.
 
 - [x] **Admit `patchedDependencies`.** Patch bytes are in the immutable snapshot
       and the tarball is digest-verified, so the output is verifiable by

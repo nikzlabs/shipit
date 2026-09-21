@@ -625,7 +625,11 @@ a session's own install with no base. A workspace member's own
 `packages/*/node_modules` is **not** in the base — the builder publishes `projectDir/node_modules`
 alone — and the session's install recreates it in the writable checkout as symlinks into the
 base's virtual store, importing no content; its `.bin` shims chmod targets that resolve back into
-that same virtual store, which `resolvePnpmBinSeedSet` already seeds.
+that same virtual store, which `resolvePnpmBinSeedSet` already seeds. That consumer half is
+measured on a real overlay under distinct uids (`workspace-base-host-spike.sh`, PASS=21, with an
+unseeded control that EPERMs): the rebuild lands in the session's own checkout owned by the
+session, `pnpm add` works in the root and in a member, an edit inside a member is visible at once
+and stays per session, and the base is byte-unchanged.
 
 Admitted: an
 `npm:` alias (the resolved target's digest is what is verified);

@@ -872,10 +872,39 @@ consumer cell does not create. The member link resolves to the consumer's **own*
 the base never saw.
 
 **The seed already covers a member's shims** (cell F, plus a source read of
-`resolvePnpmBinSeedSet`). A member's `.bin` shim names a target under
-`packages/lib/node_modules/<pkg>/…`, and that path resolves through the member's symlink into the
-**root** virtual store — the tree the base publishes, which the seed walks in full. So the
-planning#606 chmod repair needs no extension for workspace repos.
+`resolvePnpmBinSeedSet`, and measured end to end on the host below). A member's `.bin` shim names
+a target under `packages/lib/node_modules/<pkg>/…`, and that path resolves through the member's
+symlink into the **root** virtual store — the tree the base publishes, which the seed walks in
+full. So the planning#606 chmod repair needs no extension for workspace repos.
+
+## Result: a workspace base holds up as a real lowerdir under distinct uids
+
+Measured 2026-09-21 by [`workspace-base-host-spike.sh`](./workspace-base-host-spike.sh) on the
+**services** host (Docker 29.7.2, `overlayfs`, Ubuntu 24.04, ext4, 4 vCPU / 8 GB; builder pnpm
+**12.4.1**, session pnpm **12.5.1**), **PASS=21 FAIL=0**. This is the half the two harnesses above
+cannot reach: they run outside Docker, under one identity, over a writable copy.
+
+The base is built the builder's way from **manifests only** and mounted as a read-only lowerdir at
+`/proj/node_modules`, owned by another uid with the group share `shareOne` applies. The session
+gets the **full checkout** — member source included — and **no** `packages/*/node_modules`, which
+is the state a container start actually leaves, since only `node_modules` is an overlay.
+
+| Cell | Result |
+|---|---|
+| What the base carries for the member | `node_modules/wsmember -> ../packages/wsmember` and **no** `wsmember@file+…` copy: none of the member entered the base |
+| pnpm's 0600 `.pnpm-workspace-state-v1.json` | published **660** by the group share, so a foreign uid can read the file a workspace consumer must read |
+| **CONTROL, unseeded** | the consumer fails `ERR_PNPM_CMD_SHIM_CHMOD` — "Failed to chmod `/proj/node_modules/.pnpm/rimraf@…`", a base path — so the seeded cells are not vacuous |
+| Seeded base hit | rc=0, **no EPERM**, 4 seeded files / 27 KiB, 232 KiB upper |
+| The member-tree rebuild | pnpm reports "Already up to date" and **still** creates `packages/wsmember/node_modules`, owned by the **session** (2001), linking `semver` to `../../../node_modules/.pnpm/semver@7.6.3/…` — the base's virtual store |
+| The member's own `.bin` shim | exists, executes, and its `cmd-shim-target` trailer names `/proj/node_modules/.pnpm/semver@7.6.3/node_modules/semver/bin/semver.js` — **a base file**, which is exactly why the seed has to cover it, and does |
+| req 11 | the base's symlink resolves to the session's **own** member source, which the base never saw; an edit inside the workspace package is visible **at once** and survives an install |
+| req 9 | `pnpm add` succeeds in the **root** and in a **member** (`--filter`), no EPERM in either log |
+| Isolation | the base is byte-unchanged after both sessions, and a second session under uid 2002 inherits neither add nor session 1's edit |
+
+So the paragraph this section's earlier draft argued from first principles is now measured: the
+member-tree rebuild does survive the overlay, its writes land in the session's own checkout, and
+the one chmod it makes into the base is on a seeded target. No chmod of a base file that is *not*
+a bin target was observed on this shape.
 
 ## Faithfulness and limits
 
@@ -927,19 +956,16 @@ planning#606 chmod repair needs no extension for workspace repos.
   perform it.
 - **The tree spikes run as root** (no `--user`), so they do not exercise
   distinct session uids over the group-writable base (docs/270).
-- **The `workspace:` admission has no overlay or distinct-uid cell.** Both harnesses above run
-  outside Docker: `local-specifier-spike.sh` measures what pnpm does, and the integration cell
-  consumes a base as an ordinary writable copy, not as a read-only lowerdir under another uid.
-  What is therefore argued rather than measured is that a consumer's rebuild of
-  `packages/*/node_modules` survives the overlay — the rebuild's writes land in the session's own
-  checkout, its `.bin` chmod targets are ones `resolvePnpmBinSeedSet` already seeds (cell F), and
-  the two base files it rewrites (`.modules.yaml`, `.pnpm/lock.yaml`) are content rewrites, which
-  copy-up permits and which `publishBase`'s group share (`shareOne` adds `0o060` to every file,
-  so pnpm's 0600 `.pnpm-workspace-state-v1.json` is published 0660) makes reachable. A chmod of a
-  base file that is NOT a bin target would still EPERM; none was observed, and none is asserted.
-  The cells the session that admitted the class could not run — a workspace base as a real
-  lowerdir under a distinct uid, `pnpm add` in the root and in a member over it, and an edit
-  inside a member — are the ones to run before treating that paragraph as settled.
+- **The workspace host cells measure ONE workspace shape**: a single member, depending on
+  registry packages only, with no member-to-member edge, no nested workspace, and no member in a
+  peer position (the shape `local-specifier-spike.sh` cell C2 covers, which no host cell mounts).
+  What generalizes is the mechanism — the member tree is a write in the session's own checkout,
+  and the one chmod it makes into the base lands on a seeded target — not a count.
+- **A chmod of a base file that is NOT a bin target would still EPERM.** None was observed on any
+  shape measured; none is asserted.
+- **The workspace base is built online by the harness**, `--ignore-scripts --ignore-pnpmfile`,
+  not through the loopback fetch phase and the verified tarballs. That path is covered by
+  `integration_tests/pnpm-verified-base-build.test.ts`; this harness measures the consumer.
 
 ## Reproduce
 
@@ -952,6 +978,9 @@ ssh <docker-host> bash /tmp/ineligible-sharing-host-spike.sh   # PASS=13 FAIL=0,
 
 scp docs/276-shared-package-cache-integrity/bin-seed-host-spike.sh <docker-host>:/tmp/
 ssh <docker-host> bash /tmp/bin-seed-host-spike.sh   # PASS=16 FAIL=0, exit 0
+
+scp docs/276-shared-package-cache-integrity/workspace-base-host-spike.sh <docker-host>:/tmp/
+ssh <docker-host> bash /tmp/workspace-base-host-spike.sh   # PASS=21 FAIL=0, exit 0
 ```
 
 Both need only Docker on the host; the node + python toolchain comes from a baked
