@@ -217,6 +217,11 @@ services:
     x-shipit-preview: manual
 ```
 
+One service's page can **embed** another by name, with
+`<iframe src="shipit-preview://api/status.html">` — no host, no port, no session
+id. See `chat-links.md` → "Embedding a service instead of linking to it", which
+also covers what a framed document must do when its address moves.
+
 ## Hot Module Replacement (HMR)
 
 ShipIt patches dev-server WebSocket URLs so HMR works through the reverse

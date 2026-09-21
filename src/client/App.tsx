@@ -106,6 +106,10 @@ import { deriveEffectivePreviewStatus } from "./utils/preview-status.js";
 // Zustand selectors need a stable fallback reference.
 const EMPTY_TURN_USAGE: TurnUsage[] = [];
 
+// Long enough to swallow a burst from one document, short enough that a service
+// the user later stops can be started again by revisiting the page.
+const EMBED_START_COOLDOWN_MS = 10_000;
+
 const DiffPanel = lazy(() => {
   // eslint-disable-next-line no-restricted-syntax -- React.lazy requires a promise transform
   return import("./components/DiffPanel.js").then((m) => ({ default: m.DiffPanel }));
@@ -503,6 +507,35 @@ export default function App() {
       agentInterface: provenance,
     });
   }, [apiPost]);
+
+  /**
+   * Start the service a previewed page's embed names
+   * (docs/313-embedded-preview-services req 5). `PreviewFrame` has already
+   * established that the request came from the active, visible slot's own
+   * window; what is left is the checks that need state the page does not hold.
+   *
+   * The cooldown is what makes two embeds of one stopped service in a single
+   * document send one start: both see `stopped` in the same tick, because the
+   * server cannot have answered in between.
+   *
+   * It is keyed by **session and** name, and is recorded only once the send
+   * succeeds. `App` outlives a session switch, so a name-only key let one
+   * session's start suppress another session's — permanently, since the page
+   * asks once per embed and never retries. A `send` that returns false is a
+   * closed socket and must not burn the window either.
+   */
+  const embedStartsRef = useRef<Map<string, number>>(new Map());
+  const handleEmbedStartService = useCallback((name: string) => {
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) return;
+    const service = usePreviewStore.getState().services.find((s) => s.name === name);
+    if (!service || service.status === "running" || service.status === "starting") return;
+    const key = `${sid}:${name}`;
+    const now = Date.now();
+    const last = embedStartsRef.current.get(key) ?? 0;
+    if (now - last < EMBED_START_COOLDOWN_MS) return;
+    if (send({ type: "start_service", name })) embedStartsRef.current.set(key, now);
+  }, [send]);
 
   const handleSendErrors = useCallback(
     (errors: PreviewError[]) => {
@@ -1334,6 +1367,7 @@ export default function App() {
               onSendCrashToAgent={handleSendComposeErrorToAgent}
               onSendComposeHintToAgent={handleSendComposeHintToAgent}
               onAgentInterfaceMessage={handleAgentInterfaceMessage}
+              onEmbedStartService={handleEmbedStartService}
             />
             <RepoTrustBanner key={currentRepoUrl} repoUrl={currentRepoUrl} />
           </div>
