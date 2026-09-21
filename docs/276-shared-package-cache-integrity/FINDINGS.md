@@ -242,12 +242,16 @@ unpacks; `--ignore-pnpmfile` stops the hook from loading even though the config
 dependency itself is still resolved. Two consequences, and neither changes this PR.
 `--ignore-pnpmfile` is now measured to cover **every** hook source the eligibility rule
 names. `.pnpmfile.mjs` was admitted on that basis (2026-09-21, `decidePnpmBaseEligibility`);
-`configDependencies` was not, because its reason survives the measurement — admitting it makes
-the builder fetch and stage plugin packages the lockfile carries no digest for, and it is the
-input surface rather than the execution that is still open. And the builder's belt-and-braces refusal of the
-`pnpmfile`/`globalPnpmfile` keys closes the `configDependencies` route a second time: the
-hook needs that key to be loaded at all, and the builder rejects the input set that
-carries it.
+`configDependencies` was not, because its reason survives the measurement — a config dependency
+does carry its own digest, but pnpm resolves it through a path this builder neither parses
+(`pnpm-lockfile.ts` reads one document) nor stages (`pnpm-base-builder.ts` stages
+`decision.packages` alone), so it is the input surface rather than the execution that is still
+open. The builder's belt-and-braces refusal of the `pnpmfile`/`globalPnpmfile` keys closes the
+route this cell measured — the one where the key points at the unpacked file. It should **not**
+be credited with closing every plugin-loading route: pnpm 12 is reported to auto-discover a
+config dependency named `pnpm-plugin-*` and load its pnpmfile with no key at all, which is not
+measured here. Nothing turns on which is true, because the presence of `configDependencies` is
+refused outright and the flag is on both phases.
 
 ## Finding: relocating the store does not break an existing `node_modules`
 
@@ -655,15 +659,16 @@ optional dependency, which makes it useless as a *build* probe.
 Isolation is unaffected and re-asserted under distinct uids: both bases stayed byte-unchanged, and
 a second session inherited neither the add nor the build.
 
-## Finding: three ineligible classes behave under the builder's own flags
+## Finding: three refused classes behave under the builder's own flags
 
 Measured in-container ([`ineligible-sharing-spike.sh`](./ineligible-sharing-spike.sh), cells G–I,
-pnpm 12.5.1). Each is currently refused by `decidePnpmBaseEligibility`; none needs a sharing shape,
-because the builder already handles it.
+pnpm 12.5.1). Each was refused by `decidePnpmBaseEligibility` when measured; none needs a sharing
+shape, because the builder already handles it — and the first row has since been admitted on
+exactly that ground.
 
 | Class | Result |
 |---|---|
-| `.pnpmfile.mjs` | `--ignore-pnpmfile` suppresses **both** the module body and `readPackage`, with a positive control showing both run without the flag. The `hook-source` refusal of `.mjs` (`pnpm-base-inputs.ts:354`) is stale — its own code comment says "not measured", and the checklist has recorded the measurement since 2026-09-21 |
+| `.pnpmfile.mjs` | `--ignore-pnpmfile` suppresses **both** the module body and `readPackage`, with a positive control showing both run without the flag. **Admitted 2026-09-21** — the `hook-source` refusal of `.mjs` is gone, and a `.pnpmfile` was never staged in the first place |
 | `workspace:` / `link:` to an in-repo path | `pnpm install --frozen-lockfile --offline` against a dead registry succeeds with **only the manifests staged** — no member source needed — and the link pnpm writes is **relative** (`../../../lib`), so it resolves against the consuming session's own checkout rather than the builder's |
 | `patchedDependencies` | The committed patch is applied under `--ignore-scripts --ignore-pnpmfile`, and an unparseable patch **fails the install closed** rather than installing unpatched |
 

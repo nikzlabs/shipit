@@ -276,10 +276,17 @@ patchedDependencies:
   it.each([
     [".pnpmfile.cjs", "module.exports = {};"],
     [".pnpmfile.mjs", "export default {};"],
-  ])("admits a committed %s, whose hooks --ignore-pnpmfile suppresses", async (file, text) => {
-    // Neither is staged, so neither reaches the builder at all; the flag on both phases is the
-    // layer behind that. Refusing them on presence cost a base for no gain.
-    expect(decide(await stage({ ...BASE_FILES, [file]: text })).eligible).toBe(true);
+  ])("admits a committed %s, and does not stage it", async (file, text) => {
+    // Both halves, because admitting on eligibility alone would stay green if staging ever began
+    // copying hook sources — and "it never reaches the builder" is what makes the admission safe.
+    // `--ignore-pnpmfile` on both builder phases is the layer behind that, guarded separately in
+    // `pnpm-base-builder.test.ts`.
+    const staged = await stage({ ...BASE_FILES, [file]: text });
+    expect(decide(staged).eligible).toBe(true);
+    // The lockfile is the positive control: without it, "the hook is absent" would also hold
+    // for a `staged.dir` that was empty or misread.
+    expect(fs.existsSync(path.join(staged.dir, PNPM_LOCKFILE))).toBe(true);
+    expect(fs.existsSync(path.join(staged.dir, file))).toBe(false);
   });
 
   it("refuses configDependencies, whose plugin packages no lockfile digest covers", async () => {

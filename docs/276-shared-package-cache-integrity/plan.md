@@ -577,9 +577,10 @@ no source handling); `file:`, `link:`, `workspace:` entries and
 `patchedDependencies` — verifiable in principle, since the linked content and
 the patch bytes are in the immutable snapshot, but their reconciliation under
 the frozen builder is unmeasured; `configDependencies`, not because its hook
-can run — `--ignore-pnpmfile` suppresses that too, measured — but because the
-builder would have to fetch and stage plugin packages the lockfile does not
-carry a digest for; a scoped registry with no orchestrator-authorized scope→registry
+can run — `--ignore-pnpmfile` suppresses that too, measured — but because a
+config dependency, digest and all, is resolved by pnpm through a path this
+builder neither parses nor stages, so admitting it would put packages in the
+tree off the footing every other package is verified on; a scoped registry with no orchestrator-authorized scope→registry
 mapping; an output layout that escapes one self-contained `node_modules`
 (`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`); and **any
 dependency that builds at install time** — the fail-safe above. That last one is
@@ -594,10 +595,11 @@ scripts are irrelevant — the builder never runs them and the session runs them
 itself. A tarball the scan cannot read is refused the same way: one it cannot
 prove has no build must not become one it assumed had none. Admitted: an
 `npm:` alias (the resolved target's digest is what is verified); a committed
-`.pnpmfile.cjs` or `.pnpmfile.mjs` (neither is staged, and `--ignore-pnpmfile`
-suppresses the module body and `readPackage` of both on both phases, measured
-with a positive control — if the frozen install then fails to reconcile, the
-build yields no base, decided by the build rather than by a
+`.pnpmfile.cjs` or `.pnpmfile.mjs` (neither is ever staged, so neither reaches
+the builder; `--ignore-pnpmfile` suppresses the module body and `readPackage`
+of both, measured on an install with a positive control, and the flag is on
+both phases in code — if the frozen install then fails to
+reconcile, the build yields no base, decided by the build rather than by a
 presence rule); a relocated global store (overridden to the fixed builder
 path); `optionalDependencies`, verified like the rest; `bundledDependencies`,
 trusted as part of their authenticated outer tarball; a deprecated-but-present

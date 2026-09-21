@@ -344,20 +344,22 @@ export function decidePnpmBaseEligibility(
     };
   }
 
-  // A committed `.pnpmfile.cjs`/`.mjs` costs the repo nothing: neither is ever staged, and
-  // `--ignore-pnpmfile` suppresses both the module body and `readPackage` on both builder
-  // phases (measured with a positive control, FINDINGS.md). The `pnpmfile` config keys below
-  // stay refused — they name a path the snapshot stages for another reason.
+  // A committed `.pnpmfile.cjs`/`.mjs` costs the repo nothing: neither is ever staged, so
+  // neither reaches the builder at all, and `--ignore-pnpmfile` suppresses the module body and
+  // `readPackage` of both (measured on an install, with a positive control, FINDINGS.md) on
+  // both builder phases (`pnpm-base-builder.ts:232,237`). The `pnpmfile` config keys below stay
+  // refused — they name a path the snapshot stages for another reason.
   //
-  // `configDependencies` stays out for a different reason, so the measurement does not admit
-  // it: the builder would have to FETCH AND STAGE plugin packages that are not in the
-  // lockfile, and so are not verified on the footing every other package is.
+  // `configDependencies` stays out for a reason the measurement does not reach: a config
+  // dependency does carry its own digest, but NOTHING HERE VERIFIES OR STAGES IT — the parser
+  // reads one lockfile document (`pnpm-lockfile.ts`) and the builder stages `decision.packages`
+  // alone, so admitting it would have the builder fetch plugin packages off that footing.
   if (staged.workspaceYaml && "configDependencies" in staged.workspaceYaml) {
     return {
       eligible: false,
       code: "config-dependencies",
-      detail: `${PNPM_WORKSPACE_YAML} declares configDependencies, whose plugin packages the `
-        + "builder would fetch and stage without a lockfile digest to verify them against",
+      detail: `${PNPM_WORKSPACE_YAML} declares configDependencies, whose plugin packages this `
+        + "builder does not resolve, verify or stage the way it does every other package",
     };
   }
 
