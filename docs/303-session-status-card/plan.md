@@ -857,15 +857,51 @@ back to the paths it was covering for.
 
 **One rule ends it: the view is at a position the hook did not write.** A
 scrollbar drag, a PageDown, a wheel and a touch drag all reach it through the
-same test, at the moment they take effect — the loading gap included, where the
-card can be taller than the viewport and reading its first paragraph means
-scrolling up. A gesture that moves *nothing* — a momentum tick left over from the
-conversation just left — is not the reader taking the view, which is why the
-position decides and the gesture does not. Two earlier cuts got this wrong in
-both directions: one let a gesture decide the open by a different route from the
-scroll it produced, so the same action decided it differently according to
-delivery order; the other exempted the gap outright and so fought a reader who
-had done nothing but scroll a card.
+same test, at the moment they take effect — the loading gap included. A gesture
+that moves *nothing* — a momentum tick left over from the conversation just
+left — is not the reader taking the view, which is why the position decides and
+the gesture does not. An earlier cut let a gesture decide the open by a
+different route from the scroll it produced, so the same action decided it
+differently according to delivery order.
+
+**And one rule brings it back: the commit that first renders the conversation.**
+A position taken in the loading gap ends the open like any other, but it does
+not survive the rows arriving — that commit re-arms the open and clears the
+follow flag and gesture state the gap left behind. The third report of this
+defect is what settled it: *"when status cards are long and require scrolling
+themselves, if I scroll before the conversation is loaded, it is scrolled to the
+top."* The cut before this one kept that position deliberately, on the reasoning
+that a card taller than the viewport is worth scrolling and a scroll is a
+scroll. It is not the same act: there was no conversation on screen to hold a
+position **in**, so the gesture cannot be the reader choosing where in it to be.
+Measured in the dogfood instance, Chrome 1440x900, two never-opened sessions
+with a 1,476px card and a 317-message transcript, wheel injected the frame the
+transcript went empty: before, the history arrived ~1.9s later and the view
+finished at 0 of 67,348 — the reported failure exactly; after, the pin landed at
+28,749 of the 29,374 estimate and the corrections closed it to the end of
+45,455, while a scroll made *after* the rows were up held at 12,000 as the
+content grew past 83,000.
+
+What re-arms is the **arrival**, not the absence of rows — the gap is not
+exempted from the scroll rule. That distinction is the bound on the whole thing:
+exempting it would pin an **empty** session's card to its end for as long as the
+session is displayed, since no arrival will ever come to discard the hold, and
+every status update would then yank the reader out of the paragraph they were
+on. `session-open-settle.test.tsx` holds all four sides: the gap scroll
+discarded, the post-arrival scroll kept, the empty session left alone, and a
+clear-and-reload not mistaken for a first arrival. Only the first is red against
+the previous cut; the rest are non-regression guards, each red against a
+particular wrong way of making the change rather than against what shipped.
+
+The latch is set at the arrival **and** wherever a scroll ends the open with
+rows already on screen — that position is the reader choosing where in a
+conversation to be, which is the thing the latch names. Review found the
+arrival alone insufficient: a switch whose commits never leave the transcript
+empty reaches no arrival, so a later clear-and-repopulate in that session read
+as a first arrival and discarded a position taken with the rows in view. The
+client batches the id and the clear into one commit (`session-actions.ts`
+`switchSession`), so that switch shape is not the one it produces today; the
+latch does not depend on it staying that way.
 
 **Hydration is not an append.** `appendedUserMessage` is the strongest exception
 in the hook — it overrides the follow flag *and* clears gesture state — and it

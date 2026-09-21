@@ -53,6 +53,36 @@ import type { SessionInfo, SessionStatus } from "../../../server/shared/types.js
  * another, here or in `useMessageScroll.test.tsx`; nothing is carried as
  * consistency alone.
  *
+ * ## The third report, and the two sides it put on this file
+ *
+ * "If I scroll before the conversation is loaded, it is scrolled to the top."
+ * The second cut kept that position on purpose; the report is that it must not.
+ * Three cases hold the boundary: the gap scroll is DISCARDED at the commit that
+ * first renders rows; a scroll once the rows are up is NOT (`leaves the reader
+ * where they are once the conversation is on screen`); and a session that never
+ * gets rows keeps the gap scroll, since no arrival will ever come to discard
+ * it.
+ *
+ * They are not red for the same reasons, and the difference is worth stating.
+ * The two gap-scroll cases fail against the previous cut — they are the
+ * behaviour change. The other two are **non-regression** guards and pass
+ * against it by construction; what each is red against is a WRONG way to make
+ * the change. Exempting the gap from the scroll rule instead of discarding it
+ * at the arrival turns the empty-session case red, and a hook that ignores
+ * scrolls at all turns the post-arrival case red — but only because that case
+ * grows the content after the reader scrolls (`growAfterPaint`). Without the
+ * growth nothing even attempts a pin, and it passed against a hook with no
+ * scroll handling at all. Both were found in review.
+ *
+ * `openSession` walks the switch as the fixture can drive it — the incoming
+ * session's id commits while the OUTGOING rows are still rendered, a commit
+ * whose reset makes those rows look like an arrival. (The client batches the id
+ * and the clear into one commit, `session-actions.ts` `switchSession`, so this
+ * shape is the fixture being pessimistic rather than a reproduction of it.)
+ * Re-arming there would latch the open before the gap began, and the two
+ * gap-scroll cases go back to keeping the position if the latch reads
+ * `previousMessageCountRef` rather than the rows actually rendered last commit.
+ *
  * Two of those live at the hook's level rather than here, because the geometry
  * has to be posed directly: telling our own echoed position from the reader's,
  * and the settle loop stopping for a selection. "lands at the end when a scroll
@@ -66,7 +96,8 @@ const VIEWPORT = 625;
 const ROW_H = 80;
 /** What a row's group reports before it has painted — `contain-intrinsic-size`. */
 const PLACEHOLDER_H = 24;
-const CARD_H = 1336;
+/** Mutable, so the empty-session case below can grow the card the way a status update does. */
+let cardHeight = 1336;
 
 let observers: { cb: () => void; targets: Element[] }[] = [];
 let queued: (() => void)[] = [];
@@ -91,7 +122,7 @@ beforeAll(() => {
 
 function contentHeight(container: Element): number {
   const rows = container.querySelectorAll("[data-compact-content]").length;
-  const card = container.querySelector("[data-testid='session-status-card']") ? CARD_H : 0;
+  const card = container.querySelector("[data-testid='session-status-card']") ? cardHeight : 0;
   return rows * (painted ? ROW_H : PLACEHOLDER_H) + card;
 }
 
@@ -191,6 +222,7 @@ beforeEach(() => {
   queued = [];
   painted = false;
   lastSeenHeight = -1;
+  cardHeight = 1336;
   useSettingsStore.setState({ sessionStatusCard: true });
 });
 
@@ -223,6 +255,14 @@ function openSession(hooks: {
   arrivesPainted?: boolean;
   /** Open a session that is mid-turn: its history ends with the user's own row. */
   endsInUser?: boolean;
+  /**
+   * Grow the content after `afterPaint`, so the `ResizeObserver` fires again.
+   * Without it a case that asserts the reader is left alone asserts nothing:
+   * once the settle loop has ended and the height stops moving, no path even
+   * ATTEMPTS a pin, and the position survives a hook that ignores scrolls
+   * entirely. Found in review.
+   */
+  growAfterPaint?: boolean;
 } = {}): { top: number; fromBottom: number } {
   show("s1");
   const outgoing = transcript("s1", 40);
@@ -236,7 +276,7 @@ function openSession(hooks: {
   // The switch. The transcript is cleared; the incoming session's card is not.
   show("s2");
   rerender(<MessageList messages={[]} isLoading={false} />);
-  expect(contentHeight(scroller)).toBe(CARD_H);
+  expect(contentHeight(scroller)).toBe(cardHeight);
   frames(scroller, 6);
   hooks.duringGap?.(scroller);
 
@@ -254,6 +294,7 @@ function openSession(hooks: {
   painted = true;
   frames(scroller, 8);
   hooks.afterPaint?.(scroller);
+  if (hooks.growAfterPaint) cardHeight += 900;
   frames(scroller, 8);
 
   return {
@@ -311,40 +352,36 @@ describe("opening a session lands at the end once the conversation has painted",
     }).fromBottom).toBeGreaterThan(0);
   });
 
-  it("leaves the card where the reader put it when they scroll it in the loading gap", () => {
-    // Not the same case as the wheel above, and the difference is the whole
-    // rule: that wheel moved nothing, this one moves the view, so this one is
-    // the reader taking it. A tall card is taller than the viewport and reading
-    // its first paragraph means scrolling up — an open must not treat that as
-    // noise and throw them to the end of a conversation they did not ask to be
-    // shown the end of. A gesture and the scroll it produces must also not
-    // decide this differently according to which the browser delivers first,
-    // which is why only the position decides.
-    const result = openSession({
+  it("lands at the end when the reader scrolled the card in the loading gap", () => {
+    // planning#595, third report: "if I scroll before the conversation is
+    // loaded, it is scrolled to the top". The second cut kept that position,
+    // reasoning that a card taller than the viewport is worth scrolling and a
+    // scroll is a scroll. It is not: there was no conversation on screen to
+    // hold a position IN, so the gesture cannot be the reader choosing where in
+    // it to be. The commit that ends the gap re-arms the open and discards it.
+    expect(openSession({
       duringGap: (scroller) => act(() => {
         scroller.dispatchEvent(new Event("wheel"));
         scroller.scrollTop = 300;
         scroller.dispatchEvent(new Event("scroll"));
       }),
-    });
-    expect(result.top).toBe(300);
+    }).fromBottom).toBe(0);
   });
 
-  it("keeps the reader's gap scroll when the arriving history ends with their own row", () => {
-    // A session opened mid-turn, before its first reply. Hydration is not an
-    // append: counting it as one makes the strongest exception in the hook fire
-    // — the appended-user-message path, which overrides the follow flag AND
-    // clears gesture state — so the reader who had scrolled the loading card
-    // was thrown to the end by a message they sent before they ever opened it.
-    const result = openSession({
+  it("lands at the end after a gap scroll when the arriving history ends with the reader's own row", () => {
+    // The same gap scroll against a session opened mid-turn, before its first
+    // reply. It lands at the end for the ordinary reason above, and NOT via the
+    // appended-user-message path: hydration is not an append, and that path
+    // would also fire on an append after the open, where the reader's position
+    // does stand. Held apart by the two cases below.
+    expect(openSession({
       endsInUser: true,
       duringGap: (scroller) => act(() => {
         scroller.dispatchEvent(new Event("wheel"));
         scroller.scrollTop = 300;
         scroller.dispatchEvent(new Event("scroll"));
       }),
-    });
-    expect(result.top).toBe(300);
+    }).fromBottom).toBe(0);
   });
 
   it("lands at the end when a history ending in the reader's own row arrives", () => {
@@ -383,8 +420,11 @@ describe("opening a session lands at the end once the conversation has painted",
   it("leaves the reader where they are once the conversation is on screen", () => {
     // The other half of the promise, and the case that keeps the rest honest:
     // the open must not go on overriding a reader who has taken the scroll. A
-    // gesture once the rows are up ends it, and their position stands.
+    // gesture once the rows are up ends it, and their position stands — through
+    // a LATER growth, which is what makes the case fail on a hook that ignores
+    // the scroll rather than on one that has simply run out of things to do.
     const result = openSession({
+      growAfterPaint: true,
       afterPaint: (scroller) => {
         wheel(scroller);
         act(() => {
@@ -395,6 +435,67 @@ describe("opening a session lands at the end once the conversation has painted",
     });
     expect(result.top).toBe(500);
     expect(result.fromBottom).toBeGreaterThan(0);
+  });
+
+  it("keeps the reader's position through a clear and reload, after a switch that never went empty", () => {
+    // Found in review. The re-arm is latched at the arrival, and a switch whose
+    // commits never leave the transcript empty reaches no arrival to latch it —
+    // so a later clear-and-repopulate inside that session looked like a first
+    // arrival and discarded a position the reader had taken with the rows in
+    // front of them. Taking a position while a conversation is on screen latches
+    // it too, which is what that position MEANS.
+    show("s1");
+    painted = true;
+    const { container, rerender } = render(<MessageList messages={transcript("s1", 40)} isLoading={false} />);
+    const scroller = container.querySelector<HTMLElement>("[data-chat-transcript]")!;
+    installLayout(scroller);
+    frames(scroller, 6);
+
+    // The switch, with the incoming rows arriving in the same commit as the id.
+    show("s2");
+    rerender(<MessageList messages={transcript("s2", 60)} isLoading={false} />);
+    frames(scroller, 8);
+
+    act(() => {
+      scroller.dispatchEvent(new Event("wheel"));
+      scroller.scrollTop = 300;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+
+    // The transcript is cleared and reloaded under them — a rewind, a rehydrate.
+    rerender(<MessageList messages={[]} isLoading={false} />);
+    frames(scroller, 2);
+    rerender(<MessageList messages={transcript("s2", 60)} isLoading={false} />);
+    frames(scroller, 8);
+
+    expect(scroller.scrollTop).toBe(300);
+  });
+
+  it("leaves a scrolled card alone in a session that has no conversation at all", () => {
+    // The bound on discarding a gap scroll. A gap ends when the rows arrive,
+    // and in an empty session they never do — so the scroll still has to end
+    // the open there, or the card would be pinned to its end for as long as
+    // the session is displayed and every status update would yank a reader
+    // out of the paragraph they were on. The hold is discarded at the arrival,
+    // not suspended until one.
+    show("s1");
+    painted = true;
+    const { container } = render(<MessageList messages={[]} isLoading={false} />);
+    const scroller = container.querySelector<HTMLElement>("[data-chat-transcript]")!;
+    installLayout(scroller);
+    frames(scroller, 6);
+
+    act(() => {
+      scroller.dispatchEvent(new Event("wheel"));
+      scroller.scrollTop = 300;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+
+    // The card grows: a status update, or the reader opening a manual step.
+    cardHeight = 1600;
+    frames(scroller, 6);
+
+    expect(scroller.scrollTop).toBe(300);
   });
 
   it("leaves the reader where they are inside the session they are reading", () => {
