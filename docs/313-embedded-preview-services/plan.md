@@ -39,6 +39,15 @@ later is rewritten the same way a literal tag in the source is. Rewriting the
 HTML text would cover only the first and would have ShipIt parsing and
 re-serialising documents it does not own.
 
+**Open shadow roots are walked and observed too.** Neither a descendant query
+nor a `MutationObserver` on the host crosses that boundary, so a web component
+rendering an embed is precisely req 9's "an iframe your framework creates later"
+and would have stayed unresolved with no error anywhere. docs/258 already decided
+this class matters, for the same reason, when it read a click's anchor out of
+`composedPath()`. The coverage is honest rather than total: a root attached by
+the time its host is scanned is caught, which is where a custom element normally
+attaches one; a root attached later, and a closed one, stay out of reach.
+
 **One consequence of rewriting the DOM rather than the markup**, measured in
 Chrome on 2026-09-21: an iframe a *script* inserts is briefly in the document
 carrying the unresolved address, so the browser tries to launch the scheme and
@@ -77,6 +86,14 @@ page is served at `{sessionId}--{port}.{host}`, so the sibling service's origin 
 that host with the port segment replaced. The session id therefore never has to
 be injected, and the page can address nothing outside its own session (req 3).
 
+**That match is anchored on the FIRST label, with the proxy's own uuid/port
+grammar** (`parsePreviewSubdomain`), and the review is what put it there. A
+looser `.*--(\d+)\.` matches greedily, so a deployment host that itself contains
+`--<digits>.` — `…--3000.shipit--443.example.com` — has *its* label rewritten
+instead of the preview port. The origin check below cannot catch that, because
+it compares the result against the same wrongly built origin. The one guard that
+does not hold here is the one that validates a value against itself.
+
 ## Resolving, and the gate that keeps it inside the session
 
 Resolution mirrors `parseShipitLink`'s preview branch, and the two must agree
@@ -89,6 +106,10 @@ two, because a value it produces becomes a load and not a toast:
   alone and warned about in the page's console; there is no channel from an
   embed to a toast, and inventing one for an author's typo is not worth a
   protocol.
+- A path beginning with **two** slashes is refused before that, as
+  `shipit-link.ts` refuses it: a network-path reference carries its own
+  authority, so `//user:pass@<sibling-host>/x` resolves to the sibling's origin
+  and passes the origin check while carrying credentials into the frame.
 - The resolved URL is built with `new URL(path, origin)` and **refused unless
   `resolved.origin === origin`**. This is the guard that actually holds the
   boundary, and it is the same one `withPath` uses when a remembered path is
@@ -97,10 +118,16 @@ two, because a value it produces becomes a load and not a toast:
   parsing folds `\` into `/` and strips those characters anywhere in the input,
   so `/\evil.example/x` resolves to a foreign host while passing a naive
   "starts with one slash" test.
-- `shipit-render` is stripped, as it is from a link. It is ShipIt's reserved
-  name and selects how a *pointer* looks; it means nothing in an embed, and
-  leaving it in the query would hand the framed page ShipIt's own knob — which
-  docs/258-agent-authored-links req 11 forbids.
+- `shipit-render` is stripped from **both sides of the `#`**, as
+  docs/258-agent-authored-links strips it. It is ShipIt's reserved name and
+  selects how a *pointer* looks; it means nothing in an embed, and leaving it in
+  would hand the framed page ShipIt's own knob, which that feature's req 11
+  forbids. Reading `indexOf("?")` across the whole address instead is not a
+  smaller version of this — it finds the *fragment's* `?` when no query stands
+  before it, so the same address was stripped or kept depending on its
+  neighbour. Splitting on the first `#` and stripping each side is what makes
+  the behaviour one rule. A fragment's own query is otherwise untouched:
+  `#/items?focus=7` is a hash router's URL and belongs to the page.
 
 ## A stopped service (req 5)
 
@@ -123,7 +150,11 @@ and `PreviewFrame` — which already receives `ready`, `path`, `loaded` and
 1. **Page side — an `IntersectionObserver` on the iframe**, fired once, so the
    request is made when the embed is actually scrolled into view. This is the
    "on screen" of req 5: a docs page listing eight services boots the ones the
-   reader reaches, not all eight on open.
+   reader reaches, not all eight on open. **At most one pending observer per
+   element**, dropped when that element is pointed somewhere else and re-checked
+   against the element's current service when it fires — an offscreen iframe
+   retargeted from one service to another would otherwise start a service that
+   was never on screen under any address.
 2. **ShipIt side — the sending window must be a slot's `contentWindow`, it must
    be the ACTIVE slot, its origin must match that slot's, and the pane must be
    visible.** The first three are the checks `agent_message` already applies
@@ -134,9 +165,15 @@ and `PreviewFrame` — which already receives `ready`, `path`, `loaded` and
    records this exact trap). Gate 1 alone would start containers behind another
    tab.
 3. **ShipIt side — the service must be declared, and not already `running` or
-   `starting`**, with a short per-name cooldown so two embeds of one stopped
-   service in a single document send one start. The status check lives here and
-   not on the page because the page has no status and must not acquire one.
+   `starting`**, with a short cooldown so two embeds of one stopped service in a
+   single document send one start. The status check lives here and not on the
+   page because the page has no status and must not acquire one.
+
+   The cooldown is keyed by **session and** name, and is recorded only once the
+   send succeeds. `App` outlives a session switch, so a name-only key let one
+   session's start suppress another session's — and permanently, because the
+   page asks once per embed and never retries. A `send` that returns false is a
+   closed socket and must not burn the window either.
 
 A start that **fails** is not reported to the embed. docs/258's toast is tied to
 a click the user made and is the answer to "why did nothing happen when I
@@ -163,6 +200,12 @@ worth stating rather than re-deriving:
 - The same is true of `embed_start_service`: an embed's request reaches the
   embedding page, which is not ShipIt, and dies there. Two levels deep, nothing
   starts.
+
+The guarantee rests on **ShipIt's source-window check**, not on the handshake
+alone: an embedding page could answer `visibility` itself and make an embed
+believe it is embedded. That changes nothing, because the embed's messages still
+reach only the embedding page, and a message ShipIt does receive must come from
+a slot's own `contentWindow`.
 
 **Rejected: making the SDK fail fast on `window.parent !== window.top`.** It
 reads as the obvious nesting test and it is wrong here — under the dogfood loop

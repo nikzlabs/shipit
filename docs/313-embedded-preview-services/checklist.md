@@ -18,6 +18,11 @@
 - [x] Guard test: the SDK inside an embedded frame reports `embedded: false` and
       sends nothing (req 7)
 - [x] Guard test: a container preview mounts with no `sandbox` to inherit (req 6)
+- [x] Independent review, and its findings folded in: first-label host grammar,
+      `//` network-path refusal, `shipit-render` stripped on both sides of the
+      `#`, the iframe test moved inside `rewrite`, one pending observer per
+      element re-checked on fire, session-scoped cooldown recorded only on a
+      successful send, prototype-safe name sets, open shadow roots
 - [x] `chat-links.md` — the `src` form, the stopped-service behaviour, and what
       a framed document must do when its address moves (req 8)
 - [x] `agent-interface-sdk.md` — the SDK is not available to an embedded frame

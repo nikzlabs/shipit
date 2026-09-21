@@ -34,14 +34,23 @@ function installShipItEmbedResolver(): void {
   // service's origin is this one with the port segment replaced. Deriving it
   // from our own address is why the session id never has to be injected, and
   // why an embed can address nothing outside its own session.
-  const hostParts = /^(.*--)(\d+)(\..*)$/.exec(location.host);
+  // Anchored on the FIRST label, with the proxy's own uuid--port grammar
+  // (`parsePreviewSubdomain`). A looser `.*--(\d+)\.` matches greedily, so a
+  // deployment host that itself contains `--<digits>.` would have *its* label
+  // rewritten instead of the preview port — and the origin check could not
+  // catch it, because it compares against that same wrongly built origin.
+  const hostParts =
+    /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}--)(\d+)(\..*)$/i
+      .exec(location.host);
 
-  const warned: Record<string, boolean> = {};
-  const startRequested: Record<string, boolean> = {};
+  // Sets, not object literals: a service may legitimately be named
+  // `constructor`, and an inherited property reads as "already requested".
+  const warned = new Set<string>();
+  const startRequested = new Set<string>();
 
   const warn = (message: string): void => {
-    if (warned[message]) return;
-    warned[message] = true;
+    if (warned.has(message)) return;
+    warned.add(message);
     try {
       console.warn(`[ShipIt preview] ${message}`);
     } catch {
@@ -61,27 +70,41 @@ function installShipItEmbedResolver(): void {
   };
 
   /**
-   * Drop ShipIt's own presentation knob. It selects how a *pointer* looks and
-   * means nothing in an embed, so leaving it in would hand the framed page a
-   * parameter that is not the author's (docs/258-agent-authored-links req 11).
-   * Only the query position is read: an embed address is authored fresh, not
-   * copied off a rendered chat pointer, which is where the after-the-fragment
-   * spelling comes from.
+   * Drop ShipIt's own presentation knob wherever it appears. It selects how a
+   * *pointer* looks and means nothing in an embed, so leaving it in would hand
+   * the framed page a parameter that is not the author's
+   * (docs/258-agent-authored-links req 11) - which that feature's parser reads
+   * on either side of the `#` for the same reason.
+   *
+   * Only the `?` that introduced the parameter goes with it. A fragment's own
+   * query is otherwise left byte-for-byte, because `#/items?focus=7` is a hash
+   * router's URL and belongs to the page.
    */
-  const stripRenderParam = (target: string): string => {
-    const queryAt = target.indexOf("?");
-    if (queryAt < 0) return target;
-    const hashAt = target.indexOf("#", queryAt);
-    const query = hashAt < 0 ? target.slice(queryAt + 1) : target.slice(queryAt + 1, hashAt);
-    const tail = hashAt < 0 ? "" : target.slice(hashAt);
+  const stripRenderParam = (section: string): string => {
+    const queryAt = section.indexOf("?");
+    if (queryAt < 0) return section;
     const kept: string[] = [];
-    for (const segment of query.split("&")) {
+    for (const segment of section.slice(queryAt + 1).split("&")) {
       const eq = segment.indexOf("=");
       const key = eq < 0 ? segment : segment.slice(0, eq);
       if (decodePart(key) !== renderParam) kept.push(segment);
     }
     const rebuilt = kept.length ? `?${kept.join("&")}` : "";
-    return `${target.slice(0, queryAt)}${rebuilt}${tail}`;
+    return `${section.slice(0, queryAt)}${rebuilt}`;
+  };
+
+  /**
+   * Split on the FIRST `#`, then strip the parameter from each side. Splitting
+   * is what makes the two sides behave alike: reading `indexOf("?")` across the
+   * whole address finds the fragment's `?` when there is no query before it, so
+   * the same address was stripped or kept depending on what stood beside it.
+   */
+  const stripRender = (target: string): string => {
+    const hashAt = target.indexOf("#");
+    if (hashAt < 0) return stripRenderParam(target);
+    const head = stripRenderParam(target.slice(0, hashAt));
+    const fragment = stripRenderParam(target.slice(hashAt + 1));
+    return fragment === "" ? head : `${head}#${fragment}`;
   };
 
   const resolve = (href: string): { url: string; service: string } | null => {
@@ -123,7 +146,14 @@ function installShipItEmbedResolver(): void {
 
     let target = end < 0 ? "/" : afterAuthority.slice(end);
     if (!target.startsWith("/")) target = `/${target}`;
-    target = stripRenderParam(target);
+    // A network-path reference carries its own authority, so it can hold
+    // credentials that survive the origin check. `shipit-link.ts` refuses a
+    // path beginning with two slashes and so does this.
+    if (target.startsWith("//")) {
+      warn("An embed path must begin with a single /");
+      return null;
+    }
+    target = stripRender(target);
 
     const origin = `${location.protocol}//${hostParts[1]}${port}${hostParts[3]}`;
     let resolved: URL;
@@ -150,8 +180,8 @@ function installShipItEmbedResolver(): void {
    * which is the intended dead end.
    */
   const requestStart = (service: string): void => {
-    if (startRequested[service]) return;
-    startRequested[service] = true;
+    if (startRequested.has(service)) return;
+    startRequested.add(service);
     try {
       parent.postMessage({ source, type: "embed_start_service", name: service }, "*");
     } catch {
@@ -159,11 +189,28 @@ function installShipItEmbedResolver(): void {
     }
   };
 
-  // Once the embed is actually scrolled into view, so a page listing many
-  // services boots the ones the reader reaches rather than all of them on open.
+  /**
+   * Wait until the embed is actually scrolled into view, so a page listing many
+   * services boots the ones the reader reaches rather than all of them on open.
+   *
+   * At most one pending observer per element, and it is dropped when that
+   * element is pointed somewhere else: an offscreen iframe retargeted from one
+   * service to another would otherwise keep the first observer alive and start
+   * a service that was never on screen under any address.
+   */
+  const pending = new WeakMap<Element, IntersectionObserver>();
+
+  const cancelPending = (element: Element): void => {
+    const observer = pending.get(element);
+    if (!observer) return;
+    observer.disconnect();
+    pending.delete(element);
+  };
+
   const startWhenVisible = (element: Element, service: string): void => {
+    cancelPending(element);
     if (parent === window) return;
-    if (startRequested[service]) return;
+    if (startRequested.has(service)) return;
     if (typeof IntersectionObserver !== "function") {
       requestStart(service);
       return;
@@ -171,35 +218,51 @@ function installShipItEmbedResolver(): void {
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
-        observer.disconnect();
-        requestStart(service);
+        cancelPending(element);
+        // The element may have been pointed elsewhere while it waited.
+        if (element.getAttribute("data-shipit-service") === service) requestStart(service);
         return;
       }
     });
+    pending.set(element, observer);
     observer.observe(element);
   };
 
+  const isIframe = (element: Element): boolean =>
+    element.tagName?.toLowerCase() === "iframe";
+
+  /**
+   * The iframe test lives HERE and not only in `scan`, because the attribute
+   * branch of the mutation observer reaches any element whose `src` changed -
+   * an image given a shipit-preview src after insertion would otherwise be
+   * rewritten and would request a service start.
+   */
   const rewrite = (element: Element): void => {
+    if (!isIframe(element)) return;
     const href = element.getAttribute("src");
     if (!href || !looksLikeScheme(href)) return;
     const resolved = resolve(href);
-    if (!resolved) return;
+    if (!resolved) {
+      cancelPending(element);
+      return;
+    }
     element.setAttribute("data-shipit-service", resolved.service);
     element.setAttribute("src", resolved.url);
     startWhenVisible(element, resolved.service);
   };
 
-  const scan = (node: Node): void => {
-    if (node.nodeType !== 1) return;
-    const element = node as Element;
-    if (element.tagName?.toLowerCase() === "iframe") rewrite(element);
-    for (const nested of Array.from(element.getElementsByTagName("iframe"))) rewrite(nested);
-  };
+  // Open shadow roots are walked and observed too: a web component that renders
+  // an embed is exactly the "an iframe your framework creates later" case, and
+  // neither a descendant query nor an observer on the host crosses that
+  // boundary. This catches a root attached by the time its host is scanned,
+  // which is where a custom element normally attaches one; a root attached
+  // later, and a closed one, stay out of reach.
+  const observed = new WeakSet<Node>();
 
-  const root = document.documentElement;
-  if (root) scan(root);
-
-  if (typeof MutationObserver === "function" && root) {
+  const observeRoot = (target: Node): void => {
+    if (typeof MutationObserver !== "function") return;
+    if (observed.has(target)) return;
+    observed.add(target);
     new MutationObserver((records) => {
       for (const record of records) {
         if (record.type === "attributes") {
@@ -208,12 +271,36 @@ function installShipItEmbedResolver(): void {
         }
         for (const added of Array.from(record.addedNodes)) scan(added);
       }
-    }).observe(root, {
+    }).observe(target, {
       childList: true,
       subtree: true,
       attributes: true,
       attributeFilter: ["src"],
     });
+  };
+
+  const scanShadow = (element: Element): void => {
+    const shadow = (element as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+    if (!shadow) return;
+    observeRoot(shadow);
+    for (const child of Array.from(shadow.children)) scan(child);
+  };
+
+  const scan = (node: Node): void => {
+    if (node.nodeType !== 1) return;
+    const element = node as Element;
+    rewrite(element);
+    scanShadow(element);
+    for (const nested of Array.from(element.getElementsByTagName("*"))) {
+      if (isIframe(nested)) rewrite(nested);
+      scanShadow(nested);
+    }
+  };
+
+  const root = document.documentElement;
+  if (root) {
+    scan(root);
+    observeRoot(root);
   }
 
   document.addEventListener("DOMContentLoaded", () => {

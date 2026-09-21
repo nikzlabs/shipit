@@ -99,6 +99,36 @@ describe("preview embed resolver", () => {
     expect(frame.getAttribute("src")).toBe(`${SIBLING}/e.html#req-7`);
   });
 
+  // The two sides must behave alike: reading `indexOf("?")` across the whole
+  // address found the fragment's `?` only when no query stood before it, so the
+  // same address was stripped or kept depending on its neighbour.
+  it("strips the render parameter from the fragment too", async () => {
+    install();
+    const frame = addIframe("shipit-preview://assetgen/e.html?x=1#route?shipit-render=button");
+    await settle();
+
+    expect(frame.getAttribute("src")).toBe(`${SIBLING}/e.html?x=1#route`);
+  });
+
+  it("leaves a hash router's own query untouched", async () => {
+    install();
+    const frame = addIframe("shipit-preview://assetgen/e.html#/items?focus=7");
+    await settle();
+
+    expect(frame.getAttribute("src")).toBe(`${SIBLING}/e.html#/items?focus=7`);
+  });
+
+  // A network-path reference carries its own authority, so the origin check
+  // alone would pass a credential-bearing URL at the sibling's own host.
+  it("refuses a path that smuggles credentials at the sibling host", async () => {
+    install();
+    const href = "shipit-preview://assetgen//u:p@11111111-1111-1111-1111-111111111111--5173.localhost:8080/x";
+    const frame = addIframe(href);
+    await settle();
+
+    expect(frame.getAttribute("src")).toBe(href);
+  });
+
   it("leaves an undeclared service name alone", async () => {
     install();
     const frame = addIframe("shipit-preview://nope/e.html");
@@ -180,6 +210,32 @@ describe("preview embed resolver", () => {
 
     expect(img.getAttribute("src")).toBe("shipit-preview://assetgen/x.png");
   });
+
+  // The attribute branch of the mutation observer reaches any element whose
+  // `src` changed, not only the ones `scan` walked.
+  it("does not rewrite a non-iframe whose src is assigned after insertion", async () => {
+    install();
+    const img = document.createElement("img");
+    document.body.appendChild(img);
+    await settle();
+    img.setAttribute("src", "shipit-preview://assetgen/x.png");
+    await settle();
+
+    expect(img.getAttribute("src")).toBe("shipit-preview://assetgen/x.png");
+  });
+
+  it("resolves an embed inside an open shadow root", async () => {
+    install();
+    const host = document.createElement("div");
+    const shadow = host.attachShadow({ mode: "open" });
+    const frame = document.createElement("iframe");
+    frame.setAttribute("src", "shipit-preview://assetgen/e.html");
+    shadow.appendChild(frame);
+    document.body.appendChild(host);
+    await settle();
+
+    expect(frame.getAttribute("src")).toBe(`${SIBLING}/e.html`);
+  });
 });
 
 describe("buildEmbedResolverScript", () => {
@@ -195,8 +251,8 @@ describe("buildEmbedResolverScript", () => {
     const name = 'x"><img src=x onerror=1>';
     const script = buildEmbedResolverScript({ [name]: 3000 });
 
-    expect(script).not.toContain("<img");
     const attribute = /data-shipit-services="([^"]*)"/.exec(script)?.[1];
+    expect(attribute).not.toContain("<");
     const decoded = (attribute ?? "")
       .replace(/&quot;/g, '"')
       .replace(/&lt;/g, "<")
