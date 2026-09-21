@@ -71,11 +71,14 @@ export function resolveOverlayScope(
  *
  * The suffix is the eligibility contract's version, and bumping it is what retires every base
  * decided under the old one: the scope hash changes, so no session resolves a `v<N-1>` pointer
- * and the disk janitor reclaims those scopes as unreferenced. `v2` retires the bases published
+ * and the disk janitor reclaims those scopes as unreferenced. `v2` retired the bases published
  * before install-time builds became ineligible — without it the repos planning#604 is about keep
  * mounting the unbuilt base they already have, and the fix reaches only repos with no base yet.
+ * `v3` retires those decided before local links were classified (planning#414): admitting
+ * in-repo `workspace:`/`link:` also NARROWED the contract, and a repo whose lockfile sets
+ * `excludeLinksFromLockfile` already has a `v2` base carrying a link edge the decision never saw.
  */
-export const PNPM_VERIFIED_NAMESPACE = "pnpm-verified-v2";
+export const PNPM_VERIFIED_NAMESPACE = "pnpm-verified-v3";
 
 // The one dep dir the verified builder can fill: pnpm's install output is a single `node_modules`.
 export const PNPM_BASE_DEP_DIR = "node_modules";

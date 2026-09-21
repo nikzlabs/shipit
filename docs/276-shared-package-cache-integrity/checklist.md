@@ -123,8 +123,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       (**no pnpm pre-stamp**), so builds run and the session's graph reconciles
       in its upper; the session snapshot pull is dropped for pnpm. All-or-nothing
       admission; git/`file:`/`link:`/`workspace:`/`patchedDependencies`/pnpmfile
-      repos get no base. (Superseded twice since: a committed `.pnpmfile` and
-      `patchedDependencies` are both admitted.)
+      repos get no base. (Superseded three times since: a committed `.pnpmfile`,
+      `patchedDependencies`, and an in-repo `workspace:`/`link:` are all
+      admitted.)
 - [x] Spike `.bin/` shims and carried state (`tree-state-spike.sh`, PASS=9,
       FINDINGS.md): shims NOT regenerated on a genuine no-op; an inconsistent
       carried lock.yaml self-heals on an install; a carried
@@ -212,8 +213,10 @@ recorded in [requirements.md](./requirements.md); none is open.
       migrated from it. **Deviation:** its janitor sweep is kept rather than dropped —
       it is what reclaims the retired trees, and it now exempts no hash, ageing them
       out instead of deleting at once (a pre-upgrade container may still mount one).
-- [x] Verified namespace: one discriminator (`pnpm-verified-v<N>`, at `v2` since
-      planning#604 retired the pre-fix bases) as a fourth
+- [x] Verified namespace: one discriminator (`pnpm-verified-v<N>`, at `v3` — `v2`
+      retired the bases published before install-time builds became ineligible
+      (planning#604), `v3` those decided before local links were classified
+      (planning#414), which also narrowed the contract) as a fourth
       field of `overlayScopeHash`, and an optional `namespace` on `OverlayScope` so the
       pointer, the publish and the mount address one scope. Omitting it reproduces the
       pre-namespace hash, so existing npm/yarn bases stay addressable.
@@ -525,20 +528,46 @@ recorded in [requirements.md](./requirements.md); none is open.
       of that reason which claimed a config dependency carries no digest: it
       does — what is missing is ShipIt's support for verifying and staging it.
 
-- [ ] **Settle `workspace:` / `link:` / `file:` — a candidate, not yet an
-      admission** (downgraded on review). What holds: a frozen, offline install
-      against a dead registry succeeds with only the manifests staged, and pnpm
-      writes a **relative** link that resolves in the consuming checkout. Two
-      things must be settled first. (a) The builder publishes
-      `projectDir/node_modules` alone (`pnpm-base-builder.ts`), while a
-      workspace's members each carry `packages/*/node_modules`; no cell consumes
-      a root-only base from a workspace repo. (b) `injectWorkspacePackages` and
-      `dependenciesMeta[].injected` make pnpm **copy member content into the
-      tree**, which would put unverified in-repo content into a published base —
-      and nothing in `decidePnpmBaseEligibility` or `pnpm-lockfile.ts` detects
-      either today. Then narrow `LOCAL_SPECIFIER`, with a cell showing an
-      out-of-repo `link:` still refused and one showing an injected member
-      refused.
+- [x] **Settle `workspace:` / `link:` / `file:` — admitted on the symlink half**
+      (planning#414). The rule is not "is the target in the repo" but "does pnpm
+      COPY it": `workspace:`/`link:` resolve to `link:<p>` and write one relative
+      symlink the consuming session follows into its OWN checkout, so nothing
+      crosses into the base and an edit inside a member stays per session (req
+      11) — admitted when `<p>`, taken against its importer, stays in the repo.
+      `file:` copies, and over a manifests-only snapshot the builder's own flags
+      publish a **truncated** package at rc=0 with no warning, so it stays
+      refused. Both open items are closed. (a) A workspace cell now consumes a
+      root-only base on the real pipeline
+      (`integration_tests/pnpm-verified-base-build.test.ts`): the consumer
+      recreates `packages/*/node_modules` as symlinks into the base's virtual
+      store and imports no content. (b) No injected detector is needed —
+      `dependenciesMeta[].injected` and `injectWorkspacePackages` alone both
+      leave the resolution at `link:` on 12.5.1, and the spelling that does
+      inject resolves as `file:packages/…`, so the `file:` refusal IS the
+      injected refusal — and injection has more than one spelling, since
+      `dependenciesMeta[].injected` alone injects whenever the copy cannot be
+      deduped. Two gaps the admission forced closed: an importer directory
+      outside the repo (`packages: ['../sibling/*']`, which pnpm accepts), and
+      `excludeLinksFromLockfile`, which removed `link:` edges from the lockfile
+      while the builder still wrote them into the base. The `snapshots:` loop
+      takes the same split rather than a blanket refusal — a REGISTRY package
+      whose peer is a workspace member carries a `link:` edge, root-relative —
+      which independent review found before it shipped. Containment is LEXICAL:
+      a committed `vendor -> ../outside` still reaches past it, which is the
+      repo's own trust boundary and identical with no base. Measured by
+      `local-specifier-spike.sh` (PASS=31) and FINDINGS.md.
+
+- [ ] **Run the workspace admission's overlay cells on the services host.** The
+      admission was settled without them and does not rest on them — the base
+      gains one symlink, the member trees are writes in the session's own
+      checkout, and their `.bin` chmod targets are ones `resolvePnpmBinSeedSet`
+      already seeds — but nothing has consumed a workspace base as a real
+      read-only lowerdir under a distinct uid. Cells: base hit; the member-tree
+      rebuild (it rewrites `.modules.yaml` and `.pnpm/lock.yaml`, which copy-up
+      permits and the base's group share reaches); `pnpm add` in the root and in
+      a member; an edit inside a member staying per session. A chmod of a base
+      file that is not a bin target would still EPERM; none was observed and none
+      is asserted. See FINDINGS.md "Faithfulness and limits".
 
 - [x] **Admit `patchedDependencies`.** Patch bytes are in the immutable snapshot
       and the tarball is digest-verified, so the output is verifiable by

@@ -225,8 +225,12 @@ describe("liveOverlayScopeHashes", () => {
     const rt = overlayRuntimeKey(ON);
     const repo = "https://github.com/acme/repo.git";
     const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
-    expect(PNPM_VERIFIED_NAMESPACE).not.toBe("pnpm-verified-v1");
-    expect(live).not.toContain(overlayScopeHash(repo, rt, "node_modules", "pnpm-verified-v1"));
+    // Every retired suffix, not just the first: each bump is a contract change, and a base
+    // decided under ANY of them must stop being addressed rather than only the oldest.
+    for (const retired of ["pnpm-verified-v1", "pnpm-verified-v2"]) {
+      expect(PNPM_VERIFIED_NAMESPACE).not.toBe(retired);
+      expect(live).not.toContain(overlayScopeHash(repo, rt, "node_modules", retired));
+    }
   });
 
   it("uses the per-dep-dir hash, not the legacy (repo, runtime) hash", () => {

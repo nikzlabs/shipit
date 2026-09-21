@@ -82,6 +82,8 @@ export type PnpmIneligibleCode =
   | "no-dependencies"
   | "patched-dependency"
   | "local-specifier"
+  | "escaping-local-target"
+  | "excluded-links"
   | "hook-source"
   | "config-dependencies"
   | "unauthorized-registry"
@@ -106,8 +108,55 @@ export type PnpmBaseEligibility = PnpmEligible | PnpmIneligible;
 /** Lockfile major versions whose `packages`/`importers` shape this parser was written against. */
 const SUPPORTED_LOCKFILE_MAJORS = new Set(["9", "10"]);
 
-/** Specifier prefixes that resolve outside the staged snapshot. `npm:` aliases are admitted. */
+/** Specifier prefixes whose target is not a published tarball. `npm:` aliases are admitted. */
 const LOCAL_SPECIFIER = /^(?:file:|link:|workspace:|git\+|git:|github:|https?:)/;
+
+/**
+ * The one local form pnpm materializes as a **symlink** rather than as content, and the path it
+ * points at — relative to the importer that declares it (measured 2026-09-21 on 12.5.1: importer
+ * `.` resolves `workspace:*` to `link:packages/lib`, importer `packages/app` to `link:../lib`).
+ *
+ * `workspace:` and `link:` both resolve to this form, and an absolute `link:` specifier is
+ * normalized to a relative one before it is written. `file:` does NOT: it resolves to
+ * `<name>@file:<dir>` with a `packages:` entry of kind `directory`, and pnpm copies the target's
+ * content into the virtual store.
+ */
+const LINK_RESOLUTION = /^link:(.*)$/;
+
+/**
+ * Specifier forms that can never legitimately produce a symlink into the project. Only
+ * `workspace:`, `link:` and a plain semver range a member satisfies do. Checking this inside the
+ * link branch keeps both halves of the edge read, the way the blanket refusal did — an
+ * unexpected pairing is a lockfile this parser does not understand, not one to admit.
+ */
+const NON_LINK_SPECIFIER = /^(?:file:|git\+|git:|github:|https?:)/;
+
+/**
+ * A lockfile written with this setting OMITS its `link:` edges, so the decision below cannot see
+ * one — measured 2026-09-21: a repo with `link:./vendor/l` locks with no trace of it, and the
+ * builder still writes the symlink into the published base.
+ */
+const EXCLUDE_LINKS_SETTING = "excludeLinksFromLockfile";
+
+/**
+ * Does a link target leave the project LEXICALLY, once resolved against the directory it is
+ * relative to?
+ *
+ * Lexical is the whole claim, and it is the right one here. The published base carries the
+ * symlink pnpm writes, and the link is followed in the CONSUMING session's checkout — so a
+ * contained target means what it resolves to is decided entirely inside a tree that session owns
+ * and no other session can write. It does NOT mean the resolution stays on disk inside the
+ * checkout: a committed `vendor -> ../outside` makes `link:vendor` reach past it (found by
+ * independent review, reproduced on 12.4.1). That escape is the repo's own trust boundary, which
+ * the whole base already rests on, and the session's own install produces the identical link with
+ * no base at all — so a base neither creates it nor is the place to check for it, and the staged
+ * snapshot could not see those checkout symlinks anyway.
+ */
+function localTargetEscapes(importer: string, target: string): boolean {
+  if (path.posix.isAbsolute(target)) return true;
+  const joined = path.posix.normalize(path.posix.join(importer === "." ? "" : importer, target));
+  return joined === ".." || joined.startsWith("../");
+}
 
 /**
  * Layout settings, each with the one value that describes the layout the base IS. Declaring
@@ -578,10 +627,49 @@ export function decidePnpmBaseEligibility(
     }
   }
 
+  // A `link:` edge puts NO content in the base — pnpm writes one relative symlink, which the
+  // consuming session follows into its own checkout — so admitting the class needs the edges to
+  // be visible. This setting hides exactly them, and the lockfile's own `settings:` block is what
+  // decides: a config disagreeing with it cannot reach a successful frozen install either way.
+  if (staged.lock.settings[EXCLUDE_LINKS_SETTING] === true) {
+    return {
+      eligible: false,
+      code: "excluded-links",
+      detail: `${PNPM_LOCKFILE} was written with ${EXCLUDE_LINKS_SETTING}, so it records none of `
+        + "the local links the build would put in the base",
+    };
+  }
+
+  // An importer outside the project is reached by a `pnpm-workspace.yaml` naming `../elsewhere/*`
+  // — measured 2026-09-21: pnpm accepts it, and links the member from outside the checkout.
+  for (const dir of staged.lock.importerDirs) {
+    if (localTargetEscapes(".", dir)) {
+      return {
+        eligible: false,
+        code: "escaping-local-target",
+        detail: `${PNPM_LOCKFILE} names the workspace project ${dir}, which is outside the repository`,
+      };
+    }
+  }
+
   // Both halves of every edge: an ordinary `^1.0.0` specifier can RESOLVE to `link:packages/x`,
   // which happens whenever a workspace package satisfies a plain semver range, so a check that
-  // reads specifiers alone lets the local edge the design excludes straight through.
+  // reads specifiers alone lets a local edge straight through — and the `injected` spelling of a
+  // `workspace:` dependency goes the other way, resolving to `file:` under a `workspace:`
+  // specifier. What pnpm RESOLVED the edge to is therefore what decides.
   for (const { importer, name, specifier, resolved } of staged.lock.importers) {
+    const link = LINK_RESOLUTION.exec(resolved);
+    if (link && !NON_LINK_SPECIFIER.test(specifier)) {
+      if (localTargetEscapes(importer, link[1])) {
+        return {
+          eligible: false,
+          code: "escaping-local-target",
+          detail: `${importer === "." ? "the root manifest" : importer} links ${name} to `
+            + `${link[1]}, which is outside the repository`,
+        };
+      }
+      continue;
+    }
     const local = [specifier, resolved].find((v) => LOCAL_SPECIFIER.test(v));
     if (local !== undefined) {
       return {
@@ -592,7 +680,25 @@ export function decidePnpmBaseEligibility(
       };
     }
   }
+  // A REGISTRY package can carry a link edge, which is why this loop is not a blanket refusal:
+  // a workspace member satisfying a registry package's peer gives
+  // `react-dom@18.2.0(react@packages+react)` a `react: link:packages/react` edge, and the repo's
+  // own frozen install is fine with it (measured 2026-09-21 on 12.4.1 and 12.5.1). A snapshot
+  // target is resolved against the PROJECT ROOT rather than against `from` — which is a package
+  // key, not a directory — and stays root-relative even when the importer that pulled the
+  // package in is nested, where that importer's own edge reads `link:../react`.
   for (const { from, name, resolved } of staged.lock.snapshotEdges) {
+    const link = LINK_RESOLUTION.exec(resolved);
+    if (link) {
+      if (localTargetEscapes(".", link[1])) {
+        return {
+          eligible: false,
+          code: "escaping-local-target",
+          detail: `${from} links ${name} to ${link[1]}, which is outside the repository`,
+        };
+      }
+      continue;
+    }
     if (LOCAL_SPECIFIER.test(resolved)) {
       return {
         eligible: false,

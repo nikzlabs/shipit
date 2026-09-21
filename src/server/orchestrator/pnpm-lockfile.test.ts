@@ -149,6 +149,21 @@ importers:
     expect(lock.importerDirs).toEqual([".", "packages/api"]);
   });
 
+  it("reads the settings block, which records what the lockfile was written under", () => {
+    const lock = parsePnpmLock(`lockfileVersion: '9.0'
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: true
+importers:
+  .:
+    dependencies: {}
+`);
+    expect(lock.settings.excludeLinksFromLockfile).toBe(true);
+    // A lockfile with no block reads as empty, never as a setting that happens to be absent.
+    expect(parsePnpmLock("lockfileVersion: '9.0'\n").settings).toEqual({});
+    expect(parsePnpmLock("lockfileVersion: '9.0'\nsettings: nope\n").settings).toEqual({});
+  });
+
   it("refuses a lockfile with no version rather than treating it as empty", () => {
     expect(() => parsePnpmLock("packages: {}\n")).toThrow(PnpmLockParseError);
   });
