@@ -531,10 +531,16 @@ export function createDockerProxy(deps: DockerProxyDeps): http.Server {
 
       // Below 1.24 the daemon reads a full HostConfig from a container *start*, which no route
       // here checks. A stock daemon refuses those versions itself; this does not depend on that.
-      const version = /^\/v(\d+)\.(\d+)(\/|$)/.exec(url);
-      if (version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 24))) {
-        forbidden(res, `Docker API version v${version[1]}.${version[2]} is not supported (minimum v1.24)`);
-        return;
+      // The whole prefix is parsed the way Go's `versions.compare` does — component by component,
+      // a missing or unparseable one as 0 — so `/v1.2.3/` and `/v1/` are read as the sub-1.24
+      // versions the daemon reads them as, rather than skipped for not being two components.
+      const version = /^\/v([\d.]+)(?=\/|$)/.exec(url);
+      if (version) {
+        const [major, minor] = version[1].split(".").map((part) => Number.parseInt(part, 10) || 0);
+        if (major < 1 || (major === 1 && (minor ?? 0) < 24)) {
+          forbidden(res, `Docker API version v${version[1]} is not supported (minimum v1.24)`);
+          return;
+        }
       }
 
       const ctx: RequestContext = {

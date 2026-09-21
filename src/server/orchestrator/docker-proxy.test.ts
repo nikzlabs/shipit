@@ -428,14 +428,23 @@ describe("Docker API proxy", () => {
       expect((res.body as any).message).toContain("Endpoint not allowed");
     });
 
-    it("returns 403 for an API version old enough to change daemon semantics", async () => {
-      // Below 1.24 the daemon reads HostConfig from a container start, which no route checks.
-      const res = await makeRequest(proxyUrl, "POST", "/v1.23/containers/mock-container-1/start", {
+    // Below 1.24 the daemon reads HostConfig from a container start, which no route checks. Go
+    // compares the version component by component, so "1.2.3" and "1" are both below 1.24 to the
+    // daemon however many components they carry.
+    it.each(["/v1.23", "/v1.2.3", "/v1", "/v0.99"])("returns 403 for API version %s", async (prefix) => {
+      const res = await makeRequest(proxyUrl, "POST", `${prefix}/containers/mock-container-1/start`, {
         Privileged: true, Binds: ["/:/host"],
       });
       expect(res.status).toBe(403);
-      expect((res.body as any).message).toContain("v1.23");
       expect((res.body as any).message).toContain("minimum v1.24");
+      expect(daemon.containers.get("mock-container-1")?.running).toBeFalsy();
+    });
+
+    it("allows the API versions a current client negotiates", async () => {
+      for (const prefix of ["/v1.24", "/v1.41", "/v1.51", "/v2.0", ""]) {
+        const res = await makeRequest(proxyUrl, "GET", `${prefix}/version`);
+        expect(res.status, prefix).toBe(200);
+      }
     });
   });
 
