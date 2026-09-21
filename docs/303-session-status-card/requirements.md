@@ -333,6 +333,11 @@ taken inside one session, without building an agent that talks to many.
   says nothing about where the control that does it lives, which is the design's
   to settle.
 
+  And once it was in front of him collapsed: "the collapse button is on the
+  right side, but the collapsed card is on the left. Move it to the right, too."
+  So the icon is right-aligned and lands in the corner the control it replaced
+  sat in, rather than jumping the width of the card.
+
 - 2026-09-21 — Nik: "All parts of the cards should be rendered as markdown, not
   only status. Links etc. are useful." → req 41. Not a question he was asked; the
   requirement is recorded here because the card's fields were markdown in one

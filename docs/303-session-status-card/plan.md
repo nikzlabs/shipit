@@ -1008,7 +1008,8 @@ question last because it is what holds the session up (req 32).
 ### Collapsed to a single icon (req 42)
 
 A caret at the **bottom-right of the last card in the stack** replaces the whole
-stack with one accent-bordered icon button, and that button restores it. That
+stack with one accent-bordered icon button, right-aligned so it lands in the
+corner the control it replaced sat in; that button restores it. That
 corner is the one nearest the composer, and so nearest the user's hand; which
 card is last moves, because "Next steps" is absent with nothing to do and "Last
 turn" is absent on a stale card and when the agent had nothing to say, so the

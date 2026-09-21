@@ -448,7 +448,9 @@ export function SessionStatusCard({ status, sessionId, onSubmit }: SessionStatus
     ].filter((part): part is string => part !== null);
     const name = `Show session status${parts.length > 0 ? ` — ${parts.join(", ")}` : ""}`;
     return (
-      <div data-testid="session-status-card" className="flex text-xs">
+      // Right-aligned, so the icon appears where the control that collapsed it
+      // was: the same corner, rather than jumping the width of the card.
+      <div data-testid="session-status-card" className="flex justify-end text-xs">
         {/* req 42 — a single icon, which is all it is when nothing is
             outstanding. It grows only by what collapsing must not conceal. */}
         <button

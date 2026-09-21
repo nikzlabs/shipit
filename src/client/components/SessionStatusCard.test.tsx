@@ -713,6 +713,14 @@ describe("SessionStatusCard", () => {
       expect(screen.getByTestId("session-status-collapsed")).toBeInTheDocument();
     });
 
+    // The only thing jsdom can see of an alignment; the rendering was checked in
+    // a browser. Without it a restyle silently undoes something Nik asked for.
+    it("puts the collapsed icon at the right, where the control that collapsed it was", () => {
+      render(<SessionStatusCard status={full()} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("session-status-collapse"));
+      expect(screen.getByTestId("session-status-card").className).toContain("justify-end");
+    });
+
     it("reopens from the collapsed control", () => {
       render(<SessionStatusCard status={full()} sessionId="s1" />);
       fireEvent.click(screen.getByTestId("session-status-collapse"));
