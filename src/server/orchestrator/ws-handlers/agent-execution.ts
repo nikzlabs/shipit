@@ -31,7 +31,7 @@ import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../services/pr-rearm.js";
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
-import { createPromptRepark, type PromptRepark } from "../turn-settlement.js";
+import { createPromptRepark, createPromptTakeLedger, type PromptTakeLedger } from "../turn-settlement.js";
 import {
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
@@ -259,7 +259,7 @@ async function runQueuedInteractiveMessage(
   }
 }
 
-export async function runAgentWithMessage(ctx: FullCtx, opts: {
+interface RunAgentWithMessageOpts {
   userText: string;
   images?: ImageAttachment[];
   validatedFiles: FileAttachment[];
@@ -279,7 +279,28 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   dictated?: boolean;
   /** Presence enables echo; omit for queued messages already restored by dequeued. */
   userEcho?: { clientRequestId?: string };
-}): Promise<void> {
+}
+
+/**
+ * planning#609 — the takes below are performed one at a time and handed over in one go at
+ * the end, so composition owns them for its whole length. A throw in that window — an
+ * image written to disk, a read of a database shutdown has closed — would otherwise spend
+ * a take on a turn no agent ever saw.
+ */
+export async function runAgentWithMessage(ctx: FullCtx, opts: RunAgentWithMessageOpts): Promise<void> {
+  const takes = createPromptTakeLedger();
+  try {
+    await composeAndRunAgentTurn(ctx, opts, takes);
+  } finally {
+    takes.reparkIfNotHandedOver();
+  }
+}
+
+async function composeAndRunAgentTurn(
+  ctx: FullCtx,
+  opts: RunAgentWithMessageOpts,
+  takes: PromptTakeLedger,
+): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, userReview } = opts;
 
   // Capture before awaits: the user can switch sessions during this turn.
@@ -426,12 +447,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       : "";
   // Consumption clears the notice; a turn that never reaches an agent must put it back
   // (planning#609). Appended, so a notice recorded while this turn ran keeps its place.
-  const noticeRepark = capturedSessionId && pendingAgentNotice
-    ? createPromptRepark(
-        `the pending agent notice for ${capturedSessionId}`,
-        () => { ctx.sessionManager.appendPendingAgentNotice(capturedSessionId, pendingAgentNotice); },
-      )
-    : undefined;
+  takes.add(resetHook.repark);
+  if (capturedSessionId && pendingAgentNotice) {
+    takes.add(createPromptRepark(
+      `the pending agent notice for ${capturedSessionId}`,
+      () => { ctx.sessionManager.appendPendingAgentNotice(capturedSessionId, pendingAgentNotice); },
+    ));
+  }
 
   const bugOutcomeNotice =
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
@@ -497,10 +519,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       })
     : { instructions: "" };
   const roleContext = role.instructions;
-  // The takes this prompt carries, handed back if no agent ever reads it (planning#609).
-  const promptReparks = [noticeRepark, resetHook.repark, role.repark].filter(
-    (repark): repark is PromptRepark => repark !== undefined,
-  );
+  takes.add(role.repark);
   const prompt = ridesTurnAsCommand
     ? userText.trim()
     : (agentPrefix ? `${agentPrefix}\n\n` : "") +
@@ -715,6 +734,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
 
   // Record the branch move even if the turn fails before the user-row hook.
   try {
+    takes.handOver();
     await executeAgentTurn(runner, deps, currentAgent, {
       agentId,
       sessionId,
@@ -743,7 +763,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       emitErrorOnNoResult: true,
       onInterruptedTurn,
       ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
-      ...(promptReparks.length > 0 ? { promptReparks } : {}),
+      ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
     });
   } finally {
     if (sessionId) resetHook.ensureRecorded?.(sessionId);

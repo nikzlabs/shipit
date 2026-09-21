@@ -1813,21 +1813,38 @@ turn regenerates it.
 `PromptRepark` (`turn-settlement.ts`) is the mirror of `NoticeDelivery`, and it
 reads the **same** `ownTurn` lifecycle: `"unsubmitted"` is the state no
 submission ever left, so the takes were read by nobody.
-`TurnInput.promptReparks` carries them, and `settleTurn` runs them. Both
-composition sites build the list — the interactive one
-(`ws-handlers/agent-execution.ts`) had no repark at all, and
-`dispatched-turn.ts`'s `reparkNoticeIfUndelivered` latched "delivered" one line
-*before* `executeAgentTurn`, so it covered only a failure in the pre-executor
-setup. That latch stays where it is; past it the executor owns the question,
-because it is the only thing that knows whether the prompt was submitted.
+`TurnInput.promptReparks` carries them into the executor.
 
-Settlement is the right moment for the same reason it is the wrong moment for a
-delivery: every retry path stands this executor's terminal sequence down before
-re-entering with the same reparks, so a settled turn is one no successor will
-submit. A proxied submission landing after settlement is the one inexact case,
-and it reparks a take the agent did read — at-least-once, the safe direction
-here, since both stores it writes to hold prose the agent reads twice rather than
-state it corrupts.
+**Two owners, and the handover between them is the whole of it.** A
+`PromptTakeLedger` holds the takes from the moment composition makes the first
+one; `handOver()` passes them to the executor as the prompt goes in, and until
+then the composition site's own `finally` puts every one of them back. That
+window is not a formality — composition writes an image to disk and reads a
+database shutdown can close under it, and the interactive site
+(`ws-handlers/agent-execution.ts`) had no repark of any kind, while
+`dispatched-turn.ts` restored only the pending notice and lost the reset prefix
+and the role brief to a failing `createAgent`. Past the handover the executor
+owns the question, because it is the only thing that knows whether the prompt was
+submitted.
+
+**The repark is sequenced ahead of the drain, not with settlement.** A drained
+successor is a *different* turn and composes its own prompt, so a take still
+spent when `tryDrain` runs is one that turn never gets — and the queued message
+is exactly the one that needs to be told its branch moved. So the executor
+reparks at the head of the terminal sequence and again at settlement, the call
+being idempotent.
+
+**Delivery is at-least-once here too, in two known cases**, and the second was
+found in review after an earlier draft of this section claimed — wrongly — that
+every retry path stands the predecessor down first. A proxied submission can land
+after settlement; and the dispatched no-result retry starts its successor from
+`onNoResultExit` and then still settles the predecessor, because the `handled`
+return sits inside the `try` whose `finally` settles. Each reparks a take that is
+read after all. Closing them needs a channel that tells a successor-started
+`true` from a gave-up `true` — and the gave-up one MUST still repark, so the
+ambiguity cannot be assumed away. Both cost a repeated notice rather than a lost
+one, and every store a repark writes to holds prose the agent reads twice rather
+than state it corrupts.
 
 Two scopes are deliberate. Only a reset that **moved** the branch reparks; a skip
 is re-evaluated every turn and needs no help. And the notice is `append`ed rather
@@ -1838,9 +1855,12 @@ Out of scope, both by earlier decision: the bug-outcome notice is at-most-once
 (docs/164), and the dependency-gap prefix is not a take — the gap persists until
 an install succeeds, so it rides the next turn correctly.
 
-Guards: `integration_tests/turn-prefix-repark.test.ts` (the interactive site,
-end to end), `dispatched-turn-pre-turn-reset.test.ts` (the executor window on the
-dispatched site), `pre-turn-reset-hook.test.ts` and `services/session-role.test.ts`.
+Guards: `integration_tests/turn-prefix-repark.test.ts` (the interactive site, end
+to end, including a throw inside composition itself),
+`turn-prefix-repark-ordering.test.ts` (repark before drain),
+`dispatched-turn-pre-turn-reset.test.ts` (the executor window and the
+pre-executor one), `pre-turn-reset-hook.test.ts` and
+`services/session-role.test.ts`.
 
 **The notice carries no values, and that is a trust decision rather than
 brevity.** `from`/`to` are formatted values and a `user_text` projection keeps
@@ -2079,8 +2099,9 @@ Changed: `credential-store.ts`, `global-system-prompt.ts`, `git-config.ts`,
 `api-routes-bootstrap.ts`, `api-routes-egress.ts`, `api-routes-mcp.ts`,
 `api-routes-updates.ts`, `api-routes-session-repos.ts`,
 `ws-handlers/egress-handlers.ts`, `turn-settlement.ts` (`NoticeDelivery`, and its
-mirror `PromptRepark`), `turn-executor.ts` (`noticeDeliveries`, acknowledged from
-the `agent_result` handler; `promptReparks`, run from `settleTurn`),
+mirror `PromptRepark` with `PromptTakeLedger`), `turn-executor.ts`
+(`noticeDeliveries`, acknowledged from the `agent_result` handler;
+`promptReparks`, run ahead of the drain and again at settlement),
 `dispatched-turn.ts`, `ws-handlers/agent-execution.ts`,
 `pre-turn-reset-hook.ts` and `services/session-role.ts` (each take hands back a
 repark), `sessions.ts` (`clearOriginRoleName`), `session-runner.ts`,

@@ -105,6 +105,44 @@ export function createPromptRepark(label: string, restore: () => void): PromptRe
 }
 
 /**
+ * The takes a turn's composition has made, and who is answerable for them.
+ *
+ * Composition performs its takes one at a time and only then hands the prompt to
+ * `executeAgentTurn`, so for that whole window nothing else can put them back — and
+ * composition can fail in it, on an image written to disk or on any read of a database
+ * shutdown has closed under it. The ledger is what closes that window: every take is
+ * registered as it is made, the executor becomes answerable at `handOver()`, and until
+ * then a throw anywhere in composition hands all of them back.
+ */
+export interface PromptTakeLedger {
+  readonly reparks: readonly PromptRepark[];
+  /** `undefined` for a take not performed — a prefix entry this turn carries none of. */
+  add(repark: PromptRepark | undefined): void;
+  /** The prompt is the executor's from here; it settles the takes by its own reading. */
+  handOver(): void;
+  reparkIfNotHandedOver(): void;
+}
+
+export function createPromptTakeLedger(): PromptTakeLedger {
+  const reparks: PromptRepark[] = [];
+  let handedOver = false;
+  return {
+    reparks,
+    add(repark): void {
+      if (repark) reparks.push(repark);
+    },
+    handOver(): void {
+      handedOver = true;
+    },
+    reparkIfNotHandedOver(): void {
+      if (handedOver) return;
+      handedOver = true;
+      for (const repark of reparks) repark.repark();
+    },
+  };
+}
+
+/**
  * Whether a turn result is the agent's own work rather than a report that its
  * prompt did not run. No shipped adapter sets `error` on a non-`error` status,
  * so the first clause is a guard against one that does: the cost of being wrong

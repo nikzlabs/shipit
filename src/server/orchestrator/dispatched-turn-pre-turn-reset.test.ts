@@ -96,6 +96,33 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
     expect(delivered).toEqual(["ensure"]);
   });
 
+  it("reparks EVERY take when setup dies before the executor takes over (planning#609)", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const reparked: string[] = [];
+    const { hook } = makeResetHook({
+      repark: { repark: () => { reparked.push("reset"); } },
+    });
+    deps.preTurnReset = hook;
+    deps.consumePendingAgentNotice = () => "[System] Your branch was reset to origin/main.";
+    deps.restorePendingAgentNotice = () => { reparked.push("notice"); };
+    deps.takeRoleInstructions = () => ({
+      instructions: "<role_instructions>review only</role_instructions>",
+      repark: { repark: () => { reparked.push("role"); } },
+    });
+    deps.agentFactory = () => { throw new Error("container unreachable"); };
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    const outcome = await runner.dispatch(testDispatch({ text: "keep going" })).settled;
+
+    // The executor never ran, so its own repark cannot fire. Reparking only the notice
+    // here — which is all this path used to do — spends the branch reset and the role
+    // brief on a turn that never composed a process, let alone a prompt.
+    expect(outcome.status).toBe("errored");
+    expect(reparked.sort()).toEqual(["notice", "reset", "role"]);
+  });
+
   it("reparks the prefix and the notice when the turn dies INSIDE the executor (planning#609)", async () => {
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);

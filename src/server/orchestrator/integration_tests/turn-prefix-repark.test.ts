@@ -44,6 +44,9 @@ describe("Integration: one-shot prefix takes survive a turn that never reaches a
   let lastClaude: FakeClaudeProcess = null as never;
   /** The spawn this attempt's process makes fails, so the prompt is never submitted. */
   let failNextRun = false;
+  /** Make the LAST of the three takes throw, so composition itself dies. */
+  let failRoleWrite = false;
+  let roleWriteAttempted = false;
 
   const NOTICE = "[System] Your branch was reset to origin/main after PR #482 merged.";
   const ROLE_PROMPT = "Review only. Never edit a file in this repository.";
@@ -55,6 +58,14 @@ describe("Integration: one-shot prefix takes survive a turn that never reaches a
     sessionManager = new SessionManager(dbManager);
     lastClaude = null as never;
     failNextRun = false;
+    failRoleWrite = false;
+    roleWriteAttempted = false;
+    const setOriginRoleName = sessionManager.setOriginRoleName.bind(sessionManager);
+    sessionManager.setOriginRoleName = (id: string, name: string) => {
+      roleWriteAttempted = true;
+      if (failRoleWrite) throw new Error("database connection is closed");
+      setOriginRoleName(id, name);
+    };
 
     app = await buildApp({
       credentialStore,
@@ -145,6 +156,35 @@ describe("Integration: one-shot prefix takes survive a turn that never reaches a
     resend.initSession("turn-one");
     resend.finish("turn-one");
     await settled(sessionId);
+    client.close();
+  }, 30_000);
+
+  it("hands back the takes composition already made when composition itself throws", async () => {
+    const client = await TestClient.connect(port);
+    const sessionId = client.sessionId;
+    seedRole(sessionId);
+    sessionManager.setPendingAgentNotice(sessionId, NOTICE);
+
+    // The role take is the LAST of the three, and it writes to SQLite — which shutdown can
+    // close under a turn. A throw there is a throw inside composition: the notice and the
+    // reset prefix are already spent, no executor exists yet, and none ever will, so
+    // nothing downstream of composition can put them back.
+    failRoleWrite = true;
+
+    client.send({ type: "send_message", text: "Now add the rate limiter" });
+    // Wait for the throw FIRST. Polling the notice straight away would read the one still
+    // sitting there unconsumed and call it restored — a check that cannot fail.
+    await waitFor(() => roleWriteAttempted, "composition reached the role take and threw");
+
+    let restored: string | undefined;
+    await waitFor(() => {
+      restored = sessionManager.consumePendingAgentNotice(sessionId);
+      return restored !== undefined;
+    }, "the notice was handed back");
+
+    expect(restored).toBe(NOTICE);
+    // No agent ran, so nothing downstream of composition could have put it back.
+    expect(lastClaude?.runCalled ?? false).toBe(false);
     client.close();
   }, 30_000);
 
