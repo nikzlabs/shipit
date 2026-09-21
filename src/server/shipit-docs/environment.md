@@ -130,23 +130,24 @@ inside it freely.
 `verify-store-integrity` is a local check on the store this session reads. It is left
 at pnpm's default and is not a cross-session protection — the private store is.
 
-**No shared `node_modules` base is mounted in a pnpm session.** ShipIt can build one — a
-read-only tree under your own writable layer, so a warm session skips most of the download
-— and it is switched off: `pnpm add` makes pnpm `chmod` the files it links into `.bin`, and
-those files would belong to the user that built the base, which your session may rewrite but
-not `chmod`. The add would fail with `Operation not permitted`, so no session gets a base
-until that is repaired. Every pnpm repo installs from scratch into its private store, as it
-did before bases existed: the install works, it is just not warm, and there is nothing to fix
-on your side.
+**A pnpm session may get a shared `node_modules` base**, when ShipIt has built and verified one
+for this repo, runtime and commit: a read-only tree under your own writable layer, so a warm
+session skips most of the download. Your layer is on top, so a write to any file in it copies
+that file up into your session and reaches no one else. A repo with no lockfile, pinned to
+pnpm 10 or older, or with no verified base published gets none and installs privately instead —
+the install works either way, it is just not warm, and there is nothing to configure.
 
-Your `node_modules` is therefore yours alone, whole — nothing in it is read-only, `pnpm
-rebuild` and `pnpm install --force` behave normally, and a dependency that builds at install
-time builds here.
+**Everything you would do to `node_modules` still works, whether or not a base is under it.**
+`pnpm install`, `pnpm add`, `pnpm rebuild` and `pnpm install --force` all behave normally, and
+editing a file inside an installed package (a `patch-package`-style fix, or changing a
+dependency to debug it) works and stays in your session. ShipIt pre-copies the base's
+executable files into your own layer at container start precisely so that pnpm's `.bin`
+relinking — which `chmod`s every one of them — operates on files your session owns.
 
-One exception, and it is the one worth recognising: a session container started **before** this
-was switched off keeps the base it already has until that container is replaced. If `pnpm add`
-in such a session fails with `Operation not permitted` on a file under `node_modules`, that is
-this — not your repo. The session's next container start has no base and installs privately.
+The base is published **unbuilt**: its packages are installed with `--ignore-scripts`, so your
+own `agent.install` runs over it and any install-time build runs here, as you. If a `pnpm`
+command ever fails with `Operation not permitted` on a file under `node_modules`, that is
+ShipIt's layer and not your repo — say so rather than working around it.
 
 ### Write-protected paths
 

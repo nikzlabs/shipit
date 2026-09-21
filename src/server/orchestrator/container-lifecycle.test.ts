@@ -1362,6 +1362,90 @@ describe("prepareOverlayDirs (planning#147)", () => {
     expect(fs.statSync(spec.orchDirs!.upperdir).mode & 0o020).toBe(0o020);
   });
 
+  /**
+   * planning#606: over a verified base pnpm's unconditional `.bin` chmod lands on lower files the
+   * session does not own, so each executable target is pre-copied into the upper. Seed-once is the
+   * load-bearing half — within a generation the upper is REUSED across container restarts, and a
+   * second seed would put the base's copy back over the agent's own edit (docs/276 req 11).
+   */
+  describe("seeding a verified pnpm base's executable targets", () => {
+    function verifiedSpec(root: string, hash: string, generation: number): DepDirOverlaySpec {
+      const spec = makeSpec(root, hash, generation);
+      spec.scope = { ...spec.scope, namespace: PNPM_VERIFIED_NAMESPACE };
+      const pkgDir = path.join(spec.orchDirs!.lowerdir, ".pnpm", "alpha@1.0.0", "node_modules", "alpha");
+      fs.mkdirSync(path.join(pkgDir, "bin"), { recursive: true });
+      fs.writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({ name: "alpha", bin: "bin/cli.js" }));
+      fs.writeFileSync(path.join(pkgDir, "bin", "cli.js"), "base\n");
+      return spec;
+    }
+
+    const seededFile = (spec: DepDirOverlaySpec): string =>
+      path.join(spec.orchDirs!.upperdir, ".pnpm", "alpha@1.0.0", "node_modules", "alpha", "bin", "cli.js");
+
+    it("seeds a fresh upper, and does not seed again when the upper is reused", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-seed-"));
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const spec = verifiedSpec(tmpDir, "5555aaaa", 4);
+
+      prepareOverlayDirs([spec]);
+      expect(fs.readFileSync(seededFile(spec), "utf8")).toBe("base\n");
+
+      fs.writeFileSync(seededFile(spec), "the agent's own edit\n");
+      prepareOverlayDirs([spec]);
+
+      expect(fs.readFileSync(seededFile(spec), "utf8")).toBe("the agent's own edit\n");
+      log.mockRestore();
+    });
+
+    it("seeds again after a generation rotation, which gives the session a fresh upper", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-seed-rot-"));
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      prepareOverlayDirs([verifiedSpec(tmpDir, "6666aaaa", 4)]);
+      const next = verifiedSpec(tmpDir, "6666aaaa", 5);
+
+      prepareOverlayDirs([next]);
+
+      expect(fs.readFileSync(seededFile(next), "utf8")).toBe("base\n");
+      log.mockRestore();
+    });
+
+    // The base is published UNBUILT and gets no pre-stamp, so a session that gains this overlay
+    // must re-run its own install rather than trust a marker written over some other tree.
+    it("drops the install marker when the session gains a verified base", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-seed-marker-"));
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const { workspaceDir, markerFile } = makeWorkspaceWithMarker(tmpDir);
+      const spec = verifiedSpec(tmpDir, "7777aaaa", 4);
+
+      prepareOverlayDirs([spec], { workspaceDir });
+      expect(fs.existsSync(markerFile)).toBe(false);
+
+      // A restart over the same upper is not a gain, and must leave the next marker alone.
+      fs.writeFileSync(markerFile, "{}");
+      prepareOverlayDirs([spec], { workspaceDir });
+      expect(fs.existsSync(markerFile)).toBe(true);
+      log.mockRestore();
+    });
+
+    // An npm base's lower is owned the same way but nothing chmods it, and its marker drives the
+    // pre-stamp flow; neither the seed nor the marker drop may reach it.
+    it("leaves an un-namespaced overlay untouched", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-seed-npm-"));
+      const { workspaceDir, markerFile } = makeWorkspaceWithMarker(tmpDir);
+      const spec = makeSpec(tmpDir, "8888aaaa", 4);
+
+      prepareOverlayDirs([spec], { workspaceDir });
+
+      expect(fs.readdirSync(spec.orchDirs!.upperdir)).toEqual([]);
+      expect(fs.existsSync(path.join(path.dirname(spec.orchDirs!.upperdir), "bin-seed.json"))).toBe(false);
+      expect(fs.existsSync(markerFile)).toBe(true);
+    });
+  });
+
   it("reaps only the rotating dep dir's superseded upper, not its sibling's", () => {
     delete process.env.SHIPIT_SESSION_WORKER_UID;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));

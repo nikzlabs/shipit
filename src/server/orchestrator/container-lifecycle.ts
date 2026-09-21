@@ -42,6 +42,7 @@ import {
   supersededSessionOverlayLayers,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
+import { seedOverlayBinTargetsOnce } from "./overlay-bin-seed.js";
 import {
   chownToSessionWorker,
   chownTreeToSessionWorker,
@@ -487,6 +488,7 @@ export function prepareOverlayDirs(
     );
   }
   if (opts.workspaceDir) ensureDepDirMountParents(specs, opts.workspaceDir);
+  const seeded: string[] = [];
   for (const spec of specs) {
     if (!spec.orchDirs) continue;
     // Create ONLY the empty cold base. A published generation's lowerdir is the builder's or the
@@ -510,6 +512,24 @@ export function prepareOverlayDirs(
     chownToSessionWorker(spec.orchDirs.workdir);
     // The upper directory sets the merged root's mode; new directories must allow Compose cache writes.
     reconcileDepDirCacheOwnership(spec.orchDirs.upperdir);
+    // Last, so the copies carry the modes shareTreeOnce just repaired. Seeds a fresh upper only;
+    // its own marker beside the upper is what makes that idempotent (planning#606).
+    if (seedOverlayBinTargetsOnce(spec, { tag }) !== null) seeded.push(spec.depDir);
+  }
+  // A verified pnpm base is published UNBUILT and gets no pre-stamp (`preStampInstallMarker`), so
+  // the session's own install has to run over it — and a marker written over some OTHER tree would
+  // skip it. A seed that ran is exactly the signal: it means this upper had no seed marker, so it
+  // is either brand new or predates the seed, which is the shape a session lands in when it GAINS
+  // this overlay. Flipping a mount gate back on puts every pnpm session there, whether its layers
+  // were discarded meanwhile (new upper) or held by a Compose service (old upper). Rotation drops
+  // the marker above, so this only reports what that did not already cover.
+  if (opts.workspaceDir && superseded.length === 0 && seeded.length > 0) {
+    if (removeInstallMarkerForOverlayReset(opts.workspaceDir)) {
+      console.log(
+        `${tag} dropped the install marker: ${seeded.join(", ")} was seeded over a verified base ` +
+        "this session was not installed over, so agent.install re-validates",
+      );
+    }
   }
 }
 

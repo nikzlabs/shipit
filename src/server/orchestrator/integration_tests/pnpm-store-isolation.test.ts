@@ -19,8 +19,8 @@
  * reaching the base — is a property of overlayfs, measured on the services host by
  * `store-overlay-spike.sh` and `tree-overlay-spike.sh` (FINDINGS.md); it cannot run here, since
  * a session container has no Docker socket and cannot mount an overlay. That cell asserts the
- * mount SHAPE through `buildOverlaySpecs`; while planning#606 is open no pnpm session is selected
- * for a base at all (`MOUNT_VERIFIED_PNPM_BASE`), which is the selection gate's own test.
+ * mount SHAPE through `buildOverlaySpecs`; which sessions are selected for a base is the selection
+ * gate's own test. The last describe covers planning#606's bin seed against real pnpm.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
@@ -42,6 +42,7 @@ import {
   sessionPnpmStoreDir,
   type DepDirOverlaySpec,
 } from "../overlay-session.js";
+import { resolvePnpmBinSeedSet, seedBinTargetsIntoUpper } from "../overlay-bin-seed.js";
 import { MIN_VERIFIED_BASE_PNPM_MAJOR } from "../../shared/pnpm-repo.js";
 import type { ContainerConfig } from "../session-container.js";
 
@@ -414,4 +415,145 @@ describe("the verified base is shared read-only, never a session's writable dir 
       expect(reaches(shape, baseSubpath), `${shape} should count as exposure`).toBe(true);
     }
   });
+});
+
+/**
+ * planning#606 — the seed set, measured against pnpm rather than against a model of it.
+ *
+ * Any install that relinks `.bin` chmods every executable target **unconditionally**, and over a
+ * mounted base those targets are lower files the session does not own, so `pnpm add` dies with
+ * `ERR_PNPM_CMD_SHIM_CHMOD` … `Operation not permitted` (docs/276 req 9). The repair pre-copies
+ * each target into the session's upper; what makes it work is that the list is COMPLETE, so the
+ * cell below asserts that it contains every target pnpm's own shims name.
+ *
+ * The EPERM itself needs a real overlay under two uids and lives in
+ * `docs/276-shared-package-cache-integrity/ineligible-sharing-host-spike.sh`; a session container
+ * has no Docker socket and cannot mount one.
+ */
+describe.skipIf(!pnpmCmd)("Integration: the pnpm bin seed (planning#606)", () => {
+  /** A package as a `file:` tarball, so the cell needs no registry entry of its own. */
+  function packTarball(name: string, manifest: object, files: Record<string, string>): string {
+    const staging = fs.mkdtempSync(path.join(root, `pack-${name}-`));
+    const pkgDir = path.join(staging, "package");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name, version: "1.0.0", ...manifest }),
+    );
+    for (const [rel, body] of Object.entries(files)) {
+      const file = path.join(pkgDir, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+      fs.chmodSync(file, 0o755);
+    }
+    const out = path.join(staging, `${name}.tgz`);
+    execFileSync("tar", ["-czf", out, "-C", staging, "package"], { stdio: "ignore" });
+    return out;
+  }
+
+  /** Every executable pnpm linked, resolved through the trailer its own shim writer leaves. */
+  function shimTargets(treeRoot: string): string[] {
+    const shimDirs: string[] = [];
+    const walk = (dir: string, depth: number): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name === ".bin") shimDirs.push(path.join(dir, entry.name));
+        else if (depth < 5) walk(path.join(dir, entry.name), depth + 1);
+      }
+    };
+    walk(treeRoot, 0);
+    const targets = new Set<string>();
+    for (const shimDir of shimDirs) {
+      for (const entry of fs.readdirSync(shimDir, { withFileTypes: true })) {
+        if (entry.name.endsWith(".cmd") || entry.name.endsWith(".ps1")) continue;
+        const shim = path.join(shimDir, entry.name);
+        if (entry.isSymbolicLink()) {
+          targets.add(path.relative(treeRoot, fs.realpathSync(shim)));
+          continue;
+        }
+        const trailer = /# cmd-shim-target=(.*)/.exec(fs.readFileSync(shim, "utf8"));
+        expect(trailer, `${shim} names no target, so this cell can no longer read pnpm's set`).toBeTruthy();
+        targets.add(path.relative(treeRoot, fs.realpathSync(trailer![1].trim())));
+      }
+    }
+    return [...targets].sort();
+  }
+
+  it("covers every file pnpm links, and copies them into the upper unchanged", async () => {
+    // The shapes that decide the rule, each measured against pnpm's own shims: `directories.bin`
+    // is enumerated RECURSIVELY (a file four levels down gets a shim), an empty-string `bin` falls
+    // through to it, and a non-empty `bin` takes precedence over it.
+    const binMap = packTarball(
+      "probe-binmap",
+      { bin: { "probe-a": "bin/a.js", "probe-b": "bin/b.js" } },
+      { "bin/a.js": "#!/usr/bin/env node\na\n", "bin/b.js": "#!/usr/bin/env node\nb\n" },
+    );
+    const dirBin = packTarball(
+      "probe-dirbin",
+      { directories: { bin: "tools" } },
+      { "tools/t.js": "#!/usr/bin/env node\nt\n", "tools/a/b/c/deep.js": "#!/usr/bin/env node\nd\n" },
+    );
+    const emptyBin = packTarball(
+      "probe-emptybin",
+      { bin: "", directories: { bin: "tools" } },
+      { "tools/e.js": "#!/usr/bin/env node\ne\n" },
+    );
+    const both = packTarball(
+      "probe-both",
+      { bin: "cli.js", directories: { bin: "tools" } },
+      { "cli.js": "#!/usr/bin/env node\nc\n", "tools/x.js": "#!/usr/bin/env node\nx\n" },
+    );
+    const noBin = packTarball("probe-nobin", { main: "index.js" }, { "index.js": "module.exports = 1;\n" });
+
+    const dir = path.join(root, "projects", "bin-seed");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+      name: "probe-bin-seed",
+      version: "1.0.0",
+      dependencies: {
+        "probe-binmap": `file:${binMap}`,
+        "probe-dirbin": `file:${dirBin}`,
+        "probe-emptybin": `file:${emptyBin}`,
+        "probe-both": `file:${both}`,
+        "probe-nobin": `file:${noBin}`,
+      },
+    }));
+    await install(dir, sessionPnpmStoreDir(path.join(root, "state"), "sess-bin-seed"), "bin-seed");
+
+    const tree = path.join(dir, "node_modules");
+    const seedSet = resolvePnpmBinSeedSet(tree);
+    const linked = shimTargets(tree);
+
+    // Non-vacuity first: an empty shim set would make the containment below pass for free.
+    expect(linked.length).toBeGreaterThan(0);
+    // The property that matters is CONTAINMENT, not equality. A target pnpm links and the seed
+    // misses stays in the foreign-owned lower and `pnpm add` EPERMs on it; a file the seed copies
+    // and pnpm never touches costs one byte-identical copy. `probe-both/tools/x.js` is the second
+    // case on this very tree — pnpm ignores `directories.bin` when `bin` is set, and the seed takes
+    // it anyway rather than encoding that precedence.
+    expect(seedSet, "the seed misses something pnpm linked").toEqual(expect.arrayContaining(linked));
+    // The recursive `directories.bin` file is the one a non-recursive walk loses; assert pnpm links
+    // it, so this stays a real check rather than a tautology about our own resolver.
+    const deep = linked.find((f) => f.endsWith(path.join("a", "b", "c", "deep.js")));
+    expect(deep, "pnpm no longer shims a nested directories.bin file").toBeTruthy();
+    expect(linked.some((f) => f.includes("probe-emptybin"))).toBe(true);
+    expect(seedSet.some((f) => f.includes("probe-nobin"))).toBe(false);
+
+    // The upper the session would get, with one entry already in it: the agent's own edit to a
+    // dependency (req 11), which the seed must leave exactly as it is.
+    const upper = path.join(root, "bin-seed-upper");
+    const edited = seedSet.find((f) => f.includes("probe-binmap"))!;
+    fs.mkdirSync(path.join(upper, path.dirname(edited)), { recursive: true });
+    fs.writeFileSync(path.join(upper, edited), "the agent's own edit\n");
+
+    const result = seedBinTargetsIntoUpper({ lowerdir: tree, upperdir: upper, owner: null });
+
+    expect(result).toMatchObject({ files: seedSet.length - 1, present: 1, failed: 0 });
+    expect(fs.readFileSync(path.join(upper, edited), "utf8")).toBe("the agent's own edit\n");
+    for (const rel of seedSet.filter((f) => f !== edited)) {
+      expect(fs.readFileSync(path.join(upper, rel))).toEqual(fs.readFileSync(path.join(tree, rel)));
+      expect(fs.lstatSync(path.join(upper, rel)).mode & 0o7777)
+        .toBe(fs.lstatSync(path.join(tree, rel)).mode & 0o7777);
+    }
+  }, PNPM_TIMEOUT_MS);
 });
