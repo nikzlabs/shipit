@@ -84,7 +84,10 @@ project on the instance.
     2026-09-18.)*
 
 13. Package sharing between sessions MUST hold within a repo. Sharing across
-    repos is not required. *(Requester, 2026-09-18.)*
+    repos is not required. A repo with a `git:`/URL dependency, a `file:`
+    dependency, or a pnpm ≤ 10 pin installs privately and is outside this
+    requirement. *(Requester, 2026-09-18; the three private classes,
+    2026-09-21.)*
 
 ## Open questions
 
@@ -131,3 +134,14 @@ None.
   acceptable (the ext4 redesign makes the store private per session, so sharing
   becomes per-repo as npm's is): **"Yes, per-repo sharing is fine."** Recorded
   as req 13; it qualifies req 2's "what they share today" for the pnpm store.
+- 2026-09-21 — Asked which classes of repo may stay **permanently** private
+  under req 13, since a repo that gets no verified base leaves reqs 2, 10 and 13
+  unmet for it and only the requester can rule a class outside a requirement.
+  The options offered were "all three", "`git:`/URL and pnpm ≤ 10 only", and
+  "none"; the answer was **"All three (Recommended)"**. The three, with the
+  reason each: a **`git:`/URL source**, which carries no registry integrity to
+  verify the fetched content against; a **`file:` dependency**, which pnpm
+  copies rather than links, so a manifests-only builder publishes a truncated
+  package at rc=0 (PR #2963); and a repo **pinning pnpm ≤ 10**, a legacy line
+  whose store version this design does not target. Each installs privately,
+  exactly as it did before this work. Recorded in req 13.

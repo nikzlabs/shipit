@@ -639,16 +639,34 @@ recorded in [requirements.md](./requirements.md); none is open.
       builder now refuses to publish a tree whose `.modules.yaml` still lists
       `pendingBuilds`.
 
-- [ ] **The classes that stay private keep reqs 2 / 10 / 13 OPEN.** They are not
-      exempt: no requirement has been waived, and only the requester can decide a
-      class is permanently outside req 13. The two realistic candidates for an
-      exemption are a `git:`/URL source and a repo pinning pnpm <= 10.
-      Deliberately NOT filed under `## Open questions` — a bullet there blocks
-      implementation code for the whole feature, including the req 9 fix above —
-      so it is routed to the requester through the parent session instead. An
-      independent review also noted that pnpm <= 10 may need only a
-      **version-parameterized** builder rather than a second build path; price
-      that before treating the row as closed.
+- [x] **Three of the classes that stay private are outside req 13; the rest keep
+      reqs 2 / 10 / 13 OPEN.** Asked which classes may stay permanently private,
+      against the options "all three", "`git:`/URL and pnpm <= 10 only" and
+      "none", the requester answered **"All three"** on **2026-09-21**: a
+      `git:`/URL source (no registry integrity to verify the fetched source
+      against), a `file:` dependency (pnpm copies the target, so a
+      manifests-only builder publishes a truncated package — PR #2963), and a
+      repo pinning pnpm <= 10 (a legacy line whose store version this design
+      does not target). Each installs privately, exactly as before this work.
+      Receipt in `requirements.md` `## Resolved questions`; req 13 amended;
+      plan.md section 5's table rows replaced rather than annotated. The
+      question was deliberately NOT filed under `## Open questions` — a bullet
+      there blocks implementation code for the whole feature, including the
+      req 9 fix above — and was routed to the requester through the parent
+      session instead. Every other row in that table stays open work — the item
+      below.
+
+- [ ] **The classes with no ruling keep reqs 2 / 10 / 13 OPEN**, and closing
+      planning#414 does not close them. After the 2026-09-21 ruling the rows
+      still uncovered are `configDependencies` (eligibility refused at
+      `pnpm-base-inputs.ts`, on the widened input surface), an unauthorized
+      scoped registry (no operator lever supplies
+      `authorizedScopeRegistries`), and an unsupported `lockfileVersion` or a
+      registry entry with no integrity. Three more rows read as open and are
+      not: an escaping layout has no base to be, a no-lockfile consumer is
+      req 1 working, and "nothing to share" is nothing to share. plan.md
+      section 5's table is the live statement of what each needs; this box
+      stays unchecked until a mechanism or a ruling covers every row.
 
 - [x] **shipit-docs (`environment.md`)**: what an agent sees on a pruned base —
       the packages that build are imported into the session's private store on
@@ -765,5 +783,30 @@ recorded in [requirements.md](./requirements.md); none is open.
 
 ## Sequencing guard (req 8)
 
-- [ ] `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until the H1
-      fix lands and the pnpm store is safe against H3 and H4.
+- [x] `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until the H1
+      fix lands and the pnpm store is safe against H3 and H4. **Both conditions
+      are met and the guard is RELEASED as of 2026-09-21**, verified at the
+      source rather than off the ticks above. H1: `buildEnv` sets
+      `npm_config_cache` to the session's own root
+      (`container-lifecycle.ts:385`) and the worker links back only the
+      content-addressed half (`shared/npm-cache.ts:linkSessionNpmCache`), so no
+      session writes resolution data another session reads. H4/H2: the store is
+      `sessionPnpmStoreDir` (`overlay-session.ts:387`), sealed 0700 to that
+      session's own identity (`container-lifecycle.ts:ensurePnpmStoreDir`), on
+      both creation paths (`app-lifecycle.ts`, `warm-pool-manager.ts`); the
+      shared per-runtime store is retired. H3 is closed by that same privacy —
+      no session can write the store another imports from — with
+      `npm_config_package_import_method=copy` (`container-lifecycle.ts:398`) as
+      the import-compatibility half. **One qualification, from the independent
+      review and confirmed at the source:** a container already running when the
+      orchestrator updates is adopted with the mounts and env it was created
+      with (`container-discovery.ts`), so a PRE-UPGRADE container can still hold
+      the retired shared store — which is why the sweep ages those trees out
+      rather than deleting them (`steady-state-reclaim.ts:sweepRetiredPnpmStores`).
+      No creation path mounts one, and each such container loses it when it is
+      replaced. docs/266 E4 is released to proceed on its own schedule and
+      sequencing; req 8 constrains it no further, beyond that residue ending.
+      docs/266's own plan.md and checklist.md carry no mirrored guard to clear —
+      they sequence E4 last for their own reason (it is the only step that adds
+      a way for the commit to fail) — so the release is recorded on planning#384
+      instead.

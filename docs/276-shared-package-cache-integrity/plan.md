@@ -220,13 +220,19 @@ in the design selects behaviour from a reflink probe, so there is none. A
 loopback XFS image is not a ShipIt feature: it needs `CAP_SYS_ADMIN`, which the
 orchestrator does not take, and is Linux-only.
 
-**Shipped 2026-09-20, before the overlay, with the ext4 disk cost accepted.** The
-requester chose to land H3 on its own rather than hold it for section 5, so until
-that lands a pnpm ≤ 10 session pays roughly 1.8× the disk of the hardlink import for
-the same tree on ext4 (the row above). The req 10 gate is therefore **not** met by
-this change and stays open in the checklist; it closes when the tree overlay makes
-the copy free again. Paying that cost where it buys nothing is what scopes the
-setting to pnpm ≤ 10, below.
+**Shipped 2026-09-20, before the overlay, with the ext4 disk cost accepted; the
+cost then measured away on 2026-09-21.** The requester chose to land H3 on its own
+rather than hold it for section 5, on the reading that a pnpm ≤ 10 session would
+pay roughly 1.8× the disk of the hardlink import for the same tree on ext4 (the row
+above). Measurement closed the req 10 gate instead of the overlay doing it: in the
+standard container layout there is **no hardlink baseline at all** — the store is
+its own mount and `link()` compares mounts, not superblocks, so a link from the
+store into a dep dir is EXDEV and an ordinary session has been copying all along.
+The 1.8× row is copy-vs-hardlink on **one** mount, which only two non-default
+layouts recreate, and neither can ever have a verified base — so the pnpm ≥ 11
+spelling is applied only where a base is mounted, and those layouts keep free
+hardlinks into a store that is already theirs alone (FINDINGS.md). Paying the cost
+where it buys nothing is what scopes the setting, below.
 
 **Scoped to pnpm ≤ 10, deliberately — pnpm moved its config env prefix at 11**
 (measured 2026-09-20 with `pnpm store path`, which reports the resolved value): pnpm
@@ -860,20 +866,24 @@ publisher, unverified until planning#599 lands, cannot write into the verified
 namespace, and a checkout that flips its package manager gets no verified base
 rather than another publisher's.
 
-*Per-session install — no pnpm pre-stamp (req 9, 10, 11).* **No pnpm session
-mounts a base today:** `MOUNT_VERIFIED_PNPM_BASE`
-(`container-overlay-provisioner.ts`) is false, beside the two consumer gates
-below, so an eligible pnpm repo installs privately exactly as it did before bases
-existed. A session's own install does not complete the base and cannot add to it,
-both measured. `pnpm add <pkg>` relinks `.bin` and `chmod`s every bin target
+*Per-session install — no pnpm pre-stamp (req 9, 10, 11).* **An eligible pnpm
+session mounts its verified base; for a window in September 2026 none did.** The
+gate was `MOUNT_VERIFIED_PNPM_BASE` (`container-overlay-provisioner.ts`), held
+false beside the two consumer gates below so that an eligible pnpm repo installed
+privately exactly as it did before bases existed; the bin seed repaired the defect
+behind it and the constant is gone. The defect and the transition are worth
+keeping, because the seed is what the mount now depends on. A session's own
+install does not complete the base and cannot add to it, both measured.
+`pnpm add <pkg>` relinks `.bin` and `chmod`s every bin target
 unconditionally — 8 of 8 calls onto base files (`ineligible-sharing-spike.sh`) —
 and a session may rewrite a base file but not `chmod` one the publishing uid owns,
 so the add fails `Failed to chmod ".../semver/bin/semver.js": Operation not
 permitted` (`build-cost-spike.sh`), which is req 9. Its approved builds do not run
-over a base either (the paragraph above). That is planning#606, and the fail-safe
-is this gate: publishing is unchanged, so the repair — pre-seed the tree's bin
+over a base either (the paragraph above). That was planning#606, and the gate was
+the fail-safe: publishing stayed unchanged, so the repair — pre-seed the tree's bin
 targets into the session's upper at mount, owned by the session uid, so pnpm's
-chmod hits session-owned copies — flips the one constant back with no rebuild. A
+chmod hits session-owned copies — flipped the one constant back with no rebuild,
+which is what shipped. A
 session that already had a base mounted has its install marker dropped and its
 overlay layers discarded on its next container start, the way a base-generation
 rotation discards a superseded upper: the marker was stamped over the MERGED view,
@@ -888,9 +898,8 @@ discards the layers. A MANUAL one is not — `ServiceManager.start()` ups only
 automatic services — so it keeps the old mount, and its layers, until someone
 restarts it; that is the existing transition, not something this gate adds. The
 marker is dropped either way, since that is the correctness half. A container already running
-is not touched: it keeps its mount, and its `pnpm add` keeps failing, until it is
-replaced. Reqs 2, 10 and 13 are unmet for pnpm meanwhile, as they are for the
-ineligible repos below. The rest of this section is the shape that returns with the
+was not touched: it kept its mount, and its `pnpm add` kept failing, until it was
+replaced — and reqs 2, 10 and 13 were unmet for pnpm through that window. The rest of this section is the shape that came back with the
 repair. pnpm pre-stamping is **cut for pnpm** (it stays for npm/yarn); the
 session's install reconciles against the session's own lockfile. What req 1 asks of
 the base is narrow and exact:
@@ -925,10 +934,11 @@ verification (a tarball whose hash does not match, a lockfile edge with no
 registry record) skips the publish all-or-nothing, reported as a publish outcome
 naming the first failing package; the session keeps its private tree and its
 own install is never failed (req 9). Either way such a repo gets **no base and a
-cold install per session**, which does **not** meet req 2 / req 10 / req 13 for
-it. Sharing for those repos is **required work, not an optional follow-up** —
-reuse the unbuilt-base / private-build shape above rather than a second build
-path.
+cold install per session**. For the three classes the requester placed outside
+req 13 on 2026-09-21 — a `git:`/URL source, a `file:` dependency, a pnpm ≤ 10
+pin — that is the settled answer. For every other class it is **required work,
+not an optional follow-up** — reuse the unbuilt-base / private-build shape above
+rather than a second build path.
 
 #### Sharing for ineligible repos
 
@@ -943,7 +953,8 @@ ineligible — on its own count, 6 of 686 packages in ShipIt's tree carry a trig
 one of them, so anything reaching Vite was excluded alongside `better-sqlite3`, `node-pty` and
 `ssh2`. That was most JavaScript repos, with reqs 2, 10 and 13 unmet for all of them. The pruned
 base below is what gives that class back; the rows that remain are named at the end of this
-section, and they stay open work rather than exemptions.
+section, three of them outside req 13 by the requester's ruling of 2026-09-21 and the rest open
+work.
 
 **The prerequisite is not about ineligible repos at all.** Every sharing shape below ends with the
 session's own install doing *work* over a mounted base, and that is exactly what a session cannot
@@ -1171,24 +1182,22 @@ inside the repository materializes as one relative symlink the consuming session
 own checkout, so nothing of the target crosses into the base. `file:`, and the `injected`
 spelling of a `workspace:` dependency that resolves to it, stay refused by the same rule.
 
-**And the rest stay private in this step. That is where the work stops, not where the requirement
-does.** Requirements 2, 10 and 13 stay **unmet** for every row below, and each is tracked as open
-work rather than closed by this design. Saying "it stays private" is a statement about this step, not
-an exemption: req 13 is a positive requirement for within-repo sharing, and only the requester can
-decide that a class is permanently outside it. No such decision has been asked for or given, and one
-is not recorded here. Two rows — a `git:`/URL source, and a repo whose own `packageManager` pins
-pnpm ≤ 10 — are the realistic candidates for an eventual exemption, and that question is routed to
-the requester rather than filed under `## Open questions`, because a bullet there would block the
-req 9 fix above, which is a live defect.
+**And the rest stay private. Three of them permanently, the others as open work.** Req 13 is a
+positive requirement for within-repo sharing, so only the requester can place a class outside it,
+and on **2026-09-21** the requester did, for three: a `git:`/URL source, a `file:` dependency, and a
+repo pinning pnpm ≤ 10 (requirements.md req 13 and its receipt). Those three install privately,
+exactly as they did before this work, and nothing further is owed for them. For every other row
+below, requirements 2, 10 and 13 stay **unmet** and the row is tracked as open work rather than
+closed by this design.
 
-| Class | Why it is not closed here | What would close it |
+| Class | Why it stays private | What would close it |
 |---|---|---|
-| `git:` / `github:` / an `https:` tarball | No independent expected content in the snapshot to verify against, and the builder has no source handling. A git dependency also usually carries a `prepare` build | Excluding them from the *inputs* rather than the output, which needs ShipIt to synthesize a reduced manifest + lockfile for the builder; or a rule that distinguishes an independently authenticated source (a pinned commit whose tree hashes) from an unpinned one |
-| A `file:` path, directory or tarball | pnpm COPIES the target into the tree, so a manifests-only builder publishes a truncated package at rc=0 — the rule that admitted `workspace:`/`link:` is the same rule that refuses this. A `file:` **tarball**'s bytes are committed and so are verifiable on the same argument as a patch | Staging the target's source on the same verified footing as a tarball, which is what a copy needs and a symlink does not |
+| `git:` / `github:` / an `https:` tarball | No independent expected content in the snapshot to verify the fetched source against, and the builder has no source handling. A git dependency also usually carries a `prepare` build | **Nothing — outside req 13** (requester, 2026-09-21) |
+| A `file:` path, directory or tarball | pnpm COPIES the target into the tree, so a manifests-only builder publishes a truncated package at rc=0 — the rule that admitted `workspace:`/`link:` is the same rule that refuses this | **Nothing — outside req 13** (requester, 2026-09-21) |
 | `configDependencies` | Admitting it means the builder **fetches and stages plugin packages** it otherwise would not. The execution risk itself is covered — `--ignore-pnpmfile` suppresses the hook, measured with a positive control — so the reason is the widened input surface, not that code runs | Verified staging of those packages on the same footing as any other dependency |
 | An unauthorized scoped registry | An authorization decision, not a technical limit. `authorizedScopeRegistries` is threaded through `pnpm-base-inputs.ts`, `pnpm-base-registry.ts` and `pnpm-base-builder.ts`, but **nothing in `bootstrap-managers.ts` supplies it**, so it is not an operator-accessible lever today — calling it one would be wrong | Wiring it to configuration the operator can set |
 | An escaping layout (`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`) | The base *is* one self-contained `node_modules`; a layout that escapes it has no base to be. These repos lose least — both escaping layouts keep free hardlinks into a store already theirs alone (FINDINGS.md) | Nothing cheap, and the benefit is smallest here |
-| A repo declaring pnpm ≤ 10 | Its store version makes it recreate a `v11` tree instead of reading it (`MIN_VERIFIED_BASE_PNPM_MAJOR`) | A **version-parameterized** builder, which an independent review rightly noted is not the same as a second build path — the pipeline is one, the pinned binary is a parameter. Worth pricing before this row is treated as closed |
+| A repo declaring pnpm ≤ 10 | Its store version makes it recreate a `v11` tree instead of reading it (`MIN_VERIFIED_BASE_PNPM_MAJOR`) | **Nothing — outside req 13** (requester, 2026-09-21). A version-parameterized builder would reach it if that ever changes: the pipeline is one and the pinned binary is a parameter, so it is not a second build path |
 | An unsupported `lockfileVersion`, or a registry entry with no integrity | The parser was written against v9/v10 shapes, and an entry with no digest has nothing to verify against | Extending the parser; the integrity case is req 3 working and should stay |
 | No lockfile, at the publisher or the consumer | Deliberate and load-bearing: a no-lockfile consumer would inherit the base's graph (measured) | Nothing — this is req 1 working, and it is the one row that should stay as it is |
 | No dependencies, too many manifests, an unreadable input, a dep dir that is not `node_modules` | Nothing to share, a cap, a refusal to guess, and the one directory the builder can fill | — |
@@ -1429,8 +1438,32 @@ verify-and-admit lifecycle above is the same fix for it. Filed as
    (cross-repo dedup given up, req 13). The spike passed (PASS=12,
    FINDINGS.md) and the admission lifecycle is designed (section 5), through
    three adversarial reviews and one subtractive one.
-4. `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until 1 and the
-   pnpm store is safe against H3 and H4 (req 8).
+4. `docs/266-orchestrator-git-trust-boundary` E4 was held until 1 and the pnpm
+   store was safe against H3 and H4 (req 8). **Both conditions are met, and the
+   hold is released as of 2026-09-21**, verified at the source rather than off
+   this checklist: H1 is shipped — `npm_config_cache` is the session's own root
+   (`container-lifecycle.ts:buildEnv`, line 385) and the worker links only
+   `content-v2` back to the shared store
+   (`shared/npm-cache.ts:linkSessionNpmCache`), so no session writes resolution
+   data another session reads; H4/H2 are shipped — the store is
+   `sessionPnpmStoreDir` (`overlay-session.ts:387`), sealed `0700` to that
+   session's own identity (`container-lifecycle.ts:ensurePnpmStoreDir`), on both
+   creation paths (`app-lifecycle.ts`, `warm-pool-manager.ts`), with the shared
+   per-runtime store retired; and H3 is closed by that same privacy, since no
+   session can write the store another session imports from —
+   `npm_config_package_import_method=copy` (`container-lifecycle.ts:398`) is the
+   import-compatibility half, kept unconditionally in the pre-11 spelling and
+   added for pnpm ≥ 11 only where a verified base is mounted (section 2).
+   **The one qualification, found by the independent review and confirmed at the
+   source:** a container that was already running when the orchestrator updated
+   is adopted with the mounts and environment it was created with
+   (`container-discovery.ts`, `SessionContainerManager.dispose`), so a
+   **pre-upgrade** container can still hold the retired shared store — which is
+   why the sweep ages those trees out instead of deleting them
+   (`steady-state-reclaim.ts:sweepRetiredPnpmStores`). No creation path mounts
+   one, and each such container loses it the moment it is replaced. E4 proceeds
+   on docs/266's own schedule and sequencing; req 8 constrains it no further,
+   beyond that residue ending.
 
 ## Rejected
 
@@ -1512,4 +1545,5 @@ For anyone re-running or extending the harnesses:
 - `docs/198-dep-cache-content-keying-and-pnpm-store` — the pnpm store; its
   "integrity-checked on link" caveat is corrected in this PR.
 - `docs/270-per-session-worker-uids` — req 9 (sharing must survive).
-- `docs/266-orchestrator-git-trust-boundary` — E4, held by req 8.
+- `docs/266-orchestrator-git-trust-boundary` — E4, held by req 8 until
+  2026-09-21 and released then (Sequencing, step 4).
