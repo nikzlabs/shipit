@@ -57,7 +57,10 @@ doesn't weaken it:
   `docker-proxy.ts`, which is an allowlist — unmatched endpoints return 403
   (`docker-proxy.ts:525`). `DELETE /images` and container `rename`/`update` are
   explicitly blocked; ops sessions get a read-only `tecnativa/docker-socket-proxy`
-  (`templates-ops.ts:69`, `:ro`).
+  (`templates-ops.ts:69`, `:ro`). A request under an API version below **v1.24** is refused
+  outright: the allowlist models current daemon semantics, and below 1.24 the daemon reads a
+  full `HostConfig` from a container *start*, which no route checks. A stock daemon refuses
+  those versions itself; the proxy no longer depends on it doing so (planning#607).
 - **Child containers are sanitized** (`docker-proxy-sanitize.ts`): no `Privileged`, no
   `CapAdd`, `NET_RAW` force-dropped, no host/container namespace sharing, no device
   maps, no `VolumesFrom`, binds restricted to the session workspace or session-labeled
@@ -66,8 +69,21 @@ doesn't weaken it:
   to its realpath** before it reaches Docker and re-checked on `start`, and a container
   carrying a host bind may take neither a `RestartPolicy` nor an explicit `/restart`:
   every mount has to be preceded by a check nothing can stall, or a workspace path
-  repointed afterwards is what Docker mounts (planning#601, docs/088 finding 2). The
-  sanitizer's own bypass — field-casing aliases — is planning#607, still open.
+  repointed afterwards is what Docker mounts (planning#601, docs/088 finding 2). The same
+  refusals now cover `POST /containers/{id}/exec`, which piped the body through — so
+  `Privileged` at exec time undid the create-time refusal one request later (planning#607).
+  `DeviceCgroupRules` and `DeviceRequests` are refused with `Devices`: a child keeps Docker's
+  default capability set, which includes `CAP_MKNOD`, so widening the device cgroup is a device
+  mapping the container makes for itself.
+- **A check only counts if the daemon reads the field the check read.** Docker decodes bodies
+  with Go's `encoding/json`, which matches a JSON key to a struct field case-insensitively, so
+  `{"HostConfig":{"privileged":true,"binds":["/:/host"]}}` passed every exact-property check
+  above and was honoured in full. `docker-proxy-field-casing.ts` walks the parsed body first and
+  refuses any guarded field spelled in a non-canonical casing (planning#607) — refusing rather
+  than normalising, because a canonical client never emits one. The guarded list is derived from
+  what the checks read, rewrite, or delete; **extend it whenever a check starts reading a new
+  field.** Every body-reading route also forwards the object it checked, re-serialized, rather
+  than the received bytes.
 - **Agent container itself is hardened**: `CapDrop: ["ALL"]` with a minimal `CapAdd`,
   `SecurityOpt: ["no-new-privileges"]` (`container-lifecycle.ts:417-420`).
 - **Per-session network + label isolation**: each Docker-enabled session gets its own
@@ -506,6 +522,8 @@ matrix when it runs.
 
 - `src/server/orchestrator/docker-proxy.ts`, `docker-proxy-sanitize.ts`,
   `docker-proxy-auth.ts` — Docker API allowlist + child sanitization (solid).
+- `src/server/orchestrator/docker-proxy-field-casing.ts` — the Go case-folding guard every
+  body-reading route runs before its own checks (planning#607).
 - `src/server/orchestrator/container-lifecycle.ts` — container HostConfig, caps, mounts,
   env, network mode (Gaps 1, 5, 6).
 - `src/server/orchestrator/container-hardening.ts` — Gap 5 kernel-tier resolvers

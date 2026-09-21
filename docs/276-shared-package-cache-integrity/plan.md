@@ -1136,11 +1136,15 @@ neither a `RestartPolicy` nor an explicit `/restart` — both remount behind a
 check nothing can hold open. So a Docker-enabled session can no longer point a
 workspace symlink at the base after the check and have Docker mount it
 read-write.
-Closed by **planning#601**. Two limits, both in docs/088 finding 2: a
-directory-rename race against the start-time check, which the session cannot
-hold open; and **planning#607**, where the sanitizer's checks are bypassable
-by field-casing aliases — so this confinement holds for canonically-spelled
-requests until that is closed.
+Closed by **planning#601**. That check also reached only the requests it could
+read: Docker decodes with Go's `encoding/json`, which matches a JSON key to a
+struct field case-insensitively, so `{"HostConfig":{"binds":["/dep-cache:/x"]}}`
+arrived at the daemon carrying a bind the proxy had never seen. Also closed —
+the proxy refuses a body that spells a guarded field in any casing but the
+canonical one (`docker-proxy-field-casing.ts`, **planning#607**, PR #2952), so
+confinement is reached by every create rather than by the polite ones. One limit
+remains, in docs/088 finding 2: a directory-rename race against the start-time
+check, which the session cannot hold open.
 `verify-store-integrity` (section 4) is a local check on a store that is now
 private; it is not part of this fix.
 

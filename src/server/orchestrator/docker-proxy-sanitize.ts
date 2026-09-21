@@ -3,6 +3,7 @@ import path from "node:path";
 import type { SessionInfo } from "./docker-proxy-helpers.js";
 import { PARENT_SESSION_LABEL, forwardToDocker } from "./docker-proxy-helpers.js";
 import { resolveUnderWorkspace, volumeBelongsToSession, networkBelongsToSession } from "./docker-proxy-auth.js";
+import { findAmbiguousFieldCasing } from "./docker-proxy-field-casing.js";
 import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 
 const BUILTIN_NETWORK_MODES = new Set(["", "default", "bridge", "host", "none"]);
@@ -143,11 +144,34 @@ export async function sanitizeBuildRequest(
   return {};
 }
 
+/**
+ * An exec joins the container's namespaces but gets its own capability set, so `Privileged` here
+ * re-grants at exec time exactly what `sanitizeContainerCreate` refuses at create time.
+ */
+export function sanitizeExecCreate(body: Record<string, unknown>): { error?: string } {
+  const ambiguous = findAmbiguousFieldCasing(body);
+  if (ambiguous) {
+    return { error: ambiguous };
+  }
+
+  if (body.Privileged) {
+    return { error: "Privileged mode is not allowed" };
+  }
+
+  return {};
+}
+
 export async function sanitizeContainerCreate(
   body: Record<string, unknown>,
   session: SessionInfo,
   socketPath: string,
 ): Promise<{ error?: string }> {
+  // Before any check: a field the daemon reads under a spelling we do not is a check we never ran.
+  const ambiguous = findAmbiguousFieldCasing(body);
+  if (ambiguous) {
+    return { error: ambiguous };
+  }
+
   const hostConfig = (body.HostConfig ?? {}) as Record<string, unknown>;
 
   if (hostConfig.Privileged) {
@@ -203,8 +227,13 @@ export async function sanitizeContainerCreate(
     return { error: "UTSMode host is not allowed" };
   }
 
-  if (Array.isArray(hostConfig.Devices) && hostConfig.Devices.length > 0) {
-    return { error: "Device mappings are not allowed" };
+  // A child keeps Docker's default capability set, which includes CAP_MKNOD, so widening the
+  // device cgroup is a device mapping the container makes for itself.
+  for (const field of ["Devices", "DeviceCgroupRules", "DeviceRequests"]) {
+    const value = hostConfig[field];
+    if (Array.isArray(value) && value.length > 0) {
+      return { error: "Device mappings are not allowed" };
+    }
   }
 
   const pinned = await pinMountPaths(hostConfig, session.hostWorkspaceDir);

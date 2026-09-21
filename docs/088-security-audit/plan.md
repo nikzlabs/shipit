@@ -100,12 +100,19 @@ The audit identified several well-implemented security controls:
 - Path traversal checks on all file paths
 
 ### Docker Hardening (`src/server/orchestrator/docker-proxy-sanitize.ts`)
-- Rejects privileged mode
+- Rejects privileged mode — at container create **and** at `POST /containers/{id}/exec`, which
+  forwarded `Privileged: true` untouched until planning#607
 - Drops `NET_RAW` capability (prevents IP spoofing)
 - Rejects host/container network namespace sharing
 - Validates all bind-mount paths are under the workspace
 - Enforces resource limits (memory, CPU, PIDs)
-- Removes dangerous mount options
+- Removes dangerous mount options, and refuses volume driver options — on `POST /volumes/create`
+  and on a `Mounts` entry, where an anonymous volume carried them past the ownership check
+- Refuses a body that spells a guarded field in any casing but the canonical one
+  (`docker-proxy-field-casing.ts`). Docker decodes with Go's `encoding/json`, which matches a
+  JSON key to a struct field case-insensitively, so every check above read `HostConfig.Privileged`
+  while the daemon also honoured `hostconfig.privileged` — a full host escape from a
+  Docker-access session (planning#607)
 
 ### Authentication & Authorization
 - OAuth flow for Claude CLI (`src/server/orchestrator/auth.ts`)

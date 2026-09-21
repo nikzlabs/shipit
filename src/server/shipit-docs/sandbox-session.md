@@ -56,7 +56,12 @@ A sandbox grants up to three independent capabilities:
   Docker proxy: every container/network/volume you create is labelled to this
   session and only this session's resources are visible. There is **no** access
   to the host Docker socket (that is reserved for ops sessions). When NOT
-  granted, there is no Docker.
+  granted, there is no Docker. The proxy refuses privileged containers, a
+  privileged `docker exec`, host namespaces, device maps, and binds outside your
+  workspace. It also refuses a request that spells a Docker API field in any
+  casing but the canonical one (`"privileged"` for `Privileged`) with *Ambiguous
+  field casing* — the Docker CLI, Compose and the SDKs always spell them
+  canonically, so that 403 means a hand-written API call, not a broken tool.
 - **Network access** (`network`, default **on**). Controls how contained egress
   is. **On** = the standard allowlist every session runs under (LLM API, GitHub,
   package registries, plus user-added hosts). **Off** = **no internet** — egress
