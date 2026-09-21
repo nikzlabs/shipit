@@ -291,7 +291,10 @@ taken inside one session, without building an agent that talks to many.
 43. The card is immediately above the input field whenever the conversation is
     shorter than the view — a short session, and the gap before the conversation
     has loaded — and it does not move when the conversation arrives. Where the
-    conversation fills the view, the card goes on scrolling with it (req 6).
+    conversation fills the view, the card goes on scrolling with it (req 6). What
+    is below the card is unchanged: a running turn's output (req 30) and a card
+    waiting for the user's answer (req 32) sit under it as they do in a long
+    conversation.
 
 ## Open questions
 

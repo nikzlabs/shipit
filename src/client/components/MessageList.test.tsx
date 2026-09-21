@@ -1998,13 +1998,16 @@ describe("session status card slot", () => {
     );
     const scroller = container.querySelector<HTMLElement>("[data-chat-transcript]")!;
     const content = scroller.lastElementChild as HTMLElement;
-    // The auto margin only absorbs free space in a flex formatting context, so
-    // the two travel together: either one alone is a no-op.
-    expect(scroller.className).toContain("flex flex-col");
-    expect(content.className).toContain("mt-auto");
+    // Tokens rather than substrings, so reordering the class list is not a
+    // failure. The auto margin only absorbs free space in a flex formatting
+    // context, so the two travel together: either one alone is a no-op.
+    const scrollerClasses = new Set(scroller.className.split(/\s+/));
+    expect(scrollerClasses).toContain("flex");
+    expect(scrollerClasses).toContain("flex-col");
+    expect(new Set(content.className.split(/\s+/))).toContain("mt-auto");
     // `justify-end` would reach the same place and make the overflow above the
     // start edge unreachable on a long transcript.
-    expect(scroller.className).not.toContain("justify-end");
+    expect(scrollerClasses).not.toContain("justify-end");
   });
 
   it("renders nothing for a session with no stored card", () => {

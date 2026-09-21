@@ -979,22 +979,27 @@ standard form of this.
 
 The alternative was measuring the content and padding the top of the scroller to
 the difference. It reaches the same place a frame later, needs a ResizeObserver
-of its own beside the two `useMessageScroll` already runs, and its correction
+of its own beside the one `useMessageScroll` already runs, and its correction
 lands after paint — which is the jump this requirement is about.
 
 Nothing in the scroll path changes. Heights are untouched (a margin is not part
-of a border box), so the `ResizeObserver` on the content element reports growth
-exactly as before; `scrollHeight` on a short conversation is now equal to
-`clientHeight`, which `isNearBottom` already reads as at-the-bottom. The turn
-anchor (req 30) is unaffected: it decides the card's place in the keyed list, not
-where that list sits in the scroller.
+of a border box), so the observer watching the content element reports growth
+exactly as before, and the content wrapper keeps its automatic content-based
+minimum height, so flex shrinking cannot flatten it to the viewport and hide that
+growth. A short conversation had `scrollHeight === clientHeight` before this
+change as well — what moves is where in that unscrollable box the content sits,
+not whether it scrolls. The turn anchor (req 30) is unaffected: it decides the
+card's place in the keyed list, not where that list sits in the scroller, so a
+running turn's output and a pending answer card are below the card here exactly
+as they are in a long conversation.
 
-**The loading-gap repair (planning#595, PR #2942) is untouched and narrower in
-practice.** A scroll taken in the gap is still discarded when the rows first
-render. What changes is that a gap whose card is shorter than the viewport now
-has no scroll range at all, so there is nothing to discard; a card taller than
-the viewport still scrolls and still goes through the same discard. Re-verified
-by hand rather than assumed.
+**The loading-gap repair (planning#595, PR #2942) is untouched.** A scroll taken
+in the gap is still discarded when the rows first render, and a card taller than
+the viewport still has the same scroll range to take one in. Re-verified by hand
+rather than assumed: traced per frame across a session switch, the card's bottom
+was at the scroller's bottom with no rows and unchanged when 40 rows landed, and
+a scroll to the top made in the gap was discarded, the session opening at the end
+of its conversation.
 
 ### A card that waits for an answer goes last (req 32)
 
