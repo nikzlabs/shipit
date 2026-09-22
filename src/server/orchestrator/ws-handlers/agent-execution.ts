@@ -21,6 +21,7 @@ import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
 import {
+  agentEnvTurnArgs,
   prepareSessionAgentEnvironment,
   finalizeSessionAgentEnvironment,
   repushSessionAgentToken,
@@ -601,10 +602,7 @@ async function composeAndRunAgentTurn(
         sessionId,
         agentId: id,
         enforceAccountRouting: true,
-        ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
-        ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
-        ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
-        ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
+        ...agentEnvTurnArgs(envOpts),
         deps: {
           credentialsDir: ctx.credentialsDir,
           credentialStore: ctx.credentialStore,

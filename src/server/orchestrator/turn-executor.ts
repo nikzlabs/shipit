@@ -38,7 +38,9 @@ export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
   return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
-import { armConversationReplay } from "./services/replay.js";
+import path from "node:path";
+import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
+import type { ReplaySpillTarget } from "./services/replay.js";
 import {
   clearConversationThread,
   refreshStatusContextInPrompt,
@@ -159,11 +161,33 @@ function readStatusContext(deps: SystemTurnDeps, sessionId: string): string {
  * Only when there is no thread to resume, so a healthy conversation is left to `--resume`,
  * and only when the transcript holds a reply — see `requireReply`.
  */
-function reseedConversationForRetry(deps: SystemTurnDeps, input: TurnInput): void {
+function spillFor(
+  workspaceDir: string | undefined,
+  runner: SessionRunnerInterface | null,
+): { spill?: ReplaySpillTarget } {
+  if (!workspaceDir) return {};
+  // A container runner mounts the session's scratch directory at /persist; a local one
+  // leaves it where it is, so the agent-visible path is the host path.
+  return {
+    spill: replaySpillDirs(path.dirname(workspaceDir), {
+      containerized: runner?.supportsRemoteTerminal === true,
+    }),
+  };
+}
+
+function reseedConversationForRetry(
+  deps: SystemTurnDeps,
+  input: TurnInput,
+  runner: SessionRunnerInterface | null,
+): void {
   try {
     const session = deps.listenerDeps.sessionManager.get(input.sessionId);
     if (!session || session.agentSessionId || session.conversationReplay) return;
-    if (!armConversationReplay(deps.listenerDeps, input.sessionId, { requireReply: true })) return;
+    if (!armConversationReplay(deps.listenerDeps, input.sessionId, {
+      requireReply: true,
+      dropTrailingUserText: input.userText,
+      ...spillFor(session.workspaceDir, runner),
+    })) return;
     console.log(
       `[turn] re-armed the conversation replay for ${input.sessionId}; `
       + "the retry continues the transcript rather than starting empty",
@@ -543,7 +567,7 @@ export async function executeAgentTurn(
       console.warn("[turn] 401-recovery token repush failed:", err);
     }
     finalizeAttemptOutput();
-    reseedConversationForRetry(deps, input);
+    reseedConversationForRetry(deps, input, runner);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     await executeAgentTurn(runner, deps, freshAgent, {
@@ -585,7 +609,7 @@ export async function executeAgentTurn(
     if (runner?.getAgent() === agent) runner.setAgent(null);
     // The CLI has just told us this conversation is gone; rebuild it from the transcript
     // rather than letting the recovery start the agent with no history at all.
-    reseedConversationForRetry(deps, input);
+    reseedConversationForRetry(deps, input, runner);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     void executeAgentTurn(runner, deps, freshAgent, {
@@ -627,7 +651,7 @@ export async function executeAgentTurn(
     } catch {
       // Already gone.
     }
-    reseedConversationForRetry(deps, input);
+    reseedConversationForRetry(deps, input, runner);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) {
       runner.setAgent(freshAgent);
@@ -1426,6 +1450,7 @@ export async function executeAgentTurn(
     const envBegan = Date.now();
     const prep = await deps.prepareAgentEnv?.(sessionId, agentId, {
       reusingResidentAgent: input.reuseExistingAgent === true,
+      ownUserText: input.userText,
       ...(input.attemptLedger?.length
         ? { excludeRouteIds: input.attemptLedger.map((entry) => entry.routeId) }
         : {}),

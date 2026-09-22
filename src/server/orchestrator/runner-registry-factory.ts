@@ -35,6 +35,7 @@ import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { applyModelRetirement } from "./model-retirement.js";
 import {
+  agentEnvTurnArgs,
   finalizeSessionAgentEnvironment,
   prepareSessionAgentEnvironment,
   repushSessionAgentToken,
@@ -325,10 +326,7 @@ export function createRunnerRegistry(
               sessionId,
               agentId,
               enforceAccountRouting: true,
-              ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
-              ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
-              ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
-              ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
+              ...agentEnvTurnArgs(envOpts),
               deps: {
                 credentialsDir, credentialStore, sessionManager, chatHistoryManager, sseBroadcast,
                 ...(providerAccountManager ? { providerAccountManager } : {}),

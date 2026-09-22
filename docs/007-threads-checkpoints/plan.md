@@ -78,8 +78,9 @@ the very turns the rollback excluded.
 
 Guard: `integration_tests/conversation-replay-retry.test.ts`.
 
-`buildConversationReplay` flattens to `role` and `text` alone; what that drops, and why it
-matters, is `docs/144-rewind-fork-ux` U8.
+`buildConversationReplay` carries each message's tool calls, results and attachments as
+indented detail lines, spilling any payload over 500 characters to a file it names instead:
+`docs/144-rewind-fork-ux` U8.
 
 ## Key files
 

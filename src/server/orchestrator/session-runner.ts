@@ -430,6 +430,8 @@ export interface SystemTurnDeps {
       excludeRouteIds?: readonly string[];
       residentRoute?: { kind: ProviderRouteKind; id: string };
       requireResidentRoute?: boolean;
+      /** This turn's own user text, already persisted; a replay armed here must not carry it. */
+      ownUserText?: string;
     },
   ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
