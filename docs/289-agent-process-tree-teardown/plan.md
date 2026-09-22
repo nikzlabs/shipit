@@ -57,6 +57,14 @@ Every ShipIt-initiated termination of an agent CLI:
 | OpenCode | `kill`, the post-final-step stop-kill, the post-error kill, the stall deadline, the interrupt escalation, and the transient compaction server |
 | Grok | `kill`, the post-result kill, the interrupt escalation |
 
+### Orchestrator-side CLI invocations are trees too, for a second reason
+
+The table above is about agent *turns*, where the tree is the CLI's MCP servers. The orchestrator also runs agent CLIs directly — the Codex home warm-up, the device-auth sign-ins, the OAuth refreshers — and those are trees even with no MCP server in sight, because **the `codex` on `PATH` is a Node launcher shim that runs the native binary as a child** (`@openai/codex/bin/codex.js`). Every `codex <subcommand>` is therefore two processes, and a pid-only kill signals the wrapper while the work continues one level down. Measured 2026-09-22: both `codex app-server` and `codex login --device-auth` carry exactly one descendant, present at kill time.
+
+Nothing leaks today, because that shim installs SIGINT/SIGTERM/SIGHUP handlers and forwards them (`codex.js:259-271`) — which is precisely the CLI-owned guarantee this doc exists to replace with ShipIt's own. It also cannot cover SIGKILL, which no shim can forward. So orchestrator-side `codex` kills use `killProcessTree` (planning#615).
+
+Not every CLI has this shape — `grok` and `claude` are bare ELF binaries, and `grok login --device-auth` carries **zero** descendants. That is not grounds for an exception, and review talked the first draft of planning#615 out of making one. A measurement says what is true today, not what a CLI upgrade will keep true; and the escalation earns its place on the root alone, because both auth managers null out `this.proc` before signalling, so a CLI that ignored the SIGTERM would survive with no handle left to kill it by. The rule is the guarantee: an agent CLI takes `killProcessTree`.
+
 ### The cost of a `/proc` scan, and why the tests pace themselves
 
 One scan reads `/proc/<pid>/stat` for every process on the box — measured at **~22ms** in a container carrying a few hundred entries, not the sub-millisecond it looks like. That is fine on a kill path, which runs twice per teardown. It is not fine in a poll loop: the helper's own tests once polled a scan-based condition every 25ms, which saturates a core for the length of the wait while the rest of a 964-file suite competes for the same CPU. Scan-based waits there now poll at 100ms.
@@ -74,4 +82,5 @@ Giving session containers an init process (`Init: true`) reaps orphans that are 
 - `src/server/shared/kill-child.ts` — `killProcessTree`, `collectDescendants`, and the `killChild` primitive they build on
 - `src/server/shared/kill-child.test.ts` — the tree guards, including the ownership boundary
 - `src/server/session/agents/{claude/process,codex/adapter,opencode/adapter,opencode/compaction,grok/adapter}.ts` — the call sites
+- `src/server/orchestrator/agents/{codex,grok}/auth-manager.ts`, `codex/{home-init,oauth-refresher}.ts` — the orchestrator-side CLI invocations
 - `src/server/session/agents/playwright-mcp.ts` — the built-in MCP server whose browser this exists for
