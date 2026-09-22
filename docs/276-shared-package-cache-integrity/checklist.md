@@ -677,21 +677,31 @@ recorded in [requirements.md](./requirements.md); none is open.
       rather than annotated. **This ruling does not close planning#414** — the
       item below names what it leaves.
 
-- [ ] **The rows with no ruling keep reqs 2 / 10 / 13 OPEN**, and the 2026-09-22
-      ruling does not close them. A reason the mechanism cannot reach a class is
-      not a ruling placing it outside req 13, however good the reason; only the
-      requester can place a class outside a positive requirement. After both
-      rulings the rows still uncovered are an **escaping layout** (`modulesDir`,
-      `virtualStoreDir`, a non-isolated `nodeLinker`), a repo with **no
-      lockfile** at either end, and the **caps and refusals** — too many
-      manifests, an unreadable input, and a dep dir that is not `node_modules`.
-      Only one row genuinely needs nothing: a repo with **no dependencies** has
-      nothing withheld from it. The no-lockfile row is the sharpest, because
-      refusing it a base is reqs 1 and 3 working as designed while req 13 goes
-      unmet for it — a requirements-level tension only the requester can
-      resolve, so the answer there is a ruling and not a mechanism. plan.md
-      section 5's table is the live statement of what each row needs; this box
-      stays unchecked until a mechanism or a ruling covers every row.
+- [x] **The last three rows are ruled outside req 13, and a general principle
+      retires the question** (2026-09-22, second ruling that day). The rows were
+      an **escaping layout** (`modulesDir`, `virtualStoreDir`, a non-isolated
+      `nodeLinker` — the one permitted value per setting is
+      `pnpm-base-inputs.ts:166`, refused in `decidePnpmBaseEligibility` at
+      `:582` and `:601`), a repo with **no lockfile** at either end (publisher
+      `pnpm-base-inputs.ts:262`, consumer
+      `container-overlay-provisioner.ts:113`), and the **caps and refusals** —
+      too many manifests (`pnpm-base-inputs.ts:272`), an unreadable input
+      (`:282`), a dep dir that is not `node_modules` (`overlay-publish.ts:261`).
+      Asked whether they may stay permanently private and whether a general
+      principle should be recorded, against the options "all three plus the
+      principle", "the three rows only" and "keep them as work", the requester
+      answered **"Rule the three rows private, record the general principle, and
+      close planning#414."** The principle, now in req 13: a repository the
+      verified base cannot serve, for a reason stated in plan.md and cited at
+      the source, installs privately and is outside req 13 — so a future
+      unservable class needs a stated, cited reason and not a ruling. For the
+      no-lockfile row the requester also ruled that **reqs 1 and 3 take
+      precedence over req 13 and the mechanism must not change**. Receipt in
+      `requirements.md` `## Resolved questions`; req 13 amended to carry the
+      principle and name all nine classes; plan.md section 5's framing and those
+      three table rows replaced rather than annotated. **This closes
+      planning#414** — every requirement now has a shipped mechanism or a
+      requester ruling.
 
 - [x] **shipit-docs (`environment.md`)**: what an agent sees on a pruned base —
       the packages that build are imported into the session's private store on
