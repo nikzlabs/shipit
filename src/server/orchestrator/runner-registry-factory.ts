@@ -329,6 +329,7 @@ export function createRunnerRegistry(
               ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
               ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
               ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
+              ...(envOpts?.ownUserText !== undefined ? { ownUserText: envOpts.ownUserText } : {}),
               deps: {
                 credentialsDir, credentialStore, sessionManager, chatHistoryManager, sseBroadcast,
                 ...(providerAccountManager ? { providerAccountManager } : {}),

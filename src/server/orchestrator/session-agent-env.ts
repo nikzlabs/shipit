@@ -59,7 +59,7 @@ import {
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { CREDENTIAL_ROUTE_ENV_PREFIX } from "../shared/types/domain-types/credential-route.js";
-import { armConversationReplay } from "./services/replay.js";
+import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
 export const MCP_OAUTH_REFRESH_TIMEOUT_MS = 8_000;
@@ -113,9 +113,22 @@ export interface SessionAgentEnvDeps {
 }
 
 // Run-parameter construction consumes this replay in the same turn; a retry re-arms it.
-function armReplayForClearedThread(deps: SessionAgentEnvDeps, sessionId: string): void {
+function armReplayForClearedThread(
+  deps: SessionAgentEnvDeps,
+  sessionId: string,
+  opts: { ownUserText?: string; workspaceDir?: string },
+): void {
   try {
-    if (!armConversationReplay(deps, sessionId)) return;
+    // Only reached from the container path, where scratch is mounted at /persist.
+    const spill = opts.workspaceDir
+      ? { spill: replaySpillDirs(path.dirname(opts.workspaceDir), { containerized: true }) }
+      : {};
+    // No `requireReply` here: an earlier unanswered user message is real history, and
+    // dropping this turn's own row is what keeps the agent from reading it twice.
+    if (!armConversationReplay(deps, sessionId, {
+      ...(opts.ownUserText !== undefined ? { dropTrailingUserText: opts.ownUserText } : {}),
+      ...spill,
+    })) return;
     console.log(
       `[credentials] armed visible-history replay for ${sessionId} — the new agent conversation continues the transcript instead of starting empty`,
     );
@@ -268,6 +281,11 @@ export async function prepareSessionAgentEnvironment(
     requireResidentRoute?: boolean;
     // Subtree repair removes files a live CLI can reread; defer repair until a fresh spawn.
     reusingResidentAgent?: boolean;
+    /**
+     * The message this turn is about to submit. Its row is already in chat history, so a
+     * replay armed here would end with the text that immediately follows it as the prompt.
+     */
+    ownUserText?: string;
   },
 ): Promise<PrepareSessionAgentEnvironmentResult> {
   const { sessionId, agentId, deps } = args;
@@ -475,7 +493,10 @@ export async function prepareSessionAgentEnvironment(
           if (current) {
             console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable conversation found on disk)`);
             clearConversationThread(deps, sessionId);
-            armReplayForClearedThread(deps, sessionId);
+            armReplayForClearedThread(deps, sessionId, {
+              ...(args.ownUserText !== undefined ? { ownUserText: args.ownUserText } : {}),
+              ...(session.workspaceDir ? { workspaceDir: session.workspaceDir } : {}),
+            });
           }
           return;
         }

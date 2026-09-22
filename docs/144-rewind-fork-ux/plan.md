@@ -216,7 +216,32 @@ Rewinding to the gap above the first message truncates the chat to an empty arra
 
 `buildConversationReplay` (`services/replay.ts`) flattens each message to `User: …` / `Assistant: …` — tool calls, tool results, images, and file references are dropped. For tool-heavy sessions, where assistant turns can be purely tool-use with no narrative text, the replay reduces to `"Assistant: "` placeholders, which is worse than no replay at all. Any rewind/fork that resets the agent session loses that context, and Claude's continuation is markedly less informed than the pre-rewind turn was.
 
-**Fix.** Include a compact summary of tool results (tool name + short result excerpt, capped at e.g. 500 chars per tool) and a manifest of attached files/images (paths, not content) in the replay. Behind a settings toggle or model-budget guard if we're worried about tokens — see Open Q#1.
+Two further losses sit in the same builder. The replay carries **the turn's own user
+message**: `executeAgentTurn` persists the user row before `prepareAgentEnv` runs, so the
+replay ends with the text that immediately follows it as the prompt and the agent reads it
+twice. And `requireReply` demanded non-empty assistant *text*, which a tool-only turn never
+has — so the transcript that most needs replaying was the one it refused to arm.
+
+**Fix (shipped).** Each message carries indented detail lines under its `User:` /
+`Assistant:` head: `[tool] <name> <input>`, `[result] …`, and `[attached] …` naming files,
+uploads and an image count — never their contents. A row with neither text nor detail is
+dropped instead of rendering as a bare label.
+
+**Size is bounded by spilling, not by a setting.** A tool input or result of 500 characters
+or less is inline; anything longer is written to a file in the target session's scratch
+directory and the replay names that file (`/persist/replay/NNN-<tool>.txt` for a
+containerized agent, the host path otherwise). The agent reads the file when it needs the
+body. The directory is emptied on every build — a session holds exactly one armed replay,
+so files from an earlier build are unreachable and would otherwise accumulate. Without a
+usable directory a long payload degrades to a 500-character excerpt, which is still more
+than the text-only replay carried.
+
+`buildConversationReplay` also takes `dropTrailingUserText`, matched on text rather than
+position: on the new-session path the row is persisted *after* the replay is built, and
+dropping by position there would discard real history.
+
+**Key files.** `services/replay.ts` (builder, arming, own-message drop),
+`services/replay-detail.ts` (detail lines, spill writer, `replaySpillDirs`).
 
 ## Design decisions (resolved before Landing 2)
 
@@ -554,7 +579,7 @@ Landing 3 has no Landing-1 or Landing-2 hard dependencies — its items (U8 rich
 
 ### Landing 3 — Polish
 
-- [ ] U8: richer replay (tool result summary + attachment manifest).
+- [x] U8: richer replay (tool calls with inputs, results, attachment manifest; payloads over 500 characters spilled to files).
 
 ## Key files
 
@@ -603,7 +628,19 @@ hook-level test this doc planned for D7). Full write-up:
 
 ## Open questions
 
-1. **Replay token cost.** U8 widens replay materially for tool-heavy sessions. Measure on representative sessions before deciding whether to gate behind a setting or trim aggressively (e.g. last N tool results only).
-2. **Repo-removed orphan sessions UX.** B1's fix surfaces sessions whose repo was removed. The current product behavior is "removeRepo hides them"; surfacing them as "Other sessions" changes that contract. Confirm with product that this is desired — if not, we need a separate "deleted repo" flag to keep them hidden.
+1. **Repo-removed orphan sessions UX.** B1's fix surfaces sessions whose repo was removed. The current product behavior is "removeRepo hides them"; surfacing them as "Other sessions" changes that contract. Confirm with product that this is desired — if not, we need a separate "deleted repo" flag to keep them hidden.
 
 (The previous draft had a third open question about `rewind_snapshots` cleanup cadence. Decided: startup sweep + lazy on-read TTL enforcement. The combination gives durability across restarts with no runtime timer overhead, and the 5-minute window means orphan rows are bounded by usage frequency, not wall-clock time.)
+
+## Resolved questions
+
+- 2026-09-22 — **Replay token cost** (was Open Q#1: gate U8 behind a setting, or trim
+  aggressively?). Measured first, as the question asked, on a real tool-heavy session:
+  46 KB of chat text against 358 KB of tool inputs and 930 KB of tool results — full
+  fidelity is roughly 28× the text-only replay, about 330k tokens, and U8's original
+  500-chars-per-tool cap still came to about 60k. Nik's answer: carry the tool calls with
+  their inputs, and when an output exceeds 500 characters put it in a file and name the
+  file. So neither option as posed — no setting, and no lossy trim either: the replay is
+  bounded because the bulk moves out of it into files the agent can open. A setting was
+  rejected as mechanism the user cannot judge without these numbers, and its default would
+  still have to be one of the other answers.
