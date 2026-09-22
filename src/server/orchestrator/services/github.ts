@@ -705,7 +705,7 @@ export async function flushPendingTurnCommit(
     await git.autoCommit(summary);
   const secretBlocked = secretFindings.length > 0;
   if (hookFailure) {
-    const message = formatCommitHookNotice(hookFailure, { committed: commitHash !== null });
+    const message = formatCommitHookNotice(hookFailure);
     if (deps.chatHistory && deps.sessionId) {
       if (runner) {
         emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, deps.sessionId, message, "warn");

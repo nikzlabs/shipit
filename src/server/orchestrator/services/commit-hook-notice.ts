@@ -3,24 +3,22 @@ import { COMMIT_HOOK_TIMEOUT_MS } from "../../shared/git.js";
 
 /**
  * A hook may not cost the turn its work
- * (docs/266-orchestrator-git-trust-boundary req 10), so this normally reports a
- * commit that landed. `committed: false` is the one case ShipIt cannot fix: a
- * hook that empties the working tree itself leaves nothing to commit, and
- * saying "committed" there would be a lie the user cannot check.
+ * (docs/266-orchestrator-git-trust-boundary req 10), so a returned failure
+ * always has a commit behind it: the one case ShipIt cannot commit — a hook
+ * that stashes or reverts the tree — throws out of `autoCommit` instead, and
+ * is reported as an uncommitted turn (req 15).
  */
 export function formatCommitHookNotice(
   failure: CommitHookFailure,
-  opts: { committed: boolean; timeoutMs?: number },
+  opts: { timeoutMs?: number } = {},
 ): string {
   const seconds = Math.round((opts.timeoutMs ?? COMMIT_HOOK_TIMEOUT_MS) / 1000);
   const headline = failure.kind === "timeout"
     ? `A git hook in this project did not finish within ${String(seconds)}s, so ShipIt stopped it.`
     : "A git hook in this project failed.";
-  const outcome = opts.committed
-    ? "**The turn's work is committed anyway, without hooks** — a hook is not allowed to leave it "
-      + "uncommitted, because uncommitted work has no reflog entry and no way back."
-    : "**Nothing was committed**, because the hook left nothing in the working tree to commit. "
-      + "Check what the hook did to your files before running another turn.";
+  const outcome =
+    "**The turn's work is committed anyway, without hooks** — a hook is not allowed to leave it "
+    + "uncommitted, because uncommitted work has no reflog entry and no way back.";
   const output = failure.output.trim();
   const said = output
     ? `\n\nThe hook said:\n\n\`\`\`\n${output}\n\`\`\``

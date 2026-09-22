@@ -1003,7 +1003,7 @@ export async function executeAgentTurn(
           emit,
           deps.listenerDeps.chatHistoryManager,
           sessionId,
-          formatCommitHookNotice(result.hookFailure, { committed: result.commitHash !== null }),
+          formatCommitHookNotice(result.hookFailure),
           "warn",
         );
       }

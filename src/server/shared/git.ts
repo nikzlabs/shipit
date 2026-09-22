@@ -412,17 +412,19 @@ export class GitManager {
     } else if (hooked.kind === "skipped") {
       hash = (await this.git.commit(message)).commit || "";
     } else {
-      hash = await this.commitWhateverTheHookLeft(message, hooked.headMoved);
       hookFailure = this.reportHookFailure(hooked);
+      const recovered = await this.recoverFromFailedHook(message, hooked);
+      if (recovered.kind === "secrets") {
+        return {
+          commitHash: null, conflictedFiles: [], rebaseInProgress: false,
+          secretFindings: recovered.findings, unreadable, hookFailure,
+        };
+      }
+      hash = recovered.hash;
     }
-    if (hash) {
-      console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
-    } else {
-      console.error("[git] a project hook left nothing to commit — this turn produced no commit.");
-    }
+    console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
     return {
-      // "" is a hook that emptied the working tree; callers must read it as no commit.
-      commitHash: hash || null,
+      commitHash: hash,
       conflictedFiles: [],
       rebaseInProgress: false,
       secretFindings: [],
@@ -433,19 +435,56 @@ export class GitManager {
 
   /**
    * A failed hook can leave the index and the tree in any state — lint-staged,
-   * the commonest `pre-commit` setup there is, stashes and restores them — so
-   * the exit code says nothing about what is left to commit. Ask git instead:
-   * anything still in the working tree is the turn's work, and it goes in
-   * (req 10). Returns "" when the hook left nothing at all to commit and HEAD
-   * did not move, which callers already read as "no commit this turn".
+   * the commonest `pre-commit` setup there is, stashes and restores both — so
+   * its exit code says nothing about what is left to commit. Redo the staging
+   * and the secret scan against what git says NOW, rather than trusting either
+   * the index the hook was handed or the one it left behind (req 10).
+   *
+   * Throws when the hook left nothing at all: a `null` commitHash reads as
+   * "nothing to commit" to the merge route and the eviction gate, and a hook
+   * that stashed the turn's work must not look like a quiet turn (req 15).
    */
-  private async commitWhateverTheHookLeft(message: string, headMoved: boolean): Promise<string> {
-    if ((await this.git.status()).isClean()) {
-      return headMoved ? (await this.getHeadHash()) ?? "" : "";
+  private async recoverFromFailedHook(
+    message: string,
+    hooked: { kind: "failed" | "timeout"; output: string; headMoved: boolean },
+  ): Promise<{ kind: "committed"; hash: string } | { kind: "secrets"; findings: SecretFinding[] }> {
+    // A post-commit hook fails after the commit exists; there is nothing to redo.
+    if (hooked.headMoved) return { kind: "committed", hash: (await this.getHeadHash()) ?? "" };
+
+    try {
+      await this.git.add("-A");
+    } catch (err) {
+      // Keep the index the hook was handed rather than losing the turn with it.
+      console.warn(
+        "[git] could not re-stage after a failed hook; committing what is staged:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    // The scan upstream ran on a different set of paths: whatever the hook
+    // itself wrote has never been scanned, and this commit is auto-pushed.
+    const staged = await this.stagedDiff();
+    const findings = scanDiffForSecrets(staged);
+    if (findings.length > 0) {
+      console.warn(
+        "[git] autoCommit refused — likely secret(s) written by a failing project hook:",
+        findings.map((f) => `${f.rule} in ${f.file}`).join(", "),
+      );
+      try {
+        await this.git.reset(["--mixed"]);
+      } catch {
+        // An unborn HEAD has nothing to reset to.
+      }
+      return { kind: "secrets", findings };
+    }
+    if (!staged.trim()) {
+      throw new Error(
+        "A project git hook failed and left nothing to commit — the turn's work is in neither "
+        + "the working tree nor the index, so no commit was made. A hook that stashes or reverts "
+        + `the tree does this. The hook said:\n${redactSecretsInText(hooked.output).trim()}`,
+      );
     }
     // The hooks override this path already carries is stricter than --no-verify.
-    await this.git.add("-A");
-    return (await this.git.commit(message)).commit || "";
+    return { kind: "committed", hash: (await this.git.commit(message)).commit || "" };
   }
 
   private reportHookFailure(

@@ -582,18 +582,35 @@ question.
    running (reparented to pid 1), which is the `CLAUDE.md` agent-CLI case
    exactly. Pinned by a test that reads the child's pid out of the hook and
    asserts it is dead.
-5. **After a failure, ask git what is left rather than trusting the exit code.**
-   A hook can leave the index and the working tree in any state, and this is the
-   ordinary case rather than an adversarial one: **lint-staged**, the commonest
-   `pre-commit` setup in a JS project, stashes and restores the index around
-   every run. So: if the working tree is dirty, `git add -A` and commit through
-   `this.git.commit()`; if it is clean and HEAD moved, that commit is the turn's
-   (a `post-commit` hook fails after the commit exists) and there is nothing to
-   retry; if it is clean and HEAD did not move, the hook emptied the tree itself
-   and there is genuinely no commit — reported as one, not papered over.
+5. **After a failure, redo the staging AND the scan against what git says
+   now** (`recoverFromFailedHook`). A hook can leave the index and the working
+   tree in any state, and this is the ordinary case rather than an adversarial
+   one: **lint-staged**, the commonest `pre-commit` setup in a JS project,
+   stashes and restores both around every run. So the recovery repeats the
+   staging sequence rather than half of it:
+   - HEAD moved ⇒ a `post-commit` hook failed after the commit existed; nothing
+     to redo.
+   - `git add -A`, **best effort**. If it throws, keep the index the hook was
+     handed and commit that — losing the turn to a second `add` would be the
+     exact failure req 10 names. (Reproduced by a reviewer with a hook that
+     `chmod 000`s a tracked file.)
+   - **Re-scan the staged diff for secrets.** The scan upstream of the commit
+     ran on the paths the *turn* staged; anything the hook itself wrote has
+     never been scanned, and this commit is auto-pushed. A finding returns the
+     same secret-block result the ordinary path returns, with the work unstaged
+     and preserved. *This was the most serious round-2 finding: the first
+     version of the recovery committed and pushed hook-written content past the
+     only scan.*
+   - **Nothing staged ⇒ throw.** A hook that runs `git stash push -u` leaves a
+     clean tree and an unmoved HEAD, and a `null` commitHash there is read as
+     "nothing to commit" by `flushPendingTurnCommit` (which the merge route
+     accepts) and by `ensureCheckoutDurable` (which then permits eviction —
+     deleting the stash that holds the only copy). Throwing routes it to the
+     existing uncommitted-turn report instead, which is what req 15 asks for.
+     The thrown message carries the hook's output, redacted.
    *The first version retried blindly and read any HEAD movement as success,
-   which lost the turn's work to a hook that unstaged it while claiming in the
-   notice that the work was committed. Both halves are pinned by tests.*
+   which lost the turn's work to a hook that unstaged it. Every branch above is
+   pinned by a test that was watched to fail without it.*
 6. The fallback commit carries the `core.hooksPath` override, which is
    **stricter than the `--no-verify` this plan originally specified**:
    `--no-verify` skips `pre-commit` and `commit-msg` but still runs
@@ -605,6 +622,10 @@ question.
    content MUST be persisted"). No new `PersistedMessage` field and no
    migration: a system notice is already a persisted row. The notice states
    whether a commit landed rather than asserting one.
+
+   A returned `hookFailure` therefore always has a commit behind it — the one
+   case ShipIt cannot commit throws instead — so the notice states that plainly
+   rather than hedging.
 
    **Four callers surface it**, which is the whole set that has somewhere to
    surface to: `post-turn.ts` (the auto-commit), `turn-executor.ts` (the
@@ -628,6 +649,20 @@ question.
 | Does a *hanging* `post-commit` matter? | **Yes** — it trips the timeout after the commit landed, which is what step 5's HEAD check exists for. |
 | What hash does simple-git's `commit()` return? | The **full 40 characters**: it passes `-c core.abbrev=40` (`simple-git/dist/cjs/index.js:2197`). The raw spawn therefore reports `rev-parse HEAD`, not the abbreviated form an earlier draft used — and never anything parsed out of output a hook can write. |
 
+**What E4 does NOT close, stated as a residual rather than hidden.** A hook that
+**ignores SIGTERM** outlives the teardown: `killProcessTree` escalates to
+SIGKILL after a five-second grace, and ShipIt does not wait for it — the
+fallback commit runs while that hook may still be writing to the workspace.
+Reproduced by a reviewer (`trap "" TERM; sleep 2; echo … > tracked.txt`): the
+commit landed at 812 ms against a 500 ms bound, and the file changed afterwards.
+This is **not a boundary E4 could hold**. Under req 11 a hook is code the
+repository's author may already run at the session's uid, so it can fork a
+detached writer that no wait would outlive; waiting would only convert an
+uncooperative hook into a five-second tax on every timed-out commit. The turn's
+work is committed either way, and the next turn commits whatever the hook did
+after. Recorded here, and documented by a test that asserts the commit does not
+wait.
+
 **What E4 does not change, stated so the next reader does not rediscover it.**
 A hook is repo-controlled code executing in the orchestrator container at the
 session's own uid. That is permitted by req 11 — repo-controlled code may
@@ -640,6 +675,23 @@ exactly that reachability, because a `pre-commit` hook runs binaries out of
 `node_modules/.bin`; that closed on 2026-09-22
 (`docs/276-shared-package-cache-integrity` checklist), which is why E4 is only
 being built now.
+
+**Two review rounds, and what each cost.** Round 1 found six issues (the uid-0
+drop, the `close` hang, the blind retry, hook output parsed as a hash, two
+callers dropping the failure, and the Q1-receipt contradiction). Round 2 was run
+against the fixes and found five more, three of them created BY those fixes —
+the rescan gap, the `add` that could throw, and the `null` commitHash that reads
+as "nothing to commit" to the merge route and the eviction gate. That is the
+pattern worth carrying forward: a fix to a commit path is itself a commit path
+change, and the second round earned more than the first.
+
+Two round-2 findings were judged and **not** built. The SIGTERM-ignoring hook is
+the residual above. A hook that reverts the working tree while leaving the index
+(`git show HEAD:f > f; exit 1`) loses that path's content to the re-stage — but
+committing the index there would produce a commit that disagrees with the tree,
+which the next turn's `add -A` would immediately revert, so it moves the loss a
+turn later rather than preventing it. The working tree is what the user sees and
+what the next turn acts on, and it is what E4 commits.
 
 **Enforcement.** `git-hooks-guard-coverage.test.ts` gains a census: every use of
 `gitArgsWithProjectHooks` must be listed with why hooks are safe there, what

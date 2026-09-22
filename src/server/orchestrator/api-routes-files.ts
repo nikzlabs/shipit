@@ -60,7 +60,7 @@ async function commitManualEdit(
       }
     };
     if (hookFailure) {
-      notify(formatCommitHookNotice(hookFailure, { committed: commitHash !== null }));
+      notify(formatCommitHookNotice(hookFailure));
     }
     if (unreadable) {
       const message = formatUnreadableWorkspaceNotice(unreadable, {

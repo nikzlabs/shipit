@@ -62,15 +62,17 @@ describe("autoCommit runs the project's own hooks (req 9)", () => {
   });
 
   // Hook output shares git's stdout, so a hook can print anything git prints.
+  // Compared literally, not resolved: simple-git commits with core.abbrev=40,
+  // so an abbreviated hash would be a silent contract change that `rev-parse`
+  // would happily accept.
   it("reports the real commit, not a hash-shaped line a hook printed", async () => {
     writeHook("pre-commit", 'echo "[main deadbee] not a real commit"');
     fs.writeFileSync(path.join(repo, "tracked.txt"), "agent edit\n");
 
     const result = await new GitManager(repo).autoCommit("a turn");
 
-    expect(result.commitHash).not.toBe("deadbee");
-    expect(git("rev-parse", `${String(result.commitHash)}^{commit}`).trim())
-      .toBe(git("rev-parse", "HEAD").trim());
+    expect(result.commitHash).toBe(git("rev-parse", "HEAD").trim());
+    expect(result.commitHash).toHaveLength(40);
   });
 
   it("runs commit-msg, so a hook may rewrite the message", async () => {
@@ -189,6 +191,63 @@ describe("a hook cannot cost the turn its work (req 10)", () => {
     } catch {
       // Already gone.
     }
+  });
+
+  // The scan upstream of the commit ran on the paths the TURN staged. Anything
+  // the hook wrote is new, and this commit is auto-pushed.
+  it("rescans what a failing hook wrote, and refuses a secret it added", async () => {
+    const token = `ghp_${"0".repeat(32)}abcd`;
+    writeHook("pre-commit", `echo "token=${token}" > leaked.env\nexit 1`);
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "agent edit\n");
+
+    const result = await new GitManager(repo).autoCommit("a turn");
+
+    expect(result.secretFindings.length).toBeGreaterThan(0);
+    expect(result.commitHash).toBeNull();
+    expect(commitCount()).toBe(1);
+    // Unstaged, not destroyed — the work is still there to correct.
+    expect(git("status", "--porcelain")).toContain("tracked.txt");
+  });
+
+  // A null commitHash reads as "nothing to commit" to the merge route and the
+  // eviction gate, so a hook that hid the work must not produce one (req 15).
+  it("fails the turn loudly when the hook stashed the work away", async () => {
+    writeHook("pre-commit", "git stash push -u -q\nexit 1");
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "agent edit\n");
+
+    await expect(new GitManager(repo).autoCommit("a turn"))
+      .rejects.toThrow(/left nothing to commit/);
+    expect(commitCount()).toBe(1);
+  });
+
+  // Re-staging is best-effort: the index the hook was handed already holds the
+  // turn's work, and losing it to a second `add` would be the bug req 10 names.
+  it("still commits the staged work when re-staging fails", async () => {
+    writeHook("pre-commit", "chmod 000 tracked.txt\nexit 1");
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "agent edit\n");
+
+    const result = await new GitManager(repo).autoCommit("a turn");
+    fs.chmodSync(path.join(repo, "tracked.txt"), 0o644);
+
+    expect(result.hookFailure?.kind).toBe("failed");
+    expect(result.commitHash).toBeTruthy();
+    expect(git("show", "HEAD:tracked.txt")).toBe("agent edit\n");
+  });
+
+  // A hook that traps SIGTERM outlives the kill; killProcessTree escalates to
+  // SIGKILL after its grace. ShipIt does not wait for that — see plan.md §2
+  // (E4 as built) for why that residual is accepted rather than closed.
+  it("commits without waiting on a hook that refuses SIGTERM", async () => {
+    writeHook("pre-commit", 'trap "" TERM\nsleep 30');
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "agent edit\n");
+
+    const started = Date.now();
+    const result = await new GitManager(repo, { commitHookTimeoutMs: 500 })
+      .autoCommit("a turn");
+
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(result.hookFailure?.kind).toBe("timeout");
+    expect(result.commitHash).toBeTruthy();
   });
 
   it("redacts a secret a hook echoed before it failed", async () => {

@@ -177,7 +177,7 @@ export async function postTurnCommit(
         opts.emit,
         ctx.chatHistoryManager,
         opts.sessionId,
-        formatCommitHookNotice(hookFailure, { committed: commitHash !== null }),
+        formatCommitHookNotice(hookFailure),
         "warn",
       );
     }
