@@ -3,7 +3,7 @@ import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
 import { revokeOpenCodeAccount } from "./openai-account-delivery.js";
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import path from "node:path";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -110,6 +110,34 @@ export interface SessionAgentEnvDeps {
   chatHistoryManager?: Pick<ChatHistoryManager, "load" | "replaceInProgress" | "append">;
   /** Optional: without it a discarded conversation still marks the card stale, unannounced. */
   sseBroadcast?: (event: string, data: unknown) => void;
+}
+
+type PrepareAgentEnvOpts = NonNullable<Parameters<
+  NonNullable<SystemTurnDeps["prepareAgentEnv"]>
+>[2]>;
+
+/**
+ * The per-turn half of `prepareSessionAgentEnvironment`'s arguments.
+ *
+ * Both wiring sites — `runner-registry-factory.ts` for dispatched turns and
+ * `ws-handlers/agent-execution.ts` for interactive ones — rebuilt this object, and they
+ * drifted: `ownUserText` was added to one and silently dropped by the other, so the fix
+ * reached only half the turns. Add per-turn options here, not at a call site.
+ */
+export function agentEnvTurnArgs(envOpts: PrepareAgentEnvOpts | undefined): {
+  reusingResidentAgent?: boolean;
+  excludeRouteIds?: readonly string[];
+  residentRoute?: { kind: ProviderRouteKind; id: string };
+  requireResidentRoute?: boolean;
+  ownUserText?: string;
+} {
+  return {
+    ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
+    ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
+    ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
+    ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
+    ...(envOpts?.ownUserText !== undefined ? { ownUserText: envOpts.ownUserText } : {}),
+  };
 }
 
 // Run-parameter construction consumes this replay in the same turn; a retry re-arms it.

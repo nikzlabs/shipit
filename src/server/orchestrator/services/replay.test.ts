@@ -43,7 +43,7 @@ describe("the replay carries the work, not only the words", () => {
     expect(replay).toContain("[tool] Edit");
     expect(replay).toContain("/workspace/src/mw.ts");
     expect(replay).toContain("Applied 1 edit");
-    expect(replay).not.toMatch(/^Assistant: $/m);
+    expect(replay).not.toMatch(/^Assistant:\s*$\n\s*$/m);
   });
 
   it("keeps a short result inline", () => {
@@ -77,10 +77,12 @@ describe("the replay carries the work, not only the words", () => {
   });
 
   it("empties the spill directory on each build so it cannot grow", () => {
-    const messages = [toolTurn("Bash", { command: "a" }, "z".repeat(1000))];
-    buildConversationReplay(messages, { spill: spill() });
-    buildConversationReplay(messages, { spill: spill() });
-    expect(fs.readdirSync(path.join(dir, "scratch", "replay"))).toHaveLength(1);
+    const long = "z".repeat(1000);
+    // Different tool names, so a second build that failed to reset would leave both files
+    // rather than overwriting the first — which a same-name pair could never show.
+    buildConversationReplay([toolTurn("Bash", { command: "a" }, long)], { spill: spill() });
+    buildConversationReplay([toolTurn("Grep", { pattern: "b" }, long)], { spill: spill() });
+    expect(fs.readdirSync(path.join(dir, "scratch", "replay"))).toEqual(["001-Grep.txt"]);
   });
 
   it("names attachments without carrying their contents", () => {
@@ -103,7 +105,9 @@ describe("the replay carries the work, not only the words", () => {
       { role: "assistant", text: "", branchSynced: {} as PersistedMessage["branchSynced"] },
       toolTurn("Read", { file_path: "/workspace/a.ts" }, "ok"),
     ]);
-    expect(replay).not.toMatch(/^Assistant: $/m);
+    // Counted, not pattern-matched: the tool turn legitimately renders a bare `Assistant:`
+    // head above its detail lines, so only the count can show the card row was dropped.
+    expect(replay.match(/^Assistant:/gm) ?? []).toHaveLength(1);
   });
 });
 
@@ -128,11 +132,25 @@ describe("the replay does not carry the message that follows it", () => {
     expect(replay).not.toContain("this turn");
   });
 
-  it("leaves history alone when the last row is not the turn's message", () => {
+  it("leaves history alone when no user row matches", () => {
     const replay = buildConversationReplay([user("a"), toolTurn("Read", { f: 1 }, "ok", "b")], {
       dropTrailingUserText: "something else",
     });
     expect(replay).toContain("User: a");
+    expect(replay).toContain("Assistant: b");
+  });
+
+  it("drops the turn's row even when a failed attempt's output was finalized after it", () => {
+    // `recoverMissingConversation` writes the partial assistant output into history before
+    // it re-arms, so this turn's own message is no longer the last row.
+    const replay = buildConversationReplay(
+      [user("earlier"), toolTurn("Read", { f: 1 }, "ok", "ack"), user("this turn"),
+        toolTurn("Read", { f: 2 }, "partial", "starting")],
+      { dropTrailingUserText: "this turn" },
+    );
+    expect(replay).not.toContain("this turn");
+    expect(replay).toContain("earlier");
+    expect(replay).toContain("starting");
   });
 });
 

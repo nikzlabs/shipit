@@ -236,9 +236,23 @@ so files from an earlier build are unreachable and would otherwise accumulate. W
 usable directory a long payload degrades to a 500-character excerpt, which is still more
 than the text-only replay carried.
 
-`buildConversationReplay` also takes `dropTrailingUserText`, matched on text rather than
-position: on the new-session path the row is persisted *after* the replay is built, and
-dropping by position there would discard real history.
+`buildConversationReplay` also takes `dropTrailingUserText`. It removes the **last user
+row**, not the last row: a recovery finalizes the failed attempt's partial assistant output
+into history before rebuilding, so this turn's own message is no longer at the end. And it
+matches on **text** rather than position, because on the new-session path the row is
+persisted *after* the replay is built and dropping by position there would discard real
+history. Two user rows with identical text are indistinguishable to it; the later is
+dropped.
+
+The container-mode answer that picks `/persist` over a host path is read **at handler
+entry** and captured (docs/095). A fork clones before its replay is built, and a parent
+whose viewer disconnected can be reclaimed during that await — re-resolving the runner
+afterwards reads the absent one as local and hands the child paths it cannot open.
+
+Per-turn arguments to `prepareSessionAgentEnvironment` go through `agentEnvTurnArgs`
+(`session-agent-env.ts`). Both wiring sites rebuilt that object by hand and drifted:
+`ownUserText` reached the dispatched path and not the interactive one, so the fix covered
+half the turns.
 
 **Key files.** `services/replay.ts` (builder, arming, own-message drop),
 `services/replay-detail.ts` (detail lines, spill writer, `replaySpillDirs`).

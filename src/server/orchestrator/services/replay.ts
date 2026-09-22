@@ -34,11 +34,16 @@ function withoutOwnMessage(
   ownText: string | undefined,
 ): PersistedMessage[] {
   if (ownText === undefined) return messages;
-  const last = messages.at(-1);
+  // The LAST USER row, not the last row: a recovery finalizes the failed attempt's partial
+  // assistant output into history before rebuilding, so this turn's own message is no
+  // longer at the end.
+  let i = messages.length - 1;
+  while (i >= 0 && messages[i].role !== "user") i -= 1;
   // Matched on text rather than position: on the new-session path the row is persisted
-  // after this runs, and dropping a different message would discard real history.
-  if (last?.role !== "user" || last.text !== ownText) return messages;
-  return messages.slice(0, -1);
+  // after this runs, and dropping a different message would discard real history. Two user
+  // rows with identical text are indistinguishable here; the later one is dropped.
+  if (i === -1 || messages[i].text !== ownText) return messages;
+  return [...messages.slice(0, i), ...messages.slice(i + 1)];
 }
 
 export function buildConversationReplay(
