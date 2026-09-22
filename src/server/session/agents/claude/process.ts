@@ -127,8 +127,8 @@ const PARTIAL_MESSAGE_ARGS = ["--include-partial-messages"] as const;
 // here — one missing is routed to the gate, so the user hand-approves an
 // internal ShipIt tool before its card appears (`shipit-tool-allowlist.test.ts`).
 // ExitPlanMode needs headless approval; explicit skills can write even in plan mode.
-const AUTO_TOOL_SPEC = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions,mcp__shipit__propose_repo_session";
-const PLAN_TOOL_SPEC = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions,mcp__shipit__propose_repo_session";
+const AUTO_TOOL_SPEC = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions,mcp__shipit__propose_repo_session,mcp__shipit__propose_session_message";
+const PLAN_TOOL_SPEC = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions,mcp__shipit__propose_repo_session,mcp__shipit__propose_session_message";
 
 export class ClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;

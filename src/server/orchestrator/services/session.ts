@@ -37,6 +37,7 @@ export {
   listSpawnedChildren,
   getSpawnedChild,
   sendChildMessage,
+  deliverSessionMessage,
   ResolvedChildMessageError,
   waitForChildIdle,
   registerMergeWatch,

@@ -33,6 +33,7 @@ export interface RowHandlers {
   onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
+  onDeliverSessionMessage?: (cardId: string) => Promise<void>;
   onOpenIssue?: (ref: {
     tracker: TrackerId;
     id?: string;
@@ -61,6 +62,7 @@ const CALLBACK_KEYS = [
   "onSettingsProposalDecision",
   "onUndoIssueWrite",
   "onStartRepoSession",
+  "onDeliverSessionMessage",
   "onOpenIssue",
   "onResumeSession",
   "onReleaseConfirm",

@@ -297,6 +297,22 @@ Four things users ask about children:
   unmerged work. Work it must build on has to be merged first, or carried in
   the prompt.
 
+### A message to a session nobody can address
+
+Those commands reach a session's **own children**, and reporting reaches its
+**own parent** — nothing else, which is what stops one session from starting a
+turn in an unrelated one. So a sibling cannot be reached at all, and neither can
+a session that handed an agent a prompt without spawning it.
+
+For that case the agent posts a **"Message for another session"** card naming
+the target session and showing the whole message. The user reads it and sends
+it; that click is what delivers it, and it starts a turn there just as typing
+it would. Approving one card sends one message — the agent gets no continuing
+access, so a second message means a second card. The receiving session's
+transcript marks the message "From another session, approved by you", with the
+sender's name, and the card stays in the sender's transcript recording that it
+was delivered.
+
 ## Kinds of session
 
 Most sessions are the ordinary repository-backed kind described above. The

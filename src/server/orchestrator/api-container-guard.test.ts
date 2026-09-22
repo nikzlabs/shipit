@@ -535,6 +535,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/propose-actions",
   "POST /api/sessions/:sessionId/session-status",
   "POST /api/sessions/:sessionId/propose-repo-session",
+  // docs/314 req 7 — the agent may PROPOSE a message; the matching
+  // `…/session-message-proposals/:cardId/deliver` is absent on purpose, so only
+  // the user's click delivers one.
+  "POST /api/sessions/:sessionId/propose-session-message",
   "GET /api/egress/decision",
 ].sort();
 

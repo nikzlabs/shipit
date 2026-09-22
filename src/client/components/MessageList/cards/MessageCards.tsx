@@ -15,6 +15,7 @@ import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
 import { RepoSessionProposalCard } from "../../RepoSessionProposalCard.js";
+import { SessionMessageProposalCard } from "../../SessionMessageProposalCard.js";
 import { PresentInlineCard } from "../../PresentInlineCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
 import { SessionRenamedCard } from "../../SessionRenamedCard.js";
@@ -58,6 +59,7 @@ export interface MessageCardCallbacks {
   onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
 
   onStartRepoSession?: (cardId: string) => Promise<void>;
+  onDeliverSessionMessage?: (cardId: string) => Promise<void>;
 
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
 
@@ -291,6 +293,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
           <RepoSessionProposalCard
             card={msg.repoSessionProposal}
             onStart={cb.onStartRepoSession}
+            onOpenSession={cb.onResumeSession}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.sessionMessageProposal) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SessionMessageProposalCard
+            card={msg.sessionMessageProposal}
+            onDeliver={cb.onDeliverSessionMessage}
             onOpenSession={cb.onResumeSession}
           />
         </div>

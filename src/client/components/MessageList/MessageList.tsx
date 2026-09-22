@@ -103,6 +103,7 @@ export function MessageList({
   onSettingsProposalDecision,
   onUndoIssueWrite,
   onStartRepoSession,
+  onDeliverSessionMessage,
   onOpenIssue,
   onResumeSession,
   onReleaseConfirm,
@@ -134,6 +135,7 @@ export function MessageList({
 
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
+  onDeliverSessionMessage?: (cardId: string) => Promise<void>;
 
   onOpenIssue?: (ref: {
     tracker: TrackerId;
@@ -343,6 +345,7 @@ export function MessageList({
     onSettingsProposalDecision,
     onUndoIssueWrite,
     onStartRepoSession,
+    onDeliverSessionMessage,
     onOpenIssue,
     onResumeSession,
     onReleaseConfirm,

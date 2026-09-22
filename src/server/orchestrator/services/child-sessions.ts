@@ -1,7 +1,13 @@
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
-import type { SessionInfo, AgentId, SessionMergeWatch, SpawnTarget } from "../../shared/types.js";
+import type {
+  SessionInfo,
+  AgentId,
+  SessionMergeWatch,
+  SpawnTarget,
+  SessionMessageOrigin,
+} from "../../shared/types.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
 import { selectionExists } from "../../shared/catalogue/index.js";
 import {
@@ -26,6 +32,7 @@ import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { isResolvedForGrouping } from "../../shared/session-resolution.js";
+import type { TurnAdmission } from "../turn-settlement.js";
 
 export class ResolvedChildMessageError extends ServiceError {
   constructor(public readonly child: SessionInfo) {
@@ -585,6 +592,8 @@ export interface SendChildMessageResult {
   /** One-based when queued behind a running turn; otherwise zero. */
   queuePosition: number;
   enqueued: boolean;
+  /** docs/314 — the dispatch's OWN admission, not a guess from the runner's state. */
+  admitted: TurnAdmission;
 }
 
 // Observe boot failure before acknowledging; timeout still permits dispatch to await readiness itself.
@@ -622,30 +631,71 @@ export async function sendChildMessage(
   })) {
     throw new ResolvedChildMessageError(child);
   }
-  if (!child.workspaceDir) {
-    throw new ServiceError(400, "Child session has no workspace");
-  }
   if (child.archived) {
     throw new ServiceError(400, "Child session is archived");
   }
 
+  return deliverSessionMessage(
+    sessionManager,
+    runnerRegistry,
+    child,
+    trimmed,
+    {
+      sessionId: parentSessionId,
+      sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
+      relation: "parent",
+    },
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    containerManager,
+  );
+}
+
+/**
+ * The delivery half of `sendChildMessage`, with no admission rule of its own.
+ *
+ * Every caller decides separately who is allowed to reach `target`:
+ * `sendChildMessage` allows a direct child, and docs/314's proposal card allows
+ * anything the user approved by clicking. Sharing the body is what stops a
+ * change to dispatch — a credential refresh, a readiness wait — from applying
+ * to one route and not the other.
+ */
+export async function deliverSessionMessage(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  target: SessionInfo,
+  text: string,
+  origin: SessionMessageOrigin,
+  defaultAgentId: AgentId,
+  credentialsDir: string | undefined,
+  credentialStore: CredentialStore | undefined,
+  providerAccountManager?: ProviderAccountManager,
+  containerManager?: SessionContainerManager | null,
+): Promise<SendChildMessageResult> {
+  if (!target.workspaceDir) {
+    throw new ServiceError(400, "Target session has no workspace");
+  }
+  const targetSessionId = target.id;
+
   // A runner can survive its container. Dispose it so getOrCreate starts a fresh worker.
   if (containerManager) {
-    const stale = runnerRegistry.get(childSessionId);
-    if (stale && !hasLiveContainer(containerManager, childSessionId)) {
-      runnerRegistry.dispose(childSessionId, { force: true });
+    const stale = runnerRegistry.get(targetSessionId);
+    if (stale && !hasLiveContainer(containerManager, targetSessionId)) {
+      runnerRegistry.dispose(targetSessionId, { force: true });
     }
   }
 
-  const runner = runnerRegistry.getOrCreate(childSessionId, child.workspaceDir, child.agentId ?? defaultAgentId);
+  const runner = runnerRegistry.getOrCreate(targetSessionId, target.workspaceDir, target.agentId ?? defaultAgentId);
   // getOrCreate ignores the agent argument for an existing runner; reconcile before provisioning.
-  const effectiveAgentId = reconcileRunnerAgent(runner, child.agentId);
+  const effectiveAgentId = reconcileRunnerAgent(runner, target.agentId);
 
   // A queued turn refreshes its own environment when it starts.
   const wasRunning = runner.running;
   if (!wasRunning && credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
-      sessionId: childSessionId,
+      sessionId: targetSessionId,
       agentId: effectiveAgentId,
       deps: {
         credentialsDir,
@@ -668,14 +718,10 @@ export async function sendChildMessage(
     throw new ServiceError(503, "Could not resume the session container; the message was not delivered.");
   }
 
-  runner.dispatch(prepareDispatch({
-    text: trimmed,
+  const handle = runner.dispatch(prepareDispatch({
+    text,
     agentInterface: undefined,
-    messageOrigin: {
-      sessionId: parentSessionId,
-      sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
-      relation: "parent",
-    },
+    messageOrigin: origin,
     execution: undefined,
     activity: undefined,
     images: undefined,
@@ -692,8 +738,9 @@ export async function sendChildMessage(
     silent: undefined,
   }));
   return {
-    queuePosition: wasRunning ? runner.queueLength : 0,
+    queuePosition: handle.admitted === "queued" ? runner.queueLength : 0,
     enqueued: wasRunning,
+    admitted: handle.admitted,
   };
 }
 
