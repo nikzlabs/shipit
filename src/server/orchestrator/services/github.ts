@@ -22,6 +22,7 @@ import { decideMerge, readMergeObservation } from "./merge-gate.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
 import { freshenBaseRef } from "./freshen-base-ref.js";
+import { formatCommitHookNotice } from "./commit-hook-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./unreadable-workspace-notice.js";
 import { emitNoticePostTurn, persistNoticeUnattached } from "../chat-card-persistence.js";
 import type { GenerateText } from "../non-turn-model.js";
@@ -700,9 +701,21 @@ export async function flushPendingTurnCommit(
     || runner?.turnSummary?.split("\n")[0]?.slice(0, 120)
     || "Agent turn";
   const parentHash = await git.getHeadHash();
-  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable, hookFailure } =
     await git.autoCommit(summary);
   const secretBlocked = secretFindings.length > 0;
+  if (hookFailure) {
+    const message = formatCommitHookNotice(hookFailure);
+    if (deps.chatHistory && deps.sessionId) {
+      if (runner) {
+        emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, deps.sessionId, message, "warn");
+      } else {
+        persistNoticeUnattached(deps.chatHistory, deps.sessionId, message, "warn");
+      }
+    } else {
+      runner?.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
+    }
+  }
   if (unreadable) {
     const message = formatUnreadableWorkspaceNotice(unreadable, {
       committed: commitHash !== null,

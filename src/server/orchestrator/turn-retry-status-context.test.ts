@@ -120,6 +120,7 @@ function harness(opts: { card?: SessionStatus; statusCardEnabled?: () => boolean
       rebaseInProgress: false,
       secretFindings: [],
       unreadable: null,
+      hookFailure: null,
     }),
     scheduleAutoPush: vi.fn(),
     prepareAgentEnv: (async () => undefined) as never,

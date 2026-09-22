@@ -55,6 +55,7 @@ import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
+import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
@@ -1021,6 +1022,15 @@ export async function executeAgentTurn(
       // Minimal setups bypass postTurnCommit, so they need the same auto-commit gate here.
       if (!sessionAutoCommitAllowed(deps.listenerDeps.sessionManager, sessionId)) return null;
       const result = await deps.autoCommit(runner.sessionDir, summary);
+      if (result.hookFailure) {
+        emitNoticePostTurn(
+          emit,
+          deps.listenerDeps.chatHistoryManager,
+          sessionId,
+          formatCommitHookNotice(result.hookFailure),
+          "warn",
+        );
+      }
       if (result.unreadable) {
         emitNoticePostTurn(
           emit,

@@ -11,6 +11,7 @@ import {
   formatUnreadableWorkspaceNotice,
   formatUncommittedTurnNotice,
 } from "../services/unreadable-workspace-notice.js";
+import { formatCommitHookNotice } from "../services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "../services/auto-commit-gate.js";
 import { readBranchSync } from "../services/branch-sync.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
@@ -169,8 +170,17 @@ export async function postTurnCommit(
       && ctx.sessionManager.getSecretBlock(opts.sessionId) !== undefined;
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
-    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable, hookFailure } =
       await autoCommitReportingFailure(git, firstLine);
+    if (hookFailure && opts.sessionId) {
+      emitNoticePostTurn(
+        opts.emit,
+        ctx.chatHistoryManager,
+        opts.sessionId,
+        formatCommitHookNotice(hookFailure),
+        "warn",
+      );
+    }
     if (unreadable && opts.sessionId) {
       emitNoticePostTurn(
         opts.emit,

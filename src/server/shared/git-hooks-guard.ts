@@ -9,6 +9,7 @@ export {
   HOOKS_DISABLED_CONFIG,
   GIT_HOOKS_DISABLED_ARGS,
   gitArgsWithHooksDisabled,
+  gitArgsWithProjectHooks,
 } from "./git-hooks-args.js";
 
 export function safeSimpleGit(baseDir?: string, options?: Partial<SimpleGitOptions>): SimpleGit {

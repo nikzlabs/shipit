@@ -34,6 +34,7 @@ import type { MarketplaceStore } from "./marketplace-store.js";
 import { getErrorMessage } from "./validation.js";
 import { pushToOrigin } from "./git-utils.js";
 import { emitNoticePostTurn, persistNoticeUnattached } from "./chat-card-persistence.js";
+import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 
 async function commitManualEdit(
@@ -48,19 +49,25 @@ async function commitManualEdit(
   if (!sessionAutoCommitAllowed(deps.sessionManager, sessionId)) return;
   try {
     const git = deps.createGitManager(dir);
-    const { commitHash, unreadable } = await withWorkspaceLock(dir, () =>
+    const { commitHash, unreadable, hookFailure } = await withWorkspaceLock(dir, () =>
       git.autoCommit(`Edit ${path.basename(filePath)}`),
     );
-    if (unreadable) {
-      const message = formatUnreadableWorkspaceNotice(unreadable, {
-        committed: commitHash !== null,
-        what: "This file edit",
-      });
+    const notify = (message: string): void => {
       if (runner) {
         emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistoryManager, sessionId, message, "warn");
       } else {
         persistNoticeUnattached(deps.chatHistoryManager, sessionId, message, "warn");
       }
+    };
+    if (hookFailure) {
+      notify(formatCommitHookNotice(hookFailure));
+    }
+    if (unreadable) {
+      const message = formatUnreadableWorkspaceNotice(unreadable, {
+        committed: commitHash !== null,
+        what: "This file edit",
+      });
+      notify(message);
     }
     if (commitHash && deps.githubAuthManager.authenticated) {
       void pushToOrigin(git, (skip) => {

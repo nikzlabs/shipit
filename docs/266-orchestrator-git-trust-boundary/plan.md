@@ -9,8 +9,8 @@ description: Five options for closing the .git route, their costs, the recommend
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-**Status: E1 + E5-detect + E3 shipped; E2 built but not armed; E4 and the
-per-session-uid follow-up outstanding.** All four open questions were answered on
+**Status: E1 + E2 + E3 + E4 + E5-detect shipped; the per-session-uid follow-up
+is planning#405 (shipped separately as docs/270).** All four open questions were answered on
 2026-08-16 (`requirements.md` → Resolved questions). See
 [checklist.md](./checklist.md) for exactly what landed and why each remaining
 piece was split out — planning#403 (E2), planning#405 (per-session uids).
@@ -24,8 +24,9 @@ grant — are now deleted. §2 (E2) says why it took that route.
 
 **planning#384 is not closed by that work**, and the checklist says so in those
 words. The drop removes root, the Docker socket and the credential store from
-the payload's reach; it is not yet fail-closed (E2), a project's hooks still do
-not fire (E4), and cross-session workspace access remains (req 13).
+the payload's reach, it is fail-closed (E2), and a project's hooks fire again on
+the auto-commit (E4) — but cross-session workspace access at the shared uid
+remains for pre-existing sessions (req 13).
 
 One correction to §5 from building it: the sequence says "convert the five raw
 sites", and a count is the wrong unit. **Two shapes reach git.** The
@@ -481,10 +482,10 @@ downgrade and not an availability risk:
   resolver is *not* consulted during a commit.
 
 **E4. Let the project's hooks fire again on the session-workspace path**
-(req 9, decided 2026-08-16). Once E1 lands, PR #2301's `core.hooksPath` override
-is no longer doing security work there — it is only suppressing a project's own
-`pre-commit` formatter on a commit the project would expect it to run on. Drop
-it for git that runs at the session's uid. Two constraints come with it:
+(req 9, decided 2026-08-16). **Shipped 2026-09-22.** Once E1 lands, PR #2301's
+`core.hooksPath` override is no longer doing security work there — it is only
+suppressing a project's own `pre-commit` formatter on a commit the project would
+expect it to run on. Two constraints come with it:
 
 - **Keep the override everywhere orchestrator git still runs as root** — the
   bare cache, `/opt/shipit`, and anything E1 has not converted. There it is
@@ -494,11 +495,234 @@ it for git that runs at the session's uid. Two constraints come with it:
   exits non-zero when `pre-commit` fails, and never returns when it hangs;
   either way `autoCommit` throws and the turn's edits stay uncommitted with no
   reflog entry. So the commit needs a bounded hook attempt and a fallback:
-  run it with hooks, and on a non-zero exit or a timeout, re-run with
-  `--no-verify` and surface a persisted notice saying the hook failed and what
-  it printed. The commit always lands; the user always learns the hook did not
-  pass. Sequencing note — the retry must stay inside the same `postTurnStep`
-  and before the drain, so invariants 1 and 3 are unaffected.
+  run it with hooks, and on a non-zero exit or a timeout, re-run without them
+  and surface a persisted notice saying the hook failed and what it printed. The
+  commit always lands; the user always learns the hook did not pass. Sequencing
+  note — the retry must stay inside the same `postTurnStep` and before the
+  drain, so invariants 1 and 3 are unaffected.
+
+### E4 as built — which operations run hooks, and why only those
+
+**One operation runs them: `GitManager.autoCommit`'s own `git commit`.** Nothing
+else. That is requirement 9's plain words ("a project's own git hooks MUST fire
+on ShipIt's auto-commit"), and the wider reading was rejected rather than taken
+by default, so the reasoning is recorded here.
+
+**This IS a narrowing of the Q1 receipt, and it is recorded as an open question
+rather than settled here.** Requirement 9 says "on ShipIt's auto-commit"; the
+receipt in `requirements.md` ("2026-08-16 — Q1") records the chosen option as
+*"run them wherever the orchestrator's git runs, once that is no longer root"*,
+which is broader. The two disagree, and the review of this change caught the
+plan claiming the wider behaviour "was not asked for" — which is wrong as
+stated, because option (c)'s own wording asks for it. What is built implements
+the numbered requirement (the identifier, per `CLAUDE.md`'s requirements
+discipline), because req 10's fallback exists only for the commit and a
+`pre-push` or `post-checkout` hook would inherit nothing. Widening later is
+additive and loses nothing. The requester's call is recorded as an open
+question, not taken here.
+
+The wider reading was available and is *smaller to build*: `safeSimpleGit`
+already resolves `resolveGitTreeUid(baseDir)` to decide whether to drop uid
+(`git-hooks-guard.ts:19`), which is exactly the predicate "this git runs as the
+session's own uid on the session's own tree" — so making the `core.hooksPath`
+override conditional at that one choke point would have re-enabled hooks
+everywhere in one edit, with no new call sites and no census. **The observation
+in the brief is correct; the conclusion does not follow.** That choke point
+serves *every* orchestrator git operation on the session tree, so taking it
+would also have given the project `post-checkout` at session provisioning,
+`post-merge` and `post-rewrite` on conflict remediation, and `pre-push` on the
+auto-push — and, decisively, **req 10's fallback covers the commit and nothing
+else**. A failing `pre-push` hook would block the auto-push with no fallback to
+inherit; a hanging `post-checkout` would sit inside session creation. Cheaper to
+build is not the same as smaller in effect.
+
+So `safeSimpleGit` is **unchanged**: every simple-git call still carries
+`-c core.hooksPath=/dev/null`, including the fallback commit. Only one raw spawn
+omits it.
+
+**What that cost, measured against req 9's condition** ("costing nothing beyond
+removing the current hook suppression"). Removing the suppression conditionally
+is not a deletion here, because the commit also needs req 10's bound — which the
+design already accepts as the price. Beyond those two, E4 added: a marker
+`gitArgsWithProjectHooks` (returns its argument; it exists so the call site
+names its intent and the coverage scanner can census it), and one `hookFailure`
+field threaded from `AutoCommitResult` to the two places that surface notices.
+No new subsystem, no new runtime dependency, nothing the commit can fail on for
+an environmental reason (req 6). The condition holds; E4 did not come back as a
+question.
+
+**The mechanism.** `GitManager.commitWithProjectHooks` (`shared/git.ts`):
+
+1. Resolve the spawn's identity once — `{ cwd, ...gitSpawnOverridesForTree(dir) }`
+   — and ask `projectHooksAllowed` (`git-tree-uid.ts`) whether this git will
+   carry root authority: hooks run only when this process is not root, or when
+   it is dropping to a **non-root** owner. Reading the overrides the spawn will
+   actually use, rather than resolving ownership a second time, is what keeps
+   the answer from disagreeing with the process. Root with no drop returns
+   `skipped` and commits through the ordinary hooks-disabled path, which is
+   constraint 1 expressed as code rather than as a rule to remember.
+   *The "non-root" half was a review finding, not foresight: the first version
+   accepted any defined uid, and `uid: 0` is reachable —
+   `SHIPIT_SESSION_WORKER_UID=0` is accepted by `session-worker-uid.ts` and
+   becomes the fallback identity for a root-owned legacy session directory, so
+   a drop can arrive AT root. Pinned by a test.*
+2. Spawn `git commit -m <msg>` with hooks, stdin closed (a hook that reads stdin
+   gets EOF instead of waiting out the bound), bounded by
+   `COMMIT_HOOK_TIMEOUT_MS` = 60s — half of `POST_TURN_HOLD_MAX_MS`, so a hook
+   cannot consume the whole post-turn lease.
+3. **Settle on `exit`, not `close`** (with a 150 ms grace for output git wrote
+   just before exiting; `close` normally pre-empts it). This too was a review
+   finding. `close` waits for git's stdout pipe, and a hook that backgrounds a
+   child — `sleep 10000 & exit 1` — leaves that child holding it after git
+   itself is gone. The timeout could not recover it either: `killProcessTree`
+   collects no descendants once the root has exited (`kill-child.ts`), so the
+   commit would have hung until the grandchild died, well past the 120s lease.
+4. On timeout, tear the hook down with **`killProcessTree`**, not `child.kill()`:
+   measured here, SIGTERM to `git commit` leaves the hook's own background child
+   running (reparented to pid 1), which is the `CLAUDE.md` agent-CLI case
+   exactly. Pinned by a test that reads the child's pid out of the hook and
+   asserts it is dead.
+5. **After a failure, redo the staging AND the scan against what git says
+   now** (`recoverFromFailedHook`). A hook can leave the index and the working
+   tree in any state, and this is the ordinary case rather than an adversarial
+   one: **lint-staged**, the commonest `pre-commit` setup in a JS project,
+   stashes and restores both around every run. So the recovery repeats the
+   staging sequence rather than half of it:
+   - HEAD moved ⇒ a `post-commit` hook failed after the commit existed; nothing
+     to redo.
+   - `git add -A`, **best effort**. If it throws, keep the index the hook was
+     handed and commit that — losing the turn to a second `add` would be the
+     exact failure req 10 names. (Reproduced by a reviewer with a hook that
+     `chmod 000`s a tracked file.)
+   - **Re-scan the staged diff for secrets.** The scan upstream of the commit
+     ran on the paths the *turn* staged; anything the hook itself wrote has
+     never been scanned, and this commit is auto-pushed. A finding returns the
+     same secret-block result the ordinary path returns, with the work unstaged
+     and preserved. *This was the most serious round-2 finding: the first
+     version of the recovery committed and pushed hook-written content past the
+     only scan.*
+   - **Nothing staged ⇒ throw.** A hook that runs `git stash push -u` leaves a
+     clean tree and an unmoved HEAD, and a `null` commitHash there is read as
+     "nothing to commit" by `flushPendingTurnCommit` (which the merge route
+     accepts) and by `ensureCheckoutDurable` (which then permits eviction —
+     deleting the stash that holds the only copy). Throwing routes it to the
+     existing uncommitted-turn report instead, which is what req 15 asks for.
+     The thrown message carries the hook's output, redacted.
+   *The first version retried blindly and read any HEAD movement as success,
+   which lost the turn's work to a hook that unstaged it. Every branch above is
+   pinned by a test that was watched to fail without it.*
+6. The fallback commit carries the `core.hooksPath` override, which is
+   **stricter than the `--no-verify` this plan originally specified**:
+   `--no-verify` skips `pre-commit` and `commit-msg` but still runs
+   `post-commit`, while the override runs nothing.
+7. Report `hookFailure: { kind: "failed" | "timeout"; output }` — the hook's own
+   output, redacted through `redactSecretsInText` and capped — which every
+   caller that has a transcript renders as a **persisted** system notice via
+   `emitNoticePostTurn` (persisted, not emit-only: `CLAUDE.md`, "Chat transcript
+   content MUST be persisted"). No new `PersistedMessage` field and no
+   migration: a system notice is already a persisted row. The notice states
+   whether a commit landed rather than asserting one.
+
+   A returned `hookFailure` therefore always has a commit behind it — the one
+   case ShipIt cannot commit throws instead — so the notice states that plainly
+   rather than hedging.
+
+   **Four callers surface it**, which is the whole set that has somewhere to
+   surface to: `post-turn.ts` (the auto-commit), `turn-executor.ts` (the
+   minimal-setup path), `services/github.ts` (the mid-turn flush before PR
+   creation) and `api-routes-files.ts` (a manual edit in ShipIt's editor). Three
+   do not and are named here rather than left silent: `templates.ts` scaffolds a
+   repository that has no project hooks yet; `checkout-durability.ts` runs with
+   no user attached and already refuses to evict a workspace the commit left
+   dirty, which is the outcome that matters there; `sub-agent-commit.ts` reports
+   through its own flush classification. *That `github.ts` and
+   `api-routes-files.ts` silently dropped the field was a review finding.*
+
+**Measured, not argued** (git 2.39.5, in this container):
+
+| Question | Answer |
+|---|---|
+| Does a hook hold `.git/index.lock`? | **Yes**, for its whole run — so a retry is impossible until the hooked git is gone. |
+| Does SIGTERM to `git commit` release it? | **Yes.** git's lockfile signal handler removes it, so the hookless retry can take it. |
+| Does the hook's own child die with git? | **No.** It is reparented to pid 1 and keeps running — hence `killProcessTree`, and hence settling on `exit`. |
+| Does a failing `post-commit` fail `git commit`? | **No.** git ignores its exit status, so ShipIt reports nothing and retries nothing. |
+| Does a *hanging* `post-commit` matter? | **Yes** — it trips the timeout after the commit landed, which is what step 5's HEAD check exists for. |
+| What hash does simple-git's `commit()` return? | The **full 40 characters**: it passes `-c core.abbrev=40` (`simple-git/dist/cjs/index.js:2197`). The raw spawn therefore reports `rev-parse HEAD`, not the abbreviated form an earlier draft used — and never anything parsed out of output a hook can write. |
+
+**What E4 does NOT close, stated as a residual rather than hidden.** A hook that
+**ignores SIGTERM** outlives the teardown: `killProcessTree` escalates to
+SIGKILL after a five-second grace, and ShipIt does not wait for it — the
+fallback commit runs while that hook may still be writing to the workspace.
+Reproduced by a reviewer (`trap "" TERM; sleep 2; echo … > tracked.txt`): the
+commit landed at 812 ms against a 500 ms bound, and the file changed afterwards.
+This is **not a boundary E4 could hold**. Under req 11 a hook is code the
+repository's author may already run at the session's uid, so it can fork a
+detached writer that no wait would outlive; waiting would only convert an
+uncooperative hook into a five-second tax on every timed-out commit. The turn's
+work is committed either way, and the next turn commits whatever the hook did
+after. Recorded here, and documented by a test that asserts the commit does not
+wait.
+
+**What E4 does not change, stated so the next reader does not rediscover it.**
+A hook is repo-controlled code executing in the orchestrator container at the
+session's own uid. That is permitted by req 11 — repo-controlled code may
+execute at an authority its own author already holds — and it is not a new
+class: a repository's `filter.<name>.clean` already executes on this same
+`add`/`commit` path (see "What is already true" in `requirements.md`), with the
+same inherited environment. E4 adds a far more *reachable* trigger, not a new
+authority. It was held behind planning#414 (shared package-cache integrity) for
+exactly that reachability, because a `pre-commit` hook runs binaries out of
+`node_modules/.bin`; that closed on 2026-09-22
+(`docs/276-shared-package-cache-integrity` checklist), which is why E4 is only
+being built now.
+
+**Two review rounds, and what each cost.** Round 1 found six issues (the uid-0
+drop, the `close` hang, the blind retry, hook output parsed as a hash, two
+callers dropping the failure, and the Q1-receipt contradiction). Round 2 was run
+against the fixes and found five more, three of them created BY those fixes —
+the rescan gap, the `add` that could throw, and the `null` commitHash that reads
+as "nothing to commit" to the merge route and the eviction gate. That is the
+pattern worth carrying forward: a fix to a commit path is itself a commit path
+change, and the second round earned more than the first.
+
+Two round-2 findings were judged and **not** built. The SIGTERM-ignoring hook is
+the residual above. A hook that reverts the working tree while leaving the index
+(`git show HEAD:f > f; exit 1`) loses that path's content to the re-stage — but
+committing the index there would produce a commit that disagrees with the tree,
+which the next turn's `add -A` would immediately revert, so it moves the loss a
+turn later rather than preventing it. The working tree is what the user sees and
+what the next turn acts on, and it is what E4 commits.
+
+**Enforcement.** `git-hooks-guard-coverage.test.ts` gains a census: every use of
+`gitArgsWithProjectHooks` must be listed with why hooks are safe there, what
+bounds them, and what happens when one fails — and its message says plainly that
+req 10's fallback covers the commit only, so a `pre-push` site inherits nothing.
+A new site with neither wrapper still fails the original rule. `git-hooks-guard.test.ts`
+now asserts the *narrowness* directly: `autoCommit` runs the commit hooks, and
+`commitPaths`, `checkoutNewBranch`, `merge`, `rebase`, `push` and an arbitrary
+`safeSimpleGit` command still run none — including when the repository's own
+config names `core.hooksPath`, which is how husky installs hooks.
+
+**Two line references in this feature's own brief had rotted**, recorded because
+the requirements doc asks for exactly this kind of correction. `git-hooks-guard.ts`
+is 31 lines, not 173: the argv half was split into `shared/git-hooks-args.ts`
+(`HOOKS_DISABLED_PATH:5`, `gitArgsWithHooksDisabled:9`) so build tooling can
+disable hooks without importing simple-git, leaving `safeSimpleGit` at
+`git-hooks-guard.ts:15` and the `allowUnsafeHooksPath` note at `:24`. The
+"54 call sites across 13 files" count is also stale — today it is 31 raw-argv
+sites across 11 files plus 40 `safeSimpleGit` sites — and per `requirements.md`
+the count should not be trusted as a closed set either way.
+
+**`allowUnsafeHooksPath`, checked as asked.** simple-git's
+`blockUnsafeOperationsPlugin` runs `vulnerabilityCheck(args, env)` from
+`@simple-git/argv-parser`, which refuses to spawn when `core.hooksPath` appears
+in the **written** config of argv or in the environment protocol, unless that
+flag is set. It is a guard on *passing* the key, not on hooks running: with the
+override absent the flag would be unnecessary, and setting it anyway would
+silently permit any other route to `core.hooksPath` (a `git config
+core.hooksPath` write task, a `GIT_CONFIG_KEY_n` pair). E4 leaves it exactly as
+it is, because `safeSimpleGit` still passes the override on every call — the
+hooked commit is a raw spawn and never reaches simple-git's guard at all.
 
 **E5. Compose services that declare an explicit `user:` (req 12).** This is the
 one place where dropping root has a cost that is not purely security, and it was
@@ -711,8 +935,10 @@ each by name:
    looks exactly like a clean tree if the error is discarded, so it needs a
    loud, distinct log line. Second, E4 re-enables project hooks, so a failing or
    hanging `pre-commit` can now fail the commit; req 10 is what forbids that,
-   and the bounded-attempt-then-`--no-verify` fallback in E4 is what satisfies
-   it. E4 is the only part of this design that *adds* a way for the commit to
+   and E4's bounded attempt followed by the ordinary hooks-disabled commit is
+   what satisfies it. The retry is inside `autoCommit`, so it is inside the same
+   `postTurnStep` and before the drain — invariants 1 and 3 see one commit call
+   that either succeeds or throws exactly as it did before. E4 is the only part of this design that *adds* a way for the commit to
    fail, which is why it carries its own requirement rather than riding along.
 
    **This invariant is the one E5 lands on hardest.** Invariant 3 exists because
@@ -892,7 +1118,11 @@ Sequence:
 4. Drop the `core.hooksPath` override on the session-workspace path only, and
    add the bounded-hook-then-`--no-verify` fallback with its persisted notice
    (E4, reqs 9 and 10). Last, because it is the only step that adds a way for
-   the commit to fail — everything before it must be settled first.
+   the commit to fail — everything before it must be settled first. *Shipped
+   2026-09-22, narrower than "the session-workspace path": the override is
+   dropped on the auto-commit's own `git commit` and nowhere else, and the
+   fallback is the hooks-disabled commit rather than `--no-verify`, which is
+   stricter. §2 (E4 as built) says why the wider, cheaper reading was declined.*
 5. Extend `git-hooks-guard-coverage.test.ts`'s idea — it already fails the build
    when a `git` process is spawned without `gitArgsWithHooksDisabled` — to also
    fail when a session-workspace git spawn carries no uid. Note that step 4
@@ -927,7 +1157,10 @@ follow-up's own requirements, and this note is the handoff.
 ## Key files
 
 - `src/server/shared/git.ts` — `GitManager`; `autoCommit` at `:275`, `status()` at `:282`.
-- `src/server/shared/git-hooks-guard.ts` — PR #2301's `core.hooksPath` guard and its own statement of what it does not cover.
+- `src/server/shared/git-hooks-guard.ts` — `safeSimpleGit`; PR #2301's `core.hooksPath` guard and its own statement of what it does not cover.
+- `src/server/shared/git-hooks-args.ts` — the argv half: `gitArgsWithHooksDisabled`, and E4's `gitArgsWithProjectHooks` marker.
+- `src/server/shared/git-tree-uid.ts` — `gitSpawnOverridesForTree`, and E4's `projectHooksAllowed`.
+- `src/server/orchestrator/services/commit-hook-notice.ts` — E4's persisted notice text.
 - `src/server/orchestrator/app-di.ts:437` — the `createGitManager` seam.
 - `src/server/orchestrator/git-config.ts:60-66` — `safe.directory=*`; `:137` `writeContainerGitConfig`.
 - `src/server/orchestrator/session-worker-uid.ts` — uid gating and the `.git` chown.

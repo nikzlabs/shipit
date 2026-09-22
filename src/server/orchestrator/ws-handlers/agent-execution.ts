@@ -562,9 +562,12 @@ async function composeAndRunAgentTurn(
     autoCommit: async (sessionDir, summary) => {
       const git = ctx.createGitManager(sessionDir);
       const parentHash = await git.getHeadHash();
-      const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+      const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable, hookFailure } =
         await git.autoCommit(summary);
-      return { commitHash, parentHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable };
+      return {
+        commitHash, parentHash, conflictedFiles, rebaseInProgress,
+        secretFindings, unreadable, hookFailure,
+      };
     },
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     statusCardEnabled: () => ctx.credentialStore.getSessionStatusCard(),

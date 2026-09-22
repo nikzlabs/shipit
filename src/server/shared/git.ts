@@ -1,9 +1,14 @@
 import { type SimpleGit, type LogResult } from "simple-git";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
-import { safeSimpleGit, gitArgsWithHooksDisabled } from "./git-hooks-guard.js";
+import {
+  safeSimpleGit,
+  gitArgsWithHooksDisabled,
+  gitArgsWithProjectHooks,
+} from "./git-hooks-guard.js";
+import { killProcessTree } from "./kill-child.js";
 import {
   type GitRemoteCredential,
   type GitRemoteCredentialResolver,
@@ -11,11 +16,13 @@ import {
   resolveTreeRemoteCredential,
   withPreemptiveAuthFallback,
 } from "./git-remote-credential.js";
-import { gitSpawnOverridesForTree } from "./git-tree-uid.js";
+import { gitSpawnOverridesForTree, projectHooksAllowed } from "./git-tree-uid.js";
 import { pushLfsObjects } from "./git-lfs-push.js";
 
 export interface GitManagerOptions {
   resolveRemoteCredential?: GitRemoteCredentialResolver;
+  /** docs/266 E4 — shortened in tests; a hook gets this long before it is killed. */
+  commitHookTimeoutMs?: number;
 }
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
@@ -128,6 +135,14 @@ export interface AutoCommitResult {
   secretFindings: SecretFinding[];
   /** Callers must report omissions separately from a completely blocked commit. */
   unreadable: UnreadableWorkspace | null;
+  /** Set when the project's own hook did not pass; the commit landed regardless (req 10). */
+  hookFailure: CommitHookFailure | null;
+}
+
+export interface CommitHookFailure {
+  kind: "failed" | "timeout";
+  /** The hook's own output — git prints nothing of its own when a hook refuses. */
+  output: string;
 }
 
 export type UnreadableWorkspace =
@@ -183,6 +198,34 @@ export interface WorkingTreeState {
 const UNREADABLE_DIR_RE = /could not open directory\s+'([^']+)'/;
 const UNREADABLE_FILE_RE = /open\("([^"]+)"\): Permission denied/;
 
+/**
+ * A hook holds `.git/index.lock` for its whole run and the post-turn lease
+ * expires at 120s (`POST_TURN_HOLD_MAX_MS`), so half of it is the bound: long
+ * enough for a real formatter, short enough to leave the rest of the sequence
+ * its time. Measured: SIGTERM to `git commit` removes the lock, so the
+ * hookless retry can take it.
+ */
+export const COMMIT_HOOK_TIMEOUT_MS = 60_000;
+const HOOK_OUTPUT_LIMIT = 4096;
+
+/**
+ * Settle on `exit`, not `close`: a hook that backgrounds a child leaves it
+ * holding git's stdout, and `close` then waits for a process the timeout can no
+ * longer reach (`killProcessTree` collects no descendants once the root has
+ * exited). This is the grace for output git wrote just before exiting; `close`
+ * almost always arrives first and pre-empts it.
+ */
+const HOOK_STREAM_FLUSH_MS = 150;
+
+type HookedSpawnOutcome =
+  | { spawnFailed: true }
+  | { code: number | null; output: string; timedOut: boolean };
+
+type HookedCommit =
+  | { kind: "skipped" }
+  | { kind: "committed"; hash: string }
+  | { kind: "failed" | "timeout"; output: string; headMoved: boolean };
+
 export function classifyUnreadableAddFailure(message: string): UnreadableWorkspace | null {
   const blocked = UNREADABLE_FILE_RE.exec(message);
   return blocked ? { kind: "blocked", detail: blocked[1] } : null;
@@ -194,9 +237,11 @@ export class GitManager {
   // outputHandler captures warnings that simple-git omits from successful results.
   private stderrTail = "";
   private readonly resolveRemoteCredential: GitRemoteCredentialResolver | undefined;
+  private readonly commitHookTimeoutMs: number;
 
   constructor(workspaceDir?: string, options?: GitManagerOptions) {
     this.resolveRemoteCredential = options?.resolveRemoteCredential;
+    this.commitHookTimeoutMs = options?.commitHookTimeoutMs ?? COMMIT_HOOK_TIMEOUT_MS;
     this.workspaceDir = workspaceDir ?? DEFAULT_WORKSPACE_DIR;
     this.git = safeSimpleGit(this.workspaceDir).outputHandler(
       (_command, _stdout, stderr) => {
@@ -301,11 +346,17 @@ export class GitManager {
         rebaseInProgress ? "rebase in progress;" : "",
         conflictedFiles.length > 0 ? `unmerged paths: ${conflictedFiles.join(", ")}` : "",
       );
-      return { commitHash: null, conflictedFiles, rebaseInProgress, secretFindings: [], unreadable: omitted };
+      return {
+        commitHash: null, conflictedFiles, rebaseInProgress,
+        secretFindings: [], unreadable: omitted, hookFailure: null,
+      };
     }
 
     if (status.isClean()) {
-      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: omitted };
+      return {
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false,
+        secretFindings: [], unreadable: omitted, hookFailure: null,
+      };
     }
 
     try {
@@ -325,6 +376,7 @@ export class GitManager {
         rebaseInProgress: false,
         secretFindings: [],
         unreadable: blocked,
+        hookFailure: null,
       };
     }
 
@@ -345,14 +397,176 @@ export class GitManager {
       } catch {
         // An unborn HEAD has nothing to reset to.
       }
-      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings, unreadable };
+      return {
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false,
+        secretFindings, unreadable, hookFailure: null,
+      };
     }
 
     const message = redactSecretsInText(summary || "Claude turn");
-    const result = await this.git.commit(message);
-    const hash = result.commit || "";
+    const hooked = await this.commitWithProjectHooks(message);
+    let hookFailure: CommitHookFailure | null = null;
+    let hash: string;
+    if (hooked.kind === "committed") {
+      hash = hooked.hash;
+    } else if (hooked.kind === "skipped") {
+      hash = (await this.git.commit(message)).commit || "";
+    } else {
+      hookFailure = this.reportHookFailure(hooked);
+      const recovered = await this.recoverFromFailedHook(message, hooked);
+      if (recovered.kind === "secrets") {
+        return {
+          commitHash: null, conflictedFiles: [], rebaseInProgress: false,
+          secretFindings: recovered.findings, unreadable, hookFailure,
+        };
+      }
+      hash = recovered.hash;
+    }
     console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
-    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable };
+    return {
+      commitHash: hash,
+      conflictedFiles: [],
+      rebaseInProgress: false,
+      secretFindings: [],
+      unreadable,
+      hookFailure,
+    };
+  }
+
+  /**
+   * A failed hook can leave the index and the tree in any state — lint-staged,
+   * the commonest `pre-commit` setup there is, stashes and restores both — so
+   * its exit code says nothing about what is left to commit. Redo the staging
+   * and the secret scan against what git says NOW, rather than trusting either
+   * the index the hook was handed or the one it left behind (req 10).
+   *
+   * Throws when the hook left nothing at all: a `null` commitHash reads as
+   * "nothing to commit" to the merge route and the eviction gate, and a hook
+   * that stashed the turn's work must not look like a quiet turn (req 15).
+   */
+  private async recoverFromFailedHook(
+    message: string,
+    hooked: { kind: "failed" | "timeout"; output: string; headMoved: boolean },
+  ): Promise<{ kind: "committed"; hash: string } | { kind: "secrets"; findings: SecretFinding[] }> {
+    // A post-commit hook fails after the commit exists; there is nothing to redo.
+    if (hooked.headMoved) return { kind: "committed", hash: (await this.getHeadHash()) ?? "" };
+
+    try {
+      await this.git.add("-A");
+    } catch (err) {
+      // Keep the index the hook was handed rather than losing the turn with it.
+      console.warn(
+        "[git] could not re-stage after a failed hook; committing what is staged:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    // The scan upstream ran on a different set of paths: whatever the hook
+    // itself wrote has never been scanned, and this commit is auto-pushed.
+    const staged = await this.stagedDiff();
+    const findings = scanDiffForSecrets(staged);
+    if (findings.length > 0) {
+      console.warn(
+        "[git] autoCommit refused — likely secret(s) written by a failing project hook:",
+        findings.map((f) => `${f.rule} in ${f.file}`).join(", "),
+      );
+      try {
+        await this.git.reset(["--mixed"]);
+      } catch {
+        // An unborn HEAD has nothing to reset to.
+      }
+      return { kind: "secrets", findings };
+    }
+    if (!staged.trim()) {
+      throw new Error(
+        "A project git hook failed and left nothing to commit — the turn's work is in neither "
+        + "the working tree nor the index, so no commit was made. A hook that stashes or reverts "
+        + `the tree does this. The hook said:\n${redactSecretsInText(hooked.output).trim()}`,
+      );
+    }
+    // The hooks override this path already carries is stricter than --no-verify.
+    return { kind: "committed", hash: (await this.git.commit(message)).commit || "" };
+  }
+
+  private reportHookFailure(
+    hooked: { kind: "failed" | "timeout"; output: string },
+  ): CommitHookFailure {
+    console.warn(
+      `[git] a project git hook ${hooked.kind === "timeout" ? "did not finish" : "failed"}`
+      + " — the turn's work is committed without hooks (docs/266 req 10).",
+    );
+    return { kind: hooked.kind, output: redactSecretsInText(hooked.output).trim() };
+  }
+
+  /**
+   * docs/266-orchestrator-git-trust-boundary E4 — run the project's own hooks on
+   * ShipIt's auto-commit (req 9), bounded so one can never cost the turn its
+   * work (req 10). Returns `skipped` where this git would still run as root:
+   * there the hooks override is the security control it has always been, and
+   * the caller commits through the ordinary hooks-disabled path.
+   */
+  private async commitWithProjectHooks(message: string): Promise<HookedCommit> {
+    const hookedCommitSpawn = {
+      cwd: this.workspaceDir,
+      ...gitSpawnOverridesForTree(this.workspaceDir),
+    };
+    if (!projectHooksAllowed(hookedCommitSpawn)) return { kind: "skipped" };
+
+    const headBefore = await this.getHeadHash();
+    const argv = ["commit", "-m", message];
+    const commitArgv = gitArgsWithProjectHooks(argv);
+    const outcome = await new Promise<HookedSpawnOutcome>((resolve) => {
+      const child = spawn("git", commitArgv, hookedCommitSpawn);
+      let output = "";
+      // Hook output and git's own output share these streams, so nothing here
+      // is parsed — the hash comes from asking git afterwards.
+      const capture = (chunk: Buffer | string): void => {
+        output = (output + String(chunk)).slice(-HOOK_OUTPUT_LIMIT);
+      };
+      child.stdout?.on("data", capture);
+      child.stderr?.on("data", capture);
+      // A hook that reads stdin must see EOF rather than wait out the timeout.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end();
+
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        // A hook's own children outlive a pid-only kill and keep running on pid 1.
+        killProcessTree(child, "SIGTERM", { label: "git commit (project hooks)" });
+      }, this.commitHookTimeoutMs);
+
+      let settled = false;
+      let flush: NodeJS.Timeout | undefined;
+      const settle = (result: HookedSpawnOutcome): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(flush);
+        resolve(result);
+      };
+      child.on("error", (err) => {
+        console.warn("[git] could not run the hooked commit:", err.message);
+        // Failing to START git is not the project's hook failing. Say nothing
+        // about hooks and let the ordinary commit produce its own error.
+        settle(timedOut ? { code: null, output, timedOut } : { spawnFailed: true });
+      });
+      child.on("exit", (code) => {
+        flush = setTimeout(() => settle({ code, output, timedOut }), HOOK_STREAM_FLUSH_MS);
+      });
+      child.on("close", (code) => settle({ code, output, timedOut }));
+    });
+
+    if ("spawnFailed" in outcome) return { kind: "skipped" };
+    // simple-git commits with core.abbrev=40, so report the full hash it would.
+    if (outcome.code === 0) return { kind: "committed", hash: (await this.getHeadHash()) ?? "" };
+    // A post-commit hook runs after the commit exists, so a failure here can
+    // still have moved HEAD — committing again would read as a lost turn.
+    const headAfter = await this.getHeadHash();
+    return {
+      kind: outcome.timedOut ? "timeout" : "failed",
+      output: outcome.output,
+      headMoved: headAfter !== headBefore,
+    };
   }
 
   async stagedDiff(): Promise<string> {

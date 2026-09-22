@@ -35,6 +35,7 @@ describe("flushPendingTurnCommit — secret refusal", () => {
         { rule: "github-pat", description: "GitHub PAT", file: "x.ts", redacted: "ghp_…[redacted, 40 chars]" },
       ],
   unreadable: null,
+  hookFailure: null,
     });
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
@@ -47,7 +48,7 @@ describe("flushPendingTurnCommit — secret refusal", () => {
 
   it("reports a plain `committed` on a normal commit", async () => {
     const runner = fakeRunner();
-    const git = fakeGit({ commitHash: "abc123", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null });
+    const git = fakeGit({ commitHash: "abc123", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null, hookFailure: null });
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
 
@@ -65,6 +66,7 @@ describe("flushPendingTurnCommit — the states the booleans could not carry", (
         rebaseInProgress: false,
         secretFindings: [],
         unreadable: null,
+        hookFailure: null,
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
@@ -76,7 +78,7 @@ describe("flushPendingTurnCommit — the states the booleans could not carry", (
 
     const clean = await flushPendingTurnCommit(
       fakeGit({
-        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null, hookFailure: null,
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
@@ -92,6 +94,7 @@ describe("flushPendingTurnCommit — the states the booleans could not carry", (
         rebaseInProgress: true,
         secretFindings: [],
         unreadable: null,
+        hookFailure: null,
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
@@ -107,6 +110,7 @@ describe("flushPendingTurnCommit — the states the booleans could not carry", (
         rebaseInProgress: false,
         secretFindings: [],
         unreadable: { kind: "omitted", detail: "pgdata/" },
+        hookFailure: null,
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
@@ -122,6 +126,7 @@ describe("flushPendingTurnCommit — the states the booleans could not carry", (
         rebaseInProgress: false,
         secretFindings: [],
         unreadable: { kind: "omitted", detail: "pgdata/" },
+        hookFailure: null,
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
@@ -138,6 +143,7 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
       rebaseInProgress: false,
       secretFindings: [],
       unreadable: { kind: "blocked", detail: "d/server.key" },
+      hookFailure: null,
     });
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
@@ -157,6 +163,7 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
         rebaseInProgress: false,
         secretFindings: [],
         unreadable: { kind: "blocked", detail: "d/server.key" },
+        hookFailure: null,
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
@@ -164,7 +171,7 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
 
     const nothingToCommit = await flushPendingTurnCommit(
       fakeGit({
-        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null, hookFailure: null,
       }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
@@ -186,6 +193,7 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
         rebaseInProgress: false,
         secretFindings: [],
         unreadable: { kind: "blocked", detail: "d/server.key" },
+        hookFailure: null,
       }),
       {
         sessionId: "s1",
@@ -206,6 +214,7 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
       rebaseInProgress: false,
       secretFindings: [],
       unreadable: { kind: "omitted", detail: "pgdata/" },
+      hookFailure: null,
     });
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });

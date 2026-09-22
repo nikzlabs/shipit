@@ -255,8 +255,17 @@ called out rather than folded in.
 
 ## Open questions
 
-*(none — Q1–Q4 are all answered; see below. Implementation is unblocked, subject
-to the independent review this repo's requirements discipline requires.)*
+- **Q5 — should hooks run beyond the auto-commit?** Requirement 9 says "on
+  ShipIt's auto-commit"; the Q1 receipt below records the chosen option as "run
+  them wherever the orchestrator's git runs, once that is no longer root". E4
+  built the narrow reading — the numbered requirement — because requirement 10's
+  fallback exists only for the commit: a failing `pre-push` would block the
+  auto-push with nothing to fall back to, and a `post-checkout` would run inside
+  session provisioning. **This does not block anything**: what shipped is
+  useful on its own, and widening later is additive. The question is whether the
+  wider behaviour was intended, and if so, what requirement 10 becomes for the
+  operations that have no fallback. *(Raised 2026-09-22 while building E4;
+  `plan.md` §2, "E4 as built", has the full argument.)*
 
 ## Resolved questions
 
