@@ -934,11 +934,13 @@ verification (a tarball whose hash does not match, a lockfile edge with no
 registry record) skips the publish all-or-nothing, reported as a publish outcome
 naming the first failing package; the session keeps its private tree and its
 own install is never failed (req 9). Either way such a repo gets **no base and a
-cold install per session**. For the three classes the requester placed outside
-req 13 on 2026-09-21 — a `git:`/URL source, a `file:` dependency, a pnpm ≤ 10
-pin — that is the settled answer. For every other class it is **required work,
-not an optional follow-up** — reuse the unbuilt-base / private-build shape above
-rather than a second build path.
+cold install per session**. For the six classes the requester placed outside
+req 13 — a `git:`/URL source, a `file:` dependency and a pnpm ≤ 10 pin on
+2026-09-21; `configDependencies`, an unauthorized scoped registry, and an
+unsupported `lockfileVersion` or a digest-less entry on 2026-09-22 — that is the
+settled answer. For every other class it is **required work, not an optional
+follow-up** — reuse the unbuilt-base / private-build shape above rather than a
+second build path.
 
 #### Sharing for ineligible repos
 
@@ -953,8 +955,8 @@ ineligible — on its own count, 6 of 686 packages in ShipIt's tree carry a trig
 one of them, so anything reaching Vite was excluded alongside `better-sqlite3`, `node-pty` and
 `ssh2`. That was most JavaScript repos, with reqs 2, 10 and 13 unmet for all of them. The pruned
 base below is what gives that class back; the rows that remain are named at the end of this
-section, and every one of them is outside req 13 — six by the requester's rulings of 2026-09-21
-and 2026-09-22, the rest because there is nothing there to share.
+section — six of them outside req 13 by the requester's rulings of 2026-09-21 and 2026-09-22, and
+the rest still open work.
 
 **The prerequisite is not about ineligible repos at all.** Every sharing shape below ends with the
 session's own install doing *work* over a mounted base, and that is exactly what a session cannot
@@ -1182,16 +1184,23 @@ inside the repository materializes as one relative symlink the consuming session
 own checkout, so nothing of the target crosses into the base. `file:`, and the `injected`
 spelling of a `workspace:` dependency that resolves to it, stay refused by the same rule.
 
-**And the rest stay private, permanently.** Req 13 is a positive requirement for within-repo
-sharing, so only the requester can place a class outside it, and across two rulings the requester
-placed all six of the classes that a mechanism could otherwise have reached: on **2026-09-21** a
+**And the rest stay private. Six of them permanently, the others as open work.** Req 13 is a
+positive requirement for within-repo sharing, so **only the requester can place a class outside
+it** — a reason the mechanism cannot reach a class is not itself such a ruling, however good the
+reason. Across two rulings the requester placed six classes outside it: on **2026-09-21** a
 `git:`/URL source, a `file:` dependency and a repo pinning pnpm ≤ 10; on **2026-09-22** a repo
 declaring `configDependencies`, a repo on a scoped registry with no authorized mapping, and an
 unsupported `lockfileVersion` or an entry with no integrity hash (requirements.md req 13 and its
 two receipts). Each installs privately, exactly as it did before this work, and nothing further is
-owed for it. The remaining rows were never open work in the first place — an escaping layout has no
-base to be, a no-lockfile consumer is req 1 working, and nothing to share is nothing to share. So
-no row below leaves requirements 2, 10 or 13 unmet.
+owed for it.
+
+For the remaining rows, requirements 2, 10 and 13 stay **unmet**, and each is tracked as open work
+rather than closed by this design. One row needs no ruling: a repo with **no dependencies** has
+nothing withheld from it. The other three are limits of this mechanism — an escaping layout, a repo
+with no lockfile, and the caps and refusals (too many manifests, an unreadable input, a dep dir that
+is not `node_modules`). The no-lockfile row is the sharpest, because refusing it a base is reqs 1
+and 3 working as designed while req 13 goes unmet for it: that is a requirements-level tension only
+the requester can resolve, so what it needs is a ruling and not a mechanism.
 
 | Class | Why it stays private | What would close it |
 |---|---|---|
@@ -1202,8 +1211,9 @@ no row below leaves requirements 2, 10 or 13 unmet.
 | An escaping layout (`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`) | The base *is* one self-contained `node_modules`; a layout that escapes it has no base to be. These repos lose least — both escaping layouts keep free hardlinks into a store already theirs alone (FINDINGS.md) | Nothing cheap, and the benefit is smallest here |
 | A repo declaring pnpm ≤ 10 | Its store version makes it recreate a `v11` tree instead of reading it (`MIN_VERIFIED_BASE_PNPM_MAJOR`) | **Nothing — outside req 13** (requester, 2026-09-21). A version-parameterized builder would reach it if that ever changes: the pipeline is one and the pinned binary is a parameter, so it is not a second build path |
 | An unsupported `lockfileVersion`, or a registry entry with no integrity | The parser was written against the v9/v10 shapes (`pnpm-base-inputs.ts:109`), and an entry with no digest has nothing to verify against | **Nothing — outside req 13** (requester, 2026-09-22). Extending the parser would reach the version half; the integrity case is req 3 working and should stay as it is |
-| No lockfile, at the publisher or the consumer | Deliberate and load-bearing: a no-lockfile consumer would inherit the base's graph (measured) | Nothing — this is req 1 working, and it is the one row that should stay as it is |
-| No dependencies, too many manifests, an unreadable input, a dep dir that is not `node_modules` | Nothing to share, a cap, a refusal to guess, and the one directory the builder can fill | — |
+| No lockfile, at the publisher or the consumer | Deliberate and load-bearing: a no-lockfile consumer would inherit the base's graph (measured) | A requester ruling. Refusing it a base is reqs 1 and 3 working, and the mechanism should not change; what is unresolved is whether req 13 is waived for it |
+| No dependencies | Nothing is withheld — there is nothing to share | — |
+| Too many manifests, an unreadable input, a dep dir that is not `node_modules` | A cap, a refusal to guess, and the one directory the builder can fill | Raising the cap, handling the input, or a builder that fills another dep dir — each a limit of this mechanism rather than a class placed outside req 13 |
 
 **What a session sees.** For a pruned base, an install that fetches and builds only the
 build-bearing packages and reads the rest from the base; the agent can `pnpm add`, edit inside its

@@ -656,8 +656,8 @@ recorded in [requirements.md](./requirements.md); none is open.
       session instead. Every other row in that table stays open work — the item
       below.
 
-- [x] **The last three classes are ruled outside req 13, so no row leaves
-      reqs 2 / 10 / 13 open.** The rows the 2026-09-21 ruling left uncovered
+- [x] **Three more classes are ruled outside req 13** (2026-09-22). The rows the
+      2026-09-21 ruling left uncovered
       were `configDependencies` (refused at `pnpm-base-inputs.ts:519`, because
       the builder neither parses nor stages a config dependency's resolution —
       its hook IS suppressed, PR #2957), an unauthorized scoped registry (the
@@ -674,10 +674,24 @@ recorded in [requirements.md](./requirements.md); none is open.
       installs privately, exactly as before this work. Receipt in
       `requirements.md` `## Resolved questions`; req 13 amended to name all six
       classes; plan.md section 5's framing and those three table rows replaced
-      rather than annotated. The three rows that read as open and never were —
-      an escaping layout has no base to be, a no-lockfile consumer is req 1
-      working, and "nothing to share" is nothing to share — are stated as such
-      there.
+      rather than annotated. **This ruling does not close planning#414** — the
+      item below names what it leaves.
+
+- [ ] **The rows with no ruling keep reqs 2 / 10 / 13 OPEN**, and the 2026-09-22
+      ruling does not close them. A reason the mechanism cannot reach a class is
+      not a ruling placing it outside req 13, however good the reason; only the
+      requester can place a class outside a positive requirement. After both
+      rulings the rows still uncovered are an **escaping layout** (`modulesDir`,
+      `virtualStoreDir`, a non-isolated `nodeLinker`), a repo with **no
+      lockfile** at either end, and the **caps and refusals** — too many
+      manifests, an unreadable input, and a dep dir that is not `node_modules`.
+      Only one row genuinely needs nothing: a repo with **no dependencies** has
+      nothing withheld from it. The no-lockfile row is the sharpest, because
+      refusing it a base is reqs 1 and 3 working as designed while req 13 goes
+      unmet for it — a requirements-level tension only the requester can
+      resolve, so the answer there is a ruling and not a mechanism. plan.md
+      section 5's table is the live statement of what each row needs; this box
+      stays unchecked until a mechanism or a ruling covers every row.
 
 - [x] **shipit-docs (`environment.md`)**: what an agent sees on a pruned base —
       the packages that build are imported into the session's private store on
