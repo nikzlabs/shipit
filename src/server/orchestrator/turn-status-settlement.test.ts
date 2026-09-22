@@ -97,6 +97,7 @@ function harness(opts: {
       rebaseInProgress: false,
       secretFindings: [],
       unreadable: null,
+      hookFailure: null,
     }),
     // The real post-turn commit, which the executor prefers over `autoCommit`.
     commitTurn: async () => {

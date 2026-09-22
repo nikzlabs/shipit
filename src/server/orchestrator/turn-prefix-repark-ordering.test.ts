@@ -48,6 +48,7 @@ function makeDeps(): SystemTurnDeps {
       rebaseInProgress: false,
       secretFindings: [],
       unreadable: null,
+      hookFailure: null,
     }),
     scheduleAutoPush: vi.fn(),
     listenerDeps: {

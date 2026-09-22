@@ -10,6 +10,7 @@ const CLEAN_COMMIT: AutoCommitResult = {
   rebaseInProgress: false,
   secretFindings: [],
   unreadable: null,
+  hookFailure: null,
 };
 
 const MERGED_PR = {

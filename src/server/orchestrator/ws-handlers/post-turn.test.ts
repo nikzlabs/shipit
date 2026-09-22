@@ -800,3 +800,75 @@ describe("postTurnCommit — a branch already ahead of its remote", () => {
     expect(scheduleAutoPush).not.toHaveBeenCalled();
   });
 });
+
+// docs/266-orchestrator-git-trust-boundary E4 (req 10). A notice that is only
+// emitted survives a reconnect and then vanishes on reload, so assert BOTH
+// halves: the live message and the persisted history row.
+describe("postTurnCommit — a failed project hook is reported and persisted", () => {
+  function makeHookCtx(hookFailure: { kind: "failed" | "timeout"; output: string } | null) {
+    const append = vi.fn();
+    const autoCommit = vi.fn(async () => ({
+      commitHash: "abc1234",
+      conflictedFiles: [],
+      rebaseInProgress: false,
+      secretFindings: [],
+      unreadable: null,
+      hookFailure,
+    }));
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit,
+        getHeadHash: vi.fn(async () => "oldhead"),
+        currentBranchOrNull: vi.fn(async () => null),
+        isRebaseInProgress: vi.fn(async () => false),
+        isMergeOrSequencerInProgress: vi.fn(async () => false),
+      })),
+      chatHistoryManager: {
+        updateLastMessage: vi.fn(() => null),
+        indexOfMessageId: vi.fn(() => -1),
+        append,
+      },
+      sessionManager: {
+        get: vi.fn(() => undefined),
+        setWorkspaceBlock: vi.fn(() => false),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, append };
+  }
+
+  it("emits and persists a notice naming what the hook printed", async () => {
+    const emit = vi.fn();
+    const { ctx, append } = makeHookCtx({ kind: "failed", output: "lint found 3 problems" });
+
+    const hash = await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+
+    expect(hash).toBe("abc1234");
+    const notice = emit.mock.calls
+      .map(([m]) => m as { type: string; message?: string })
+      .find((m) => m.type === "system_notice");
+    expect(notice?.message).toContain("lint found 3 problems");
+    expect(notice?.message).toContain("committed");
+    expect(append).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ notice: true, text: expect.stringContaining("lint found 3 problems") }),
+    );
+  });
+
+  it("says nothing when every hook passed", async () => {
+    const emit = vi.fn();
+    const { ctx, append } = makeHookCtx(null);
+
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+
+    expect(append).not.toHaveBeenCalled();
+    expect(emit.mock.calls.map(([m]) => (m as { type: string }).type))
+      .not.toContain("system_notice");
+  });
+});

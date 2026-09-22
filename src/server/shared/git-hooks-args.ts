@@ -9,3 +9,14 @@ export const GIT_HOOKS_DISABLED_ARGS: readonly string[] = ["-c", HOOKS_DISABLED_
 export function gitArgsWithHooksDisabled(args: readonly string[]): string[] {
   return [...GIT_HOOKS_DISABLED_ARGS, ...args];
 }
+
+/**
+ * The deliberate opposite, for docs/266-orchestrator-git-trust-boundary E4
+ * (req 9): one invocation that lets the project's own hooks run. It adds
+ * nothing — leaving the override off IS the change — and exists so the call
+ * site names its intent and `git-hooks-guard-coverage.test.ts` can census it.
+ * Only a git that has already dropped root may use it.
+ */
+export function gitArgsWithProjectHooks(args: readonly string[]): string[] {
+  return [...args];
+}

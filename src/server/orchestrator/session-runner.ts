@@ -12,7 +12,7 @@ import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { SettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
-import type { UnreadableWorkspace } from "../shared/git.js";
+import type { UnreadableWorkspace, CommitHookFailure } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -353,6 +353,7 @@ export interface SystemTurnDeps {
     rebaseInProgress: boolean;
     secretFindings: SecretFinding[];
     unreadable: UnreadableWorkspace | null;
+    hookFailure: CommitHookFailure | null;
   }>;
   /** Pass sessionId so a push can be scheduled after the viewer disconnects. */
   scheduleAutoPush: (sessionDir: string, sessionId?: string) => void;

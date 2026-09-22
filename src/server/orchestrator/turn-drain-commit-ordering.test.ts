@@ -197,7 +197,7 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
       },
       autoCommit: async () => {
         order.push("commit");
-        return { commitHash: "abc1234", parentHash: "def5678", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null };
+        return { commitHash: "abc1234", parentHash: "def5678", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null, hookFailure: null };
       },
       scheduleAutoPush: vi.fn(),
       postTurnPrFlow: vi.fn(() => {

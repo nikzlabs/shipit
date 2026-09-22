@@ -96,7 +96,11 @@ describe("git hooks guard", () => {
     );
   });
 
-  it("GitManager.autoCommit does not run a repository pre-commit hook", async () => {
+  // Reversed by docs/266-orchestrator-git-trust-boundary E4 (req 9): once
+  // orchestrator git runs at the tree owner's uid, this ONE operation runs the
+  // project's own hooks. Every other case in this file still must not — that
+  // narrowness is what the rest of the file now guards.
+  it("GitManager.autoCommit DOES run the project's commit hooks (E4, req 9)", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
     plantHooks(tmpDir);
@@ -105,7 +109,24 @@ describe("git hooks guard", () => {
     const result = await git.autoCommit("a turn");
 
     expect(result.commitHash).toBeTruthy();
-    expect(firedHooks()).toEqual([]);
+    expect(result.hookFailure).toBeNull();
+    expect(firedHooks()).toEqual(
+      expect.arrayContaining(["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"]),
+    );
+  });
+
+  it("autoCommit's hooks do not leak into the operations around it", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+    plantHooks(tmpDir);
+
+    write("payload.txt", "agent output");
+    await git.autoCommit("a turn");
+
+    // pre-rebase/post-checkout/pre-push belong to operations E4 did not widen to.
+    expect(firedHooks()).not.toContain("post-checkout");
+    expect(firedHooks()).not.toContain("pre-push");
+    expect(firedHooks()).not.toContain("pre-rebase");
   });
 
   it("GitManager.commitPaths does not run a repository pre-commit hook", async () => {
@@ -197,7 +218,10 @@ describe("git hooks guard", () => {
     }
   });
 
-  it("a repository-local core.hooksPath cannot re-enable hooks", async () => {
+  // The repository names the hook directory (husky does exactly this), so the
+  // question is whether that reaches the operations ShipIt still guards. It
+  // must not: only the auto-commit's own `git commit` drops the override.
+  it("a repository-local core.hooksPath cannot re-enable hooks on a guarded operation", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
     plantHooks(tmpDir);
@@ -206,10 +230,11 @@ describe("git hooks guard", () => {
       stdio: "ignore",
     });
 
-    write("payload.txt", "agent output");
-    const result = await git.autoCommit("a turn");
+    write("skill.md", "installed");
+    const hash = await git.commitPaths(["skill.md"], "install a skill");
+    await git.checkoutNewBranch("shipit/abc123");
 
-    expect(result.commitHash).toBeTruthy();
+    expect(hash).toBeTruthy();
     expect(firedHooks()).toEqual([]);
   });
 
