@@ -171,6 +171,25 @@ Sol stays first because Astra access is still rolling out and catalogue order
 sets the default. The exact 0.153.2 CLI pin has a time-limited dependency-age
 waiver approved for this model launch.
 
+**Catalogue maintenance (2026-09-22): GPT-6 Sol and Luna.** The user asked
+for a Codex update and support for the latest OpenAI models. Both models are
+added to the OpenAI subscription and API-key catalogues. GPT-5.6 Sol remains
+the default; saved selections keep their model. The new rows use Responses
+because Chat Completions permits function calling only without reasoning.
+Their image support, reasoning efforts (`none`, `low`, `medium`, `high`,
+`xhigh`, `max`), and standard token prices come from the official
+[Sol](https://developers.openai.com/api/docs/models/gpt-6-sol) and
+[Luna](https://developers.openai.com/api/docs/models/gpt-6-luna) pages, read
+on this date. [Codex model documentation](https://learn.chatgpt.com/docs/models)
+confirms the CLI IDs and says access depends on the account and rollout.
+The initial context window uses the published 1,050,000-token limit. Codex
+telemetry replaces it when reported; OpenCode uses the catalogue value.
+There is no measured Codex-specific window for these new IDs.
+The Codex CLI pin moves to 0.155.1 with a regenerated platform lockfile.
+Its unauthenticated app-server handshake, model-list request, and thread
+creation with both new IDs were checked. Its bundled list does not yet include
+Sol or Luna. No authenticated inference against the new models has been verified.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither

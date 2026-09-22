@@ -19,6 +19,9 @@ const ANTHROPIC_PRICES = {
 
 // OpenAI model/pricing docs: 2026-08-09; Astra 2026-09-04.
 const OPENAI_PRICES = {
+  // https://developers.openai.com/api/docs/models/gpt-6-{sol,luna}, 2026-09-22.
+  gpt6sol: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  gpt6luna: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
   gpt6astra: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   sol: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
   terra: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
@@ -189,6 +192,8 @@ export const SERVICES = [
           // Keep Sol first: Astra may be hidden by account entitlement.
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6sol, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6luna, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
           { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", ...MODEL_IDENTITIES.gpt53codexSpark, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codexSparkProvisional },
@@ -208,8 +213,10 @@ export const SERVICES = [
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
-          // GPT-6 tool use requires Responses, even though plain chat can use Chat Completions.
+          // GPT-6 reasoning with tools requires Responses.
           { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6sol, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6luna, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
           { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },

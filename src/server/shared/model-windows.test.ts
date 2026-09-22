@@ -65,6 +65,11 @@ describe("context windows survive the catalogue derivation unchanged", () => {
     }
   });
 
+  it("uses the published window for GPT-6 Sol and Luna until telemetry reports one", () => {
+    expect(getContextWindowForModel("gpt-6-sol")).toBe(1_050_000);
+    expect(getContextWindowForModel("gpt-6-luna")).toBe(1_050_000);
+  });
+
   it("keeps Codex's assigned window for the GPT family, not OpenAI's advertised maximum", () => {
     expect(getContextWindowForModel("gpt-6-astra")).toBe(272_000);
     expect(getContextWindowForModel("gpt-5.6-sol")).toBe(272_000);

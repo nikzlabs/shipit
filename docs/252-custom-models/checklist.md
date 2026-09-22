@@ -22,6 +22,10 @@ table — a phase is checked off when its PR has merged.
 - [x] Add GPT-6 Astra under both OpenAI billing modes, keep GPT-5.6 Sol as the
       access-safe default, and update the Codex CLI to the required 0.153.2
 
+- [x] Add GPT-6 Sol and Luna under both OpenAI billing modes with published
+      metadata and unchanged saved selections; validate Codex 0.155.1
+- [ ] Resolve the Codex 0.155.1 seven-day age gate before marking the PR ready
+
 ## Phase 2 — Credentials and Settings
 
 - [x] `CredentialRoute` — credential storage keyed by `(service, billing mode)`
