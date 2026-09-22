@@ -934,11 +934,12 @@ verification (a tarball whose hash does not match, a lockfile edge with no
 registry record) skips the publish all-or-nothing, reported as a publish outcome
 naming the first failing package; the session keeps its private tree and its
 own install is never failed (req 9). Either way such a repo gets **no base and a
-cold install per session**. For the three classes the requester placed outside
-req 13 on 2026-09-21 — a `git:`/URL source, a `file:` dependency, a pnpm ≤ 10
-pin — that is the settled answer. For every other class it is **required work,
-not an optional follow-up** — reuse the unbuilt-base / private-build shape above
-rather than a second build path.
+cold install per session**, and for every class named below that is the settled
+answer: each has a reason stated here and cited at the source, which under the
+req 13 principle ("Sharing for ineligible repos") places it outside the
+requirement. Admitting a class later is still worth doing where it is cheap, but
+it is an improvement rather than an outstanding obligation — and it reuses the
+unbuilt-base / private-build shape above rather than a second build path.
 
 #### Sharing for ineligible repos
 
@@ -953,8 +954,8 @@ ineligible — on its own count, 6 of 686 packages in ShipIt's tree carry a trig
 one of them, so anything reaching Vite was excluded alongside `better-sqlite3`, `node-pty` and
 `ssh2`. That was most JavaScript repos, with reqs 2, 10 and 13 unmet for all of them. The pruned
 base below is what gives that class back; the rows that remain are named at the end of this
-section, three of them outside req 13 by the requester's ruling of 2026-09-21 and the rest open
-work.
+section — all of them outside req 13, nine by the requester's rulings of 2026-09-21 and
+2026-09-22 and the tenth (a repo with no dependencies) because nothing is withheld from it.
 
 **The prerequisite is not about ineligible repos at all.** Every sharing shape below ends with the
 session's own install doing *work* over a mounted base, and that is exactly what a session cannot
@@ -1182,25 +1183,39 @@ inside the repository materializes as one relative symlink the consuming session
 own checkout, so nothing of the target crosses into the base. `file:`, and the `injected`
 spelling of a `workspace:` dependency that resolves to it, stay refused by the same rule.
 
-**And the rest stay private. Three of them permanently, the others as open work.** Req 13 is a
-positive requirement for within-repo sharing, so only the requester can place a class outside it,
-and on **2026-09-21** the requester did, for three: a `git:`/URL source, a `file:` dependency, and a
-repo pinning pnpm ≤ 10 (requirements.md req 13 and its receipt). Those three install privately,
-exactly as they did before this work, and nothing further is owed for them. For every other row
-below, requirements 2, 10 and 13 stay **unmet** and the row is tracked as open work rather than
-closed by this design.
+**And the rest stay private, permanently.** Req 13 now carries a general principle the requester
+recorded on **2026-09-22**: *a repository the verified base cannot serve, for a reason stated in
+plan.md and cited at the source, installs privately and is outside req 13; req 13 binds only the
+classes the design can reach.* So the table below is the statement that places each row outside the
+requirement, and the standard a **new** unservable class has to meet is the same one — a reason
+written here and a citation to the code that refuses it, not a fresh ruling.
 
-| Class | Why it stays private | What would close it |
+The rows were also ruled on individually, in three sittings: on **2026-09-21** a `git:`/URL source,
+a `file:` dependency and a repo pinning pnpm ≤ 10; on **2026-09-22** a repo declaring
+`configDependencies`, a repo on a scoped registry with no authorized mapping, and an unsupported
+`lockfileVersion` or an entry with no integrity hash; and on **2026-09-22** in a second ruling, an
+escaping layout, a repo with no lockfile at either end, and the builder's caps and refusals
+(requirements.md req 13 and its three receipts). One row needed no ruling at all: a repo with **no
+dependencies** has nothing withheld from it. Each class installs privately, exactly as it did before
+this work, and nothing further is owed for any of them.
+
+The no-lockfile row is the one with a tension inside it, and the ruling resolves it explicitly:
+refusing that repo a base is reqs 1 and 3 working as designed — a consumer without its own lockfile
+would adopt the base's graph — so **reqs 1 and 3 take precedence over req 13 here and the mechanism
+must not change**.
+
+| Class | Why it stays private | Ruling, and what would reach it |
 |---|---|---|
 | `git:` / `github:` / an `https:` tarball | No independent expected content in the snapshot to verify the fetched source against, and the builder has no source handling. A git dependency also usually carries a `prepare` build | **Nothing — outside req 13** (requester, 2026-09-21) |
 | A `file:` path, directory or tarball | pnpm COPIES the target into the tree, so a manifests-only builder publishes a truncated package at rc=0 — the rule that admitted `workspace:`/`link:` is the same rule that refuses this | **Nothing — outside req 13** (requester, 2026-09-21) |
-| `configDependencies` | Admitting it means the builder **fetches and stages plugin packages** it otherwise would not. The execution risk itself is covered — `--ignore-pnpmfile` suppresses the hook, measured with a positive control — so the reason is the widened input surface, not that code runs | Verified staging of those packages on the same footing as any other dependency |
-| An unauthorized scoped registry | An authorization decision, not a technical limit. `authorizedScopeRegistries` is threaded through `pnpm-base-inputs.ts`, `pnpm-base-registry.ts` and `pnpm-base-builder.ts`, but **nothing in `bootstrap-managers.ts` supplies it**, so it is not an operator-accessible lever today — calling it one would be wrong | Wiring it to configuration the operator can set |
-| An escaping layout (`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`) | The base *is* one self-contained `node_modules`; a layout that escapes it has no base to be. These repos lose least — both escaping layouts keep free hardlinks into a store already theirs alone (FINDINGS.md) | Nothing cheap, and the benefit is smallest here |
+| `configDependencies` | Admitting it means the builder **fetches and stages plugin packages** it otherwise would not. The execution risk itself is covered — `--ignore-pnpmfile` suppresses the hook, measured with a positive control — so the reason is the widened input surface, not that code runs (`pnpm-base-inputs.ts:519`) | **Nothing — outside req 13** (requester, 2026-09-22). Verified staging of those packages on the same footing as any other dependency would reach it |
+| An unauthorized scoped registry | An authorization decision, not a technical limit. `authorizedScopeRegistries` is threaded through `pnpm-base-inputs.ts:454`, `pnpm-base-registry.ts:158` and `pnpm-base-builder.ts:106`, but the only production construction of those deps supplies no such field (`bootstrap-managers.ts:520`), so it is not an operator-accessible lever today — calling it one would be wrong | **Nothing — outside req 13** (requester, 2026-09-22). Wiring it to configuration the operator can set would reach it |
+| An escaping layout (`modulesDir`, `virtualStoreDir`, a non-isolated `nodeLinker`) | The base *is* one self-contained `node_modules`; a layout that escapes it has no base to be. Each setting admits exactly the one value that describes that layout (`pnpm-base-inputs.ts:166`), refused in `decidePnpmBaseEligibility` at `pnpm-base-inputs.ts:582` and `:601`. These repos lose least — both escaping layouts keep free hardlinks into a store already theirs alone (FINDINGS.md) | **Nothing — outside req 13** (requester, 2026-09-22). Nothing cheap would reach it, and the benefit is smallest here |
 | A repo declaring pnpm ≤ 10 | Its store version makes it recreate a `v11` tree instead of reading it (`MIN_VERIFIED_BASE_PNPM_MAJOR`) | **Nothing — outside req 13** (requester, 2026-09-21). A version-parameterized builder would reach it if that ever changes: the pipeline is one and the pinned binary is a parameter, so it is not a second build path |
-| An unsupported `lockfileVersion`, or a registry entry with no integrity | The parser was written against v9/v10 shapes, and an entry with no digest has nothing to verify against | Extending the parser; the integrity case is req 3 working and should stay |
-| No lockfile, at the publisher or the consumer | Deliberate and load-bearing: a no-lockfile consumer would inherit the base's graph (measured) | Nothing — this is req 1 working, and it is the one row that should stay as it is |
-| No dependencies, too many manifests, an unreadable input, a dep dir that is not `node_modules` | Nothing to share, a cap, a refusal to guess, and the one directory the builder can fill | — |
+| An unsupported `lockfileVersion`, or a registry entry with no integrity | The parser was written against the v9/v10 shapes (`pnpm-base-inputs.ts:109`), and an entry with no digest has nothing to verify against | **Nothing — outside req 13** (requester, 2026-09-22). Extending the parser would reach the version half; the integrity case is req 3 working and should stay as it is |
+| No lockfile, at the publisher or the consumer | Deliberate and load-bearing: a no-lockfile consumer would inherit the base's graph (measured). Refused on the publisher side at `pnpm-base-inputs.ts:262` and on the consumer side at `container-overlay-provisioner.ts:113` | **Nothing — outside req 13** (requester, 2026-09-22). Reqs 1 and 3 take precedence here and the mechanism must not change |
+| No dependencies | Nothing is withheld — there is nothing to share | — |
+| Too many manifests, an unreadable input, a dep dir that is not `node_modules` | A cap (`pnpm-base-inputs.ts:272` on manifest count, `:282` on lockfile size), a refusal to guess at an input it cannot parse (`:315` for `pnpm-workspace.yaml`, `:364` for the root manifest), and the one directory the builder can fill (`overlay-publish.ts:261`) — bounded inputs are part of the verification contract | **Nothing — outside req 13** (requester, 2026-09-22). Raising the cap, handling the input, or a builder that fills another dep dir would each reach one of them |
 
 **What a session sees.** For a pruned base, an install that fetches and builds only the
 build-bearing packages and reads the rest from the base; the agent can `pnpm add`, edit inside its

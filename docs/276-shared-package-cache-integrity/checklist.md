@@ -639,8 +639,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       builder now refuses to publish a tree whose `.modules.yaml` still lists
       `pendingBuilds`.
 
-- [x] **Three of the classes that stay private are outside req 13; the rest keep
-      reqs 2 / 10 / 13 OPEN.** Asked which classes may stay permanently private,
+- [x] **Three of the classes that stay private are outside req 13** — the first
+      of three rulings; at the time it left the rest open. Asked which classes
+      may stay permanently private,
       against the options "all three", "`git:`/URL and pnpm <= 10 only" and
       "none", the requester answered **"All three"** on **2026-09-21**: a
       `git:`/URL source (no registry integrity to verify the fetched source
@@ -653,20 +654,56 @@ recorded in [requirements.md](./requirements.md); none is open.
       question was deliberately NOT filed under `## Open questions` — a bullet
       there blocks implementation code for the whole feature, including the
       req 9 fix above — and was routed to the requester through the parent
-      session instead. Every other row in that table stays open work — the item
-      below.
+      session instead. Every other row in that table was open work at this
+      point; the two items below close them.
 
-- [ ] **The classes with no ruling keep reqs 2 / 10 / 13 OPEN**, and closing
-      planning#414 does not close them. After the 2026-09-21 ruling the rows
-      still uncovered are `configDependencies` (eligibility refused at
-      `pnpm-base-inputs.ts`, on the widened input surface), an unauthorized
-      scoped registry (no operator lever supplies
-      `authorizedScopeRegistries`), and an unsupported `lockfileVersion` or a
-      registry entry with no integrity. Three more rows read as open and are
-      not: an escaping layout has no base to be, a no-lockfile consumer is
-      req 1 working, and "nothing to share" is nothing to share. plan.md
-      section 5's table is the live statement of what each needs; this box
-      stays unchecked until a mechanism or a ruling covers every row.
+- [x] **Three more classes are ruled outside req 13** (2026-09-22). The rows the
+      2026-09-21 ruling left uncovered
+      were `configDependencies` (refused at `pnpm-base-inputs.ts:519`, because
+      the builder neither parses nor stages a config dependency's resolution —
+      its hook IS suppressed, PR #2957), an unauthorized scoped registry (the
+      builder accepts a map at `pnpm-base-builder.ts:106` /
+      `pnpm-base-registry.ts:158` / `pnpm-base-inputs.ts:454`, and no
+      orchestrator setting supplies one — `bootstrap-managers.ts:520` is the
+      only production construction and passes no such field), and an
+      unsupported `lockfileVersion` or an entry with no integrity hash (the
+      parser covers v9/v10, `pnpm-base-inputs.ts:109`; a digest-less entry
+      cannot be verified at all). Asked which of them may stay permanently
+      private, against the options "all three", "(a) and (c), wire the registry
+      mapping first" and "none", the requester answered **"Rule all three
+      permanently private and close planning#414"** on **2026-09-22**. Each
+      installs privately, exactly as before this work. Receipt in
+      `requirements.md` `## Resolved questions`; req 13 amended to name all six
+      classes; plan.md section 5's framing and those three table rows replaced
+      rather than annotated. **This ruling does not close planning#414** — the
+      item below names what it leaves.
+
+- [x] **The last three rows are ruled outside req 13, and a general principle
+      retires the question** (2026-09-22, second ruling that day). The rows were
+      an **escaping layout** (`modulesDir`, `virtualStoreDir`, a non-isolated
+      `nodeLinker` — the one permitted value per setting is
+      `pnpm-base-inputs.ts:166`, refused in `decidePnpmBaseEligibility` at
+      `:582` and `:601`), a repo with **no lockfile** at either end (publisher
+      `pnpm-base-inputs.ts:262`, consumer
+      `container-overlay-provisioner.ts:113`), and the **caps and refusals** —
+      too many manifests (`pnpm-base-inputs.ts:272`), an input past a size cap
+      (`:282`) or one the builder cannot parse (`:315`, `:364`), a dep dir that
+      is not `node_modules` (`overlay-publish.ts:261`).
+      Asked whether they may stay permanently private and whether a general
+      principle should be recorded, against the options "all three plus the
+      principle", "the three rows only" and "keep them as work", the requester
+      answered **"Rule the three rows private, record the general principle, and
+      close planning#414."** The principle, now in req 13: a repository the
+      verified base cannot serve, for a reason stated in plan.md and cited at
+      the source, installs privately and is outside req 13 — so a future
+      unservable class needs a stated, cited reason and not a ruling. For the
+      no-lockfile row the requester also ruled that **reqs 1 and 3 take
+      precedence over req 13 and the mechanism must not change**. Receipt in
+      `requirements.md` `## Resolved questions`; req 13 amended to carry the
+      principle and name all nine classes; plan.md section 5's framing and those
+      three table rows replaced rather than annotated. **This closes
+      planning#414** — every requirement now has a shipped mechanism or a
+      requester ruling.
 
 - [x] **shipit-docs (`environment.md`)**: what an agent sees on a pruned base —
       the packages that build are imported into the session's private store on
