@@ -17,7 +17,12 @@ import { queuedMessageToDispatchOptions, takeRunnableQueuedTurn } from "./queue-
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { toQueuedMessage } from "./session-runner.js";
 import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction } from "./compact-before-turn.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import {
+  createPromptRepark,
+  createPromptTakeLedger,
+  type PromptTakeLedger,
+  type TurnOutcome,
+} from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
@@ -58,8 +63,11 @@ export async function runDispatchedTurn(
   runner.running = true;
   if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.activeDeliveryId = opts.deliveryId;
+  // planning#609 — composition's one-shot takes are owned here until the prompt reaches
+  // the executor, so a throw anywhere before that hands every one of them back.
+  const takes = createPromptTakeLedger();
   try {
-    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent);
+    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent, takes);
   } catch (err) {
     runner.running = false;
     if (opts.systemTurn) runner.systemTurnInProgress = false;
@@ -67,6 +75,8 @@ export async function runDispatchedTurn(
       runner.activeDeliveryId = undefined;
     }
     throw err;
+  } finally {
+    takes.reparkIfNotHandedOver();
   }
 }
 
@@ -76,6 +86,7 @@ async function runDispatchedTurnInner(
   agentId: AgentId,
   opts: PreparedDispatch,
   createAgent: (agentId: AgentId) => AgentProcess,
+  takes: PromptTakeLedger,
 ): Promise<void> {
   // Queued and recovered turns must recheck admission.
   runner.assertCanDispatch();
@@ -207,17 +218,17 @@ async function runDispatchedTurnInner(
   const pendingNotice = opts.postTurn !== "none" && !isCompactRequest
     ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
     : "";
-  // Consumption clears the notice; restore it if setup fails before executor handoff.
-  let promptDelivered = false;
-  const reparkNoticeIfUndelivered = () => {
-    if (!pendingNotice || promptDelivered) return;
-    promptDelivered = true;
-    try {
-      deps.restorePendingAgentNotice?.(runner.sessionId, pendingNotice);
-    } catch (err) {
-      console.error("[dispatch] re-parking the pending agent notice failed:", err);
-    }
-  };
+  // Consumption clears the notice; restore it if the turn never reaches an agent. The
+  // ledger covers setup failing before the executor takes over — past that point the
+  // executor reparks, because it is the one that knows whether the prompt was ever
+  // submitted (planning#609).
+  takes.add(reset?.repark);
+  if (pendingNotice) {
+    takes.add(createPromptRepark(
+      `the pending agent notice for ${runner.sessionId}`,
+      () => { deps.restorePendingAgentNotice?.(runner.sessionId, pendingNotice); },
+    ));
+  }
 
   // Bug outcomes are intentionally consumed at most once, including failed delivery.
   const bugOutcomeNotice = opts.systemTurn || isCompactRequest
@@ -259,7 +270,9 @@ async function runDispatchedTurnInner(
   // docs/303 req 35 — where a retry of this turn swaps its own rendering in. The prefix
   // heads the prompt, so its offset is the prompt's.
   const insertedStatusContext = locateStatusContext(agentPrefix, statusContext);
-  const roleContext = deps.takeRoleInstructions?.(runner.sessionId) ?? "";
+  const role = deps.takeRoleInstructions?.(runner.sessionId) ?? { instructions: "" };
+  const roleContext = role.instructions;
+  takes.add(role.repark);
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +
     assembleAgentPrompt({
@@ -350,7 +363,7 @@ async function runDispatchedTurnInner(
     const turnStreams = useStreaming || reuse;
     if (reuse) agent.removeAllListeners();
 
-    promptDelivered = true;
+    takes.handOver();
     await executeAgentTurn(runner, deps, agent, {
       agentId,
       sessionId: runner.sessionId,
@@ -369,6 +382,7 @@ async function runDispatchedTurnInner(
       ...(harnessCommand ? { harnessCommand: true } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
+      ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
       emitUserEcho: attempt === 0 && !opts.silent,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
@@ -444,6 +458,5 @@ async function runDispatchedTurnInner(
     await runOnce(0);
   } finally {
     reset?.ensureRecorded?.(runner.sessionId);
-    reparkNoticeIfUndelivered();
   }
 }

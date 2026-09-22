@@ -450,7 +450,9 @@ export function createRunnerRegistry(
           ? { takeRoleInstructions: (sessionId: string) =>
               takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }
           : {}),
-        restorePendingAgentNotice: (sessionId, notice) => sessionManager.setPendingAgentNotice(sessionId, notice),
+        // Appended, not set: a notice recorded while the failed turn ran describes a LATER
+        // branch move, and this one must not overwrite it (planning#609).
+        restorePendingAgentNotice: (sessionId, notice) => sessionManager.appendPendingAgentNotice(sessionId, notice),
         ...(generateText ? {
           postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
             const prStatusPoller = getPrStatusPoller?.();

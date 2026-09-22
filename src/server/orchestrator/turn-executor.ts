@@ -55,7 +55,7 @@ import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
-import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -116,6 +116,12 @@ export interface TurnInput {
    * actually ran acknowledges.
    */
   noticeDeliveries?: readonly NoticeDelivery[];
+  /**
+   * The mirror of `noticeDeliveries` (planning#609): one-shot state this prompt took at
+   * composition, restored when the turn settles without the prompt having been submitted.
+   * A retry carries them onto its successor, so only the attempt that never ran reparks.
+   */
+  promptReparks?: readonly PromptRepark[];
   deliveryId?: string;
   adopt?: boolean;
   compact?: boolean;
@@ -310,9 +316,33 @@ export async function executeAgentTurn(
     }
   };
 
+  /**
+   * The mirror of `notePromptDelivered` (planning#609). `ownTurn` is the same reading both
+   * use: "unsubmitted" is the state no submission ever left, so the takes this prompt
+   * carries were never read by any agent.
+   *
+   * Idempotent, and called from more than one point in the terminal sequence, because the
+   * earliest safe moment differs by path — see the `done` handler for why the drain must
+   * not go first.
+   *
+   * **At-least-once, in two known cases.** A proxied submission can land after settlement,
+   * and the dispatched no-result retry starts its successor from `onNoResultExit` and then
+   * still settles this attempt (the `handled` return sits inside the `try`, so the
+   * `finally` runs) — so an attempt whose submission never resolved reparks while its
+   * successor carries the same prompt. Both repark a take that is read after all, and both
+   * cost a repeated notice rather than a lost one. Closing them would need a fourth
+   * signalling channel to tell a successor-started `true` from a gave-up `true`, and the
+   * gave-up one MUST still repark, so the ambiguity cannot simply be assumed away.
+   */
+  const reparkUnsubmittedPrompt = (): void => {
+    if (ownTurn !== "unsubmitted") return;
+    for (const repark of input.promptReparks ?? []) repark.repark();
+  };
+
   const settleTurn = (outcome: TurnOutcome): void => {
     if (turnCompleteFired) return;
     turnCompleteFired = true;
+    reparkUnsubmittedPrompt();
     // Clear before notifying the supervisor, but never clear a successor or live retry.
     if (
       runner &&
@@ -1304,6 +1334,13 @@ export async function executeAgentTurn(
         });
         if (handled) return;
       }
+
+      // Before the drain below, not at settlement with it (planning#609): a drained
+      // successor is a DIFFERENT turn and composes its own prompt, so a take still spent
+      // here is one that turn does not get — and the queued message is exactly the one
+      // that needs to be told its branch moved. Past the no-result hook above, which
+      // hands this prompt to a successor of its own.
+      reparkUnsubmittedPrompt();
 
       // Adoption retains receivedResult from its predecessor, but its partial rows still need saving.
       if (

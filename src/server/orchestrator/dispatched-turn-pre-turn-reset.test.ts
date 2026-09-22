@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunner } from "./session-runner.js";
 import type { AgentId } from "../shared/types.js";
 import type { PreTurnResetHookResult } from "./pre-turn-reset-hook.js";
+import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
 import {
   testDispatch,
   makeDispatchTurnDeps,
@@ -93,6 +94,62 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
 
     expect(outcome.status).toBe("errored");
     expect(delivered).toEqual(["ensure"]);
+  });
+
+  it("reparks EVERY take when setup dies before the executor takes over (planning#609)", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const reparked: string[] = [];
+    const { hook } = makeResetHook({
+      repark: { repark: () => { reparked.push("reset"); } },
+    });
+    deps.preTurnReset = hook;
+    deps.consumePendingAgentNotice = () => "[System] Your branch was reset to origin/main.";
+    deps.restorePendingAgentNotice = () => { reparked.push("notice"); };
+    deps.takeRoleInstructions = () => ({
+      instructions: "<role_instructions>review only</role_instructions>",
+      repark: { repark: () => { reparked.push("role"); } },
+    });
+    deps.agentFactory = () => { throw new Error("container unreachable"); };
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    const outcome = await runner.dispatch(testDispatch({ text: "keep going" })).settled;
+
+    // The executor never ran, so its own repark cannot fire. Reparking only the notice
+    // here — which is all this path used to do — spends the branch reset and the role
+    // brief on a turn that never composed a process, let alone a prompt.
+    expect(outcome.status).toBe("errored");
+    expect(reparked.sort()).toEqual(["notice", "reset", "role"]);
+  });
+
+  it("reparks the prefix and the notice when the turn dies INSIDE the executor (planning#609)", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const reparked: string[] = [];
+    const { hook } = makeResetHook({
+      repark: { repark: () => { reparked.push("reset"); } },
+    });
+    deps.preTurnReset = hook;
+    deps.consumePendingAgentNotice = () => "[System] Your branch was reset to origin/main.";
+    deps.restorePendingAgentNotice = (_sid, notice) => { reparked.push(notice); };
+    // The report's own trigger: every connected account is out of quota, so the prompt is
+    // never submitted and the error tells the user to send the message again.
+    deps.prepareAgentEnv = (() => {
+      throw new ProviderRouteUnavailableError("claude" as AgentId, {
+        reason: "all_exhausted",
+        earliestResetAt: null,
+      });
+    }) as never;
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    const outcome = await runner.dispatch(testDispatch({ text: "now add the rate limiter" })).settled;
+
+    // The latch this path used to close before `executeAgentTurn` left both takes lost
+    // here: the setup succeeded, so the caller's finally read the prompt as delivered.
+    expect(outcome.errored).toBe(true);
+    expect(reparked.sort()).toEqual(["[System] Your branch was reset to origin/main.", "reset"]);
   });
 
   it("runs once per dispatched message, not once per no-result retry", async () => {
