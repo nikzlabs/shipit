@@ -64,6 +64,7 @@ export class AgentController {
   private selfWakeActive = false;
 
   private reclaimInFlight = false;
+  private reclaimPending = false;
 
   private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
 
@@ -227,6 +228,8 @@ export class AgentController {
         } finally {
           this.spawnedAgents.delete(spawnId);
           try { agent.kill(); } catch { /* already exited */ }
+          // This spawn may have been what blocked a reclaim when the primary turn ended.
+          this.reclaimBrowsers();
         }
       },
     );
@@ -375,24 +378,36 @@ export class AgentController {
    * reported finished, and the CPU sample must not delay the next one.
    */
   private reclaimBrowsers(): void {
-    if (this.reclaimInFlight || !this.browsersAreUnattended()) return;
+    // A skipped pass is deferred, never dropped: the browser this turn abandoned would
+    // otherwise render until some later turn happened to end at a quiet moment, which is
+    // the defect itself (docs/315 req 1). Whatever cleared the block calls back here.
+    if (this.reclaimInFlight || !this.browsersAreUnattended()) {
+      this.reclaimPending = true;
+      return;
+    }
     this.reclaimInFlight = true;
+    this.reclaimPending = false;
     void reclaimStillRenderingBrowsers({ stillIdle: () => this.browsersAreUnattended() })
       .catch((err: unknown) => {
         console.warn(`[browser-reclaim] failed: ${getErrorMessage(err)}`);
       })
       .finally(() => {
         this.reclaimInFlight = false;
+        // A turn that began and ended inside the sample opened a browser this pass never
+        // saw, and its roots were fixed when the pass started.
+        if (this.reclaimPending) this.reclaimBrowsers();
       });
   }
 
   /**
-   * A sub-agent spawn outlives the primary turn by design (see the note at the top of
-   * this file) and drives a browser of its own, so `turnActive` alone would let a
-   * reclaim kill a browser that is in use — docs/315 req 4.
+   * Work that outlives the primary turn drives a browser of its own, so `turnActive`
+   * alone would let a reclaim kill a browser in use — docs/315 req 4. Sub-agent spawns
+   * and background tasks are both such work (see the note at the top of this file, and
+   * `endTurn`'s). A self-wake needs no entry here: `endTurn` clears its flag immediately
+   * before calling us, and the turn it schedules sets `turnActive` before it dispatches.
    */
   private browsersAreUnattended(): boolean {
-    return !this.turnActive && this.spawnedAgents.size === 0;
+    return !this.turnActive && this.spawnedAgents.size === 0 && this.backgroundTaskCount === 0;
   }
 
   stop(): void {

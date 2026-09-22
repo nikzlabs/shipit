@@ -49,12 +49,29 @@ healthy and what ended is the **turn**, so none of its call sites fire.
    browser process and on nothing below it — **and** whose parent's cmdline names
    `playwright-mcp`. A browser the user's project launched has a test runner for a
    parent and is not ours to touch.
-2. **Sample** the tree's `utime + stime` over 1s, re-walking descendants each time
-   because renderer and GPU processes come and go under the root.
+2. **Sample** the tree's `utime + stime` over 1s, **per process identity**, re-walking
+   descendants each time because renderer and GPU processes come and go under the root.
 3. **Kill** the tree when the rate clears `BUSY_TICKS_PER_SEC`, via `killDescendantTree`.
 
 Not awaited. The turn is already reported finished by the time `endTurn` runs, and the
-second of sampling must not delay the next turn. A re-entry flag keeps one in flight.
+second of sampling must not delay the next turn. A re-entry flag keeps one in flight, and
+a pass skipped because something was in the way is **deferred, not dropped** — whatever
+clears the block calls back in, including a sub-agent spawn completing. Dropping it would
+leave the abandoned browser rendering until some later turn happened to end at a quiet
+moment, which is the defect itself.
+
+### A difference of totals is not the CPU burned
+
+The first version subtracted one tree total from another, and a review reproduced the
+failure: when a process exits between samples its **entire lifetime** leaves the second
+total, so a GPU process with hours on it swamps everything its siblings burned during the
+window and a pegged tree reads as settled. `ticksBurned` therefore matches processes by
+pid **and `startTime`** and sums per-process deltas: present in both, take the delta;
+newly appeared, take all of it, since it can only have run inside the window; vanished,
+take nothing, because nothing available here says how much of its lifetime fell inside
+the window. That last case undercounts, which errs toward keeping a browser rather than
+killing a live one. The rate divides by real elapsed time, not the requested delay, so a
+timer firing late under load cannot inflate it.
 
 ### Why the threshold is 25 and not 5
 
@@ -101,6 +118,24 @@ Against the real MCP browser in a session container, not only in tests: detectio
 exactly one managed root; the WebGL page measured 587 ticks/s and the real static page 3;
 killing the tree left `playwright-mcp` alive, and the next `browser_navigate` relaunched
 the browser and succeeded with nothing for the agent to notice (req 3).
+
+## Known limits
+
+Stated rather than fixed, all three raised by the independent review.
+
+- **The teardown overlaps the start of the next turn.** `killDescendantTree` returns
+  after SIGTERM and SIGKILLs survivors 5s later, so a turn starting inside that window
+  could issue a browser call against a connection that is going away. The idle check
+  stops a reclaim from *starting* during a turn but cannot un-send a signal. The blast
+  radius is one tool call that may need retrying, against a browser the agent was not
+  using a moment earlier; closing it properly would need a handshake with the MCP server,
+  which has no interface for one. The verified relaunch below does not test this overlap.
+- **Detection is substring matching on a command line, not identity.** It is anchored to
+  `PLAYWRIGHT_MCP_BIN`, the name `playwright-mcp.ts` execs, so the two move together —
+  but a project runner invoked through a path that happens to contain that name would
+  match, and invoking the package some other way would be missed.
+- **An orphaned browser is invisible.** One whose MCP server died is reparented to pid 1
+  and no walk from us can reach it. That is docs/289's case, not this one's.
 
 ## Not covered here
 

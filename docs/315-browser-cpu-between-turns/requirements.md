@@ -44,6 +44,13 @@ _None. All four were resolved on 2026-09-22; see below._
   req 2. The rejected alternatives were reclaiming at every turn end regardless (costs
   cross-turn workflows for no gain on pages that cost nothing) and an idle timer
   (burns CPU for the length of the window and adds a number to tune).
+- 2026-09-22 — **"Still consuming CPU" (req 2) needs a number, and the number does not
+  meet req 1 literally.** The threshold is 25 ticks/s, a quarter of a core. A canvas
+  animation measures ~6 and is therefore left running, even though req 1's plain words
+  ask for any abandoned rendering to stop. Recorded rather than quietly diverged from,
+  because no threshold can do better: a real static page measures 3, so a line drawn low
+  enough to catch a 6 would also reclaim settled pages that req 2 exists to protect, and
+  a page costing 6% of a core is not what put a host at load 42. Raised by review.
 - 2026-09-22 — **Is losing in-memory browser state acceptable?** Answer: yes. Killing the
   browser drops cookies, logins and `localStorage` along with the page, because
   `playwright-mcp` runs with `--isolated` and keeps the profile in memory. An agent that

@@ -108,6 +108,14 @@ describe("AgentController — reclaiming the browser at turn end", () => {
     expect(stillIdle()).toBe(false);
   });
 
+  it("does not reclaim while background tasks are running", async () => {
+    const agent = await startTurn();
+    agent.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1" }] });
+    finishTurn(agent);
+    await settle();
+    expect(reclaim).not.toHaveBeenCalled();
+  });
+
   it("does not reclaim while a sub-agent spawn is in flight", async () => {
     // Not awaited: the route resolves only when the spawned agent finishes, and this one
     // never does — which is the point. A spawn outlives the primary turn.
@@ -123,5 +131,30 @@ describe("AgentController — reclaiming the browser at turn end", () => {
     await settle();
 
     expect(reclaim).not.toHaveBeenCalled();
+  });
+
+  // Skipping is a deferral, not a drop: the browser the turn abandoned would otherwise
+  // render until some later turn happened to end at a quiet moment.
+  it("reclaims once the spawn that blocked it finishes", async () => {
+    const spawn = app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: { agentId: "claude", prompt: "review", spawnId: "s1", model: "claude-opus-5" },
+    });
+    await settle();
+    await settle();
+    const spawned = agents.at(-1)!;
+
+    const primary = await startTurn();
+    finishTurn(primary);
+    await settle();
+    expect(reclaim).not.toHaveBeenCalled();
+
+    spawned.emit("event", { type: "agent_result", subtype: "success", isError: false });
+    spawned.emit("done", 0);
+    await spawn;
+    await settle();
+
+    expect(reclaim).toHaveBeenCalledTimes(1);
   });
 });

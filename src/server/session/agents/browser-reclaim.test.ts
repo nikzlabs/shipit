@@ -3,7 +3,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { findManagedBrowsers, reclaimStillRenderingBrowsers } from "./browser-reclaim.js";
+import { killProcessTree } from "../../shared/kill-child.js";
+import {
+  findManagedBrowsers,
+  reclaimStillRenderingBrowsers,
+  ticksBurned,
+} from "./browser-reclaim.js";
 
 // Real trees rather than fakes: the module's whole job is reading /proc correctly.
 const spawned: ChildProcess[] = [];
@@ -58,15 +63,17 @@ async function waitForBrowser(): Promise<number> {
   throw new Error("fixture browser never appeared");
 }
 
+// Snapshot before signalling, per docs/289: killing a fixture parent first orphans its
+// browser onto pid 1, where it is neither our descendant nor a child of anything named
+// `playwright-mcp` — so nothing can find it again, and a busy one burns a core for the
+// rest of its minute. `killProcessTree` takes the whole tree in one go.
 afterEach(async () => {
   for (const child of spawned.splice(0)) {
-    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    killProcessTree(child, "SIGKILL", { label: "reclaim-fixture", graceMs: 0 });
   }
-  // Grandchildren are orphaned by the kill above; sweep them by marker.
-  for (const found of findManagedBrowsers()) {
-    try { process.kill(found.pid, "SIGKILL"); } catch { /* already gone */ }
-  }
-  await new Promise((r) => setTimeout(r, 50));
+  await new Promise((r) => setTimeout(r, 100));
+  const survivors = findManagedBrowsers();
+  expect(survivors, "fixture browsers outlived the test").toEqual([]);
 });
 
 describe("findManagedBrowsers", () => {
@@ -111,20 +118,52 @@ describe("reclaimStillRenderingBrowsers", () => {
     expect(alive(pid)).toBe(true);
   });
 
-  it("does not reclaim when a turn started while it sampled", async () => {
+  // Idle flips DURING the sample, so an implementation that only checked before sampling
+  // would still kill and fail here. The paired assertion above — same fixture, same
+  // sample window, reclaimed — is what rules out passing because nothing looked busy.
+  it("does not reclaim when a turn starts while it samples", async () => {
     spawnFakeMcpWithBrowser(true);
     const pid = await waitForBrowser();
 
+    let idle = true;
+    setTimeout(() => { idle = false; }, 100);
     const reclaimed = await reclaimStillRenderingBrowsers({
-      stillIdle: () => false,
+      stillIdle: () => idle,
       sampleMs: 300,
     });
 
+    expect(idle).toBe(false);
     expect(reclaimed).toBe(0);
     expect(alive(pid)).toBe(true);
   });
 
   it("reports nothing to do when no browser is open", async () => {
     expect(await reclaimStillRenderingBrowsers({ stillIdle: () => true, sampleMs: 50 })).toBe(0);
+  });
+});
+
+// The population changes between samples, so a difference of totals is not the CPU burned.
+describe("ticksBurned", () => {
+  const p = (startTime: number, ticks: number) => ({ startTime, ticks });
+
+  it("counts the delta for a process present in both samples", () => {
+    expect(ticksBurned(new Map([[10, p(1, 500)]]), new Map([[10, p(1, 560)]]))).toBe(60);
+  });
+
+  it("counts all of a process that appeared, which can only have run inside the window", () => {
+    expect(ticksBurned(new Map(), new Map([[11, p(2, 30)]]))).toBe(30);
+  });
+
+  it("is not dragged negative by a long-lived process that exited", () => {
+    // The real shape: a GPU process with hours on it exits while a sibling keeps working.
+    const before = new Map([[10, p(1, 10_000)], [11, p(2, 100)]]);
+    const after = new Map([[11, p(2, 600)]]);
+    expect(ticksBurned(before, after)).toBe(500);
+  });
+
+  it("treats a reused pid as a new process rather than crediting its predecessor", () => {
+    const before = new Map([[10, p(1, 900)]]);
+    const after = new Map([[10, p(7, 40)]]);
+    expect(ticksBurned(before, after)).toBe(40);
   });
 });

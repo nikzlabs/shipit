@@ -18,3 +18,14 @@
 - [x] `npm run lint:dev`, `npm run typecheck`, `npm run test:dev` clean
 - [x] Agent-facing note in `src/server/shipit-docs/preview.md`
 - [x] planning#614 filed for the in-use browser starving its own container
+- [x] Independent review (Codex), six findings, all addressed:
+  - [x] P1 — background tasks join sub-agent spawns in the attended check
+  - [x] A skipped pass is deferred and retried, not dropped
+  - [x] Per-identity CPU deltas, so an exiting process cannot mask a busy tree; rate
+        divided by real elapsed time
+  - [x] Test cleanup snapshots before signalling, so fixtures cannot be orphaned
+  - [x] Cancellation test flips idle mid-sample, so it can actually fail
+  - [x] Direct tests for `killDescendantTree` — stranger root, stale start time, a real
+        great-grandchild tree
+  - [x] Shutdown overlap, substring detection and orphaned browsers recorded as known
+        limits rather than silently accepted
