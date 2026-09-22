@@ -189,9 +189,10 @@ None.
   `container-overlay-provisioner.ts:113`), and the requester rules that reqs 1
   and 3 take precedence over req 13 for this class and that the mechanism must
   not change; and **the builder's caps and refusals** — too many manifests
-  (`pnpm-base-inputs.ts:272`), an unreadable input (`pnpm-base-inputs.ts:282`),
-  and a dep dir that is not `node_modules` (`overlay-publish.ts:261`), bounded
-  inputs being part of the verification contract. The **general principle**,
+  (`pnpm-base-inputs.ts:272`), an input past a size cap (`:282`) or one it
+  cannot parse (`:315`, `:364`), and a dep dir that is not `node_modules`
+  (`overlay-publish.ts:261`), bounded inputs being part of the verification
+  contract. The **general principle**,
   recorded as an amendment to req 13: a repository the verified base cannot
   serve, for a reason stated in plan.md and cited at the source, installs
   privately and is outside req 13; req 13 binds only the classes the design can

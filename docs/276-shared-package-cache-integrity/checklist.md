@@ -639,8 +639,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       builder now refuses to publish a tree whose `.modules.yaml` still lists
       `pendingBuilds`.
 
-- [x] **Three of the classes that stay private are outside req 13; the rest keep
-      reqs 2 / 10 / 13 OPEN.** Asked which classes may stay permanently private,
+- [x] **Three of the classes that stay private are outside req 13** — the first
+      of three rulings; at the time it left the rest open. Asked which classes
+      may stay permanently private,
       against the options "all three", "`git:`/URL and pnpm <= 10 only" and
       "none", the requester answered **"All three"** on **2026-09-21**: a
       `git:`/URL source (no registry integrity to verify the fetched source
@@ -653,8 +654,8 @@ recorded in [requirements.md](./requirements.md); none is open.
       question was deliberately NOT filed under `## Open questions` — a bullet
       there blocks implementation code for the whole feature, including the
       req 9 fix above — and was routed to the requester through the parent
-      session instead. Every other row in that table stays open work — the item
-      below.
+      session instead. Every other row in that table was open work at this
+      point; the two items below close them.
 
 - [x] **Three more classes are ruled outside req 13** (2026-09-22). The rows the
       2026-09-21 ruling left uncovered
@@ -685,8 +686,9 @@ recorded in [requirements.md](./requirements.md); none is open.
       `:582` and `:601`), a repo with **no lockfile** at either end (publisher
       `pnpm-base-inputs.ts:262`, consumer
       `container-overlay-provisioner.ts:113`), and the **caps and refusals** —
-      too many manifests (`pnpm-base-inputs.ts:272`), an unreadable input
-      (`:282`), a dep dir that is not `node_modules` (`overlay-publish.ts:261`).
+      too many manifests (`pnpm-base-inputs.ts:272`), an input past a size cap
+      (`:282`) or one the builder cannot parse (`:315`, `:364`), a dep dir that
+      is not `node_modules` (`overlay-publish.ts:261`).
       Asked whether they may stay permanently private and whether a general
       principle should be recorded, against the options "all three plus the
       principle", "the three rows only" and "keep them as work", the requester
