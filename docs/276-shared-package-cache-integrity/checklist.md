@@ -656,17 +656,28 @@ recorded in [requirements.md](./requirements.md); none is open.
       session instead. Every other row in that table stays open work — the item
       below.
 
-- [ ] **The classes with no ruling keep reqs 2 / 10 / 13 OPEN**, and closing
-      planning#414 does not close them. After the 2026-09-21 ruling the rows
-      still uncovered are `configDependencies` (eligibility refused at
-      `pnpm-base-inputs.ts`, on the widened input surface), an unauthorized
-      scoped registry (no operator lever supplies
-      `authorizedScopeRegistries`), and an unsupported `lockfileVersion` or a
-      registry entry with no integrity. Three more rows read as open and are
-      not: an escaping layout has no base to be, a no-lockfile consumer is
-      req 1 working, and "nothing to share" is nothing to share. plan.md
-      section 5's table is the live statement of what each needs; this box
-      stays unchecked until a mechanism or a ruling covers every row.
+- [x] **The last three classes are ruled outside req 13, so no row leaves
+      reqs 2 / 10 / 13 open.** The rows the 2026-09-21 ruling left uncovered
+      were `configDependencies` (refused at `pnpm-base-inputs.ts:519`, because
+      the builder neither parses nor stages a config dependency's resolution —
+      its hook IS suppressed, PR #2957), an unauthorized scoped registry (the
+      builder accepts a map at `pnpm-base-builder.ts:106` /
+      `pnpm-base-registry.ts:158` / `pnpm-base-inputs.ts:454`, and no
+      orchestrator setting supplies one — `bootstrap-managers.ts:520` is the
+      only production construction and passes no such field), and an
+      unsupported `lockfileVersion` or an entry with no integrity hash (the
+      parser covers v9/v10, `pnpm-base-inputs.ts:109`; a digest-less entry
+      cannot be verified at all). Asked which of them may stay permanently
+      private, against the options "all three", "(a) and (c), wire the registry
+      mapping first" and "none", the requester answered **"Rule all three
+      permanently private and close planning#414"** on **2026-09-22**. Each
+      installs privately, exactly as before this work. Receipt in
+      `requirements.md` `## Resolved questions`; req 13 amended to name all six
+      classes; plan.md section 5's framing and those three table rows replaced
+      rather than annotated. The three rows that read as open and never were —
+      an escaping layout has no base to be, a no-lockfile consumer is req 1
+      working, and "nothing to share" is nothing to share — are stated as such
+      there.
 
 - [x] **shipit-docs (`environment.md`)**: what an agent sees on a pruned base —
       the packages that build are imported into the session's private store on
