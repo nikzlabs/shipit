@@ -5,9 +5,9 @@ services:
     build:
       context: ../../..
       dockerfile: docker/Dockerfile.dev
-    # The orchestrator is PID 1 in this container, and Node reaps only the children it spawned
-    # itself — an adopted orphan (a git whose parent exited first) zombies for the process's life.
-    # docker-init reaps them; session containers do the same (planning#613).
+    # PID 1 here is the entrypoint's `exec npm run dev`, which reaps adopted orphans no better than
+    # node does — a git whose parent exited first zombies for the container's life. docker-init
+    # reaps them; session containers do the same (planning#613).
     init: true
     # CFS fairness is per-CPU, so at the default weight the orchestrator's single main thread gets
     # only its even share against dozens of runnable worker threads — HTTP and WS upgrades stall for
