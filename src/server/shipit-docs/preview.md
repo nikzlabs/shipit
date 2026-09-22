@@ -300,6 +300,19 @@ verify your work:
 
 Use browser tools proactively after UI changes to catch issues early.
 
+**A page left rendering does not survive the turn.** At the end of a turn ShipIt measures
+the browser's CPU, and tears it down when it is still rendering — an animation, a canvas
+loop, a WebGL scene. Headless Chromium rasterizes those in software across a thread per
+core, so one abandoned WebGL page can consume a session's entire CPU quota for hours.
+A page sitting still costs nothing and is left alone, so navigate-in-one-turn,
+look-in-the-next keeps working.
+
+Nothing is required of you: the next browser call launches a fresh browser by itself. The
+one consequence to plan around is that a reclaimed browser loses its in-memory profile —
+a login from an earlier turn is gone, so do the login in the turn that needs it, and
+finish what you are doing with an animated page inside the turn that opened it. There is
+no way to opt out.
+
 ## Creating a compose file
 
 If the project doesn't have a docker-compose.yml, see

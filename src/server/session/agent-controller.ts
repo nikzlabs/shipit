@@ -13,6 +13,7 @@ import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { restoreFullResolutionScreenshots } from "./playwright-screenshot.js";
+import { reclaimStillRenderingBrowsers } from "./agents/browser-reclaim.js";
 import {
   formatNodeRuntimeNotice,
   prefixPromptWithNotice,
@@ -61,6 +62,8 @@ export class AgentController {
 
   private backgroundTaskCount = 0;
   private selfWakeActive = false;
+
+  private reclaimInFlight = false;
 
   private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
 
@@ -362,6 +365,34 @@ export class AgentController {
     // Background tasks can outlive a turn; retain their count until the process ends.
     this.selfWakeActive = false;
     this.turnDeliveryId = undefined;
+    this.reclaimBrowsers();
+  }
+
+  /**
+   * docs/315-browser-cpu-between-turns req 2. Sits here rather than in an adapter so it
+   * holds for every backend (req 6), and covers the crash and error paths, which reach
+   * `endTurn` through `vacateSlot`. Deliberately not awaited: the turn is already
+   * reported finished, and the CPU sample must not delay the next one.
+   */
+  private reclaimBrowsers(): void {
+    if (this.reclaimInFlight || !this.browsersAreUnattended()) return;
+    this.reclaimInFlight = true;
+    void reclaimStillRenderingBrowsers({ stillIdle: () => this.browsersAreUnattended() })
+      .catch((err: unknown) => {
+        console.warn(`[browser-reclaim] failed: ${getErrorMessage(err)}`);
+      })
+      .finally(() => {
+        this.reclaimInFlight = false;
+      });
+  }
+
+  /**
+   * A sub-agent spawn outlives the primary turn by design (see the note at the top of
+   * this file) and drives a browser of its own, so `turnActive` alone would let a
+   * reclaim kill a browser that is in use — docs/315 req 4.
+   */
+  private browsersAreUnattended(): boolean {
+    return !this.turnActive && this.spawnedAgents.size === 0;
   }
 
   stop(): void {
