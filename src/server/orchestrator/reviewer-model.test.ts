@@ -269,7 +269,7 @@ describe("resolving the two reviewer slots", () => {
 
     expect(slots[0].target?.selection.modelId).toBe("claude-opus-5");
     expect(slots[1].target).not.toBeNull();
-    expect(slots[1].target?.selection.modelId).toBe("claude-sonnet-5");
+    expect(slots[1].target?.selection.modelId).toBe("claude-opus-5-5");
     expect(slots[1].target?.selection.serviceId).toBe("anthropic");
   });
 
