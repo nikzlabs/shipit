@@ -28,6 +28,7 @@ function identity<K extends string, F extends ModelFamily>(
 
 // Reuse these pairs in service rows; an additional offering does not add an identity.
 export const MODEL_IDENTITIES = {
+  opus55: identity("claude-opus-5.5", "claude"),
   opus5: identity("claude-opus-5", "claude"),
   sonnet5: identity("claude-sonnet-5", "claude"),
   haiku45: identity("claude-haiku-4.5", "claude"),
@@ -77,6 +78,7 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   haiku: "claude-haiku-4.5",
   "claude-haiku-4-5": "claude-haiku-4.5",
   "claude-fable-5-1": "claude-fable-5.1",
+  "claude-opus-5-5": "claude-opus-5.5",
   "x-preview-f-free": "ox-alpha",
   "ox-alpha-free": "ox-alpha",
   // DeepSeek's own version-free id for V4.1 Flash, which OpenCode Go copies,

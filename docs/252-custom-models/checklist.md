@@ -24,7 +24,11 @@ table — a phase is checked off when its PR has merged.
 
 - [x] Add GPT-6 Sol and Luna under both OpenAI billing modes with published
       metadata and unchanged saved selections; validate Codex 0.155.1
-- [ ] Resolve the Codex 0.155.1 seven-day age gate before marking the PR ready
+- [x] Resolve the Codex 0.155.1 seven-day age gate with the user-approved
+      exact-version exception, expiring 2026-09-26
+
+- [x] Add Opus 5.5 under both Anthropic billing modes with published metadata
+- [x] Update Claude Code to 2.1.280 with the approved exact-version age exception
 
 ## Phase 2 — Credentials and Settings
 

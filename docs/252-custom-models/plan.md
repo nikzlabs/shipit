@@ -186,9 +186,24 @@ The initial context window uses the published 1,050,000-token limit. Codex
 telemetry replaces it when reported; OpenCode uses the catalogue value.
 There is no measured Codex-specific window for these new IDs.
 The Codex CLI pin moves to 0.155.1 with a regenerated platform lockfile.
+The user approved its exact-version dependency-age exception on 2026-09-22;
+it expires on 2026-09-26. The update fulfills the requested CLI refresh and
+is not required for the new model IDs.
 Its unauthenticated app-server handshake, model-list request, and thread
 creation with both new IDs were checked. Its bundled list does not yet include
 Sol or Luna. No authenticated inference against the new models has been verified.
+
+**Catalogue maintenance (2026-09-22): Opus 5.5.** The user also requested
+Opus 5.5. Anthropic's [model overview](https://platform.claude.com/docs/en/models/opus-5-5/overview)
+and [pricing](https://platform.claude.com/docs/en/about-claude/pricing), read on
+this date, confirm `claude-opus-5-5`, image input, a 1M context window, and
+input/output prices of $4/$20 per million tokens. Cache reads cost $0.20 and
+five-minute writes cost $5. The row uses Anthropic Messages and is added under
+both Anthropic billing modes. Existing models and defaults stay unchanged.
+Gateway availability is not inferred from Anthropic's release. The user also
+requested the latest Claude Code CLI and explicitly approved an age exception:
+2.1.280 is pinned with a regenerated lockfile and an exception expiring
+2026-09-30. No live model response has been verified.
 
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍

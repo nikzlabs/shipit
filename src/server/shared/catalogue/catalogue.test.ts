@@ -567,8 +567,9 @@ describe("harnesses", () => {
 
 describe("the harness\u00d7service join", () => {
   it("leads with the harness's own vendor, in the order the picker had", () => {
-    expect(catalogueModelIdsForHarness("claude").slice(0, 4)).toEqual([
+    expect(catalogueModelIdsForHarness("claude").slice(0, 5)).toEqual([
       "claude-opus-5",
+      "claude-opus-5-5",
       "claude-sonnet-5",
       "haiku",
       "claude-fable-5-1",
@@ -587,6 +588,28 @@ describe("the harness\u00d7service join", () => {
       "gpt-5.3-codex",
       "gpt-5.2",
     ]);
+  });
+
+  it("offers Opus 5.5 under both Anthropic billing modes without replacing the default", () => {
+    for (const billingMode of ["sub", "key"] as const) {
+      const selection = { serviceId: "anthropic", billingMode, modelId: "claude-opus-5-5" };
+      expect(getModel(selection)).toMatchObject({
+        label: "Opus 5.5", canonicalModelKey: "claude-opus-5.5", family: "claude",
+        contextWindow: { default: 1_000_000 },
+        price: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+      });
+      expect(resolveSpawnShaping("claude", selection)?.style).toBe("anthropic-messages");
+      expect(visionSupportFor(selection)).toBe("yes");
+      expect(reasoningOptionsFor("claude", selection).map((option) => option.value))
+        .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      if (billingMode === "key") {
+        expect(reasoningOptionsFor("opencode", selection).map((option) => option.value))
+          .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      }
+      expect(resolveSpawnShaping("codex", selection)).toBeUndefined();
+    }
+    expect(catalogueModelIdsForHarness("claude")[0]).toBe("claude-opus-5");
+    expect(MODEL_ID_ALIASES["claude-opus-5-5"]).toBe("claude-opus-5.5");
   });
 
   it("offers GPT-6 Astra through both OpenAI billing modes without making it the default", () => {
