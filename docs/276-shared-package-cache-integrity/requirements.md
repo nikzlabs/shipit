@@ -84,13 +84,19 @@ project on the instance.
     2026-09-18.)*
 
 13. Package sharing between sessions MUST hold within a repo. Sharing across
-    repos is not required. A repo with a `git:`/URL dependency, a `file:`
-    dependency, a pnpm ≤ 10 pin, a `configDependencies` declaration, a scoped
-    private registry with no operator-authorized scope→registry mapping, or an
-    unsupported `lockfileVersion` or a registry entry with no integrity hash
-    installs privately and is outside this requirement. *(Requester,
-    2026-09-18; the first three private classes, 2026-09-21; the remaining
-    three, 2026-09-22.)*
+    repos is not required. A repository the verified base cannot serve, for a
+    reason stated in plan.md and cited at the source, installs privately and is
+    outside this requirement; this requirement binds only the classes the design
+    can reach. Those outside it are a repo with a `git:`/URL dependency, a
+    `file:` dependency, a pnpm ≤ 10 pin, a `configDependencies` declaration, a
+    scoped private registry with no operator-authorized scope→registry mapping,
+    an unsupported `lockfileVersion` or a registry entry with no integrity hash,
+    an escaping dependency layout (`modulesDir`, `virtualStoreDir`, or a
+    non-isolated `nodeLinker`), no lockfile at the publisher or at the consumer,
+    and an input the builder caps or refuses (too many manifests, an unreadable
+    input, a dependency directory that is not `node_modules`). *(Requester,
+    2026-09-18; the first three private classes, 2026-09-21; the next three,
+    and the final three with the general principle, 2026-09-22.)*
 
 ## Open questions
 
@@ -166,3 +172,28 @@ None.
   covers the v9/v10 shapes (`pnpm-base-inputs.ts:109`) and an entry carrying no
   digest cannot be verified against the registry at all. Each installs
   privately, exactly as it did before this work. Recorded in req 13.
+- 2026-09-22 (the second ruling that day) — Asked whether the three rows that
+  still had no ruling may stay **permanently** private under req 13, and whether
+  a general principle should be recorded so no further row needs one. The
+  options offered were that, "rule only the three rows private (no general
+  principle)", and keeping them as work; the answer was **"Rule the three rows
+  private, record the general principle, and close planning#414."** The three,
+  with the reason each: an **escaping layout** — `modulesDir`,
+  `virtualStoreDir` or a non-isolated `nodeLinker` places the tree where no
+  single `node_modules` base can be mounted (the one permitted value per setting
+  is `pnpm-base-inputs.ts:166`, refused in `decidePnpmBaseEligibility` at
+  `pnpm-base-inputs.ts:582` and `:601`); **no lockfile at either end** —
+  refusing a base there is reqs 1 and 3 working as designed, since a session
+  without its own lockfile would adopt the base's graph (publisher side
+  `pnpm-base-inputs.ts:262`, consumer side
+  `container-overlay-provisioner.ts:113`), and the requester rules that reqs 1
+  and 3 take precedence over req 13 for this class and that the mechanism must
+  not change; and **the builder's caps and refusals** — too many manifests
+  (`pnpm-base-inputs.ts:272`), an input past a size cap (`:282`) or one it
+  cannot parse (`:315`, `:364`), and a dep dir that is not `node_modules`
+  (`overlay-publish.ts:261`), bounded inputs being part of the verification
+  contract. The **general principle**,
+  recorded as an amendment to req 13: a repository the verified base cannot
+  serve, for a reason stated in plan.md and cited at the source, installs
+  privately and is outside req 13; req 13 binds only the classes the design can
+  reach. Recorded in req 13.
