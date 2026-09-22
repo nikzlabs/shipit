@@ -95,8 +95,8 @@ function smudgeLfsObject(
       chunks.push(c);
       bytes += c.length;
     });
-    // `git lfs smudge` is a child of the `git` wrapper and inherits stdout. Killing the
-    // wrapper alone leaves it on the pipe, so `close` never fires (planning#615).
+    // `close` waits on any descendant still holding stdout, so killing the `git` wrapper
+    // alone leaves this promise waiting on the runaway `git lfs` (planning#615).
     const timer = setTimeout(
       () => killProcessTree(proc, "SIGKILL", { label: "git lfs smudge" }),
       smudgeTimeoutMs(),

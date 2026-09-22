@@ -524,19 +524,23 @@ describe.skipIf(!fs.existsSync("/proc/1/stat"))("runGit timeout (planning#615)",
   it("settles and leaves no descendant when the timed-out git has a child on the pipes", async () => {
     const dir = makeRepo();
     dirs.push(dir);
-    // `!` aliases run from the repo root, so the marker lands beside .git.
-    git(dir, "config alias.lingering '!{ sleep 2 && touch leaked.txt; } & exec sleep 30'");
+    // `!` aliases run from the repo root, so the markers land beside .git. `started`
+    // proves the descendant existed to be killed, so a slow spawn fails rather than
+    // passing vacuously; `leaked` appears only if it outlived the timeout.
+    git(dir, "config alias.lingering "
+      + "'!touch started.txt; { sleep 5 && touch leaked.txt; } & exec sleep 60'");
 
     const startedAt = Date.now();
-    const res = await runGit(["lingering"], dir, 300);
+    const res = await runGit(["lingering"], dir, 1_500);
 
     expect(res.timedOut).toBe(true);
-    // Unfixed, `close` waits on the surviving child and this runs ~30s, not ~0.3s.
-    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    // Unfixed, `close` waits on the surviving child and this runs ~60s, not ~1.5s.
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
+    expect(fs.existsSync(path.join(dir, "started.txt"))).toBe(true);
 
-    await new Promise((r) => setTimeout(r, 3_000));
+    await new Promise((r) => setTimeout(r, 6_000));
     expect(fs.existsSync(path.join(dir, "leaked.txt"))).toBe(false);
-  }, 20_000);
+  }, 40_000);
 });
 
 describe("isGitLfsAvailable", () => {

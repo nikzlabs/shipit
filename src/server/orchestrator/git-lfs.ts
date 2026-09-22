@@ -70,9 +70,8 @@ export function runGit(
     const append = (buf: string, chunk: Buffer) => (buf + chunk.toString()).slice(-8192);
     proc.stdout.on("data", (c: Buffer) => (stdout = append(stdout, c)));
     proc.stderr.on("data", (c: Buffer) => (stderr = append(stderr, c)));
-    // git runs `git lfs` as a child, and the child inherits these pipes. Killing the
-    // wrapper alone leaves it holding the write ends, so `close` never fires and this
-    // promise never settles — the timeout would bound nothing (planning#615).
+    // `close` waits on any descendant still holding these pipes, so killing the `git`
+    // wrapper alone leaves this promise waiting on the runaway `git lfs` (planning#615).
     const timer = setTimeout(() => {
       timedOut = true;
       killProcessTree(proc, "SIGKILL", { label: "git" });
