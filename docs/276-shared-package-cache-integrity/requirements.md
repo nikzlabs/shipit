@@ -85,9 +85,12 @@ project on the instance.
 
 13. Package sharing between sessions MUST hold within a repo. Sharing across
     repos is not required. A repo with a `git:`/URL dependency, a `file:`
-    dependency, or a pnpm ≤ 10 pin installs privately and is outside this
-    requirement. *(Requester, 2026-09-18; the three private classes,
-    2026-09-21.)*
+    dependency, a pnpm ≤ 10 pin, a `configDependencies` declaration, a scoped
+    private registry with no operator-authorized scope→registry mapping, or an
+    unsupported `lockfileVersion` or a registry entry with no integrity hash
+    installs privately and is outside this requirement. *(Requester,
+    2026-09-18; the first three private classes, 2026-09-21; the remaining
+    three, 2026-09-22.)*
 
 ## Open questions
 
@@ -145,3 +148,21 @@ None.
   package at rc=0 (PR #2963); and a repo **pinning pnpm ≤ 10**, a legacy line
   whose store version this design does not target. Each installs privately,
   exactly as it did before this work. Recorded in req 13.
+- 2026-09-22 — Asked which of the three remaining classes may stay
+  **permanently** private under req 13. The options offered were "all three",
+  "(a) and (c), wire the registry mapping first", and "none"; the answer was
+  **"Rule all three permanently private and close planning#414"**. The three,
+  with the reason each: **(a) a repo declaring `configDependencies`** — the
+  builder neither parses nor stages a config dependency's resolution, so
+  admitting it would have the builder fetch plugin packages off a footing no
+  digest of ShipIt's covers (`pnpm-base-inputs.ts:519`; the hook itself is
+  suppressed, confirmed in PR #2957); **(b) a repo on a scoped private registry
+  with no operator-authorized scope→registry mapping** — the builder accepts
+  such a map (`pnpm-base-builder.ts:106`, `pnpm-base-registry.ts:158`,
+  `pnpm-base-inputs.ts:454`) but no orchestrator setting supplies one, the only
+  production construction of those deps passing no such field
+  (`bootstrap-managers.ts:520`); and **(c) a repo with an unsupported
+  `lockfileVersion`, or a registry entry with no integrity hash** — the parser
+  covers the v9/v10 shapes (`pnpm-base-inputs.ts:109`) and an entry carrying no
+  digest cannot be verified against the registry at all. Each installs
+  privately, exactly as it did before this work. Recorded in req 13.
