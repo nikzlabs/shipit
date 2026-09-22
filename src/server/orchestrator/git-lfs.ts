@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { killChild } from "../shared/kill-child.js";
+import { killProcessTree } from "../shared/kill-child.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 import { lfsDeclarationGrepArgs } from "../shared/git-lfs-push.js";
@@ -70,9 +70,12 @@ export function runGit(
     const append = (buf: string, chunk: Buffer) => (buf + chunk.toString()).slice(-8192);
     proc.stdout.on("data", (c: Buffer) => (stdout = append(stdout, c)));
     proc.stderr.on("data", (c: Buffer) => (stderr = append(stderr, c)));
+    // git runs `git lfs` as a child, and the child inherits these pipes. Killing the
+    // wrapper alone leaves it holding the write ends, so `close` never fires and this
+    // promise never settles — the timeout would bound nothing (planning#615).
     const timer = setTimeout(() => {
       timedOut = true;
-      killChild(proc, "SIGKILL");
+      killProcessTree(proc, "SIGKILL", { label: "git" });
     }, timeoutMs);
     proc.on("error", (err) => {
       clearTimeout(timer);

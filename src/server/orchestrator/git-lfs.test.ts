@@ -12,6 +12,7 @@ import {
   resetGitLfsAvailabilityCache,
   classifyPullFailure,
   buildLfsUnresolvedAgentNotice,
+  runGit,
 } from "./git-lfs.js";
 
 function git(cwd: string, args: string): string {
@@ -509,6 +510,33 @@ describe("restoreLfsAfterTreeRewrite (nikzlabs/shipit#2349)", () => {
     expect(result.status).toBe("not-an-lfs-repo");
     expect(warnings).toEqual([]);
   });
+});
+
+// A `!`-alias stands in for `git lfs`: git resolves an external `git-lfs` binary
+// BEFORE any alias of that name, so `lfs` itself cannot be shadowed here. The shape
+// that matters is identical — a `git` wrapper whose child outlives it on the pipes.
+describe.skipIf(!fs.existsSync("/proc/1/stat"))("runGit timeout (planning#615)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it("settles and leaves no descendant when the timed-out git has a child on the pipes", async () => {
+    const dir = makeRepo();
+    dirs.push(dir);
+    // `!` aliases run from the repo root, so the marker lands beside .git.
+    git(dir, "config alias.lingering '!{ sleep 2 && touch leaked.txt; } & exec sleep 30'");
+
+    const startedAt = Date.now();
+    const res = await runGit(["lingering"], dir, 300);
+
+    expect(res.timedOut).toBe(true);
+    // Unfixed, `close` waits on the surviving child and this runs ~30s, not ~0.3s.
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+
+    await new Promise((r) => setTimeout(r, 3_000));
+    expect(fs.existsSync(path.join(dir, "leaked.txt"))).toBe(false);
+  }, 20_000);
 });
 
 describe("isGitLfsAvailable", () => {
