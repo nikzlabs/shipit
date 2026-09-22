@@ -120,6 +120,8 @@ import type {
   WsActionChecklistUpdate,
   WsRepoSessionProposalCard,
   WsRepoSessionProposalUpdate,
+  WsSessionMessageProposalCard,
+  WsSessionMessageProposalUpdate,
   WsPresentInlineCard,
   WsBranchAutoResetCard,
   WsBranchSyncedCard,
@@ -166,6 +168,8 @@ export type WsServerMessage =
   | WsActionChecklistUpdate
   | WsRepoSessionProposalCard
   | WsRepoSessionProposalUpdate
+  | WsSessionMessageProposalCard
+  | WsSessionMessageProposalUpdate
   | WsPresentInlineCard
   | WsBranchAutoResetCard
   | WsBranchSyncedCard

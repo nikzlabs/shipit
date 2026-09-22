@@ -89,6 +89,11 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/propose-repo-session", request.body ?? {}, reply),
   );
 
+  app.post<{ Body: { sessionId?: string; message?: string } }>(
+    "/agent-ops/propose-session-message",
+    async (request, reply) => relay("POST", "/propose-session-message", request.body ?? {}, reply),
+  );
+
   app.post<{ Body: {
     title?: string; body?: string; base?: string; draft?: boolean; fill?: boolean;
     labels?: string[]; cwd?: string; repo?: string;

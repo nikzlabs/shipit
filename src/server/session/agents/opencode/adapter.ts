@@ -678,7 +678,7 @@ export class OpencodeAdapter
         type: "local",
         command: [ctx.shipitBridge.tsxBin, ctx.shipitBridge.bridgePath],
         enabled: true,
-        environment: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session", ctx) },
+        environment: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session,propose_session_message", ctx) },
       };
     }
 

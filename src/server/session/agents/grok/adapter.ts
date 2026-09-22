@@ -866,7 +866,7 @@ export class GrokAdapter
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
         enabled: true,
-        env: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session", ctx) },
+        env: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session,propose_session_message", ctx) },
       };
     }
 

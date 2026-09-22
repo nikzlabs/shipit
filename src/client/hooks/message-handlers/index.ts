@@ -11,6 +11,10 @@ import {
   handleRepoSessionProposalCard,
   handleRepoSessionProposalUpdate,
 } from "./repo-session-proposal.js";
+import {
+  handleSessionMessageProposalCard,
+  handleSessionMessageProposalUpdate,
+} from "./session-message-proposal.js";
 import { handlePresentInlineCard } from "./present-inline-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
 import { handleSessionRenamedCard } from "./session-renamed-card.js";
@@ -127,6 +131,8 @@ export const messageHandlers: MessageHandlerMap = {
   action_checklist_update: handleActionChecklistUpdate,
   repo_session_proposal_card: handleRepoSessionProposalCard,
   repo_session_proposal_update: handleRepoSessionProposalUpdate,
+  session_message_proposal_card: handleSessionMessageProposalCard,
+  session_message_proposal_update: handleSessionMessageProposalUpdate,
   present_inline_card: handlePresentInlineCard,
   auto_resolve_result: handleAutoResolveResult,
   auto_resolve_started: handleAutoResolveStarted,
@@ -254,6 +260,8 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "action_checklist_update",
   "repo_session_proposal_card",
   "repo_session_proposal_update",
+  "session_message_proposal_card",
+  "session_message_proposal_update",
   "present_inline_card",
   "branch_auto_reset_card",
   "branch_synced_card",

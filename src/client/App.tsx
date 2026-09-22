@@ -1628,6 +1628,12 @@ export default function App() {
                 `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/start`,
               );
             }}
+            onDeliverSessionMessage={async (cardId) => {
+              if (!sessionId) return;
+              await apiPost(
+                `/api/sessions/${sessionId}/session-message-proposals/${cardId}/deliver`,
+              );
+            }}
             onOpenIssue={handleOpenIssue}
             onAgentInterfaceMessage={handleAgentInterfaceMessage}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}

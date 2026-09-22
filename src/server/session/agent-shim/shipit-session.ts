@@ -34,7 +34,13 @@ single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
   EOF`;
 
 // Do not disclose whether an inaccessible child exists.
-const CHILD_NOT_FOUND = "Spawned session not found, or not a descendant of this parent.";
+// docs/314 req 10 — the reach is one hop, and the dead end names its own way out.
+const CHILD_NOT_FOUND =
+  "Spawned session not found, or not a direct child of this session. "
+  + "These commands reach only the sessions YOU spawned.\n"
+  + "To reach any other session on this host — the one that wrote your prompt, a sibling, an "
+  + "unrelated session — use the `propose_session_message` tool: it posts a card the user approves, "
+  + "and approval delivers the message there.";
 
 const WHOAMI_HINT =
   "To see THIS session (its parent, siblings, and children), run `shipit session whoami`.";
