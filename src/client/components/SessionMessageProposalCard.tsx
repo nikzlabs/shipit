@@ -5,7 +5,7 @@
  * approval covers this one message.
  */
 
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowSquareOutIcon,
   PaperPlaneTiltIcon,
@@ -32,14 +32,26 @@ export function SessionMessageProposalCard({
   const [requestError, setRequestError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   /**
-   * A card already `delivering` at mount is a leftover: the live `delivering`
-   * always arrives as an update, so the only way to load one is that the
-   * process working on it is gone. Stay clickable; the server refuses a
-   * genuine double-delivery.
+   * A card mounted as `delivering` stays clickable rather than spinning on a
+   * state nothing here will ever resolve — a reload or a session switch can
+   * mount one while the request is genuinely still running, and an orchestrator
+   * that stopped mid-delivery leaves one behind forever. Clicking is safe in
+   * both: the server refuses a concurrent delivery and refuses a delivered one.
    */
   const staleDelivery = useRef(card.state === "delivering");
-  // The user approves this text, so it must be readable in full.
+  /**
+   * The user approves this exact text, so any part of it the clamp hides must be
+   * reachable. Measured rather than guessed from the length: six short lines, or
+   * a narrow column that wraps, overflow a message well under any character cap.
+   */
   const [expanded, setExpanded] = useState(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [clipped, setClipped] = useState(false);
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || expanded) return;
+    setClipped(el.scrollHeight > el.clientHeight);
+  }, [card.message, expanded]);
 
   const targetSession = useSessionStore((s) =>
     s.sessions.find((row) => row.id === card.targetSessionId),
@@ -91,12 +103,13 @@ export function SessionMessageProposalCard({
           {targetSession?.title ?? card.targetTitle}
         </div>
         <div
+          ref={bodyRef}
           className={`text-(--color-text-secondary) whitespace-pre-wrap ${expanded ? "" : "line-clamp-6"}`}
           data-testid="session-message-proposal-body"
         >
           {card.message}
         </div>
-        {card.message.length > 280 && (
+        {(clipped || expanded) && (
           <button
             type="button"
             className="self-start text-(--color-text-link) hover:underline"

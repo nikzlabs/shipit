@@ -40,7 +40,6 @@ describe("Integration: session-message proposal delivery", () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "deliver-session-message-"));
     sessionManager = new SessionManager(dbManager);
-    chatHistory = new ChatHistoryManager(dbManager);
     credentialStore = createTestCredentialStore(tmpDir);
 
     app = await buildApp({
@@ -53,6 +52,10 @@ describe("Integration: session-message proposal delivery", () => {
       workspaceDir: tmpDir,
       serveStatic: false,
     });
+
+    // The app's own manager, not a second one over the same file: a test that
+    // stubs a write must intercept the instance the route actually calls.
+    chatHistory = app.chatHistoryManager;
 
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
     port = Number(/:(\d+)$/.exec(address)?.[1] ?? 0);
@@ -140,6 +143,20 @@ describe("Integration: session-message proposal delivery", () => {
     siblingClient.close();
   });
 
+  /**
+   * The card's "queued" line is read off the DISPATCH's own admission, not
+   * guessed from whether the target was running: a running, steerable target
+   * takes the message immediately, so "Queued behind…" would be a lie.
+   */
+  it("reports an idle target's delivery as not queued", async () => {
+    const cardId = await propose("Report.");
+    const res = await deliver(cardId);
+    expect(res.json()).toMatchObject({ queued: false });
+
+    const persisted = chatHistory.findSessionMessageProposalCard(sessionId, cardId);
+    expect(persisted?.queued).toBe(false);
+  });
+
   // req 5 — approval delivers once; it is not a standing channel.
   it("refuses a second delivery of the same card", async () => {
     const cardId = await propose("Once.");
@@ -165,5 +182,38 @@ describe("Integration: session-message proposal delivery", () => {
   it("404s a card id this session's history does not hold", async () => {
     const res = await deliver("session-message-nope");
     expect(res.statusCode).toBe(404);
+  });
+
+  /**
+   * req 5 — dispatch is the point of no return. If persisting the delivered
+   * state throws AFTER the message has landed, marking the card `failed` would
+   * offer a "Try again" that delivers it a second time.
+   */
+  it("never marks a card retryable once the message has been dispatched", async () => {
+    const cardId = await propose("Exactly once.");
+    const targetClient = await TestClient.connect(port, targetId);
+    await targetClient.receive();
+
+    const realUpdate = chatHistory.updateSessionMessageProposalCard.bind(chatHistory);
+    let calls = 0;
+    chatHistory.updateSessionMessageProposalCard = ((sid, cid, patch) => {
+      calls += 1;
+      // The first call is `delivering`; fail the terminal one, after dispatch.
+      if (calls > 1) throw new Error("simulated persistence failure");
+      return realUpdate(sid, cid, patch);
+    }) as typeof chatHistory.updateSessionMessageProposalCard;
+
+    const res = await deliver(cardId);
+    chatHistory.updateSessionMessageProposalCard = realUpdate;
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ delivered: true });
+
+    // The message really did land, and the card was not downgraded to `failed`.
+    const arrived = (await targetClient.receiveType("system_user_message")) as WsSystemUserMessage;
+    expect(arrived.text).toBe("Exactly once.");
+    targetClient.close();
+    expect(chatHistory.findSessionMessageProposalCard(sessionId, cardId)?.state)
+      .not.toBe("failed");
   });
 });

@@ -59,8 +59,12 @@ describe("propose_session_message", () => {
     expect(out.content[0].text).toContain("ECONNREFUSED");
   });
 
-  // req 5 — the tool text must not leave the agent expecting a reply or a channel.
-  it("tells the agent the delivery is one-way and one-shot", async () => {
+  /**
+   * A copy assertion, and only that: req 5 is enforced by the route, not here.
+   * It exists because the wording is what stops an agent from waiting for a
+   * reply that never comes, or assuming it now has a channel.
+   */
+  it("says in its result text that the delivery is one-way and one-shot", async () => {
     stubFetch(200, { ok: true, targetTitle: "Orchestrator" });
     const out = await proposeSessionMessageTool.call(valid, deps);
     expect(out.content[0].text).toContain("delivered once");

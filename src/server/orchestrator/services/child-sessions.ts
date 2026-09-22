@@ -32,6 +32,7 @@ import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { isResolvedForGrouping } from "../../shared/session-resolution.js";
+import type { TurnAdmission } from "../turn-settlement.js";
 
 export class ResolvedChildMessageError extends ServiceError {
   constructor(public readonly child: SessionInfo) {
@@ -591,6 +592,8 @@ export interface SendChildMessageResult {
   /** One-based when queued behind a running turn; otherwise zero. */
   queuePosition: number;
   enqueued: boolean;
+  /** docs/314 — the dispatch's OWN admission, not a guess from the runner's state. */
+  admitted: TurnAdmission;
 }
 
 // Observe boot failure before acknowledging; timeout still permits dispatch to await readiness itself.
@@ -715,7 +718,7 @@ export async function deliverSessionMessage(
     throw new ServiceError(503, "Could not resume the session container; the message was not delivered.");
   }
 
-  runner.dispatch(prepareDispatch({
+  const handle = runner.dispatch(prepareDispatch({
     text,
     agentInterface: undefined,
     messageOrigin: origin,
@@ -735,8 +738,9 @@ export async function deliverSessionMessage(
     silent: undefined,
   }));
   return {
-    queuePosition: wasRunning ? runner.queueLength : 0,
+    queuePosition: handle.admitted === "queued" ? runner.queueLength : 0,
     enqueued: wasRunning,
+    admitted: handle.admitted,
   };
 }
 

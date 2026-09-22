@@ -60,14 +60,16 @@ and starting it registers the repository. Nothing is added until the user clicks
 ## Reaching a session you cannot address — `propose_session_message`
 
 `shipit session message` — and `list` / `view` / `wait` / `notify-on-merge` —
-reach only the sessions **you spawned**. Every other session on the host is
-unaddressable: the session that wrote the prompt you are working from, a
-sibling in the same cohort, a grandchild, anything unrelated. That scoping is
-the point — it is what stops a session injecting a turn into an unrelated one —
-so it is not something to work around.
+reach only the sessions **you spawned**. One other session you can reach
+directly: the session that spawned *you*, via `shipit session report`. Every
+other session on the host is unaddressable — a sibling in the same cohort, a
+grandchild, the session that wrote a prompt handed to you by someone other than
+your parent, anything unrelated. That scoping is the point — it is what stops a
+session injecting a turn into an unrelated one — so it is not something to work
+around.
 
-When you have been asked to report a result back to a session you cannot
-message, use the **`propose_session_message`** MCP tool. It posts a card in your
+When you have been asked to report a result back to a session neither of those
+reaches, use the **`propose_session_message`** MCP tool. It posts a card in your
 chat; one click delivers your message there and starts a turn.
 
 ```
@@ -81,9 +83,10 @@ Four things to know:
 
 - **You name the session, and ShipIt resolves it before the card exists.** The
   call is refused — to you, in the same turn — if no session has that id, if it
-  is this session, if it is archived, or if it is a session you spawned (use
-  `shipit session message` for that one). A id you got wrong is yours to
-  correct, not the user's to discover on the click.
+  is this session, if it is archived, if its repository is not trusted, or if it
+  is a session you can already reach — one you spawned (`shipit session message`)
+  or the one that spawned you (`shipit session report`). An id you got wrong is
+  yours to correct, not the user's to discover on the click.
 - **The message must stand alone.** The session that receives it has none of
   this conversation and a different workspace. Say what it is answering and
   which session it is from.

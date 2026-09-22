@@ -21,5 +21,16 @@
       children, and the dead end names the tool
 - [x] `wiki/sessions.md` describes the card for the user
 - [x] `npm run lint:dev` and `npm run typecheck` clean
-- [ ] Independent review collected and answered
-- [ ] PR opened with `Closes planning#450`
+- [x] Independent review collected and answered (6 findings; every one acted on)
+  - [x] A post-dispatch failure never marks the card retryable (pinned by a test
+        that goes red without the guard)
+  - [x] `queued` comes from the dispatch's own admission, not `runner.running`
+  - [x] The expander is offered on MEASURED overflow, so a short clipped message
+        is still readable in full
+  - [x] The repository-trust admission is checked at propose time, not left to
+        fail under the click
+  - [x] The in-flight lock is released when the first persist throws
+  - [x] The deliver response updates the card, for a session with no runner
+  - [x] Factual corrections: `session report` reaches the direct parent (now
+        refused and pointed at), and `list` uses `findChildren`
+- [x] PR opened with `Closes planning#450`

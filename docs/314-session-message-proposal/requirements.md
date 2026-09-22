@@ -14,14 +14,19 @@ What the feature must do, in the user's terms. Design lives in
 `shipit session message` reaches **direct children only**. The refusal is
 `assertChildOfParent` (`src/server/orchestrator/services/child-sessions.ts:545`),
 which compares `child.parentSessionId !== parentSessionId` — an equality test on
-one hop, not a walk up the tree. `list`, `view`, `wait` and `notify-on-merge`
-share that helper, so they carry the same reach.
+one hop, not a walk up the tree. `view`, `wait` and `notify-on-merge` share that
+helper; `list` uses `findChildren`, which is the same one hop.
 
-So every session that is not a direct child of the caller is unaddressable: a
-**root** session (the case planning#450 names), but equally a **sibling**, a
-**grandchild**, and any unrelated session on the box. On 2026-08-19 an operator
-had to drive the `send_message` WS handler by hand for want of any agent-facing
-route.
+One other session IS reachable: `shipit session report` resolves the caller's
+**direct parent** from its own linkage and wakes it
+(`orchestrator/services/session-report.ts:148`). That channel needs no card, so
+it is not in scope here — a proposal for a direct parent is refused and points
+at it (req 9).
+
+Everything else is unaddressable: a **root** session (the case planning#450
+names), a **sibling**, a **grandchild**, and any unrelated session on the box.
+On 2026-08-19 an operator had to drive the `send_message` WS handler by hand for
+want of any agent-facing route.
 
 That scoping is a security property — it is what stops one session injecting a
 turn into an unrelated one — and it is not widened here. A human approval is
@@ -47,9 +52,12 @@ what makes the unreachable case possible without giving it up.
    without approval is exactly what it was before this feature.
 8. A target the agent got wrong is refused when the agent asks for the card, not
    when the user clicks it. That covers a session id that does not exist, the
-   proposing session itself, and a session that cannot receive a turn.
+   proposing session itself, and any session that could not receive the turn if
+   the user did click — for whatever reason ShipIt already refuses one.
 9. An agent that can already reach the target directly is told to use the direct
-   route instead of proposing a card.
+   route instead of proposing a card. Today that means a session it spawned
+   (`shipit session message`) and the session that spawned it
+   (`shipit session report`).
 10. An agent that hits the existing "not found" refusal from a direct-message
     attempt is told that the proposal card exists, so the dead end names its own
     way out.

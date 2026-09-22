@@ -7,6 +7,7 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
+import { RepoStore } from "../repo-store.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import {
   TestClient,
@@ -21,6 +22,8 @@ import type { CredentialStore } from "../credential-store.js";
 import type { WsSessionMessageProposalCard } from "../../shared/types.js";
 import { MAX_PROPOSED_MESSAGE_LEN } from "../../shared/session-message-proposal-validation.js";
 
+const UNTRUSTED_URL = "https://github.com/acme/untrusted.git";
+
 /**
  * docs/314 — every refusal here happens at CALL time (req 8), so an agent that
  * got the address wrong learns while it can still fix it.
@@ -33,6 +36,7 @@ describe("Integration: propose-session-message route", () => {
   let credentialStore: CredentialStore;
   let sessionManager: SessionManager;
   let chatHistory: ChatHistoryManager;
+  let repoStore: RepoStore;
   let sessionId: string;
   let rootId: string;
   let client: TestClient;
@@ -42,6 +46,7 @@ describe("Integration: propose-session-message route", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "propose-session-message-"));
     sessionManager = new SessionManager(dbManager);
     chatHistory = new ChatHistoryManager(dbManager);
+    repoStore = new RepoStore(dbManager);
     credentialStore = createTestCredentialStore(tmpDir);
 
     app = await buildApp({
@@ -51,6 +56,7 @@ describe("Integration: propose-session-message route", () => {
       agentFactory: () => new FakeClaudeProcess() as unknown as never,
       credentialStore,
       databaseManager: dbManager,
+      repoStore,
       workspaceDir: tmpDir,
       serveStatic: false,
     });
@@ -97,11 +103,29 @@ describe("Integration: propose-session-message route", () => {
       targetTitle: "Orchestrator",
       message,
     });
-    // Nothing is delivered by proposing (req 7).
     expect(emitted.card.state).toBeUndefined();
 
     const persisted = chatHistory.findSessionMessageProposalCard(sessionId, emitted.card.cardId);
     expect(persisted).toMatchObject({ targetSessionId: rootId, message });
+  });
+
+  /**
+   * req 7 — observed at the TARGET, not inferred from the card's own state. A
+   * proposal that eagerly dispatched without setting `state` would satisfy the
+   * card assertion above and fail here.
+   */
+  it("delivers nothing to the target, and starts no turn there", async () => {
+    const targetClient = await TestClient.connect(port, rootId);
+    await targetClient.receive();
+
+    await propose({ sessionId: rootId, message: "Nothing should arrive from this." });
+    await client.receiveType("session_message_proposal_card");
+
+    const seen = (await targetClient.drain({ quietMs: 150, maxMs: 1500 }))
+      .map((m) => m.type);
+    expect(seen).not.toContain("system_user_message");
+    expect(seen).not.toContain("message_queued");
+    targetClient.close();
   });
 
   it("proposes for a SIBLING, not only a root session", async () => {
@@ -149,6 +173,37 @@ describe("Integration: propose-session-message route", () => {
     const res = await propose({ sessionId: rootId, message: "hi" });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toContain("warm pool");
+  });
+
+  // req 9 — the parent channel (`shipit session report`) already wakes it.
+  it("refuses the session that spawned this one and names the direct route", async () => {
+    const parentId = (await createTestSession(sessionManager, tmpDir, "Coordinator")).sessionId;
+    sessionManager.setParentSession(sessionId, parentId);
+
+    const res = await propose({ sessionId: parentId, message: "hi" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("shipit session report");
+  });
+
+  // The same admission `dispatch` applies, checked here so the card is never
+  // approvable while the delivery is impossible (req 8).
+  it("refuses a target on a repository the user has not trusted", async () => {
+    repoStore.add(UNTRUSTED_URL);
+    sessionManager.setRemoteUrl(rootId, UNTRUSTED_URL);
+
+    const res = await propose({ sessionId: rootId, message: "hi" });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toContain("not trusted");
+  });
+
+  it("refuses when this session has no active runner to post the card into", async () => {
+    const otherId = (await createTestSession(sessionManager, tmpDir, "Detached")).sessionId;
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${otherId}/propose-session-message`,
+      payload: { sessionId: rootId, message: "hi" },
+    });
+    expect(res.statusCode).toBe(409);
   });
 
   it("refuses a message over the cap", async () => {

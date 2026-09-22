@@ -23,6 +23,7 @@ import type { SessionManager } from "./sessions.js";
 /** Refuse at CALL time, so a bad address fails back to the agent (req 8). */
 function resolveTarget(
   sessionManager: SessionManager,
+  isRepoTrusted: (remoteUrl: string) => boolean,
   proposingSessionId: string,
   targetSessionId: string,
 ): { session: SessionInfo } | { error: string; code: number } {
@@ -51,6 +52,18 @@ function resolveTarget(
         + "A proposal card is for a session you cannot address.",
     };
   }
+  // The parent channel already wakes this target without a card (req 9), so a
+  // proposal here would add approval friction to a delivery that needs none.
+  const proposer = sessionManager.get(proposingSessionId);
+  if (proposer?.parentSessionId === targetSessionId) {
+    return {
+      code: 400,
+      error:
+        `${target.title} is the session that spawned you, so you can already reach it directly: `
+        + "run `shipit session report --body-file -`. "
+        + "A proposal card is for a session you cannot address.",
+    };
+  }
   // A pooled empty session is not work the user is following; a turn dispatched
   // into one would claim it for a conversation they never started.
   if (target.warm) {
@@ -69,6 +82,18 @@ function resolveTarget(
     return {
       code: 400,
       error: `${target.title} has no workspace and cannot take a turn, so there is nothing to approve.`,
+    };
+  }
+  // The same admission `dispatch` applies (`assertSessionCanDispatch`). Without
+  // it the card is approvable and the delivery is not, which is what req 8 exists
+  // to prevent.
+  if (target.kind !== "ops" && target.kind !== "sandbox"
+    && target.remoteUrl && !isRepoTrusted(target.remoteUrl)) {
+    return {
+      code: 403,
+      error:
+        `${target.title} is on a repository the user has not trusted, so no turn can start there. `
+        + "Tell the user to trust it in ShipIt before this message can be delivered.",
     };
   }
   return { session: target };
@@ -98,7 +123,12 @@ export async function registerProposeSessionMessageRoutes(
         return;
       }
 
-      const resolved = resolveTarget(deps.sessionManager, sessionId, validated.sessionId);
+      const resolved = resolveTarget(
+        deps.sessionManager,
+        (url) => deps.repoStore.isTrusted(url),
+        sessionId,
+        validated.sessionId,
+      );
       if ("error" in resolved) {
         reply.code(resolved.code).send({ error: resolved.error });
         return;
@@ -129,8 +159,12 @@ export async function registerProposeSessionMessageRoutes(
     },
   );
 
-  // Claimed synchronously: the persisted `delivering` state is written behind an
-  // await, so two fast clicks would both read `undefined` and dispatch twice.
+  /**
+   * Two fast clicks would both read a non-terminal card and dispatch twice, so
+   * the claim is synchronous and process-lived. A persisted `delivering` alone
+   * cannot serve: it is deliberately retryable, because an orchestrator that
+   * stopped mid-delivery leaves one behind and the card must not spin forever.
+   */
   const deliveriesInFlight = new Set<string>();
 
   // The user's click. Not container-accessible: the agent proposes, the user delivers.
@@ -173,11 +207,19 @@ export async function registerProposeSessionMessageRoutes(
       };
 
       deliveriesInFlight.add(cardId);
-      patch({ state: "delivering", errorMessage: undefined });
-
+      // Dispatch is the point of no return: once it has happened the message is
+      // in the target, so a later throw must never mark the card retryable.
+      let dispatched = false;
       try {
+        patch({ state: "delivering", errorMessage: undefined });
+
         // Re-resolved: the target may have been archived since the card was written.
-        const resolved = resolveTarget(deps.sessionManager, sessionId, card.targetSessionId);
+        const resolved = resolveTarget(
+          deps.sessionManager,
+          (url) => deps.repoStore.isTrusted(url),
+          sessionId,
+          card.targetSessionId,
+        );
         if ("error" in resolved) {
           throw new ServiceError(resolved.code, resolved.error);
         }
@@ -199,16 +241,36 @@ export async function registerProposeSessionMessageRoutes(
           deps.providerAccountManager,
           deps.containerManager,
         );
+        dispatched = true;
 
+        // The dispatch's own admission, not a guess from the runner's state: a
+        // steered message reaches a RUNNING target immediately, and an idle one
+        // under a merge hold is queued.
+        const queued = result.admitted === "queued";
         const deliveredAt = new Date().toISOString();
-        patch({ state: "delivered", deliveredAt, queued: result.enqueued });
-        return { ok: true, deliveredAt, queued: result.enqueued, queuePosition: result.queuePosition };
+        patch({ state: "delivered", deliveredAt, queued });
+        return { ok: true, deliveredAt, queued, queuePosition: result.queuePosition };
       } catch (err) {
         const message = err instanceof ServiceError
           ? err.message
           : `Could not deliver the message to ${card.targetTitle}: ${getErrorMessage(err)}`;
+        if (dispatched) {
+          // The message landed and only the acknowledgement failed. Marking this
+          // failed would offer a Try again that delivers it a second time.
+          console.error(
+            `[session-message-proposal] ${cardId} was delivered but could not be acknowledged:`,
+            err,
+          );
+          reply.code(500).send({ error: message, delivered: true });
+          return;
+        }
         patch({ state: "failed", errorMessage: message });
-        reply.code(err instanceof ServiceError ? err.statusCode : 500).send({ error: message });
+        const statusCode = err instanceof ServiceError
+          ? err.statusCode
+          : typeof (err as { statusCode?: unknown }).statusCode === "number"
+            ? (err as { statusCode: number }).statusCode
+            : 500;
+        reply.code(statusCode).send({ error: message });
         return;
       } finally {
         deliveriesInFlight.delete(cardId);

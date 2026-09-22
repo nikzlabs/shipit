@@ -136,6 +136,7 @@ import type {
 } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
+import { applySessionMessageProposalUpdate } from "./hooks/message-handlers/session-message-proposal.js";
 import { useGitStore } from "./stores/git-store.js";
 import { useFileStore, markUploadDeleted, noteUploadDismissed } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
@@ -1630,9 +1631,19 @@ export default function App() {
             }}
             onDeliverSessionMessage={async (cardId) => {
               if (!sessionId) return;
-              await apiPost(
+              const res = await apiPost<{ deliveredAt?: string; queued?: boolean }>(
                 `/api/sessions/${sessionId}/session-message-proposals/${cardId}/deliver`,
               );
+              // The route delivers even with no runner on this session, and with
+              // no runner it emits no WS update — so apply the response itself.
+              // Scoped, because the user may have switched sessions meanwhile.
+              if (useSessionStore.getState().sessionId !== sessionId) return;
+              applySessionMessageProposalUpdate({
+                cardId,
+                state: "delivered",
+                ...(res?.deliveredAt ? { deliveredAt: res.deliveredAt } : {}),
+                ...(res?.queued !== undefined ? { queued: res.queued } : {}),
+              });
             }}
             onOpenIssue={handleOpenIssue}
             onAgentInterfaceMessage={handleAgentInterfaceMessage}
