@@ -142,6 +142,45 @@ export function killProcessTree(
   return killed;
 }
 
+/**
+ * Same discipline as `killProcessTree` for a root we hold no handle to, reached by
+ * walking down from ourselves rather than by being our direct child. Ownership is the
+ * walk: a root absent from our own descendants is a stranger's and is left alone.
+ */
+export function killDescendantTree(
+  root: ProcessIdentity,
+  signal: NodeJS.Signals = "SIGTERM",
+  opts: { label?: string; graceMs?: number } = {},
+): boolean {
+  const label = opts.label ?? "descendant";
+  const graceMs = opts.graceMs ?? TREE_KILL_GRACE_MS;
+
+  const table = readProcessTable();
+  const ours = descendantsOf([process.pid], table).some(
+    (p) => p.pid === root.pid && p.startTime === root.startTime,
+  );
+  if (!ours) {
+    console.warn(
+      `[kill-tree] ${label} pid=${String(root.pid)} is not our descendant — not signalling it`,
+    );
+    return false;
+  }
+
+  const snapshot = descendantsOf([root.pid], table);
+  const killed = signalIdentity(root, signal);
+  let signalled = 0;
+  for (const descendant of snapshot) {
+    if (signalIdentity(descendant, signal)) signalled++;
+  }
+  console.log(
+    `[kill-tree] ${label} pid=${String(root.pid)}: ${signal} to root and`
+    + ` ${String(signalled)}/${String(snapshot.length)} descendant(s)`,
+  );
+
+  scheduleSweep(root, [root, ...snapshot], graceMs, label);
+  return killed;
+}
+
 // Re-walk every verified survivor: the root can exit while descendants still spawn.
 function scheduleSweep(
   root: ProcessIdentity,
