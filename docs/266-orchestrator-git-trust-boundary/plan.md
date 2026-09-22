@@ -508,18 +508,23 @@ else. That is requirement 9's plain words ("a project's own git hooks MUST fire
 on ShipIt's auto-commit"), and the wider reading was rejected rather than taken
 by default, so the reasoning is recorded here.
 
-**This IS a narrowing of the Q1 receipt, and it is recorded as an open question
-rather than settled here.** Requirement 9 says "on ShipIt's auto-commit"; the
-receipt in `requirements.md` ("2026-08-16 — Q1") records the chosen option as
-*"run them wherever the orchestrator's git runs, once that is no longer root"*,
-which is broader. The two disagree, and the review of this change caught the
-plan claiming the wider behaviour "was not asked for" — which is wrong as
-stated, because option (c)'s own wording asks for it. What is built implements
-the numbered requirement (the identifier, per `CLAUDE.md`'s requirements
-discipline), because req 10's fallback exists only for the commit and a
-`pre-push` or `post-checkout` hook would inherit nothing. Widening later is
-additive and loses nothing. The requester's call is recorded as an open
-question, not taken here.
+**This IS a narrowing of the Q1 receipt, and the requester confirmed it on
+2026-09-22.** Requirement 9 says "on ShipIt's auto-commit"; the receipt in
+`requirements.md` ("2026-08-16 — Q1") records the chosen option as *"run them
+wherever the orchestrator's git runs, once that is no longer root"*, which is
+broader. The two disagreed, and the review of this change caught the plan
+claiming the wider behaviour "was not asked for" — which is wrong as stated,
+because option (c)'s own wording asks for it. So it was raised as Q5 rather than
+settled here, and answered: *"Autocommit only is fine for now."*
+
+What is built implements the numbered requirement (the identifier, per
+`CLAUDE.md`'s requirements discipline), because req 10's fallback exists only
+for the commit and a `pre-push` or `post-checkout` hook would inherit nothing.
+
+**Widening remains available, and this section is the analysis it should
+inherit.** "For now" was a deferral, not a rejection — so anyone taking it up
+starts from the question req 10 leaves open for operations with no fallback,
+rather than rediscovering that the disagreement exists.
 
 The wider reading was available and is *smaller to build*: `safeSimpleGit`
 already resolves `resolveGitTreeUid(baseDir)` to decide whether to drop uid
