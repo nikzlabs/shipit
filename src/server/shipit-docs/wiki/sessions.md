@@ -287,7 +287,8 @@ for when that is the right shape and when a sub-agent or a consult is better.
 Four things users ask about children:
 
 - They report **upward only**. A child can raise a blocker to its parent; it
-  cannot talk to its siblings.
+  cannot talk to its siblings, and cannot see them either — so children run as
+  parallel trials of different prompts or models do not learn of each other.
 - **A parent cannot end a child.** It can wait on one, message one, and be woken
   when one merges; archiving is the user's, above. A child steered by the user in
   its own chat is doing exactly that, and the parent has no way to see it.

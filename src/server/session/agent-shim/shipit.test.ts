@@ -923,7 +923,7 @@ describe("shipit session view", () => {
     const out = await run(["session", "view"], {
       "GET /agent-ops/session/cohort": {
         status: 200,
-        body: { self: { id: "ses_self", title: "Me", status: "running" }, siblings: [], children: [] },
+        body: { self: { id: "ses_self", title: "Me", status: "running" }, children: [] },
       },
     });
     expect(out.exitCode).toBe(0);
@@ -1421,12 +1421,11 @@ describe("shipit session archive (removed — docs/117)", () => {
 const COHORT_BODY = {
   self: { id: "ses_me", title: "Elementalist catalog", branch: "shipit/elem", status: "running" },
   parent: { id: "ses_parent", title: "Spell catalogs", branch: "shipit/plan", status: "idle" },
-  siblings: [{ id: "ses_druid", title: "Druid catalog", branch: "shipit/druid", status: "idle" }],
-  children: [],
+  children: [{ id: "ses_rune", title: "Rune tables", branch: "shipit/rune", status: "idle" }],
 };
 
 describe("shipit session whoami", () => {
-  it("prints this session, its parent, and its cohort", async () => {
+  it("prints this session, its parent, and its children, with no siblings section", async () => {
     const { run } = makeRunner();
     const out = await run(["session", "whoami"], {
       "GET /agent-ops/session/cohort": { status: 200, body: COHORT_BODY },
@@ -1435,8 +1434,8 @@ describe("shipit session whoami", () => {
     expect(out.calls[0]).toMatchObject({ method: "GET", path: "/agent-ops/session/cohort" });
     expect(out.stdout).toContain("session:  Elementalist catalog (ses_me)");
     expect(out.stdout).toContain("parent:   Spell catalogs (ses_parent)");
-    expect(out.stdout).toContain("ses_druid");
-    expect(out.stdout).toContain("children: (none)");
+    expect(out.stdout).toContain("ses_rune");
+    expect(out.stdout).not.toContain("siblings");
   });
 
   it("says so when this session has no parent (report is unavailable)", async () => {
@@ -1444,7 +1443,7 @@ describe("shipit session whoami", () => {
     const out = await run(["session", "whoami"], {
       "GET /agent-ops/session/cohort": {
         status: 200,
-        body: { self: { id: "ses_solo", title: "Solo", status: "idle" }, siblings: [], children: [] },
+        body: { self: { id: "ses_solo", title: "Solo", status: "idle" }, children: [] },
       },
     });
     expect(out.exitCode).toBe(0);

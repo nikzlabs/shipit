@@ -43,7 +43,7 @@ const CHILD_NOT_FOUND =
   + "and approval delivers the message there.";
 
 const WHOAMI_HINT =
-  "To see THIS session (its parent, siblings, and children), run `shipit session whoami`.";
+  "To see THIS session (its parent and children), run `shipit session whoami`.";
 
 export async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void> {
   const usedInline = args.some(
@@ -1125,7 +1125,6 @@ export async function handleSessionWhoami(args: string[], deps: RunDeps): Promis
 
   const self = (res.body.self ?? {}) as Record<string, unknown>;
   const parent = res.body.parent as Record<string, unknown> | undefined;
-  const siblings = (res.body.siblings as Record<string, unknown>[] | undefined) ?? [];
   const children = (res.body.children as Record<string, unknown>[] | undefined) ?? [];
 
   const lines = [
@@ -1141,9 +1140,7 @@ export async function handleSessionWhoami(args: string[], deps: RunDeps): Promis
   if (res.body.rootSessionId && res.body.rootSessionId !== (parent?.id ?? "")) {
     lines.push(`root:     ${asString(res.body.rootSessionId)}`);
   }
-  lines.push("", `siblings: ${siblings.length === 0 ? "(none)" : ""}`);
-  for (const s of siblings) lines.push(`  ${formatPeer(s)}`);
-  lines.push(`children: ${children.length === 0 ? "(none)" : ""}`);
+  lines.push("", `children: ${children.length === 0 ? "(none)" : ""}`);
   for (const c of children) lines.push(`  ${formatPeer(c)}`);
   success(deps.io, lines.join("\n"));
 }

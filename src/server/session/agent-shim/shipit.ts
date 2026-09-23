@@ -426,8 +426,8 @@ children. Severity is \`fyi\` (default), \`warn\`, or \`blocker\`. You cannot
 target an arbitrary session id. A report costs the parent a turn, so batch
 findings into one report rather than sending a stream of them.
 
-\`shipit session whoami\` resolves THIS session: its id, branch, parent, cohort
-siblings, and any children it spawned. (\`view <id>\` is descendant-scoped, so
+\`shipit session whoami\` resolves THIS session: its id, branch, parent, and any
+children it spawned. (\`view <id>\` is descendant-scoped, so
 passing your own id doesn't work — use \`whoami\`.)
 
 In an Ops session, use \`shipit source *\` to read the ShipIt source code that

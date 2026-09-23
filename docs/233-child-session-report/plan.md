@@ -39,8 +39,14 @@ rejects `--cohort`; the orchestrator independently rejects any `to` value other
 than `parent`. The server check protects existing containers that still run an
 older shim after an orchestrator update. There is no target session-id flag.
 
-`shipit session whoami` still shows the caller, parent, siblings, and children.
-Sibling rows are read-only topology. Visibility does not grant delivery rights.
+`shipit session whoami` shows the caller, its parent, and its children — never
+its siblings (req 12). Sibling rows were first kept as read-only topology, but
+`whoami --json` then exposed each sibling's model, role, PR URL, and latest
+assistant message, so parallel children run as prompt or model comparisons could
+read each other's results. The parent row also carries no transcript or PR
+projection, since the parent's latest message can describe the experiment. A
+child that needs to know which work belongs elsewhere gets that scope from its
+spawn prompt.
 
 ## Delivery
 
