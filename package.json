@@ -72,7 +72,7 @@
     "tailwindcss-animate": "1.0.7",
     "unified": "11.0.5",
     "yaml": "2.9.0",
-    "zustand": "5.0.14"
+    "zustand": "5.0.15"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
