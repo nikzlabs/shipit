@@ -609,7 +609,18 @@ edge is simply frequent enough to make them reachable.
    queued or re-queued steer's successor also cleared the finished turn's
    release markers before they were parsed, and no card appeared. It now reads
    the `resultTurnText` snapshot (taken at `agent_result` and at the drain) on the
-   same live-when-current rule.
+   same live-when-current rule. Two CLI-started turns can also overlap one
+   handover: B ends while A's re-arm is pending, and C starts before it settles.
+   The re-arm then ends at C's epoch, so a result that arrives during a handover
+   keeps its own epoch, summary and text across the await. Such results pass a
+   gate (`resultGate`) one at a time, in arrival order, and each one re-arms for
+   itself when the previous result's flow has fired; without that, C's result
+   found the flow already fired and C got no commit or release flow at all. The
+   `done`, `error` and auth-recovery paths wait on the same gate
+   (`settleHandovers`) and re-arm for a turn that started while a result was
+   gated (`owedEpoch`, an epoch rather than a flag, because a gated result's
+   re-arm can end at that later turn and then step back to its own epoch), so a
+   turn that crashes there still drains and clears `running`.
 4. **The ownership check is stale by the time the drain runs.** `tryDrain` checks
    `turnIsCurrent()`, then *awaits the queued-turn commit* — real work, on a real
    tree — before calling `drainNext()`. A turn adopted inside that await would
